@@ -84,7 +84,7 @@ FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMACB** with fu
     |  +-----------------------------------------------------------------------+   |
     |                                                                              |
     |  +--------------+  +--------------+  +--------------+                        |
-    |  | MMIO FIFO 0  |  | MMIO FIFO 1  |  | Sync DC FIFO |--> UART TX --> o_uart_tx |
+    |  | MMIO FIFO 0  |  | MMIO FIFO 1  |  | Sync DC FIFO |-> UART TX -> o_uart_tx |
     |  +--------------+  +--------------+  +--------------+     (clk_div4)         |
     |                                                                              |
     |  +--------------+                   +--------------+                         |
