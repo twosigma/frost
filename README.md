@@ -2,7 +2,7 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-A 6-stage pipelined RISC-V processor implementing RV32IMACB with full machine-mode privilege support for RTOS operation. Designed for FPGA deployment with clean, portable SystemVerilog.
+A 6-stage pipelined RISC-V processor implementing RV32IMACB with full machine-mode privilege support for RTOS operation. Achieves 322 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is hand-written with extensive documentation, suitable for teaching, learning, and extending.
-- **Practical performance** — 1.62 CoreMark/MHz with branch prediction, L0 cache, and full data forwarding. Usable for non-critical applications but still plenty of room for improvement.
+- **Practical performance** — 1.62 CoreMark/MHz (523 CoreMark at 322 MHz on UltraScale+) with branch prediction, L0 cache, and full data forwarding.
 - **Layered verification** — constrained-random tests, directed tests, and real C programs all run in Cocotb simulation with pass/fail markers. Bugs that slip past one layer get caught by another. More accessible than SystemVerilog/UVM.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, and ISA compliance suite all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC) and Xilinx. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
