@@ -12,10 +12,10 @@ create_clock -period 10 -name sysclk [get_ports i_sysclk]
 # ================================================================
 # UART - Serial communication for debug console
 # ================================================================
-# UART transmit (directly from FTDI chip - directly from UART_TXD_IN pin)
-set_property -dict {PACKAGE_PIN C4 IOSTANDARD LVCMOS33} [get_ports o_uart_tx]
-# UART receive
-set_property -dict {PACKAGE_PIN D4 IOSTANDARD LVCMOS33} [get_ports i_uart_rx]
+# UART transmit (directly to FTDI chip - directly to UART_RXD_OUT pin)
+set_property -dict {PACKAGE_PIN D4 IOSTANDARD LVCMOS33} [get_ports o_uart_tx]
+# UART receive (directly from FTDI chip - directly from UART_TXD_IN pin)
+set_property -dict {PACKAGE_PIN C4 IOSTANDARD LVCMOS33} [get_ports i_uart_rx]
 
 # ================================================================
 # RESET - CPU reset push-button (active-low)
