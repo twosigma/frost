@@ -15,13 +15,15 @@
 # Vivado TCL script to program FPGA bitstream via JTAG
 # Loads compiled bitstream into FPGA configuration memory
 
-if { $argc < 2 } {
-    puts "Error: Project root and board name required"
-    puts "Usage: vivado -source program_bitstream.tcl -tclargs <project_root> <board_name> \[remote_host\]"
+if { $argc < 3 } {
+    puts "Error: Project root, board name, and hardware target required"
+    puts "Usage: vivado -source program_bitstream.tcl -tclargs <project_root> <board_name> <hw_target> \[remote_host\]"
     exit 1
 }
 set project_root [lindex $argv 0]
 set board_name [lindex $argv 1]
+set hw_target [lindex $argv 2]
+
 if { $board_name != "x3" && $board_name != "genesys2" && $board_name != "nexys_a7" } {
     puts "Error: Invalid board '$board_name'. Must be 'x3', 'genesys2', or 'nexys_a7'"
     exit 1
@@ -29,17 +31,17 @@ if { $board_name != "x3" && $board_name != "genesys2" && $board_name != "nexys_a
 
 # Connect to FPGA hardware via JTAG
 open_hw_manager
-if { $argc >= 3 } {
+if { $argc >= 4 } {
     # Remote hardware server specified - connect to remote FPGA
-    set remote_hardware_server [lindex $argv 2]
+    set remote_hardware_server [lindex $argv 3]
     connect_hw_server -url ${remote_hardware_server}:3121
 } else {
     # No remote host - connect to local hardware server
     connect_hw_server
 }
 
-# Select first available hardware target and device
-current_hw_target [lindex [get_hw_targets] 0]
+# Select the specified hardware target
+current_hw_target $hw_target
 open_hw_target
 
 # Configure device with bitstream file path

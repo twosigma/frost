@@ -18,7 +18,12 @@
 
 import argparse
 import subprocess
+import sys
 from pathlib import Path
+
+# Add common directory to path for shared modules
+sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
+from hw_target import add_target_args, select_target
 
 
 def main() -> None:
@@ -45,7 +50,24 @@ def main() -> None:
         default="vivado",
         help="Path to Vivado executable (default: vivado from PATH)",
     )
+    add_target_args(parser)
     args = parser.parse_args()
+
+    # Handle --list-targets: just list and exit
+    if args.list_targets:
+        select_target(
+            args.vivado_path, args.remote_host, list_only=True, board=args.board
+        )
+        return
+
+    # Select hardware target (may prompt user if multiple targets)
+    # Auto-filters by vendor based on board (e.g., nexys_a7 -> Digilent, x3 -> Xilinx)
+    selected_target = select_target(
+        args.vivado_path,
+        args.remote_host,
+        target_pattern=args.target,
+        board=args.board,
+    )
 
     # Compute absolute paths based on script location
     script_dir = Path(__file__).parent.resolve()
@@ -68,6 +90,7 @@ def main() -> None:
         "-tclargs",
         str(project_root),  # Pass project root as first arg
         args.board,
+        selected_target,  # Pass selected hardware target
     ]
 
     if args.remote_host:

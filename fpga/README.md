@@ -119,17 +119,28 @@ The build system uses Vivado in batch mode to synthesize, place, and route the d
 Program the FPGA with the generated bitstream via JTAG.
 
 ```bash
-./fpga/program_bitstream/program_bitstream.py <board> [remote_host]
+./fpga/program_bitstream/program_bitstream.py <board> [remote_host] [--target PATTERN] [--list-targets]
 ```
 
 **Arguments:**
 - `board` - Target board: `x3`, `genesys2`, or `nexys_a7`
 - `remote_host` - (Optional) Hostname for remote FPGA programming
+- `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
+- `--list-targets` - (Optional) List available hardware targets for this board and exit
 
 **Examples:**
 ```bash
-# Local FPGA
+# Local FPGA (auto-selects if only one matching target, prompts if multiple)
 ./fpga/program_bitstream/program_bitstream.py x3
+
+# List available targets for this board (filtered by vendor)
+./fpga/program_bitstream/program_bitstream.py nexys_a7 --list-targets
+
+# Select target by index (from filtered list)
+./fpga/program_bitstream/program_bitstream.py nexys_a7 --target 0
+
+# Select target by serial number
+./fpga/program_bitstream/program_bitstream.py nexys_a7 --target 210299A8B4D1
 
 # Remote FPGA (requires Vivado Hardware Server on remote host)
 ./fpga/program_bitstream/program_bitstream.py x3 fpga-server.local
@@ -140,13 +151,15 @@ Program the FPGA with the generated bitstream via JTAG.
 Load software into instruction memory without regenerating the bitstream. This enables rapid iteration during development. Applications are compiled automatically before loading—no manual build step required. The board argument sets the correct clock frequency and scales CoreMark iterations appropriately.
 
 ```bash
-./fpga/load_software/load_software.py <board> <app> [remote_host]
+./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]
 ```
 
 **Arguments:**
 - `board` - Target board: `x3`, `genesys2`, or `nexys_a7`
 - `app` - Application name (see table below)
 - `remote_host` - (Optional) Hostname for remote FPGA
+- `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
+- `--list-targets` - (Optional) List available hardware targets for this board and exit (does not require `app`)
 
 **Available Applications:**
 
@@ -179,7 +192,37 @@ The script compiles the application with the correct clock frequency for the tar
 
 # Load FreeRTOS demo on Nexys A7
 ./fpga/load_software/load_software.py nexys_a7 freertos_demo
+
+# List targets for this board (doesn't require app argument)
+./fpga/load_software/load_software.py nexys_a7 --list-targets
+
+# Select specific target by serial number
+./fpga/load_software/load_software.py nexys_a7 hello_world --target 210299A8B4D1
 ```
+
+## Multiple Hardware Targets
+
+When multiple FPGA boards are connected to the same host, the scripts automatically detect all available hardware targets and filter them based on the board type:
+
+**Automatic vendor filtering:**
+- `nexys_a7` and `genesys2` → auto-filters for `Digilent` targets
+- `x3` → auto-filters for `Xilinx` targets
+
+This filtering applies to all operations including `--list-targets`. If you have both Digilent and Alveo boards connected, specifying `nexys_a7` will only show/select Digilent targets and `x3` will only show/select Xilinx targets.
+
+**Selection behavior:**
+- **Single matching target**: Automatically selected without prompting
+- **Multiple matching targets, no `--target` flag**: Lists matching targets and prompts for selection
+- **`--target` with unique match**: Automatically selects the matching target
+- **`--target` with multiple matches**: Lists matching targets and prompts for selection
+
+Target names follow the format `hostname:port/xilinx_tcf/<vendor>/<serial>`:
+- Digilent boards: `localhost:3121/xilinx_tcf/Digilent/210299A8B4D1`
+- Alveo boards: `localhost:3121/xilinx_tcf/Xilinx/00001234abcd`
+
+The `--target` pattern matching is case-insensitive and matches anywhere in the target name, so you can use:
+- `210299A8B4D1` - matches a specific board by serial number
+- `0`, `1`, `2` - select by index from the filtered target list
 
 ## Architecture
 
@@ -274,6 +317,11 @@ The build system uses aggressive optimization settings for maximum frequency:
 - Ensure JTAG cable is connected
 - Check that the board is powered on
 - For remote: verify `hw_server` is running on the remote host
+- Use `--list-targets` to see what targets are detected
+
+**"Multiple hardware targets detected" / wrong board selected**
+- Use `--list-targets` to see available targets
+- Use `--target <pattern>` to select the correct board by index, vendor, or serial number
 
 **Timing failures**
 - Check `build/<board>/work/post_route_timing.rpt` for failing paths

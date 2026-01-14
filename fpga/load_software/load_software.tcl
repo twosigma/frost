@@ -15,13 +15,14 @@
 # Vivado TCL script to load software into FPGA instruction memory via JTAG
 # Writes compiled program into BRAM through AXI interface without reprogramming bitstream
 
-if { $argc < 2 } {
-    puts "Error: Project root and software application name required"
-    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> \[remote_host\]"
+if { $argc < 3 } {
+    puts "Error: Project root, software application name, and hardware target required"
+    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> <hw_target> \[remote_host\]"
     exit 1
 }
 set project_root [lindex $argv 0]
 set software_application_name [lindex $argv 1]
+set hw_target [lindex $argv 2]
 
 # Valid software applications (alphabetically sorted)
 set valid_apps [list c_ext_test call_stress coremark csr_test freertos_demo \
@@ -43,17 +44,17 @@ source ${script_dir}/file_to_bram.tcl
 
 # Connect to FPGA hardware via JTAG
 open_hw_manager
-if { $argc >= 3 } {
+if { $argc >= 4 } {
     # Remote host was provided - connect to remote hardware server
-    set remote_hardware_server [lindex $argv 2]
+    set remote_hardware_server [lindex $argv 3]
     connect_hw_server -url ${remote_hardware_server}:3121
 } else {
     # No remote host - connect to local hardware server
     connect_hw_server
 }
 
-# Select first available hardware target and open it
-current_hw_target [lindex [get_hw_targets] 0]
+# Select the specified hardware target and open it
+current_hw_target $hw_target
 open_hw_target
 
 # Refresh device and reset AXI interface

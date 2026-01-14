@@ -22,6 +22,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Add common directory to path for shared modules
+sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
+from hw_target import add_target_args, select_target
+
 # Valid software applications
 VALID_APPS = [
     "branch_pred_test",
@@ -129,6 +133,7 @@ def main() -> None:
     )
     parser.add_argument(
         "software_app",
+        nargs="?",
         choices=VALID_APPS,
         help="Software application to load",
     )
@@ -143,7 +148,28 @@ def main() -> None:
         default="vivado",
         help="Path to Vivado executable (default: vivado from PATH)",
     )
+    add_target_args(parser)
     args = parser.parse_args()
+
+    # Handle --list-targets: just list and exit (doesn't require software_app)
+    if args.list_targets:
+        select_target(
+            args.vivado_path, args.remote_host, list_only=True, board=args.board
+        )
+        return
+
+    # software_app is required for actual loading
+    if not args.software_app:
+        parser.error("software_app is required unless using --list-targets")
+
+    # Select hardware target (may prompt user if multiple targets)
+    # Auto-filters by vendor based on board (e.g., nexys_a7 -> Digilent, x3 -> Xilinx)
+    selected_target = select_target(
+        args.vivado_path,
+        args.remote_host,
+        target_pattern=args.target,
+        board=args.board,
+    )
 
     # Get board configuration
     board_config = BOARD_CONFIG[args.board]
@@ -184,6 +210,7 @@ def main() -> None:
         "-tclargs",
         str(project_root),  # Pass project root as first arg
         args.software_app,
+        selected_target,  # Pass selected hardware target
     ]
 
     if args.remote_host:
