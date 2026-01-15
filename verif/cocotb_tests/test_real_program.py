@@ -98,6 +98,65 @@ class UartMonitor:
         return self.output_buffer
 
 
+def _read_u64(signal: Any) -> int | None:
+    """Read a 64-bit counter from a cocotb signal, return None if not resolvable."""
+    try:
+        value = signal.value
+    except AttributeError:
+        return None
+    if value.is_resolvable:
+        return int(value)
+    return None
+
+
+def read_ras_stats(dut: Any) -> dict[str, int] | None:
+    """Read RAS stats counters from the DUT if available."""
+    try:
+        cpu = dut.cpu_and_memory_subsystem.cpu_inst
+    except AttributeError:
+        return None
+
+    ras_predicted = _read_u64(getattr(cpu, "ras_predicted_count", None))
+    if ras_predicted is None:
+        return None
+    ras_return = _read_u64(getattr(cpu, "ras_return_count", None))
+    if ras_return is None:
+        return None
+    ras_correct = _read_u64(getattr(cpu, "ras_correct_count", None))
+    if ras_correct is None:
+        return None
+    ras_mispred = _read_u64(getattr(cpu, "ras_mispred_count", None))
+    if ras_mispred is None:
+        return None
+
+    return {
+        "ras_predicted": ras_predicted,
+        "ras_return": ras_return,
+        "ras_correct": ras_correct,
+        "ras_mispred": ras_mispred,
+    }
+
+
+def log_ras_stats(run_number: int, stats: dict[str, int] | None) -> None:
+    """Log RAS stats in a compact format."""
+    if stats is None:
+        return
+
+    predicted = stats["ras_predicted"]
+    returns = stats["ras_return"]
+    correct = stats["ras_correct"]
+    mispred = stats["ras_mispred"]
+
+    acc = (correct / predicted) if predicted else 0.0
+    use = (predicted / returns) if returns else 0.0
+
+    cocotb.log.info(
+        f"Run {run_number} RAS stats: predicted={predicted}, returns={returns}, "
+        f"correct={correct}, mispred={mispred}, "
+        f"predicted/returns={use:.3f}, correct/predicted={acc:.3f}"
+    )
+
+
 def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
     """Determine expected behavior based on the program being tested.
 
@@ -230,7 +289,9 @@ async def test_real_program(dut: Any) -> None:
     """
     # Start clocks
     cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
-    cocotb.start_soon(Clock(dut.i_clk_div4, CLK_PERIOD_NS * 4, unit="ns").start())
+    # Note: i_clk_div4 only exists in frost.sv, not cpu_tb.sv testbench
+    if hasattr(dut, "i_clk_div4"):
+        cocotb.start_soon(Clock(dut.i_clk_div4, CLK_PERIOD_NS * 4, unit="ns").start())
 
     # Get expected behavior for this program
     success_marker, initial_text, has_defined_endpoint, app_name = (
@@ -270,6 +331,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles,
         run_number=1,
     )
+    log_ras_stats(1, read_ras_stats(dut))
 
     # === Reset between runs ===
     cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
@@ -292,6 +354,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles,
         run_number=2,
     )
+    log_ras_stats(2, read_ras_stats(dut))
 
     # Stop UART monitor
     uart_monitor.stop()

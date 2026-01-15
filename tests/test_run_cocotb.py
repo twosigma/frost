@@ -142,6 +142,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="strings_test",
         description="String library test suite",
     ),
+    "ras_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ras_test",
+        description="Return Address Stack (RAS) comprehensive test suite",
+    ),
+    "ras_stress_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ras_stress_test",
+        description="RAS stress test (calls, branches, and function pointers)",
+    ),
     # Note: uart_echo is intentionally excluded - it requires interactive user
     # input and has no <<PASS>> marker, so it cannot be tested automatically.
 }
@@ -355,7 +367,8 @@ class CocotbRunner:
             needs_clean = simulator != "verilator" or self._verilator_needs_rebuild()
 
             if needs_clean:
-                subprocess.run(["make", "clean"], check=True)
+                # Don't fail on clean errors (e.g., permission denied on root-owned files)
+                subprocess.run(["make", "clean"], check=False)
 
             # Set up program memory symlink if needed
             program_memory_file = self._get_program_memory_file()

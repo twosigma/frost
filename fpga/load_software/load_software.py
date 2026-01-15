@@ -39,6 +39,8 @@ VALID_APPS = [
     "memory_test",
     "packet_parser",
     "print_clock_speed",
+    "ras_stress_test",
+    "ras_test",
     "spanning_test",
     "strings_test",
     "uart_echo",

@@ -167,9 +167,16 @@ void portable_init(core_portable *p, int *argc, char *argv[])
 */
 void portable_fini(core_portable *p)
 {
+    /* Get back to the containing core_results struct to check err field */
+    core_results *res = (core_results *) ((char *) p - offsetof(core_results, port));
+
     p->portable_id = 0;
     /* Print correct 64-bit total ticks (core_main.c truncates to 32-bit) */
     ee_printf("Total 64-bit ticks : %llu\n", (unsigned long long) (stop_time_val - start_time_val));
     ee_printf("To calculate Coremark score: ITERATIONS*FPGA_CPU_CLK_FREQ/(Total 64-bit ticks)\n");
-    ee_printf("<<PASS>>\n");
+    if (res->err == 0) {
+        ee_printf("<<PASS>>\n");
+    } else {
+        ee_printf("<<FAIL>>\n");
+    }
 }

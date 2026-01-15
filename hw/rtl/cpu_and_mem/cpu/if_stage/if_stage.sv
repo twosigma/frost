@@ -99,62 +99,70 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   // Branch Prediction Controller Interface (branch_prediction_controller)
   // ---------------------------------------------------------------------------
-  logic            btb_predicted_taken;  // Combinational: BTB hit with taken prediction
+  logic btb_predicted_taken;  // Combinational: BTB hit with taken prediction
   logic [XLEN-1:0] btb_predicted_target;  // Combinational: Predicted target address
-  logic            prediction_used_r;  // Registered: Prediction was applied
+  logic prediction_used_r;  // Registered: Prediction was applied
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
-  logic            prediction_used;  // Current prediction being used
-  logic            prediction_holdoff;  // Block prediction (stale data)
-  logic            sel_prediction_r;  // Select registered prediction target
-  logic            control_flow_to_halfword_pred;  // Prediction targets halfword address
+  logic prediction_used;  // Current prediction being used
+  logic prediction_holdoff;  // Block prediction (stale data)
+  logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
+  logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
+  logic sel_prediction_r;  // Select registered prediction target
+  logic control_flow_to_halfword_pred;  // Prediction targets halfword address
+
+  // RAS (Return Address Stack) signals
+  logic ras_predicted;  // RAS prediction was used
+  logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
+  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;  // TOS checkpoint
+  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count checkpoint
 
   // ---------------------------------------------------------------------------
   // PC Controller Interface (pc_controller)
   // ---------------------------------------------------------------------------
   logic [XLEN-1:0] pc;  // Current program counter (fetch address)
   logic [XLEN-1:0] pc_reg;  // Registered PC (instruction address)
-  logic            control_flow_change;  // Branch/jump taken this cycle
-  logic            control_flow_holdoff;  // Wait cycle after control flow change
-  logic            control_flow_to_halfword;  // Target address is halfword-aligned
-  logic            control_flow_to_halfword_r;  // Registered version for timing
-  logic            reset_holdoff;  // Wait cycle after reset
-  logic            any_holdoff;  // Any holdoff condition active
-  logic            any_holdoff_safe;  // Safe holdoff (registered signals only)
-  logic            mid_32bit_correction;  // Correction for 32-bit at halfword boundary
+  logic control_flow_change;  // Branch/jump taken this cycle
+  logic control_flow_holdoff;  // Wait cycle after control flow change
+  logic control_flow_to_halfword;  // Target address is halfword-aligned
+  logic control_flow_to_halfword_r;  // Registered version for timing
+  logic reset_holdoff;  // Wait cycle after reset
+  logic any_holdoff;  // Any holdoff condition active
+  logic any_holdoff_safe;  // Safe holdoff (registered signals only)
+  logic mid_32bit_correction;  // Correction for 32-bit at halfword boundary
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
   // ---------------------------------------------------------------------------
-  logic            spanning_wait_for_fetch;  // Waiting for second half of spanning instr
-  logic            spanning_in_progress;  // Currently processing spanning instruction
-  logic [    15:0] spanning_buffer;  // First half of spanning instruction
-  logic [    15:0] spanning_second_half;  // Second half of spanning instruction
+  logic spanning_wait_for_fetch;  // Waiting for second half of spanning instr
+  logic spanning_in_progress;  // Currently processing spanning instruction
+  logic [15:0] spanning_buffer;  // First half of spanning instruction
+  logic [15:0] spanning_second_half;  // Second half of spanning instruction
   logic [XLEN-1:0] spanning_pc;  // PC of spanning instruction
-  logic [    31:0] instr_buffer;  // Buffered instruction for stall recovery
-  logic            prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
-  logic            spanning_to_halfword;  // Spanning ends at halfword boundary
-  logic            spanning_to_halfword_registered;  // Registered for timing
-  logic            is_compressed_for_buffer;  // Stall-restored is_compressed
-  logic            is_compressed_for_pc;  // Registered is_compressed for PC timing
-  logic            use_buffer_after_spanning;  // Use buffer after spanning_to_halfword
+  logic [31:0] instr_buffer;  // Buffered instruction for stall recovery
+  logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
+  logic spanning_to_halfword;  // Spanning ends at halfword boundary
+  logic spanning_to_halfword_registered;  // Registered for timing
+  logic is_compressed_for_buffer;  // Stall-restored is_compressed
+  logic is_compressed_for_pc;  // Registered is_compressed for PC timing
+  logic use_buffer_after_spanning;  // Use buffer after spanning_to_halfword
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
   // ---------------------------------------------------------------------------
-  logic [    15:0] raw_parcel;  // Selected 16-bit parcel for RVC decompression
-  logic [    31:0] effective_instr;  // Aligned 32-bit instruction
-  logic [    31:0] spanning_instr;  // Assembled spanning instruction
-  logic            is_compressed;  // Current instruction is 16-bit compressed
-  logic            sel_nop;  // Select NOP (during holdoff/flush)
-  logic            sel_spanning;  // Select spanning instruction
-  logic            sel_compressed;  // Select compressed instruction path
-  logic            use_instr_buffer;  // Use buffered instruction
+  logic [15:0] raw_parcel;  // Selected 16-bit parcel for RVC decompression
+  logic [31:0] effective_instr;  // Aligned 32-bit instruction
+  logic [31:0] spanning_instr;  // Assembled spanning instruction
+  logic is_compressed;  // Current instruction is 16-bit compressed
+  logic sel_nop;  // Select NOP (during holdoff/flush)
+  logic sel_spanning;  // Select spanning instruction
+  logic sel_compressed;  // Select compressed instruction path
+  logic use_instr_buffer;  // Use buffered instruction
 
   // ---------------------------------------------------------------------------
   // Derived Signals and Stall State
   // ---------------------------------------------------------------------------
-  logic            is_32bit_spanning;  // 32-bit instruction spans two words
-  logic            prev_was_compressed_at_lo_saved;  // Saved for stall recovery
+  logic is_32bit_spanning;  // 32-bit instruction spans two words
+  logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -162,7 +170,7 @@ module if_stage #(
   // is_compressed value during flush doesn't affect the PC output.
   // NOP insertion during flush is handled by PD stage, not here.
   // C-extension state updates are already protected by flush checks in c_ext_state.
-  logic [    31:0] instr_for_aligner;
+  logic [31:0] instr_for_aligner;
   assign instr_for_aligner = i_instr;
 
   // TIMING OPTIMIZATION: Create a "safe" flush signal for c_ext_state that uses
@@ -213,10 +221,27 @@ module if_stage #(
   // ===========================================================================
   // Branch Prediction Controller
   // ===========================================================================
-  // Encapsulates BTB, prediction gating, and registration logic.
-  branch_prediction_controller #(
-      .XLEN(XLEN)
-  ) branch_prediction_controller_inst (
+  // Encapsulates BTB, RAS, prediction gating, and registration logic.
+
+  // RAS detection uses the assembled spanning instruction when available so
+  // calls/returns that straddle words still update/predict correctly.
+  logic [31:0] ras_instruction;
+  logic [15:0] ras_raw_parcel;
+  logic        ras_is_compressed;
+  logic        sel_spanning_effective;
+  logic [31:0] ras_spanning_instr;
+
+  assign sel_spanning_effective = use_saved_values ? sel_spanning_saved : sel_spanning;
+  assign ras_spanning_instr = use_saved_values ? spanning_instr_saved : spanning_instr;
+
+  assign ras_instruction = sel_spanning_effective ? ras_spanning_instr :
+                           (use_saved_values ? effective_instr_saved : effective_instr);
+  assign ras_raw_parcel = sel_spanning_effective ? ras_spanning_instr[15:0] :
+                          (use_saved_values ? raw_parcel_saved : raw_parcel);
+  assign ras_is_compressed = sel_spanning_effective ? 1'b0 :
+                             (use_saved_values ? is_compressed_for_buffer : is_compressed);
+
+  branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(i_pipeline_ctrl.stall),
@@ -242,6 +267,36 @@ module if_stage #(
       .i_btb_update_target(i_from_ex_comb.btb_update_target),
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
 
+      // RAS inputs (instruction for call/return detection)
+      // CRITICAL: Use saved instruction data during stall_registered. After multi-cycle
+      // stalls (load-use hazard), BRAM has advanced past the instruction we're processing.
+      // The saved values contain the correct instruction from when stall started.
+      .i_instruction(ras_instruction),
+      .i_raw_parcel(ras_raw_parcel),
+      .i_is_compressed(ras_is_compressed),
+      // Instruction validity for RAS detection depends on which predictor fired:
+      //   - BTB predicts based on PC (fetch address) BEFORE instruction arrives.
+      //     During btb_only_prediction_holdoff, the instruction is VALID (it's the branch).
+      //     RAS should be allowed to push if this instruction is a call.
+      //   - RAS predicts based on instruction content AFTER instruction arrives.
+      //     During prediction_holdoff (but NOT btb_only), the instruction is STALE.
+      //     RAS detection should be blocked to prevent spurious pushes.
+      // IMPORTANT: When using saved values (after stall), the holdoffs are stale and
+      // shouldn't affect validity. The saved instruction was valid when captured.
+      .i_instruction_valid(!sel_nop && !any_holdoff &&
+                           (use_saved_values || !prediction_holdoff ||
+                            btb_only_prediction_holdoff)),
+      // IMPORTANT: Use saved link_address when using saved instruction data. When coming
+      // out of stall, the saved instruction triggers RAS push/pop but link_address is
+      // now for the NEW instruction. Using the wrong link_address corrupts RAS.
+      .i_link_address(use_saved_values ? link_address_saved : link_address),
+
+      // RAS misprediction recovery (from EX stage)
+      .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
+      .i_ras_restore_tos(i_from_ex_comb.ras_restore_tos),
+      .i_ras_restore_valid_count(i_from_ex_comb.ras_restore_valid_count),
+      .i_ras_pop_after_restore(i_from_ex_comb.ras_pop_after_restore),
+
       // Combinational prediction outputs (for pc_controller)
       .o_predicted_taken (btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
@@ -253,8 +308,15 @@ module if_stage #(
       // Control outputs
       .o_prediction_used(prediction_used),
       .o_prediction_holdoff(prediction_holdoff),
+      .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
-      .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred)
+      .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
+
+      // RAS prediction outputs
+      .o_ras_predicted(ras_predicted),
+      .o_ras_predicted_target(ras_predicted_target),
+      .o_ras_checkpoint_tos(ras_checkpoint_tos),
+      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count)
   );
 
   // ===========================================================================
@@ -293,6 +355,7 @@ module if_stage #(
       .i_prediction_used(prediction_used),
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_holdoff(prediction_holdoff),
+      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
@@ -379,6 +442,10 @@ module if_stage #(
       .i_use_buffer_after_spanning(use_buffer_after_spanning),
 
       .i_mid_32bit_correction(mid_32bit_correction),
+      // RAS predicts after instruction arrives; next cycle's instruction is stale.
+      // BTB predicts before instruction arrives, so we must NOT suppress that cycle.
+      .i_prediction_holdoff(ras_prediction_holdoff),
+      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       // TIMING OPTIMIZATION: Only use stall_registered (not combinational stall signals)
       // to break critical path from stall → is_compressed → PC
@@ -394,6 +461,9 @@ module if_stage #(
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer)
   );
+
+  // RAS prediction stale cycle: only when prediction came from RAS (not BTB-only).
+  assign ras_prediction_holdoff = prediction_holdoff && !btb_only_prediction_holdoff;
 
   // ===========================================================================
   // Stall State Registers
@@ -425,6 +495,24 @@ module if_stage #(
       sel_nop_saved <= sel_nop;
       sel_spanning_saved <= sel_spanning;
       sel_compressed_saved <= sel_compressed;
+    end
+  end
+
+  // ===========================================================================
+  // Prediction From Buffer Holdoff
+  // ===========================================================================
+  // When RAS (or BTB) predicts from a buffered instruction, there's a fetch in
+  // flight that will arrive next cycle with STALE data (it was fetched for the
+  // PC after the buffered instruction, not for the predicted target).
+  // This holdoff signal suppresses that stale instruction for one cycle.
+  logic prediction_from_buffer_holdoff;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      prediction_from_buffer_holdoff <= 1'b0;
+    end else if (!i_pipeline_ctrl.stall) begin
+      // Set when prediction happens while using buffered instruction.
+      // Next cycle's instruction data will be stale and needs suppression.
+      prediction_from_buffer_holdoff <= prediction_used && use_instr_buffer;
     end
   end
 
@@ -487,6 +575,49 @@ module if_stage #(
   assign o_from_if_to_pd.link_address = use_saved_values ? link_address_saved : link_address;
 
   // ===========================================================================
+  // RAS Metadata for Pipeline Passthrough
+  // ===========================================================================
+  // RAS checkpoint data needs to be saved during stalls similar to other IF outputs.
+  // The checkpoint is taken at the time of RAS prediction and passed through the
+  // pipeline for misprediction recovery in EX stage.
+
+  logic                             ras_predicted_saved;
+  logic [                 XLEN-1:0] ras_predicted_target_saved;
+  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_saved;
+  logic [  riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_saved;
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe || prediction_holdoff) begin
+      // Clear on reset, flush, or prediction-driven control flow change.
+      // Prediction holdoff indicates PC changed due to prediction, so saved
+      // values from the old PC are stale. This matches BTB behavior.
+      ras_predicted_saved <= 1'b0;
+      ras_predicted_target_saved <= '0;
+      ras_checkpoint_tos_saved <= '0;
+      ras_checkpoint_valid_count_saved <= '0;
+    end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
+      ras_predicted_saved <= ras_predicted;
+      ras_predicted_target_saved <= ras_predicted_target;
+      ras_checkpoint_tos_saved <= ras_checkpoint_tos;
+      ras_checkpoint_valid_count_saved <= ras_checkpoint_valid_count;
+    end
+  end
+
+  // Output RAS metadata - clear for NOP/spanning, use saved during stall
+  logic sel_nop_effective;
+  assign sel_nop_effective = use_saved_values ? sel_nop_saved : sel_nop;
+
+  assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
+                                         (use_saved_values ? ras_predicted_saved : ras_predicted);
+  assign o_from_if_to_pd.ras_predicted_target = use_saved_values ? ras_predicted_target_saved :
+                                                                   ras_predicted_target;
+  assign o_from_if_to_pd.ras_checkpoint_tos = use_saved_values ? ras_checkpoint_tos_saved :
+                                                                 ras_checkpoint_tos;
+  assign o_from_if_to_pd.ras_checkpoint_valid_count = use_saved_values ?
+                                                      ras_checkpoint_valid_count_saved :
+                                                      ras_checkpoint_valid_count;
+
+  // ===========================================================================
   // Prediction Metadata Tracker
   // ===========================================================================
   // Manages prediction metadata for stalls and spanning instructions.
@@ -502,6 +633,7 @@ module if_stage #(
       .i_stall(i_pipeline_ctrl.stall),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
+      .i_prediction_holdoff(prediction_holdoff),  // Clear stale saved state on prediction
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
 
       // Registered prediction from branch_prediction_controller

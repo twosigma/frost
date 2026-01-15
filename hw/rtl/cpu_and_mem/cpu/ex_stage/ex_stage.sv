@@ -106,7 +106,9 @@ module ex_stage #(
     input riscv_pkg::reservation_t i_reservation,
 
     // Combinational outputs (used by forwarding, hazard detection, control flow)
+    /* verilator lint_off UNOPTFLAT */
     output riscv_pkg::from_ex_comb_t o_from_ex_comb,
+    /* verilator lint_on UNOPTFLAT */
 
     // Registered outputs to MA stage (pipeline register)
     output riscv_pkg::from_ex_to_ma_t o_from_ex_to_ma
@@ -173,19 +175,78 @@ module ex_stage #(
   // the right path and should NOT flush the pipeline.
 
   logic predicted_taken;
-  assign predicted_taken = i_from_id_to_ex.btb_predicted_taken;
+  // Include RAS predictions in predicted_taken
+  assign predicted_taken = i_from_id_to_ex.btb_predicted_taken || i_from_id_to_ex.ras_predicted;
 
   // Correct prediction: predicted taken AND actually taken to same target
+  // Check both BTB and RAS predictions
+  //
+  // TIMING OPTIMIZATION: BTB comparison uses pre-computed values from ID stage.
+  // For JALR: Compare forwarded_rs1 with btb_expected_rs1 (= btb_predicted_target - imm)
+  //   This removes the JALR adder (3 CARRY8 chains) from the critical path.
+  //   Math: (rs1 + imm == predicted) iff (rs1 == predicted - imm)
+  // For non-JALR (JAL/branches): Target comparison is pre-computed in ID stage
+  //   (btb_correct_non_jalr flag). No EX stage target comparison needed.
+  //
+  // Note: For JALR, actual_branch_taken is always true (unconditional jump).
+  logic btb_correct_for_jalr;
+  assign btb_correct_for_jalr = i_from_id_to_ex.btb_predicted_taken &&
+                                i_from_id_to_ex.is_jump_and_link_register &&
+                                (i_fwd_to_ex.source_reg_1_value ==
+                                 i_from_id_to_ex.btb_expected_rs1);
+
+  logic btb_correct_for_non_jalr;
+  assign btb_correct_for_non_jalr = i_from_id_to_ex.btb_predicted_taken &&
+                                    !i_from_id_to_ex.is_jump_and_link_register &&
+                                    actual_branch_taken &&
+                                    i_from_id_to_ex.btb_correct_non_jalr;
+
+  logic btb_correct;
+  assign btb_correct = btb_correct_for_jalr || btb_correct_for_non_jalr;
+
+  logic ras_correct;
+  // RAS correct requires: IF detected return (ras_predicted), EX confirms return (is_ras_return),
+  // target matches prediction, AND target is non-zero (valid).
+  // The non-zero check guards against stale zero-initialized values in the pipeline.
+  //
+  // TIMING OPTIMIZATION: Multiple optimizations to reduce EX stage critical path:
+  // 1. is_ras_return and ras_predicted_target_nonzero are pre-computed in ID stage
+  // 2. Instead of (actual_branch_target == ras_predicted_target), we compare
+  //    (forwarded_rs1 == ras_expected_rs1) where ras_expected_rs1 = predicted_target - imm
+  //    This removes the JALR adder (CARRY8 chain) from the comparison critical path.
+  //    Math: actual_target = rs1 + imm, so (rs1 + imm == predicted) iff (rs1 == predicted - imm)
+  // 3. Removed actual_branch_taken from the AND chain - it's redundant because:
+  //    is_ras_return implies the instruction is a JALR, and JALR always "takes" (unconditional).
+  assign ras_correct = i_from_id_to_ex.ras_predicted &&
+                       i_from_id_to_ex.is_ras_return &&
+                       (i_fwd_to_ex.source_reg_1_value == i_from_id_to_ex.ras_expected_rs1) &&
+                       i_from_id_to_ex.ras_predicted_target_nonzero;
+
   logic correct_prediction;
-  assign correct_prediction = predicted_taken && actual_branch_taken &&
-                              (actual_branch_target == i_from_id_to_ex.btb_predicted_target);
+  // Include both BTB and RAS correct predictions
+  assign correct_prediction = btb_correct || ras_correct;
 
   // Need redirect when:
   // - Actual branch taken but prediction was wrong (not predicted, or wrong target)
   // - Predicted taken but actually not taken
+  //
+  // TIMING OPTIMIZATION: Separate JALR and non-JALR paths.
+  // For JALR: actual_branch_taken is always true (unconditional jump), so we can
+  // compute need_redirect directly from btb_correct_for_jalr and ras_correct without
+  // waiting for actual_branch_taken. This removes actual_branch_taken from the
+  // JALR critical path.
+  // For non-JALR: need actual_branch_taken for branch condition evaluation.
+  logic need_redirect_jalr;
+  assign need_redirect_jalr = i_from_id_to_ex.is_jump_and_link_register &&
+                              !btb_correct_for_jalr && !ras_correct;
+
+  logic need_redirect_non_jalr;
+  assign need_redirect_non_jalr = !i_from_id_to_ex.is_jump_and_link_register &&
+                                  ((actual_branch_taken && !btb_correct_for_non_jalr) ||
+                                   (predicted_taken && !actual_branch_taken));
+
   logic need_redirect;
-  assign need_redirect = (actual_branch_taken && !correct_prediction) ||
-                         (predicted_taken && !actual_branch_taken);
+  assign need_redirect = need_redirect_jalr || need_redirect_non_jalr;
 
   // Redirect target:
   // - If predicted taken but not taken: sequential PC (link_address)
@@ -269,6 +330,60 @@ module ex_stage #(
   assign o_from_ex_comb.btb_update_target = actual_branch_target;
   // For false predictions on non-branches, mark as not-taken to prevent repeated mispredictions
   assign o_from_ex_comb.btb_update_taken = is_branch_or_jump ? actual_branch_taken : 1'b0;
+
+  // ===========================================================================
+  // RAS (Return Address Stack) Misprediction Detection
+  // ===========================================================================
+  // Detect when RAS prediction was wrong and signal recovery.
+  //
+  // RAS misprediction occurs when:
+  //   1. RAS predicted a return address (ras_predicted = 1), AND
+  //   2. Either:
+  //      a. The instruction is actually a return but target differs, OR
+  //      b. The instruction is not actually a return (false positive)
+  //
+  // Recovery: Restore RAS state from checkpoint passed through pipeline.
+
+  // Detect if current instruction is actually a return (JALR with rs1 = x1/x5, rd = x0)
+  // TIMING OPTIMIZATION: Use pre-computed flag from ID stage instead of inline computation.
+  // This removes (rs1 == x1/x5), (rd == x0), and (imm == 0) comparisons from EX critical path.
+  logic actual_is_return;
+  assign actual_is_return = i_from_id_to_ex.is_ras_return;
+
+  // Detect if current instruction is actually a call (JAL/JALR with rd = x1/x5)
+  // Calls push to the RAS and should NOT trigger a restore when they redirect.
+  // TIMING OPTIMIZATION: Use pre-computed flag from ID stage.
+  logic actual_is_call;
+  assign actual_is_call = i_from_id_to_ex.is_ras_call;
+
+  // RAS prediction was wrong if:
+  // - RAS predicted (took a prediction), AND
+  // - Either: instruction is not actually a return, OR target doesn't match
+  logic ras_prediction_wrong;
+  assign ras_prediction_wrong = i_from_id_to_ex.ras_predicted &&
+                                (!actual_is_return ||
+                                 (actual_is_return &&
+                                  actual_branch_target != i_from_id_to_ex.ras_predicted_target));
+
+  // Output RAS recovery signals
+  // Restore RAS on redirects, EXCEPT for call instructions.
+  // - Call instructions push to RAS at IF stage. When they reach EX and trigger
+  //   a redirect (to jump to the call target), we must NOT restore - the push
+  //   was correct and should be kept.
+  // - For all other redirects (branch misprediction, trap, RAS misprediction),
+  //   we restore from the checkpoint to undo any speculative RAS operations.
+  assign o_from_ex_comb.ras_misprediction = need_redirect && !actual_is_call;
+  assign o_from_ex_comb.ras_restore_tos = i_from_id_to_ex.ras_checkpoint_tos;
+  assign o_from_ex_comb.ras_restore_valid_count = i_from_id_to_ex.ras_checkpoint_valid_count;
+
+  // Pop after restore: When a return instruction triggers ras_misprediction, we need to pop.
+  // This handles two cases:
+  // - Non-spanning returns that popped in IF but mispredicted: restore undoes pop, then re-pop
+  // - Spanning returns that couldn't pop in IF: restore (noop on pop), then pop
+  // This ensures every return "consumes" exactly one stack entry.
+  // Pop after restore for returns that trigger misprediction (spanning or wrong prediction)
+  assign o_from_ex_comb.ras_pop_after_restore =
+      o_from_ex_comb.ras_misprediction && actual_is_return;
 
   // Pipeline register logic to next stage
   always_ff @(posedge i_clk) begin

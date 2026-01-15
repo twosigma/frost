@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is hand-written with extensive documentation, suitable for teaching, learning, and extending.
-- **Practical performance** — 1.62 CoreMark/MHz (523 CoreMark at 322 MHz on UltraScale+) with branch prediction, L0 cache, and full data forwarding.
+- **Practical performance** — 1.63 CoreMark/MHz (525 CoreMark at 322 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
 - **Layered verification** — constrained-random tests, directed tests, and real C programs all run in Cocotb simulation with pass/fail markers. Bugs that slip past one layer get caught by another. More accessible than SystemVerilog/UVM.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, and ISA compliance suite all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
@@ -41,6 +41,9 @@ There are many RISC-V cores. Here's what makes FROST different:
 │  │                                                                     │  │
 │  │  ┌──────────────┐                                                   │  │
 │  │  │     BTB      │  (32-entry 2-bit saturating counter predictor)    │  │
+│  │  └──────────────┘                                                   │  │
+│  │  ┌──────────────┐                                                   │  │
+│  │  │     RAS      │  (8-entry return address stack)                   │  │
 │  │  └──────────────┘                                                   │  │
 │  └─────────────────────────────────────────────────────────────────────┘  │
 │                                                                           │
@@ -77,7 +80,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 ### Architecture Highlights
 
 - **6-stage pipeline** with full data forwarding (IF → PD → ID → EX → MA → WB)
-- **Branch prediction** with 32-entry 2-bit saturating counter BTB (0-cycle penalty for correct predictions)
+- **Branch prediction** with 32-entry 2-bit BTB and 8-entry return address stack (0-cycle penalty for correct predictions)
 - **L0 cache** reduces load-use stalls (direct-mapped, write-through)
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
@@ -308,6 +311,7 @@ Running `pytest tests/` exercises:
 | **WB**          | Write Back stage                                 |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
 | **BTB**         | Branch Target Buffer (32-entry branch predictor) |
+| **RAS**         | Return Address Stack (8-entry return predictor)   |
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |
 | **Cocotb**      | Python-based verification framework              |

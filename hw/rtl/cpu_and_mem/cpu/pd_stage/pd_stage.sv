@@ -105,15 +105,20 @@ module pd_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       // On reset, insert NOP into pipeline
-      o_from_pd_to_id.instruction          <= riscv_pkg::NOP;
-      o_from_pd_to_id.program_counter      <= '0;
-      o_from_pd_to_id.link_address         <= '0;
-      o_from_pd_to_id.source_reg_1_early   <= 5'd0;
-      o_from_pd_to_id.source_reg_2_early   <= 5'd0;
+      o_from_pd_to_id.instruction                <= riscv_pkg::NOP;
+      o_from_pd_to_id.program_counter            <= '0;
+      o_from_pd_to_id.link_address               <= '0;
+      o_from_pd_to_id.source_reg_1_early         <= 5'd0;
+      o_from_pd_to_id.source_reg_2_early         <= 5'd0;
       // Branch prediction metadata
-      o_from_pd_to_id.btb_hit              <= 1'b0;
-      o_from_pd_to_id.btb_predicted_taken  <= 1'b0;
-      o_from_pd_to_id.btb_predicted_target <= '0;
+      o_from_pd_to_id.btb_hit                    <= 1'b0;
+      o_from_pd_to_id.btb_predicted_taken        <= 1'b0;
+      o_from_pd_to_id.btb_predicted_target       <= '0;
+      // RAS prediction metadata
+      o_from_pd_to_id.ras_predicted              <= 1'b0;
+      o_from_pd_to_id.ras_predicted_target       <= '0;
+      o_from_pd_to_id.ras_checkpoint_tos         <= '0;
+      o_from_pd_to_id.ras_checkpoint_valid_count <= '0;
     end else if (~i_pipeline_ctrl.stall) begin
       // When flushing, insert NOP; otherwise pass values from decompression
       o_from_pd_to_id.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : final_instruction;
@@ -127,6 +132,11 @@ module pd_stage #(
       o_from_pd_to_id.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                               i_from_if_to_pd.btb_predicted_taken;
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
+      // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
+      o_from_pd_to_id.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_if_to_pd.ras_predicted;
+      o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
+      o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
+      o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
     end
     // When stalled, hold current values (implicit - no else clause)
   end

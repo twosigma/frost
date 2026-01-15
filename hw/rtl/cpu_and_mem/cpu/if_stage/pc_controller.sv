@@ -102,6 +102,7 @@ module pc_controller #(
     input logic i_prediction_used,  // Prediction actually used this cycle
     input logic i_sel_prediction_r,  // Registered prediction used (for pc_reg)
     input logic i_prediction_holdoff,  // One cycle after prediction (for pc_increment)
+    input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
 
     // Outputs
     output logic [XLEN-1:0] o_pc,
@@ -175,6 +176,7 @@ module pc_controller #(
       // Holdoff and control signals
       .i_any_holdoff_safe(o_any_holdoff_safe),
       .i_prediction_holdoff,
+      .i_prediction_from_buffer_holdoff,
       .i_control_flow_to_halfword_r(o_control_flow_to_halfword_r),
 
       // Mid-32bit correction

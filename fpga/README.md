@@ -178,6 +178,8 @@ Load software into instruction memory without regenerating the bitstream. This e
 | `spanning_test`     | Instruction spanning boundary test                   |
 | `uart_echo`         | Interactive UART receive demo (echo, hex, commands)  |
 | `branch_pred_test`  | Branch predictor verification (45 tests)             |
+| `ras_test`          | Return Address Stack (RAS) comprehensive test suite  |
+| `ras_stress_test`   | Stress test mixing calls, returns, and branches      |
 | `print_clock_speed` | Clock speed measurement utility                      |
 
 The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.

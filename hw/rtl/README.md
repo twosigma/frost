@@ -30,7 +30,7 @@ FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMACB** with fu
 
 **Key Highlights:**
 - 6-stage pipeline with full data forwarding
-- **Branch prediction** with 32-entry 2-bit saturating counter BTB (reduces branch penalty from 3 to 0 cycles when correct)
+- **Branch prediction** with 32-entry 2-bit BTB + 8-entry return address stack (reduces branch/return penalty from 3 to 0 cycles when correct)
 - L0 data cache for reduced load latency
 - Full machine-mode trap handling (interrupts and exceptions)
 - CLINT-compatible timer with mtime/mtimecmp for RTOS scheduling
@@ -62,6 +62,9 @@ FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMACB** with fu
     |  |  |      |         +----------+      +----------+                   |  |   |
     |  |  |      +-------->|   BTB    |      | Regfile  |                   |  |   |
     |  |  |      |         +----------+      +----------+                   |  |   |
+    |  |  |      |         +----------+                                     |  |   |
+    |  |  |      |         |   RAS    |                                     |  |   |
+    |  |  |      |         +----------+                                     |  |   |
     |  |  |      |         +----------+                                     |  |   |
     |  |  |      |         | L0 Cache |                                     |  |   |
     |  |  |      |         +----------+                                     |  |   |
@@ -154,12 +157,18 @@ The IF stage handles instruction fetch with C-extension and branch prediction su
   |   |  | branch_predictor|  |branch_prediction_    |  |prediction_metadata_|  |   |
   |   |  |    (BTB)        |->|    controller        |->|     tracker        |--+---+-> to PD
   |   |  |  32 entries     |  |  (gating logic)      |  | (stall handling)   |  |   |
-  |   |  +--------^--------+  +----------------------+  +--------------------+  |   |
+  |   |  +--------^--------+  +----------^-----------+  +--------------------+  |   |
   |   |           |                      |                                      |   |
+  |   |           |              +-----------------+                            |   |
+  |   |           +--------------| return_address  |                            |   |
+  |   |                          |   stack (RAS)   |                            |   |
+  |   |                          |   8 entries     |                            |   |
+  |   |                          +-----------------+                            |   |
   |   +-----------+----------------------+--------------------------------------+   |
   |               |                      |                                          |
-  |   BTB update  |                      | prediction signals                       |
-  |   from EX     |                      v                                          |
+  |   BTB/RAS     |                      | prediction signals                       |
+  |   update from |                      v                                          |
+  |   EX          |                                                                 |
   |               |           +----------------------------------------------+      |
   |               |           |              pc_controller                   |      |
   |               |           |  +----------------------------------------+  |      |
@@ -242,8 +251,8 @@ The EX stage performs computation, branch resolution, and exception detection:
   |                                 |                                               |
   |                                 +--------------------------------------------> to MA
   |                                                                                 |
-  |   BTB update <------------------------------------------------------------ to IF|
-  |   (branch resolution)                                                           |
+  |   BTB/RAS update <-------------------------------------------------------- to IF|
+  |   (branch resolution + RAS restore)                                          |
   +---------------------------------------------------------------------------------+
 ```
 
@@ -362,8 +371,8 @@ ID is reading in the same cycle.
 | **Load-use (cache hit)**       | L0 cache hit                 | Forward from cache                 | 0 cycles  |
 | **AMO-use**                    | Hazard resolution unit       | Stall for AMO result, then forward | 1 cycle   |
 | **AMO operation**              | AMO unit                     | Stall for read-modify-write        | 2 cycles  |
-| **Branch/Jump (predicted)**    | BTB hit, correct prediction  | No flush needed                    | 0 cycles  |
-| **Branch/Jump (mispredicted)** | BTB miss or wrong prediction | Flush pipeline                     | 3 cycles  |
+| **Branch/Jump (predicted)**    | BTB hit or RAS return, correct prediction | No flush needed                    | 0 cycles  |
+| **Branch/Jump (mispredicted)** | BTB miss/wrong prediction or RAS miss/wrong target | Flush pipeline                     | 3 cycles  |
 | **Multiply**                   | ALU                          | Stall pipeline                     | 1 cycle   |
 | **Divide**                     | ALU                          | Stall pipeline                     | 17 cycles |
 | **Trap/Exception**             | Trap unit                    | Flush pipeline, jump to mtvec      | 2 cycles  |
@@ -456,7 +465,7 @@ BEQ x1,x2,L | IF |-->| PD |-->| ID |-->| EX |-->| MA |-->| WB |  <- branch in EX
 L: ADD      | IF |-->| PD |-->| ID |-->| EX |-->| MA |-->| WB |  <- target fetched
             +----+   +----+   +----+   +----+   +----+   +----+
 
-No penalty! BTB correctly predicted target, no flush needed.
+No penalty! BTB correctly predicted target, no flush needed. Returns predicted by the RAS behave the same way.
 ```
 
 **Branch Misprediction (3-cycle penalty):**
@@ -648,8 +657,10 @@ rtl/
         │   ├── control_flow_tracker.sv # Holdoff signal generation
         │   ├── branch_prediction/    # Branch prediction subsystem
         │   │   ├── branch_predictor.sv           # 32-entry BTB
-        │   │   ├── branch_prediction_controller.sv # Prediction gating logic
-        │   │   └── prediction_metadata_tracker.sv  # Stall/spanning handling
+        │   │   ├── branch_prediction_controller.sv # Prediction gating logic (BTB + RAS)
+        │   │   ├── prediction_metadata_tracker.sv  # Stall/spanning handling
+        │   │   ├── ras_detector.sv                # Call/return/coroutine detection
+        │   │   └── return_address_stack.sv        # 8-entry return address stack
         │   └── c_extension/          # Compressed instruction (C ext) support
         │       ├── c_ext_state.sv        # C extension state machine
         │       ├── instruction_aligner.sv # Parcel selection, alignment
@@ -871,6 +882,32 @@ Misprediction cases:
   prediction direction, reducing mispredictions for loops
 - Loop back-edges typically hit in BTB after first iteration
 - Function calls (JAL) are always taken, quickly reach "Strongly Taken"
+
+### Return Address Stack (`return_address_stack.sv`)
+
+An 8-entry circular Return Address Stack (RAS) predicts targets for function returns
+(JALR x0, rs1, 0). It is driven by `ras_detector.sv` in the IF stage and restored
+on mispredictions using checkpoints that flow down the pipeline.
+
+| Parameter   | Default | Description             |
+|-------------|---------|-------------------------|
+| `RAS_DEPTH` | 8       | Number of stack entries |
+
+**Detection rules (`ras_detector.sv`):**
+- Call: JAL/JALR with rd in {x1, x5}
+- Return: JALR with rs1 in {x1, x5}, rd = x0, imm = 0
+- Coroutine: JALR with rd in {x1, x5}, rs1 in {x1, x5}, rd != rs1, imm = 0
+- Compressed C.JR/C.JALR/C.JAL are detected directly from the 16-bit parcel
+
+**Behavior:**
+- Push link address on calls (not gated by prediction)
+- Pop on returns/coroutines when prediction is allowed
+- Checkpoint TOS/valid_count on prediction, restore on mispredict
+- RAS prediction takes priority over BTB for detected returns
+- Note: RAS prediction is disabled while a 32-bit spanning instruction is assembling
+  (SPANNING_IN_PROGRESS), so returns that start on a halfword boundary are
+  resolved in EX and take the normal redirect penalty; the stack still updates
+  via EX-stage pop-after-restore.
 
 ### L0 Cache (`l0_cache.sv`)
 

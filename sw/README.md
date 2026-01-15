@@ -33,6 +33,8 @@ sw/
     ├── spanning_test/# Instruction spanning boundary test
     ├── uart_echo/    # UART RX echo demo with interactive commands
     ├── branch_pred_test/ # Branch predictor verification (assembly)
+    ├── ras_test/     # Return Address Stack (RAS) verification (assembly)
+    ├── ras_stress_test/  # Stress test mixing calls, returns, and branches
     └── print_clock_speed/ # Clock speed measurement utility
 ```
 
@@ -415,6 +417,14 @@ Any other input is echoed back with a character count. Use a serial terminal at 
 ### Branch Predictor Test (`apps/branch_pred_test/`)
 
 Assembly-level verification suite for the branch predictor. Contains 45 targeted tests that exercise the Branch Target Buffer (BTB) with various branch patterns, loop structures, and edge cases. Written in raw assembly for precise control over instruction placement and timing.
+
+### Return Address Stack Test (`apps/ras_test/`)
+
+Comprehensive assembly-level verification suite for the Return Address Stack (RAS). Exercises 32-bit and compressed calls/returns, deep nesting (2-level through 8-level), alignment cases, coroutines, and edge cases with pass/fail output.
+
+### RAS Stress Test (`apps/ras_stress_test/`)
+
+C-based stress test that mixes loops, branches, function pointers, and nested calls to stress BTB+RAS interactions (CoreMark-like patterns).
 
 ### Print Clock Speed (`apps/print_clock_speed/`)
 

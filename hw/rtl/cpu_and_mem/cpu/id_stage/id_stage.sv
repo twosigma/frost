@@ -160,6 +160,68 @@ module id_stage #(
   assign is_jalr_direct = (instruction.opcode == riscv_pkg::OPC_JALR) &&
                           (instruction.funct3 == 3'b000);
 
+  // ===========================================================================
+  // TIMING OPTIMIZATION: Pre-compute RAS instruction type detection
+  // ===========================================================================
+  // These flags are computed here (ID stage) from registered inputs and passed
+  // to EX stage to remove comparisons from the critical ras_correct path.
+  //
+  // is_ras_return: JALR with rs1 in {x1, x5}, rd = x0, imm = 0
+  // is_ras_call: JAL/JALR with rd in {x1, x5}
+  // ras_predicted_target_nonzero: ras_predicted_target != 0
+
+  logic is_ras_return_precomputed;
+  logic is_ras_call_precomputed;
+  logic rs1_is_link_reg;
+  logic rd_is_link_reg;
+
+  assign rs1_is_link_reg = (instruction.source_reg_1 == 5'd1) || (instruction.source_reg_1 == 5'd5);
+  assign rd_is_link_reg = (instruction.dest_reg == 5'd1) || (instruction.dest_reg == 5'd5);
+
+  // Return: JALR with rs1 in {x1, x5}, rd = x0, imm = 0
+  // The immediate for JALR is in I-type format: funct7[6:0] ++ source_reg_2[4:0]
+  assign is_ras_return_precomputed = is_jalr_direct &&
+                                     rs1_is_link_reg &&
+                                     (instruction.dest_reg == 5'd0) &&
+                                     (immediate_i_type == 32'b0);
+
+  // Call: JAL or JALR with rd in {x1, x5}
+  assign is_ras_call_precomputed = (is_jal_direct || is_jalr_direct) && rd_is_link_reg;
+
+  // TIMING OPTIMIZATION: Pre-compute expected rs1 for RAS target verification.
+  // For JALR returns: actual_target = rs1 + immediate_i_type
+  // Therefore: expected_rs1 = ras_predicted_target - immediate_i_type
+  // This allows EX stage to verify RAS prediction by comparing forwarded_rs1
+  // with this pre-computed value, removing the JALR adder from the critical path.
+  logic [XLEN-1:0] ras_expected_rs1_precomputed;
+  assign ras_expected_rs1_precomputed = i_from_pd_to_id.ras_predicted_target -
+                                        XLEN'(signed'(immediate_i_type));
+
+  // ===========================================================================
+  // TIMING OPTIMIZATION: Pre-compute BTB target verification
+  // ===========================================================================
+  // Same algebraic transformation as RAS, applied to BTB comparison.
+  // For JALR: btb_expected_rs1 = btb_predicted_target - immediate_i_type
+  //   EX stage compares: forwarded_rs1 == btb_expected_rs1
+  // For non-JALR (JAL/branches): targets are PC-relative, computed here
+  //   Compare precomputed target with btb_predicted_target in ID stage
+  //   This removes the entire comparison from EX stage critical path
+  logic [XLEN-1:0] btb_expected_rs1_precomputed;
+  assign btb_expected_rs1_precomputed = i_from_pd_to_id.btb_predicted_target -
+                                        XLEN'(signed'(immediate_i_type));
+
+  // For non-JALR, select the appropriate precomputed target
+  // JAL uses jal_target_precomputed, branches use branch_target_precomputed
+  logic [XLEN-1:0] precomputed_target_for_btb;
+  assign precomputed_target_for_btb = is_jal_direct ?
+                                      jal_target_precomputed : branch_target_precomputed;
+
+  // Pre-compute BTB correctness for non-JALR instructions
+  // This comparison happens in ID stage where timing is not critical
+  logic btb_correct_non_jalr_precomputed;
+  assign btb_correct_non_jalr_precomputed = (precomputed_target_for_btb ==
+                                             i_from_pd_to_id.btb_predicted_target);
+
   // Pre-computed branch/jump targets for pipeline balancing.
   // Computing PC-relative targets here removes adders from EX stage critical path.
   // Only JALR target is computed in EX since it requires forwarded rs1.
@@ -205,45 +267,58 @@ module id_stage #(
   always_ff @(posedge i_clk) begin
     // On reset, insert a NOP (no operation) into the pipeline
     if (i_pipeline_ctrl.reset) begin
-      o_from_id_to_ex.instruction               <= riscv_pkg::NOP;
-      o_from_id_to_ex.instruction_operation     <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
-      o_from_id_to_ex.is_load_instruction       <= 1'b0;
-      o_from_id_to_ex.is_load_byte              <= 1'b0;
-      o_from_id_to_ex.is_load_halfword          <= 1'b0;
-      o_from_id_to_ex.is_load_unsigned          <= 1'b0;
-      o_from_id_to_ex.is_multiply               <= 1'b0;
-      o_from_id_to_ex.is_divide                 <= 1'b0;
-      o_from_id_to_ex.program_counter           <= '0;
-      o_from_id_to_ex.branch_operation          <= riscv_pkg::NULL;
-      o_from_id_to_ex.store_operation           <= riscv_pkg::STN;  // Store nothing
-      o_from_id_to_ex.is_jump_and_link          <= 1'b0;
-      o_from_id_to_ex.is_jump_and_link_register <= 1'b0;
-      o_from_id_to_ex.is_csr_instruction        <= 1'b0;
-      o_from_id_to_ex.csr_address               <= '0;
-      o_from_id_to_ex.csr_imm                   <= '0;
+      o_from_id_to_ex.instruction                  <= riscv_pkg::NOP;
+      o_from_id_to_ex.instruction_operation        <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
+      o_from_id_to_ex.is_load_instruction          <= 1'b0;
+      o_from_id_to_ex.is_load_byte                 <= 1'b0;
+      o_from_id_to_ex.is_load_halfword             <= 1'b0;
+      o_from_id_to_ex.is_load_unsigned             <= 1'b0;
+      o_from_id_to_ex.is_multiply                  <= 1'b0;
+      o_from_id_to_ex.is_divide                    <= 1'b0;
+      o_from_id_to_ex.program_counter              <= '0;
+      o_from_id_to_ex.branch_operation             <= riscv_pkg::NULL;
+      o_from_id_to_ex.store_operation              <= riscv_pkg::STN;  // Store nothing
+      o_from_id_to_ex.is_jump_and_link             <= 1'b0;
+      o_from_id_to_ex.is_jump_and_link_register    <= 1'b0;
+      o_from_id_to_ex.is_csr_instruction           <= 1'b0;
+      o_from_id_to_ex.csr_address                  <= '0;
+      o_from_id_to_ex.csr_imm                      <= '0;
       // A extension (atomics)
-      o_from_id_to_ex.is_amo_instruction        <= 1'b0;
-      o_from_id_to_ex.is_lr                     <= 1'b0;
-      o_from_id_to_ex.is_sc                     <= 1'b0;
+      o_from_id_to_ex.is_amo_instruction           <= 1'b0;
+      o_from_id_to_ex.is_lr                        <= 1'b0;
+      o_from_id_to_ex.is_sc                        <= 1'b0;
       // Privileged instructions (trap handling)
-      o_from_id_to_ex.is_mret                   <= 1'b0;
-      o_from_id_to_ex.is_wfi                    <= 1'b0;
-      o_from_id_to_ex.is_ecall                  <= 1'b0;
-      o_from_id_to_ex.is_ebreak                 <= 1'b0;
-      o_from_id_to_ex.link_address              <= '0;
+      o_from_id_to_ex.is_mret                      <= 1'b0;
+      o_from_id_to_ex.is_wfi                       <= 1'b0;
+      o_from_id_to_ex.is_ecall                     <= 1'b0;
+      o_from_id_to_ex.is_ebreak                    <= 1'b0;
+      o_from_id_to_ex.link_address                 <= '0;
       // Pre-computed branch/jump targets (pipeline balancing)
-      o_from_id_to_ex.branch_target_precomputed <= '0;
-      o_from_id_to_ex.jal_target_precomputed    <= '0;
+      o_from_id_to_ex.branch_target_precomputed    <= '0;
+      o_from_id_to_ex.jal_target_precomputed       <= '0;
       // Regfile read data (read in ID stage using early source regs from PD)
-      o_from_id_to_ex.source_reg_1_data         <= '0;
-      o_from_id_to_ex.source_reg_2_data         <= '0;
+      o_from_id_to_ex.source_reg_1_data            <= '0;
+      o_from_id_to_ex.source_reg_2_data            <= '0;
       // Pre-computed x0 check flags (timing optimization)
-      o_from_id_to_ex.source_reg_1_is_x0        <= 1'b1;  // NOP uses x0
-      o_from_id_to_ex.source_reg_2_is_x0        <= 1'b1;  // NOP uses x0
+      o_from_id_to_ex.source_reg_1_is_x0           <= 1'b1;  // NOP uses x0
+      o_from_id_to_ex.source_reg_2_is_x0           <= 1'b1;  // NOP uses x0
       // Branch prediction metadata
-      o_from_id_to_ex.btb_hit                   <= 1'b0;
-      o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
-      o_from_id_to_ex.btb_predicted_target      <= '0;
+      o_from_id_to_ex.btb_hit                      <= 1'b0;
+      o_from_id_to_ex.btb_predicted_taken          <= 1'b0;
+      o_from_id_to_ex.btb_predicted_target         <= '0;
+      // RAS prediction metadata
+      o_from_id_to_ex.ras_predicted                <= 1'b0;
+      o_from_id_to_ex.ras_predicted_target         <= '0;
+      o_from_id_to_ex.ras_checkpoint_tos           <= '0;
+      o_from_id_to_ex.ras_checkpoint_valid_count   <= '0;
+      // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
+      o_from_id_to_ex.is_ras_return                <= 1'b0;
+      o_from_id_to_ex.is_ras_call                  <= 1'b0;
+      o_from_id_to_ex.ras_predicted_target_nonzero <= 1'b0;
+      o_from_id_to_ex.ras_expected_rs1             <= '0;
+      // TIMING OPTIMIZATION: Pre-computed BTB verification
+      o_from_id_to_ex.btb_correct_non_jalr         <= 1'b0;
+      o_from_id_to_ex.btb_expected_rs1             <= '0;
     end else if (~i_pipeline_ctrl.stall) begin
       // When pipeline is not stalled, pass decoded instruction to Execute stage
       // If flushing (e.g., due to branch), insert NOP instead
@@ -288,6 +363,24 @@ module id_stage #(
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                               i_from_pd_to_id.btb_predicted_taken;
       o_from_id_to_ex.btb_predicted_target <= i_from_pd_to_id.btb_predicted_target;
+      // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
+      o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
+      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
+      o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
+      o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+      // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
+      // These remove comparisons from the EX stage critical path
+      o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
+      o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
+      o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
+      // Pre-computed expected rs1 for RAS verification (removes JALR adder from critical path)
+      o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
+      // TIMING OPTIMIZATION: Pre-computed BTB verification
+      // For non-JALR: target comparison done in ID stage (no forwarding dependency)
+      // For JALR: use btb_expected_rs1 in EX stage (same algebraic transformation as RAS)
+      o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              btb_correct_non_jalr_precomputed;
+      o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
     end
     // Pass immediate values and regfile data (datapath, not affected by reset - only by stall)
     if (~i_pipeline_ctrl.stall) begin

@@ -6,7 +6,7 @@
 |--------|-------|
 | Clock Frequency | 133.333 MHz |
 | Clock Period | 7.500 ns |
-| WNS (Setup) | 1.383 ns |
+| WNS (Setup) | 1.382 ns |
 | TNS (Setup) | 0.000 ns (0 failing) |
 | WHS (Hold) | -0.165 ns |
 | THS (Hold) | -39.420 ns (2114 failing) |
@@ -16,10 +16,10 @@
 
 | Metric | Value |
 |--------|-------|
-| Slack | 1.383 ns |
-| Data Path Delay | 4.913 ns |
+| Slack | 1.382 ns |
+| Data Path Delay | 4.914 ns |
 | Logic Delay | 3.181 ns |
-| Route Delay | 1.732 ns |
+| Route Delay | 1.733 ns |
 | Logic Levels | 4 |
 
 ### Path Endpoints
@@ -31,7 +31,7 @@
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 8820 | 203800 | 4.33% |
-| Registers | 5284 | 407600 | 1.30% |
+| LUTs | 9114 | 203800 | 4.47% |
+| Registers | 5491 | 407600 | 1.35% |
 | Block RAM | 21.5 | 445 | 4.83% |
 | DSPs | 4 | 840 | 0.48% |

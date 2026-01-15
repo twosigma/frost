@@ -368,26 +368,35 @@ package riscv_pkg;
   // Named as from_<source>_to_<dest>_t (e.g., from_if_to_pd_t).
   // These are registered at stage boundaries (pipeline registers).
 
+  // RAS (Return Address Stack) constants
+  localparam int unsigned RasDepth = 8;
+  localparam int unsigned RasPtrBits = $clog2(RasDepth);
+
   // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage
   // IF outputs raw/partially processed data; PD performs decompression for better timing
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     // Raw 16-bit parcel for decompression (compressed instructions)
-    logic [15:0]     raw_parcel;
+    logic [15:0] raw_parcel;
     // Selection signals for final instruction mux (computed in IF, used in PD)
-    logic            sel_nop;
-    logic            sel_spanning;
-    logic            sel_compressed;        // True if raw_parcel is a compressed instruction
+    logic sel_nop;
+    logic sel_spanning;
+    logic sel_compressed;  // True if raw_parcel is a compressed instruction
     // Pre-assembled spanning instruction (32-bit from spanning buffer)
-    instr_t          spanning_instr;
+    instr_t spanning_instr;
     // Effective 32-bit instruction word (for aligned 32-bit case)
-    instr_t          effective_instr;
+    instr_t effective_instr;
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
     // Branch prediction metadata (from BTB)
-    logic            btb_hit;               // BTB lookup hit
-    logic            btb_predicted_taken;   // BTB predicts taken
+    logic btb_hit;  // BTB lookup hit
+    logic btb_predicted_taken;  // BTB predicts taken
     logic [XLEN-1:0] btb_predicted_target;  // BTB predicted target address
+    // RAS (Return Address Stack) prediction metadata
+    logic ras_predicted;  // RAS prediction was used
+    logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;  // TOS at prediction time (for recovery)
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count at prediction (for recovery)
   } from_if_to_pd_t;
 
   // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage
@@ -404,6 +413,11 @@ package riscv_pkg;
     logic btb_hit;
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;
+    // RAS prediction metadata (passed through from IF)
+    logic ras_predicted;
+    logic [XLEN-1:0] ras_predicted_target;
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
   } from_pd_to_id_t;
 
   // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
@@ -458,6 +472,29 @@ package riscv_pkg;
     logic btb_hit;
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;
+    // RAS prediction metadata (passed through from IF via PD/ID)
+    logic ras_predicted;
+    logic [XLEN-1:0] ras_predicted_target;
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    // TIMING OPTIMIZATION: Pre-computed RAS instruction type detection.
+    // These flags move comparisons out of the EX stage critical path.
+    // Computed in ID stage from registered values, used by EX for ras_correct.
+    logic is_ras_return;  // JALR with rs1 in {x1,x5}, rd=x0, imm=0
+    logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
+    logic ras_predicted_target_nonzero;  // ras_predicted_target != 0
+    // TIMING OPTIMIZATION: Pre-computed expected rs1 for RAS target verification.
+    // For JALR: actual_target = rs1 + imm, so rs1 = predicted_target - imm.
+    // By pre-computing this in ID stage, we remove the JALR adder (CARRY8 chain)
+    // from the EX stage ras_correct critical path. EX only needs to compare
+    // forwarded_rs1 with this pre-computed value.
+    logic [XLEN-1:0] ras_expected_rs1;
+    // TIMING OPTIMIZATION: Pre-computed BTB verification for non-JALR instructions.
+    // For JAL and branches, the target is PC-relative and computed in ID stage.
+    // We can compare it with btb_predicted_target in ID stage (no forwarding needed).
+    // For JALR, we use btb_expected_rs1 (same algebraic transformation as RAS).
+    logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
+    logic [XLEN-1:0] btb_expected_rs1;  // btb_predicted_target - imm_i (for JALR)
   } from_id_to_ex_t;
 
   // Combinational outputs from Execute stage
@@ -486,6 +523,11 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_pc;  // PC of branch instruction
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
+    // RAS misprediction recovery signals
+    logic ras_misprediction;  // RAS prediction was wrong, need to restore
+    logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
+    logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
+    logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
   } from_ex_comb_t;
 
   // Clocked signals passed from Execute (EX) stage to Memory Access (MA) stage

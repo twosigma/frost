@@ -97,14 +97,21 @@ module c_ext_state #(
   logic        is_compressed_saved;
   logic        saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
 
+  // TIMING OPTIMIZATION: Use registered i_control_flow_holdoff instead of combinational
+  // i_flush to break the critical path from branch_taken. The state will be cleared
+  // one cycle later, but that's functionally safe because:
+  // 1. During the flush cycle, saved values are gated by flush elsewhere anyway
+  // 2. The following cycle, i_control_flow_holdoff clears the state
+  // Note: i_prediction_holdoff is already registered (from branch_prediction_controller).
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       effective_instr_saved <= '0;
       is_compressed_saved <= 1'b0;
       saved_values_valid <= 1'b0;
-    end else if (i_flush) begin
-      // Flush invalidates saved values - we've jumped to a different PC
-      // Also clear the data to prevent any stale data from persisting
+    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
+      // Registered control flow change invalidates saved values.
+      // We've jumped to a different PC, so saved values are stale.
+      // Also clear the data to prevent any stale data from persisting.
       effective_instr_saved <= '0;
       is_compressed_saved <= 1'b0;
       saved_values_valid <= 1'b0;
@@ -148,6 +155,8 @@ module c_ext_state #(
   assign instr_hi = effective_instr_for_buffer[31:16];
 
   // Spanning state register updates
+  // TIMING OPTIMIZATION: Removed combinational i_flush check. The registered
+  // i_control_flow_holdoff and i_prediction_holdoff handle state clearing safely.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_spanning_wait_for_fetch <= 1'b0;
@@ -155,10 +164,9 @@ module c_ext_state #(
       o_spanning_buffer <= 16'b0;
       o_spanning_second_half <= 16'b0;
       o_spanning_pc <= '0;
-    end else if (i_control_flow_holdoff || i_flush || i_prediction_holdoff) begin
-      // Cancel spanning on control flow change, flush, or prediction
-      // control_flow_holdoff is registered to break timing path
-      // i_flush blocks state updates during 2-cycle flush window
+    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
+      // Cancel spanning on control flow change or prediction
+      // control_flow_holdoff is registered to break timing path from branch_taken
       // i_prediction_holdoff clears stale state after branch prediction redirect
       // Also clear data buffers to prevent any stale data from persisting
       o_spanning_wait_for_fetch <= 1'b0;
@@ -198,8 +206,10 @@ module c_ext_state #(
   assign next_pc_after_spanning = i_pc_reg + riscv_pkg::PcIncrement32bit;
   assign o_spanning_to_halfword = o_spanning_in_progress && next_pc_after_spanning[1];
 
+  // TIMING OPTIMIZATION: Use registered i_control_flow_holdoff instead of combinational
+  // i_flush to break the critical path from branch_taken.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush) o_spanning_to_halfword_registered <= 1'b0;
+    if (i_reset || i_control_flow_holdoff) o_spanning_to_halfword_registered <= 1'b0;
     else if (!i_stall) o_spanning_to_halfword_registered <= o_spanning_to_halfword;
   end
 
@@ -208,7 +218,7 @@ module c_ext_state #(
   // advanced past the word containing the next instruction.
   logic spanning_to_halfword_registered_prev;
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush) spanning_to_halfword_registered_prev <= 1'b0;
+    if (i_reset || i_control_flow_holdoff) spanning_to_halfword_registered_prev <= 1'b0;
     else if (!i_stall) spanning_to_halfword_registered_prev <= o_spanning_to_halfword_registered;
   end
 
@@ -246,8 +256,11 @@ module c_ext_state #(
   // when buffer data is used, and that signal IS properly reset. After reset, buffer data
   // cannot be selected until valid data has been written. Removing reset from these 32 FFs
   // improves timing/area by eliminating reset tree connectivity.
+  // CRITICAL: Include !i_prediction_holdoff to prevent stale instruction data from corrupting
+  // the buffer after a prediction redirect. Without this, stale data could be read later
+  // when use_instr_buffer is true.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && !i_any_holdoff_safe && !o_spanning_to_halfword) begin
+    if (!i_stall && !i_any_holdoff_safe && !o_spanning_to_halfword && !i_prediction_holdoff) begin
       o_instr_buffer <= effective_instr_for_buffer;
     end
   end
@@ -267,8 +280,9 @@ module c_ext_state #(
   // pc_increment=4 anyway. So using a 1-cycle-stale is_compressed is safe.
   //
   // Reset to 0 (assume 32-bit = increment by 4) for conservative behavior.
+  // TIMING OPTIMIZATION: Removed combinational i_flush to break path from branch_taken.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff) begin
+    if (i_reset || i_control_flow_holdoff || i_prediction_holdoff) begin
       o_is_compressed_for_pc <= 1'b0;
     end else if (!i_stall) begin
       o_is_compressed_for_pc <= is_compressed_for_buffer;

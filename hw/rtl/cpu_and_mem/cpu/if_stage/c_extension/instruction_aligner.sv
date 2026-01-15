@@ -51,6 +51,8 @@ module instruction_aligner #(
 
     // Control signals
     input logic i_mid_32bit_correction,  // Landed mid-instruction
+    input logic i_prediction_holdoff,  // Stale cycle after RAS prediction
+    input logic i_prediction_from_buffer_holdoff,  // Stale cycle after RAS predicted from buffer
 
     // Stall handling (only registered signal needed for timing optimization)
     input logic i_stall_registered,
@@ -158,11 +160,14 @@ module instruction_aligner #(
   // Decompression has been moved to PD stage for timing.
 
   // Consolidate all NOP-producing conditions
+  // NOTE: prediction_holdoff here is RAS-only. BTB predictions must not suppress
+  // the next cycle because that cycle contains the branch instruction itself.
   assign o_sel_nop = i_spanning_to_halfword_registered ||  // Stale after spanning to halfword
       i_mid_32bit_correction ||  // Landed mid-instruction
       i_spanning_wait_for_fetch ||  // Waiting for memory
-      (i_pc_reg[1] && !o_is_compressed && !i_spanning_in_progress);
-  // 32-bit spanning first cycle
+      i_prediction_holdoff ||  // Stale after RAS prediction
+      i_prediction_from_buffer_holdoff ||  // Stale after RAS predicted from buffer
+      (i_pc_reg[1] && !o_is_compressed && !i_spanning_in_progress);  // 32-bit spanning first cycle
 
   assign o_sel_spanning = i_spanning_in_progress && !i_spanning_to_halfword_registered;
   assign o_sel_compressed = o_is_compressed && !o_sel_nop && !o_sel_spanning;

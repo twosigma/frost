@@ -58,6 +58,7 @@ module pc_increment_calculator #(
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
+    input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_control_flow_to_halfword_r,
 
     // Mid-32bit correction (from pc_controller)
@@ -139,7 +140,8 @@ module pc_increment_calculator #(
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
   logic pc_reg_inc_sel_0, pc_reg_inc_sel_2;
   assign pc_reg_inc_sel_0 = i_spanning_wait_for_fetch || i_is_32bit_spanning ||
-                            i_spanning_to_halfword_registered;
+                            i_spanning_to_halfword_registered ||
+                            i_prediction_from_buffer_holdoff;  // Hold during stale cycle
   assign pc_reg_inc_sel_2 = !i_spanning_in_progress && !pc_reg_inc_sel_0 && i_is_compressed;
 
   logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;

@@ -42,6 +42,7 @@ module prediction_metadata_tracker #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,
+    input logic i_prediction_holdoff,  // Prediction happened - clear stale saved state
     input logic i_stall_registered,
 
     // Current registered prediction from branch_prediction_controller

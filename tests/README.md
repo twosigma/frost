@@ -38,6 +38,8 @@ Primary test runner for RTL simulations using Cocotb. Supports both standalone e
 | Test                | Description                                                              |
 |---------------------|--------------------------------------------------------------------------|
 | `branch_pred_test`  | Branch prediction test suite (45 tests)                                  |
+| `ras_test`          | Return Address Stack (RAS) comprehensive test suite                       |
+| `ras_stress_test`   | RAS stress test (calls, branches, and function pointers)                  |
 | `cpu`               | CPU verification suite (9 testcases: random regression, atomics, traps, compressed) |
 | `hello_world`       | Simple "Hello, world!" program                                           |
 | `isa_test`          | ISA compliance test suite                                                |
