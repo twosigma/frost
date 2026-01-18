@@ -42,11 +42,23 @@ extern char _heap_end;
 static char *heap_mark = &_heap_start;
 char *_sbrk(int incr)
 {
-    char *prev_heap = heap_mark;
-    if (heap_mark + incr > &_heap_end) {
-        return NULL;
+    if (incr <= 0) {
+        return NULL;  /* Reject negative or zero increments */
     }
-    heap_mark += incr;
+    
+    char *prev_heap = heap_mark;
+    char *new_heap = heap_mark + incr;
+    
+    /* Check for overflow in pointer arithmetic */
+    if (new_heap < heap_mark) {
+        return NULL;  /* Pointer overflow */
+    }
+    
+    if (new_heap > &_heap_end) {
+        return NULL;  /* Exceeds heap boundary */
+    }
+    
+    heap_mark = new_heap;
     return prev_heap;
 }
 
@@ -66,12 +78,27 @@ arena_t arena_alloc(uint32_t size)
 
 char *arena_push_align(arena_t *arena, uint32_t size, uint8_t align)
 {
+    if (arena == NULL || arena->start == NULL || align == 0) {
+        return NULL;
+    }
+    
+    /* Ensure alignment is power of two */
+    if ((align & (align - 1)) != 0) {
+        return NULL;
+    }
+    
     /* Align the actual pointer address, not just the position within the arena */
     char *p = (char *) ALIGN((uintptr_t) (arena->start + arena->pos), align);
     uint32_t new_pos = (uint32_t) (p - arena->start) + size;
 
+    /* Check for overflow in size calculation */
+    if (size > UINT32_MAX - (p - arena->start)) {
+        return NULL;
+    }
+    
     /* Bounds check: ensure allocation fits within arena capacity */
-    if (new_pos > arena->capacity) {
+    if (arena->pos > UINT32_MAX - (new_pos - arena->pos) || 
+        new_pos > arena->capacity) {
         return NULL;
     }
 
