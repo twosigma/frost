@@ -252,7 +252,7 @@ The EX stage performs computation, branch resolution, and exception detection:
   |                                 +--------------------------------------------> to MA
   |                                                                                 |
   |   BTB/RAS update <-------------------------------------------------------- to IF|
-  |   (branch resolution + RAS restore)                                          |
+  |   (branch resolution + RAS restore)                                             |
   +---------------------------------------------------------------------------------+
 ```
 
