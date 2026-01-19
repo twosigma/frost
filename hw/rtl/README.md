@@ -240,19 +240,23 @@ The EX stage performs computation, branch resolution, and exception detection:
   |   |                 |    |   Output    |    |  +-----------------------+  |     |
   |   | branch condition|--->|    Mux      |<---|  | ECALL / EBREAK        |  |     |
   |   | target address  |    |             |    |  | load/store misalign   |  |     |
-  |   +-----------------+    +------+------+    |  +-----------------------+  |     |
-  |                                 |           +--------------+--------------+     |
-  |   +-----------------+           |                          |                    |
-  |   |   store_unit    |           |                          | exception signals  |
-  |   |                 |           |                          v                    |
-  |   | address calc    |-----------+--------------------------------------------> to MA
-  |   | byte enables    |           |                                               |
-  |   +-----------------+           |                                               |
+  |   +---------+-------+    +------+------+    |  +-----------------------+  |     |
+  |             |                   |           +--------------+--------------+     |
+  |             v                   |                          |                    |
+  |   +--------------------+        |                          | exception signals  |
+  |   |branch_redirect_unit|        |                          v                    |
+  |   | misprediction det  |--------+--------------------------------------------> to MA
+  |   | BTB/RAS recovery   |        |                                               |
+  |   +--------------------+        |                                               |
   |                                 |                                               |
-  |                                 +--------------------------------------------> to MA
+  |   +-----------------+           |                                               |
+  |   |   store_unit    |           |                                               |
+  |   | address calc    |-----------+--------------------------------------------> to MA
+  |   | byte enables    |                                                           |
+  |   +-----------------+                                                           |
   |                                                                                 |
   |   BTB/RAS update <-------------------------------------------------------- to IF|
-  |   (branch resolution + RAS restore)                                             |
+  |   (from branch_redirect_unit)                                                   |
   +---------------------------------------------------------------------------------+
 ```
 
@@ -670,12 +674,16 @@ rtl/
         │   └── pd_stage.sv           # C extension decompression, early source register extraction
         │
         ├── id_stage/                 # Instruction Decode stage
-        │   ├── id_stage.sv           # Full instruction decode, immediate extraction, control flags
-        │   └── instr_decoder.sv      # Opcode/funct decoder
+        │   ├── id_stage.sv           # ID stage integration, pipeline register
+        │   ├── instr_decoder.sv      # Opcode/funct decoder
+        │   ├── immediate_decoder.sv  # I/S/B/U/J immediate extraction
+        │   ├── instruction_type_decoder.sv  # Direct type detection (timing opt)
+        │   └── branch_target_precompute.sv  # Pre-computed targets/prediction verification
         │
         ├── ex_stage/                 # Execute stage
-        │   ├── ex_stage.sv           # ALU integration, branch resolution
-        │   ├── branch_jump_unit.sv   # Branch condition evaluation
+        │   ├── ex_stage.sv           # EX stage integration, pipeline register
+        │   ├── branch_jump_unit.sv   # Branch condition evaluation, target calc
+        │   ├── branch_redirect_unit.sv  # Misprediction detection, BTB/RAS recovery
         │   ├── store_unit.sv         # Store address/data preparation
         │   ├── exception_detector.sv # ECALL, EBREAK, misaligned access detection
         │   └── alu/

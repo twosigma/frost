@@ -171,7 +171,7 @@ report_utilization    -file $work_directory/post_opt_util.rpt
 
 # apply overconstraining during placer for better placement
 set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 1.0 -setup
-place_design -directive Auto_1
+place_design -directive ExtraNetDelay_high
 phys_opt_design -directive AggressiveExplore
 write_checkpoint -force $work_directory/post_place.dcp
 report_timing_summary -file $work_directory/post_place_timing.rpt

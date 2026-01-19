@@ -7,6 +7,9 @@
 # Branch and jump resolution unit
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 
+# Branch redirect unit - misprediction detection and BTB/RAS recovery
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_redirect_unit.sv
+
 # Store unit - memory address calculation and byte alignment
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/store_unit.sv
 

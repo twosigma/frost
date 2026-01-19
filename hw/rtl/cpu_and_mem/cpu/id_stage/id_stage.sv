@@ -15,14 +15,23 @@
  */
 
 /*
-  Instruction Decode (ID) stage - Third stage of the 6-stage RISC-V pipeline.
-  This module decodes RISC-V instructions into control signals and immediate values.
-  It instantiates decoders for instruction type determination and immediate
-  value extraction. The module identifies load instructions, store operations, branch
-  conditions, and ALU operations. It supports pipeline flushing on branch mispredictions
-  and stalling for hazards. The decoded information is passed to the Execute stage through
-  a pipeline register that can be flushed or stalled as needed for correct program execution.
-*/
+ * Instruction Decode (ID) stage - Third stage of the 6-stage RISC-V pipeline.
+ *
+ * This module decodes RISC-V instructions into control signals and immediate values.
+ * It instantiates decoders for instruction type determination and immediate
+ * value extraction. The module identifies load instructions, store operations, branch
+ * conditions, and ALU operations. It supports pipeline flushing on branch mispredictions
+ * and stalling for hazards. The decoded information is passed to the Execute stage through
+ * a pipeline register that can be flushed or stalled as needed for correct program execution.
+ *
+ * Submodule Hierarchy:
+ * ====================
+ *   id_stage
+ *   ├── instr_decoder           - Main instruction decoder (opcode -> operation)
+ *   ├── immediate_decoder       - Immediate value extraction (I/S/B/U/J types)
+ *   ├── instruction_type_decoder - Direct instruction type detection (timing optimization)
+ *   └── branch_target_precompute - Pre-computed branch/jump targets and prediction verification
+ */
 module id_stage #(
     parameter int unsigned XLEN = 32
 ) (
@@ -39,15 +48,48 @@ module id_stage #(
   riscv_pkg::instr_op_e instruction_operation;
   riscv_pkg::branch_taken_op_e branch_operation;
   riscv_pkg::store_op_e store_operation;
-  logic is_load_instruction;
+
   // Immediate values for different instruction formats
-  logic [31:0] immediate_i_type;  // I-type immediate
-  logic [31:0] immediate_s_type;  // S-type immediate (for stores)
-  logic [31:0] immediate_b_type;  // B-type immediate (for branches)
-  logic [31:0] immediate_u_type;  // U-type immediate (upper 20 bits)
-  logic [31:0] immediate_j_type;  // J-type immediate (for jumps)
+  logic [XLEN-1:0] immediate_i_type;
+  logic [XLEN-1:0] immediate_s_type;
+  logic [XLEN-1:0] immediate_b_type;
+  logic [XLEN-1:0] immediate_u_type;
+  logic [XLEN-1:0] immediate_j_type;
+
+  // Instruction type detection signals
+  logic is_load_instruction;
+  logic is_load_byte_direct;
+  logic is_load_halfword_direct;
+  logic is_load_unsigned_direct;
+  logic is_multiply_direct;
+  logic is_divide_direct;
+  logic is_csr_instruction;
+  logic [11:0] csr_address;
+  logic [4:0] csr_imm;
+  logic is_amo_instruction;
+  logic is_lr;
+  logic is_sc;
+  logic is_ecall;
+  logic is_ebreak;
+  logic is_mret;
+  logic is_wfi;
+  logic is_jal_direct;
+  logic is_jalr_direct;
+  logic is_ras_return_precomputed;
+  logic is_ras_call_precomputed;
+
+  // Pre-computed branch/jump targets and prediction verification
+  logic [XLEN-1:0] branch_target_precomputed;
+  logic [XLEN-1:0] jal_target_precomputed;
+  logic [XLEN-1:0] ras_expected_rs1_precomputed;
+  logic [XLEN-1:0] btb_expected_rs1_precomputed;
+  logic btb_correct_non_jalr_precomputed;
 
   assign instruction = i_from_pd_to_id.instruction;
+
+  // ===========================================================================
+  // Submodule Instantiations
+  // ===========================================================================
 
   // Instantiate instruction decoder to determine operation type
   instr_decoder instr_decoder_inst (
@@ -57,185 +99,82 @@ module id_stage #(
       .o_branch_taken_op(branch_operation)
   );
 
-  // Extract and sign-extend immediate values from instruction fields
-  // I-type: 12-bit immediate in bits [31:20]
-  assign immediate_i_type = {
-    {20{instruction.funct7[6]}}, instruction.funct7, instruction.source_reg_2
-  };
-  // S-type: 12-bit immediate split between bits [31:25] and [11:7]
-  assign immediate_s_type = {{20{instruction.funct7[6]}}, instruction.funct7, instruction.dest_reg};
-  // B-type: 13-bit immediate (branch offset) scrambled in instruction
-  assign immediate_b_type = {
-    {19{instruction.funct7[6]}},
-    instruction.funct7[6],
-    instruction.dest_reg[0],
-    instruction.funct7[5:0],
-    instruction.dest_reg[4:1],
-    1'b0
-  };
-  // U-type: 20-bit immediate in upper bits, lower 12 bits are zero
-  assign immediate_u_type = {instruction[31:12], 12'h0};
-  // J-type: 21-bit jump offset scrambled in instruction
-  assign immediate_j_type = {
-    {11{instruction[31]}},
-    instruction[31],
-    instruction[19:12],
-    instruction[20],
-    instruction[30:21],
-    1'b0
-  };
+  // Instantiate immediate decoder for all immediate formats
+  immediate_decoder #(
+      .XLEN(XLEN)
+  ) immediate_decoder_inst (
+      .i_instruction(instruction),
+      .o_immediate_i_type(immediate_i_type),
+      .o_immediate_s_type(immediate_s_type),
+      .o_immediate_b_type(immediate_b_type),
+      .o_immediate_u_type(immediate_u_type),
+      .o_immediate_j_type(immediate_j_type)
+  );
 
-  assign is_load_instruction = instruction.opcode == riscv_pkg::OPC_LOAD;
+  // Instantiate instruction type decoder for direct type detection
+  instruction_type_decoder #(
+      .XLEN(XLEN)
+  ) instruction_type_decoder_inst (
+      .i_instruction(instruction),
+      .i_immediate_i_type(immediate_i_type),
+      // Load type outputs
+      .o_is_load_instruction(is_load_instruction),
+      .o_is_load_byte(is_load_byte_direct),
+      .o_is_load_halfword(is_load_halfword_direct),
+      .o_is_load_unsigned(is_load_unsigned_direct),
+      // M-extension outputs
+      .o_is_multiply(is_multiply_direct),
+      .o_is_divide(is_divide_direct),
+      // CSR outputs
+      .o_is_csr_instruction(is_csr_instruction),
+      .o_csr_address(csr_address),
+      .o_csr_imm(csr_imm),
+      // A-extension outputs
+      .o_is_amo_instruction(is_amo_instruction),
+      .o_is_lr(is_lr),
+      .o_is_sc(is_sc),
+      // Privileged instruction outputs
+      .o_is_ecall(is_ecall),
+      .o_is_ebreak(is_ebreak),
+      .o_is_mret(is_mret),
+      .o_is_wfi(is_wfi),
+      // JAL/JALR outputs
+      .o_is_jal(is_jal_direct),
+      .o_is_jalr(is_jalr_direct),
+      // RAS instruction type outputs
+      .o_is_ras_return(is_ras_return_precomputed),
+      .o_is_ras_call(is_ras_call_precomputed)
+  );
 
-  // Direct decode of load type from instruction bits (parallel with instruction_operation)
-  // This breaks the dependency chain: instruction → instruction_operation → is_load_*
-  // Load funct3: 000=LB, 001=LH, 010=LW, 100=LBU, 101=LHU
-  logic is_load_byte_direct;
-  logic is_load_halfword_direct;
-  logic is_load_unsigned_direct;
-  assign is_load_byte_direct = is_load_instruction &&
-                               (instruction.funct3 == 3'b000 || instruction.funct3 == 3'b100);
-  assign is_load_halfword_direct = is_load_instruction &&
-                                   (instruction.funct3 == 3'b001 || instruction.funct3 == 3'b101);
-  assign is_load_unsigned_direct = is_load_instruction && instruction.funct3[2];
-
-  // Direct decode of multiply/divide from instruction bits
-  // M-extension uses opcode=OP (0110011), funct7=0000001
-  logic is_m_extension;
-  logic is_multiply_direct;
-  logic is_divide_direct;
-  assign is_m_extension = (instruction.opcode == riscv_pkg::OPC_OP) &&
-                          (instruction.funct7 == 7'b0000001);
-  assign is_multiply_direct = is_m_extension && !instruction.funct3[2];  // funct3[2]=0 for MUL*
-  assign is_divide_direct = is_m_extension && instruction.funct3[2];  // funct3[2]=1 for DIV/REM
-
-  // CSR instruction detection and field extraction (Zicsr extension)
-  logic is_csr_instruction;
-  logic [11:0] csr_address;
-  logic [4:0] csr_imm;
-  assign is_csr_instruction = instruction.opcode == riscv_pkg::OPC_CSR;
-  assign csr_address = {
-    instruction.funct7, instruction.source_reg_2
-  };  // CSR address in bits [31:20]
-  assign csr_imm = instruction.source_reg_1;  // Zero-extended immediate for CSRRWI/CSRRSI/CSRRCI
-
-  // A extension (atomics) detection - decode directly from instruction bits
-  logic is_amo_instruction;
-  logic is_lr;
-  logic is_sc;
-  assign is_amo_instruction = instruction.opcode == riscv_pkg::OPC_AMO;
-  // LR.W: funct7[6:2]=00010, funct3=010
-  // SC.W: funct7[6:2]=00011, funct3=010
-  assign is_lr = is_amo_instruction && (instruction.funct3 == 3'b010) &&
-                 (instruction.funct7[6:2] == 5'b00010);
-  assign is_sc = is_amo_instruction && (instruction.funct3 == 3'b010) &&
-                 (instruction.funct7[6:2] == 5'b00011);
-
-  // Privileged instruction detection - decode directly from instruction bits
-  // All use opcode=SYSTEM (1110011), funct3=000
-  logic is_mret;
-  logic is_wfi;
-  logic is_ecall;
-  logic is_ebreak;
-  logic is_priv_instruction;
-  assign is_priv_instruction = (instruction.opcode == riscv_pkg::OPC_CSR) &&
-                               (instruction.funct3 == 3'b000);
-  // ECALL: funct7=0000000, rs2=00000
-  assign is_ecall = is_priv_instruction &&
-                    (instruction.funct7 == 7'b0000000) && (instruction.source_reg_2 == 5'b00000);
-  // EBREAK: funct7=0000000, rs2=00001
-  assign is_ebreak = is_priv_instruction &&
-                     (instruction.funct7 == 7'b0000000) && (instruction.source_reg_2 == 5'b00001);
-  // MRET: funct7=0011000, rs2=00010
-  assign is_mret = is_priv_instruction &&
-                   (instruction.funct7 == 7'b0011000) && (instruction.source_reg_2 == 5'b00010);
-  // WFI: funct7=0001000, rs2=00101
-  assign is_wfi = is_priv_instruction &&
-                  (instruction.funct7 == 7'b0001000) && (instruction.source_reg_2 == 5'b00101);
-
-  // Direct decode of JAL/JALR for timing - don't depend on instruction_operation
-  logic is_jal_direct;
-  logic is_jalr_direct;
-  assign is_jal_direct = instruction.opcode == riscv_pkg::OPC_JAL;
-  assign is_jalr_direct = (instruction.opcode == riscv_pkg::OPC_JALR) &&
-                          (instruction.funct3 == 3'b000);
+  // Instantiate branch target pre-computation unit
+  branch_target_precompute #(
+      .XLEN(XLEN)
+  ) branch_target_precompute_inst (
+      .i_program_counter(i_from_pd_to_id.program_counter),
+      .i_immediate_i_type(immediate_i_type),
+      .i_immediate_b_type(immediate_b_type),
+      .i_immediate_j_type(immediate_j_type),
+      .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
+      .i_btb_predicted_target(i_from_pd_to_id.btb_predicted_target),
+      .i_is_jal(is_jal_direct),
+      // Pre-computed target outputs
+      .o_branch_target_precomputed(branch_target_precomputed),
+      .o_jal_target_precomputed(jal_target_precomputed),
+      // Pre-computed RAS verification
+      .o_ras_expected_rs1(ras_expected_rs1_precomputed),
+      // Pre-computed BTB verification
+      .o_btb_expected_rs1(btb_expected_rs1_precomputed),
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed)
+  );
 
   // ===========================================================================
-  // TIMING OPTIMIZATION: Pre-compute RAS instruction type detection
+  // WB Bypass Logic
   // ===========================================================================
-  // These flags are computed here (ID stage) from registered inputs and passed
-  // to EX stage to remove comparisons from the critical ras_correct path.
-  //
-  // is_ras_return: JALR with rs1 in {x1, x5}, rd = x0, imm = 0
-  // is_ras_call: JAL/JALR with rd in {x1, x5}
-  // ras_predicted_target_nonzero: ras_predicted_target != 0
-
-  logic is_ras_return_precomputed;
-  logic is_ras_call_precomputed;
-  logic rs1_is_link_reg;
-  logic rd_is_link_reg;
-
-  assign rs1_is_link_reg = (instruction.source_reg_1 == 5'd1) || (instruction.source_reg_1 == 5'd5);
-  assign rd_is_link_reg = (instruction.dest_reg == 5'd1) || (instruction.dest_reg == 5'd5);
-
-  // Return: JALR with rs1 in {x1, x5}, rd = x0, imm = 0
-  // The immediate for JALR is in I-type format: funct7[6:0] ++ source_reg_2[4:0]
-  assign is_ras_return_precomputed = is_jalr_direct &&
-                                     rs1_is_link_reg &&
-                                     (instruction.dest_reg == 5'd0) &&
-                                     (immediate_i_type == 32'b0);
-
-  // Call: JAL or JALR with rd in {x1, x5}
-  assign is_ras_call_precomputed = (is_jal_direct || is_jalr_direct) && rd_is_link_reg;
-
-  // TIMING OPTIMIZATION: Pre-compute expected rs1 for RAS target verification.
-  // For JALR returns: actual_target = rs1 + immediate_i_type
-  // Therefore: expected_rs1 = ras_predicted_target - immediate_i_type
-  // This allows EX stage to verify RAS prediction by comparing forwarded_rs1
-  // with this pre-computed value, removing the JALR adder from the critical path.
-  logic [XLEN-1:0] ras_expected_rs1_precomputed;
-  assign ras_expected_rs1_precomputed = i_from_pd_to_id.ras_predicted_target -
-                                        XLEN'(signed'(immediate_i_type));
-
-  // ===========================================================================
-  // TIMING OPTIMIZATION: Pre-compute BTB target verification
-  // ===========================================================================
-  // Same algebraic transformation as RAS, applied to BTB comparison.
-  // For JALR: btb_expected_rs1 = btb_predicted_target - immediate_i_type
-  //   EX stage compares: forwarded_rs1 == btb_expected_rs1
-  // For non-JALR (JAL/branches): targets are PC-relative, computed here
-  //   Compare precomputed target with btb_predicted_target in ID stage
-  //   This removes the entire comparison from EX stage critical path
-  logic [XLEN-1:0] btb_expected_rs1_precomputed;
-  assign btb_expected_rs1_precomputed = i_from_pd_to_id.btb_predicted_target -
-                                        XLEN'(signed'(immediate_i_type));
-
-  // For non-JALR, select the appropriate precomputed target
-  // JAL uses jal_target_precomputed, branches use branch_target_precomputed
-  logic [XLEN-1:0] precomputed_target_for_btb;
-  assign precomputed_target_for_btb = is_jal_direct ?
-                                      jal_target_precomputed : branch_target_precomputed;
-
-  // Pre-compute BTB correctness for non-JALR instructions
-  // This comparison happens in ID stage where timing is not critical
-  logic btb_correct_non_jalr_precomputed;
-  assign btb_correct_non_jalr_precomputed = (precomputed_target_for_btb ==
-                                             i_from_pd_to_id.btb_predicted_target);
-
-  // Pre-computed branch/jump targets for pipeline balancing.
-  // Computing PC-relative targets here removes adders from EX stage critical path.
-  // Only JALR target is computed in EX since it requires forwarded rs1.
-  logic [XLEN-1:0] branch_target_precomputed;
-  logic [XLEN-1:0] jal_target_precomputed;
-  assign branch_target_precomputed = i_from_pd_to_id.program_counter +
-                                     XLEN'(signed'(immediate_b_type));
-  assign jal_target_precomputed = i_from_pd_to_id.program_counter +
-                                  XLEN'(signed'(immediate_j_type));
-
   // WB bypass for regfile data: When WB writes to a register that ID is reading,
   // we must use the WB write data instead of the regfile read data. This is because
   // the regfile read (async) happens the same cycle as the WB write (sync), so the
   // regfile read would get stale data before the write commits.
+
   logic wb_bypass_rs1;
   logic wb_bypass_rs2;
   logic [XLEN-1:0] source_reg_1_data_bypassed;
@@ -255,15 +194,23 @@ module id_stage #(
   assign source_reg_2_data_bypassed = wb_bypass_rs2 ? i_from_ma_to_wb.regfile_write_data :
                                                       i_rf_to_id.source_reg_2_data;
 
+  // ===========================================================================
+  // Source Register x0 Check Pre-computation
+  // ===========================================================================
   // TIMING OPTIMIZATION: Pre-compute x0 check for source registers.
   // This moves the ~|source_reg NOR gate out of the EX stage critical path.
   // The forwarding unit uses these registered flags instead of computing them combinationally.
+
   logic source_reg_1_is_x0;
   logic source_reg_2_is_x0;
   assign source_reg_1_is_x0 = ~|i_from_pd_to_id.source_reg_1_early;
   assign source_reg_2_is_x0 = ~|i_from_pd_to_id.source_reg_2_early;
 
-  // Pipeline register: latch decoded values and pass to Execute stage
+  // ===========================================================================
+  // Pipeline Register
+  // ===========================================================================
+  // Latch decoded values and pass to Execute stage
+
   always_ff @(posedge i_clk) begin
     // On reset, insert a NOP (no operation) into the pipeline
     if (i_pipeline_ctrl.reset) begin
