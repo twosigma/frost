@@ -258,6 +258,12 @@ module l0_cache #(
   );
 
   // Register cache hit/data for forwarding (timing optimization)
+  // These registers capture the cache lookup result when an instruction is in EX.
+  // When the instruction moves to MA, these registered values are used for:
+  //   1. Hazard detection (cache_hit_on_load_reg in hazard_resolution_unit.sv)
+  //   2. Data forwarding (data_loaded_from_cache_reg in forwarding_unit.sv)
+  // By using registered signals for both, we ensure consistency and break the
+  // critical timing path from cache lookup to stall/forwarding decisions.
   always_ff @(posedge i_clk)
     if (i_rst) begin
       cache_hit_on_load_reg <= 1'b0;

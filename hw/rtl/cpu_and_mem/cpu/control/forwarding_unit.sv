@@ -195,11 +195,13 @@ module forwarding_unit #(
                                 i_from_ex_comb.fp_result :
                                 i_from_ex_comb.alu_result;
 
-  // Use registered cache hit/data for load forwarding (breaks EX->cache->forwarding path)
+  // Data forwarding from MA stage
+  // With the conservative "always stall on load-use hazard" approach, we always have
+  // time for memory data to arrive. The register_write_data_ma is updated during the
+  // stall with the correct memory-loaded data, so we always forward from there.
+  // This avoids any issues with stale cache data.
   logic [XLEN-1:0] forward_data_ma;
-  assign forward_data_ma = i_from_cache.cache_hit_on_load_reg ?
-                           i_from_cache.data_loaded_from_cache_reg :
-                           register_write_data_ma;
+  assign forward_data_ma = register_write_data_ma;
 
   // Final multiplexing: select forwarded value or register file value
   // Priority order: MA stage forward > WB stage forward > Register file

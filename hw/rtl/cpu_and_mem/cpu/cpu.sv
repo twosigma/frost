@@ -364,7 +364,7 @@ module cpu #(
     Stalls pipeline during atomic operation and drives memory write.
   */
   // Early AMO detection: true when a regular AMO (not LR/SC) is in EX stage.
-  // This allows the AMO unit to capture forwarded rs2 one cycle before entering MA.
+  // This allows the AMO unit to capture forwarded rs2 before entering MA.
   logic amo_in_ex;
   assign amo_in_ex = from_id_to_ex.is_amo_instruction &&
                      !from_id_to_ex.is_lr && !from_id_to_ex.is_sc;
@@ -375,7 +375,7 @@ module cpu #(
       .i_clk,
       .i_rst,
       .i_stall(stall_excluding_amo),  // Use external stalls only to avoid combinational loop
-      // Early detection for rs2 capture timing
+      // Early detection and RS2 capture for correct forwarding timing
       .i_amo_in_ex(amo_in_ex),
       .i_rs2_fwd(fwd_to_ex.source_reg_2_value),
       // From EX→MA pipeline register

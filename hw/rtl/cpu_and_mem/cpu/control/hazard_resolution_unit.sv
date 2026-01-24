@@ -121,7 +121,6 @@ module hazard_resolution_unit #(
   logic amo_potential_hazard_reg;  // Registered: potential hazard from previous cycle
   // FP load-use hazards are handled with an early, single-cycle stall.
   logic fpu_inflight_hazard_reg;  // Registered: FPU pipeline hazard
-  logic cache_hit_on_load_reg;  // Registered: cache hit from previous cycle
   logic load_use_hazard_detected;  // Current instruction uses data from load
   logic stall_for_load_use_hazard;  // Need to stall due to load-use dependency
   logic fp_load_use_hazard_early;  // Early stall for FP load-use (one-cycle bubble)
@@ -157,10 +156,23 @@ module hazard_resolution_unit #(
   // Hazard detection and stall generation
   // Priority: multiply/divide stalls take precedence over load-use stalls
   // Use optimized multiply stall for correct behavior with timing optimization
-  // Integer/AMO load-use hazards use the registered path; FP load-use uses early stall.
+  //
+  // CONSERVATIVE APPROACH: Always stall on potential load-use hazard.
+  //
+  // The cache hit optimization (skipping stall if cache hit) has subtle timing
+  // issues with forwarding that cause incorrect data to be used. The registered
+  // cache_hit signal can be stale when captured at the same posedge as the
+  // consumer's operand capture, leading to forwarding from wrong data.
+  //
+  // By always stalling on a potential hazard, we ensure:
+  // 1. Correct behavior (memory data is always available after stall)
+  // 2. Good timing (no cache lookup in critical path)
+  // 3. Slight performance cost (extra stall when cache would hit)
+  //
+  // The cache hit optimization can be revisited with more careful pipeline
+  // analysis to ensure forwarding data capture timing is correct.
   logic load_use_hazard_int_amo;
-  assign load_use_hazard_int_amo = (load_potential_hazard_reg && ~cache_hit_on_load_reg) ||
-                                   amo_potential_hazard_reg;
+  assign load_use_hazard_int_amo = load_potential_hazard_reg || amo_potential_hazard_reg;
 
   assign load_use_hazard_detected = load_use_hazard_int_amo && ~is_load_registered;
   assign stall_for_load_use_hazard = load_use_hazard_detected &
@@ -231,20 +243,24 @@ module hazard_resolution_unit #(
   // Use optimized multiply stall for correct behavior with timing optimization
   // F extension: fpu_inflight_hazard uses combinational signal since it compares registered values
   // and needs to clear immediately when the FPU operation completes
+  //
+  // Use reduction-OR to encourage a balanced tree and trim OR-chain depth.
   logic stall_sources;
-  assign stall_sources = stall_for_multiply_divide_optimized |
-                         stall_for_load_use_hazard |
-                         fp_load_use_hazard_early |
-                         fp_load_ma_hazard_stall |
-                         i_stall_for_amo |
-                         fpu_stall_gated |
-                         fpu_inflight_hazard |
-                         fpu_single_to_pipelined_hazard |
-                         fp_to_int_to_int_to_fp_hazard |
-                         csr_fflags_read_hazard |
-                         stall_for_csr_read |
-                         mmio_load_stall |
-                         i_stall_for_wfi;
+  assign stall_sources = |{
+      stall_for_multiply_divide_optimized,
+      stall_for_load_use_hazard,
+      fp_load_use_hazard_early,
+      fp_load_ma_hazard_stall,
+      i_stall_for_amo,
+      fpu_stall_gated,
+      fpu_inflight_hazard,
+      fpu_single_to_pipelined_hazard,
+      fp_to_int_to_int_to_fp_hazard,
+      csr_fflags_read_hazard,
+      stall_for_csr_read,
+      mmio_load_stall,
+      i_stall_for_wfi
+  };
 
   // Stall sources excluding CSR read stall - used for trap check.
   // When a trap fires, the CSR instruction will be flushed anyway, so blocking
@@ -252,18 +268,20 @@ module hazard_resolution_unit #(
   // immediately when interrupt_pending becomes 1, without waiting for a
   // potentially stalling CSR instruction to complete.
   logic stall_sources_for_trap;
-  assign stall_sources_for_trap = stall_for_multiply_divide_optimized |
-                                  stall_for_load_use_hazard |
-                                  fp_load_use_hazard_early |
-                                  fp_load_ma_hazard_stall |
-                                  i_stall_for_amo |
-                                  fpu_stall_gated |
-                                  fpu_inflight_hazard |
-                                  fpu_single_to_pipelined_hazard |
-                                  fp_to_int_to_int_to_fp_hazard |
-                                  csr_fflags_read_hazard |
-                                  mmio_load_stall |
-                                  i_stall_for_wfi;
+  assign stall_sources_for_trap = |{
+      stall_for_multiply_divide_optimized,
+      stall_for_load_use_hazard,
+      fp_load_use_hazard_early,
+      fp_load_ma_hazard_stall,
+      i_stall_for_amo,
+      fpu_stall_gated,
+      fpu_inflight_hazard,
+      fpu_single_to_pipelined_hazard,
+      fp_to_int_to_int_to_fp_hazard,
+      csr_fflags_read_hazard,
+      mmio_load_stall,
+      i_stall_for_wfi
+  };
 
   // ===========================================================================
   // Internal Pipeline Control Signal Generation
@@ -550,19 +568,17 @@ module hazard_resolution_unit #(
   assign csr_fflags_read_hazard = is_csr_fflags_read && fp_flags_producer_in_ma &&
                                    ~stall_registered;
 
-  // Register the potential hazards and cache hit signal
-  // cache_hit_on_load is the SLOW signal (long combinational path), but it now ends at a register
+  // Register the potential hazards for timing optimization.
+  // The actual hazard decision combines these with the combinational cache_hit_on_load.
   always_ff @(posedge i_clk) begin
     if (pipeline_reset || pipeline_flush) begin
       load_potential_hazard_reg <= 1'b0;
-      amo_potential_hazard_reg <= 1'b0;
-      fpu_inflight_hazard_reg <= 1'b0;
-      cache_hit_on_load_reg <= 1'b0;
+      amo_potential_hazard_reg  <= 1'b0;
+      fpu_inflight_hazard_reg   <= 1'b0;
     end else if (~pipeline_stall) begin
       load_potential_hazard_reg <= load_potential_hazard;
-      amo_potential_hazard_reg <= amo_potential_hazard;
-      fpu_inflight_hazard_reg <= fpu_inflight_hazard;
-      cache_hit_on_load_reg <= i_from_cache.cache_hit_on_load;
+      amo_potential_hazard_reg  <= amo_potential_hazard;
+      fpu_inflight_hazard_reg   <= fpu_inflight_hazard;
     end
   end
 
@@ -605,16 +621,18 @@ module hazard_resolution_unit #(
   // This excludes i_stall_for_amo, preventing: stall → AMO check → stall_for_amo → stall
   // NOTE: This is a separate output port (not through packed struct) to avoid false loop detection.
   assign o_stall_excluding_amo = stall_for_multiply_divide_optimized |
-                                  load_use_hazard_detected |
+                                  stall_for_load_use_hazard |
                                   fp_load_use_hazard_early |
                                   fp_load_ma_hazard_stall |
-                                  i_stall_for_fpu |
+                                  fpu_stall_gated |
                                   fpu_inflight_hazard |
+                                  fpu_single_to_pipelined_hazard |
                                   fp_to_int_to_int_to_fp_hazard |
                                   csr_fflags_read_hazard |
                                   stall_for_csr_read |
                                   mmio_load_stall |
                                   i_stall_for_wfi;
+
   // Stall for FPU input - excludes fpu_inflight_hazard so FPU can continue computing
   // to resolve the hazard. Similar to how integer multiply continues during multiply stall.
   // Note: Do NOT gate by trap/mret to avoid combinational loop. FPU will be reset on flush anyway.

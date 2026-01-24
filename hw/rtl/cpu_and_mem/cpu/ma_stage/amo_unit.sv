@@ -88,8 +88,9 @@ module amo_unit #(
     input logic i_stall,
 
     // Early detection when AMO is in EX stage (for rs2 capture)
-    input logic            i_amo_in_ex,  // True when AMO (not LR/SC) is in EX stage
-    input logic [XLEN-1:0] i_rs2_fwd,    // Forwarded rs2 value from EX stage
+    input logic i_amo_in_ex,
+    // RS2 value - combinational forwarded value from forwarding unit
+    input logic [XLEN-1:0] i_rs2_fwd,
 
     // From EX→MA pipeline register
     input logic i_is_amo_instruction,
@@ -125,8 +126,9 @@ module amo_unit #(
   logic [XLEN-1:0] captured_address;
   riscv_pkg::instr_op_e captured_operation;
 
-  // Early-captured rs2: captured when AMO is in EX (one cycle before state machine starts)
-  // This ensures we get the correctly forwarded value before pipeline register updates.
+  // Early-captured rs2: captured when AMO is in EX stage (before entering MA).
+  // This ensures we capture the correctly forwarded value before the pipeline
+  // register updates, avoiding timing issues at the EX→MA boundary.
   logic [XLEN-1:0] rs2_early_captured;
 
   // Track whether current AMO instruction has been processed to prevent re-execution
@@ -188,21 +190,24 @@ module amo_unit #(
   end
 
   // Early-capture rs2 when AMO is in EX stage (before it enters MA).
-  // This captures the forwarded rs2 value at the correct time, avoiding
-  // timing issues with pipeline register updates at clock edges.
+  // This captures the combinational forwarded value at the correct time,
+  // before the pipeline register updates at the EX→MA boundary.
+  // The key is that we capture when stall is LOW and AMO is in EX - this is
+  // exactly the cycle when the AMO will move to MA at the next posedge.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       rs2_early_captured <= '0;
     end else if (i_amo_in_ex && !i_stall) begin
-      // Capture forwarded rs2 when AMO is in EX (will enter MA next cycle)
+      // Capture forwarded rs2 when AMO is in EX and about to enter MA
       rs2_early_captured <= i_rs2_fwd;
     end
   end
 
-  // Capture values when AMO starts (only if not already processed)
+  // Capture values when AMO starts processing in MA stage.
   always_ff @(posedge i_clk) begin
     if (amo_state == AMO_IDLE && is_regular_amo && !i_stall && !amo_instruction_processed) begin
-      // Use the early-captured rs2 value instead of i_rs2_value
+      // Use the early-captured rs2 value - this was captured when AMO was in EX,
+      // so it has the correctly forwarded value before the pipeline register update.
       captured_rs2_value <= rs2_early_captured;
       captured_address   <= i_data_memory_address;
       captured_operation <= i_instruction_operation;
