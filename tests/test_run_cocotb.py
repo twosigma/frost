@@ -569,7 +569,9 @@ Available tests:
     os.environ["SIM"] = args.sim
     os.environ["GUI"] = "1" if args.gui else "0"
     if args.testcase:
-        os.environ["COCOTB_TEST_FILTER"] = args.testcase
+        # Anchor at end for exact match (COCOTB_TEST_FILTER uses regex).
+        # We only anchor at end because cocotb may prefix with module path.
+        os.environ["COCOTB_TEST_FILTER"] = f"{args.testcase}$"
     if args.random_seed:
         os.environ["COCOTB_RANDOM_SEED"] = args.random_seed
 
