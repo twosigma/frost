@@ -1,12 +1,12 @@
-# Makefile for Compressed FP (C.F) Extension Test
+# Makefile for Compressed FP (C.F/C.D) Extension Test
 # Self-contained assembly test for compressed FP load/store handling
 # Note: Uses custom build flow (not common.mk) because cf_ext_test.S
 # defines its own _start and doesn't use crt0.S
 
 # Architecture - MUST match common.mk RISCV_FLAGS -march value
 # If common.mk changes, update this value to match
-ARCH = rv32imacf_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI = ilp32f
+ARCH = rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI = ilp32d
 
 # Tools - use same prefix as common.mk
 RISCV_PREFIX ?= riscv-none-elf-

@@ -38,7 +38,7 @@ module sdp_dist_ram #(
 );
 
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
-  logic [DATA_WIDTH-1:0] ram[RamDepth];
+  (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
   // Initialize all memory locations to zero
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;

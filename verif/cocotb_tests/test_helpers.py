@@ -47,7 +47,7 @@ from typing import Any
 from dataclasses import dataclass, field
 from cocotb.triggers import FallingEdge
 
-from config import DUTSignalPaths
+from config import DUTSignalPaths, MASK64
 from encoders.op_tables import LOADS, STORES
 from utils.validation import HardwareAssertions
 
@@ -303,9 +303,10 @@ class DUTInterface:
         ram_fs1 = self._get_fp_regfile_ram(0)
         ram_fs2 = self._get_fp_regfile_ram(1)
         ram_fs3 = self._get_fp_regfile_ram(2)
-        ram_fs1[reg].value = value
-        ram_fs2[reg].value = value
-        ram_fs3[reg].value = value
+        masked_value = value & MASK64
+        ram_fs1[reg].value = masked_value
+        ram_fs2[reg].value = masked_value
+        ram_fs3[reg].value = masked_value
 
     def initialize_fp_registers(self) -> list[int]:
         """Initialize all FP registers to zero and return the values.

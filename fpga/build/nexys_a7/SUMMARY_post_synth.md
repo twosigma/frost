@@ -6,32 +6,32 @@
 |--------|-------|
 | Clock Frequency | 80.000 MHz |
 | Clock Period | 12.500 ns |
-| WNS (Setup) | 2.183 ns |
-| TNS (Setup) | 0.000 ns (0 failing) |
+| WNS (Setup) | -0.538 ns |
+| TNS (Setup) | -1.734 ns (4 failing) |
 | WHS (Hold) | -0.107 ns |
-| THS (Hold) | -5.722 ns (73 failing) |
+| THS (Hold) | -4.386 ns (53 failing) |
 | Timing Met | No |
 
 ## Worst Setup Path
 
 | Metric | Value |
 |--------|-------|
-| Slack | 2.183 ns |
-| Data Path Delay | 9.558 ns |
-| Logic Delay | 1.889 ns |
-| Route Delay | 7.669 ns |
-| Logic Levels | 10 |
+| Slack | -0.538 ns |
+| Data Path Delay | 12.855 ns |
+| Logic Delay | 3.591 ns |
+| Route Delay | 9.264 ns |
+| Logic Levels | 19 |
 
 ### Path Endpoints
 
-- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/pd_stage_inst/o_from_pd_to_id_reg[fp_source_reg_3_early][3]/C`
-- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/unified_instruction_data_memory/gen_port_a_byte_logic[1].memory_reg_0_0/WEA[0]`
+- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/ex_stage_inst/fpu_inst/fma_inst_d/sum_s5a_reg[96]/C`
+- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/ex_stage_inst/fpu_inst/fma_inst_d/lzc_s6_reg[6]/D`
 
 ## Resource Utilization
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 14479 | 63400 | 22.84% |
-| Registers | 8924 | 126800 | 7.04% |
-| Block RAM | 21.5 | 135 | 15.93% |
-| DSPs | 8 | 240 | 3.33% |
+| LUTs | 28115 | 63400 | 44.35% |
+| Registers | 18495 | 126800 | 14.59% |
+| Block RAM | 68.5 | 135 | 50.74% |
+| DSPs | 28 | 240 | 11.67% |

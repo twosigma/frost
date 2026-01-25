@@ -21,16 +21,16 @@
   use fs1, fs2, and fs3 as source operands.
 
   Unlike the integer register file, there is no hardwired zero register -
-  all 32 FP registers are read/write. NaN-boxing is not implemented here
-  since this is an RV32F-only implementation (no D extension).
+  all 32 FP registers are read/write. NaN-boxing is not implemented here;
+  F and D instructions operate directly on the stored bit patterns.
 
   Read addresses come from PD stage (early source registers) so the regfile
   read happens in ID stage. The read data is then registered at the ID->EX
   boundary, moving the RAM read out of the EX stage critical path.
 */
 module fp_regfile #(
-    parameter int unsigned DEPTH = 32,  // Number of registers (32 for RV32F)
-    parameter int unsigned DATA_WIDTH = 32  // Register width in bits
+    parameter int unsigned DEPTH = 32,  // Number of registers (32 for RV32F/RV32D)
+    parameter int unsigned DATA_WIDTH = riscv_pkg::FpWidth  // Register width in bits
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,

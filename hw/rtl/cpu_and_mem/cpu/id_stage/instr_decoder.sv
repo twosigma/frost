@@ -300,37 +300,51 @@ module instr_decoder (
       // F extension (single-precision floating-point)
       // =========================================================================
 
-      // FLW - Load floating-point word (I-type format)
+      // FLW/FLD - Load floating-point word/double (I-type format)
       // Uses integer rs1 for address, writes to FP rd
       riscv_pkg::OPC_LOAD_FP:
-      if (i_instr.funct3 == 3'b010)  // width=W (32-bit)
+      if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FLW;
+      end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
+        o_instr_op = riscv_pkg::FLD;
+      end
 
-      // FSW - Store floating-point word (S-type format)
+      // FSW/FSD - Store floating-point word/double (S-type format)
       // Uses integer rs1 for address, FP rs2 for data
       riscv_pkg::OPC_STORE_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
         o_store_op = riscv_pkg::STW;  // 32-bit store
+      end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
+        o_instr_op = riscv_pkg::FSD;
+        o_store_op = riscv_pkg::STN;  // Handled by FP64 store unit
       end
 
       // Fused multiply-add variants (R4-type format)
-      // rs3 is in funct7[6:2], fmt is in funct7[1:0] (00=S for single-precision)
+      // rs3 is in funct7[6:2], fmt is in funct7[1:0] (00=S, 01=D)
       riscv_pkg::OPC_FMADD:
-      if (i_instr.funct7[1:0] == 2'b00)  // fmt=S (single-precision)
+      if (i_instr.funct7[1:0] == 2'b00)  // fmt=S
         o_instr_op = riscv_pkg::FMADD_S;  // rd = (rs1 * rs2) + rs3
+      else if (i_instr.funct7[1:0] == 2'b01)  // fmt=D
+        o_instr_op = riscv_pkg::FMADD_D;
 
       riscv_pkg::OPC_FMSUB:
       if (i_instr.funct7[1:0] == 2'b00)  // fmt=S
         o_instr_op = riscv_pkg::FMSUB_S;  // rd = (rs1 * rs2) - rs3
+      else if (i_instr.funct7[1:0] == 2'b01)  // fmt=D
+        o_instr_op = riscv_pkg::FMSUB_D;
 
       riscv_pkg::OPC_FNMSUB:
       if (i_instr.funct7[1:0] == 2'b00)  // fmt=S
         o_instr_op = riscv_pkg::FNMSUB_S;  // rd = -(rs1 * rs2) + rs3
+      else if (i_instr.funct7[1:0] == 2'b01)  // fmt=D
+        o_instr_op = riscv_pkg::FNMSUB_D;
 
       riscv_pkg::OPC_FNMADD:
       if (i_instr.funct7[1:0] == 2'b00)  // fmt=S
         o_instr_op = riscv_pkg::FNMADD_S;  // rd = -(rs1 * rs2) - rs3
+      else if (i_instr.funct7[1:0] == 2'b01)  // fmt=D
+        o_instr_op = riscv_pkg::FNMADD_D;
 
       // FP arithmetic operations (R-type format)
       // funct7 determines the operation, funct3 is rounding mode (or sub-operation)
@@ -338,12 +352,17 @@ module instr_decoder (
       unique case (i_instr.funct7)
         // Basic arithmetic (rd = fs1 op fs2)
         7'b0000000: o_instr_op = riscv_pkg::FADD_S;  // Floating-point add
+        7'b0000001: o_instr_op = riscv_pkg::FADD_D;  // Floating-point add (double)
         7'b0000100: o_instr_op = riscv_pkg::FSUB_S;  // Floating-point subtract
+        7'b0000101: o_instr_op = riscv_pkg::FSUB_D;  // Floating-point subtract (double)
         7'b0001000: o_instr_op = riscv_pkg::FMUL_S;  // Floating-point multiply
+        7'b0001001: o_instr_op = riscv_pkg::FMUL_D;  // Floating-point multiply (double)
         7'b0001100: o_instr_op = riscv_pkg::FDIV_S;  // Floating-point divide
+        7'b0001101: o_instr_op = riscv_pkg::FDIV_D;  // Floating-point divide (double)
 
         // Square root (rd = sqrt(fs1), rs2 must be 0)
         7'b0101100: if (i_instr.source_reg_2 == 5'b00000) o_instr_op = riscv_pkg::FSQRT_S;
+        7'b0101101: if (i_instr.source_reg_2 == 5'b00000) o_instr_op = riscv_pkg::FSQRT_D;
 
         // Sign injection (rd = sign-manipulated fs1 using fs2's sign)
         7'b0010000:
@@ -351,6 +370,13 @@ module instr_decoder (
           3'b000:  o_instr_op = riscv_pkg::FSGNJ_S;  // Copy fs2's sign to fs1
           3'b001:  o_instr_op = riscv_pkg::FSGNJN_S;  // Copy negated fs2's sign to fs1
           3'b010:  o_instr_op = riscv_pkg::FSGNJX_S;  // XOR fs1's sign with fs2's sign
+          default: ;
+        endcase
+        7'b0010001:
+        unique case (i_instr.funct3)
+          3'b000:  o_instr_op = riscv_pkg::FSGNJ_D;
+          3'b001:  o_instr_op = riscv_pkg::FSGNJN_D;
+          3'b010:  o_instr_op = riscv_pkg::FSGNJX_D;
           default: ;
         endcase
 
@@ -361,12 +387,24 @@ module instr_decoder (
           3'b001:  o_instr_op = riscv_pkg::FMAX_S;  // Floating-point maximum
           default: ;
         endcase
+        7'b0010101:
+        unique case (i_instr.funct3)
+          3'b000:  o_instr_op = riscv_pkg::FMIN_D;
+          3'b001:  o_instr_op = riscv_pkg::FMAX_D;
+          default: ;
+        endcase
 
         // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects signed/unsigned)
         7'b1100000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_S;  // Convert to signed 32-bit
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_S;  // Convert to unsigned 32-bit
+          default:  ;
+        endcase
+        7'b1100001:
+        unique case (i_instr.source_reg_2)
+          5'b00000: o_instr_op = riscv_pkg::FCVT_W_D;
+          5'b00001: o_instr_op = riscv_pkg::FCVT_WU_D;
           default:  ;
         endcase
 
@@ -377,6 +415,16 @@ module instr_decoder (
           5'b00001: o_instr_op = riscv_pkg::FCVT_S_WU;  // Convert from unsigned 32-bit
           default:  ;
         endcase
+        7'b1101001:
+        unique case (i_instr.source_reg_2)
+          5'b00000: o_instr_op = riscv_pkg::FCVT_D_W;
+          5'b00001: o_instr_op = riscv_pkg::FCVT_D_WU;
+          default:  ;
+        endcase
+
+        // Convert between single and double precision
+        7'b0100000: if (i_instr.source_reg_2 == 5'b00001) o_instr_op = riscv_pkg::FCVT_S_D;
+        7'b0100001: if (i_instr.source_reg_2 == 5'b00000) o_instr_op = riscv_pkg::FCVT_D_S;
 
         // Move FP bits to integer register, or classify (rd = bits(fs1) or class(fs1))
         7'b1110000:
@@ -384,6 +432,12 @@ module instr_decoder (
           unique case (i_instr.funct3)
             3'b000:  o_instr_op = riscv_pkg::FMV_X_W;  // Move FP bits to integer
             3'b001:  o_instr_op = riscv_pkg::FCLASS_S;  // Classify FP value
+            default: ;
+          endcase
+        7'b1110001:
+        if (i_instr.source_reg_2 == 5'b00000)
+          unique case (i_instr.funct3)
+            3'b001:  o_instr_op = riscv_pkg::FCLASS_D;
             default: ;
           endcase
 
@@ -398,6 +452,13 @@ module instr_decoder (
           3'b010:  o_instr_op = riscv_pkg::FEQ_S;  // Floating-point equal
           3'b001:  o_instr_op = riscv_pkg::FLT_S;  // Floating-point less than
           3'b000:  o_instr_op = riscv_pkg::FLE_S;  // Floating-point less than or equal
+          default: ;
+        endcase
+        7'b1010001:
+        unique case (i_instr.funct3)
+          3'b010:  o_instr_op = riscv_pkg::FEQ_D;
+          3'b001:  o_instr_op = riscv_pkg::FLT_D;
+          3'b000:  o_instr_op = riscv_pkg::FLE_D;
           default: ;
         endcase
 

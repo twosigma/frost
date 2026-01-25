@@ -111,7 +111,9 @@ module forwarding_unit #(
   logic forward_source_reg_2_from_wb;
 
   // Data to forward from Memory Access stage (registered)
-  logic [XLEN-1:0] register_write_data_ma;
+  // TIMING: Manual register replication to reduce fanout - one copy for each forwarding path
+  (* KEEP = "TRUE" *) logic [XLEN-1:0] register_write_data_ma_rs1;
+  (* KEEP = "TRUE" *) logic [XLEN-1:0] register_write_data_ma_rs2;
 
   // MMIO load detection (used to refresh forward data during MMIO stalls).
   logic mmio_load_in_ma;
@@ -182,36 +184,50 @@ module forwarding_unit #(
 
   // Select data to forward from MA stage
   // Special handling for load-use hazards and AMO-use hazards
+  // TIMING: Replicated registers - identical logic drives both copies
   always_ff @(posedge i_clk)
     if (i_pipeline_ctrl.stall_for_load_use_hazard || (i_pipeline_ctrl.stall && mmio_load_in_ma))
       // Load/AMO-use hazard or MMIO-load stall: use memory data
       // (refresh during MMIO stall so forwarding sees the updated read data).
-      if (i_amo_read_phase)
-        register_write_data_ma <= i_from_ma_comb.data_memory_read_data;
-      else register_write_data_ma <= i_from_ma_comb.data_loaded_from_memory;
-    else if (~i_pipeline_ctrl.stall)
+      if (i_amo_read_phase) begin
+        register_write_data_ma_rs1 <= i_from_ma_comb.data_memory_read_data;
+        register_write_data_ma_rs2 <= i_from_ma_comb.data_memory_read_data;
+      end else begin
+        register_write_data_ma_rs1 <= i_from_ma_comb.data_loaded_from_memory;
+        register_write_data_ma_rs2 <= i_from_ma_comb.data_loaded_from_memory;
+      end
+    else if (~i_pipeline_ctrl.stall) begin
       // Normal case: use ALU result (cache-hit forwarding uses registered path below)
-      register_write_data_ma <= i_from_id_to_ex.is_fp_to_int ?
-                                i_from_ex_comb.fp_result :
-                                i_from_ex_comb.alu_result;
-
-  // Data forwarding from MA stage
-  // With the conservative "always stall on load-use hazard" approach, we always have
-  // time for memory data to arrive. The register_write_data_ma is updated during the
-  // stall with the correct memory-loaded data, so we always forward from there.
-  // This avoids any issues with stale cache data.
-  logic [XLEN-1:0] forward_data_ma;
-  assign forward_data_ma = register_write_data_ma;
+      register_write_data_ma_rs1 <= i_from_id_to_ex.is_fp_to_int ?
+                                    i_from_ex_comb.fp_result[XLEN-1:0] :
+                                    i_from_ex_comb.alu_result;
+      register_write_data_ma_rs2 <= i_from_id_to_ex.is_fp_to_int ?
+                                    i_from_ex_comb.fp_result[XLEN-1:0] :
+                                    i_from_ex_comb.alu_result;
+    end
 
   // Final multiplexing: select forwarded value or register file value
   // Priority order: MA stage forward > WB stage forward > Register file
+  // TIMING: Each path uses its own replicated register copy
+  logic use_cache_hit_forward;
+  logic [XLEN-1:0] forward_data_ma_rs1;
+  logic [XLEN-1:0] forward_data_ma_rs2;
+
+  assign use_cache_hit_forward = i_from_cache.cache_hit_on_load_reg;
+  assign forward_data_ma_rs1 = use_cache_hit_forward ?
+                               i_from_cache.data_loaded_from_cache_reg :
+                               register_write_data_ma_rs1;
+  assign forward_data_ma_rs2 = use_cache_hit_forward ?
+                               i_from_cache.data_loaded_from_cache_reg :
+                               register_write_data_ma_rs2;
+
   assign o_fwd_to_ex.source_reg_1_value =
-      forward_source_reg_1_from_ma ? forward_data_ma :
+      forward_source_reg_1_from_ma ? forward_data_ma_rs1 :
       forward_source_reg_1_from_wb ? i_from_ma_to_wb.regfile_write_data :
       source_reg_1_raw_value;
 
   assign o_fwd_to_ex.source_reg_2_value =
-      forward_source_reg_2_from_ma ? forward_data_ma :
+      forward_source_reg_2_from_ma ? forward_data_ma_rs2 :
       forward_source_reg_2_from_wb ? i_from_ma_to_wb.regfile_write_data :
       source_reg_2_raw_value;
 

@@ -97,6 +97,8 @@ module ex_stage #(
     parameter int unsigned XLEN = 32
 ) (
     input logic i_clk,
+    // Top-level reset (synchronous, not gated by cache reset)
+    input logic i_rst,
 
     // Pipeline control (stall, flush, reset)
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
@@ -118,6 +120,8 @@ module ex_stage #(
 
     // F extension: Stall signal (excludes FPU RAW hazard so FPU can continue)
     input logic i_stall_for_fpu,
+    // FP64 load/store sequencing stall (from MA stage)
+    input logic i_fp_mem_stall,
 
     // LR/SC reservation state for A-extension atomic operations
     input riscv_pkg::reservation_t i_reservation,
@@ -140,7 +144,7 @@ module ex_stage #(
       .XLEN(XLEN)
   ) alu_inst (
       .i_clk,
-      .i_rst(i_pipeline_ctrl.reset),
+      .i_rst(i_rst),
       .i_instruction(i_from_id_to_ex.instruction),
       .i_instruction_operation(i_from_id_to_ex.instruction_operation),
       .i_operand_a(i_fwd_to_ex.source_reg_1_value),
@@ -234,7 +238,7 @@ module ex_stage #(
   // Select store data: FP stores use FP rs2, integer stores use integer rs2
   logic [XLEN-1:0] store_data_source;
   assign store_data_source = i_from_id_to_ex.is_fp_store ?
-                             i_fp_fwd_to_ex.fp_source_reg_2_value :
+                             i_fp_fwd_to_ex.fp_source_reg_2_value[XLEN-1:0] :
                              i_fwd_to_ex.source_reg_2_value;
 
   store_unit #(
@@ -267,6 +271,9 @@ module ex_stage #(
       .i_is_load_instruction(i_from_id_to_ex.is_load_instruction),
       .i_is_load_halfword(i_from_id_to_ex.is_load_halfword),
       .i_is_load_byte(i_from_id_to_ex.is_load_byte),
+      .i_is_fp_load(i_from_id_to_ex.is_fp_load),
+      .i_is_fp_load_double(i_from_id_to_ex.is_fp_load_double),
+      .i_is_fp_store_double(i_from_id_to_ex.is_fp_store_double),
       .i_store_operation(i_from_id_to_ex.store_operation),
       .i_program_counter(i_from_id_to_ex.program_counter),
       .i_data_memory_address(o_from_ex_comb.data_memory_address),
@@ -284,7 +291,9 @@ module ex_stage #(
   // Sequential operations (FDIV, FSQRT) also stall the pipeline.
 
   // Select FP operands: use forwarded values, with capture bypass when needed
-  logic [XLEN-1:0] fpu_operand_a, fpu_operand_b, fpu_operand_c;
+  logic [riscv_pkg::FpWidth-1:0] fpu_operand_a;
+  logic [riscv_pkg::FpWidth-1:0] fpu_operand_b;
+  logic [riscv_pkg::FpWidth-1:0] fpu_operand_c;
   logic [XLEN-1:0] fpu_int_operand;
 
   // Apply capture bypass when the bypass signals indicate a RAW hazard.
@@ -334,22 +343,22 @@ module ex_stage #(
                            i_fwd_to_ex.source_reg_1_value;
 
   // FPU instance
-  logic                            fpu_valid;
-  logic                 [XLEN-1:0] fpu_result;
-  logic                            fpu_result_valid;
-  logic                            fpu_result_to_int;
-  logic                 [     4:0] fpu_dest_reg;
-  logic                            fpu_stall;
-  riscv_pkg::fp_flags_t            fpu_flags;
+  logic                                          fpu_valid;
+  logic                 [riscv_pkg::FpWidth-1:0] fpu_result;
+  logic                                          fpu_result_valid;
+  logic                                          fpu_result_to_int;
+  logic                 [                   4:0] fpu_dest_reg;
+  logic                                          fpu_stall;
+  riscv_pkg::fp_flags_t                          fpu_flags;
 
-  // FPU is valid when we have an FP compute instruction
-  assign fpu_valid = i_from_id_to_ex.is_fp_compute;
+  // FPU is valid when we have an FP compute instruction and no FP mem sequencing stall.
+  assign fpu_valid = i_from_id_to_ex.is_fp_compute & ~i_fp_mem_stall;
 
   fpu #(
       .XLEN(XLEN)
   ) fpu_inst (
       .i_clk,
-      .i_rst(i_pipeline_ctrl.reset),
+      .i_rst(i_rst),
       .i_valid(fpu_valid),
       .i_operation(i_from_id_to_ex.instruction_operation),
       .i_operand_a(fpu_operand_a),
@@ -409,6 +418,8 @@ module ex_stage #(
       o_from_ex_to_ma.is_fp_instruction <= 1'b0;
       o_from_ex_to_ma.is_fp_load <= 1'b0;
       o_from_ex_to_ma.is_fp_store <= 1'b0;
+      o_from_ex_to_ma.is_fp_load_double <= 1'b0;
+      o_from_ex_to_ma.is_fp_store_double <= 1'b0;
       o_from_ex_to_ma.is_fp_to_int <= 1'b0;
       o_from_ex_to_ma.fp_regfile_write_enable <= 1'b0;
       o_from_ex_to_ma.fp_dest_reg <= 5'b0;
@@ -438,6 +449,8 @@ module ex_stage #(
       o_from_ex_to_ma.is_fp_instruction <= i_from_id_to_ex.is_fp_instruction;
       o_from_ex_to_ma.is_fp_load <= i_from_id_to_ex.is_fp_load;
       o_from_ex_to_ma.is_fp_store <= i_from_id_to_ex.is_fp_store;
+      o_from_ex_to_ma.is_fp_load_double <= i_from_id_to_ex.is_fp_load_double;
+      o_from_ex_to_ma.is_fp_store_double <= i_from_id_to_ex.is_fp_store_double;
       o_from_ex_to_ma.is_fp_to_int <= fpu_result_valid && fpu_result_to_int;
       // FP regfile write: FPU compute result OR FP load
       o_from_ex_to_ma.fp_regfile_write_enable <= o_from_ex_comb.fp_regfile_write_enable |
@@ -454,6 +467,8 @@ module ex_stage #(
       o_from_ex_to_ma.rs2_value <= i_fwd_to_ex.source_reg_2_value;
       // F extension: FP result from FPU
       o_from_ex_to_ma.fp_result <= fpu_result;
+      // F extension: FP store data for FSW/FSD
+      o_from_ex_to_ma.fp_store_data <= i_fp_fwd_to_ex.fp_source_reg_2_value;
     end
   end
 

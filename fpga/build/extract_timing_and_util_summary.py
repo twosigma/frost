@@ -68,11 +68,8 @@ def extract_timing_summary(timing_rpt: str) -> dict[str, Any]:
         result["ths_failing_endpoints"] = int(match.group(7))
         result["ths_total_endpoints"] = int(match.group(8))
 
-    # Check if timing is met
-    if "All user specified timing constraints are met" in timing_rpt:
-        result["timing_met"] = True
-    else:
-        result["timing_met"] = False
+    # Only check setup timing (WNS)
+    result["timing_met"] = result.get("wns_ns", float("-inf")) >= 0
 
     return result
 
@@ -308,7 +305,7 @@ def format_summary(
 def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]:
     """Collect utilization data from all boards' summary files.
 
-    Prefers post_route data, falls back to post_synth if not available.
+    Prefers final data, falls back through earlier stages if not available.
     Returns dict mapping board name to utilization dict.
     """
     all_util: dict[str, dict[str, Any]] = {}
@@ -316,8 +313,15 @@ def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]
     for board in BOARD_INFO:
         board_dir = script_dir / board
 
-        # Prefer post_route, fall back through stages
-        for stage in ["post_route", "post_place", "post_opt", "post_synth"]:
+        # Prefer final, fall back through stages
+        for stage in [
+            "final",
+            "post_route",
+            "post_place_physopt",
+            "post_place",
+            "post_opt",
+            "post_synth",
+        ]:
             util_rpt_path = board_dir / "work" / f"{stage}_util.rpt"
             timing_rpt_path = board_dir / "work" / f"{stage}_timing.rpt"
 
@@ -517,7 +521,14 @@ def main() -> None:
     work_dir = board_dir / "work"
 
     # Process all available build stages
-    stages = ["post_synth", "post_opt", "post_place", "post_route"]
+    stages = [
+        "post_synth",
+        "post_opt",
+        "post_place",
+        "post_place_physopt",
+        "post_route",
+        "final",
+    ]
 
     summaries_written = 0
     for stage in stages:

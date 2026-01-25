@@ -44,6 +44,9 @@ module exception_detector #(
     input logic i_is_load_instruction,
     input logic i_is_load_halfword,
     input logic i_is_load_byte,
+    input logic i_is_fp_load,
+    input logic i_is_fp_load_double,
+    input logic i_is_fp_store_double,
     input riscv_pkg::store_op_e i_store_operation,
 
     // Address signals
@@ -73,19 +76,24 @@ module exception_detector #(
   // for misalignment detection. This breaks the critical path:
   //   rs1 → forwarding → CARRY8 → misalign → trap → stall → cache WE
   // by computing address[1:0] in parallel with the CARRY8 chain.
-  assign exception_load_misalign = i_is_load_instruction && (
-      (i_is_load_halfword && i_data_memory_address_low[0]) ||
-      (!i_is_load_halfword && !i_is_load_byte &&
-       i_data_memory_address_low != 2'b00)
-  );
+  assign exception_load_misalign =
+      (i_is_load_instruction && (
+          (i_is_load_halfword && i_data_memory_address_low[0]) ||
+          (!i_is_load_halfword && !i_is_load_byte &&
+           i_data_memory_address_low != 2'b00)
+      )) ||
+      (i_is_fp_load && !i_is_fp_load_double &&
+       (i_data_memory_address_low != 2'b00)) ||
+      (i_is_fp_load_double && (i_data_memory_address[2:0] != 3'b000));
 
   // Store misalignment: halfword store at odd address, or word store not 4-byte aligned
-  assign exception_store_misalign = (i_store_operation != riscv_pkg::STN) && (
+  assign exception_store_misalign = ((i_store_operation != riscv_pkg::STN) && (
       (i_store_operation == riscv_pkg::STH &&
        i_data_memory_address_low[0]) ||
       (i_store_operation == riscv_pkg::STW &&
        i_data_memory_address_low != 2'b00)
-  );
+  )) ||
+      (i_is_fp_store_double && (i_data_memory_address[2:0] != 3'b000));
 
   // TIMING OPTIMIZATION: Compute exception_valid as flat OR instead of priority mux.
   // Priority is only needed for cause/tval selection, not for the valid signal.

@@ -8,7 +8,7 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 |------------------------|------------------------------------|------------|--------------------------|
 | [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | Entry-level development  |
 | [Nexys A7](nexys_a7/)  | Xilinx Artix-7 (xc7a100t)          | 80 MHz     | Entry-level development  |
-| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 322.27 MHz | High-performance target  |
+| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | High-performance target  |
 
 ## Architecture Overview
 
@@ -24,7 +24,7 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 │  │                                                                     │  │
 │  │  Clock      ┌────────┐   ┌──────┐   ┌────────┐                      │  │
 │  │  Input ────>│ IBUF/  │──>│ MMCM │──>│  BUFG  │──> CPU Clock         │  │
-│  │             │ IBUFDS │   └──┬───┘   └────────┘    (80-322 MHz)      │  │
+│  │             │ IBUFDS │   └──┬───┘   └────────┘    (80-300 MHz)      │  │
 │  │             └────────┘      │                                       │  │
 │  │                             └──────>┌────────┐                      │  │
 │  │                                     │  BUFG  │──> /4 Clock          │  │
@@ -191,7 +191,7 @@ All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from
 |----------|-------------|----------|------------|------------------------|
 | Genesys2 | 200 MHz     | 800 MHz  | 133.33 MHz | 200 × 4 / 6            |
 | Nexys A7 | 100 MHz     | 800 MHz  | 80 MHz     | 100 × 8 / 10           |
-| X3       | 300 MHz     | 1289 MHz | 322.27 MHz | 300 × 34.375 / 8 / 4   |
+| X3       | 300 MHz     | 1200 MHz | 300 MHz    | 300 × 4 / 1 / 4        |
 
 **Note:** All boards generate a /4 clock for JTAG and UART clock domain crossing.
 
@@ -201,8 +201,8 @@ All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from
 |-------------------|----------------------|----------------------|-----------------------------|
 | **FPGA Family**   | Kintex-7             | Artix-7              | UltraScale+                 |
 | **FPGA Part**     | xc7k325tffg900-2     | xc7a100tcsg324-1     | xcux35-vsva1365-3-e         |
-| **CPU Clock**     | 133.33 MHz           | 80 MHz               | 322.27 MHz                  |
-| **Div4 Clock**    | 33.33 MHz            | 20 MHz               | 80.57 MHz                   |
+| **CPU Clock**     | 133.33 MHz           | 80 MHz               | 300 MHz                     |
+| **Div4 Clock**    | 33.33 MHz            | 20 MHz               | 75 MHz                      |
 | **Reset**         | Push-button + JTAG   | Push-button + JTAG   | JTAG load only              |
 | **Use Case**      | Development/learning | Development/learning | Production/high-performance |
 

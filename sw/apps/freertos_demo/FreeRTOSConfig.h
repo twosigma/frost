@@ -21,7 +21,7 @@
  *   - RV32IMAB with M-mode only
  *   - Single core (mhartid = 0)
  *   - CLINT-style timer (mtime/mtimecmp)
- *   - 322 MHz clock frequency
+ *   - 300 MHz clock frequency
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -39,7 +39,7 @@
 #define configUSE_TICK_HOOK 0
 
 /* CPU and tick rate */
-#define configCPU_CLOCK_HZ (322265625UL) /* FROST runs at ~322 MHz */
+#define configCPU_CLOCK_HZ (300000000UL) /* FROST runs at 300 MHz */
 #define configTICK_RATE_HZ (1000)        /* 1ms tick */
 
 /* Memory allocation */

@@ -27,7 +27,7 @@
  */
 module uart_rx #(
     parameter int unsigned DATA_WIDTH  = 8,
-    parameter int unsigned CLK_FREQ_HZ = 322265625,
+    parameter int unsigned CLK_FREQ_HZ = 300000000,
     parameter int unsigned BAUD_RATE   = 115200
 ) (
     input logic i_clk,

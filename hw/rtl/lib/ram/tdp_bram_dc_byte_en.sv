@@ -60,7 +60,7 @@ module tdp_bram_dc_byte_en #(
   // Memory array.
   // Not all simulators support dual clock memory without warning about driven by multiple clocks.
   /* verilator lint_off MULTIDRIVEN */
-  logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
+  (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
   // Initialize memory contents

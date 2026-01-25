@@ -4,34 +4,34 @@
 
 | Metric | Value |
 |--------|-------|
-| Clock Frequency | 322.298 MHz |
-| Clock Period | 3.103 ns |
-| WNS (Setup) | 0.006 ns |
-| TNS (Setup) | 0.000 ns (0 failing) |
+| Clock Frequency | 300.030 MHz |
+| Clock Period | 3.333 ns |
+| WNS (Setup) | -0.079 ns |
+| TNS (Setup) | -21.940 ns (464 failing) |
 | WHS (Hold) | -0.104 ns |
-| THS (Hold) | -587.077 ns (13178 failing) |
+| THS (Hold) | -1141.926 ns (24800 failing) |
 | Timing Met | No |
 
 ## Worst Setup Path
 
 | Metric | Value |
 |--------|-------|
-| Slack | 0.006 ns |
-| Data Path Delay | 2.908 ns |
-| Logic Delay | 1.285 ns |
-| Route Delay | 1.623 ns |
-| Logic Levels | 8 |
+| Slack | -0.079 ns |
+| Data Path Delay | 3.170 ns |
+| Logic Delay | 0.546 ns |
+| Route Delay | 2.624 ns |
+| Logic Levels | 12 |
 
 ### Path Endpoints
 
-- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/unified_instruction_data_memory/gen_port_a_byte_logic[1].memory_reg_0_0/CLKBWRCLK`
-- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg[10]/D`
+- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/forwarding_unit_inst/forward_source_reg_1_from_wb_reg/C`
+- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst/c_ext_state_inst/o_spanning_buffer_reg[0]/CE`
 
 ## Resource Utilization
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 15089 | 1029600 | 1.47% |
-| Registers | 8935 | 2059200 | 0.43% |
-| Block RAM | 21.5 | 2112 | 1.02% |
-| DSPs | 8 | 1320 | 0.61% |
+| LUTs | 28474 | 1029600 | 2.77% |
+| Registers | 18481 | 2059200 | 0.90% |
+| Block RAM | 68.5 | 2112 | 3.24% |
+| DSPs | 28 | 1320 | 2.12% |

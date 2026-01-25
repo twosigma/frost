@@ -30,6 +30,7 @@ from typing import Protocol
 from functools import wraps
 from config import (
     MASK32,
+    MASK64,
     SHIFT_AMOUNT_MASK,
     DIVISION_OVERFLOW_DIVIDEND,
     DIVISION_OVERFLOW_DIVISOR,
@@ -194,6 +195,22 @@ def lw(memory: MemoryReader, memory_address: int) -> int:
         32-bit word value from memory
     """
     return memory.read_word(memory_address & ~0x3)  # Align to 4-byte boundary
+
+
+def ld(memory: MemoryReader, memory_address: int) -> int:
+    """Load doubleword - read 64-bit value from memory (LD instruction).
+
+    Args:
+        memory: Memory model to read from
+        memory_address: Byte address (will be aligned to 8-byte boundary)
+
+    Returns:
+        64-bit value from memory (little-endian)
+    """
+    aligned_address = memory_address & ~0x7
+    low_word = memory.read_word(aligned_address)
+    high_word = memory.read_word(aligned_address + 4)
+    return ((high_word << 32) | low_word) & MASK64
 
 
 def lb(memory: MemoryReader, memory_address: int) -> int:

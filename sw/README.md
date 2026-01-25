@@ -29,8 +29,9 @@ sw/
     ├── strings_test/ # String library test suite
     ├── memory_test/  # Memory allocator test suite
     ├── c_ext_test/   # C extension (compressed) instruction test
-    ├── cf_ext_test/  # Compressed floating-point (C.FLW/C.FSW) test
-    ├── fpu_test/     # FPU compliance test suite (F extension)
+    ├── cf_ext_test/  # Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) test
+    ├── fpu_test/     # FPU compliance test suite (F/D extensions)
+    ├── fpu_assembly_test/ # FPU assembly hazard tests
     ├── call_stress/  # Function call stress test
     ├── spanning_test/# Instruction spanning boundary test
     ├── uart_echo/    # UART RX echo demo with interactive commands
@@ -176,7 +177,7 @@ delay_1_second();                         // Wait ~1 second
 **Note:** Timer functionality is implemented using the Zicntr CSR cycle counter,
 providing single-instruction access (faster than MMIO). Use `read_timer64()` for
 long-running benchmarks to avoid 32-bit overflow (which occurs after ~13 seconds
-at 322 MHz).
+at 300 MHz).
 
 ### FIFO (`lib/include/fifo.h`)
 
@@ -303,7 +304,7 @@ Minimal test program that prints a message every second. Useful for verifying UA
 
 ```
 [     0 s] Frost: Hello, world!
-Δticks = 322265625 (expect ≈ 322265625)
+Δticks = 300000000 (expect ≈ 300000000)
 [     1 s] Frost: Hello, world!
 ...
 ```
@@ -312,13 +313,16 @@ Minimal test program that prints a message every second. Useful for verifying UA
 
 Comprehensive RISC-V ISA compliance test suite. Tests all instructions from every extension supported by Frost with known inputs and expected outputs. Provides clear pass/fail reporting per-instruction and per-extension.
 
-**Tested extensions (RV32IMACB + additional):**
+**Tested extensions (RV32GCB (G = IMAFD) + additional):**
 - RV32I (base integer), M (multiply/divide), A (atomics), C (compressed)
+- F/D (single- and double-precision floating-point)
 - B (bit manipulation: B = Zba + Zbb + Zbs)
 - Zicsr, Zicntr (CSR access and counters)
 - Zifencei (instruction fence)
 - Zicond (conditional zero), Zbkb (crypto bit ops), Zihintpause (pause hint)
 - Machine mode (M-mode CSRs, trap handling, ECALL, EBREAK, MRET, WFI)
+
+Note: Output now includes F and D sections for single/double-precision tests; counts may vary as tests evolve.
 
 ```
 ============================================================
@@ -493,7 +497,7 @@ make RISCV_PREFIX=riscv-none-elf-
 
 ### Clock Frequency
 
-The default CPU clock is 322.265625 MHz. Override for different hardware:
+The default CPU clock is 300 MHz. Override for different hardware:
 
 ```bash
 make FPGA_CPU_CLK_FREQ=100000000  # 100 MHz
@@ -556,7 +560,7 @@ include ../../common/common.mk
 
 ### Supported RISC-V Extensions
 
-**ISA: RV32IMAFCB** plus additional extensions
+**ISA: RV32GCB** (G = IMAFD) plus additional extensions
 
 | Extension       | Description                                                                        |
 |-----------------|------------------------------------------------------------------------------------|
@@ -564,6 +568,7 @@ include ../../common/common.mk
 | **M**           | Integer multiply/divide                                                            |
 | **A**           | Atomic memory operations (LR.W, SC.W, AMO instructions)                            |
 | **F**           | Single-precision floating-point (32-bit IEEE 754)                                  |
+| **D**           | Double-precision floating-point (64-bit IEEE 754)                                  |
 | **C**           | Compressed instructions (16-bit encodings for reduced code size)                   |
 | **B**           | Bit manipulation (B = Zba + Zbb + Zbs)                                             |
 | **Zba**         | Address generation (sh1add, sh2add, sh3add) - part of B                            |
@@ -615,7 +620,7 @@ These markers are distinct from individual test output (like `PASS: test_name`) 
 
 ### Other Details
 
-- **ABI**: ILP32F (32-bit integers, longs, pointers; hardware single-precision float)
-- **Floating-point**: Hardware F extension (single-precision IEEE 754)
+- **ABI**: ILP32D (32-bit integers, longs, pointers; hardware double-precision float)
+- **Floating-point**: Hardware F/D extensions (single/double-precision IEEE 754)
 - **No OS/libc**: Fully bare-metal, minimal dependencies
 - **Optimization**: Default `-O3` (can be overridden per-app, e.g., isa_test uses `-O2`)

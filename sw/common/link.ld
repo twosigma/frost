@@ -8,12 +8,12 @@ ENTRY(_start)
 MEMORY
 {
     /* Read-only memory region for code and constants
-     * WARNING: If total memory size changes from 64K, must update hardware in cpu_and_mem.sv */
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 48K   /* Executable code + read-only data */
+     * WARNING: If total memory size changes from 128K, must update hardware in cpu_and_mem.sv */
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K   /* Executable code + read-only data */
 
     /* Read-write memory region for variables and stack
-     * Starts at 48K offset (0xC000) to follow ROM */
-    RAM (rwx) : ORIGIN = 0x0000C000, LENGTH = 16K   /* Initialized data + BSS + stack + heap */
+     * Starts at 96K offset (0x18000) to follow ROM */
+    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 32K   /* Initialized data + BSS + stack + heap */
 
     /* Memory-mapped I/O peripheral region - DO NOT USE for regular data/code!
      * CRITICAL: If these addresses change, must also update:

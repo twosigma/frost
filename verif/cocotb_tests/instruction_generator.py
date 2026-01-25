@@ -54,6 +54,7 @@ from config import (
     SHIFT_AMOUNT_MASK,
     HALFWORD_ALIGNMENT,
     WORD_ALIGNMENT,
+    DOUBLEWORD_ALIGNMENT,
 )
 from encoders.op_tables import (
     R_ALU,
@@ -91,6 +92,7 @@ from encoders.op_tables import (
     FP_CMP,
     FP_CVT_F2I,
     FP_CVT_I2F,
+    FP_CVT_F2F,
     FP_MV_F2I,
     FP_MV_I2F,
     FP_CLASS,
@@ -134,6 +136,7 @@ FP_OPS_TO_FP_REG = set(
     + list(FP_SGNJ.keys())
     + list(FP_MINMAX.keys())
     + list(FP_CVT_I2F.keys())
+    + list(FP_CVT_F2F.keys())
     + list(FP_MV_I2F.keys())
     + list(FP_LOADS.keys())
 )
@@ -152,6 +155,32 @@ FP_OPS_NO_WRITE = set(FP_STORES.keys())
 
 ALL_FP_OPS = FP_OPS_TO_FP_REG | FP_OPS_TO_INT_REG | FP_OPS_NO_WRITE
 """All floating-point operations."""
+
+
+def _is_double_precision_fp_op(operation: str) -> bool:
+    """Return True if operation uses double-precision encoding/data path."""
+    if operation in ("fld", "fsd"):
+        return True
+    if ".d" in operation:
+        return True
+    if ".s" in operation:
+        return False
+    # Default to single-precision for legacy F ops without .s/.d suffix
+    return False
+
+
+def _is_single_precision_fp_op(operation: str) -> bool:
+    """Return True if operation uses single-precision encoding/data path."""
+    if operation in ("flw", "fsw"):
+        return True
+    if operation in ("fld", "fsd"):
+        return False
+    if ".d" in operation:
+        return False
+    if ".s" in operation:
+        return True
+    # Default to single-precision for legacy F ops without .s/.d suffix
+    return True
 
 
 class InstructionGenerator:
@@ -191,7 +220,7 @@ class InstructionGenerator:
 
     @staticmethod
     def get_fp_operations() -> list[str]:
-        """Get list of all supported F extension floating-point operations.
+        """Get list of all supported floating-point operations (F + D).
 
         Returns:
             List of FP operation mnemonics (e.g., ['fadd.s', 'fmul.s', ...])
@@ -201,6 +230,16 @@ class InstructionGenerator:
             non-deterministic iteration order without PYTHONHASHSEED).
         """
         return sorted(ALL_FP_OPS)
+
+    @staticmethod
+    def get_fp_operations_single() -> list[str]:
+        """Get list of supported single-precision floating-point operations."""
+        return sorted([op for op in ALL_FP_OPS if _is_single_precision_fp_op(op)])
+
+    @staticmethod
+    def get_fp_operations_double() -> list[str]:
+        """Get list of supported double-precision floating-point operations."""
+        return sorted([op for op in ALL_FP_OPS if _is_double_precision_fp_op(op)])
 
     @staticmethod
     def get_all_operations_with_fp() -> list[str]:
@@ -362,6 +401,7 @@ class InstructionGenerator:
         int_register_file_state: list[int],
         fp_register_file_state: list[int],
         constrain_to_memory_size: int | None = None,
+        fp_operations: list[str] | None = None,
     ) -> InstructionParams:
         """Generate random F extension floating-point instruction parameters.
 
@@ -380,12 +420,17 @@ class InstructionGenerator:
             int_register_file_state: Current integer register file values (32 entries)
             fp_register_file_state: Current FP register file values (32 entries)
             constrain_to_memory_size: If provided, constrains memory addresses
+            fp_operations: Optional list of FP operations to choose from
 
         Returns:
             InstructionParams with FP instruction details
         """
-        fp_operations = InstructionGenerator.get_fp_operations()
-        operation = random.choice(fp_operations)
+        available_fp_ops = (
+            fp_operations
+            if fp_operations is not None
+            else InstructionGenerator.get_fp_operations()
+        )
+        operation = random.choice(available_fp_ops)
 
         # Default values - will be overwritten based on instruction type
         destination_register = random.randint(0, 31)
@@ -398,9 +443,10 @@ class InstructionGenerator:
         if operation in FP_LOADS:
             # FLW: rd=FP, rs1=INT (base address), imm=offset
             # Need word-aligned address
+            alignment = DOUBLEWORD_ALIGNMENT if operation == "fld" else WORD_ALIGNMENT
             immediate_value = generate_aligned_immediate(
                 int_register_file_state[source_register_1],
-                WORD_ALIGNMENT,
+                alignment,
                 IMM_12BIT_MIN,
                 IMM_12BIT_MAX,
                 constrain_to_memory_size,
@@ -408,9 +454,10 @@ class InstructionGenerator:
         elif operation in FP_STORES:
             # FSW: rs2=FP (data), rs1=INT (base address), imm=offset
             # Need word-aligned address
+            alignment = DOUBLEWORD_ALIGNMENT if operation == "fsd" else WORD_ALIGNMENT
             immediate_value = generate_aligned_immediate(
                 int_register_file_state[source_register_1],
-                WORD_ALIGNMENT,
+                alignment,
                 IMM_12BIT_MIN,
                 IMM_12BIT_MAX,
                 constrain_to_memory_size,
@@ -435,6 +482,7 @@ class InstructionGenerator:
         force_one_address: bool = False,
         constrain_to_memory_size: int | None = None,
         fp_probability: float = 0.3,
+        fp_operations: list[str] | None = None,
     ) -> InstructionParams:
         """Generate random instruction, potentially FP, with given probability.
 
@@ -444,6 +492,7 @@ class InstructionGenerator:
             force_one_address: If True, force simple address calculation
             constrain_to_memory_size: Constrain memory addresses to this range
             fp_probability: Probability (0.0-1.0) of generating FP instruction
+            fp_operations: Optional list of FP operations to choose from
 
         Returns:
             InstructionParams for either integer or FP instruction
@@ -453,6 +502,7 @@ class InstructionGenerator:
                 int_register_file_state,
                 fp_register_file_state,
                 constrain_to_memory_size,
+                fp_operations,
             )
         else:
             return InstructionGenerator.generate_random_instruction(
@@ -626,6 +676,10 @@ class InstructionGenerator:
         elif operation in FP_CVT_I2F:
             # Integer to FP conversion (fcvt.s.w, fcvt.s.wu)
             encoder_function, _ = FP_CVT_I2F[operation]
+            return encoder_function(destination_register, source_register_1)
+        elif operation in FP_CVT_F2F:
+            # FP to FP conversion (fcvt.s.d, fcvt.d.s)
+            encoder_function, _ = FP_CVT_F2F[operation]
             return encoder_function(destination_register, source_register_1)
         elif operation in FP_MV_F2I:
             # FP bits to integer move (fmv.x.w)

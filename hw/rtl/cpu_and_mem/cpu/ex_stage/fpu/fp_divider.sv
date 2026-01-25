@@ -19,14 +19,16 @@
 
   Implements FDIV.S operation using a sequential radix-2 restoring division algorithm.
 
-  Latency: 34 cycles (not pipelined, stalls pipeline during operation)
+  Latency: 36 cycles (not pipelined, stalls pipeline during operation)
     - 1 cycle: Input capture (IDLE)
     - 1 cycle: Operand unpacking and LZC (UNPACK)
     - 1 cycle: Mantissa normalization and special case detection (INIT)
     - 1 cycle: Division initialization (SETUP)
     - 26 cycles: Mantissa division (1 integer bit + 26 fractional/guard bits)
-    - 1 cycle: Normalization
-    - 1 cycle: Subnormal handling, compute round-up decision
+    - 1 cycle: Normalization prep (capture LZC)
+    - 1 cycle: Normalization apply
+    - 1 cycle: Subnormal handling and shift prep
+    - 1 cycle: Compute round-up decision
     - 1 cycle: Apply rounding increment, format result
     - 1 cycle: Output registered result
 
@@ -41,17 +43,19 @@
     - x/0 = infinity (for finite non-zero x)
     - 0/x = 0 (for finite non-zero x)
 */
-module fp_divider (
-    input  logic                        i_clk,
-    input  logic                        i_rst,
-    input  logic                        i_valid,
-    input  logic                 [31:0] i_operand_a,      // Dividend
-    input  logic                 [31:0] i_operand_b,      // Divisor
-    input  logic                 [ 2:0] i_rounding_mode,
-    output logic                 [31:0] o_result,
-    output logic                        o_valid,
-    output logic                        o_stall,          // Stall pipeline during division
-    output riscv_pkg::fp_flags_t        o_flags
+module fp_divider #(
+    parameter int unsigned FP_WIDTH = 32
+) (
+    input  logic                                i_clk,
+    input  logic                                i_rst,
+    input  logic                                i_valid,
+    input  logic                 [FP_WIDTH-1:0] i_operand_a,      // Dividend
+    input  logic                 [FP_WIDTH-1:0] i_operand_b,      // Divisor
+    input  logic                 [         2:0] i_rounding_mode,
+    output logic                 [FP_WIDTH-1:0] o_result,
+    output logic                                o_valid,
+    output logic                                o_stall,          // Stall pipeline during division
+    output riscv_pkg::fp_flags_t                o_flags
 );
 
   // State machine - expanded for pipelined SETUP
@@ -61,7 +65,9 @@ module fp_divider (
     INIT,
     SETUP,
     DIVIDE,
+    NORMALIZE_PREP,
     NORMALIZE,
+    ROUND_SHIFT,
     ROUND_PREP,
     ROUND_APPLY,
     OUTPUT,
@@ -69,19 +75,42 @@ module fp_divider (
   } state_t;
 
   state_t state, next_state;
-  logic [ 4:0] cycle_count;
+  localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
+  localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
+  localparam int unsigned MantBits = FracBits + 1;
+  localparam int unsigned DivBits = MantBits + 3;  // mantissa + guard bits
+  localparam int unsigned ExpExtBits = ExpBits + 2;
+  localparam int signed ExpBias = (1 << (ExpBits - 1)) - 1;
+  localparam int unsigned LzcMantBits = $clog2(FracBits + 1);
+  localparam int unsigned ShiftBits = $clog2(MantBits + 3 + 1);
+  localparam int unsigned QuotLzcBits = $clog2(DivBits + 1);
+  localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
+  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
+  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
+  localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
+  localparam int unsigned DivCycles = MantBits + 2;
+  localparam int unsigned CycleCountBits = $clog2(DivCycles + 1);
+  localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
+  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
+  localparam logic [ShiftBits-1:0] MantBitsPlus3Shift = ShiftBits'(MantBits + 3);
+  localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
+    {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
+  };
+  localparam logic [CycleCountBits-1:0] DivCyclesMinus1 = CycleCountBits'(DivCycles - 1);
+
+  logic [CycleCountBits-1:0] cycle_count;
 
   // Registered inputs
-  logic [31:0] operand_a_reg;
-  logic [31:0] operand_b_reg;
+  logic [FP_WIDTH-1:0] operand_a_reg;
+  logic [FP_WIDTH-1:0] operand_b_reg;
 
   // =========================================================================
   // UNPACK Stage: Classification and LZC (combinational from operand_*_reg)
   // =========================================================================
 
   logic sign_a, sign_b;
-  logic [7:0] exp_a, exp_b;
-  logic [4:0] mant_lzc_a, mant_lzc_b;
+  logic [ExpBits-1:0] exp_a, exp_b;
+  logic [LzcMantBits-1:0] mant_lzc_a, mant_lzc_b;
   logic mant_lzc_found_a, mant_lzc_found_b;
   logic is_subnormal_a, is_subnormal_b;
   logic is_zero_a, is_zero_b;
@@ -90,20 +119,20 @@ module fp_divider (
   logic is_snan_a, is_snan_b;
 
   always_comb begin
-    sign_a = operand_a_reg[31];
-    sign_b = operand_b_reg[31];
-    exp_a = operand_a_reg[30:23];
-    exp_b = operand_b_reg[30:23];
+    sign_a = operand_a_reg[FP_WIDTH-1];
+    sign_b = operand_b_reg[FP_WIDTH-1];
+    exp_a = operand_a_reg[FP_WIDTH-2-:ExpBits];
+    exp_b = operand_b_reg[FP_WIDTH-2-:ExpBits];
 
     // Leading zero count for subnormal normalization
-    mant_lzc_a = 5'd0;
-    mant_lzc_b = 5'd0;
+    mant_lzc_a = '0;
+    mant_lzc_b = '0;
     mant_lzc_found_a = 1'b0;
     mant_lzc_found_b = 1'b0;
 
     // LZC for operand A
-    if (exp_a == 8'b0 && operand_a_reg[22:0] != 23'b0) begin
-      for (int i = 22; i >= 0; i--) begin
+    if (exp_a == '0 && operand_a_reg[FracBits-1:0] != '0) begin
+      for (int i = FracBits - 1; i >= 0; i--) begin
         if (!mant_lzc_found_a) begin
           if (operand_a_reg[i]) mant_lzc_found_a = 1'b1;
           else mant_lzc_a = mant_lzc_a + 1'b1;
@@ -112,8 +141,8 @@ module fp_divider (
     end
 
     // LZC for operand B
-    if (exp_b == 8'b0 && operand_b_reg[22:0] != 23'b0) begin
-      for (int i = 22; i >= 0; i--) begin
+    if (exp_b == '0 && operand_b_reg[FracBits-1:0] != '0) begin
+      for (int i = FracBits - 1; i >= 0; i--) begin
         if (!mant_lzc_found_b) begin
           if (operand_b_reg[i]) mant_lzc_found_b = 1'b1;
           else mant_lzc_b = mant_lzc_b + 1'b1;
@@ -122,16 +151,16 @@ module fp_divider (
     end
 
     // Classification
-    is_subnormal_a = (exp_a == 8'b0) && (operand_a_reg[22:0] != 23'b0);
-    is_subnormal_b = (exp_b == 8'b0) && (operand_b_reg[22:0] != 23'b0);
-    is_zero_a = (exp_a == 8'b0) && (operand_a_reg[22:0] == 23'b0);
-    is_zero_b = (exp_b == 8'b0) && (operand_b_reg[22:0] == 23'b0);
-    is_inf_a = (exp_a == 8'hFF) && (operand_a_reg[22:0] == 23'b0);
-    is_inf_b = (exp_b == 8'hFF) && (operand_b_reg[22:0] == 23'b0);
-    is_nan_a = (exp_a == 8'hFF) && (operand_a_reg[22:0] != 23'b0);
-    is_nan_b = (exp_b == 8'hFF) && (operand_b_reg[22:0] != 23'b0);
-    is_snan_a = is_nan_a && ~operand_a_reg[22];
-    is_snan_b = is_nan_b && ~operand_b_reg[22];
+    is_subnormal_a = (exp_a == '0) && (operand_a_reg[FracBits-1:0] != '0);
+    is_subnormal_b = (exp_b == '0) && (operand_b_reg[FracBits-1:0] != '0);
+    is_zero_a = (exp_a == '0) && (operand_a_reg[FracBits-1:0] == '0);
+    is_zero_b = (exp_b == '0) && (operand_b_reg[FracBits-1:0] == '0);
+    is_inf_a = (exp_a == ExpMax) && (operand_a_reg[FracBits-1:0] == '0);
+    is_inf_b = (exp_b == ExpMax) && (operand_b_reg[FracBits-1:0] == '0);
+    is_nan_a = (exp_a == ExpMax) && (operand_a_reg[FracBits-1:0] != '0);
+    is_nan_b = (exp_b == ExpMax) && (operand_b_reg[FracBits-1:0] != '0);
+    is_snan_a = is_nan_a && ~operand_a_reg[FracBits-1];
+    is_snan_b = is_nan_b && ~operand_b_reg[FracBits-1];
   end
 
   // =========================================================================
@@ -139,103 +168,105 @@ module fp_divider (
   // =========================================================================
 
   logic sign_a_r, sign_b_r;
-  logic [7:0] exp_a_r, exp_b_r;
-  logic [4:0] mant_lzc_a_r, mant_lzc_b_r;
+  logic [ExpBits-1:0] exp_a_r, exp_b_r;
+  logic [LzcMantBits-1:0] mant_lzc_a_r, mant_lzc_b_r;
   logic is_subnormal_a_r, is_subnormal_b_r;
   logic is_zero_a_r, is_zero_b_r;
   logic is_inf_a_r, is_inf_b_r;
   logic is_nan_a_r, is_nan_b_r;
   logic is_snan_a_r, is_snan_b_r;
-  logic [22:0] raw_mant_a_r, raw_mant_b_r;
+  logic [FracBits-1:0] raw_mant_a_r, raw_mant_b_r;
 
   // =========================================================================
   // INIT Stage: Mantissa Normalization and Special Case Detection
   // Uses registered values from UNPACK stage
   // =========================================================================
 
-  logic [5:0] sub_shift_a, sub_shift_b;
-  logic signed [9:0] exp_a_adj, exp_b_adj;
-  logic [23:0] mant_a, mant_b;
+  logic [LzcMantBits:0] sub_shift_a, sub_shift_b;
+  logic signed [ExpExtBits-1:0] exp_a_adj, exp_b_adj;
+  logic [MantBits-1:0] mant_a, mant_b;
   logic is_special_init;
-  logic [31:0] special_result_init;
+  logic [FP_WIDTH-1:0] special_result_init;
   logic special_invalid_init;
   logic special_div_zero_init;
 
   always_comb begin
-    sub_shift_a = 6'd0;
-    sub_shift_b = 6'd0;
-    exp_a_adj = 10'sd0;
-    exp_b_adj = 10'sd0;
-    mant_a = 24'b0;
-    mant_b = 24'b0;
+    sub_shift_a = '0;
+    sub_shift_b = '0;
+    exp_a_adj = '0;
+    exp_b_adj = '0;
+    mant_a = '0;
+    mant_b = '0;
 
     // Operand A normalization using registered LZC
     if (is_subnormal_a_r) begin
-      sub_shift_a = {1'b0, mant_lzc_a_r} + 6'd1;
-      exp_a_adj = 10'sd1 - $signed({4'b0, sub_shift_a});
+      sub_shift_a = {1'b0, mant_lzc_a_r} + {{LzcMantBits{1'b0}}, 1'b1};
+      exp_a_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift_a});
       mant_a = {1'b0, raw_mant_a_r} << sub_shift_a;
-    end else if (exp_a_r == 8'b0) begin
+    end else if (exp_a_r == '0) begin
       // Zero
-      exp_a_adj = 10'sd0;
-      mant_a = 24'b0;
+      exp_a_adj = '0;
+      mant_a = '0;
     end else begin
       // Normal
-      exp_a_adj = $signed({2'b0, exp_a_r});
+      exp_a_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_a_r});
       mant_a = {1'b1, raw_mant_a_r};
     end
 
     // Operand B normalization using registered LZC
     if (is_subnormal_b_r) begin
-      sub_shift_b = {1'b0, mant_lzc_b_r} + 6'd1;
-      exp_b_adj = 10'sd1 - $signed({4'b0, sub_shift_b});
+      sub_shift_b = {1'b0, mant_lzc_b_r} + {{LzcMantBits{1'b0}}, 1'b1};
+      exp_b_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift_b});
       mant_b = {1'b0, raw_mant_b_r} << sub_shift_b;
-    end else if (exp_b_r == 8'b0) begin
+    end else if (exp_b_r == '0) begin
       // Zero
-      exp_b_adj = 10'sd0;
-      mant_b = 24'b0;
+      exp_b_adj = '0;
+      mant_b = '0;
     end else begin
       // Normal
-      exp_b_adj = $signed({2'b0, exp_b_r});
+      exp_b_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_b_r});
       mant_b = {1'b1, raw_mant_b_r};
     end
 
     // Special case detection using registered classification flags
     is_special_init = 1'b0;
-    special_result_init = 32'b0;
+    special_result_init = '0;
     special_invalid_init = 1'b0;
     special_div_zero_init = 1'b0;
 
     if (is_nan_a_r || is_nan_b_r) begin
       is_special_init = 1'b1;
-      special_result_init = riscv_pkg::FpCanonicalNan;
+      special_result_init = CanonicalNan;
       special_invalid_init = is_snan_a_r | is_snan_b_r;
     end else if (is_inf_a_r && is_inf_b_r) begin
       // inf / inf = NaN
       is_special_init = 1'b1;
-      special_result_init = riscv_pkg::FpCanonicalNan;
+      special_result_init = CanonicalNan;
       special_invalid_init = 1'b1;
     end else if (is_zero_a_r && is_zero_b_r) begin
       // 0 / 0 = NaN
       is_special_init = 1'b1;
-      special_result_init = riscv_pkg::FpCanonicalNan;
+      special_result_init = CanonicalNan;
       special_invalid_init = 1'b1;
     end else if (is_inf_a_r) begin
       // inf / x = inf
       is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, 8'hFF, 23'b0};
+      special_result_init = {sign_a_r ^ sign_b_r, ExpMax, {FracBits{1'b0}}};
     end else if (is_inf_b_r) begin
       // x / inf = 0
       is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, 31'b0};
+      special_result_init = {sign_a_r ^ sign_b_r, {(FP_WIDTH - 1) {1'b0}}};
     end else if (is_zero_b_r) begin
       // x / 0 = inf (divide by zero)
       is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, 8'hFF, 23'b0};
+      special_result_init = {sign_a_r ^ sign_b_r, ExpMax, {FracBits{1'b0}}};
       special_div_zero_init = ~is_zero_a_r;
     end else if (is_zero_a_r) begin
       // 0 / x = 0
       is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, 31'b0};
+      special_result_init = {sign_a_r ^ sign_b_r, {(FP_WIDTH - 1) {1'b0}}};
     end
   end
 
@@ -244,54 +275,55 @@ module fp_divider (
   // =========================================================================
 
   logic result_sign_r;
-  logic signed [9:0] exp_a_adj_r, exp_b_adj_r;
-  logic [23:0] mant_a_r, mant_b_r;
-  logic               is_special_r;
-  logic        [31:0] special_result_r;
-  logic               special_invalid_r;
-  logic               special_div_zero_r;
+  logic signed [ExpExtBits-1:0] exp_a_adj_r, exp_b_adj_r;
+  logic [MantBits-1:0] mant_a_r, mant_b_r;
+  logic                         is_special_r;
+  logic        [  FP_WIDTH-1:0] special_result_r;
+  logic                         special_invalid_r;
+  logic                         special_div_zero_r;
 
   // =========================================================================
   // Division state
   // =========================================================================
 
-  logic signed [ 9:0] result_exp;
-  logic        [26:0] quotient;  // 24 bits + 3 guard bits
-  logic        [26:0] remainder;
-  logic        [26:0] divisor;
+  // TIMING: Limit fanout to force register replication and improve timing
+  (* max_fanout = 30 *)logic signed [ExpExtBits-1:0] result_exp;
+  logic        [   DivBits-1:0] quotient;  // mantissa + guard bits
+  logic        [   DivBits-1:0] remainder;
+  logic        [   DivBits-1:0] divisor;
 
   // Rounding mode storage
-  logic        [ 2:0] rm;
+  logic        [           2:0] rm;
 
   // Rounding inputs
-  logic        [24:0] div_pre_round_mant;
-  logic               div_guard_bit;
-  logic               div_round_bit;
-  logic               div_sticky_bit;
-  logic               div_is_zero;
+  logic        [    MantBits:0] div_pre_round_mant;
+  logic                         div_guard_bit;
+  logic                         div_round_bit;
+  logic                         div_sticky_bit;
+  logic                         div_is_zero;
 
-  assign div_pre_round_mant = quotient[26:2];
+  assign div_pre_round_mant = quotient[DivBits-1-:(MantBits+1)];
   assign div_guard_bit = quotient[1];
   assign div_round_bit = quotient[0];
   assign div_sticky_bit = |remainder;
-  assign div_is_zero = (quotient == 27'b0) && (remainder == 27'b0);
+  assign div_is_zero = (quotient == '0) && (remainder == '0);
 
   // =========================================================================
-  // ROUND_PREP: Subnormal handling and round-up decision (split rounding)
+  // ROUND_SHIFT prep: Subnormal handling and rounding bit extraction
   // =========================================================================
 
   // Extract mantissa and rounding bits
-  logic [23:0] mantissa_retained_prep;
-  assign mantissa_retained_prep = div_pre_round_mant[24:1];
+  logic [MantBits-1:0] mantissa_retained_prep;
+  assign mantissa_retained_prep = div_pre_round_mant[MantBits:1];
 
   // Subnormal handling: compute shift and apply
-  logic [23:0] mantissa_work_prep;
+  logic [MantBits-1:0] mantissa_work_prep;
   logic guard_work_prep, round_work_prep, sticky_work_prep;
-  logic signed [9:0] exp_work_prep;
-  logic [26:0] mantissa_ext_prep, shifted_ext_prep;
-  logic               shifted_sticky_prep;
-  logic        [ 5:0] shift_amt_prep;
-  logic signed [10:0] shift_amt_signed_prep;
+  logic signed [ExpExtBits-1:0] exp_work_prep;
+  logic [MantBits+2:0] mantissa_ext_prep, shifted_ext_prep;
+  logic                        shifted_sticky_prep;
+  logic        [ShiftBits-1:0] shift_amt_prep;
+  logic signed [ ExpExtBits:0] shift_amt_signed_prep;
 
   always_comb begin
     mantissa_work_prep = mantissa_retained_prep;
@@ -304,125 +336,138 @@ module fp_divider (
     };
     shifted_ext_prep = mantissa_ext_prep;
     shifted_sticky_prep = 1'b0;
-    shift_amt_prep = 6'd0;
-    shift_amt_signed_prep = 11'sb0;
+    shift_amt_prep = '0;
+    shift_amt_signed_prep = '0;
 
     if (result_exp <= 0) begin
-      shift_amt_signed_prep = 11'sd1 - $signed({result_exp[9], result_exp});
-      if (shift_amt_signed_prep >= 27) shift_amt_prep = 6'd27;
-      else shift_amt_prep = shift_amt_signed_prep[5:0];
-      if (shift_amt_prep >= 6'd27) begin
-        shifted_ext_prep = 27'b0;
+      shift_amt_signed_prep = $signed({1'b0, {ExpExtBits{1'b0}}}) + 1 -
+          $signed({result_exp[ExpExtBits-1], result_exp});
+      if (shift_amt_signed_prep >= MantBitsPlus3Signed) shift_amt_prep = MantBitsPlus3Shift;
+      else shift_amt_prep = shift_amt_signed_prep[ShiftBits-1:0];
+      if (shift_amt_prep >= MantBitsPlus3Shift) begin
+        shifted_ext_prep = '0;
         shifted_sticky_prep = |mantissa_ext_prep;
       end else if (shift_amt_prep != 0) begin
         shifted_ext_prep = mantissa_ext_prep >> shift_amt_prep;
         shifted_sticky_prep = 1'b0;
-        for (int i = 0; i < 27; i++) begin
+        for (int i = 0; i < (MantBits + 3); i++) begin
           if (i < shift_amt_prep) shifted_sticky_prep = shifted_sticky_prep | mantissa_ext_prep[i];
         end
       end
-      mantissa_work_prep = shifted_ext_prep[26:3];
+      mantissa_work_prep = shifted_ext_prep[(MantBits+2):3];
       guard_work_prep = shifted_ext_prep[2];
       round_work_prep = shifted_ext_prep[1];
       sticky_work_prep = shifted_ext_prep[0] | shifted_sticky_prep;
-      exp_work_prep = 10'sd0;
+      exp_work_prep = '0;
     end
   end
 
-  // Compute round-up decision
-  logic round_up_prep;
-  logic lsb_prep;
+  // =========================================================================
+  // ROUND_SHIFT -> ROUND_PREP Pipeline Registers
+  // =========================================================================
 
-  assign lsb_prep = mantissa_work_prep[0];
+  logic signed [ExpExtBits-1:0] exp_work_shift;
+  logic        [  MantBits-1:0] mantissa_work_shift;
+  logic                         guard_work_shift;
+  logic                         round_work_shift;
+  logic                         sticky_work_shift;
+  logic                         div_is_zero_shift;
+  logic        [           2:0] rm_shift;
+
+  // Compute round-up decision
+  logic                         round_up_prep;
+  logic                         lsb_prep;
+
+  assign lsb_prep = mantissa_work_shift[0];
 
   always_comb begin
-    unique case (rm)
+    unique case (rm_shift)
       riscv_pkg::FRM_RNE:
-      round_up_prep = guard_work_prep & (round_work_prep | sticky_work_prep | lsb_prep);
+      round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
       riscv_pkg::FRM_RTZ: round_up_prep = 1'b0;
       riscv_pkg::FRM_RDN:
-      round_up_prep = result_sign_r & (guard_work_prep | round_work_prep | sticky_work_prep);
+      round_up_prep = result_sign_r & (guard_work_shift | round_work_shift | sticky_work_shift);
       riscv_pkg::FRM_RUP:
-      round_up_prep = ~result_sign_r & (guard_work_prep | round_work_prep | sticky_work_prep);
-      riscv_pkg::FRM_RMM: round_up_prep = guard_work_prep;
-      default: round_up_prep = guard_work_prep & (round_work_prep | sticky_work_prep | lsb_prep);
+      round_up_prep = ~result_sign_r & (guard_work_shift | round_work_shift | sticky_work_shift);
+      riscv_pkg::FRM_RMM: round_up_prep = guard_work_shift;
+      default: round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
     endcase
   end
 
   // Compute is_inexact for flags
   logic is_inexact_prep;
-  assign is_inexact_prep = guard_work_prep | round_work_prep | sticky_work_prep;
+  assign is_inexact_prep = guard_work_shift | round_work_shift | sticky_work_shift;
 
   // =========================================================================
   // ROUND_PREP -> ROUND_APPLY Pipeline Registers
   // =========================================================================
 
-  logic               result_sign_apply;
-  logic signed [ 9:0] exp_work_apply;
-  logic        [23:0] mantissa_work_apply;
-  logic               round_up_apply;
-  logic               is_inexact_apply;
-  logic               div_is_zero_apply;
-  logic        [ 2:0] rm_apply;
+  logic                         result_sign_apply;
+  logic signed [ExpExtBits-1:0] exp_work_apply;
+  logic        [  MantBits-1:0] mantissa_work_apply;
+  logic                         round_up_apply;
+  logic                         is_inexact_apply;
+  logic                         div_is_zero_apply;
+  logic        [           2:0] rm_apply;
 
   // =========================================================================
   // ROUND_APPLY: Apply rounding and format result
   // =========================================================================
 
-  logic        [24:0] rounded_mantissa_apply;
-  logic               mantissa_overflow_apply;
-  logic signed [ 9:0] adjusted_exponent_apply;
-  logic        [22:0] final_mantissa_apply;
+  logic        [    MantBits:0] rounded_mantissa_apply;
+  logic                         mantissa_overflow_apply;
+  logic signed [ExpExtBits-1:0] adjusted_exponent_apply;
+  logic        [  FracBits-1:0] final_mantissa_apply;
   logic is_overflow_apply, is_underflow_apply;
 
-  assign rounded_mantissa_apply  = {1'b0, mantissa_work_apply} + {24'b0, round_up_apply};
-  assign mantissa_overflow_apply = rounded_mantissa_apply[24];
+  assign rounded_mantissa_apply  = {1'b0, mantissa_work_apply} + {{MantBits{1'b0}}, round_up_apply};
+  assign mantissa_overflow_apply = rounded_mantissa_apply[MantBits];
 
   always_comb begin
     if (mantissa_overflow_apply) begin
-      if (exp_work_apply == 10'sd0) begin
-        adjusted_exponent_apply = 10'sd1;
+      if (exp_work_apply == '0) begin
+        adjusted_exponent_apply = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
       end else begin
         adjusted_exponent_apply = exp_work_apply + 1;
       end
-      final_mantissa_apply = rounded_mantissa_apply[23:1];
+      final_mantissa_apply = rounded_mantissa_apply[MantBits-1:1];
     end else begin
       adjusted_exponent_apply = exp_work_apply;
-      final_mantissa_apply = rounded_mantissa_apply[22:0];
+      final_mantissa_apply = rounded_mantissa_apply[FracBits-1:0];
     end
   end
 
-  assign is_overflow_apply  = (adjusted_exponent_apply >= 10'sd255);
-  assign is_underflow_apply = (adjusted_exponent_apply <= 10'sd0);
+  assign is_overflow_apply  = (adjusted_exponent_apply >= ExpMaxSigned);
+  assign is_underflow_apply = (adjusted_exponent_apply <= '0);
 
   // Compute final result
-  logic [31:0] final_result_apply_comb;
+  logic [FP_WIDTH-1:0] final_result_apply_comb;
   riscv_pkg::fp_flags_t final_flags_apply_comb;
 
   always_comb begin
-    final_result_apply_comb = 32'b0;
+    final_result_apply_comb = '0;
     final_flags_apply_comb  = '0;
 
     if (div_is_zero_apply) begin
-      final_result_apply_comb = {result_sign_apply, 31'b0};
+      final_result_apply_comb = {result_sign_apply, {(FP_WIDTH - 1) {1'b0}}};
     end else if (is_overflow_apply) begin
       final_flags_apply_comb.of = 1'b1;
       final_flags_apply_comb.nx = 1'b1;
       if ((rm_apply == riscv_pkg::FRM_RTZ) ||
           (rm_apply == riscv_pkg::FRM_RDN && !result_sign_apply) ||
           (rm_apply == riscv_pkg::FRM_RUP && result_sign_apply)) begin
-        final_result_apply_comb = {result_sign_apply, 8'hFE, 23'h7FFFFF};
+        final_result_apply_comb = {result_sign_apply, MaxNormalExp, MaxMant};
       end else begin
-        final_result_apply_comb = {result_sign_apply, 8'hFF, 23'b0};
+        final_result_apply_comb = {result_sign_apply, ExpMax, {FracBits{1'b0}}};
       end
     end else if (is_underflow_apply) begin
       final_flags_apply_comb.uf = is_inexact_apply;
       final_flags_apply_comb.nx = is_inexact_apply;
-      final_result_apply_comb   = {result_sign_apply, 8'b0, final_mantissa_apply};
+      final_result_apply_comb   = {result_sign_apply, {ExpBits{1'b0}}, final_mantissa_apply};
     end else begin
       final_flags_apply_comb.nx = is_inexact_apply;
       final_result_apply_comb = {
-        result_sign_apply, adjusted_exponent_apply[7:0], final_mantissa_apply
+        result_sign_apply, adjusted_exponent_apply[ExpBits-1:0], final_mantissa_apply
       };
     end
   end
@@ -431,7 +476,7 @@ module fp_divider (
   // ROUND_APPLY -> OUTPUT Pipeline Registers
   // =========================================================================
 
-  logic [31:0] result_output;
+  logic [FP_WIDTH-1:0] result_output;
   riscv_pkg::fp_flags_t flags_output;
 
   // =========================================================================
@@ -470,11 +515,17 @@ module fp_divider (
         end
       end
       DIVIDE: begin
-        if (cycle_count == 5'd25) begin
-          next_state = NORMALIZE;
+        if (cycle_count == DivCyclesMinus1) begin
+          next_state = NORMALIZE_PREP;
         end
       end
+      NORMALIZE_PREP: begin
+        next_state = NORMALIZE;
+      end
       NORMALIZE: begin
+        next_state = ROUND_SHIFT;
+      end
+      ROUND_SHIFT: begin
         next_state = ROUND_PREP;
       end
       ROUND_PREP: begin
@@ -497,39 +548,39 @@ module fp_divider (
   // Division Logic
   // =========================================================================
 
-  logic [26:0] next_quotient;
-  logic [26:0] next_remainder;
-  logic [26:0] shifted_remainder;
-  logic [26:0] diff;
-  logic        diff_neg;
-  logic [ 5:0] quotient_lzc;
-  logic        quotient_lzc_found;
-  logic        quotient_is_zero;
+  logic [    DivBits-1:0] next_quotient;
+  logic [    DivBits-1:0] next_remainder;
+  logic [    DivBits-1:0] shifted_remainder;
+  logic [    DivBits-1:0] diff;
+  logic                   diff_neg;
+  logic [QuotLzcBits-1:0] quotient_lzc;
+  logic                   quotient_lzc_found;
+  logic                   quotient_is_zero;
 
   always_comb begin
-    shifted_remainder = {remainder[25:0], 1'b0};
+    shifted_remainder = {remainder[DivBits-2:0], 1'b0};
     diff = shifted_remainder - divisor;
-    diff_neg = diff[26];
+    diff_neg = diff[DivBits-1];
 
     if (diff_neg) begin
       // Remainder < divisor: quotient bit is 0
       next_remainder = shifted_remainder;
-      next_quotient  = {quotient[25:0], 1'b0};
+      next_quotient  = {quotient[DivBits-2:0], 1'b0};
     end else begin
       // Remainder >= divisor: quotient bit is 1
       next_remainder = diff;
-      next_quotient  = {quotient[25:0], 1'b1};
+      next_quotient  = {quotient[DivBits-2:0], 1'b1};
     end
   end
 
   // Leading-zero count for quotient normalization
   always_comb begin
-    quotient_lzc = 6'd0;
+    quotient_lzc = '0;
     quotient_lzc_found = 1'b0;
-    quotient_is_zero = (quotient == 27'b0);
+    quotient_is_zero = (quotient == '0);
 
     if (!quotient_is_zero) begin
-      for (int i = 26; i >= 0; i--) begin
+      for (int i = DivBits - 1; i >= 0; i--) begin
         if (!quotient_lzc_found) begin
           if (quotient[i]) quotient_lzc_found = 1'b1;
           else quotient_lzc = quotient_lzc + 1'b1;
@@ -538,31 +589,47 @@ module fp_divider (
     end
   end
 
+  // Pre-compute normalization results to avoid quotient-driven clock-enables
+  logic        [    DivBits-1:0] quotient_norm;
+  logic signed [ ExpExtBits-1:0] result_exp_norm;
+  logic        [QuotLzcBits-1:0] quotient_lzc_r;
+  logic                          quotient_is_zero_r;
+
+  always_comb begin
+    quotient_norm   = quotient;
+    result_exp_norm = result_exp;
+    if (!quotient_is_zero_r && quotient_lzc_r != 0) begin
+      quotient_norm = quotient << quotient_lzc_r;
+      result_exp_norm = result_exp - $signed({{(ExpExtBits - QuotLzcBits) {1'b0}}, quotient_lzc_r});
+    end
+  end
+
   // =========================================================================
   // Main Datapath
   // =========================================================================
 
-  logic [31:0] result_reg;
+  logic [FP_WIDTH-1:0] result_reg;
   riscv_pkg::fp_flags_t flags_reg;
-  logic valid_reg;
+  // TIMING: Limit fanout to force register replication and improve timing
+  (* max_fanout = 30 *) logic valid_reg;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      cycle_count <= 5'd0;
-      quotient <= 27'b0;
-      remainder <= 27'b0;
-      divisor <= 27'b0;
-      result_exp <= 10'sb0;
+      cycle_count <= '0;
+      quotient <= '0;
+      remainder <= '0;
+      divisor <= '0;
+      result_exp <= '0;
       rm <= 3'b0;
-      operand_a_reg <= 32'b0;
-      operand_b_reg <= 32'b0;
+      operand_a_reg <= '0;
+      operand_b_reg <= '0;
       // UNPACK -> INIT registers
       sign_a_r <= 1'b0;
       sign_b_r <= 1'b0;
-      exp_a_r <= 8'b0;
-      exp_b_r <= 8'b0;
-      mant_lzc_a_r <= 5'b0;
-      mant_lzc_b_r <= 5'b0;
+      exp_a_r <= '0;
+      exp_b_r <= '0;
+      mant_lzc_a_r <= '0;
+      mant_lzc_b_r <= '0;
       is_subnormal_a_r <= 1'b0;
       is_subnormal_b_r <= 1'b0;
       is_zero_a_r <= 1'b0;
@@ -573,31 +640,42 @@ module fp_divider (
       is_nan_b_r <= 1'b0;
       is_snan_a_r <= 1'b0;
       is_snan_b_r <= 1'b0;
-      raw_mant_a_r <= 23'b0;
-      raw_mant_b_r <= 23'b0;
+      raw_mant_a_r <= '0;
+      raw_mant_b_r <= '0;
       // INIT -> SETUP registers
       result_sign_r <= 1'b0;
-      exp_a_adj_r <= 10'sb0;
-      exp_b_adj_r <= 10'sb0;
-      mant_a_r <= 24'b0;
-      mant_b_r <= 24'b0;
+      exp_a_adj_r <= '0;
+      exp_b_adj_r <= '0;
+      mant_a_r <= '0;
+      mant_b_r <= '0;
       is_special_r <= 1'b0;
-      special_result_r <= 32'b0;
+      special_result_r <= '0;
       special_invalid_r <= 1'b0;
       special_div_zero_r <= 1'b0;
+      // ROUND_SHIFT -> ROUND_PREP registers
+      exp_work_shift <= '0;
+      mantissa_work_shift <= '0;
+      guard_work_shift <= 1'b0;
+      round_work_shift <= 1'b0;
+      sticky_work_shift <= 1'b0;
+      div_is_zero_shift <= 1'b0;
+      rm_shift <= 3'b0;
+      // NORMALIZE prep registers
+      quotient_lzc_r <= '0;
+      quotient_is_zero_r <= 1'b0;
       // ROUND_PREP -> ROUND_APPLY registers
       result_sign_apply <= 1'b0;
-      exp_work_apply <= 10'sb0;
-      mantissa_work_apply <= 24'b0;
+      exp_work_apply <= '0;
+      mantissa_work_apply <= '0;
       round_up_apply <= 1'b0;
       is_inexact_apply <= 1'b0;
       div_is_zero_apply <= 1'b0;
       rm_apply <= 3'b0;
       // ROUND_APPLY -> OUTPUT registers
-      result_output <= 32'b0;
+      result_output <= '0;
       flags_output <= '0;
       // Final output
-      result_reg <= 32'b0;
+      result_reg <= '0;
       flags_reg <= '0;
       valid_reg <= 1'b0;
     end else begin
@@ -609,7 +687,7 @@ module fp_divider (
             operand_a_reg <= i_operand_a;
             operand_b_reg <= i_operand_b;
             rm <= i_rounding_mode;
-            cycle_count <= 5'd0;
+            cycle_count <= '0;
           end
         end
 
@@ -631,8 +709,8 @@ module fp_divider (
           is_nan_b_r <= is_nan_b;
           is_snan_a_r <= is_snan_a;
           is_snan_b_r <= is_snan_b;
-          raw_mant_a_r <= operand_a_reg[22:0];
-          raw_mant_b_r <= operand_b_reg[22:0];
+          raw_mant_a_r <= operand_a_reg[FracBits-1:0];
+          raw_mant_b_r <= operand_b_reg[FracBits-1:0];
         end
 
         INIT: begin
@@ -656,14 +734,14 @@ module fp_divider (
           end else begin
             // Initialize division using registered mantissas
             // exp_result = exp_a - exp_b + 127
-            result_exp <= exp_a_adj_r - exp_b_adj_r + 10'sd127;
-            divisor <= {3'b0, mant_b_r};
+            result_exp <= exp_a_adj_r - exp_b_adj_r + ExpBiasExt;
+            divisor <= {{(DivBits - MantBits) {1'b0}}, mant_b_r};
             if (mant_a_r >= mant_b_r) begin
-              quotient  <= 27'd1;
-              remainder <= {3'b0, mant_a_r - mant_b_r};
+              quotient  <= {{(DivBits - 1) {1'b0}}, 1'b1};
+              remainder <= {{(DivBits - MantBits) {1'b0}}, mant_a_r - mant_b_r};
             end else begin
-              quotient  <= 27'b0;
-              remainder <= {3'b0, mant_a_r};
+              quotient  <= '0;
+              remainder <= {{(DivBits - MantBits) {1'b0}}, mant_a_r};
             end
           end
         end
@@ -674,23 +752,36 @@ module fp_divider (
           remainder <= next_remainder;
         end
 
+        NORMALIZE_PREP: begin
+          quotient_lzc_r <= quotient_lzc;
+          quotient_is_zero_r <= quotient_is_zero;
+        end
+
         NORMALIZE: begin
-          if (!quotient_is_zero && quotient_lzc != 0) begin
-            quotient   <= quotient << quotient_lzc;
-            result_exp <= result_exp - $signed({4'b0, quotient_lzc});
-          end
-          // quotient[26] is now the implicit 1 (unless result is zero)
+          quotient   <= quotient_norm;
+          result_exp <= result_exp_norm;
+          // quotient[DivBits-1] is now the implicit 1 (unless result is zero)
+        end
+
+        ROUND_SHIFT: begin
+          exp_work_shift <= exp_work_prep;
+          mantissa_work_shift <= mantissa_work_prep;
+          guard_work_shift <= guard_work_prep;
+          round_work_shift <= round_work_prep;
+          sticky_work_shift <= sticky_work_prep;
+          div_is_zero_shift <= div_is_zero;
+          rm_shift <= rm;
         end
 
         ROUND_PREP: begin
           // Capture round-up decision into apply registers
           result_sign_apply <= result_sign_r;
-          exp_work_apply <= exp_work_prep;
-          mantissa_work_apply <= mantissa_work_prep;
+          exp_work_apply <= exp_work_shift;
+          mantissa_work_apply <= mantissa_work_shift;
           round_up_apply <= round_up_prep;
           is_inexact_apply <= is_inexact_prep;
-          div_is_zero_apply <= div_is_zero;
-          rm_apply <= rm;
+          div_is_zero_apply <= div_is_zero_shift;
+          rm_apply <= rm_shift;
         end
 
         ROUND_APPLY: begin
