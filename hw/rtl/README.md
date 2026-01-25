@@ -2,11 +2,11 @@
 
 ## Overview
 
-FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMAFCB** with full machine-mode privilege support for RTOS operation. The design is fully portable (no vendor-specific primitives), synthesizable with standard tools including Yosys and Vivado, and simulatable with Verilator, Icarus Verilog, and Questa.
+FROST is a 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with full machine-mode privilege support for RTOS operation. The design is fully portable (no vendor-specific primitives), synthesizable with standard tools including Yosys and Vivado, and simulatable with Verilator, Icarus Verilog, and Questa.
 
 ### Supported RISC-V Extensions
 
-**ISA: RV32IMAFCB** plus additional extensions
+**ISA: RV32GCB** (G = IMAFD) plus additional extensions
 
 | Extension        | Description                                | Instructions                                                                                                                                                       |
 |------------------|--------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -14,6 +14,7 @@ FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMAFCB** with f
 | **M**            | Integer multiply/divide                    | mul, mulh, mulhsu, mulhu, div, divu, rem, remu                                                                                                                     |
 | **A**            | Atomic memory operations                   | lr.w, sc.w, amoswap.w, amoadd.w, amoxor.w, amoand.w, amoor.w, amomin.w, amomax.w, amominu.w, amomaxu.w                                                             |
 | **F**            | Single-precision floating-point            | flw, fsw, fadd.s, fsub.s, fmul.s, fdiv.s, fsqrt.s, fmin.s, fmax.s, fmadd.s, fmsub.s, fnmadd.s, fnmsub.s, fsgnj.s, fsgnjn.s, fsgnjx.s, fcvt.w.s, fcvt.wu.s, fcvt.s.w, fcvt.s.wu, fmv.x.w, fmv.w.x, feq.s, flt.s, fle.s, fclass.s |
+| **D**            | Double-precision floating-point            | fld, fsd, fadd.d, fsub.d, fmul.d, fdiv.d, fsqrt.d, fmin.d, fmax.d, fmadd.d, fmsub.d, fnmadd.d, fnmsub.d, fsgnj.d, fsgnjn.d, fsgnjx.d, fcvt.w.d, fcvt.wu.d, fcvt.d.w, fcvt.d.wu, fcvt.s.d, fcvt.d.s, feq.d, flt.d, fle.d, fclass.d |
 | **C**            | Compressed instructions (16-bit)           | c.lwsp, c.swsp, c.lw, c.sw, c.flwsp, c.fswsp, c.flw, c.fsw, c.j, c.jal, c.jr, c.jalr, c.beqz, c.bnez, c.li, c.lui, c.addi, c.addi16sp, c.addi4spn, c.slli, c.srli, c.srai, c.andi, c.mv, c.add, c.and, c.or, c.xor, c.sub, c.nop, c.ebreak |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)     | See Zba, Zbb, Zbs below                                                                                                                                            |
 | **Zba**          | Address generation (part of B)             | sh1add, sh2add, sh3add                                                                                                                                             |
@@ -27,7 +28,7 @@ FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMAFCB** with f
 | **Zihintpause**  | Pause hint                                 | pause                                                                                                                                                              |
 | **Machine Mode** | M-mode privilege (RTOS support)            | mret, wfi, ecall, ebreak                                                                                                                                           |
 
-**Total: 140+ instructions** (including C extension compressed forms)
+**Total: 170+ instructions** (including C extension compressed forms)
 
 **Key Highlights:**
 - 6-stage pipeline with full data forwarding
@@ -698,7 +699,7 @@ rtl/
         │   │   ├── alu.sv            # Main ALU (all extensions)
         │   │   ├── multiplier.sv     # 1-cycle registered multiplier
         │   │   └── divider.sv        # 17-cycle radix-2 divider (2x folded)
-        │   └── fpu/                  # Floating-Point Unit (F extension)
+        │   └── fpu/                  # Floating-Point Unit (F/D extensions)
         │       ├── fpu.sv            # FPU top-level, operation routing
         │       ├── fp_adder.sv       # Addition/subtraction (4-cycle)
         │       ├── fp_multiplier.sv  # Multiplication (8-cycle)
@@ -718,7 +719,7 @@ rtl/
         │
         ├── wb_stage/                 # Writeback stage
         │   ├── regfile.sv            # 32x32 integer register file (2R/1W)
-        │   └── fp_regfile.sv         # 32x32 floating-point register file (3R/1W)
+        │   └── fp_regfile.sv         # 32x64 floating-point register file (3R/1W)
         │
         ├── cache/                    # Cache subsystem
         │   ├── l0_cache.sv           # Direct-mapped L0 data cache
@@ -730,7 +731,7 @@ rtl/
         │
         └── control/                  # Pipeline control
             ├── forwarding_unit.sv    # Integer data hazard forwarding
-            ├── fp_forwarding_unit.sv # FP data hazard forwarding (F extension)
+            ├── fp_forwarding_unit.sv # FP data hazard forwarding (F/D extensions)
             ├── hazard_resolution_unit.sv # Stall/flush control (incl. FPU stalls)
             ├── trap_unit.sv          # Interrupt/exception handling
             └── lr_sc_reservation.sv  # A extension: LR/SC address reservation
@@ -867,7 +868,7 @@ Cycle N+1: Result registered and available (MULH/MULHSU/MULHU select upper 32 bi
 
 ### Floating-Point Unit (`fpu.sv`)
 
-The FPU implements the complete RISC-V F extension (single-precision floating-point) with
+The FPU implements the complete RISC-V F and D extensions (single- and double-precision floating-point) with
 IEEE 754-compliant operations. The current implementation uses **non-pipelined multi-cycle
 execution** — each FP operation stalls the pipeline until completion.
 
@@ -920,9 +921,12 @@ execution** — each FP operation stalls the pipeline until completion.
   |   |          ALU            |     |                 FPU                      |  |
   |   |  (integer operations)   |     |  (floating-point operations)             |  |
   |   |                         |     |                                          |  |
-  |   |  RV32I, M, Zba, Zbb,    |     |  FADD, FSUB, FMUL, FDIV, FSQRT           |  |
-  |   |  Zbs, Zicond, Zbkb      |     |  FMADD, FMSUB, FNMADD, FNMSUB            |  |
-  |   |                         |     |  FMIN, FMAX, FEQ, FLT, FLE               |  |
+  |   |  RV32I, M, Zba, Zbb,    |     |  FADD(.S/.D), FSUB(.S/.D), FMUL(.S/.D),  |  |
+  |   |  Zbs, Zicond, Zbkb      |     |  FDIV(.S/.D), FSQRT(.S/.D)               |  |
+  |   |                         |     |  FMADD(.S/.D), FMSUB(.S/.D),             |  |
+  |   |                         |     |  FNMADD(.S/.D), FNMSUB(.S/.D)            |  |
+  |   |                         |     |  FMIN(.S/.D), FMAX(.S/.D), FEQ(.S/.D),   |  |
+  |   |                         |     |  FLT(.S/.D), FLE(.S/.D)                  |  |
   |   |  Multiplier (1-cycle)   |     |  FCVT.*, FMV.*, FSGNJ*, FCLASS           |  |
   |   |  Divider (17-cycle)     |     |                                          |  |
   |   +------------+------------+     +---------------------+--------------------+  |
@@ -932,7 +936,7 @@ execution** — each FP operation stalls the pipeline until completion.
   |   +------------------------------------------------------------------------+    |
   |   |                        EX Result Mux                                   |    |
   |   |  Integer ops: ALU result    FP ops: FPU result                         |    |
-  |   |  FP->Int (FEQ/FLT/FLE/FCVT.W/FCLASS/FMV.X.W): FPU result to int rd     |    |
+  |   |  FP->Int (FEQ/FLT/FLE/FCVT.W(.S/.D)/FCLASS/FMV.X.W): FPU result to int rd |    |
   |   +----------------------------+-------------------------------------------+    |
   |                                |                                                |
   |                                v                                                |
@@ -1254,7 +1258,7 @@ FROST implements full machine-mode privilege support, enabling both bare-metal a
 | CSR         | Address | Access | Description                                   |
 |-------------|---------|--------|-----------------------------------------------|
 | `mstatus`   | 0x300   | R/W    | Machine status (MIE, MPIE, MPP, FS fields)    |
-| `misa`      | 0x301   | RO     | ISA description (RV32IMAFCB)                  |
+| `misa`      | 0x301   | RO     | ISA description (RV32GCB)                     |
 | `mie`       | 0x304   | R/W    | Interrupt enable (MEIE, MTIE, MSIE bits)      |
 | `mtvec`     | 0x305   | R/W    | Trap vector base address (direct mode only)   |
 | `mscratch`  | 0x340   | R/W    | Scratch register for trap handlers            |
@@ -1267,7 +1271,7 @@ FROST implements full machine-mode privilege support, enabling both bare-metal a
 | `mimpid`    | 0xF13   | RO     | Implementation ID (0)                         |
 | `mhartid`   | 0xF14   | RO     | Hardware thread ID (0)                        |
 
-### Floating-Point CSRs (F Extension)
+### Floating-Point CSRs (F/D Extensions)
 
 | CSR      | Address | Access | Description                                      |
 |----------|---------|--------|--------------------------------------------------|

@@ -145,6 +145,8 @@ module if_stage #(
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
   logic use_buffer_after_spanning;  // Use buffer after spanning_to_halfword
+  logic is_compressed_saved;  // Saved is_compressed for fast path
+  logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -153,6 +155,7 @@ module if_stage #(
   logic [31:0] effective_instr;  // Aligned 32-bit instruction
   logic [31:0] spanning_instr;  // Assembled spanning instruction
   logic is_compressed;  // Current instruction is 16-bit compressed
+  logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic sel_nop;  // Select NOP (during holdoff/flush)
   logic sel_spanning;  // Select spanning instruction
   logic sel_compressed;  // Select compressed instruction path
@@ -244,7 +247,8 @@ module if_stage #(
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(i_pipeline_ctrl.stall),
+      // Use stall_for_trap_check to avoid pulling trap_taken into prediction gating.
+      .i_stall(i_pipeline_ctrl.stall_for_trap_check),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -343,9 +347,9 @@ module if_stage #(
       .i_is_32bit_spanning(is_32bit_spanning),
       .i_spanning_to_halfword(spanning_to_halfword),
       .i_spanning_to_halfword_registered(spanning_to_halfword_registered),
-      // Use is_compressed_for_buffer which handles stall restoration correctly,
-      // including the saved_values_valid check that clears on flush.
-      .i_is_compressed(is_compressed_for_buffer),
+      // TIMING OPTIMIZATION: Use is_compressed_fast which matches is_compressed_for_buffer
+      // behavior but is computed locally in instruction_aligner for better timing.
+      .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
 
       // Branch prediction (from branch_prediction_controller)
@@ -405,7 +409,9 @@ module if_stage #(
       .o_spanning_to_halfword_registered(spanning_to_halfword_registered),
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_for_pc(is_compressed_for_pc),  // TIMING OPTIMIZATION: for PC increment
-      .o_use_buffer_after_spanning(use_buffer_after_spanning)
+      .o_use_buffer_after_spanning(use_buffer_after_spanning),
+      .o_is_compressed_saved(is_compressed_saved),
+      .o_saved_values_valid(saved_values_valid)
   );
 
   // ===========================================================================
@@ -451,11 +457,14 @@ module if_stage #(
       // to break critical path from stall → is_compressed → PC
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
+      .i_is_compressed_saved(is_compressed_saved),
+      .i_saved_values_valid(saved_values_valid),
 
       .o_raw_parcel(raw_parcel),
       .o_effective_instr(effective_instr),
       .o_spanning_instr(spanning_instr),
       .o_is_compressed(is_compressed),
+      .o_is_compressed_fast(is_compressed_fast),
       .o_sel_nop(sel_nop),
       .o_sel_spanning(sel_spanning),
       .o_sel_compressed(sel_compressed),

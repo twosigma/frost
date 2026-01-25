@@ -15,7 +15,7 @@
  */
 
 /*
-  Floating-point classify operation (FCLASS.S).
+  Floating-point classify operation (FCLASS.{S,D}).
   Returns a 10-bit mask indicating the class of the input value.
   Result is written to an integer register (rd), not an FP register.
 
@@ -33,24 +33,30 @@
 
   Latency: 2 cycles (registered output to break timing path through FP forwarding)
 */
-module fp_classify (
-    input  logic        i_clk,
-    input  logic        i_rst,
-    input  logic        i_valid,    // Start operation
-    input  logic [31:0] i_operand,
-    output logic [31:0] o_result,
-    output logic        o_valid,    // Result ready
-    output logic        o_busy      // Operation in progress
+module fp_classify #(
+    parameter int unsigned FP_WIDTH = 32
+) (
+    input  logic                i_clk,
+    input  logic                i_rst,
+    input  logic                i_valid,    // Start operation
+    input  logic [FP_WIDTH-1:0] i_operand,
+    output logic [        31:0] o_result,
+    output logic                o_valid,    // Result ready
+    output logic                o_busy      // Operation in progress
 );
 
   // Extract fields
-  logic        sign;
-  logic [ 7:0] exponent;
-  logic [22:0] mantissa;
+  localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
+  localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
+  localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
 
-  assign sign = i_operand[31];
-  assign exponent = i_operand[30:23];
-  assign mantissa = i_operand[22:0];
+  logic                sign;
+  logic [ ExpBits-1:0] exponent;
+  logic [FracBits-1:0] mantissa;
+
+  assign sign = i_operand[FP_WIDTH-1];
+  assign exponent = i_operand[FP_WIDTH-2-:ExpBits];
+  assign mantissa = i_operand[FracBits-1:0];
 
   // Classify conditions
   logic is_zero;
@@ -61,15 +67,15 @@ module fp_classify (
   logic is_signaling_nan;
   logic is_quiet_nan;
 
-  assign is_zero          = (exponent == 8'h00) && (mantissa == 23'b0);
-  assign is_subnormal     = (exponent == 8'h00) && (mantissa != 23'b0);
-  assign is_infinity      = (exponent == 8'hFF) && (mantissa == 23'b0);
-  assign is_nan           = (exponent == 8'hFF) && (mantissa != 23'b0);
-  assign is_normal        = (exponent != 8'h00) && (exponent != 8'hFF);
+  assign is_zero          = (exponent == '0) && (mantissa == '0);
+  assign is_subnormal     = (exponent == '0) && (mantissa != '0);
+  assign is_infinity      = (exponent == ExpMax) && (mantissa == '0);
+  assign is_nan           = (exponent == ExpMax) && (mantissa != '0);
+  assign is_normal        = (exponent != '0) && (exponent != ExpMax);
 
   // For NaNs: bit 22 of mantissa distinguishes quiet (1) from signaling (0)
-  assign is_quiet_nan     = is_nan && mantissa[22];
-  assign is_signaling_nan = is_nan && ~mantissa[22];
+  assign is_quiet_nan     = is_nan && mantissa[FracBits-1];
+  assign is_signaling_nan = is_nan && ~mantissa[FracBits-1];
 
   // Generate output mask (combinational)
   logic [9:0] class_mask;

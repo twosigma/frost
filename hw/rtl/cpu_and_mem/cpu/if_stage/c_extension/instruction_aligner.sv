@@ -57,16 +57,19 @@ module instruction_aligner #(
     // Stall handling (only registered signal needed for timing optimization)
     input logic i_stall_registered,
     input logic i_prev_was_compressed_at_lo_saved,
+    input logic i_is_compressed_saved,  // Saved is_compressed from stall start
+    input logic i_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
 
     // Outputs
-    output logic [15:0] o_raw_parcel,       // Raw 16-bit parcel for PD decompression
+    output logic [15:0] o_raw_parcel,  // Raw 16-bit parcel for PD decompression
     output logic [31:0] o_effective_instr,  // Effective instruction word (for state)
-    output logic [31:0] o_spanning_instr,   // Pre-assembled spanning instruction
-    output logic        o_is_compressed,    // Current parcel is compressed
-    output logic        o_sel_nop,          // Outputting NOP
-    output logic        o_sel_spanning,     // Outputting spanning instruction
-    output logic        o_sel_compressed,   // Outputting decompressed instruction
-    output logic        o_use_instr_buffer  // Using buffered instruction
+    output logic [31:0] o_spanning_instr,  // Pre-assembled spanning instruction
+    output logic o_is_compressed,  // Current parcel is compressed
+    output logic o_is_compressed_fast,  // Fast path for PC-critical path (registered selects only)
+    output logic o_sel_nop,  // Outputting NOP
+    output logic o_sel_spanning,  // Outputting spanning instruction
+    output logic o_sel_compressed,  // Outputting decompressed instruction
+    output logic o_use_instr_buffer  // Using buffered instruction
 );
 
   // ===========================================================================
@@ -152,6 +155,43 @@ module instruction_aligner #(
       default: o_is_compressed = 1'b0;
     endcase
   end
+
+  // ===========================================================================
+  // Fast is_compressed for PC-Critical Path
+  // ===========================================================================
+  // TIMING OPTIMIZATION: Create a "fast" is_compressed that matches the behavior
+  // of c_ext_state's is_compressed_for_buffer but is computed locally.
+  //
+  // Key insight: c_ext_state's is_compressed_for_buffer uses saved values when
+  // stall_registered && saved_values_valid. We replicate this exactly:
+  //   - When saved_values_valid: use the saved is_compressed value (fast register)
+  //   - Otherwise: compute from current BRAM/buffer data
+  //
+  // The timing improvement comes from avoiding the round-trip through c_ext_state
+  // while maintaining functional equivalence. All mux selects use registered signals.
+  logic use_saved_is_compressed;
+  assign use_saved_is_compressed = i_stall_registered && i_saved_values_valid;
+
+  // Compute is_compressed from current data (same as o_is_compressed but local)
+  logic prev_was_compressed_at_lo_fast;
+  assign prev_was_compressed_at_lo_fast = i_stall_registered ?
+      i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
+
+  logic need_buffer_fast;
+  assign need_buffer_fast = (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
+                            i_use_buffer_after_spanning;
+
+  logic is_compressed_from_instr, is_compressed_from_buf;
+  assign is_compressed_from_instr = i_pc_reg[1] ? is_comp_instr_hi : is_comp_instr_lo;
+  assign is_compressed_from_buf   = i_pc_reg[1] ? is_comp_buf_hi : is_comp_buf_lo;
+
+  logic is_compressed_computed;
+  assign is_compressed_computed = need_buffer_fast ?
+                                  is_compressed_from_buf : is_compressed_from_instr;
+
+  // Final fast output: use saved value when valid, else computed value
+  assign o_is_compressed_fast = use_saved_is_compressed ?
+                                i_is_compressed_saved : is_compressed_computed;
 
   // ===========================================================================
   // Instruction Selection Signals

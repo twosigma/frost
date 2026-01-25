@@ -64,7 +64,9 @@ module c_ext_state #(
     output logic o_spanning_to_halfword_registered,
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
-    output logic o_use_buffer_after_spanning  // Use buffer after spanning_to_halfword holdoff
+    output logic o_use_buffer_after_spanning,  // Use buffer after spanning_to_halfword holdoff
+    output logic o_is_compressed_saved,  // Saved is_compressed for fast path
+    output logic o_saved_values_valid  // Saved values are valid (not invalidated by control flow)
 );
 
   // ===========================================================================
@@ -143,10 +145,14 @@ module c_ext_state #(
   logic        is_compressed_for_buffer;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
-  assign is_compressed_for_buffer   = use_saved_values ? is_compressed_saved : i_is_compressed;
+  assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
 
   // Export stall-restored is_compressed for use by pc_controller and spanning detection
   assign o_is_compressed_for_buffer = is_compressed_for_buffer;
+
+  // Export saved values for instruction_aligner's fast path
+  assign o_is_compressed_saved = is_compressed_saved;
+  assign o_saved_values_valid = saved_values_valid;
 
   // Extract instruction halves for spanning
   // Use effective_instr_for_buffer to handle stall restoration correctly.

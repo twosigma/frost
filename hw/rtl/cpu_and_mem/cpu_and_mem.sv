@@ -29,7 +29,7 @@
   of the dual-port RAM.
 */
 module cpu_and_mem #(
-    parameter int unsigned MEM_SIZE_BYTES = 2 ** 16,
+    parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
@@ -71,7 +71,7 @@ module cpu_and_mem #(
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
-  // ((64 KiB total memory)/(4 bytes per word)) = 16k words = 2^14 word address bits
+  // ((128 KiB total memory)/(4 bytes per word)) = 32k words = 2^15 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
 
   // Memory-mapped I/O addresses for peripherals

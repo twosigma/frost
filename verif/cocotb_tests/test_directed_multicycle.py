@@ -30,7 +30,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
 from typing import Any
 
-from config import MASK32, PIPELINE_DEPTH
+from config import MASK32, MASK64, PIPELINE_DEPTH
 from monitors.monitors import regfile_monitor, pc_monitor, fp_regfile_monitor
 from models.memory_model import MemoryModel
 from cocotb_tests.test_helpers import DUTInterface
@@ -71,7 +71,7 @@ async def execute_instruction(
 
     # Update software model
     if is_fp:
-        state.fp_register_file_current[rd] = expected_value & MASK32
+        state.fp_register_file_current[rd] = expected_value & MASK64
     else:
         if rd != 0:
             state.register_file_current[rd] = expected_value & MASK32
@@ -87,7 +87,10 @@ async def execute_instruction(
         )
     state.program_counter_expected_values_queue.append(expected_pc)
 
-    cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:08X}")
+    if is_fp:
+        cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:016X}")
+    else:
+        cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:08X}")
 
     # Drive instruction
     dut_if.instruction = instr
@@ -307,7 +310,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
     dut_if, state, _ = await setup_test(dut, use_fp_monitor=True)
 
     from encoders.instruction_encode import enc_fmv_w_x, enc_fdiv_s, enc_lui
-    from models.fp_model import fdiv_s
+    from models.fp_model import fdiv_s, box32
 
     # Set up FP operands via FMV.W.X (move integer bits to FP register)
     # f1 = 10.0 (0x41200000)
@@ -349,7 +352,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         1,
-        0x41200000,
+        box32(0x41200000),
         "FMV.W.X f1, x1",
         is_fp=True,
         use_fp_monitor=True,
@@ -362,7 +365,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         2,
-        0x40000000,
+        box32(0x40000000),
         "FMV.W.X f2, x2",
         is_fp=True,
         use_fp_monitor=True,
@@ -375,7 +378,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         3,
-        0x40A00000,
+        box32(0x40A00000),
         "FMV.W.X f3, x3",
         is_fp=True,
         use_fp_monitor=True,
@@ -386,8 +389,8 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
 
     # FDIV.S f4, f1, f2: 10.0 / 2.0 = 5.0 (0x40A00000)
     instr = enc_fdiv_s(4, 1, 2)
-    expected = fdiv_s(0x41200000, 0x40000000)  # 10.0 / 2.0
-    cocotb.log.info(f"FDIV.S f4, f1, f2: expected result = 0x{expected:08X}")
+    expected = box32(fdiv_s(0x41200000, 0x40000000))  # 10.0 / 2.0
+    cocotb.log.info(f"FDIV.S f4, f1, f2: expected result = 0x{expected:016X}")
     await execute_instruction(
         dut_if,
         state,
@@ -401,8 +404,8 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
 
     # FDIV.S f5, f1, f3: 10.0 / 5.0 = 2.0 (0x40000000)
     instr = enc_fdiv_s(5, 1, 3)
-    expected = fdiv_s(0x41200000, 0x40A00000)  # 10.0 / 5.0
-    cocotb.log.info(f"FDIV.S f5, f1, f3: expected result = 0x{expected:08X}")
+    expected = box32(fdiv_s(0x41200000, 0x40A00000))  # 10.0 / 5.0
+    cocotb.log.info(f"FDIV.S f5, f1, f3: expected result = 0x{expected:016X}")
     await execute_instruction(
         dut_if,
         state,
