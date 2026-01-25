@@ -15,15 +15,109 @@
 # Vivado build script for FROST RISC-V processor
 # Synthesizes, implements, and generates bitstream for specified FPGA board
 
+# Parse timing report to get number of failing setup endpoints
+proc get_failing_endpoint_count {timing_report_file} {
+    set setup_count 0
+
+    set fh [open $timing_report_file r]
+    set content [read $fh]
+    close $fh
+
+    # Look for the timing summary table line with format:
+    # WNS  TNS  TNS_Failing  TNS_Total  WHS  THS  THS_Failing  THS_Total  ...
+    # The data line follows the header with dashes
+    set lines [split $content "\n"]
+    set in_summary_table 0
+    foreach line $lines {
+        # Detect the header line
+        if {[string match "*TNS Failing Endpoints*" $line]} {
+            set in_summary_table 1
+            continue
+        }
+        # Skip the separator line with dashes
+        if {$in_summary_table && [string match "*-------*" $line]} {
+            continue
+        }
+        # Parse the data line
+        if {$in_summary_table && [string trim $line] ne ""} {
+            # Extract numbers from the line
+            set fields [regexp -all -inline -- {-?[0-9.]+} $line]
+            # Fields order: WNS, TNS, TNS_Failing, ...
+            if {[llength $fields] >= 3} {
+                set setup_count [lindex $fields 2]
+            }
+            break
+        }
+    }
+
+    return [expr {int($setup_count)}]
+}
+
+# Generate CSV report of failing setup timing paths
+# If timing_report_file is provided, extracts failing path count from it
+proc write_failing_paths_csv {output_file {timing_report_file ""}} {
+    # Determine max_paths from timing report or use default
+    if {$timing_report_file ne "" && [file exists $timing_report_file]} {
+        set max_paths [get_failing_endpoint_count $timing_report_file]
+        puts "Detected $max_paths failing setup endpoints from timing report"
+    } else {
+        set max_paths 1000
+    }
+
+    # Get setup violations (negative slack)
+    if {$max_paths > 0} {
+        set paths [get_timing_paths -max_paths $max_paths -slack_lesser_than 0 -delay_type max]
+    } else {
+        set paths {}
+    }
+
+    set fh [open $output_file w]
+
+    # CSV header
+    puts $fh "slack_ns,requirement_ns,logic_delay_ns,net_delay_ns,logic_levels,routes,high_fanout,startpoint,endpoint,start_clock,end_clock,path_group"
+
+    foreach path $paths {
+        set slack [get_property SLACK $path]
+        set requirement [get_property REQUIREMENT $path]
+        set logic_delay [get_property DATAPATH_LOGIC_DELAY $path]
+        set net_delay [get_property DATAPATH_NET_DELAY $path]
+        set logic_levels [get_property LOGIC_LEVELS $path]
+        set startpoint [get_property STARTPOINT_PIN $path]
+        set endpoint [get_property ENDPOINT_PIN $path]
+        set start_clk [get_property STARTPOINT_CLOCK $path]
+        set end_clk [get_property ENDPOINT_CLOCK $path]
+        set path_group [get_property GROUP $path]
+
+        # Count routes and find max fanout
+        set nets [get_nets -of_objects $path -quiet]
+        set routes [llength $nets]
+        set high_fanout 0
+        foreach net $nets {
+            set fanout [get_property FLAT_PIN_COUNT $net]
+            if {$fanout > $high_fanout} {
+                set high_fanout $fanout
+            }
+        }
+
+        # Escape commas in pin names by quoting
+        puts $fh "$slack,$requirement,$logic_delay,$net_delay,$logic_levels,$routes,$high_fanout,\"$startpoint\",\"$endpoint\",$start_clk,$end_clk,$path_group"
+    }
+
+    close $fh
+
+    puts "Wrote [llength $paths] failing setup paths to $output_file"
+}
+
 # Validate command line arguments
 # Required: board_name, synth_only, retiming
 # Optional: opt_only (stop after opt_design, for generating shared checkpoint)
 #           placer_directive (default: AltSpreadLogic_high)
 #           checkpoint_path (if provided, skip synthesis and load this checkpoint)
 #           work_suffix (suffix for work directory, used for parallel runs)
+#           synth_directive (default: PerformanceOptimized)
 if {$argc < 3} {
     puts "Error: Board name, synth_only flag, and retiming flag are required"
-    puts "Usage: vivado -mode batch -source build.tcl -tclargs <board_name> <synth_only> <retiming> \[opt_only\] \[placer_directive\] \[checkpoint_path\] \[work_suffix\]"
+    puts "Usage: vivado -mode batch -source build.tcl -tclargs <board_name> <synth_only> <retiming> \[opt_only\] \[placer_directive\] \[checkpoint_path\] \[work_suffix\] \[synth_directive\]"
     exit 1
 }
 set board_name [lindex $argv 0]
@@ -33,6 +127,7 @@ set opt_only [expr {$argc > 3 ? [lindex $argv 3] : "0"}]
 set placer_directive [expr {$argc > 4 ? [lindex $argv 4] : "ExtraTimingOpt"}]
 set checkpoint_path [expr {$argc > 5 ? [lindex $argv 5] : ""}]
 set work_suffix [expr {$argc > 6 ? [lindex $argv 6] : ""}]
+set synth_directive [expr {$argc > 7 ? [lindex $argv 7] : "PerformanceOptimized"}]
 if {$board_name ne "x3" && $board_name ne "genesys2" && $board_name ne "nexys_a7"} {
     puts "Error: Invalid board name '$board_name'"
     puts "Valid boards: x3, genesys2, nexys_a7"
@@ -78,6 +173,7 @@ puts "Board: $board_name"
 puts "FPGA Part: $fpga_part_number"
 puts "Top Module: $top_level_module_name"
 puts "Placer Directive: $placer_directive"
+puts "Synth Directive: $synth_directive"
 puts "Script directory: $script_directory"
 puts "Work directory: $work_directory"
 puts "Project root: $project_root_directory"
@@ -172,9 +268,7 @@ read_xdc      $constraints_file
 set_property top $top_level_module_name [current_fileset]
 
 set synth_args [list -top $top_level_module_name -part $fpga_part_number \
-                     -flatten_hierarchy rebuilt \
-                     -directive AlternateRoutability \
-                     -resource_sharing off]
+                     -directive $synth_directive]
 if {$retiming eq "1"} {
     lappend synth_args -global_retiming on
 }
@@ -183,6 +277,7 @@ synth_design {*}$synth_args
 write_checkpoint -force $work_directory/post_synth.dcp
 report_timing_summary -file $work_directory/post_synth_timing.rpt
 report_utilization    -file $work_directory/post_synth_util.rpt
+write_failing_paths_csv $work_directory/post_synth_failing_paths.csv $work_directory/post_synth_timing.rpt
 
 if {$synth_only eq "1"} {
     puts "** DONE — synthesis only, checkpoint at $work_directory/post_synth.dcp"

@@ -59,6 +59,10 @@ module hazard_resolution_unit #(
     input logic i_amo_write_enable_delayed,
     // F extension: stall for multi-cycle FPU operations (FDIV, FSQRT)
     input logic i_stall_for_fpu,
+    // FP64 load/store sequencing stall
+    input logic i_stall_for_fp_mem,
+    // FP forwarding pipeline stall (extra cycle for timing)
+    input logic i_stall_for_fp_forward_pipeline,
     // Trap handling - lint suppression for false loop detection (see comment at o_pipeline_ctrl)
     /* verilator lint_off UNOPTFLAT */
     input logic i_trap_taken,
@@ -252,6 +256,8 @@ module hazard_resolution_unit #(
       fp_load_use_hazard_early,
       fp_load_ma_hazard_stall,
       i_stall_for_amo,
+      i_stall_for_fp_mem,
+      i_stall_for_fp_forward_pipeline,
       fpu_stall_gated,
       fpu_inflight_hazard,
       fpu_single_to_pipelined_hazard,
@@ -274,6 +280,8 @@ module hazard_resolution_unit #(
       fp_load_use_hazard_early,
       fp_load_ma_hazard_stall,
       i_stall_for_amo,
+      i_stall_for_fp_mem,
+      i_stall_for_fp_forward_pipeline,
       fpu_stall_gated,
       fpu_inflight_hazard,
       fpu_single_to_pipelined_hazard,
@@ -473,14 +481,17 @@ module hazard_resolution_unit #(
   assign fp_op_in_ex_is_single_cycle = i_from_id_to_ex.is_fp_compute &&
       (i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJ_S ||
        i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJN_S ||
-       i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJX_S);
+       i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJX_S ||
+       i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJ_D ||
+       i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJN_D ||
+       i_from_id_to_ex.instruction_operation == riscv_pkg::FSGNJX_D);
 
   // Check if instruction in ID (about to enter EX) is a pipelined FP op
   assign fp_op_in_id_is_pipelined =
       (i_from_pd_to_id.instruction.opcode == riscv_pkg::OPC_OP_FP &&
-       (i_from_pd_to_id.instruction.funct7 == 7'b0000000 ||   // FADD.S
-      i_from_pd_to_id.instruction.funct7 == 7'b0000100 ||  // FSUB.S
-      i_from_pd_to_id.instruction.funct7 == 7'b0001000)) ||  // FMUL.S
+       (i_from_pd_to_id.instruction.funct7[6:1] == 6'b000000 ||  // FADD.{S,D}
+      i_from_pd_to_id.instruction.funct7[6:1] == 6'b000010 ||  // FSUB.{S,D}
+      i_from_pd_to_id.instruction.funct7[6:1] == 6'b000100)) ||  // FMUL.{S,D}
       (i_from_pd_to_id.instruction.opcode == riscv_pkg::OPC_FMADD) ||
       (i_from_pd_to_id.instruction.opcode == riscv_pkg::OPC_FMSUB) ||
       (i_from_pd_to_id.instruction.opcode == riscv_pkg::OPC_FNMSUB) ||
@@ -524,8 +535,8 @@ module hazard_resolution_unit #(
 
   assign fp_op_in_id_is_multicycle = fp_op_in_id_is_pipelined ||
       (i_from_pd_to_id.instruction.opcode == riscv_pkg::OPC_OP_FP &&
-       (i_from_pd_to_id.instruction.funct7 == 7'b0001100 ||  // FDIV.S
-      i_from_pd_to_id.instruction.funct7 == 7'b0101100));  // FSQRT.S
+       (i_from_pd_to_id.instruction.funct7[6:1] == 6'b000110 ||  // FDIV.{S,D}
+      i_from_pd_to_id.instruction.funct7[6:1] == 6'b010110));  // FSQRT.{S,D}
 
   assign fp_load_ma_matches_src = i_from_ex_to_ma.is_fp_load &&
       (i_from_ex_to_ma.fp_dest_reg == fpu_src1 ||
@@ -624,6 +635,7 @@ module hazard_resolution_unit #(
                                   stall_for_load_use_hazard |
                                   fp_load_use_hazard_early |
                                   fp_load_ma_hazard_stall |
+                                  i_stall_for_fp_mem |
                                   fpu_stall_gated |
                                   fpu_inflight_hazard |
                                   fpu_single_to_pipelined_hazard |
@@ -641,6 +653,7 @@ module hazard_resolution_unit #(
                                   fp_load_use_hazard_early |
                                   fp_load_ma_hazard_stall |
                                   i_stall_for_amo |
+                                  i_stall_for_fp_mem |
                                   i_stall_for_fpu |
                                   fp_to_int_to_int_to_fp_hazard |
                                   stall_for_csr_read |

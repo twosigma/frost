@@ -27,14 +27,15 @@ UNROLL_LOOPS ?= -funroll-loops
 # RISC-V compilation flags
 #
 # Architecture flags (-march, -mabi):
-#   -march=rv32imacf_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-#     RV32IMABCF ISA (using explicit Zba_Zbb_Zbs for toolchain compatibility):
+#   -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+#     RV32IMAFDCB ISA (using explicit Zba_Zbb_Zbs for toolchain compatibility):
 #       - I: Base integer instructions
 #       - M: Multiply/divide
 #       - A: Atomics (LR.W, SC.W, AMO instructions)
 #       - B: Bit manipulation (B = Zba + Zbb + Zbs, spelled out in march string)
 #       - C: Compressed instructions (16-bit instruction encoding)
 #       - F: Single-precision floating-point
+#       - D: Double-precision floating-point
 #     Additional extensions:
 #       - Zicsr: CSR instructions
 #       - Zicntr: Base counters (cycle, time, instret)
@@ -42,7 +43,7 @@ UNROLL_LOOPS ?= -funroll-loops
 #       - Zicond: Conditional operations (czero.eqz, czero.nez)
 #       - Zbkb: Bit manipulation for crypto (pack, packh, brev8, zip, unzip)
 #       - Zihintpause: Pause hint for spin-wait loops
-#   -mabi=ilp32f: Integer-Long-Pointer 32-bit ABI with hardware single-precision float
+#   -mabi=ilp32d: Integer-Long-Pointer 32-bit ABI with hardware double-precision float
 #
 # Bare-metal flags:
 #   -nostdlib:      Don't link standard C library (we provide our own minimal lib/)
@@ -68,7 +69,7 @@ UNROLL_LOOPS ?= -funroll-loops
 #     from the final binary. Essential for library code like uart.c where apps
 #     may only use a subset of functions (e.g., Coremark uses uart_printf but
 #     not uart_getchar).
-RISCV_FLAGS  = -march=rv32imacf_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=ilp32f -Wall -Wextra \
+RISCV_FLAGS  = -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=ilp32d -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \
                -fno-unwind-tables -fno-asynchronous-unwind-tables \
                -ffunction-sections -fdata-sections \

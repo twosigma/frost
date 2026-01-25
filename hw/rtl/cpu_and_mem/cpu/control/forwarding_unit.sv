@@ -192,7 +192,7 @@ module forwarding_unit #(
     else if (~i_pipeline_ctrl.stall)
       // Normal case: use ALU result (cache-hit forwarding uses registered path below)
       register_write_data_ma <= i_from_id_to_ex.is_fp_to_int ?
-                                i_from_ex_comb.fp_result :
+                                i_from_ex_comb.fp_result[XLEN-1:0] :
                                 i_from_ex_comb.alu_result;
 
   // Data forwarding from MA stage

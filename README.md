@@ -2,7 +2,7 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-A 6-stage pipelined RISC-V processor implementing RV32IMAFCB with full machine-mode privilege support for RTOS operation. Achieves 322 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
+A 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with full machine-mode privilege support for RTOS operation. Achieves 322 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
@@ -60,7 +60,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Supported RISC-V Extensions
 
-**ISA: RV32IMAFCB** plus additional extensions — **170+ instructions**
+**ISA: RV32GCB** (G = IMAFD) plus additional extensions — **170+ instructions**
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
@@ -68,6 +68,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 | **M**            | Integer multiply/divide                        |
 | **A**            | Atomic memory operations (LR/SC, AMO)          |
 | **F**            | Single-precision floating-point (32-bit)       |
+| **D**            | Double-precision floating-point (64-bit)       |
 | **C**            | Compressed instructions (16-bit encodings)     |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
@@ -291,16 +292,16 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 16,275 | 1,029,600 | 1.6% |
-|   LUT as Logic | 15,080 | 1,029,600 | 1.5% |
-|   LUT as Distributed RAM | 1,099 | — | — |
-|   LUT as Shift Register | 96 | — | — |
-| CLB Registers | 9,627 | 2,059,200 | 0.5% |
-| Block RAM Tile | 21.5 | 2,112 | 1.0% |
+| CLB LUTs | 28,135 | 1,029,600 | 2.7% |
+|   LUT as Logic | 26,877 | 1,029,600 | 2.6% |
+|   LUT as Distributed RAM | 1,164 | — | — |
+|   LUT as Shift Register | 94 | — | — |
+| CLB Registers | 16,839 | 2,059,200 | 0.8% |
+| Block RAM Tile | 37.5 | 2,112 | 1.8% |
 | URAM | 0 | 352 | 0.0% |
-| DSPs | 8 | 1,320 | 0.6% |
-| CARRY8 | 437 | 128,700 | 0.3% |
-| F7 Muxes | 0 | 514,800 | 0.0% |
+| DSPs | 28 | 1,320 | 2.1% |
+| CARRY8 | 744 | 128,700 | 0.6% |
+| F7 Muxes | 323 | 514,800 | 0.1% |
 | F8 Muxes | 0 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
@@ -310,50 +311,20 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 14,954 | 203,800 | 7.3% |
-|   LUT as Logic | 13,729 | 203,800 | 6.7% |
-|   LUT as Distributed RAM | 1,129 | — | — |
+| Slice LUTs | 15,311 | 203,800 | 7.5% |
+|   LUT as Logic | 13,954 | 203,800 | 6.8% |
+|   LUT as Distributed RAM | 1,261 | — | — |
 |   LUT as Shift Register | 96 | — | — |
-| Slice Registers | 9,481 | 407,600 | 2.3% |
+| Slice Registers | 9,571 | 407,600 | 2.4% |
 | Block RAM Tile | 21.5 | 445 | 4.8% |
 | DSPs | 8 | 840 | 0.9% |
-| F7 Muxes | 0 | 101,900 | 0.0% |
+| F7 Muxes | 8 | 101,900 | 0.0% |
 | F8 Muxes | 0 | 50,950 | 0.0% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |
 
-**Digilent Nexys A7** (Artix-7 @ 80 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 14,863 | 63,400 | 23.4% |
-|   LUT as Logic | 13,638 | 63,400 | 21.5% |
-|   LUT as Distributed RAM | 1,129 | — | — |
-|   LUT as Shift Register | 96 | — | — |
-| Slice Registers | 9,481 | 126,800 | 7.5% |
-| Block RAM Tile | 21.5 | 135 | 15.9% |
-| DSPs | 8 | 240 | 3.3% |
-| F7 Muxes | 0 | 31,700 | 0.0% |
-| F8 Muxes | 0 | 15,850 | 0.0% |
-| Bonded IOB | 4 | 210 | 1.9% |
-| MMCM | 1 | 6 | 16.7% |
-| PLL | 0 | 6 | 0.0% |
-
 <!-- FPGA_UTILIZATION_END -->
-## Roadmap
-
-### To-Do
-- [ ] Add debugger support
-
-### Future Enhancements
-- [ ] Superscalar execution
-- [ ] Out-of-order execution
-
-### ISA Roadmap
-- [x] F extension — single-precision floating-point
-- [ ] D extension — double-precision floating-point
-
 ## Glossary
 
 | Term            | Definition                                       |
@@ -364,6 +335,8 @@ Running `pytest tests/` exercises:
 | **B extension** | Bit manipulation (Zba + Zbb + Zbs)               |
 | **C extension** | Compressed 16-bit instructions                   |
 | **F extension** | Single-precision floating-point (32-bit IEEE 754)|
+| **D extension** | Double-precision floating-point (64-bit IEEE 754)|
+| **G extension** | Shorthand for IMAFD                               |
 | **IF**          | Instruction Fetch stage                          |
 | **PD**          | Pre-Decode stage (C extension decompression)     |
 | **ID**          | Instruction Decode stage                         |

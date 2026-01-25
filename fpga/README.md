@@ -11,8 +11,8 @@ This directory contains the complete infrastructure for building, programming, a
 │                                                                             │
 │   ┌──────────────┐     ┌──────────────────┐     ┌───────────────────────┐   │
 │   │  RTL Source  │────>│  build/build.py  │────>│  Bitstream (.bit)     │   │
-│   │  (hw/rtl/)   │     │       -or-       │     │  (build/<board>/work/)│   │
-│   └──────────────┘     │  build_sweep.py  │     └───────────┬───────────┘   │
+│   │  (hw/rtl/)   │     │        -or-      │     │  (build/<board>/work/)│   │
+│   └──────────────┘     │ build_*_sweep.py │     └───────────┬───────────┘   │
 │                        └──────────────────┘                 │               │
 │                                                             │               │
 │                                                             v               │
@@ -117,10 +117,10 @@ The build system uses Vivado in batch mode to synthesize, place, and route the d
 
 ### Placer Directive Sweep
 
-For the X3 target (322 MHz), timing closure can be challenging and results vary significantly between different placer directives. The `build_sweep.py` script runs multiple place+route jobs in parallel with different directives and automatically selects the first one that passes timing.
+For the X3 target (322 MHz), timing closure can be challenging and results vary significantly between different placer directives. The `build_placer_sweep.py` script runs multiple place+route jobs in parallel with different directives and automatically selects the first one that passes timing.
 
 ```bash
-./fpga/build/build_sweep.py [--skip-synth-opt] [--auto] [--keep-all]
+./fpga/build/build_placer_sweep.py [--skip-synth-opt] [--auto] [--keep-all]
 ```
 
 **How it works:**
@@ -139,13 +139,13 @@ For the X3 target (322 MHz), timing closure can be challenging and results vary 
 **Examples:**
 ```bash
 # Full sweep (synthesis + 12 parallel place+route jobs)
-./fpga/build/build_sweep.py
+./fpga/build/build_placer_sweep.py
 
 # Re-run sweep from existing synthesis checkpoint
-./fpga/build/build_sweep.py --skip-synth-opt
+./fpga/build/build_placer_sweep.py --skip-synth-opt
 
 # Include ML-predicted directives
-./fpga/build/build_sweep.py --auto
+./fpga/build/build_placer_sweep.py --auto
 ```
 
 **Default directives tested:**
@@ -155,6 +155,55 @@ For the X3 target (322 MHz), timing closure can be challenging and results vary 
 - ExtraPostPlacementOpt, ExtraTimingOpt, RuntimeOptimized
 
 Results are printed in a table showing WNS/TNS for each directive, with the winner copied to the main `work/` directory.
+
+### Synthesis Directive Sweep
+
+The `build_synth_sweep.py` script runs synthesis with all available `synth_design` directives in parallel to explore area/timing tradeoffs at the synthesis stage.
+
+```bash
+./fpga/build/build_synth_sweep.py [board] [--directives DIR ...] [--retiming] [--clean-after]
+```
+
+**How it works:**
+1. Compiles hello_world for initial BRAM contents
+2. Launches 10 parallel Vivado synthesis jobs, each with a different synthesis directive
+3. Reports timing (WNS/TNS) and utilization (LUTs, FFs, BRAM, DSP) for all runs
+4. Results are sorted by timing and by area for easy comparison
+
+**Arguments:**
+- `board` - Target board (default: x3)
+- `--directives` - Run only specific directives (default: all 10)
+- `--retiming` - Enable global retiming during synthesis
+- `--clean-after` - Delete work directories after reporting results (default: keep all)
+
+**Examples:**
+```bash
+# Run all synthesis directives for x3
+./fpga/build/build_synth_sweep.py x3
+
+# Run with retiming enabled
+./fpga/build/build_synth_sweep.py x3 --retiming
+
+# Run only specific directives
+./fpga/build/build_synth_sweep.py x3 --directives default AreaOptimized_high PerformanceOptimized
+
+# Clean up after (default keeps all work directories)
+./fpga/build/build_synth_sweep.py x3 --clean-after
+```
+
+**Directives tested:**
+- `default` - Default synthesis
+- `runtimeoptimized` - Fewer optimizations, faster runtime
+- `AreaOptimized_high` - Aggressive area optimization
+- `AreaOptimized_medium` - Moderate area optimization
+- `AlternateRoutability` - Improved routability, reduced MUXFs/CARRYs
+- `AreaMapLargeShiftRegToBRAM` - Map large shift registers to BRAM
+- `AreaMultThresholdDSP` - Lower threshold for DSP inference
+- `FewerCarryChains` - Higher threshold for carry chain usage
+- `PerformanceOptimized` - Timing optimization at expense of area
+- `LogicCompaction` - Pack multipliers into smaller areas
+
+Results are saved in `build/<board>/work_<directive>/` directories with checkpoints and reports.
 
 ## Programming the FPGA
 
@@ -324,7 +373,7 @@ The build system uses aggressive optimization settings for maximum frequency:
 | Synthesis    | `AlternateRoutability`      | Prevent local congestion                                            |
 | Synthesis    | `global_retiming on`        | Move registers across logic for timing (optional, via `--retiming`) |
 | Optimization | `ExploreWithRemap`          | LUT optimization                                                    |
-| Placement    | (varies)                    | `build.py`: AltSpreadLogic_high; `build_sweep.py`: tries 12+ directives |
+| Placement    | (varies)                    | `build.py`: AltSpreadLogic_high; `build_placer_sweep.py`: tries 12+ directives |
 | Routing      | `AggressiveExplore`         | Maximum routing effort                                              |
 | Routing      | `AlternateFlowWithRetiming` | Enable retiming optimizations                                       |
 
@@ -368,7 +417,7 @@ The build system uses aggressive optimization settings for maximum frequency:
 - Use `--target <pattern>` to select the correct board by index, vendor, or serial number
 
 **Timing failures**
-- Use `build_sweep.py` to try multiple placer directives in parallel
+- Use `build_placer_sweep.py` to try multiple placer directives in parallel
 - Check `build/<board>/work/post_route_timing.rpt` for failing paths
 - Consider reducing clock frequency in the board's constraint file
 

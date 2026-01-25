@@ -48,6 +48,7 @@ from cocotb.triggers import RisingEdge, ReadOnly
 from typing import Any, Generic, TypeVar
 from config import (
     MASK32,
+    MASK64,
     DUTSignalPaths,
     FIRST_WRITABLE_REGISTER,
     NUM_REGISTERS,
@@ -232,9 +233,11 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
         """
         for reg in range(NUM_REGISTERS):  # Start from f0, not f1
             hw_val = actual[reg]
-            sw_val = expected[reg] & MASK32
+            sw_val = expected[reg] & MASK64
             if hw_val != sw_val:
-                return f"FP Register f{reg}: DUT 0x{hw_val:08x} EXP 0x{sw_val:08x}"
+                return (
+                    f"FP Register f{reg}: DUT 0x{hw_val:016x} " f"EXP 0x{sw_val:016x}"
+                )
         return None
 
 
