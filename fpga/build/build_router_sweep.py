@@ -14,11 +14,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run FPGA builds with multiple placer directives in parallel and harvest the best result.
+"""Run FPGA route_design with multiple directives in parallel and harvest the best result.
 
-This script runs synthesis once, then forks into parallel place+route runs with different
-placer directives. As soon as ANY run passes timing, all remaining runs are terminated
-and that result is used. If no run passes timing, the best result (by WNS) is selected.
+This script runs synthesis, opt_design, and place_design once (or uses an existing
+post_place checkpoint), then forks into parallel route_design runs with different
+router directives. The best result (by WNS) is selected and moved to work/.
 """
 
 import argparse
@@ -39,47 +39,21 @@ BOARD_CONFIG = {
     "nexys_a7": {"clock_freq": 80000000},
 }
 
-# All available Vivado place_design directives
-ALL_PLACER_DIRECTIVES = [
+# All available Vivado route_design directives
+ALL_ROUTER_DIRECTIVES = [
     "Default",
     "Explore",
-    "WLDrivenBlockPlacement",
-    "EarlyBlockPlacement",
-    "ExtraNetDelay_high",
-    "ExtraNetDelay_low",
-    "SSI_SpreadLogic_high",
-    "SSI_SpreadLogic_low",
-    "AltSpreadLogic_high",
-    "AltSpreadLogic_medium",
-    "AltSpreadLogic_low",
-    "ExtraPostPlacementOpt",
-    "ExtraTimingOpt",
-    "SSI_SpreadSLLs",
-    "SSI_BalanceSLLs",
-    "SSI_BalanceSLRs",
-    "SSI_HighUtilSLRs",
+    "AggressiveExplore",
+    "NoTimingRelaxation",
+    "MoreGlobalIterations",
+    "HigherDelayCost",
+    "AdvancedSkewModeling",
     "RuntimeOptimized",
-    "Quick",
 ]
 
-# ML-predicted directives (Auto_1, Auto_2, Auto_3)
-AUTO_DIRECTIVES = ["Auto_1", "Auto_2", "Auto_3"]
-
-# Recommended subset for non-SSI devices (7-series, single-die UltraScale+)
-# SSI_* directives only work on stacked silicon interconnect devices
-NON_SSI_DIRECTIVES = [
-    "Default",
-    "Explore",
-    "WLDrivenBlockPlacement",
-    "EarlyBlockPlacement",
-    "ExtraNetDelay_high",
-    "ExtraNetDelay_low",
-    "AltSpreadLogic_high",
-    "AltSpreadLogic_medium",
-    "AltSpreadLogic_low",
-    "ExtraPostPlacementOpt",
-    "ExtraTimingOpt",
-    "RuntimeOptimized",
+# UltraScale-only directives
+ULTRASCALE_DIRECTIVES = [
+    "AlternateCLBRouting",
 ]
 
 
@@ -94,6 +68,75 @@ class TimingResult:
     ths_ns: float | None
     timing_met: bool
     work_dir: Path
+
+
+def select_best_result(results: list[TimingResult]) -> TimingResult | None:
+    """Select the best result based on timing.
+
+    Priority:
+    1. Timing met (prefer runs where all constraints are satisfied)
+    2. Best WNS (highest value = least negative = best slack)
+    3. Best TNS (least negative total negative slack)
+    """
+    # Filter out runs that failed (no timing data)
+    valid_results = [r for r in results if r.wns_ns is not None]
+
+    if not valid_results:
+        return None
+
+    # Sort by: timing_met (True first), then WNS (highest first), then TNS (highest first)
+    sorted_results = sorted(
+        valid_results,
+        key=lambda r: (
+            r.timing_met,
+            r.wns_ns or float("-inf"),
+            r.tns_ns or float("-inf"),
+        ),
+        reverse=True,
+    )
+
+    return sorted_results[0]
+
+
+def move_winner_to_main_work(
+    script_dir: Path,
+    board_name: str,
+    winner: TimingResult,
+) -> None:
+    """Move the winning run's results to the main work directory.
+
+    Preserves post_synth, post_opt, and post_place files from original work directory.
+    """
+    main_work = script_dir / board_name / "work"
+
+    # Collect files to preserve from original work directory
+    files_to_preserve = []
+    if main_work.exists():
+        for prefix in ["post_synth", "post_opt", "post_place"]:
+            for f in main_work.glob(f"{prefix}*"):
+                files_to_preserve.append(f)
+
+    # Copy files to temp location before removing work directory
+    temp_dir = script_dir / board_name / "work_preserve_temp"
+    if files_to_preserve:
+        temp_dir.mkdir(exist_ok=True)
+        for f in files_to_preserve:
+            shutil.copy2(f, temp_dir / f.name)
+
+    # Remove main work directory if it exists
+    if main_work.exists():
+        shutil.rmtree(main_work)
+
+    # Move winner to main work
+    shutil.move(winner.work_dir, main_work)
+
+    # Restore preserved files
+    if temp_dir.exists():
+        for f in temp_dir.iterdir():
+            shutil.copy2(f, main_work / f.name)
+        shutil.rmtree(temp_dir)
+
+    print(f"\nMoved winning results from {winner.work_dir} to {main_work}")
 
 
 def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
@@ -145,13 +188,13 @@ def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
         return False
 
 
-def run_synthesis_and_opt(
+def run_through_placement(
     script_dir: Path,
     board_name: str,
     retiming: bool,
     vivado_path: str,
 ) -> Path | None:
-    """Run synthesis and opt_design, return path to checkpoint."""
+    """Run synthesis, opt_design, and place_design. Return path to checkpoint."""
     work_dir = script_dir / board_name / "work"
 
     # Clean work directory
@@ -169,22 +212,25 @@ def run_synthesis_and_opt(
         board_name,
         "0",  # synth_only
         "1" if retiming else "0",
-        "1",  # opt_only - stop after opt_design
-        "Default",  # placer_directive (not used since opt_only=1)
-        "",  # checkpoint_path (none - full synthesis)
-        "",  # work_suffix (none - use default work directory)
+        "0",  # opt_only
+        "AltSpreadLogic_high",  # placer_directive
+        "",  # checkpoint_path (none - full flow)
+        "",  # work_suffix
+        "PerformanceOptimized",  # synth_directive
+        "ExploreWithRemap",  # opt_directive
+        "1",  # place_only - stop after place_design
     ]
 
     print(f"\n{'='*60}")
-    print("Running synthesis and opt_design...")
+    print("Running synthesis, opt_design, and place_design...")
     print(f"{'='*60}\n")
 
     result = subprocess.run(vivado_command)
     if result.returncode != 0:
-        print("Error: Synthesis failed", file=sys.stderr)
+        print("Error: Build through placement failed", file=sys.stderr)
         return None
 
-    checkpoint = work_dir / "post_opt.dcp"
+    checkpoint = work_dir / "post_place.dcp"
     if not checkpoint.exists():
         print(f"Error: Checkpoint not found at {checkpoint}", file=sys.stderr)
         return None
@@ -202,14 +248,14 @@ class VivadoProcess:
     work_dir: Path
 
 
-def start_place_route_process(
+def start_route_process(
     script_dir: Path,
     board_name: str,
     directive: str,
     checkpoint_path: Path,
     vivado_path: str,
 ) -> VivadoProcess:
-    """Start a place+route process with a specific directive. Returns VivadoProcess."""
+    """Start a route_design process with a specific directive. Returns VivadoProcess."""
     vivado_command = [
         vivado_path,
         "-mode",
@@ -222,9 +268,13 @@ def start_place_route_process(
         "0",  # synth_only
         "0",  # retiming (not used when loading checkpoint)
         "0",  # opt_only
-        directive,  # placer_directive
-        str(checkpoint_path),  # checkpoint_path
+        "Default",  # placer_directive (not used - loading post_place checkpoint)
+        str(checkpoint_path),  # checkpoint_path (post_place.dcp)
         directive,  # work_suffix
+        "PerformanceOptimized",  # synth_directive (not used)
+        "ExploreWithRemap",  # opt_directive (not used)
+        "0",  # place_only (not used - loading post_place checkpoint)
+        directive,  # router_directive
     ]
 
     # Redirect stdout/stderr to a log file
@@ -310,63 +360,17 @@ def harvest_results(
     return results
 
 
-def select_best_result(results: list[TimingResult]) -> TimingResult | None:
-    """Select the best result based on timing.
-
-    Priority:
-    1. Timing met (prefer runs where all constraints are satisfied)
-    2. Best WNS (highest value = least negative = best slack)
-    3. Best TNS (least negative total negative slack)
-    """
-    # Filter out runs that failed (no timing data)
-    valid_results = [r for r in results if r.wns_ns is not None]
-
-    if not valid_results:
-        return None
-
-    # Sort by: timing_met (True first), then WNS (highest first), then TNS (highest first)
-    sorted_results = sorted(
-        valid_results,
-        key=lambda r: (
-            r.timing_met,
-            r.wns_ns or float("-inf"),
-            r.tns_ns or float("-inf"),
-        ),
-        reverse=True,
-    )
-
-    return sorted_results[0]
-
-
-def move_winner_to_main_work(
-    script_dir: Path,
-    board_name: str,
-    winner: TimingResult,
-) -> None:
-    """Move the winning run's results to the main work directory."""
-    main_work = script_dir / board_name / "work"
-
-    # Remove main work directory if it exists
-    if main_work.exists():
-        shutil.rmtree(main_work)
-
-    # Move winner to main work
-    shutil.move(winner.work_dir, main_work)
-
-    print(f"\nMoved winning results from {winner.work_dir} to {main_work}")
-
-
 def print_results_table(
     results: list[TimingResult], winner: TimingResult | None
 ) -> None:
     """Print a formatted table of results."""
-    print("\n" + "=" * 80)
-    print("PLACER DIRECTIVE SWEEP RESULTS")
-    print("=" * 80)
+    print("\n" + "=" * 100)
+    print("ROUTER DIRECTIVE SWEEP RESULTS")
+    print("=" * 100)
     print(
-        f"{'Directive':<28} {'WNS (ns)':>10} {'TNS (ns)':>12} {'WHS (ns)':>10} {'Met':>6} {'Winner':>8}"
+        f"{'Directive':<24} {'WNS (ns)':>10} {'TNS (ns)':>12} {'WHS (ns)':>10} {'Met':>6} {'Winner':>8}"
     )
-    print("-" * 80)
+    print("-" * 100)
 
     for r in sorted(results, key=lambda x: x.wns_ns or float("-inf"), reverse=True):
         wns = f"{r.wns_ns:.3f}" if r.wns_ns is not None else "FAILED"
@@ -376,16 +380,16 @@ def print_results_table(
         is_winner = "*" if winner and r.directive == winner.directive else ""
 
         print(
-            f"{r.directive:<28} {wns:>10} {tns:>12} {whs:>10} {met:>6} {is_winner:>8}"
+            f"{r.directive:<24} {wns:>10} {tns:>12} {whs:>10} {met:>6} {is_winner:>8}"
         )
 
-    print("=" * 80)
+    print("=" * 100)
 
 
 def main() -> None:
-    """Run placer directive sweep."""
+    """Run router directive sweep."""
     parser = argparse.ArgumentParser(
-        description="Run FPGA builds with multiple placer directives in parallel"
+        description="Run FPGA route_design with multiple directives in parallel"
     )
     parser.add_argument(
         "board_name",
@@ -397,17 +401,12 @@ def main() -> None:
     parser.add_argument(
         "--directives",
         nargs="+",
-        help="Specific directives to run (default: all non-SSI directives)",
+        help="Specific directives to run (default: all router directives)",
     )
     parser.add_argument(
-        "--all",
+        "--ultrascale",
         action="store_true",
-        help="Run ALL directives including SSI-specific ones",
-    )
-    parser.add_argument(
-        "--auto",
-        action="store_true",
-        help="Include ML-predicted Auto_1, Auto_2, Auto_3 directives",
+        help="Include UltraScale-only directives (AlternateCLBRouting)",
     )
     parser.add_argument(
         "--retiming",
@@ -420,9 +419,9 @@ def main() -> None:
         help="Path to Vivado executable (default: vivado from PATH)",
     )
     parser.add_argument(
-        "--skip-synth-opt",
+        "--skip-place",
         action="store_true",
-        help="Skip synthesis and opt_design, use existing post_opt.dcp checkpoint",
+        help="Skip synth/opt/place, use existing post_place.dcp checkpoint",
     )
     parser.add_argument(
         "--keep-all",
@@ -438,13 +437,10 @@ def main() -> None:
     # Determine which directives to run
     if args.directives:
         directives = args.directives
-    elif args.all:
-        directives = ALL_PLACER_DIRECTIVES.copy()
     else:
-        directives = NON_SSI_DIRECTIVES.copy()
-
-    if args.auto:
-        directives.extend(AUTO_DIRECTIVES)
+        directives = ALL_ROUTER_DIRECTIVES.copy()
+        if args.ultrascale or board_name == "x3":
+            directives.extend(ULTRASCALE_DIRECTIVES)
 
     # Remove duplicates while preserving order
     seen = set()
@@ -463,43 +459,40 @@ def main() -> None:
         print("Error: Failed to compile hello_world", file=sys.stderr)
         sys.exit(1)
 
-    # Step 2: Run synthesis + opt_design (or use existing checkpoint)
-    if args.skip_synth_opt:
-        checkpoint = script_dir / board_name / "work" / "post_opt.dcp"
+    # Step 2: Run through placement (or use existing checkpoint)
+    if args.skip_place:
+        checkpoint = script_dir / board_name / "work" / "post_place.dcp"
         if not checkpoint.exists():
             print(f"Error: Checkpoint not found: {checkpoint}", file=sys.stderr)
-            print("Run without --skip-synth-opt first to generate it.")
+            print("Run without --skip-place first to generate it.")
             sys.exit(1)
         print(f"\nUsing existing checkpoint: {checkpoint}")
     else:
-        checkpoint = run_synthesis_and_opt(
+        checkpoint = run_through_placement(
             script_dir, board_name, args.retiming, args.vivado_path
         )
         if checkpoint is None:
             sys.exit(1)
 
-    # Step 3: Run place+route with all directives in parallel
+    # Step 3: Run route_design with all directives in parallel
     print(f"\n{'='*60}")
-    print(f"Running {len(directives)} place+route jobs in parallel...")
-    print("Will terminate all jobs when first one passes timing.")
+    print(f"Running {len(directives)} route_design jobs in parallel...")
     print(f"{'='*60}\n")
 
     # Start all processes
     running_procs: list[VivadoProcess] = []
     for directive in directives:
-        proc = start_place_route_process(
+        proc = start_route_process(
             script_dir, board_name, directive, checkpoint, args.vivado_path
         )
         running_procs.append(proc)
         print(f"  [STARTED] {directive} (PID {proc.process.pid})")
 
-    # Poll for completion and check timing
+    # Poll for completion
     completed_directives: list[str] = []
     failed_directives: list[str] = []
-    winner: TimingResult | None = None
-    early_exit = False
 
-    while running_procs and not early_exit:
+    while running_procs:
         time.sleep(5)  # Poll every 5 seconds
 
         still_running = []
@@ -513,56 +506,20 @@ def main() -> None:
                 if ret == 0:
                     completed_directives.append(proc.directive)
                     print(f"  [DONE] {proc.directive}")
-
-                    # Check if timing is met
-                    timing_rpt = proc.work_dir / "post_route_timing.rpt"
-                    timing = extract_timing_from_report(timing_rpt)
-
-                    if timing.get("timing_met", False):
-                        print(f"\n  *** TIMING MET with {proc.directive}! ***")
-                        winner = TimingResult(
-                            directive=proc.directive,
-                            wns_ns=timing.get("wns_ns"),
-                            tns_ns=timing.get("tns_ns"),
-                            whs_ns=timing.get("whs_ns"),
-                            ths_ns=timing.get("ths_ns"),
-                            timing_met=True,
-                            work_dir=proc.work_dir,
-                        )
-                        early_exit = True
                 else:
                     failed_directives.append(proc.directive)
                     print(f"  [FAIL] {proc.directive} (return code {ret})")
 
         running_procs = still_running
 
-    # If we found a winner with timing met, kill remaining processes
-    if early_exit and running_procs:
-        print(f"\n  Terminating {len(running_procs)} remaining jobs...")
-        for proc in running_procs:
-            kill_process_tree(proc)
-            print(f"    [KILLED] {proc.directive}")
-        # Give processes time to die
-        time.sleep(2)
-
     print(f"\nCompleted: {len(completed_directives)}/{len(directives)}")
     if failed_directives:
         print(f"Failed: {', '.join(failed_directives)}")
-    if early_exit:
-        killed = [p.directive for p in running_procs]
-        if killed:
-            print(f"Killed (early exit): {', '.join(killed)}")
 
-    # If no early winner, harvest all results and pick the best
-    if winner is None:
-        print("\nNo run passed timing. Harvesting all results to find best...")
-        results = harvest_results(script_dir, board_name, directives)
-        winner = select_best_result(results)
-        print_results_table(results, winner)
-    else:
-        # We have an early winner, but still show what completed
-        results = harvest_results(script_dir, board_name, completed_directives)
-        print_results_table(results, winner)
+    # Harvest all results and pick the best
+    results = harvest_results(script_dir, board_name, directives)
+    winner = select_best_result(results)
+    print_results_table(results, winner)
 
     if winner:
         print(f"\n*** WINNER: {winner.directive} ***")
@@ -585,6 +542,10 @@ def main() -> None:
                 if work_dir.exists():
                     shutil.rmtree(work_dir)
             print("Done.")
+
+        print(
+            f"\nBitstream: {script_dir / board_name / 'work' / f'{board_name}_frost.bit'}"
+        )
     else:
         print("\nError: No successful runs!", file=sys.stderr)
         sys.exit(1)

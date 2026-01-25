@@ -19,13 +19,15 @@
 
   Implements FMUL.S operation.
 
-  Multi-cycle implementation (8-cycle latency, non-pipelined):
+  Multi-cycle implementation (18-cycle latency, non-pipelined, deep post-multiply pipeline):
     Cycle 0: Capture operands
     Cycle 1: Unpack, compute result sign and exponent, detect special cases
     Cycle 2: Multiply mantissas (24x24 -> 48 bits)
+    Cycle 2B: TIMING: 10-stage pipeline after DSP multiply
     Cycle 3A: Compute leading zero count (LZC)
     Cycle 3B: Apply normalization shift
-    Cycle 4: Subnormal handling, compute round-up decision
+    Cycle 4A: Subnormal handling, compute rounding inputs
+    Cycle 4B: Compute round-up decision
     Cycle 5: Apply rounding increment, format result
     Cycle 6: Capture result
     Cycle 7: Output registered result
@@ -39,15 +41,17 @@
     - Infinity * finite = infinity
     - Zero * anything = zero (with proper sign)
 */
-module fp_multiplier (
+module fp_multiplier #(
+    parameter int unsigned FP_WIDTH = 32
+) (
     input logic i_clk,
     input logic i_rst,
     input logic i_valid,
-    input logic [31:0] i_operand_a,
-    input logic [31:0] i_operand_b,
+    input logic [FP_WIDTH-1:0] i_operand_a,
+    input logic [FP_WIDTH-1:0] i_operand_b,
     input logic [2:0] i_rounding_mode,
     input logic i_stall,  // Pipeline stall (unused in non-pipelined mode)
-    output logic [31:0] o_result,
+    output logic [FP_WIDTH-1:0] o_result,
     output logic o_valid,
     output riscv_pkg::fp_flags_t o_flags
 );
@@ -56,51 +60,75 @@ module fp_multiplier (
   // State Machine
   // =========================================================================
 
-  typedef enum logic [2:0] {
-    IDLE    = 3'b000,
-    STAGE1  = 3'b001,
-    STAGE2  = 3'b010,
-    STAGE3A = 3'b011,
-    STAGE3B = 3'b100,
-    STAGE4  = 3'b101,
-    STAGE5  = 3'b110,
-    STAGE6  = 3'b111
+  typedef enum logic [3:0] {
+    IDLE    = 4'b0000,
+    STAGE1  = 4'b0001,
+    STAGE2  = 4'b0010,
+    STAGE2B = 4'b1001,  // TIMING: Post-multiply pipeline shift (MulPipeStages deep)
+    STAGE3A = 4'b0011,
+    STAGE3B = 4'b0100,
+    STAGE4A = 4'b0101,
+    STAGE4B = 4'b0110,
+    STAGE5  = 4'b0111,
+    STAGE6  = 4'b1000
   } state_e;
 
   state_e state, next_state;
+
+  localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
+  localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
+  localparam int unsigned MantBits = FracBits + 1;
+  localparam int unsigned ProdBits = MantBits * 2;
+  localparam int unsigned ExpExtBits = ExpBits + 2;
+  localparam int signed ExpBias = (1 << (ExpBits - 1)) - 1;
+  localparam int unsigned LzcBits = $clog2(ProdBits + 1);
+  localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
+  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
+  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
+  localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
+  localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
+  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
+  localparam logic [LzcBits-1:0] MantBitsPlus3Shift = LzcBits'(MantBits + 3);
+  localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
+    {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
+  };
+  // Post-multiply pipeline depth (Vivado recommends 10 stages for wide multiplier).
+  localparam int unsigned MulPipeStages = 10;
 
   // =========================================================================
   // Captured Operands (registered at start of operation)
   // =========================================================================
 
-  logic [31:0] operand_a_reg, operand_b_reg;
+  logic [FP_WIDTH-1:0] operand_a_reg, operand_b_reg;
   logic [2:0] rounding_mode_reg;
 
   // =========================================================================
   // Stage 1: Unpack (combinational from captured operands)
   // =========================================================================
 
-  logic [31:0] op_a, op_b;
+  logic [FP_WIDTH-1:0] op_a, op_b;
   assign op_a = operand_a_reg;
   assign op_b = operand_b_reg;
 
   logic sign_a, sign_b, result_sign;
-  logic [7:0] exp_a, exp_b;
-  logic [7:0] exp_a_adj, exp_b_adj;
-  logic [23:0] mant_a, mant_b;
+  logic [ExpBits-1:0] exp_a, exp_b;
+  logic [ExpBits-1:0] exp_a_adj, exp_b_adj;
+  logic [MantBits-1:0] mant_a, mant_b;
 
-  assign sign_a = op_a[31];
-  assign sign_b = op_b[31];
+  assign sign_a = op_a[FP_WIDTH-1];
+  assign sign_b = op_b[FP_WIDTH-1];
   assign result_sign = sign_a ^ sign_b;
 
-  assign exp_a = op_a[30:23];
-  assign exp_b = op_b[30:23];
-  assign exp_a_adj = (exp_a == 8'b0 && op_a[22:0] != 23'b0) ? 8'd1 : exp_a;
-  assign exp_b_adj = (exp_b == 8'b0 && op_b[22:0] != 23'b0) ? 8'd1 : exp_b;
+  assign exp_a = op_a[FP_WIDTH-2-:ExpBits];
+  assign exp_b = op_b[FP_WIDTH-2-:ExpBits];
+  assign exp_a_adj = (exp_a == '0 && op_a[FracBits-1:0] != '0) ?
+                     {{(ExpBits-1){1'b0}}, 1'b1} : exp_a;
+  assign exp_b_adj = (exp_b == '0 && op_b[FracBits-1:0] != '0) ?
+                     {{(ExpBits-1){1'b0}}, 1'b1} : exp_b;
 
   // Mantissa with implicit 1 (or 0 for zero/subnormal)
-  assign mant_a = (exp_a == 8'b0) ? {1'b0, op_a[22:0]} : {1'b1, op_a[22:0]};
-  assign mant_b = (exp_b == 8'b0) ? {1'b0, op_b[22:0]} : {1'b1, op_b[22:0]};
+  assign mant_a = (exp_a == '0) ? {1'b0, op_a[FracBits-1:0]} : {1'b1, op_a[FracBits-1:0]};
+  assign mant_b = (exp_b == '0) ? {1'b0, op_b[FracBits-1:0]} : {1'b1, op_b[FracBits-1:0]};
 
   // Special value detection
   logic is_zero_a, is_zero_b;
@@ -108,43 +136,47 @@ module fp_multiplier (
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
 
-  assign is_zero_a = (exp_a == 8'b0) && (op_a[22:0] == 23'b0);
-  assign is_zero_b = (exp_b == 8'b0) && (op_b[22:0] == 23'b0);
-  assign is_inf_a  = (exp_a == 8'hFF) && (op_a[22:0] == 23'b0);
-  assign is_inf_b  = (exp_b == 8'hFF) && (op_b[22:0] == 23'b0);
-  assign is_nan_a  = (exp_a == 8'hFF) && (op_a[22:0] != 23'b0);
-  assign is_nan_b  = (exp_b == 8'hFF) && (op_b[22:0] != 23'b0);
-  assign is_snan_a = is_nan_a && ~op_a[22];
-  assign is_snan_b = is_nan_b && ~op_b[22];
+  assign is_zero_a = (exp_a == '0) && (op_a[FracBits-1:0] == '0);
+  assign is_zero_b = (exp_b == '0) && (op_b[FracBits-1:0] == '0);
+  assign is_inf_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] == '0);
+  assign is_inf_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] == '0);
+  assign is_nan_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] != '0);
+  assign is_nan_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] != '0);
+  assign is_snan_a = is_nan_a && ~op_a[FracBits-1];
+  assign is_snan_b = is_nan_b && ~op_b[FracBits-1];
 
   // Compute tentative exponent (before normalization)
-  logic signed [9:0] tentative_exp;
-  assign tentative_exp = $signed({2'b0, exp_a_adj}) + $signed({2'b0, exp_b_adj}) - 10'sd127;
+  logic signed [ExpExtBits-1:0] tentative_exp;
+  assign tentative_exp = $signed(
+      {{(ExpExtBits - ExpBits) {1'b0}}, exp_a_adj}
+  ) + $signed(
+      {{(ExpExtBits - ExpBits) {1'b0}}, exp_b_adj}
+  ) - ExpBiasExt;
 
   // Special case handling
-  logic        is_special;
-  logic [31:0] special_result;
-  logic        special_invalid;
+  logic                is_special;
+  logic [FP_WIDTH-1:0] special_result;
+  logic                special_invalid;
 
   always_comb begin
     is_special = 1'b0;
-    special_result = 32'b0;
+    special_result = '0;
     special_invalid = 1'b0;
 
     if (is_nan_a || is_nan_b) begin
       is_special = 1'b1;
-      special_result = riscv_pkg::FpCanonicalNan;
+      special_result = CanonicalNan;
       special_invalid = is_snan_a | is_snan_b;
     end else if ((is_inf_a && is_zero_b) || (is_zero_a && is_inf_b)) begin
       is_special = 1'b1;
-      special_result = riscv_pkg::FpCanonicalNan;
+      special_result = CanonicalNan;
       special_invalid = 1'b1;
     end else if (is_inf_a || is_inf_b) begin
       is_special = 1'b1;
-      special_result = {result_sign, 8'hFF, 23'b0};
+      special_result = {result_sign, ExpMax, {FracBits{1'b0}}};
     end else if (is_zero_a || is_zero_b) begin
       is_special = 1'b1;
-      special_result = {result_sign, 31'b0};
+      special_result = {result_sign, {(FP_WIDTH - 1) {1'b0}}};
     end
   end
 
@@ -152,13 +184,13 @@ module fp_multiplier (
   // Stage 1 -> Stage 2 Pipeline Register (after unpack, before multiply)
   // =========================================================================
 
-  logic              result_sign_s2;
-  logic signed [9:0] tentative_exp_s2;
-  logic [23:0] mant_a_s2, mant_b_s2;
-  logic        is_special_s2;
-  logic [31:0] special_result_s2;
-  logic        special_invalid_s2;
-  logic [ 2:0] rm_s2;
+  logic                         result_sign_s2;
+  logic signed [ExpExtBits-1:0] tentative_exp_s2;
+  logic [MantBits-1:0] mant_a_s2, mant_b_s2;
+  logic                is_special_s2;
+  logic [FP_WIDTH-1:0] special_result_s2;
+  logic                special_invalid_s2;
+  logic [         2:0] rm_s2;
 
   // =========================================================================
   // Stage 2: Multiply (combinational 24x24 from stage 2 regs)
@@ -166,39 +198,47 @@ module fp_multiplier (
   // =========================================================================
 
   (* use_dsp = "yes" *)
-  logic [47:0] product_s2_comb;
+  logic [ProdBits-1:0] product_s2_comb;
   assign product_s2_comb = mant_a_s2 * mant_b_s2;
 
   // =========================================================================
-  // Stage 2 -> Stage 3 Pipeline Register (after multiply, before normalize)
+  // Post-Multiply Product Pipeline (TIMING: break DSP critical path)
+  // =========================================================================
+  // Deep pipeline after DSP multiply to satisfy timing (MulPipeStages stages).
+
+  logic        [     ProdBits-1:0] product_pipe       [MulPipeStages];
+  logic        [MulPipeStages-1:0] product_valid_pipe;
+
+  // =========================================================================
+  // Stage 2B -> Stage 3 Pipeline Register (after multiply, before normalize)
   // =========================================================================
 
-  logic               result_sign_s3;
-  logic signed [ 9:0] tentative_exp_s3;
-  logic        [47:0] product_s3;
-  logic               is_special_s3;
-  logic        [31:0] special_result_s3;
-  logic               special_invalid_s3;
-  logic        [ 2:0] rm_s3;
+  logic                            result_sign_s3;
+  logic signed [   ExpExtBits-1:0] tentative_exp_s3;
+  logic        [     ProdBits-1:0] product_s3;
+  logic                            is_special_s3;
+  logic        [     FP_WIDTH-1:0] special_result_s3;
+  logic                            special_invalid_s3;
+  logic        [              2:0] rm_s3;
 
   // =========================================================================
   // Stage 3A: Compute Leading Zero Count (combinational from stage 3 regs)
   // =========================================================================
 
-  logic               product_is_zero_s3;
-  logic               product_msb_set_s3;
+  logic                            product_is_zero_s3;
+  logic                            product_msb_set_s3;
 
-  assign product_is_zero_s3 = (product_s3 == 48'b0);
-  assign product_msb_set_s3 = product_s3[47];
+  assign product_is_zero_s3 = (product_s3 == '0);
+  assign product_msb_set_s3 = product_s3[ProdBits-1];
 
-  logic [5:0] lzc_s3;
-  logic       lzc_found_s3;
+  logic [LzcBits-1:0] lzc_s3;
+  logic               lzc_found_s3;
 
   always_comb begin
-    lzc_s3 = 6'd0;
+    lzc_s3 = '0;
     lzc_found_s3 = 1'b0;
     if (!product_is_zero_s3 && !product_msb_set_s3) begin
-      for (int i = 46; i >= 0; i--) begin
+      for (int i = ProdBits - 2; i >= 0; i--) begin
         if (!lzc_found_s3) begin
           if (product_s3[i]) begin
             lzc_found_s3 = 1'b1;
@@ -214,34 +254,34 @@ module fp_multiplier (
   // Stage 3A -> Stage 3B Pipeline Register (after LZC, before shift)
   // =========================================================================
 
-  logic               result_sign_s3b;
-  logic signed [ 9:0] tentative_exp_s3b;
-  logic        [47:0] product_s3b;
-  logic               product_is_zero_s3b;
-  logic               product_msb_set_s3b;
-  logic        [ 5:0] lzc_s3b;
-  logic               is_special_s3b;
-  logic        [31:0] special_result_s3b;
-  logic               special_invalid_s3b;
-  logic        [ 2:0] rm_s3b;
+  logic                         result_sign_s3b;
+  logic signed [ExpExtBits-1:0] tentative_exp_s3b;
+  logic        [  ProdBits-1:0] product_s3b;
+  logic                         product_is_zero_s3b;
+  logic                         product_msb_set_s3b;
+  logic        [   LzcBits-1:0] lzc_s3b;
+  logic                         is_special_s3b;
+  logic        [  FP_WIDTH-1:0] special_result_s3b;
+  logic                         special_invalid_s3b;
+  logic        [           2:0] rm_s3b;
 
   // =========================================================================
   // Stage 3B: Apply Normalization Shift (combinational from stage 3B regs)
   // =========================================================================
 
-  logic        [47:0] normalized_product_s3b;
-  logic signed [ 9:0] normalized_exp_s3b;
+  logic        [  ProdBits-1:0] normalized_product_s3b;
+  logic signed [ExpExtBits-1:0] normalized_exp_s3b;
 
   always_comb begin
     if (product_is_zero_s3b) begin
-      normalized_product_s3b = 48'b0;
-      normalized_exp_s3b = 10'sb0;
+      normalized_product_s3b = '0;
+      normalized_exp_s3b = '0;
     end else if (product_msb_set_s3b) begin
       normalized_product_s3b = product_s3b;
       normalized_exp_s3b = tentative_exp_s3b + 1;
     end else begin
       normalized_product_s3b = product_s3b << (lzc_s3b + 1'b1);
-      normalized_exp_s3b = tentative_exp_s3b - $signed({4'b0, lzc_s3b});
+      normalized_exp_s3b = tentative_exp_s3b - $signed({{(ExpExtBits - LzcBits) {1'b0}}, lzc_s3b});
     end
   end
 
@@ -249,40 +289,45 @@ module fp_multiplier (
   // Stage 3B -> Stage 4 Pipeline Register (after normalize, before round)
   // =========================================================================
 
-  logic               result_sign_s4;
-  logic signed [ 9:0] exp_s4;
-  logic        [47:0] product_s4;
-  logic               product_is_zero_s4;
-  logic               is_special_s4;
-  logic        [31:0] special_result_s4;
-  logic               special_invalid_s4;
-  logic        [ 2:0] rm_s4;
+  logic                         result_sign_s4;
+  logic signed [ExpExtBits-1:0] exp_s4;
+  logic        [  ProdBits-1:0] product_s4;
+  logic                         product_is_zero_s4;
+  logic                         is_special_s4;
+  // TIMING OPTIMIZATION: Pre-compute subnormal condition in stage 3B to reduce
+  // critical path depth in stage 4A. The comparison is done on normalized_exp_s3b
+  // and registered, so the mux select is ready immediately in stage 4A.
+  logic                         is_subnormal_s4;
+  logic        [  FP_WIDTH-1:0] special_result_s4;
+  logic                         special_invalid_s4;
+  logic        [           2:0] rm_s4;
 
   // =========================================================================
-  // Stage 4: Subnormal handling, compute round-up decision
-  // (Split rounding into 2 stages to meet timing)
+  // Stage 4A: Subnormal handling, compute rounding inputs
   // =========================================================================
 
-  logic        [24:0] pre_round_mant_s4;
+  logic        [    MantBits:0] pre_round_mant_s4;
   logic guard_bit_s4, round_bit_s4, sticky_bit_s4;
 
-  assign pre_round_mant_s4 = product_s4[47:23];
-  assign guard_bit_s4 = product_s4[22];
-  assign round_bit_s4 = product_s4[21];
-  assign sticky_bit_s4 = |product_s4[20:0];
+  localparam int unsigned GuardIndexP4 = ProdBits - MantBits - 2;
+
+  assign pre_round_mant_s4 = product_s4[ProdBits-1-:(MantBits+1)];
+  assign guard_bit_s4 = product_s4[GuardIndexP4];
+  assign round_bit_s4 = product_s4[GuardIndexP4-1];
+  assign sticky_bit_s4 = |product_s4[GuardIndexP4-2:0];
 
   // Extract mantissa and rounding bits
-  logic [23:0] mantissa_retained_s4;
-  assign mantissa_retained_s4 = pre_round_mant_s4[24:1];
+  logic [MantBits-1:0] mantissa_retained_s4;
+  assign mantissa_retained_s4 = pre_round_mant_s4[MantBits:1];
 
   // Subnormal handling: compute shift and apply
-  logic [23:0] mantissa_work_s4;
+  logic [MantBits-1:0] mantissa_work_s4;
   logic guard_work_s4, round_work_s4, sticky_work_s4;
-  logic signed [9:0] exp_work_s4;
-  logic [26:0] mantissa_ext_s4, shifted_ext_s4;
-  logic               shifted_sticky_s4;
-  logic        [ 5:0] shift_amt_s4;
-  logic signed [10:0] shift_amt_signed_s4;
+  logic signed [ExpExtBits-1:0] exp_work_s4;
+  logic [MantBits+2:0] mantissa_ext_s4, shifted_ext_s4;
+  logic                       shifted_sticky_s4;
+  logic        [ LzcBits-1:0] shift_amt_s4;
+  logic signed [ExpExtBits:0] shift_amt_signed_s4;
 
   always_comb begin
     mantissa_work_s4 = mantissa_retained_s4;
@@ -295,129 +340,141 @@ module fp_multiplier (
     };
     shifted_ext_s4 = mantissa_ext_s4;
     shifted_sticky_s4 = 1'b0;
-    shift_amt_s4 = 6'd0;
-    shift_amt_signed_s4 = 11'sb0;
+    shift_amt_s4 = '0;
+    shift_amt_signed_s4 = '0;
 
-    if (exp_s4 <= 0) begin
-      shift_amt_signed_s4 = 11'sd1 - $signed({exp_s4[9], exp_s4});
-      if (shift_amt_signed_s4 >= 27) shift_amt_s4 = 6'd27;
-      else shift_amt_s4 = shift_amt_signed_s4[5:0];
-      if (shift_amt_s4 >= 6'd27) begin
-        shifted_ext_s4 = 27'b0;
+    // TIMING OPTIMIZATION: Use pre-computed subnormal condition (registered)
+    // instead of comparing exp_s4 <= 0 here (which was on the critical path).
+    if (is_subnormal_s4) begin
+      shift_amt_signed_s4 = $signed({1'b0, {ExpExtBits{1'b0}}}) + 1 -
+          $signed({exp_s4[ExpExtBits-1], exp_s4});
+      if (shift_amt_signed_s4 >= MantBitsPlus3Signed) shift_amt_s4 = MantBitsPlus3Shift;
+      else shift_amt_s4 = shift_amt_signed_s4[LzcBits-1:0];
+      if (shift_amt_s4 >= MantBitsPlus3Shift) begin
+        shifted_ext_s4 = '0;
         shifted_sticky_s4 = |mantissa_ext_s4;
       end else if (shift_amt_s4 != 0) begin
         shifted_ext_s4 = mantissa_ext_s4 >> shift_amt_s4;
         shifted_sticky_s4 = 1'b0;
-        for (int i = 0; i < 27; i++) begin
+        for (int i = 0; i < (MantBits + 3); i++) begin
           if (i < shift_amt_s4) shifted_sticky_s4 = shifted_sticky_s4 | mantissa_ext_s4[i];
         end
       end
-      mantissa_work_s4 = shifted_ext_s4[26:3];
+      mantissa_work_s4 = shifted_ext_s4[(MantBits+2):3];
       guard_work_s4 = shifted_ext_s4[2];
       round_work_s4 = shifted_ext_s4[1];
       sticky_work_s4 = shifted_ext_s4[0] | shifted_sticky_s4;
-      exp_work_s4 = 10'sd0;
+      exp_work_s4 = '0;
     end
   end
 
-  // Compute round-up decision
-  logic round_up_s4;
-  logic lsb_s4;
+  // =========================================================================
+  // Stage 4A -> Stage 4B Pipeline Register (after subnormal handling)
+  // =========================================================================
 
-  assign lsb_s4 = mantissa_work_s4[0];
+  logic [MantBits-1:0] mantissa_work_s4b;
+  logic guard_work_s4b, round_work_s4b, sticky_work_s4b;
+  logic signed [ExpExtBits-1:0] exp_work_s4b;
+
+  // Stage 4B: Compute round-up decision
+  logic round_up_s4b_comb;
+  logic lsb_s4b;
+
+  assign lsb_s4b = mantissa_work_s4b[0];
 
   always_comb begin
     unique case (rm_s4)
-      riscv_pkg::FRM_RNE: round_up_s4 = guard_work_s4 & (round_work_s4 | sticky_work_s4 | lsb_s4);
-      riscv_pkg::FRM_RTZ: round_up_s4 = 1'b0;
+      riscv_pkg::FRM_RNE:
+      round_up_s4b_comb = guard_work_s4b & (round_work_s4b | sticky_work_s4b | lsb_s4b);
+      riscv_pkg::FRM_RTZ: round_up_s4b_comb = 1'b0;
       riscv_pkg::FRM_RDN:
-      round_up_s4 = result_sign_s4 & (guard_work_s4 | round_work_s4 | sticky_work_s4);
+      round_up_s4b_comb = result_sign_s4 & (guard_work_s4b | round_work_s4b | sticky_work_s4b);
       riscv_pkg::FRM_RUP:
-      round_up_s4 = ~result_sign_s4 & (guard_work_s4 | round_work_s4 | sticky_work_s4);
-      riscv_pkg::FRM_RMM: round_up_s4 = guard_work_s4;
-      default: round_up_s4 = guard_work_s4 & (round_work_s4 | sticky_work_s4 | lsb_s4);
+      round_up_s4b_comb = ~result_sign_s4 & (guard_work_s4b | round_work_s4b | sticky_work_s4b);
+      riscv_pkg::FRM_RMM: round_up_s4b_comb = guard_work_s4b;
+      default: round_up_s4b_comb = guard_work_s4b & (round_work_s4b | sticky_work_s4b | lsb_s4b);
     endcase
   end
 
   // Compute is_inexact for flags
-  logic is_inexact_s4;
-  assign is_inexact_s4 = guard_work_s4 | round_work_s4 | sticky_work_s4;
+  logic is_inexact_s4b;
+  assign is_inexact_s4b = guard_work_s4b | round_work_s4b | sticky_work_s4b;
 
   // =========================================================================
-  // Stage 4 -> Stage 5 Pipeline Register (after round-up decision)
+  // Stage 4B -> Stage 5 Pipeline Register (after round-up decision)
   // =========================================================================
 
-  logic               result_sign_s5;
-  logic signed [ 9:0] exp_work_s5;
-  logic        [23:0] mantissa_work_s5;
-  logic               round_up_s5;
-  logic               is_inexact_s5;
-  logic               product_is_zero_s5;
-  logic        [ 2:0] rm_s5;
-  logic               is_special_s5;
-  logic        [31:0] special_result_s5;
-  logic               special_invalid_s5;
+  logic                         result_sign_s5;
+  logic signed [ExpExtBits-1:0] exp_work_s5;
+  logic        [  MantBits-1:0] mantissa_work_s5;
+  logic                         round_up_s5;
+  logic                         is_inexact_s5;
+  logic                         product_is_zero_s5;
+  logic        [           2:0] rm_s5;
+  logic                         is_special_s5;
+  logic        [  FP_WIDTH-1:0] special_result_s5;
+  logic                         special_invalid_s5;
 
   // =========================================================================
   // Stage 5: Apply rounding and format result (combinational from s5 regs)
   // =========================================================================
 
-  logic        [24:0] rounded_mantissa_s5;
-  logic               mantissa_overflow_s5;
-  logic signed [ 9:0] adjusted_exponent_s5;
-  logic        [22:0] final_mantissa_s5;
+  logic        [    MantBits:0] rounded_mantissa_s5;
+  logic                         mantissa_overflow_s5;
+  logic signed [ExpExtBits-1:0] adjusted_exponent_s5;
+  logic        [  FracBits-1:0] final_mantissa_s5;
   logic is_overflow_s5, is_underflow_s5;
 
-  assign rounded_mantissa_s5  = {1'b0, mantissa_work_s5} + {24'b0, round_up_s5};
-  assign mantissa_overflow_s5 = rounded_mantissa_s5[24];
+  assign rounded_mantissa_s5  = {1'b0, mantissa_work_s5} + {{MantBits{1'b0}}, round_up_s5};
+  assign mantissa_overflow_s5 = rounded_mantissa_s5[MantBits];
 
   always_comb begin
     if (mantissa_overflow_s5) begin
-      if (exp_work_s5 == 10'sd0) begin
-        adjusted_exponent_s5 = 10'sd1;
+      if (exp_work_s5 == '0) begin
+        adjusted_exponent_s5 = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
       end else begin
         adjusted_exponent_s5 = exp_work_s5 + 1;
       end
-      final_mantissa_s5 = rounded_mantissa_s5[23:1];
+      final_mantissa_s5 = rounded_mantissa_s5[MantBits-1:1];
     end else begin
       adjusted_exponent_s5 = exp_work_s5;
-      final_mantissa_s5 = rounded_mantissa_s5[22:0];
+      final_mantissa_s5 = rounded_mantissa_s5[FracBits-1:0];
     end
   end
 
-  assign is_overflow_s5  = (adjusted_exponent_s5 >= 10'sd255);
-  assign is_underflow_s5 = (adjusted_exponent_s5 <= 10'sd0);
+  assign is_overflow_s5  = (adjusted_exponent_s5 >= ExpMaxSigned);
+  assign is_underflow_s5 = (adjusted_exponent_s5 <= '0);
 
   // Compute final result
-  logic [31:0] final_result_s5_comb;
+  logic [FP_WIDTH-1:0] final_result_s5_comb;
   riscv_pkg::fp_flags_t final_flags_s5_comb;
 
   always_comb begin
-    final_result_s5_comb = 32'b0;
+    final_result_s5_comb = '0;
     final_flags_s5_comb  = '0;
 
     if (is_special_s5) begin
       final_result_s5_comb   = special_result_s5;
       final_flags_s5_comb.nv = special_invalid_s5;
     end else if (product_is_zero_s5) begin
-      final_result_s5_comb = {result_sign_s5, 31'b0};
+      final_result_s5_comb = {result_sign_s5, {(FP_WIDTH - 1) {1'b0}}};
     end else if (is_overflow_s5) begin
       final_flags_s5_comb.of = 1'b1;
       final_flags_s5_comb.nx = 1'b1;
       if ((rm_s5 == riscv_pkg::FRM_RTZ) ||
           (rm_s5 == riscv_pkg::FRM_RDN && !result_sign_s5) ||
           (rm_s5 == riscv_pkg::FRM_RUP && result_sign_s5)) begin
-        final_result_s5_comb = {result_sign_s5, 8'hFE, 23'h7FFFFF};
+        final_result_s5_comb = {result_sign_s5, MaxNormalExp, MaxMant};
       end else begin
-        final_result_s5_comb = {result_sign_s5, 8'hFF, 23'b0};
+        final_result_s5_comb = {result_sign_s5, ExpMax, {FracBits{1'b0}}};
       end
     end else if (is_underflow_s5) begin
       final_flags_s5_comb.uf = is_inexact_s5;
       final_flags_s5_comb.nx = is_inexact_s5;
-      final_result_s5_comb   = {result_sign_s5, 8'b0, final_mantissa_s5};
+      final_result_s5_comb   = {result_sign_s5, {ExpBits{1'b0}}, final_mantissa_s5};
     end else begin
       final_flags_s5_comb.nx = is_inexact_s5;
-      final_result_s5_comb   = {result_sign_s5, adjusted_exponent_s5[7:0], final_mantissa_s5};
+      final_result_s5_comb = {result_sign_s5, adjusted_exponent_s5[ExpBits-1:0], final_mantissa_s5};
     end
   end
 
@@ -425,7 +482,7 @@ module fp_multiplier (
   // Stage 5 -> Stage 6 Pipeline Register (final output)
   // =========================================================================
 
-  logic [31:0] result_s6;
+  logic [FP_WIDTH-1:0] result_s6;
   riscv_pkg::fp_flags_t flags_s6;
 
   // =========================================================================
@@ -435,62 +492,81 @@ module fp_multiplier (
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
-      operand_a_reg <= 32'b0;
-      operand_b_reg <= 32'b0;
+      operand_a_reg <= '0;
+      operand_b_reg <= '0;
       rounding_mode_reg <= 3'b0;
       // Stage 2 registers
       result_sign_s2 <= 1'b0;
-      tentative_exp_s2 <= 10'sb0;
-      mant_a_s2 <= 24'b0;
-      mant_b_s2 <= 24'b0;
+      tentative_exp_s2 <= '0;
+      mant_a_s2 <= '0;
+      mant_b_s2 <= '0;
       is_special_s2 <= 1'b0;
-      special_result_s2 <= 32'b0;
+      special_result_s2 <= '0;
       special_invalid_s2 <= 1'b0;
       rm_s2 <= 3'b0;
+      // Post-multiply product pipeline
+      for (int i = 0; i < MulPipeStages; i++) begin
+        product_pipe[i] <= '0;
+      end
+      product_valid_pipe <= '0;
       // Stage 3 registers (before LZC)
       result_sign_s3 <= 1'b0;
-      tentative_exp_s3 <= 10'sb0;
-      product_s3 <= 48'b0;
+      tentative_exp_s3 <= '0;
+      product_s3 <= '0;
       is_special_s3 <= 1'b0;
-      special_result_s3 <= 32'b0;
+      special_result_s3 <= '0;
       special_invalid_s3 <= 1'b0;
       rm_s3 <= 3'b0;
       // Stage 3B registers (after LZC, before shift)
       result_sign_s3b <= 1'b0;
-      tentative_exp_s3b <= 10'sb0;
-      product_s3b <= 48'b0;
+      tentative_exp_s3b <= '0;
+      product_s3b <= '0;
       product_is_zero_s3b <= 1'b0;
       product_msb_set_s3b <= 1'b0;
-      lzc_s3b <= 6'b0;
+      lzc_s3b <= '0;
       is_special_s3b <= 1'b0;
-      special_result_s3b <= 32'b0;
+      special_result_s3b <= '0;
       special_invalid_s3b <= 1'b0;
       rm_s3b <= 3'b0;
       // Stage 4 registers
       result_sign_s4 <= 1'b0;
-      exp_s4 <= 10'sb0;
-      product_s4 <= 48'b0;
+      exp_s4 <= '0;
+      product_s4 <= '0;
       product_is_zero_s4 <= 1'b0;
       is_special_s4 <= 1'b0;
-      special_result_s4 <= 32'b0;
+      is_subnormal_s4 <= 1'b0;
+      special_result_s4 <= '0;
       special_invalid_s4 <= 1'b0;
       rm_s4 <= 3'b0;
+      // Stage 4B registers (after subnormal handling)
+      mantissa_work_s4b <= '0;
+      guard_work_s4b <= 1'b0;
+      round_work_s4b <= 1'b0;
+      sticky_work_s4b <= 1'b0;
+      exp_work_s4b <= '0;
       // Stage 5 registers (after round-up decision)
       result_sign_s5 <= 1'b0;
-      exp_work_s5 <= 10'sb0;
-      mantissa_work_s5 <= 24'b0;
+      exp_work_s5 <= '0;
+      mantissa_work_s5 <= '0;
       round_up_s5 <= 1'b0;
       is_inexact_s5 <= 1'b0;
       product_is_zero_s5 <= 1'b0;
       rm_s5 <= 3'b0;
       is_special_s5 <= 1'b0;
-      special_result_s5 <= 32'b0;
+      special_result_s5 <= '0;
       special_invalid_s5 <= 1'b0;
       // Stage 6 registers (final output)
-      result_s6 <= 32'b0;
+      result_s6 <= '0;
       flags_s6 <= '0;
     end else begin
       state <= next_state;
+      // Post-multiply product pipeline (free-running for DSP register inference)
+      product_pipe[0] <= product_s2_comb;
+      product_valid_pipe[0] <= (state == STAGE2);
+      for (int i = 1; i < MulPipeStages; i++) begin
+        product_pipe[i] <= product_pipe[i-1];
+        product_valid_pipe[i] <= product_valid_pipe[i-1];
+      end
 
       case (state)
         IDLE: begin
@@ -515,14 +591,20 @@ module fp_multiplier (
         end
 
         STAGE2: begin
-          // Capture stage 2 results into stage 3 registers
-          result_sign_s3 <= result_sign_s2;
-          tentative_exp_s3 <= tentative_exp_s2;
-          product_s3 <= product_s2_comb;
-          is_special_s3 <= is_special_s2;
-          special_result_s3 <= special_result_s2;
-          special_invalid_s3 <= special_invalid_s2;
-          rm_s3 <= rm_s2;
+          // Multiply pipeline runs continuously; no action needed here.
+        end
+
+        STAGE2B: begin
+          // TIMING: Wait for pipelined product to emerge, then load stage 3 regs
+          if (product_valid_pipe[MulPipeStages-1]) begin
+            result_sign_s3 <= result_sign_s2;
+            tentative_exp_s3 <= tentative_exp_s2;
+            product_s3 <= product_pipe[MulPipeStages-1];
+            is_special_s3 <= is_special_s2;
+            special_result_s3 <= special_result_s2;
+            special_invalid_s3 <= special_invalid_s2;
+            rm_s3 <= rm_s2;
+          end
         end
 
         STAGE3A: begin
@@ -549,15 +631,26 @@ module fp_multiplier (
           special_result_s4 <= special_result_s3b;
           special_invalid_s4 <= special_invalid_s3b;
           rm_s4 <= rm_s3b;
+          // TIMING: Pre-compute subnormal condition for stage 4A
+          is_subnormal_s4 <= (normalized_exp_s3b <= 0);
         end
 
-        STAGE4: begin
+        STAGE4A: begin
+          // Capture subnormal handling outputs into stage 4B registers
+          mantissa_work_s4b <= mantissa_work_s4;
+          guard_work_s4b <= guard_work_s4;
+          round_work_s4b <= round_work_s4;
+          sticky_work_s4b <= sticky_work_s4;
+          exp_work_s4b <= exp_work_s4;
+        end
+
+        STAGE4B: begin
           // Capture round-up decision into s5 registers
           result_sign_s5 <= result_sign_s4;
-          exp_work_s5 <= exp_work_s4;
-          mantissa_work_s5 <= mantissa_work_s4;
-          round_up_s5 <= round_up_s4;
-          is_inexact_s5 <= is_inexact_s4;
+          exp_work_s5 <= exp_work_s4b;
+          mantissa_work_s5 <= mantissa_work_s4b;
+          round_up_s5 <= round_up_s4b_comb;
+          is_inexact_s5 <= is_inexact_s4b;
           product_is_zero_s5 <= product_is_zero_s4;
           rm_s5 <= rm_s4;
           is_special_s5 <= is_special_s4;
@@ -586,10 +679,12 @@ module fp_multiplier (
     case (state)
       IDLE:    if (i_valid) next_state = STAGE1;
       STAGE1:  next_state = STAGE2;
-      STAGE2:  next_state = STAGE3A;
+      STAGE2:  next_state = STAGE2B;
+      STAGE2B: next_state = state_e'(product_valid_pipe[MulPipeStages - 1] ? STAGE3A : STAGE2B);
       STAGE3A: next_state = STAGE3B;
-      STAGE3B: next_state = STAGE4;
-      STAGE4:  next_state = STAGE5;
+      STAGE3B: next_state = STAGE4A;
+      STAGE4A: next_state = STAGE4B;
+      STAGE4B: next_state = STAGE5;
       STAGE5:  next_state = STAGE6;
       STAGE6:  next_state = IDLE;
       default: next_state = IDLE;
@@ -600,7 +695,8 @@ module fp_multiplier (
   // Output Logic
   // =========================================================================
 
-  logic valid_reg;
+  // TIMING: Limit fanout to force register replication and improve timing
+  (* max_fanout = 30 *) logic valid_reg;
   always_ff @(posedge i_clk) begin
     if (i_rst) valid_reg <= 1'b0;
     else valid_reg <= (state == STAGE6);

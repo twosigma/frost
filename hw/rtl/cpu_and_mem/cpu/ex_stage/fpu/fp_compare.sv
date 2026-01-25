@@ -41,17 +41,19 @@
     - FLT/FLE raise invalid for any NaN (signaling or quiet)
     - FMIN/FMAX raise invalid only for signaling NaN
 */
-module fp_compare (
-    input  logic                        i_clk,
-    input  logic                        i_rst,
-    input  logic                        i_valid,
-    input  logic                 [31:0] i_operand_a,   // fs1
-    input  logic                 [31:0] i_operand_b,   // fs2
-    input  riscv_pkg::instr_op_e        i_operation,
-    output logic                 [31:0] o_result,      // Comparison result (0 or 1) or min/max
-    output logic                        o_is_compare,  // True for FEQ/FLT/FLE (result to int reg)
-    output logic                        o_valid,
-    output riscv_pkg::fp_flags_t        o_flags
+module fp_compare #(
+    parameter int unsigned FP_WIDTH = 32
+) (
+    input logic i_clk,
+    input logic i_rst,
+    input logic i_valid,
+    input logic [FP_WIDTH-1:0] i_operand_a,  // fs1
+    input logic [FP_WIDTH-1:0] i_operand_b,  // fs2
+    input riscv_pkg::instr_op_e i_operation,
+    output logic [FP_WIDTH-1:0] o_result,  // Comparison result (0 or 1) or min/max
+    output logic o_is_compare,  // True for FEQ/FLT/FLE (result to int reg)
+    output logic o_valid,
+    output riscv_pkg::fp_flags_t o_flags
 );
 
   // =========================================================================
@@ -70,46 +72,51 @@ module fp_compare (
   // Stage 0 -> Stage 1: Capture operands
   // =========================================================================
 
-  logic [31:0] operand_a_s1, operand_b_s1;
+  logic [FP_WIDTH-1:0] operand_a_s1, operand_b_s1;
   riscv_pkg::instr_op_e operation_s1;
 
   // =========================================================================
   // Stage 1: Extract fields and compute magnitude comparison (combinational)
   // =========================================================================
 
+  localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
+  localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
+  localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
+  localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
+
   // Extract fields
   logic sign_a_s1, sign_b_s1;
-  logic [7:0] exp_a_s1, exp_b_s1;
-  logic [22:0] mant_a_s1, mant_b_s1;
+  logic [ExpBits-1:0] exp_a_s1, exp_b_s1;
+  logic [FracBits-1:0] mant_a_s1, mant_b_s1;
 
-  assign sign_a_s1 = operand_a_s1[31];
-  assign sign_b_s1 = operand_b_s1[31];
-  assign exp_a_s1  = operand_a_s1[30:23];
-  assign exp_b_s1  = operand_b_s1[30:23];
-  assign mant_a_s1 = operand_a_s1[22:0];
-  assign mant_b_s1 = operand_b_s1[22:0];
+  assign sign_a_s1 = operand_a_s1[FP_WIDTH-1];
+  assign sign_b_s1 = operand_b_s1[FP_WIDTH-1];
+  assign exp_a_s1  = operand_a_s1[FP_WIDTH-2-:ExpBits];
+  assign exp_b_s1  = operand_b_s1[FP_WIDTH-2-:ExpBits];
+  assign mant_a_s1 = operand_a_s1[FracBits-1:0];
+  assign mant_b_s1 = operand_b_s1[FracBits-1:0];
 
   // NaN detection
   logic is_nan_a_s1, is_nan_b_s1;
   logic is_snan_a_s1, is_snan_b_s1;
   logic either_nan_s1, either_snan_s1;
 
-  assign is_nan_a_s1 = (exp_a_s1 == 8'hFF) && (mant_a_s1 != 23'b0);
-  assign is_nan_b_s1 = (exp_b_s1 == 8'hFF) && (mant_b_s1 != 23'b0);
-  assign is_snan_a_s1 = is_nan_a_s1 && ~mant_a_s1[22];
-  assign is_snan_b_s1 = is_nan_b_s1 && ~mant_b_s1[22];
+  assign is_nan_a_s1 = (exp_a_s1 == ExpMax) && (mant_a_s1 != '0);
+  assign is_nan_b_s1 = (exp_b_s1 == ExpMax) && (mant_b_s1 != '0);
+  assign is_snan_a_s1 = is_nan_a_s1 && ~mant_a_s1[FracBits-1];
+  assign is_snan_b_s1 = is_nan_b_s1 && ~mant_b_s1[FracBits-1];
   assign either_nan_s1 = is_nan_a_s1 | is_nan_b_s1;
   assign either_snan_s1 = is_snan_a_s1 | is_snan_b_s1;
 
   // Zero detection
   logic is_zero_a_s1, is_zero_b_s1;
-  assign is_zero_a_s1 = (exp_a_s1 == 8'h00) && (mant_a_s1 == 23'b0);
-  assign is_zero_b_s1 = (exp_b_s1 == 8'h00) && (mant_b_s1 == 23'b0);
+  assign is_zero_a_s1 = (exp_a_s1 == '0) && (mant_a_s1 == '0);
+  assign is_zero_b_s1 = (exp_b_s1 == '0) && (mant_b_s1 == '0);
 
   // Magnitude comparison
-  logic [30:0] mag_a_s1, mag_b_s1;
-  assign mag_a_s1 = operand_a_s1[30:0];
-  assign mag_b_s1 = operand_b_s1[30:0];
+  logic [FP_WIDTH-2:0] mag_a_s1, mag_b_s1;
+  assign mag_a_s1 = operand_a_s1[FP_WIDTH-2:0];
+  assign mag_b_s1 = operand_b_s1[FP_WIDTH-2:0];
 
   logic mag_a_lt_b_s1;  // |a| < |b|
   logic mag_a_eq_b_s1;  // |a| == |b|
@@ -120,7 +127,7 @@ module fp_compare (
   // Stage 1 -> Stage 2: Pipeline registers
   // =========================================================================
 
-  logic [31:0] operand_a_s2, operand_b_s2;
+  logic [FP_WIDTH-1:0] operand_a_s2, operand_b_s2;
   riscv_pkg::instr_op_e operation_s2;
   logic sign_a_s2, sign_b_s2;
   logic is_nan_a_s2, is_nan_b_s2;
@@ -160,12 +167,12 @@ module fp_compare (
   assign a_le_b_s2 = a_lt_b_s2 | a_eq_b_s2;
 
   // Min/Max selection
-  logic [31:0] min_result_s2, max_result_s2;
+  logic [FP_WIDTH-1:0] min_result_s2, max_result_s2;
 
   always_comb begin
     if (is_nan_a_s2 && is_nan_b_s2) begin
-      min_result_s2 = riscv_pkg::FpCanonicalNan;
-      max_result_s2 = riscv_pkg::FpCanonicalNan;
+      min_result_s2 = CanonicalNan;
+      max_result_s2 = CanonicalNan;
     end else if (is_nan_a_s2) begin
       min_result_s2 = operand_b_s2;
       max_result_s2 = operand_b_s2;
@@ -184,60 +191,60 @@ module fp_compare (
   end
 
   // Compute final result
-  logic                 [31:0] result_s2_comb;
-  logic                        is_compare_s2_comb;
-  riscv_pkg::fp_flags_t        flags_s2_comb;
+  logic                 [FP_WIDTH-1:0] result_s2_comb;
+  logic                                is_compare_s2_comb;
+  riscv_pkg::fp_flags_t                flags_s2_comb;
 
   always_comb begin
-    result_s2_comb = 32'b0;
+    result_s2_comb = '0;
     is_compare_s2_comb = 1'b0;
     flags_s2_comb = '0;
 
     unique case (operation_s2)
-      riscv_pkg::FEQ_S: begin
+      riscv_pkg::FEQ_S, riscv_pkg::FEQ_D: begin
         is_compare_s2_comb = 1'b1;
         if (either_nan_s2) begin
-          result_s2_comb   = 32'b0;
+          result_s2_comb   = '0;
           flags_s2_comb.nv = either_snan_s2;
         end else begin
-          result_s2_comb = {31'b0, a_eq_b_s2};
+          result_s2_comb = {{(FP_WIDTH - 1) {1'b0}}, a_eq_b_s2};
         end
       end
 
-      riscv_pkg::FLT_S: begin
+      riscv_pkg::FLT_S, riscv_pkg::FLT_D: begin
         is_compare_s2_comb = 1'b1;
         if (either_nan_s2) begin
-          result_s2_comb   = 32'b0;
+          result_s2_comb   = '0;
           flags_s2_comb.nv = 1'b1;
         end else begin
-          result_s2_comb = {31'b0, a_lt_b_s2};
+          result_s2_comb = {{(FP_WIDTH - 1) {1'b0}}, a_lt_b_s2};
         end
       end
 
-      riscv_pkg::FLE_S: begin
+      riscv_pkg::FLE_S, riscv_pkg::FLE_D: begin
         is_compare_s2_comb = 1'b1;
         if (either_nan_s2) begin
-          result_s2_comb   = 32'b0;
+          result_s2_comb   = '0;
           flags_s2_comb.nv = 1'b1;
         end else begin
-          result_s2_comb = {31'b0, a_le_b_s2};
+          result_s2_comb = {{(FP_WIDTH - 1) {1'b0}}, a_le_b_s2};
         end
       end
 
-      riscv_pkg::FMIN_S: begin
+      riscv_pkg::FMIN_S, riscv_pkg::FMIN_D: begin
         is_compare_s2_comb = 1'b0;
         result_s2_comb = min_result_s2;
         flags_s2_comb.nv = either_snan_s2;
       end
 
-      riscv_pkg::FMAX_S: begin
+      riscv_pkg::FMAX_S, riscv_pkg::FMAX_D: begin
         is_compare_s2_comb = 1'b0;
         result_s2_comb = max_result_s2;
         flags_s2_comb.nv = either_snan_s2;
       end
 
       default: begin
-        result_s2_comb = 32'b0;
+        result_s2_comb = '0;
         is_compare_s2_comb = 1'b0;
       end
     endcase
@@ -247,10 +254,10 @@ module fp_compare (
   // Output registers
   // =========================================================================
 
-  logic                 [31:0] result_reg;
-  logic                        is_compare_reg;
-  riscv_pkg::fp_flags_t        flags_reg;
-  logic                        valid_reg;
+  logic                 [FP_WIDTH-1:0] result_reg;
+  logic                                is_compare_reg;
+  riscv_pkg::fp_flags_t                flags_reg;
+  logic                                valid_reg;
 
   // =========================================================================
   // State Machine and Sequential Logic
@@ -259,11 +266,11 @@ module fp_compare (
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
-      operand_a_s1 <= 32'b0;
-      operand_b_s1 <= 32'b0;
+      operand_a_s1 <= '0;
+      operand_b_s1 <= '0;
       operation_s1 <= riscv_pkg::ADD;
-      operand_a_s2 <= 32'b0;
-      operand_b_s2 <= 32'b0;
+      operand_a_s2 <= '0;
+      operand_b_s2 <= '0;
       operation_s2 <= riscv_pkg::ADD;
       sign_a_s2 <= 1'b0;
       sign_b_s2 <= 1'b0;
@@ -275,7 +282,7 @@ module fp_compare (
       is_zero_b_s2 <= 1'b0;
       mag_a_lt_b_s2 <= 1'b0;
       mag_a_eq_b_s2 <= 1'b0;
-      result_reg <= 32'b0;
+      result_reg <= '0;
       is_compare_reg <= 1'b0;
       flags_reg <= '0;
       valid_reg <= 1'b0;

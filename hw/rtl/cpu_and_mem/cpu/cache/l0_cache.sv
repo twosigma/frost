@@ -267,9 +267,11 @@ module l0_cache #(
   always_ff @(posedge i_clk)
     if (i_rst) begin
       cache_hit_on_load_reg <= 1'b0;
-      data_loaded_from_cache_reg <= '0;
     end else if (~i_pipeline_ctrl.stall) begin
       cache_hit_on_load_reg <= cache_hit_on_load_comb;
+    end
+  always_ff @(posedge i_clk)
+    if (~i_pipeline_ctrl.stall) begin
       data_loaded_from_cache_reg <= data_loaded_from_cache_comb;
     end
 

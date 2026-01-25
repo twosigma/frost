@@ -17,11 +17,12 @@
 /**
  * RISC-V ISA Compliance Test Suite for Frost Processor
  *
- * Tests all extensions claimed by Frost (RV32IMAFCB):
+ * Tests all extensions claimed by Frost (RV32IMAFDCB):
  *   - RV32I:  Base integer instruction set
  *   - M:      Integer multiply/divide
  *   - A:      Atomic memory operations
  *   - F:      Single-precision floating-point
+ *   - D:      Double-precision floating-point
  *   - C:      Compressed 16-bit instructions
  *   - B:      Bit manipulation (B = Zba + Zbb + Zbs)
  *   - Zicsr:  CSR access instructions
@@ -59,6 +60,7 @@ typedef enum {
     EXT_A,
     EXT_C,
     EXT_F,
+    EXT_D,
     EXT_ZICSR,
     EXT_ZICNTR,
     EXT_ZIFENCEI,
@@ -79,6 +81,7 @@ static const char *extension_names[EXT_COUNT] = {
     "A",           /* Atomics */
     "C",           /* Compressed 16-bit instructions */
     "F",           /* Single-precision floating-point */
+    "D",           /* Double-precision floating-point */
     "Zicsr",       /* CSR instructions */
     "Zicntr",      /* Counters */
     "Zifencei",    /* Instruction fence */
@@ -143,6 +146,24 @@ static uint32_t current_test_index;
         }                                                                                          \
         current_test_index++;                                                                      \
     } while (0)
+#define TEST64(name, got, expected)                                                                \
+    do {                                                                                           \
+        uint64_t _got = (got);                                                                     \
+        uint64_t _exp = (expected);                                                                \
+        if (_got == _exp) {                                                                        \
+            results[current_ext].tests_passed++;                                                   \
+        } else {                                                                                   \
+            results[current_ext].tests_failed++;                                                   \
+            results[current_ext].failed_mask |= (1U << (current_test_index & 31));                 \
+            uart_printf("\n  #%lu:0x%08X%08X!=0x%08X%08X",                                         \
+                        (unsigned long) current_test_index,                                        \
+                        (unsigned) (_got >> 32),                                                   \
+                        (unsigned) _got,                                                           \
+                        (unsigned) (_exp >> 32),                                                   \
+                        (unsigned) _exp);                                                          \
+        }                                                                                          \
+        current_test_index++;                                                                      \
+    } while (0)
 #else
 #define TEST(name, got, expected)                                                                  \
     do {                                                                                           \
@@ -158,6 +179,28 @@ static uint32_t current_test_index;
                 failed_instructions[current_ext][failed_count[current_ext]++] = name;              \
             }                                                                                      \
             uart_printf("  [FAIL] %s: 0x%08X!=0x%08X\n", name, _got, _exp);                        \
+        }                                                                                          \
+        current_test_index++;                                                                      \
+    } while (0)
+#define TEST64(name, got, expected)                                                                \
+    do {                                                                                           \
+        uint64_t _got = (got);                                                                     \
+        uint64_t _exp = (expected);                                                                \
+        if (_got == _exp) {                                                                        \
+            results[current_ext].tests_passed++;                                                   \
+            uart_printf("  [PASS] %s\n", name);                                                    \
+        } else {                                                                                   \
+            results[current_ext].tests_failed++;                                                   \
+            results[current_ext].failed_mask |= (1U << (current_test_index & 31));                 \
+            if (failed_count[current_ext] < MAX_TESTS_PER_EXT) {                                   \
+                failed_instructions[current_ext][failed_count[current_ext]++] = name;              \
+            }                                                                                      \
+            uart_printf("  [FAIL] %s: 0x%08X%08X!=0x%08X%08X\n",                                   \
+                        name,                                                                      \
+                        (unsigned) (_got >> 32),                                                   \
+                        (unsigned) _got,                                                           \
+                        (unsigned) (_exp >> 32),                                                   \
+                        (unsigned) _exp);                                                          \
         }                                                                                          \
         current_test_index++;                                                                      \
     } while (0)
@@ -859,6 +902,9 @@ static void test_c_extension(void)
     BEGIN_EXTENSION(EXT_C);
 
     register uint32_t result __asm__("a0");
+    uint64_t result64;
+    uint32_t result_lo;
+    uint32_t result_hi;
     volatile uint32_t mem_val;
 
     /* ===== Quadrant 0: Stack-relative loads/stores ===== */
@@ -1141,6 +1187,44 @@ static void test_c_extension(void)
                      : "t0", "ft1", "memory");
     TEST("c.flwsp", result, 0x87654321);
 
+    /* ===== Compressed Double-Precision Load/Store (RV32DC / Zcd) ===== */
+
+    volatile uint64_t cfp_mem_d[4] __attribute__((aligned(8)));
+    cfp_mem_d[0] = 0x0123456789ABCDEFull;
+    cfp_mem_d[1] = 0;
+    __asm__ volatile("mv s0, %0\n"
+                     "c.fld fs0, 0(s0)\n"
+                     "c.fsd fs0, 8(s0)\n"
+                     :
+                     : "r"(&cfp_mem_d[0])
+                     : "s0", "fs0", "memory");
+    TEST64("c.fsd", cfp_mem_d[1], 0x0123456789ABCDEFull);
+
+    cfp_mem_d[2] = 0x0FEDCBA987654321ull;
+    __asm__ volatile("mv s0, %1\n"
+                     "c.fld fa0, 16(s0)\n"
+                     "fsd fa0, 0(%0)\n"
+                     :
+                     : "r"(&cfp_mem_d[3]), "r"(&cfp_mem_d[0])
+                     : "s0", "fa0", "memory");
+    TEST64("c.fld+o", cfp_mem_d[3], 0x0FEDCBA987654321ull);
+
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "li t0, 0x89ABCDEF\n"
+                     "li t1, 0x01234567\n"
+                     "sw t0, 0(sp)\n"
+                     "sw t1, 4(sp)\n"
+                     "c.fldsp fs1, 0(sp)\n"
+                     "c.fsdsp fs1, 8(sp)\n"
+                     "lw %0, 8(sp)\n"
+                     "lw %1, 12(sp)\n"
+                     "addi sp, sp, 32\n"
+                     : "=r"(result_lo), "=r"(result_hi)
+                     :
+                     : "t0", "t1", "fs1", "memory");
+    result64 = ((uint64_t) result_hi << 32) | result_lo;
+    TEST64("c.fsdsp", result64, 0x0123456789ABCDEFull);
+
     uint32_t old_mtvec;
     __asm__ volatile("csrr %0, mtvec" : "=r"(old_mtvec));
     __asm__ volatile("csrw mtvec, %0" ::"r"((uint32_t) c_test_trap_handler));
@@ -1182,6 +1266,26 @@ static void test_c_extension(void)
 #define FP_PI 0x40490FDBU         /* ~3.14159265 */
 #define FP_E 0x402DF854U          /* ~2.71828182 */
 
+/* IEEE 754 double-precision constants */
+#define DP_POS_ZERO 0x0000000000000000ull   /* +0.0 */
+#define DP_NEG_ZERO 0x8000000000000000ull   /* -0.0 */
+#define DP_POS_ONE 0x3FF0000000000000ull    /* +1.0 */
+#define DP_NEG_ONE 0xBFF0000000000000ull    /* -1.0 */
+#define DP_POS_TWO 0x4000000000000000ull    /* +2.0 */
+#define DP_POS_THREE 0x4008000000000000ull  /* +3.0 */
+#define DP_POS_FOUR 0x4010000000000000ull   /* +4.0 */
+#define DP_POS_HALF 0x3FE0000000000000ull   /* +0.5 */
+#define DP_POS_INF 0x7FF0000000000000ull    /* +infinity */
+#define DP_NEG_INF 0xFFF0000000000000ull    /* -infinity */
+#define DP_QNAN 0x7FF8000000000000ull       /* Quiet NaN (canonical) */
+#define DP_SNAN 0x7FF0000000000001ull       /* Signaling NaN */
+#define DP_POS_DENORM 0x0000000000000001ull /* Smallest positive denormal */
+#define DP_NEG_DENORM 0x8000000000000001ull /* Smallest negative denormal */
+#define DP_POS_MAX 0x7FEFFFFFFFFFFFFFull    /* Largest finite positive */
+#define DP_NEG_MAX 0xFFEFFFFFFFFFFFFFull    /* Largest finite negative */
+#define DP_PI 0x400921FB54442D18ull         /* ~3.141592653589793 */
+#define DP_E 0x4005BF0A8B145769ull          /* ~2.718281828459045 */
+
 /* FCLASS bit positions */
 #define FCLASS_NEG_INF (1 << 0)
 #define FCLASS_NEG_NORMAL (1 << 1)
@@ -1216,8 +1320,31 @@ static inline uint32_t float_to_u32(float f)
     return conv.u;
 }
 
+/* Helper to convert uint64_t bit pattern to double */
+static inline double u64_to_double(uint64_t bits)
+{
+    union {
+        uint64_t u;
+        double d;
+    } conv;
+    conv.u = bits;
+    return conv.d;
+}
+
+/* Helper to convert double to uint64_t bit pattern */
+static inline uint64_t double_to_u64(double d)
+{
+    union {
+        uint64_t u;
+        double d;
+    } conv;
+    conv.d = d;
+    return conv.u;
+}
+
 /* Storage for FLW/FSW tests */
 static volatile float fp_test_mem[4] __attribute__((aligned(4)));
+static volatile double fp_test_mem_d[4] __attribute__((aligned(8)));
 
 static void test_f_extension(void)
 {
@@ -2103,6 +2230,516 @@ static void test_f_extension(void)
 }
 
 /* ========================================================================== */
+/* D Extension Tests (Double-Precision Floating-Point)                        */
+/* ========================================================================== */
+
+static void test_d_extension(void)
+{
+    BEGIN_EXTENSION(EXT_D);
+
+    uint32_t result;
+    uint64_t result64;
+    double dresult;
+
+    /* ===================================================================== */
+    /* FLD / FSD - Double-Precision Load/Store                               */
+    /* ===================================================================== */
+
+    dresult = u64_to_double(DP_PI);
+    __asm__ volatile("fsd %0, 0(%1)" ::"f"(dresult), "r"(&fp_test_mem_d[0]) : "memory");
+    result64 = double_to_u64(fp_test_mem_d[0]);
+    TEST64("FSD basic", result64, DP_PI);
+
+    fp_test_mem_d[1] = u64_to_double(DP_E);
+    __asm__ volatile("fld %0, 0(%1)" : "=f"(dresult) : "r"(&fp_test_mem_d[1]) : "memory");
+    result64 = double_to_u64(dresult);
+    TEST64("FLD basic", result64, DP_E);
+
+    fp_test_mem_d[2] = u64_to_double(DP_POS_TWO);
+    __asm__ volatile("fld %0, 16(%1)" : "=f"(dresult) : "r"(&fp_test_mem_d[0]) : "memory");
+    result64 = double_to_u64(dresult);
+    TEST64("FLD offset", result64, DP_POS_TWO);
+
+    /* ===================================================================== */
+    /* FSGNJ.D / FSGNJN.D / FSGNJX.D - Sign Injection                        */
+    /* ===================================================================== */
+
+    __asm__ volatile("fsgnj.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FSGNJ +,- -> -", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fsgnj.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FSGNJ -,+ -> +", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fsgnjn.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FSGNJN +,- -> +", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fsgnjn.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FSGNJN +,+ -> -", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fsgnjx.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FSGNJX +,- -> -", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fsgnjx.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FSGNJX -,- -> +", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fabs.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FABS -1 -> +1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fneg.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FNEG +1 -> -1", double_to_u64(dresult), DP_NEG_ONE);
+
+    /* ===================================================================== */
+    /* FCLASS.D - Classify floating-point value                              */
+    /* ===================================================================== */
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_NEG_INF)));
+    TEST("FCLASS -inf", result, FCLASS_NEG_INF);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_NEG_ONE)));
+    TEST("FCLASS -normal", result, FCLASS_NEG_NORMAL);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_NEG_DENORM)));
+    TEST("FCLASS -subnorm", result, FCLASS_NEG_SUBNORM);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST("FCLASS -0", result, FCLASS_NEG_ZERO);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_POS_ZERO)));
+    TEST("FCLASS +0", result, FCLASS_POS_ZERO);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_POS_DENORM)));
+    TEST("FCLASS +subnorm", result, FCLASS_POS_SUBNORM);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FCLASS +normal", result, FCLASS_POS_NORMAL);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_POS_INF)));
+    TEST("FCLASS +inf", result, FCLASS_POS_INF);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_SNAN)));
+    TEST("FCLASS sNaN", result, FCLASS_SNAN);
+
+    __asm__ volatile("fclass.d %0, %1" : "=r"(result) : "f"(u64_to_double(DP_QNAN)));
+    TEST("FCLASS qNaN", result, FCLASS_QNAN);
+
+    /* ===================================================================== */
+    /* FEQ.D / FLT.D / FLE.D - Floating-Point Comparisons                    */
+    /* ===================================================================== */
+
+    __asm__ volatile("feq.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FEQ 1==1", result, 1);
+
+    __asm__ volatile("feq.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST("FEQ 1==2", result, 0);
+
+    __asm__ volatile("feq.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST("FEQ +0==-0", result, 1);
+
+    __asm__ volatile("feq.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_QNAN)), "f"(u64_to_double(DP_QNAN)));
+    TEST("FEQ NaN==NaN", result, 0);
+
+    __asm__ volatile("flt.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST("FLT 1<2", result, 1);
+
+    __asm__ volatile("flt.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FLT 2<1", result, 0);
+
+    __asm__ volatile("flt.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FLT -1<1", result, 1);
+
+    __asm__ volatile("flt.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_NEG_INF)), "f"(u64_to_double(DP_POS_INF)));
+    TEST("FLT -inf<+inf", result, 1);
+
+    __asm__ volatile("fle.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FLE 1<=1", result, 1);
+
+    __asm__ volatile("fle.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST("FLE 1<=2", result, 1);
+
+    __asm__ volatile("fle.d %0, %1, %2"
+                     : "=r"(result)
+                     : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FLE 2<=1", result, 0);
+
+    /* ===================================================================== */
+    /* FMIN.D / FMAX.D - Minimum and Maximum                                 */
+    /* ===================================================================== */
+
+    __asm__ volatile("fmin.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FMIN 1,2", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fmin.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMIN -1,1", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fmin.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST64("FMIN +0,-0", double_to_u64(dresult), DP_NEG_ZERO);
+
+    __asm__ volatile("fmax.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FMAX 1,2", double_to_u64(dresult), DP_POS_TWO);
+
+    __asm__ volatile("fmax.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMAX -1,1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fmax.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST64("FMAX +0,-0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fmin.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_QNAN)));
+    TEST64("FMIN 1,NaN", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fmax.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_QNAN)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FMAX NaN,2", double_to_u64(dresult), DP_POS_TWO);
+
+    /* ===================================================================== */
+    /* FCVT.W.D / FCVT.WU.D - Double to Integer Conversion                   */
+    /* ===================================================================== */
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FCVT.W.D 1.0", result, 1);
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_NEG_ONE)));
+    TEST("FCVT.W.D -1.0", result, (uint32_t) -1);
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_PI)));
+    TEST("FCVT.W.D pi->3", result, 3);
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_POS_INF)));
+    TEST("FCVT.W.D +inf", result, 0x7FFFFFFF);
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_NEG_INF)));
+    TEST("FCVT.W.D -inf", result, 0x80000000);
+
+    __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_QNAN)));
+    TEST("FCVT.W.D NaN", result, 0x7FFFFFFF);
+
+    __asm__ volatile("fcvt.wu.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_POS_ONE)));
+    TEST("FCVT.WU.D 1.0", result, 1);
+
+    __asm__ volatile("fcvt.wu.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_POS_TWO)));
+    TEST("FCVT.WU.D 2.0", result, 2);
+
+    __asm__ volatile("fcvt.wu.d %0, %1, rtz" : "=r"(result) : "f"(u64_to_double(DP_NEG_ONE)));
+    TEST("FCVT.WU.D -1.0", result, 0);
+
+    /* ===================================================================== */
+    /* FCVT.D.W / FCVT.D.WU - Integer to Double Conversion                   */
+    /* ===================================================================== */
+
+    __asm__ volatile("fcvt.d.w %0, %1" : "=f"(dresult) : "r"(1));
+    TEST64("FCVT.D.W 1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fcvt.d.w %0, %1" : "=f"(dresult) : "r"(-1));
+    TEST64("FCVT.D.W -1", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fcvt.d.w %0, %1" : "=f"(dresult) : "r"(0));
+    TEST64("FCVT.D.W 0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fcvt.d.wu %0, %1" : "=f"(dresult) : "r"(1U));
+    TEST64("FCVT.D.WU 1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fcvt.d.wu %0, %1" : "=f"(dresult) : "r"(2U));
+    TEST64("FCVT.D.WU 2", double_to_u64(dresult), DP_POS_TWO);
+
+    /* ===================================================================== */
+    /* FCVT.S.D / FCVT.D.S - Convert between single and double               */
+    /* ===================================================================== */
+
+    fp_test_mem_d[0] = u64_to_double(DP_POS_ONE);
+    __asm__ volatile("fld ft0, 0(%1)\n\t"
+                     "fcvt.s.d ft1, ft0\n\t"
+                     "fmv.x.w %0, ft1"
+                     : "=r"(result)
+                     : "r"(&fp_test_mem_d[0])
+                     : "ft0", "ft1", "memory");
+    TEST("FCVT.S.D 1", result, FP_POS_ONE);
+
+    __asm__ volatile("fmv.w.x ft0, %1\n\t"
+                     "fcvt.d.s ft1, ft0\n\t"
+                     "fsd ft1, 0(%0)"
+                     :
+                     : "r"(&fp_test_mem_d[1]), "r"(FP_POS_ONE)
+                     : "ft0", "ft1", "memory");
+    result64 = double_to_u64(fp_test_mem_d[1]);
+    TEST64("FCVT.D.S 1", result64, DP_POS_ONE);
+
+    /* ===================================================================== */
+    /* FADD.D / FSUB.D - Floating-Point Addition and Subtraction             */
+    /* ===================================================================== */
+
+    __asm__ volatile("fadd.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FADD 1+1=2", double_to_u64(dresult), DP_POS_TWO);
+
+    __asm__ volatile("fadd.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FADD 1+(-1)=0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fadd.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST64("FADD +0+(-0)=+0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fadd.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_INF)));
+    TEST64("FADD 1+inf=inf", double_to_u64(dresult), DP_POS_INF);
+
+    __asm__ volatile("fsub.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FSUB 2-1=1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fsub.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FSUB 1-2=-1", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fsub.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FSUB 1-1=0", double_to_u64(dresult), DP_POS_ZERO);
+
+    /* ===================================================================== */
+    /* FMUL.D - Floating-Point Multiplication                                */
+    /* ===================================================================== */
+
+    __asm__ volatile("fmul.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FMUL 2*2=4", double_to_u64(dresult), DP_POS_FOUR);
+
+    __asm__ volatile("fmul.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)), "f"(u64_to_double(DP_POS_HALF)));
+    TEST64("FMUL 2*0.5=1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fmul.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FMUL -1*-1=1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fmul.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FMUL 1*-1=-1", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fmul.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ZERO)));
+    TEST64("FMUL 1*0=0", double_to_u64(dresult), DP_POS_ZERO);
+
+    /* ===================================================================== */
+    /* FDIV.D - Floating-Point Division                                      */
+    /* ===================================================================== */
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_FOUR)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FDIV 4/2=2", double_to_u64(dresult), DP_POS_TWO);
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FDIV 1/2=0.5", double_to_u64(dresult), DP_POS_HALF);
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FDIV -1/1=-1", double_to_u64(dresult), DP_NEG_ONE);
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ZERO)));
+    TEST64("FDIV 1/0=+inf", double_to_u64(dresult), DP_POS_INF);
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_NEG_ONE)), "f"(u64_to_double(DP_POS_ZERO)));
+    TEST64("FDIV -1/0=-inf", double_to_u64(dresult), DP_NEG_INF);
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ZERO)), "f"(u64_to_double(DP_POS_ZERO)));
+    TEST64("FDIV 0/0=NaN", double_to_u64(dresult), DP_QNAN);
+
+    /* ===================================================================== */
+    /* FSQRT.D - Floating-Point Square Root                                  */
+    /* ===================================================================== */
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_FOUR)));
+    TEST64("FSQRT 4=2", double_to_u64(dresult), DP_POS_TWO);
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FSQRT 1=1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_ZERO)));
+    TEST64("FSQRT +0=+0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_NEG_ZERO)));
+    TEST64("FSQRT -0=-0", double_to_u64(dresult), DP_NEG_ZERO);
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_POS_INF)));
+    TEST64("FSQRT +inf=+inf", double_to_u64(dresult), DP_POS_INF);
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_NEG_ONE)));
+    TEST64("FSQRT -1=NaN", double_to_u64(dresult), DP_QNAN);
+
+    /* ===================================================================== */
+    /* FMADD.D / FMSUB.D / FNMADD.D / FNMSUB.D - Fused Multiply-Add          */
+    /* ===================================================================== */
+
+    __asm__ volatile("fmadd.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMADD 2*2+1=5", double_to_u64(dresult), 0x4014000000000000ull);
+
+    __asm__ volatile("fmadd.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMADD 1*1+1=2", double_to_u64(dresult), DP_POS_TWO);
+
+    __asm__ volatile("fmsub.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMSUB 2*2-1=3", double_to_u64(dresult), DP_POS_THREE);
+
+    __asm__ volatile("fmsub.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FMSUB 1*1-1=0", double_to_u64(dresult), DP_POS_ZERO);
+
+    __asm__ volatile("fnmadd.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FNMADD -(1*1)-1=-2", double_to_u64(dresult), 0xC000000000000000ull);
+
+    __asm__ volatile("fnmsub.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_ONE)),
+                       "f"(u64_to_double(DP_POS_TWO)));
+    TEST64("FNMSUB -(1*1)+2=1", double_to_u64(dresult), DP_POS_ONE);
+
+    __asm__ volatile("fnmsub.d %0, %1, %2, %3"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_TWO)),
+                       "f"(u64_to_double(DP_POS_ONE)));
+    TEST64("FNMSUB -(2*2)+1=-3", double_to_u64(dresult), 0xC008000000000000ull);
+
+    /* ===================================================================== */
+    /* FP CSR Tests - fflags, frm, fcsr                                      */
+    /* ===================================================================== */
+
+    __asm__ volatile("csrw fflags, zero");
+
+    __asm__ volatile("fsqrt.d %0, %1" : "=f"(dresult) : "f"(u64_to_double(DP_NEG_ONE)));
+    __asm__ volatile("csrr %0, fflags" : "=r"(result));
+    TEST("fflags NV set", (result & 0x10) != 0, 1);
+
+    __asm__ volatile("csrw fflags, zero");
+
+    __asm__ volatile("fdiv.d %0, %1, %2"
+                     : "=f"(dresult)
+                     : "f"(u64_to_double(DP_POS_ONE)), "f"(u64_to_double(DP_POS_ZERO)));
+    __asm__ volatile("csrr %0, fflags" : "=r"(result));
+    TEST("fflags DZ set", (result & 0x08) != 0, 1);
+
+    __asm__ volatile("csrw frm, %0" ::"r"(0));
+    __asm__ volatile("csrr %0, frm" : "=r"(result));
+    TEST("frm RNE", result, 0);
+
+    __asm__ volatile("csrw frm, %0" ::"r"(1));
+    __asm__ volatile("csrr %0, frm" : "=r"(result));
+    TEST("frm RTZ", result, 1);
+
+    __asm__ volatile("csrw frm, %0" ::"r"(2));
+    __asm__ volatile("csrr %0, frm" : "=r"(result));
+    TEST("frm RDN", result, 2);
+
+    __asm__ volatile("csrw frm, %0" ::"r"(3));
+    __asm__ volatile("csrr %0, frm" : "=r"(result));
+    TEST("frm RUP", result, 3);
+
+    __asm__ volatile("csrw frm, %0" ::"r"(4));
+    __asm__ volatile("csrr %0, frm" : "=r"(result));
+    TEST("frm RMM", result, 4);
+
+    __asm__ volatile("csrw frm, zero");
+
+    __asm__ volatile("csrw fcsr, %0" ::"r"(0x00));
+    __asm__ volatile("csrr %0, fcsr" : "=r"(result));
+    TEST("fcsr clear", result, 0);
+
+    __asm__ volatile("csrw fcsr, %0" ::"r"(0xFF));
+    __asm__ volatile("csrr %0, fcsr" : "=r"(result));
+    TEST("fcsr mask", result, 0xFF);
+
+    __asm__ volatile("csrw fcsr, zero");
+
+    END_EXTENSION();
+}
+
+/* ========================================================================== */
 /* Zicsr Tests (CSR Instructions)                                             */
 /* ========================================================================== */
 
@@ -2662,14 +3299,14 @@ static volatile uint32_t trap_cause = 0;
 __attribute__((naked, aligned(4))) static void test_trap_handler(void)
 {
     __asm__ volatile(
-        /* Save mcause to global using absolute addressing */
-        /* trap_cause is at 0xC000, trap_taken is at 0xC004 */
+        /* Save mcause to global using symbol addressing */
         "csrr t0, mcause\n"
-        "lui t1, 0xC\n"  /* t1 = 0xC000 */
-        "sw t0, 0(t1)\n" /* store mcause to trap_cause (0xC000) */
-        /* Set trap_taken flag using same base */
+        "la t1, trap_cause\n"
+        "sw t0, 0(t1)\n"
+        /* Set trap_taken flag */
         "li t0, 1\n"
-        "sw t0, 4(t1)\n" /* store 1 to trap_taken (0xC004) */
+        "la t1, trap_taken\n"
+        "sw t0, 0(t1)\n"
         /* Advance mepc past the trapping instruction.
          * With C extension, need to detect if it's 16-bit or 32-bit.
          * 32-bit instructions have bits[1:0] = 0b11 */
@@ -2884,9 +3521,11 @@ int main(void)
     uart_printf("============================================================\n");
     uart_printf("     FROST RISC-V ISA COMPLIANCE TEST SUITE\n");
     uart_printf("============================================================\n");
-    uart_printf("  Target: RV32IMAFCB_Zicsr_Zicntr_Zifencei_Zicond_Zbkb_Zihintpause + M-mode\n");
+    uart_printf("  Target: RV32GCB_Zicsr_Zicntr_Zifencei_Zicond_Zbkb_Zihintpause + M-mode\n");
+    uart_printf("  Note:   G = IMAFD (base integer + M/A/F/D)\n");
     uart_printf("  Note:   B = Zba + Zbb + Zbs (full bit manipulation extension)\n");
     uart_printf("  Note:   F = Single-precision floating-point\n");
+    uart_printf("  Note:   D = Double-precision floating-point\n");
     uart_printf("  Clock:  %u Hz\n", FPGA_CPU_CLK_FREQ);
     uart_printf("============================================================\n");
 
@@ -2898,6 +3537,7 @@ int main(void)
     test_a_extension();
     test_c_extension();
     test_f_extension();
+    test_d_extension();
     test_zicsr();
     test_zicntr();
     test_zifencei();

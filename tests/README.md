@@ -40,7 +40,7 @@ Primary test runner for RTL simulations using Cocotb. Supports both standalone e
 | `branch_pred_test`  | Branch prediction test suite (45 tests)                                  |
 | `ras_test`          | Return Address Stack (RAS) comprehensive test suite                       |
 | `ras_stress_test`   | RAS stress test (calls, branches, and function pointers)                  |
-| `cpu`               | CPU verification suite (9 testcases: random regression, atomics, traps, compressed) |
+| `cpu`               | CPU verification suite (11 testcases: random regression, atomics, traps, compressed, FP F/D) |
 | `hello_world`       | Simple "Hello, world!" program                                           |
 | `isa_test`          | ISA compliance test suite                                                |
 | `coremark`          | Industry-standard CPU benchmark                                          |
@@ -50,8 +50,9 @@ Primary test runner for RTL simulations using Cocotb. Supports both standalone e
 | `strings_test`      | String library test suite                                                |
 | `packet_parser`     | FIX protocol message parser                                              |
 | `c_ext_test`        | C extension (compressed instruction) test                                |
-| `cf_ext_test`       | Compressed floating-point (C.FLW/C.FSW) test                             |
-| `fpu_test`          | FPU compliance test suite (F extension)                                  |
+| `cf_ext_test`       | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) test                  |
+| `fpu_test`          | FPU compliance test suite (F/D extensions)                               |
+| `fpu_assembly_test` | FPU assembly hazard tests                                                |
 | `call_stress`       | Function call stress test                                                |
 | `spanning_test`     | Instruction spanning boundary test                                       |
 | `print_clock_speed` | Clock speed measurement utility                                          |
@@ -78,7 +79,37 @@ Applications are compiled automatically before simulation—no manual build step
 # Reproducibility options
 ./test_run_cocotb.py cpu --random-seed=12345       # Use specific seed
 ./test_run_cocotb.py cpu --testcase=test_random    # Run specific test function
+
+# Seed sweep (parallel random seed testing)
+./test_run_cocotb.py cpu --sim=verilator --seed-sweep 10          # Run 10 seeds in parallel
+./test_run_cocotb.py cpu --seed-sweep 20 --max-workers 4          # Limit parallelism
+./test_run_cocotb.py cpu --seed-sweep 10 --testcase test_random   # Sweep specific test
 ```
+
+**Seed Sweep Mode:**
+
+The `--seed-sweep N` flag runs N simulations in parallel, each with a different random seed. This is useful for finding intermittent failures in randomized tests. After all runs complete, a summary report shows which seeds passed and which failed, along with commands to reproduce any failures:
+
+```
+============================================================
+SEED SWEEP REPORT
+============================================================
+Total runs: 10
+Passed: 9
+Failed: 1
+
+Passing seeds: [123456789, 234567890, ...]
+Failing seeds: [987654321]
+
+To reproduce a failure, run:
+  ./test_run_cocotb.py cpu --sim=verilator --random-seed=987654321
+============================================================
+```
+
+Options:
+- `--seed-sweep N` - Number of random seeds to test
+- `--max-workers W` - Limit parallel workers (default: min(N, cpu_count))
+- Can be combined with `--testcase` to sweep a specific test function
 
 **Pytest Usage:**
 

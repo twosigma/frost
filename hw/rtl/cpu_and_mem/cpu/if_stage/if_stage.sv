@@ -145,6 +145,8 @@ module if_stage #(
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
   logic use_buffer_after_spanning;  // Use buffer after spanning_to_halfword
+  logic is_compressed_saved;  // Saved is_compressed for fast path
+  logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -153,6 +155,7 @@ module if_stage #(
   logic [31:0] effective_instr;  // Aligned 32-bit instruction
   logic [31:0] spanning_instr;  // Assembled spanning instruction
   logic is_compressed;  // Current instruction is 16-bit compressed
+  logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic sel_nop;  // Select NOP (during holdoff/flush)
   logic sel_spanning;  // Select spanning instruction
   logic sel_compressed;  // Select compressed instruction path
@@ -244,7 +247,8 @@ module if_stage #(
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(i_pipeline_ctrl.stall),
+      // Use stall_for_trap_check to avoid pulling trap_taken into prediction gating.
+      .i_stall(i_pipeline_ctrl.stall_for_trap_check),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -343,9 +347,9 @@ module if_stage #(
       .i_is_32bit_spanning(is_32bit_spanning),
       .i_spanning_to_halfword(spanning_to_halfword),
       .i_spanning_to_halfword_registered(spanning_to_halfword_registered),
-      // Use is_compressed_for_buffer which handles stall restoration correctly,
-      // including the saved_values_valid check that clears on flush.
-      .i_is_compressed(is_compressed_for_buffer),
+      // TIMING OPTIMIZATION: Use is_compressed_fast which matches is_compressed_for_buffer
+      // behavior but is computed locally in instruction_aligner for better timing.
+      .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
 
       // Branch prediction (from branch_prediction_controller)
@@ -405,7 +409,9 @@ module if_stage #(
       .o_spanning_to_halfword_registered(spanning_to_halfword_registered),
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_for_pc(is_compressed_for_pc),  // TIMING OPTIMIZATION: for PC increment
-      .o_use_buffer_after_spanning(use_buffer_after_spanning)
+      .o_use_buffer_after_spanning(use_buffer_after_spanning),
+      .o_is_compressed_saved(is_compressed_saved),
+      .o_saved_values_valid(saved_values_valid)
   );
 
   // ===========================================================================
@@ -451,11 +457,14 @@ module if_stage #(
       // to break critical path from stall → is_compressed → PC
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
+      .i_is_compressed_saved(is_compressed_saved),
+      .i_saved_values_valid(saved_values_valid),
 
       .o_raw_parcel(raw_parcel),
       .o_effective_instr(effective_instr),
       .o_spanning_instr(spanning_instr),
       .o_is_compressed(is_compressed),
+      .o_is_compressed_fast(is_compressed_fast),
       .o_sel_nop(sel_nop),
       .o_sel_spanning(sel_spanning),
       .o_sel_compressed(sel_compressed),
@@ -479,12 +488,8 @@ module if_stage #(
   logic        sel_compressed_saved;
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      // Clear on reset or flush - flush invalidates pre-flush state
-      // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
-      raw_parcel_saved <= riscv_pkg::NopLowBits;
-      effective_instr_saved <= riscv_pkg::NOP;
-      spanning_instr_saved <= riscv_pkg::NOP;
+    if (flush_for_c_ext_safe) begin
+      // Flush invalidates pre-flush state; keep only selection controls
       sel_nop_saved <= 1'b1;
       sel_spanning_saved <= 1'b0;
       sel_compressed_saved <= 1'b0;
@@ -563,11 +568,7 @@ module if_stage #(
                         riscv_pkg::PcIncrementCompressed : riscv_pkg::PcIncrement32bit);
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      // Clear on reset or flush - flush invalidates pre-flush state
-      // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
-      link_address_saved <= '0;
-    end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
+    if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
       link_address_saved <= link_address;
     end
   end
@@ -587,16 +588,16 @@ module if_stage #(
   logic [  riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_saved;
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe || prediction_holdoff) begin
-      // Clear on reset, flush, or prediction-driven control flow change.
-      // Prediction holdoff indicates PC changed due to prediction, so saved
-      // values from the old PC are stale. This matches BTB behavior.
+    if (flush_for_c_ext_safe || prediction_holdoff) begin
+      // Clear control bit on flush or prediction-driven control flow change.
+      // Saved data remains but is ignored when ras_predicted_saved is low.
       ras_predicted_saved <= 1'b0;
-      ras_predicted_target_saved <= '0;
-      ras_checkpoint_tos_saved <= '0;
-      ras_checkpoint_valid_count_saved <= '0;
     end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
       ras_predicted_saved <= ras_predicted;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
       ras_predicted_target_saved <= ras_predicted_target;
       ras_checkpoint_tos_saved <= ras_checkpoint_tos;
       ras_checkpoint_valid_count_saved <= ras_checkpoint_valid_count;

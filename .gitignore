@@ -70,4 +70,4 @@ sw/apps/*/sw.S
 *.txt
 *.str
 .Xil/
-fpga/build/*/work
+fpga/build/*/work*

@@ -9,6 +9,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sign_inject.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_compare.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
 
 # Pipelined arithmetic operations
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv

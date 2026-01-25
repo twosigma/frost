@@ -64,6 +64,7 @@ from encoders.op_tables import (
     FP_CMP,
     FP_CVT_F2I,
     FP_CVT_I2F,
+    FP_CVT_F2F,
     FP_MV_F2I,
     FP_MV_I2F,
     FP_CLASS,
@@ -361,6 +362,10 @@ class CPUModel:
             # Integer to FP conversion (fcvt.s.w, fcvt.s.wu)
             _, fn = FP_CVT_I2F[operation]
             return fn(state.register_file_previous[source_register_1])
+        elif operation in FP_CVT_F2F:
+            # FP to FP conversion (fcvt.s.d, fcvt.d.s)
+            _, fn = FP_CVT_F2F[operation]
+            return fn(state.fp_register_file_previous[source_register_1])
         elif operation in FP_MV_F2I:
             # FP bits to integer move (fmv.x.w)
             _, fn = FP_MV_F2I[operation]
@@ -560,22 +565,46 @@ class CPUModel:
             mem_model.write_word(write_address, new_value)
             return
 
-        # Handle FP store (FSW)
+        # Handle FP store (FSW/FSD)
         if operation in FP_STORES:
             # FSW: rs2 is FP register (data), rs1 is INT register (address)
             write_address = (
                 state.register_file_previous[source_register_1] + immediate
             ) & MASK32
             # Get data from FP register file
-            write_data = state.fp_register_file_previous[source_register_2] & MASK32
-            cocotb.log.info(
-                f"op {operation} with fp_rs2_val 0x{write_data:08X} storing to address 0x{write_address:08X}"
-            )
-            # Update expected queues
-            state.memory_write_address_expected_queue.append(write_address)
-            state.memory_write_data_expected_queue.append(write_data)
-            # Update memory model (word-aligned store)
-            mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, write_data)
+            fp_value = state.fp_register_file_previous[source_register_2]
+            if operation == "fsd":
+                # RTL writes FSD as two 32-bit stores: low word then high word.
+                # See hw/rtl/cpu_and_mem/cpu/ma_stage/ma_stage.sv (FP_MEM_STORE_HI).
+                low_word = fp_value & MASK32
+                high_word = (fp_value >> 32) & MASK32
+                cocotb.log.info(
+                    f"op {operation} storing fp_rs2_val 0x{fp_value:016X} "
+                    f"to address 0x{write_address:08X}"
+                )
+                # Queue low word then high word (little-endian)
+                state.memory_write_address_expected_queue.append(write_address)
+                state.memory_write_data_expected_queue.append(low_word)
+                state.memory_write_address_expected_queue.append(
+                    (write_address + 4) & MASK32
+                )
+                state.memory_write_data_expected_queue.append(high_word)
+                # Update memory model
+                mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, low_word)
+                mem_model.write_word(
+                    (write_address + 4) & MEMORY_WORD_ALIGN_MASK, high_word
+                )
+            else:
+                write_data = fp_value & MASK32
+                cocotb.log.info(
+                    f"op {operation} with fp_rs2_val 0x{write_data:08X} "
+                    f"storing to address 0x{write_address:08X}"
+                )
+                # Update expected queues
+                state.memory_write_address_expected_queue.append(write_address)
+                state.memory_write_data_expected_queue.append(write_data)
+                # Update memory model (word-aligned store)
+                mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, write_data)
             return
 
         if operation not in STORES:

@@ -293,6 +293,120 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
         return decimal_to_float32(result_dec)
 
 
+def _fma_float64(a_bits: int, b_bits: int, c_bits: int) -> int:
+    """Compute double-precision fused multiply-add with single rounding.
+
+    This uses exact integer arithmetic to avoid double-rounding and to provide
+    deterministic results when math.fma() is unavailable.
+    """
+
+    def _unpack(bits: int) -> tuple[int, int, int]:
+        """Return (sign, exp2, sig) where value = (-1)^sign * sig * 2^exp2."""
+        sign = (bits >> 63) & 1
+        exp = (bits >> 52) & 0x7FF
+        mant = bits & DP_MANT_MASK
+        if exp == 0:
+            # Subnormal or zero: value = mant * 2^-1074
+            return sign, -1074, mant
+        # Normal: value = (1.mant) * 2^(exp-1023)
+        return sign, exp - 1023 - 52, (1 << 52) | mant
+
+    def _round_to_double(sign: int, sig: int, exp2: int) -> int:
+        """Round exact value (sig * 2^exp2) to IEEE754 double (RNE)."""
+        if sig == 0:
+            # Exact zero (RNE) -> +0
+            return DP_POS_ZERO
+
+        n_bits = sig.bit_length()
+        exp_unbiased = exp2 + n_bits - 1
+
+        if exp_unbiased > 1023:
+            return DP_NEG_INF if sign else DP_POS_INF
+
+        if exp_unbiased >= -1022:
+            # Normal number: keep 53-bit significand (incl implicit 1)
+            shift = n_bits - 53
+            if shift > 0:
+                sig_53 = sig >> shift
+                rem = sig & ((1 << shift) - 1)
+                guard = (sig >> (shift - 1)) & 1
+                sticky = 1 if (rem & ((1 << (shift - 1)) - 1)) != 0 else 0
+                lsb = sig_53 & 1
+                if guard and (sticky or lsb):
+                    sig_53 += 1
+                    if sig_53 >= (1 << 53):
+                        sig_53 >>= 1
+                        exp_unbiased += 1
+                        if exp_unbiased > 1023:
+                            return DP_NEG_INF if sign else DP_POS_INF
+            elif shift < 0:
+                sig_53 = sig << (-shift)
+            else:
+                sig_53 = sig
+
+            exp_bits = exp_unbiased + 1023
+            mant = sig_53 & DP_MANT_MASK
+            return (sign << 63) | (exp_bits << 52) | mant
+
+        # Subnormal: round to nearest 2^-1074
+        shift = -(exp2 + 1074)
+        if shift > 0:
+            mant = sig >> shift
+            rem = sig & ((1 << shift) - 1)
+            guard = (sig >> (shift - 1)) & 1
+            sticky = 1 if (rem & ((1 << (shift - 1)) - 1)) != 0 else 0
+            lsb = mant & 1
+            if guard and (sticky or lsb):
+                mant += 1
+        else:
+            mant = sig << (-shift)
+
+        if mant >= (1 << 52):
+            # Rounds up to smallest normal
+            return (sign << 63) | (1 << 52)
+        if mant == 0:
+            return DP_NEG_ZERO if sign else DP_POS_ZERO
+        return (sign << 63) | (mant & DP_MANT_MASK)
+
+    sign_a, exp_a, sig_a = _unpack(a_bits)
+    sign_b, exp_b, sig_b = _unpack(b_bits)
+    sign_c, exp_c, sig_c = _unpack(c_bits)
+
+    # Exact product
+    sign_p = sign_a ^ sign_b
+    sig_p = sig_a * sig_b
+    exp_p = exp_a + exp_b
+
+    # Align to the smaller exponent for exact sum
+    if exp_p >= exp_c:
+        sig_p_shift = sig_p << (exp_p - exp_c)
+        sig_c_shift = sig_c
+        exp_min = exp_c
+    else:
+        sig_p_shift = sig_p
+        sig_c_shift = sig_c << (exp_c - exp_p)
+        exp_min = exp_p
+
+    if sign_p == sign_c:
+        sig_sum = sig_p_shift + sig_c_shift
+        sign_sum = sign_p
+    else:
+        if sig_p_shift >= sig_c_shift:
+            sig_sum = sig_p_shift - sig_c_shift
+            sign_sum = sign_p
+        else:
+            sig_sum = sig_c_shift - sig_p_shift
+            sign_sum = sign_c
+
+    # Exact zero: sign depends on operand signs (RNE behavior).
+    if sig_sum == 0:
+        if sign_p == sign_c:
+            return DP_NEG_ZERO if sign_p else DP_POS_ZERO
+        return DP_POS_ZERO
+
+    return _round_to_double(sign_sum, sig_sum, exp_min)
+
+
 def _round_to_nearest_even(value: float) -> int:
     """Round to nearest even (RNE) and return as int."""
     # Python's round() implements bankers rounding (ties to even).
@@ -311,6 +425,37 @@ FP_SIGN_MASK = 0x80000000
 FP_EXP_MASK = 0x7F800000
 FP_MANT_MASK = 0x007FFFFF
 MASK32 = 0xFFFFFFFF
+MASK64 = 0xFFFFFFFFFFFFFFFF
+FP32_NANBOX_MASK = 0xFFFFFFFF00000000
+
+
+def box32(bits32: int) -> int:
+    """NaN-box a 32-bit float into a 64-bit FP register value."""
+    return (FP32_NANBOX_MASK | (bits32 & MASK32)) & MASK64
+
+
+def unbox32(bits64: int) -> int:
+    """Unbox a 64-bit FP register to 32-bit float bits.
+
+    If the value is not NaN-boxed (upper 32 bits are not all 1s), return
+    canonical quiet NaN per the RISC-V NaN-boxing rules.
+    """
+    if (bits64 & FP32_NANBOX_MASK) != FP32_NANBOX_MASK:
+        return FP_CANONICAL_NAN
+    return bits64 & MASK32
+
+
+# IEEE 754 double-precision constants
+DP_POS_ZERO = 0x0000000000000000
+DP_NEG_ZERO = 0x8000000000000000
+DP_POS_INF = 0x7FF0000000000000
+DP_NEG_INF = 0xFFF0000000000000
+DP_CANONICAL_NAN = 0x7FF8000000000000  # Canonical quiet NaN
+
+# Masks for IEEE 754 double-precision
+DP_SIGN_MASK = 0x8000000000000000
+DP_EXP_MASK = 0x7FF0000000000000
+DP_MANT_MASK = 0x000FFFFFFFFFFFFF
 
 
 def bits_to_float(bits: int) -> float:
@@ -331,6 +476,22 @@ def float_to_bits(f: float) -> int:
         # Value too large for float32: saturate to signed infinity.
         return FP_NEG_INF if f < 0.0 else FP_POS_INF
     return struct.unpack(">I", packed)[0]
+
+
+def bits_to_double(bits: int) -> float:
+    """Convert 64-bit integer to IEEE 754 double-precision float."""
+    packed = struct.pack(">Q", bits & MASK64)
+    return struct.unpack(">d", packed)[0]
+
+
+def double_to_bits(d: float) -> int:
+    """Convert IEEE 754 double-precision float to 64-bit integer."""
+    if math.isnan(d):
+        return DP_CANONICAL_NAN
+    if math.isinf(d):
+        return DP_NEG_INF if d < 0.0 else DP_POS_INF
+    packed = struct.pack(">d", d)
+    return struct.unpack(">Q", packed)[0]
 
 
 def is_nan(bits: int) -> bool:
@@ -362,6 +523,30 @@ def is_subnormal(bits: int) -> bool:
 def is_negative(bits: int) -> bool:
     """Check if the sign bit is set."""
     return bool(bits & FP_SIGN_MASK)
+
+
+def is_nan_d(bits: int) -> bool:
+    """Check if bits represent a NaN value (double-precision)."""
+    exp = (bits & DP_EXP_MASK) >> 52
+    mant = bits & DP_MANT_MASK
+    return exp == 0x7FF and mant != 0
+
+
+def is_inf_d(bits: int) -> bool:
+    """Check if bits represent an infinity value (double-precision)."""
+    exp = (bits & DP_EXP_MASK) >> 52
+    mant = bits & DP_MANT_MASK
+    return exp == 0x7FF and mant == 0
+
+
+def is_zero_d(bits: int) -> bool:
+    """Check if bits represent a zero value (+0 or -0) (double-precision)."""
+    return (bits & ~DP_SIGN_MASK) == 0
+
+
+def is_negative_d(bits: int) -> bool:
+    """Check if the sign bit is set (double-precision)."""
+    return bool(bits & DP_SIGN_MASK)
 
 
 def canonicalize_nan(bits: int) -> int:
@@ -759,6 +944,282 @@ def fclass_s(rs1_bits: int, _unused: int = 0) -> int:
 
 
 # ============================================================================
+# D extension (double-precision floating-point)
+# ============================================================================
+
+
+def fadd_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FADD.D: rd = rs1 + rs2 (double-precision add)."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return double_to_bits(d1 + d2)
+
+
+def fsub_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FSUB.D: rd = rs1 - rs2 (double-precision subtract)."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return double_to_bits(d1 - d2)
+
+
+def fmul_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FMUL.D: rd = rs1 * rs2 (double-precision multiply)."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return double_to_bits(d1 * d2)
+
+
+def fdiv_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FDIV.D: rd = rs1 / rs2 (double-precision divide)."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    if is_inf_d(rs1_bits) and is_inf_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    if is_zero_d(rs2_bits):
+        if is_zero_d(rs1_bits):
+            return DP_CANONICAL_NAN
+        sign = (rs1_bits ^ rs2_bits) & DP_SIGN_MASK
+        return DP_POS_INF | sign
+    if is_inf_d(rs1_bits) and not is_inf_d(rs2_bits):
+        sign = (rs1_bits ^ rs2_bits) & DP_SIGN_MASK
+        return DP_POS_INF | sign
+    if is_inf_d(rs2_bits) and not is_inf_d(rs1_bits):
+        sign = (rs1_bits ^ rs2_bits) & DP_SIGN_MASK
+        return DP_POS_ZERO | sign
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return double_to_bits(d1 / d2)
+
+
+def fsqrt_d(rs1_bits: int, _unused: int = 0) -> int:
+    """FSQRT.D: rd = sqrt(rs1) (double-precision)."""
+    if is_nan_d(rs1_bits):
+        return DP_CANONICAL_NAN
+    if is_negative_d(rs1_bits) and not is_zero_d(rs1_bits):
+        return DP_CANONICAL_NAN
+    if is_inf_d(rs1_bits):
+        return DP_NEG_INF if is_negative_d(rs1_bits) else DP_POS_INF
+    d1 = bits_to_double(rs1_bits)
+    try:
+        return double_to_bits(math.sqrt(d1))
+    except ValueError:
+        return DP_CANONICAL_NAN
+
+
+def fmadd_d(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
+    """FMADD.D: rd = (rs1 * rs2) + rs3 (double-precision FMA)."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits) or is_nan_d(rs3_bits):
+        return DP_CANONICAL_NAN
+    if (is_inf_d(rs1_bits) and is_zero_d(rs2_bits)) or (
+        is_zero_d(rs1_bits) and is_inf_d(rs2_bits)
+    ):
+        return DP_CANONICAL_NAN
+    prod_inf = is_inf_d(rs1_bits) or is_inf_d(rs2_bits)
+    if prod_inf and is_inf_d(rs3_bits):
+        prod_sign = (rs1_bits ^ rs2_bits) & DP_SIGN_MASK
+        if prod_sign != (rs3_bits & DP_SIGN_MASK):
+            return DP_CANONICAL_NAN
+        return DP_POS_INF | prod_sign
+    if prod_inf and not is_inf_d(rs3_bits):
+        prod_sign = (rs1_bits ^ rs2_bits) & DP_SIGN_MASK
+        return DP_POS_INF | prod_sign
+    if is_inf_d(rs3_bits) and not prod_inf:
+        return DP_POS_INF | (rs3_bits & DP_SIGN_MASK)
+    # Deterministic fused implementation (avoids libm differences)
+    return _fma_float64(rs1_bits, rs2_bits, rs3_bits)
+
+
+def fmsub_d(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
+    """FMSUB.D: rd = (rs1 * rs2) - rs3."""
+    return fmadd_d(rs1_bits, rs2_bits, rs3_bits ^ DP_SIGN_MASK)
+
+
+def fnmadd_d(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
+    """FNMADD.D: rd = -(rs1 * rs2) - rs3."""
+    return fmadd_d(rs1_bits ^ DP_SIGN_MASK, rs2_bits, rs3_bits ^ DP_SIGN_MASK)
+
+
+def fnmsub_d(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
+    """FNMSUB.D: rd = -(rs1 * rs2) + rs3."""
+    return fmadd_d(rs1_bits ^ DP_SIGN_MASK, rs2_bits, rs3_bits)
+
+
+def fsgnj_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FSGNJ.D: rd = |rs1| with sign of rs2."""
+    magnitude = rs1_bits & ~DP_SIGN_MASK
+    sign = rs2_bits & DP_SIGN_MASK
+    return magnitude | sign
+
+
+def fsgnjn_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FSGNJN.D: rd = |rs1| with negated sign of rs2."""
+    magnitude = rs1_bits & ~DP_SIGN_MASK
+    sign = (~rs2_bits) & DP_SIGN_MASK
+    return magnitude | sign
+
+
+def fsgnjx_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FSGNJX.D: rd = rs1 with sign XORed with rs2's sign."""
+    return rs1_bits ^ (rs2_bits & DP_SIGN_MASK)
+
+
+def fmin_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FMIN.D: Minimum of two doubles with NaN handling."""
+    if is_nan_d(rs1_bits) and is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    if is_nan_d(rs1_bits):
+        return rs2_bits
+    if is_nan_d(rs2_bits):
+        return rs1_bits
+    if is_zero_d(rs1_bits) and is_zero_d(rs2_bits):
+        return DP_NEG_ZERO if (rs1_bits | rs2_bits) & DP_SIGN_MASK else DP_POS_ZERO
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    if d1 < d2:
+        return rs1_bits
+    if d2 < d1:
+        return rs2_bits
+    return rs1_bits
+
+
+def fmax_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FMAX.D: Maximum of two doubles with NaN handling."""
+    if is_nan_d(rs1_bits) and is_nan_d(rs2_bits):
+        return DP_CANONICAL_NAN
+    if is_nan_d(rs1_bits):
+        return rs2_bits
+    if is_nan_d(rs2_bits):
+        return rs1_bits
+    if is_zero_d(rs1_bits) and is_zero_d(rs2_bits):
+        return rs1_bits if not is_negative_d(rs1_bits) else rs2_bits
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    if d1 > d2:
+        return rs1_bits
+    if d2 > d1:
+        return rs2_bits
+    return rs1_bits
+
+
+def feq_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FEQ.D: rd = (rs1 == rs2) ? 1 : 0. Returns 0 if either is NaN."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return 0
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return 1 if d1 == d2 else 0
+
+
+def flt_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FLT.D: rd = (rs1 < rs2) ? 1 : 0. Returns 0 if either is NaN."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return 0
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return 1 if d1 < d2 else 0
+
+
+def fle_d(rs1_bits: int, rs2_bits: int) -> int:
+    """FLE.D: rd = (rs1 <= rs2) ? 1 : 0. Returns 0 if either is NaN."""
+    if is_nan_d(rs1_bits) or is_nan_d(rs2_bits):
+        return 0
+    d1 = bits_to_double(rs1_bits)
+    d2 = bits_to_double(rs2_bits)
+    return 1 if d1 <= d2 else 0
+
+
+def fcvt_w_d(rs1_bits: int, _unused: int = 0) -> int:
+    """FCVT.W.D: Convert double to signed 32-bit integer."""
+    if is_nan_d(rs1_bits):
+        return 0x7FFFFFFF
+    if is_inf_d(rs1_bits):
+        return 0x7FFFFFFF if not is_negative_d(rs1_bits) else 0x80000000
+    d = bits_to_double(rs1_bits)
+    if d >= 2147483648.0:
+        return 0x7FFFFFFF
+    if d < -2147483648.0:
+        return 0x80000000
+    result = _round_to_nearest_even(d)
+    if result > 2147483647:
+        return 0x7FFFFFFF
+    if result < -2147483648:
+        return 0x80000000
+    return result & MASK32
+
+
+def fcvt_wu_d(rs1_bits: int, _unused: int = 0) -> int:
+    """FCVT.WU.D: Convert double to unsigned 32-bit integer."""
+    if is_nan_d(rs1_bits):
+        return 0xFFFFFFFF
+    if is_inf_d(rs1_bits):
+        return 0xFFFFFFFF if not is_negative_d(rs1_bits) else 0
+    d = bits_to_double(rs1_bits)
+    if d >= 4294967296.0:
+        return 0xFFFFFFFF
+    result = _round_to_nearest_even(d)
+    if result < 0:
+        return 0
+    if result > 0xFFFFFFFF:
+        return 0xFFFFFFFF
+    return result & MASK32
+
+
+def fcvt_d_w(rs1_int: int, _unused: int = 0) -> int:
+    """FCVT.D.W: Convert signed 32-bit integer to double."""
+    if rs1_int & 0x80000000:
+        signed_val = rs1_int - 0x100000000
+    else:
+        signed_val = rs1_int
+    d = float(signed_val)
+    return double_to_bits(d)
+
+
+def fcvt_d_wu(rs1_int: int, _unused: int = 0) -> int:
+    """FCVT.D.WU: Convert unsigned 32-bit integer to double."""
+    d = float(rs1_int & MASK32)
+    return double_to_bits(d)
+
+
+def fcvt_s_d(rs1_bits: int, _unused: int = 0) -> int:
+    """FCVT.S.D: Convert double to single."""
+    if is_nan_d(rs1_bits):
+        return FP_CANONICAL_NAN
+    d = bits_to_double(rs1_bits)
+    return float_to_bits(float(d))
+
+
+def fcvt_d_s(rs1_bits: int, _unused: int = 0) -> int:
+    """FCVT.D.S: Convert single to double."""
+    f = bits_to_float(rs1_bits)
+    return double_to_bits(float(f))
+
+
+def fclass_d(rs1_bits: int, _unused: int = 0) -> int:
+    """FCLASS.D: Classify double-precision value."""
+    sign = is_negative_d(rs1_bits)
+    exp = (rs1_bits & DP_EXP_MASK) >> 52
+    mant = rs1_bits & DP_MANT_MASK
+
+    if exp == 0x7FF:
+        if mant == 0:
+            return 1 if sign else 0x80
+        if mant & (1 << 51):
+            return 0x200
+        return 0x100
+    if exp == 0:
+        if mant == 0:
+            return 8 if sign else 0x10
+        return 4 if sign else 0x20
+    return 2 if sign else 0x40
+
+
+# ============================================================================
 # FLW/FSW - handled by memory model, not FPU
 # These functions are for symmetry in the op_tables
 # ============================================================================
@@ -770,3 +1231,10 @@ def flw(memory_model: MemoryModel, address: int) -> int:
     from models.alu_model import lw
 
     return lw(memory_model, address)
+
+
+def fld(memory_model: MemoryModel, address: int) -> int:
+    """FLD: Load doubleword from memory to FP register."""
+    from models.alu_model import ld
+
+    return ld(memory_model, address)
