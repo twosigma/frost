@@ -249,6 +249,189 @@ supports both integer (RV32IMACB) and floating-point (RV32FD) operations.
 Conservative approach: loads wait for all older store addresses to be known.
 This applies to both integer and floating-point memory operations.
 
+### L0 Data Cache Integration
+
+The existing FROST L0 cache (128-entry, direct-mapped, write-through) is preserved
+and integrated with the Load/Store Queues:
+
+```
+                        L0 Cache Integration with LQ/SQ
+    +-------------------------------------------------------------------------+
+    |                                                                         |
+    |  LOAD PATH (priority order):                                            |
+    |                                                                         |
+    |  1. Store-to-Load Forwarding (highest priority)                         |
+    |     - Check SQ for matching address from older stores                   |
+    |     - If match with compatible size: forward data, skip cache/memory    |
+    |                                                                         |
+    |  2. L0 Cache Hit                                                        |
+    |     - If no SQ forward, check L0 cache                                  |
+    |     - Cache hit: data available in 1 cycle, broadcast on CDB            |
+    |                                                                         |
+    |  3. Memory Access (cache miss)                                          |
+    |     - If no SQ forward and cache miss: issue to memory                  |
+    |     - Update cache on memory response (write-through)                   |
+    |                                                                         |
+    |  +------------------+     +------------------+     +------------------+ |
+    |  |   STORE QUEUE    |     |    L0 CACHE      |     |     MEMORY       | |
+    |  |                  |     |                  |     |                  | |
+    |  |  Check for addr  |---->|  Tag lookup      |---->|  Issue read      | |
+    |  |  match + forward |  NO |  (1 cycle)       |  NO |  (variable lat)  | |
+    |  |                  | FWD |                  | HIT |                  | |
+    |  +--------+---------+     +--------+---------+     +--------+---------+ |
+    |           |                        |                        |           |
+    |           | YES                    | YES                    |           |
+    |           v                        v                        v           |
+    |  +--------+---------+     +--------+---------+     +--------+---------+ |
+    |  |  Forward data    |     |  Cache hit data  |     |  Memory response | |
+    |  |  to LQ entry     |     |  to LQ entry     |     |  to LQ + cache   | |
+    |  +------------------+     +------------------+     +------------------+ |
+    |                                                                         |
+    |  STORE PATH:                                                            |
+    |                                                                         |
+    |  - Stores buffer in SQ until ROB commit                                 |
+    |  - On commit: write to L0 cache AND memory (write-through)              |
+    |  - Cache updated with store data for subsequent load hits               |
+    |                                                                         |
+    |  CACHE COHERENCY:                                                       |
+    |                                                                         |
+    |  - SQ forwarding takes precedence over cache (handles WAW/RAW)          |
+    |  - Write-through ensures memory always consistent                       |
+    |  - No cache invalidation needed (single-core design)                    |
+    |                                                                         |
+    +-------------------------------------------------------------------------+
+```
+
+### MMIO (Memory-Mapped I/O) Handling
+
+MMIO addresses require special handling to prevent speculative side effects:
+
+```
+                        MMIO Handling in Tomasulo
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  MMIO ADDRESS DETECTION:                                               |
+    |                                                                        |
+    |  - MEM_RS and LQ/SQ check address against MMIO region                  |
+    |  - MMIO region defined by address decode (platform-specific)           |
+    |  - MMIO flag stored in LQ/SQ entry when address calculated             |
+    |                                                                        |
+    |  MMIO LOADS (Non-Speculative):                                         |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  MMIO loads MUST NOT execute speculatively because:              |  |
+    |  |    - Read may have side effects (clear-on-read registers)        |  |
+    |  |    - Read may return different values each time                  |  |
+    |  |                                                                  |  |
+    |  |  HANDLING:                                                       |  |
+    |  |    1. LQ entry marked as MMIO when address calculated            |  |
+    |  |    2. MMIO load waits until it reaches ROB head                  |  |
+    |  |    3. Only then issue to memory (bypassing cache)                |  |
+    |  |    4. Response goes to CDB, load commits                         |  |
+    |  |                                                                  |  |
+    |  |  can_issue_mmio_load = lq_entry.is_mmio &&                       |  |
+    |  |                        lq_entry.rob_tag == rob_head              |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  MMIO STORES:                                                          |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  MMIO stores follow normal SQ commit path:                       |  |
+    |  |    - Store waits in SQ until ROB commits it                      |  |
+    |  |    - On commit: write directly to memory (bypass cache)          |  |
+    |  |    - MMIO flag ensures cache is not updated                      |  |
+    |  |                                                                  |  |
+    |  |  This naturally makes MMIO stores non-speculative.               |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  STORE-TO-LOAD FORWARDING WITH MMIO:                                   |
+    |                                                                        |
+    |  - MMIO loads do NOT receive forwarding from SQ                        |
+    |  - Even if address matches, MMIO load must go to device                |
+    |  - Reason: device state may have changed since store was queued        |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+### FP64 (D Extension) Load/Store Sequencing
+
+The 32-bit memory interface requires 2 sequential accesses for 64-bit FP operations:
+
+```
+                        FP64 Load/Store Sequencing
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  FLD (64-bit FP Load) - 2-Phase Sequence:                              |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  Phase 1: Load low word (addr)                                   |  |
+    |  |    - LQ issues memory read for addr                              |  |
+    |  |    - Response stored in LQ entry (bits [31:0])                   |  |
+    |  |    - LQ entry remains valid, not yet complete                    |  |
+    |  |                                                                  |  |
+    |  |  Phase 2: Load high word (addr+4)                                |  |
+    |  |    - LQ issues memory read for addr+4                            |  |
+    |  |    - Response stored in LQ entry (bits [63:32])                  |  |
+    |  |    - LQ entry now complete, broadcast 64-bit value on CDB        |  |
+    |  |                                                                  |  |
+    |  |  LQ Entry Fields for FLD:                                        |  |
+    |  |    - size = 11 (D = double)                                      |  |
+    |  |    - phase = 0 or 1 (track which word)                           |  |
+    |  |    - data[63:0] accumulates both words                           |  |
+    |  |                                                                  |  |
+    |  |  Timing: 2 memory accesses, may have cache hits for both         |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  FSD (64-bit FP Store) - 2-Phase Commit:                               |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  SQ Entry: stores full 64-bit value, size = D                    |  |
+    |  |                                                                  |  |
+    |  |  On ROB commit of FSD:                                           |  |
+    |  |    Phase 1: Write low word to addr                               |  |
+    |  |      - sq_entry.data[31:0] -> memory[addr]                       |  |
+    |  |      - SQ entry remains, phase = 1                               |  |
+    |  |                                                                  |  |
+    |  |    Phase 2: Write high word to addr+4                            |  |
+    |  |      - sq_entry.data[63:32] -> memory[addr+4]                    |  |
+    |  |      - SQ entry freed, advance head                              |  |
+    |  |                                                                  |  |
+    |  |  ATOMICITY:                                                      |  |
+    |  |    - FSD is NOT atomic at memory level (2 separate writes)       |  |
+    |  |    - RISC-V allows this for naturally-aligned FSD                |  |
+    |  |    - Both writes happen before next store commits                |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  STORE-TO-LOAD FORWARDING FOR FP64:                                    |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  FLD from address matching FSD:                                  |  |
+    |  |    - Forward full 64 bits from SQ entry                          |  |
+    |  |    - Both phases satisfied, skip memory entirely                 |  |
+    |  |                                                                  |  |
+    |  |  FLW from address matching FSD:                                  |  |
+    |  |    - Forward appropriate 32-bit word from SQ entry               |  |
+    |  |    - addr matches FSD.addr: forward bits [31:0]                  |  |
+    |  |    - addr matches FSD.addr+4: forward bits [63:32]               |  |
+    |  |                                                                  |  |
+    |  |  FLD from address matching FSW:                                  |  |
+    |  |    - Partial forward not supported (complexity)                  |  |
+    |  |    - Wait for FSW to commit, then issue FLD to memory            |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
 ```
                         Memory Disambiguation
     +------------------------------------------------------------------------+
@@ -625,6 +808,46 @@ FENCE.I synchronizes instruction and data memory.
     +------------------------------------------------------------------------+
 ```
 
+### WFI (Wait For Interrupt) Instruction
+
+WFI stalls the processor until an interrupt occurs:
+
+```
+                        WFI Handling in Tomasulo
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  WFI SEMANTICS:                                                        |
+    |                                                                        |
+    |  - Hint to implementation that core can enter low-power state          |
+    |  - Must wake on any enabled interrupt                                  |
+    |  - May be implemented as NOP (legal but inefficient)                   |
+    |                                                                        |
+    |  TOMASULO HANDLING:                                                    |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  1. WFI dispatches to ROB like other instructions                |  |
+    |  |  2. WFI does not need a reservation station (no operands)        |  |
+    |  |  3. WFI marked "done" immediately in ROB                         |  |
+    |  |  4. When WFI reaches ROB head:                                   |  |
+    |  |       a. Stall commit (do not advance head)                      |  |
+    |  |       b. Front-end continues fetching (ROB may fill)             |  |
+    |  |       c. Wait for interrupt signal                               |  |
+    |  |  5. On interrupt:                                                |  |
+    |  |       a. WFI commits (advances head)                             |  |
+    |  |       b. Interrupt taken via normal trap mechanism               |  |
+    |  |       c. ROB flushed as part of trap entry                       |  |
+    |  |                                                                  |  |
+    |  |  Alternative (simpler): Treat WFI as pipeline serialize point    |  |
+    |  |    - Drain ROB before entering WFI stall                         |  |
+    |  |    - Stall front-end during WFI                                  |  |
+    |  |    - Resume fetch on interrupt                                   |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
 ### Summary: Special Instruction Handling
 
 | Instruction Class | Dispatch | Execute | Commit | Notes |
@@ -635,25 +858,484 @@ FENCE.I synchronizes instruction and data memory.
 | **CSR** | Normal | At ROB head | Normal | Non-speculative R/M/W |
 | **FENCE** | Normal | N/A | Drains SQ | Orders memory ops |
 | **FENCE.I** | Normal | N/A | Drains SQ, flushes | I-cache sync |
+| **WFI** | Normal | N/A (immediate done) | Stalls until interrupt | Low-power hint |
+
+---
+
+## Instruction Routing and RS Assignment
+
+Each instruction type is routed to a specific reservation station based on the
+functional unit required. This table provides the complete mapping:
+
+### Integer Instructions (INT RAT for source/dest)
+
+| Instruction | RS | Functional Unit | Latency | Notes |
+|-------------|-----|-----------------|---------|-------|
+| ADD, SUB, AND, OR, XOR | INT_RS | ALU | 1 cycle | Basic arithmetic/logic |
+| SLL, SRL, SRA | INT_RS | ALU | 1 cycle | Shifts |
+| SLT, SLTU | INT_RS | ALU | 1 cycle | Comparisons |
+| ADDI, ANDI, ORI, XORI | INT_RS | ALU | 1 cycle | Immediate variants |
+| SLLI, SRLI, SRAI | INT_RS | ALU | 1 cycle | Immediate shifts |
+| SLTI, SLTIU | INT_RS | ALU | 1 cycle | Immediate comparisons |
+| LUI, AUIPC | INT_RS | ALU | 1 cycle | Upper immediate |
+| **B-extension** | INT_RS | ALU | 1 cycle | CLZ, CTZ, CPOP, ROL, ROR, etc. |
+| **Zba** | INT_RS | ALU | 1 cycle | SH1ADD, SH2ADD, SH3ADD |
+| **Zicond** | INT_RS | ALU | 1 cycle | CZERO.EQZ, CZERO.NEZ |
+| MUL, MULH, MULHSU, MULHU | MUL_RS | Multiplier | 2 cycles | Pipelined multiply |
+| DIV, DIVU, REM, REMU | MUL_RS | Divider | 16-17 cycles | Pipelined divide |
+| LW, LH, LB, LHU, LBU | MEM_RS | Load Queue | Variable | Cache hit: 1 cycle |
+| SW, SH, SB | MEM_RS | Store Queue | N/A | Commit writes to memory |
+| BEQ, BNE, BLT, BGE, BLTU, BGEU | INT_RS | Branch Unit | 1 cycle | Resolved in EX |
+| JAL | INT_RS | Branch Unit | 1 cycle | PC-relative (target pre-computed) |
+| JALR | INT_RS | Branch Unit | 1 cycle | Register-relative |
+| LR.W | MEM_RS | Load Queue | Variable | Sets reservation |
+| SC.W | MEM_RS | Store Queue | N/A | At ROB head only |
+| AMO* | MEM_RS | AMO Unit | Variable | At ROB head, SQ empty |
+| CSR* | INT_RS | CSR Unit | 1 cycle | At ROB head (non-speculative) |
+| FENCE | MEM_RS | N/A | N/A | Drains SQ at commit |
+| FENCE.I | MEM_RS | N/A | N/A | Drains SQ, flushes pipeline |
+| ECALL, EBREAK | INT_RS | N/A | N/A | Exception at commit |
+| WFI | (none) | N/A | N/A | Stalls at ROB head |
+
+### Floating-Point Instructions (FP RAT for FP source/dest)
+
+| Instruction | RS | Functional Unit | Latency | Notes |
+|-------------|-----|-----------------|---------|-------|
+| FADD.S/D, FSUB.S/D | FP_RS | FP Adder | 10 cycles | 4-cycle internal pipeline |
+| FMUL.S/D | FMUL_RS | FP Multiplier | 9 cycles | 3-cycle internal pipeline |
+| FMADD, FMSUB, FNMADD, FNMSUB | FMUL_RS | FP FMA | 14 cycles | 4-cycle internal pipeline |
+| FDIV.S/D | FDIV_RS | FP Divider | ~32 cycles | Sequential |
+| FSQRT.S/D | FDIV_RS | FP Sqrt | ~32 cycles | Sequential |
+| FMIN.S/D, FMAX.S/D | FP_RS | FP Compare | 3 cycles | |
+| FEQ.S/D, FLT.S/D, FLE.S/D | FP_RS | FP Compare | 3 cycles | Result to INT rd |
+| FCVT.W.S, FCVT.WU.S | FP_RS | FP Convert | 5 cycles | FP→INT, result to INT rd |
+| FCVT.S.W, FCVT.S.WU | FP_RS | FP Convert | 5 cycles | INT→FP, INT rs1 source |
+| FCVT.D.S, FCVT.S.D | FP_RS | FP Convert | 5 cycles | D↔S conversion |
+| FMV.X.W, FMV.X.D | FP_RS | (direct) | 1 cycle | FP→INT bit copy |
+| FMV.W.X, FMV.D.X | FP_RS | (direct) | 1 cycle | INT→FP bit copy |
+| FCLASS.S/D | FP_RS | FP Classify | 1 cycle | Result to INT rd |
+| FSGNJ.S/D, FSGNJN, FSGNJX | FP_RS | FP Sign Inject | 1 cycle | |
+| FLW, FLD | MEM_RS | Load Queue | Variable | FLD: 2-phase |
+| FSW, FSD | MEM_RS | Store Queue | N/A | FSD: 2-phase commit |
+
+### Mixed INT/FP Instructions
+
+Some instructions read from one register file and write to another:
+
+| Instruction | Source RF | Dest RF | RS | Notes |
+|-------------|-----------|---------|-----|-------|
+| FEQ, FLT, FLE | FP (fs1, fs2) | INT (rd) | FP_RS | FP compare → INT result |
+| FCLASS | FP (fs1) | INT (rd) | FP_RS | FP classify → INT result |
+| FCVT.W.S, FCVT.WU.S | FP (fs1) | INT (rd) | FP_RS | FP → INT conversion |
+| FCVT.S.W, FCVT.S.WU | INT (rs1) | FP (fd) | FP_RS | INT → FP conversion |
+| FMV.X.W | FP (fs1) | INT (rd) | FP_RS | FP → INT bit move |
+| FMV.W.X | INT (rs1) | FP (fd) | FP_RS | INT → FP bit move |
+| FLW, FLD | INT (rs1) | FP (fd) | MEM_RS | INT base addr, FP dest |
+| FSW, FSD | INT (rs1), FP (fs2) | N/A | MEM_RS | INT base, FP data |
+
+For mixed instructions, dispatch must:
+- Read INT sources from INT RAT (or INT regfile if not renamed)
+- Read FP sources from FP RAT (or FP regfile if not renamed)
+- Update appropriate RAT based on dest_rf
+
+---
+
+## Branch Prediction and BTB Update Policy
+
+### Preserving Front-End Optimizations
+
+The existing FROST front-end optimizations are preserved:
+
+```
+                        Front-End Preserved Features
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  BRANCH TARGET PRE-COMPUTATION:                                        |
+    |                                                                        |
+    |  - ID stage pre-computes branch/JAL targets (branch_target_precompute) |
+    |  - Pre-computed targets stored in RS entry for branch instructions     |
+    |  - EX stage only computes JALR target (requires forwarded rs1)         |
+    |  - This reduces EX critical path, preserved in Tomasulo                |
+    |                                                                        |
+    |  RS Entry for Branch:                                                  |
+    |    - op: branch type (BEQ, BNE, etc.)                                  |
+    |    - src1_value: rs1 for comparison (or JALR target calc)              |
+    |    - src2_value: rs2 for comparison                                    |
+    |    - precomputed_target: PC + B-imm or PC + J-imm (from ID)            |
+    |    - predicted_taken: from BTB                                         |
+    |    - predicted_target: from BTB                                        |
+    |                                                                        |
+    |  EARLY SOURCE REGISTER EXTRACTION:                                     |
+    |                                                                        |
+    |  - PD stage extracts rs1, rs2, fp_rs3 from instruction bits            |
+    |  - In Tomasulo: used for early RAT lookup timing                       |
+    |  - RAT lookup can begin in PD, complete in ID/Dispatch                 |
+    |  - Reduces dispatch critical path                                      |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+### BTB Update Policy
+
+```
+                        BTB Update Policy
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  POLICY: Update BTB at branch RESOLUTION (not commit)                  |
+    |                                                                        |
+    |  RATIONALE:                                                            |
+    |    - Waiting for commit delays BTB update by ROB depth                 |
+    |    - Speculative BTB update is acceptable:                             |
+    |        * BTB is a predictor, not architectural state                   |
+    |        * Incorrect update on squashed branch is harmless               |
+    |        * Will be overwritten on next execution of that branch          |
+    |    - Faster update improves prediction accuracy sooner                 |
+    |                                                                        |
+    |  IMPLEMENTATION:                                                       |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  When branch resolves in EX (from INT_RS):                       |  |
+    |  |                                                                  |  |
+    |  |    btb_update_en    = branch_resolved                            |  |
+    |  |    btb_update_pc    = branch_pc                                  |  |
+    |  |    btb_update_taken = actual_taken                               |  |
+    |  |    btb_update_target= actual_target                              |  |
+    |  |                                                                  |  |
+    |  |  BTB entry updated regardless of speculation state.              |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  MISPREDICTION HANDLING:                                               |
+    |                                                                        |
+    |    - Misprediction detected when actual != predicted                   |
+    |    - ROB stores branch outcome for checkpoint selection                |
+    |    - Flush uses ROB tag to identify squashed instructions              |
+    |    - RAT/RAS restored from checkpoint                                  |
+    |    - Front-end redirected to correct target                            |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+---
+
+## Checkpoint Sizing and Management
+
+### Checkpoint Count Rationale
+
+```
+                        Checkpoint Management
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  PARAMETERS:                                                           |
+    |    NUM_CHECKPOINTS = 4                                                 |
+    |    ROB_DEPTH = 32                                                      |
+    |                                                                        |
+    |  RATIONALE FOR 4 CHECKPOINTS:                                          |
+    |                                                                        |
+    |  - Average basic block size: 4-6 instructions                          |
+    |  - With ROB_DEPTH=32, expect ~5-8 branches in flight                   |
+    |  - 4 checkpoints means some branches share checkpoints                 |
+    |                                                                        |
+    |  CHECKPOINT SHARING STRATEGY:                                          |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  Option A: Stall on checkpoint exhaustion                        |  |
+    |  |    - If all 4 checkpoints in use, stall dispatch                 |  |
+    |  |    - Simple, guarantees recovery for any misprediction           |  |
+    |  |    - May reduce performance with many branches                   |  |
+    |  |                                                                  |  |
+    |  |  Option B: Reuse checkpoints (implemented)                       |  |
+    |  |    - New branch reuses oldest checkpoint if exhausted            |  |
+    |  |    - If old checkpoint's branch mispredicts: full flush          |  |
+    |  |    - Trade-off: rare full flush vs dispatch stall                |  |
+    |  |                                                                  |  |
+    |  |  Option C: Increase checkpoint count                             |  |
+    |  |    - 8 checkpoints: handles most branch-heavy code               |  |
+    |  |    - Cost: 2x checkpoint storage (~3KB vs ~1.5KB)                |  |
+    |  |    - Consider if performance data shows frequent stalls          |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  DISPATCH STALL CONDITION:                                             |
+    |                                                                        |
+    |    stall_for_checkpoint = is_branch &&                                 |
+    |                           !checkpoint_available &&                     |
+    |                           POLICY == STALL_ON_EXHAUSTION                |
+    |                                                                        |
+    |  CHECKPOINT STORAGE:                                                   |
+    |                                                                        |
+    |    Per checkpoint:                                                     |
+    |      - INT RAT: 32 regs × 6 bits = 192 bits                            |
+    |      - FP RAT:  32 regs × 6 bits = 192 bits                            |
+    |      - RAS top pointer: 4 bits                                         |
+    |      - Branch ROB tag: 5 bits                                          |
+    |      - Valid bit: 1 bit                                                |
+    |      Total: 394 bits per checkpoint                                    |
+    |                                                                        |
+    |    4 checkpoints: 1576 bits (~200 bytes)                               |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+---
+
+## Floating-Point Rounding Mode Handling
+
+```
+                        FP Rounding Mode Management
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  RISC-V FP ROUNDING MODES:                                             |
+    |                                                                        |
+    |  | rm | Mode | Description |                                           |
+    |  |----|------|-------------|                                           |
+    |  | 000 | RNE | Round to Nearest, ties to Even |                        |
+    |  | 001 | RTZ | Round towards Zero |                                    |
+    |  | 010 | RDN | Round Down (towards -∞) |                               |
+    |  | 011 | RUP | Round Up (towards +∞) |                                 |
+    |  | 100 | RMM | Round to Nearest, ties to Max Magnitude |               |
+    |  | 111 | DYN | Dynamic (use frm in fcsr) |                             |
+    |                                                                        |
+    |  HANDLING IN TOMASULO:                                                 |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  AT DISPATCH:                                                    |  |
+    |  |                                                                  |  |
+    |  |    if (instr.rm == DYN):                                         |  |
+    |  |      rs_entry.rm = fcsr.frm  // Capture current global mode      |  |
+    |  |    else:                                                         |  |
+    |  |      rs_entry.rm = instr.rm  // Use instruction-specified mode   |  |
+    |  |                                                                  |  |
+    |  |  WHY CAPTURE AT DISPATCH:                                        |  |
+    |  |    - fcsr.frm may change before FP instruction executes          |  |
+    |  |    - Must use frm value from program order at instruction        |  |
+    |  |    - Capturing at dispatch preserves correct semantics           |  |
+    |  |                                                                  |  |
+    |  |  RS ENTRY:                                                       |  |
+    |  |    - rm: 3 bits (resolved rounding mode)                         |  |
+    |  |    - Passed to FPU with operation                                |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  FCSR UPDATES:                                                         |
+    |                                                                        |
+    |  - CSRRW/CSRRS/CSRRC to fcsr execute at ROB head (non-speculative)     |
+    |  - Ensures frm changes are properly ordered with FP instructions       |
+    |  - FP instructions dispatched after CSR will see new frm value         |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+---
+
+## Functional Unit Pipelining Details
+
+### Multiplier Integration
+
+```
+                        Multiplier Pipelining with MUL_RS
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  CURRENT FROST MULTIPLIER:                                             |
+    |    - 2-cycle pipelined                                                 |
+    |    - Accepts new operation every cycle                                 |
+    |    - 32×32 → 64-bit result                                             |
+    |                                                                        |
+    |  TOMASULO INTEGRATION:                                                 |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  MUL_RS issues to multiplier when:                               |  |
+    |  |    - Entry ready (both operands available)                       |  |
+    |  |    - Multiplier input stage not stalled                          |  |
+    |  |                                                                  |  |
+    |  |  Pipelining behavior:                                            |  |
+    |  |    Cycle 0: MUL_RS issues MUL_A                                  |  |
+    |  |    Cycle 1: MUL_RS issues MUL_B (A in stage 2)                   |  |
+    |  |    Cycle 2: MUL_A completes → CDB, MUL_RS issues MUL_C           |  |
+    |  |    Cycle 3: MUL_B completes → CDB, ...                           |  |
+    |  |                                                                  |  |
+    |  |  CDB contention:                                                 |  |
+    |  |    - Multiplier outputs every cycle once pipeline full           |  |
+    |  |    - May compete with ALU, divider, memory                       |  |
+    |  |    - If multiplier loses arbitration: stall multiplier output    |  |
+    |  |    - Multiplier holds result in output register                  |  |
+    |  |    - Stalls propagate to input (stop accepting new ops)          |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+### Divider Integration
+
+```
+                        Divider Pipelining with MUL_RS
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  CURRENT FROST DIVIDER:                                                |
+    |    - 16-stage pipelined (can overlap multiple divisions)               |
+    |    - Accepts new operation every cycle                                 |
+    |    - 32÷32 → quotient and remainder                                    |
+    |                                                                        |
+    |  TOMASULO INTEGRATION:                                                 |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  Option A: Multiple in-flight divisions (utilize pipelining)     |  |
+    |  |    - MUL_RS can issue DIV every cycle                            |  |
+    |  |    - Track up to 16 in-flight divisions                          |  |
+    |  |    - Each has ROB tag for CDB broadcast                          |  |
+    |  |    - Complex: need to track completion order                     |  |
+    |  |                                                                  |  |
+    |  |  Option B: Single division at a time (simpler)         [CHOSEN]  |  |
+    |  |    - MUL_RS issues DIV only when divider idle                    |  |
+    |  |    - Subsequent DIVs wait in MUL_RS until completion             |  |
+    |  |    - Simpler tracking, matches existing hazard behavior          |  |
+    |  |    - Performance cost: division serialization                    |  |
+    |  |                                                                  |  |
+    |  |  IMPLEMENTATION (Option B):                                      |  |
+    |  |    div_busy: 1-bit flag, set on DIV issue, clear on completion   |  |
+    |  |    MUL_RS issue condition for DIV: entry_ready && !div_busy      |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+### FPU Integration
+
+```
+                        FPU Pipelining with FP Reservation Stations
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  CURRENT FROST FPU LATENCIES:                                          |
+    |    - FP Add/Sub: 10 cycles (4-cycle internal pipeline)                 |
+    |    - FP Multiply: 9 cycles (3-cycle internal pipeline)                 |
+    |    - FP FMA: 14 cycles (4-cycle internal pipeline)                     |
+    |    - FP Divide: ~32 cycles (sequential)                                |
+    |    - FP Sqrt: ~32 cycles (sequential)                                  |
+    |    - FP Compare: 3 cycles                                              |
+    |    - FP Convert: 5 cycles                                              |
+    |    - FP Classify: 1 cycle                                              |
+    |    - FP Sign Inject: 1 cycle                                           |
+    |                                                                        |
+    |  RS ASSIGNMENT RATIONALE:                                              |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  FP_RS (FP Add/Sub, Compare, Convert, Classify, Sign Inject):    |  |
+    |  |    - Groups operations with similar latencies (1-10 cycles)      |  |
+    |  |    - Internal pipelining allows overlapped execution             |  |
+    |  |    - Issue every cycle if different operations                   |  |
+    |  |                                                                  |  |
+    |  |  FMUL_RS (FP Multiply, FMA):                                     |  |
+    |  |    - FMA needs 3 source operands (fs1, fs2, fs3)                 |  |
+    |  |    - RS entries have src3 field                                  |  |
+    |  |    - Internal pipelining allows overlapped FMULs                 |  |
+    |  |                                                                  |  |
+    |  |  FDIV_RS (FP Divide, FP Sqrt):                                   |  |
+    |  |    - Long latency, sequential (not pipelined internally)         |  |
+    |  |    - Only one FDIV/FSQRT in flight at a time                     |  |
+    |  |    - Separate RS prevents blocking shorter FP operations         |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  CDB CONTENTION:                                                       |
+    |                                                                        |
+    |  - Multiple FP units may complete same cycle                           |
+    |  - Priority: FDIV > FMUL > FP_ADD (longest latency first)              |
+    |  - Losing unit holds result, stalls internal pipeline                  |
+    |  - FPU has 1-cycle input capture registers to absorb some stalls       |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
+
+---
+
+## CDB Arbitration and Stall Handling
+
+```
+                        CDB Stall Buffering Strategy
+    +------------------------------------------------------------------------+
+    |                                                                        |
+    |  PROBLEM: Multiple FUs may complete in same cycle, only one CDB        |
+    |                                                                        |
+    |  SOLUTION: Per-FU result holding and back-pressure                     |
+    |                                                                        |
+    |  +------------------------------------------------------------------+  |
+    |  |                                                                  |  |
+    |  |  ALU (1-cycle):                                                  |  |
+    |  |    - Output register holds result                                |  |
+    |  |    - If loses arbitration: alu_result_pending = 1                |  |
+    |  |    - INT_RS stalls issue until ALU result accepted               |  |
+    |  |    - Effectively makes ALU 2-cycle when contended                |  |
+    |  |                                                                  |  |
+    |  |  Multiplier (2-cycle pipelined):                                 |  |
+    |  |    - Stage 2 output register holds result                        |  |
+    |  |    - If loses arbitration: mul_result_pending = 1                |  |
+    |  |    - Stall propagates: stage 1 stalls, MUL_RS stalls             |  |
+    |  |    - 1-entry buffer (output register) absorbs 1 stall cycle      |  |
+    |  |                                                                  |  |
+    |  |  Divider (16-cycle, sequential):                                 |  |
+    |  |    - Single in-flight division, result held on completion        |  |
+    |  |    - If loses arbitration: div_result_pending = 1                |  |
+    |  |    - New divisions blocked until result accepted                 |  |
+    |  |                                                                  |  |
+    |  |  Memory (Load Queue):                                            |  |
+    |  |    - LQ entry holds result when data returns                     |  |
+    |  |    - If loses arbitration: stay in LQ, retry next cycle          |  |
+    |  |    - LQ entries provide natural buffering                        |  |
+    |  |                                                                  |  |
+    |  |  FPU (multi-cycle):                                              |  |
+    |  |    - Each FPU subunit has output register                        |  |
+    |  |    - If loses arbitration: hold result, stall pipeline           |  |
+    |  |    - 1-cycle input registers help absorb back-pressure           |  |
+    |  |                                                                  |  |
+    |  +------------------------------------------------------------------+  |
+    |                                                                        |
+    |  PRIORITY ORDER (configurable):                                        |
+    |                                                                        |
+    |    1. FP_DIV/SQRT (longest latency, don't extend further)              |
+    |    2. INT_DIV                                                          |
+    |    3. FP_MUL/FMA                                                       |
+    |    4. INT_MUL                                                          |
+    |    5. FP_ADD (and other FP_RS operations)                              |
+    |    6. MEM (load results)                                               |
+    |    7. ALU (shortest latency, can tolerate delay)                       |
+    |                                                                        |
+    |  DESIGN PARAMETER: NUM_CDB_LANES                                       |
+    |                                                                        |
+    |    - Initially NUM_CDB_LANES = 1 (single CDB)                          |
+    |    - Parameterized for future expansion                                |
+    |    - 2 lanes (INT + FP) would reduce contention significantly          |
+    |    - Trade-off: 2x wakeup comparators in RS, 2x ROB write ports        |
+    |                                                                        |
+    +------------------------------------------------------------------------+
+```
 
 ---
 
 ## Module Summary
 
-| Module | Purpose | Key Interfaces |
-|--------|---------|----------------|
-| **ROB** | In-order commit, precise exceptions (unified INT/FP) | Dispatch alloc, CDB write, Commit out |
-| **INT_RAT** | Integer register renaming (x0-x31), speculation recovery | ID read, Dispatch write, Checkpoint |
-| **FP_RAT** | FP register renaming (f0-f31), speculation recovery | ID read, Dispatch write, Checkpoint |
-| **INT_RS** | Integer ALU reservation station | Dispatch in, CDB snoop, Issue to ALU |
-| **MUL_RS** | Integer multiply/divide reservation station | Dispatch in, CDB snoop, Issue to MUL |
-| **MEM_RS** | Memory ops reservation station (INT + FP loads/stores) | Dispatch in, CDB snoop, Issue to LQ/SQ |
-| **FP_RS** | FP add/sub/compare/convert reservation station | Dispatch in, CDB snoop, Issue to FPU |
-| **FMUL_RS** | FP multiply reservation station | Dispatch in, CDB snoop, Issue to FPU |
-| **FDIV_RS** | FP divide/sqrt reservation station (long latency) | Dispatch in, CDB snoop, Issue to FPU |
-| **LQ** | Load queue, address disambiguation (INT + FP) | MEM_RS issue, Store forward, Memory |
-| **SQ** | Store queue, commit buffer (INT + FP) | MEM_RS issue, Load forward, Commit |
-| **CDB** | Result broadcast, arbiter (XLEN/FLEN width); lane-parameterized (NUM_CDB_LANES=1 initially) | FU results in, RS/ROB/RAT broadcast |
+| Module | Purpose | Key Interfaces | FROST-Specific Features |
+|--------|---------|----------------|------------------------|
+| **ROB** | In-order commit, precise exceptions (unified INT/FP) | Dispatch alloc, CDB write, Commit out | WFI stall-at-head, CSR/FENCE serialization |
+| **INT_RAT** | Integer register renaming (x0-x31), speculation recovery | ID read, Dispatch write, Checkpoint | Early src reg timing path from PD |
+| **FP_RAT** | FP register renaming (f0-f31), speculation recovery | ID read, Dispatch write, Checkpoint | RAS pointer in checkpoint |
+| **INT_RS** | Integer ALU reservation station | Dispatch in, CDB snoop, Issue to ALU | Pre-computed branch targets from ID |
+| **MUL_RS** | Integer multiply/divide reservation station | Dispatch in, CDB snoop, Issue to MUL | DIV serialization (single in-flight) |
+| **MEM_RS** | Memory ops reservation station (INT + FP loads/stores) | Dispatch in, CDB snoop, Issue to LQ/SQ | MMIO flag, FP64 size encoding |
+| **FP_RS** | FP add/sub/compare/convert/classify/sgnj reservation station | Dispatch in, CDB snoop, Issue to FPU | Resolved rounding mode (DYN → frm) |
+| **FMUL_RS** | FP multiply/FMA reservation station (3 sources) | Dispatch in, CDB snoop, Issue to FPU | src3 for FMA operand |
+| **FDIV_RS** | FP divide/sqrt reservation station (long latency) | Dispatch in, CDB snoop, Issue to FPU | Single in-flight (sequential unit) |
+| **LQ** | Load queue, address disambiguation (INT + FP) | MEM_RS issue, Store forward, Memory | L0 cache integration, MMIO non-spec, FP64 2-phase |
+| **SQ** | Store queue, commit buffer (INT + FP) | MEM_RS issue, Load forward, Commit | FLEN data, FP64 2-phase commit, MMIO bypass |
+| **CDB** | Result broadcast, arbiter (FLEN width); lane-parameterized | FU results in, RS/ROB/RAT broadcast | FP flag propagation, per-FU result hold |
+| **Dispatch** | Coordinate ROB/RAT/RS allocation | Decode in, ROB/RAT/RS out, Stall signal | Checkpoint alloc, frm capture for DYN |
 
 ---
 
@@ -1019,12 +1701,14 @@ FENCE.I synchronizes instruction and data memory.
     |  |  address        | 32 bits   | Load address                       |  |
     |  |  size           | 2 bits    | 00=B, 01=H, 10=W, 11=D (for FLD)   |  |
     |  |  sign_ext       | 1 bit     | Sign extend result (INT only)      |  |
-    |  |  issued         | 1 bit     | Sent to memory                     |  |
+    |  |  is_mmio        | 1 bit     | MMIO addr (non-speculative only)   |  |
+    |  |  fp64_phase     | 1 bit     | FLD phase: 0=low word, 1=high word |  |
+    |  |  issued         | 1 bit     | Sent to memory (or phase 1 sent)   |  |
     |  |  data_valid     | 1 bit     | Data received from memory/forward  |  |
     |  |  data           | FLEN      | Loaded data (FLEN for FLD)         |  |
     |  |  forwarded      | 1 bit     | Data from store queue forward      |  |
     |  +-----------------+-----------+------------------------------------+  |
-    |  |  TOTAL          | ~112 bits/entry                                |  |
+    |  |  TOTAL          | ~116 bits/entry                                |  |
     |  +------------------------------------------------------------------+  |
     |                                                                        |
     |  MEMORY DISAMBIGUATION:                                                |
@@ -1125,10 +1809,12 @@ FENCE.I synchronizes instruction and data memory.
     |  |  data_valid     | 1 bit     | Data is available                  |  |
     |  |  data           | FLEN      | Store data (FLEN for FSD)          |  |
     |  |  size           | 2 bits    | 00=B, 01=H, 10=W, 11=D (for FSD)   |  |
+    |  |  is_mmio        | 1 bit     | MMIO addr (bypass cache on commit) |  |
+    |  |  fp64_phase     | 1 bit     | FSD phase: 0=low word, 1=high word |  |
     |  |  committed      | 1 bit     | ROB has committed this store       |  |
-    |  |  sent           | 1 bit     | Written to memory                  |  |
+    |  |  sent           | 1 bit     | Written to memory (both phases)    |  |
     |  +-----------------+-----------+------------------------------------+  |
-    |  |  TOTAL          | ~111 bits/entry                                |  |
+    |  |  TOTAL          | ~115 bits/entry                                |  |
     |  +------------------------------------------------------------------+  |
     |                                                                        |
     |  KEY PRINCIPLE: STORES COMMIT IN-ORDER                                 |
@@ -1425,48 +2111,112 @@ FENCE.I synchronizes instruction and data memory.
 
 ```
 tomasulo/
-├── README.md                 # This file
-├── tomasulo_pkg.sv           # Types, structs, parameters
-├── dispatch.sv               # Dispatch logic (ROB/RAT/RS allocation)
-├── rob.sv                    # Reorder Buffer (unified INT/FP)
+├── DESIGN.md                 # This file - architecture and plan
+├── tomasulo_pkg.sv           # Types, structs, parameters, constants
+│
+├── # Core Tomasulo Components
+├── dispatch.sv               # Dispatch logic (ROB/RAT/RS allocation, frm capture)
+├── rob.sv                    # Reorder Buffer (unified INT/FP, WFI/CSR/FENCE handling)
 ├── int_rat.sv                # Integer Register Alias Table (x0-x31)
 ├── fp_rat.sv                 # FP Register Alias Table (f0-f31)
-├── reservation_station.sv    # Generic RS (parameterized)
-├── int_rs.sv                 # Integer RS instance
-├── mul_rs.sv                 # Multiply RS instance
+├── rat_checkpoint.sv         # Checkpoint storage and restore logic (INT+FP+RAS)
+│
+├── # Reservation Stations
+├── reservation_station.sv    # Generic RS (parameterized depth, width, num sources)
+├── int_rs.sv                 # Integer RS instance (ALU, branches)
+├── mul_rs.sv                 # Multiply/Divide RS instance
 ├── mem_rs.sv                 # Memory RS instance (INT + FP loads/stores)
-├── fp_rs.sv                  # FP add/sub/compare RS instance
-├── fmul_rs.sv                # FP multiply RS instance
+├── fp_rs.sv                  # FP add/sub/compare/convert/classify RS instance
+├── fmul_rs.sv                # FP multiply/FMA RS instance (3 sources)
 ├── fdiv_rs.sv                # FP divide/sqrt RS instance
-├── load_queue.sv             # Load queue with disambiguation (INT + FP)
-├── store_queue.sv            # Store queue with forwarding (INT + FP)
-└── cdb_arbiter.sv            # Common Data Bus arbiter (FLEN-wide, lane-parameterized)
+│
+├── # Memory Subsystem
+├── load_queue.sv             # Load queue (disambiguation, L0 cache, MMIO, FP64)
+├── store_queue.sv            # Store queue (forwarding, commit buffer, MMIO, FP64)
+├── mem_disambiguator.sv      # Address comparison and forwarding logic
+│
+├── # Result Broadcast
+├── cdb_arbiter.sv            # CDB arbiter (7 FUs, FLEN-wide, priority-based)
+├── cdb_broadcast.sv          # CDB fanout to RS/ROB/RAT listeners
+│
+└── # Testbenches (cocotb)
+    ├── test_rob.py           # ROB unit tests
+    ├── test_rat.py           # RAT unit tests
+    ├── test_rs.py            # RS unit tests
+    ├── test_lq_sq.py         # LQ/SQ unit tests
+    └── test_cdb.py           # CDB unit tests
 ```
 
 ---
 
 ## Implementation Schedule (14 Weeks)
 
-| Week | Dates | Deliverable |
-|------|-------|-------------|
-| 1 | 1/20 | **F and D floating-point extensions implemented** - FPU integration, F/D instruction support, cocotb tests passing; high-level block diagrams and architecture diagrams designed |
-| 2 | 1/27 | Define module interfaces in SystemVerilog (tomasulo_pkg.sv - types, structs, parameters); finish closing timing for D extension (~300ps slack to recover) |
-| 3 | 2/3 | ROB structure - circular buffer, allocation logic, head/tail pointers, unified INT/FP tracking |
-| 4 | 2/10 | ROB commit logic - in-order retirement, register writeback (INT + FP), exception handling, FP flag accumulation, pipeline flush; CSR execute-at-commit, FENCE store queue drain, FENCE.I pipeline flush |
-| 5 | 2/17 | INT RAT + FP RAT - register mapping tables, checkpoint/restore for branch misprediction recovery, RAS state tracking |
-| 6 | 2/24 | Integer Reservation Stations (INT_RS, MUL_RS) - operand tracking, readiness detection, issue logic, CDB snoop for wakeup |
-| 7 | 3/3 | FP Reservation Stations (FP_RS, FMUL_RS, FDIV_RS) - FLEN operand support, rounding mode, 3-source for FMA |
-| 8 | 3/10 | CDB - arbitration between INT + FP functional units (7 FUs), XLEN/FLEN broadcast to RS/LQ/ROB/RAT, FP flag propagation |
-| 9 | 3/23 | Load Queue - address calculation, memory disambiguation against older stores (INT + FP loads); LR.W/D reservation set tracking |
-| 10 | 3/30 | Store Queue - address/data buffering (FLEN for FSD), in-order commit to memory, store-to-load forwarding; SC.W/D reservation check, AMO execute-at-ROB-head |
-| 11 | 4/6 | Pipeline integration - connect Tomasulo components to FROST IF/PD/ID; adapt ALU/MUL/DIV/FPU to RS interface; wire up RAS restore |
-| 12 | 4/13 | Initial verification - run ISA test suite (366+ tests including F/D), debug failures, fix integration issues |
-| 13 | 4/20 | Full verification - run CoreMark and FreeRTOS demo; verify correct behavior with interrupts, AMOs, and FP operations; begin timing closure |
-| 14 | 4/27 | Final timing closure and documentation - synthesize for Ultrascale+, analyze critical paths, optimize as needed; finalize architecture diagrams, complete technical report |
+The schedule incorporates all Tomasulo components plus FROST-specific integration
+(L0 cache, MMIO, FP64 sequencing). Work is balanced to ~equal effort per week.
+
+| Week | Dates | Deliverable | Key Tasks |
+|------|-------|-------------|-----------|
+| 1 | 1/20 | **F/D Extensions + Architecture** | FPU integration, F/D instruction support, cocotb tests passing; high-level Tomasulo block diagrams; review existing FROST pipeline for integration points |
+| 2 | 1/27 | **Package Definition + D Timing** | Define tomasulo_pkg.sv (all types, structs, parameters); instruction routing table; ROB/RS entry structures; finish D extension timing closure (~300ps slack) |
+| 3 | 2/3 | **ROB Core Structure** | ROB circular buffer, allocation/deallocation logic, head/tail pointers, unified INT/FP entry fields (dest_rf, fp_flags), basic valid/done tracking |
+| 4 | 2/10 | **ROB Commit + Serialization** | ROB commit logic (INT/FP writeback, FP flag accumulation); exception handling; WFI stall-at-head; CSR execute-at-commit; FENCE/FENCE.I handling |
+| 5 | 2/17 | **RAT + Checkpointing** | INT RAT (x0-x31 mapping), FP RAT (f0-f31 mapping); checkpoint storage (4 checkpoints); checkpoint allocation on branch; restore on misprediction; RAS pointer in checkpoint |
+| 6 | 2/24 | **Integer Reservation Stations** | Generic RS module (parameterized depth/width); INT_RS instance (ALU ops, branches); MUL_RS instance (MUL/DIV); operand ready detection; CDB snoop wakeup |
+| 7 | 3/3 | **FP Reservation Stations** | FP_RS (add/sub/cmp/cvt/classify/sgnj); FMUL_RS (fmul/fma with 3 sources); FDIV_RS (fdiv/fsqrt); FLEN operands; rounding mode capture (resolve DYN at dispatch) |
+| 8 | 3/10 | **CDB Arbiter + FU Adaptation** | CDB arbiter (7 FUs, priority-based); FLEN-wide broadcast; FP flag propagation; result holding registers per FU; back-pressure signaling; adapt ALU/MUL/DIV output interfaces |
+| 9 | 3/17 | **Load Queue + L0 Cache** | LQ allocation, address calculation, disambiguation against SQ; L0 cache hit path integration; cache-hit-to-CDB fast path; MMIO load detection (wait for ROB head); FP64 load 2-phase sequencing |
+| 10 | 3/24 | **Store Queue + Forwarding** | SQ allocation, address/data buffering (FLEN); commit-ordered memory write; store-to-load forwarding (INT/FP, size compatibility); MMIO store handling; FP64 store 2-phase commit |
+| 11 | 3/31 | **Atomics + Memory Special Cases** | LR reservation set in LQ; SC at-ROB-head check; AMO execute-at-head with SQ-empty; FP64 forwarding edge cases; MMIO non-speculation enforcement |
+| 12 | 4/7 | **Pipeline Integration** | Connect dispatch to ROB/RAT/RS; wire IF/PD/ID to dispatch; adapt FPU to RS interface; BTB update from resolved branches; RAS restore on misprediction; remove in-order forwarding/hazard logic |
+| 13 | 4/14 | **Verification + Debug** | Run ISA test suite (366+ tests); run CoreMark benchmark; run FreeRTOS demo; debug failures; verify interrupts, AMOs, FP operations, MMIO accesses |
+| 14 | 4/21 | **Timing Closure + Documentation** | Synthesize for Ultrascale+ 322MHz; analyze critical paths; timing optimization if needed; finalize architecture diagrams; complete technical report |
+
+### Weekly Work Breakdown
+
+**Weeks 1-2: Foundation (Setup + Package)**
+- Establish baseline with F/D working
+- Define all data structures upfront to avoid rework
+- Timing closure ensures clean starting point
+
+**Weeks 3-4: ROB (Core Commit Engine)**
+- ROB is central to everything; must be solid
+- Commit logic handles all special cases (CSR, FENCE, WFI)
+- Week 4 slightly heavier due to serialization complexity
+
+**Weeks 5-7: RAT + Reservation Stations**
+- RAT relatively straightforward once ROB exists
+- RS is parameterized, instances are simpler
+- FP RS slightly more complex (3 sources, rounding mode)
+
+**Week 8: CDB (Result Broadcast)**
+- CDB ties RS and ROB together
+- FU adaptation ensures clean handoff
+
+**Weeks 9-11: Memory Subsystem**
+- Most complex part: LQ, SQ, cache, MMIO, atomics
+- Split across 3 weeks for manageable chunks
+- Week 11 handles edge cases and atomics
+
+**Weeks 12-14: Integration + Verification + Closure**
+- Integration expected to surface bugs
+- Full week for debug is realistic
+- Final week for timing and documentation
+
+### Risk Mitigation
+
+| Risk | Mitigation |
+|------|------------|
+| Memory disambiguation bugs | Extensive unit tests for LQ/SQ before integration |
+| CDB contention causing stalls | Monitor IPC in simulation; consider 2-lane CDB if needed |
+| Checkpoint exhaustion | Start with stall-on-exhaustion; can optimize later |
+| FP64 sequencing complexity | Test FLD/FSD thoroughly in isolation |
+| Timing closure | Budget 1 week; pipeline critical paths if needed |
 
 ---
 
 ## Methodology & Approach
+
+### Core Principles
 
 - **Reuse existing FROST functional units** (ALU, multiplier, divider, FPU) and cocotb test infrastructure
 - **Develop ROB, INT RAT, FP RAT, RS, LQ, SQ as isolated modules** with unit tests before integration
@@ -1476,15 +2226,52 @@ tomasulo/
 - **RAS integration**: checkpoint RAS top pointer with branch checkpoints; restore on misprediction
 - **FP exception handling**: accumulate FP flags (NV/DZ/OF/UF/NX) in ROB entries; update fcsr at commit time
 
+### FROST-Specific Integration
+
+- **L0 Cache preserved**: LQ checks SQ forwarding first, then L0 cache, then memory; write-through policy maintained
+- **MMIO handling**: MMIO loads wait for ROB head (non-speculative); MMIO stores use normal SQ commit path with cache bypass
+- **FP64 sequencing**: LQ/SQ handle 2-phase FLD/FSD via phase tracking in entries; forwarding supports full 64-bit and partial 32-bit cases
+- **BTB update at resolution**: speculative BTB update is acceptable for predictor state; faster adaptation to branch patterns
+- **Early source extraction**: PD-stage rs1/rs2/fp_rs3 extraction preserved for RAT lookup timing optimization
+
+### Testing Strategy
+
+- **Unit tests**: Each module (ROB, RAT, RS, LQ, SQ, CDB) tested in isolation with cocotb
+- **Integration tests**: Incremental integration with regression after each component
+- **ISA compliance**: Full 366+ test suite including F/D extensions
+- **Benchmarks**: CoreMark for performance, FreeRTOS for interrupt/OS behavior
+- **Edge cases**: Specific tests for MMIO, AMO, FP64 sequencing, checkpoint exhaustion
+
 ---
 
 ## Deliverables & Evaluation
 
+### Weekly Deliverables
 - Weekly 30-min meeting with advisor on design progress and test results
 - Git repository with clear commit history, documented modules, and commented code
-- RTL modules: ROB, INT RAT, FP RAT, Reservation Stations (INT + FP), Load Queue, Store Queue, CDB arbiter - in synthesizable SystemVerilog
+
+### RTL Modules (Synthesizable SystemVerilog)
+- **Core Tomasulo**: ROB, INT RAT, FP RAT, Dispatch unit
+- **Reservation Stations**: INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS (generic + instances)
+- **Memory Subsystem**: Load Queue (with L0 cache integration, MMIO, FP64), Store Queue (with forwarding, MMIO, FP64)
+- **Result Broadcast**: CDB arbiter (7 FUs, FLEN-wide, lane-parameterized)
+- **Package**: tomasulo_pkg.sv with all types, structs, parameters
+
+### Integration
 - Integrated FROST-Tomasulo CPU with out-of-order execution for integer, memory, and floating-point operations
-- All existing tests passing (366+ instruction ISA tests including F/D, CoreMark benchmark, FreeRTOS RTOS demo)
+- L0 data cache integration with LQ/SQ (preserved existing cache, added forwarding priority)
+- MMIO handling (non-speculative loads, cache-bypass stores)
+- FP64 load/store sequencing (2-phase for 32-bit memory interface)
+- BTB update from branch resolution
+- RAS checkpoint/restore on misprediction
+
+### Verification
+- All existing tests passing (366+ instruction ISA tests including F/D extensions)
+- CoreMark benchmark (performance validation)
+- FreeRTOS RTOS demo (interrupt and OS behavior)
+- Edge case tests: MMIO, AMO, FP64 sequencing, checkpoint exhaustion
+
+### Documentation
 - Timing closure at 322MHz on Ultrascale+ or documented analysis of critical paths
 - Architecture diagrams documenting Tomasulo datapath, control flow, memory disambiguation, and FP support
 - Technical report (conference paper format) describing design decisions and implementation
