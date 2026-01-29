@@ -8,7 +8,8 @@ maintaining the existing ISA support and test compatibility.
 
 The Tomasulo transformation preserves the front-end (IF/PD/ID) while replacing
 the in-order back-end with out-of-order execution machinery. The implementation
-supports both integer (RV32IMACB) and floating-point (RV32FD) operations.
+supports both integer (RV32IMACB + Zbkb + Zicond + Zicntr) and floating-point
+(RV32FD) operations.
 
 **Key Components:**
 - **ROB (Reorder Buffer)** - In-order commit, precise exceptions, unified for INT/FP
@@ -41,6 +42,9 @@ supports both integer (RV32IMACB) and floating-point (RV32FD) operations.
 - RVC decompression
 - M-mode privilege support
 - Atomic (A) extension support
+- Zbkb bit-manipulation (PACK, PACKH, BREV8)
+- Zicntr counters (cycle, time, instret)
+- Zihintpause (PAUSE hint, treated as NOP)
 
 ---
 
@@ -299,6 +303,11 @@ and integrated with the Load/Store Queues:
     |  - Write-through ensures memory always consistent                       |
     |  - No cache invalidation needed (single-core design)                    |
     |                                                                         |
+    |  RESET SEQUENCING:                                                      |
+    |  - L0 cache clears valid bits sequentially on reset                     |
+    |  - `o_rst_done` signals when cache reset complete                       |
+    |  - Preserve this behavior (boot-time only, not runtime critical)        |
+    |                                                                         |
     +-------------------------------------------------------------------------+
 ```
 
@@ -356,6 +365,18 @@ MMIO addresses require special handling to prevent speculative side effects:
     |                                                                        |
     +------------------------------------------------------------------------+
 ```
+
+**MMIO Protocol Signals (preserve from in-order core):**
+
+| Signal | Direction | Purpose |
+|--------|-----------|---------|
+| `o_mmio_read_pulse` | Output | Single-cycle pulse when MMIO load executes (for side-effect timing) |
+| `o_mmio_load_valid` | Output | MMIO load address is valid |
+| `o_mmio_load_addr` | Output | MMIO load address for peripheral routing |
+
+**MMIO Timing:** Current core inserts a 2-cycle stall bubble for MMIO loads. In OOO, the
+MMIO load waits at ROB head, issues with pulse, waits for response, then commits. The
+external timing behavior (pulse + response) must be preserved for peripheral compatibility.
 
 ### FP64 (D Extension) Load/Store Sequencing
 
@@ -596,6 +617,24 @@ The ROB ensures in-order commit and precise exceptions for both INT and FP:
     +------------------------------------------------------------------------+
 ```
 
+**Trap/Interrupt Handling (preserved from in-order core):**
+
+| Aspect | Behavior |
+|--------|----------|
+| **Interrupt priority** | MEIP > MSIP > MTIP > synchronous exceptions |
+| **mtvec modes** | Direct: all traps to BASE; Vectored: interrupts to BASE + 4×cause |
+| **mstatus updates** | Trap entry: MIE→MPIE, MIE←0; MRET: MIE←MPIE, MPIE←1 |
+| **instret counter** | Increment on commit (not execution) via ROB retire signal |
+| **WFI release** | Any pending interrupt (even if masked) releases WFI stall |
+
+**Counter Semantics (Zicntr):**
+
+| Counter | Width | Source | OOO Behavior |
+|---------|-------|--------|--------------|
+| cycle/cycleh | 64-bit | Clock | Free-running, unaffected by OOO |
+| time/timeh | 64-bit | i_mtime input | Passthrough from external timer |
+| instret/instreth | 64-bit | ROB commit | Increment when ROB head retires (not at dispatch or execute) |
+
 ---
 
 ## Serializing and Special Instructions
@@ -747,6 +786,15 @@ They must execute non-speculatively because CSRs have global side effects.
     +------------------------------------------------------------------------+
 ```
 
+**CSR Implementation Notes:**
+
+| Consideration | Handling |
+|---------------|----------|
+| **CSR read latency** | Current core registers CSR read data (1-cycle latency); at-commit execution naturally handles this |
+| **fflags/fcsr reads** | Must see latest FP flags; if FP op in-flight will update flags, either stall CSR read or forward flags from ROB |
+| **frm writes** | CSR write to frm at commit; subsequent FP instructions (dispatched after) will capture new frm |
+| **misa value** | Current core reports RV32IMAFB; update to include D if D extension enabled |
+
 ### Fence Instructions (Zifencei)
 
 Fence instructions enforce memory ordering. FENCE orders memory accesses;
@@ -857,7 +905,8 @@ WFI stalls the processor until an interrupt occurs:
 | **AMO** | Normal | At ROB head, SQ empty | Normal | Atomic read-modify-write |
 | **CSR** | Normal | At ROB head | Normal | Non-speculative R/M/W |
 | **FENCE** | Normal | N/A | Drains SQ | Orders memory ops |
-| **FENCE.I** | Normal | N/A | Drains SQ, flushes | I-cache sync |
+| **FENCE.I** | Normal | N/A | Drains SQ, flushes | I-cache sync (no I$ in FROST) |
+| **PAUSE** | Normal | N/A | Immediate | Zihintpause hint, treat as NOP |
 | **WFI** | Normal | N/A (immediate done) | Stalls until interrupt | Low-power hint |
 
 ---
@@ -878,7 +927,7 @@ functional unit required. This table provides the complete mapping:
 | SLLI, SRLI, SRAI | INT_RS | ALU | 1 cycle | Immediate shifts |
 | SLTI, SLTIU | INT_RS | ALU | 1 cycle | Immediate comparisons |
 | LUI, AUIPC | INT_RS | ALU | 1 cycle | Upper immediate |
-| **B-extension** | INT_RS | ALU | 1 cycle | CLZ, CTZ, CPOP, ROL, ROR, etc. |
+| **B-extension (Zba/Zbb/Zbs/Zbkb)** | INT_RS | ALU | 1 cycle | CLZ, CTZ, CPOP, ROL, ROR, PACK, PACKH, BREV8, etc. |
 | **Zba** | INT_RS | ALU | 1 cycle | SH1ADD, SH2ADD, SH3ADD |
 | **Zicond** | INT_RS | ALU | 1 cycle | CZERO.EQZ, CZERO.NEZ |
 | MUL, MULH, MULHSU, MULHU | MUL_RS | Multiplier | 2 cycles | Pipelined multiply |
@@ -964,6 +1013,21 @@ The existing FROST front-end optimizations are preserved:
     |    - precomputed_target: PC + B-imm or PC + J-imm (from ID)            |
     |    - predicted_taken: from BTB                                         |
     |    - predicted_target: from BTB                                        |
+    |                                                                        |
+    |  LINK ADDRESS (JAL/JALR):                                              |
+    |                                                                        |
+    |  - IF computes link_address = PC + 2 (compressed) or PC + 4 (normal)   |
+    |  - Link address carried through pipeline into ROB entry                |
+    |  - On JAL/JALR commit, link_address written to rd (not recomputed)     |
+    |                                                                        |
+    |  RAS CHECKPOINT DETAILS:                                               |
+    |                                                                        |
+    |  - RAS state: top-of-stack pointer (tos) + valid_count                 |
+    |  - On branch dispatch: save tos/valid_count in checkpoint              |
+    |  - On misprediction restore:                                           |
+    |      * Restore tos/valid_count from checkpoint                         |
+    |      * For returns: pop after restore (get correct return address)     |
+    |      * For calls: no extra action (call already pushed speculatively)  |
     |                                                                        |
     |  EARLY SOURCE REGISTER EXTRACTION:                                     |
     |                                                                        |
@@ -1888,6 +1952,18 @@ The existing FROST front-end optimizations are preserved:
     +------------------------------------------------------------------------+
 ```
 
+**Memory Interface (SQ must preserve):**
+
+| Signal | Purpose | SQ Responsibility |
+|--------|---------|-------------------|
+| `o_data_mem_addr` | Memory address | From SQ head entry on commit |
+| `o_data_mem_wr_data` | Write data | From SQ head entry (up to 64b for FSD) |
+| `o_data_mem_per_byte_wr_en` | Byte enables | Generated from SQ entry size/addr |
+| `o_data_mem_read_enable` | Read strobe | From LQ for loads |
+
+**Gating:** Memory writes must be suppressed during stall/trap conditions to match
+existing `cpu_and_mem.sv` interface expectations.
+
 ### CDB Arbiter
 
 ```
@@ -2233,6 +2309,15 @@ The schedule incorporates all Tomasulo components plus FROST-specific integratio
 - **FP64 sequencing**: LQ/SQ handle 2-phase FLD/FSD via phase tracking in entries; forwarding supports full 64-bit and partial 32-bit cases
 - **BTB update at resolution**: speculative BTB update is acceptable for predictor state; faster adaptation to branch patterns
 - **Early source extraction**: PD-stage rs1/rs2/fp_rs3 extraction preserved for RAT lookup timing optimization
+
+### Verification/Debug Signals (preserve or redefine)
+
+| Signal | Current Meaning | OOO Equivalent |
+|--------|-----------------|----------------|
+| `o_vld` | Instruction valid in WB | ROB commit valid (instruction retired) |
+| `o_pc_vld` | PC valid for trace | Committed instruction PC |
+| `o_rst_done` | L0 cache reset complete | Preserve as-is (cache unchanged) |
+| `i_disable_branch_prediction` | Debug: force no prediction | Preserve for debug/test |
 
 ### Testing Strategy
 
