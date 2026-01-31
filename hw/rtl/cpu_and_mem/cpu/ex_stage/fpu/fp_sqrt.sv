@@ -19,12 +19,14 @@
 
   Implements FSQRT.S operation using a digit-by-digit algorithm.
 
-  Latency: 19 cycles (not pipelined, stalls pipeline during operation)
+  Latency: 21 cycles (not pipelined, stalls pipeline during operation)
     - 1 cycle: Input capture
     - 1 cycle: Special case detection and setup
+    - 1 cycle: Prep register capture
     - 12 cycles: Square root computation
     - 1 cycle: Normalization
-    - 1 cycle: Subnormal handling, compute round-up decision
+    - 1 cycle: Subnormal handling and shift prep
+    - 1 cycle: Compute round-up decision
     - 1 cycle: Apply rounding increment, format result
     - 1 cycle: Capture result
     - 1 cycle: Output registered result
@@ -40,24 +42,28 @@
     - sqrt(-0) = -0
     - sqrt(+0) = +0
 */
-module fp_sqrt (
-    input  logic                        i_clk,
-    input  logic                        i_rst,
-    input  logic                        i_valid,
-    input  logic                 [31:0] i_operand,
-    input  logic                 [ 2:0] i_rounding_mode,
-    output logic                 [31:0] o_result,
-    output logic                        o_valid,
-    output logic                        o_stall,
-    output riscv_pkg::fp_flags_t        o_flags
+module fp_sqrt #(
+    parameter int unsigned FP_WIDTH = 32
+) (
+    input  logic                                i_clk,
+    input  logic                                i_rst,
+    input  logic                                i_valid,
+    input  logic                 [FP_WIDTH-1:0] i_operand,
+    input  logic                 [         2:0] i_rounding_mode,
+    output logic                 [FP_WIDTH-1:0] o_result,
+    output logic                                o_valid,
+    output logic                                o_stall,
+    output riscv_pkg::fp_flags_t                o_flags
 );
 
   // State machine
-  typedef enum logic [2:0] {
+  typedef enum logic [3:0] {
     IDLE,
     SETUP,
+    PREP,
     COMPUTE,
     NORMALIZE,
+    ROUND_SHIFT,
     ROUND_PREP,
     ROUND_APPLY,
     OUTPUT,
@@ -65,79 +71,109 @@ module fp_sqrt (
   } state_t;
 
   state_t state, next_state;
-  logic [ 4:0] cycle_count;
+
+  localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
+  localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
+  localparam int unsigned MantBits = FracBits + 1;
+  localparam int unsigned RootBits = MantBits + 3;
+  localparam int unsigned RadicandBits = 2 * RootBits;
+  localparam int unsigned RemBits = (2 * RootBits) + 2;
+  localparam int unsigned CycleCountBits = $clog2(RootBits + 1);
+  localparam int unsigned ExpExtBits = ExpBits + 2;
+  localparam int signed ExpBias = (1 << (ExpBits - 1)) - 1;
+  localparam int unsigned LzcMantBits = $clog2(FracBits + 1);
+  localparam int unsigned ShiftBits = $clog2(MantBits + 3 + 1);
+  localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
+  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
+  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
+  localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
+  localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
+  localparam logic signed [ExpExtBits-1:0] ExpBiasMinus1Ext = ExpExtBits'(ExpBias - 1);
+  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
+  localparam logic [ShiftBits-1:0] MantBitsPlus3Shift = ShiftBits'(MantBits + 3);
+  localparam logic [CycleCountBits-1:0] RootBitsMinus1 = CycleCountBits'(RootBits - 1);
+
+  logic [CycleCountBits-1:0] cycle_count;
 
   // Registered input
-  logic [31:0] operand_reg;
+  logic [      FP_WIDTH-1:0] operand_reg;
 
   // Operand fields
-  logic        sign;
-  logic [ 7:0] exp;
-  logic [22:0] mant;
+  logic                      sign;
+  logic [       ExpBits-1:0] exp;
+  logic [      FracBits-1:0] mant;
   logic is_zero, is_inf, is_nan, is_snan;
-  logic               is_subnormal;
-  logic signed [ 9:0] exp_adj;
-  logic        [23:0] mant_norm;
-  logic        [ 4:0] mant_lzc;
-  logic        [ 5:0] sub_shift;
-  logic               mant_lzc_found;
+  logic                           is_subnormal;
+  logic signed [  ExpExtBits-1:0] exp_adj;
+  logic        [    MantBits-1:0] mant_norm;
+  logic        [ LzcMantBits-1:0] mant_lzc;
+  logic        [   LzcMantBits:0] sub_shift;
+  logic                           mant_lzc_found;
 
   // Special case handling
-  logic               is_special;
-  logic        [31:0] special_result;
-  logic               special_invalid;
+  logic                           is_special;
+  logic        [    FP_WIDTH-1:0] special_result;
+  logic                           special_invalid;
 
   // Square root state
-  logic signed [ 9:0] result_exp;
-  logic        [26:0] root;  // Result accumulator
-  logic        [55:0] remainder;  // For digit computation
-  logic        [53:0] radicand;  // Mantissa bits consumed 2 at a time
+  // TIMING: Limit fanout to force register replication and improve timing
+  (* max_fanout = 30 *)logic signed [  ExpExtBits-1:0] result_exp;
+  logic        [    RootBits-1:0] root;  // Result accumulator
+  logic        [     RemBits-1:0] remainder;  // For digit computation
+  logic        [RadicandBits-1:0] radicand;  // Mantissa bits consumed 2 at a time
 
   // Rounding mode storage
-  logic        [ 2:0] rm;
-  logic               result_sign;
-  logic signed [ 9:0] sqrt_unbiased_exp;
-  logic               sqrt_exp_is_even;
-  logic signed [10:0] sqrt_adjusted_exp;
-  logic        [24:0] sqrt_mantissa_int;
-  logic        [ 5:0] sqrt_shift_amount;
+  logic        [             2:0] rm;
+  logic                           result_sign;
+  logic signed [  ExpExtBits-1:0] sqrt_unbiased_exp;
+  logic                           sqrt_exp_is_even;
+  logic signed [    ExpExtBits:0] sqrt_adjusted_exp;
+  logic        [      MantBits:0] sqrt_mantissa_int;
+  logic        [   ShiftBits-1:0] sqrt_shift_amount;
+
+  // Prep registers to break long operand->radicand path
+  logic                           prep_is_special;
+  logic        [    FP_WIDTH-1:0] prep_special_result;
+  logic                           prep_special_invalid;
+  logic signed [    ExpExtBits:0] prep_sqrt_adjusted_exp;
+  logic        [      MantBits:0] prep_sqrt_mantissa_int;
 
   // Rounding inputs
-  logic        [24:0] sqrt_pre_round_mant;
-  logic               sqrt_guard_bit;
-  logic               sqrt_round_bit;
-  logic               sqrt_sticky_bit;
-  logic               sqrt_is_zero;
+  logic        [      MantBits:0] sqrt_pre_round_mant;
+  logic                           sqrt_guard_bit;
+  logic                           sqrt_round_bit;
+  logic                           sqrt_sticky_bit;
+  logic                           sqrt_is_zero;
 
   // =========================================================================
   // Operand Unpacking
   // =========================================================================
 
   always_comb begin
-    sign = operand_reg[31];
-    exp = operand_reg[30:23];
-    mant = operand_reg[22:0];
+    sign = operand_reg[FP_WIDTH-1];
+    exp = operand_reg[FP_WIDTH-2-:ExpBits];
+    mant = operand_reg[FracBits-1:0];
 
-    is_zero = (exp == 8'b0) && (mant == 23'b0);
-    is_inf = (exp == 8'hFF) && (mant == 23'b0);
-    is_nan = (exp == 8'hFF) && (mant != 23'b0);
-    is_snan = is_nan && ~mant[22];
-    is_subnormal = (exp == 8'b0) && (mant != 23'b0);
+    is_zero = (exp == '0) && (mant == '0);
+    is_inf = (exp == ExpMax) && (mant == '0);
+    is_nan = (exp == ExpMax) && (mant != '0);
+    is_snan = is_nan && ~mant[FracBits-1];
+    is_subnormal = (exp == '0) && (mant != '0);
 
-    mant_lzc = 5'd0;
-    sub_shift = 6'd0;
-    exp_adj = 10'sb0;
-    mant_norm = 24'b0;
-    sqrt_unbiased_exp = 10'sb0;
+    mant_lzc = '0;
+    sub_shift = '0;
+    exp_adj = '0;
+    mant_norm = '0;
+    sqrt_unbiased_exp = '0;
     sqrt_exp_is_even = 1'b0;
-    sqrt_adjusted_exp = 11'sb0;
-    sqrt_mantissa_int = 25'b0;
-    sqrt_shift_amount = 6'd0;
+    sqrt_adjusted_exp = '0;
+    sqrt_mantissa_int = '0;
+    sqrt_shift_amount = '0;
 
     mant_lzc_found = 1'b0;
 
     if (is_subnormal) begin
-      for (int i = 22; i >= 0; i--) begin
+      for (int i = FracBits - 1; i >= 0; i--) begin
         if (!mant_lzc_found) begin
           if (mant[i]) begin
             mant_lzc_found = 1'b1;
@@ -146,77 +182,78 @@ module fp_sqrt (
           end
         end
       end
-      sub_shift = {1'b0, mant_lzc} + 6'd1;
-      exp_adj   = 10'sd1 - $signed({4'b0, sub_shift});
+      sub_shift = {1'b0, mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
+      exp_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift});
       mant_norm = {1'b0, mant} << sub_shift;
     end else begin
-      exp_adj   = $signed({2'b0, exp});
+      exp_adj   = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp});
       mant_norm = {1'b1, mant};
     end
 
     // Special case detection
     is_special = 1'b0;
-    special_result = 32'b0;
+    special_result = '0;
     special_invalid = 1'b0;
 
     if (is_nan) begin
       // sqrt(NaN) = NaN
       is_special = 1'b1;
-      special_result = riscv_pkg::FpCanonicalNan;
+      special_result = CanonicalNan;
       special_invalid = is_snan;
     end else if (sign && !is_zero) begin
       // sqrt(negative) = NaN (invalid)
       is_special = 1'b1;
-      special_result = riscv_pkg::FpCanonicalNan;
+      special_result = CanonicalNan;
       special_invalid = 1'b1;
     end else if (is_inf) begin
       // sqrt(+inf) = +inf
       is_special = 1'b1;
-      special_result = riscv_pkg::FpPosInf;
+      special_result = {1'b0, ExpMax, {FracBits{1'b0}}};
     end else if (is_zero) begin
       // sqrt(+/-0) = +/-0
       is_special = 1'b1;
-      special_result = {sign, 31'b0};
+      special_result = {sign, {(FP_WIDTH - 1) {1'b0}}};
     end
 
-    sqrt_unbiased_exp = exp_adj - 10'sd127;
+    sqrt_unbiased_exp = exp_adj - ExpBiasExt;
     sqrt_exp_is_even  = ~sqrt_unbiased_exp[0];
 
     if (sqrt_exp_is_even) begin
       // Unbiased exponent is even
-      sqrt_adjusted_exp = exp_adj + 10'sd127;
+      sqrt_adjusted_exp = exp_adj + ExpBiasExt;
       sqrt_mantissa_int = {1'b0, mant_norm};
-      sqrt_shift_amount = 6'd29;
+      sqrt_shift_amount = ShiftBits'(MantBits + 5);
     end else begin
       // Unbiased exponent is odd: scale mantissa by 2
-      sqrt_adjusted_exp = exp_adj + 10'sd126;
+      sqrt_adjusted_exp = exp_adj + ExpBiasMinus1Ext;
       sqrt_mantissa_int = {mant_norm, 1'b0};
-      sqrt_shift_amount = 6'd29;
+      sqrt_shift_amount = ShiftBits'(MantBits + 5);
     end
   end
 
-  assign sqrt_pre_round_mant = root[26:2];
+  assign sqrt_pre_round_mant = root[RootBits-1-:(MantBits+1)];
   assign sqrt_guard_bit = root[1];
   assign sqrt_round_bit = root[0];
   assign sqrt_sticky_bit = |remainder;
-  assign sqrt_is_zero = (root == 27'b0) && (remainder == 56'b0);
+  assign sqrt_is_zero = (root == '0) && (remainder == '0);
 
   // =========================================================================
-  // ROUND_PREP: Subnormal handling and round-up decision (split rounding)
+  // ROUND_SHIFT prep: Subnormal handling and rounding bit extraction
   // =========================================================================
 
   // Extract mantissa and rounding bits
-  logic [23:0] mantissa_retained_prep;
-  assign mantissa_retained_prep = sqrt_pre_round_mant[24:1];
+  logic [MantBits-1:0] mantissa_retained_prep;
+  assign mantissa_retained_prep = sqrt_pre_round_mant[MantBits:1];
 
   // Subnormal handling: compute shift and apply
-  logic [23:0] mantissa_work_prep;
+  logic [MantBits-1:0] mantissa_work_prep;
   logic guard_work_prep, round_work_prep, sticky_work_prep;
-  logic signed [9:0] exp_work_prep;
-  logic [26:0] mantissa_ext_prep, shifted_ext_prep;
-  logic               shifted_sticky_prep;
-  logic        [ 5:0] shift_amt_prep;
-  logic signed [10:0] shift_amt_signed_prep;
+  logic signed [ExpExtBits-1:0] exp_work_prep;
+  logic [MantBits+2:0] mantissa_ext_prep, shifted_ext_prep;
+  logic                        shifted_sticky_prep;
+  logic        [ShiftBits-1:0] shift_amt_prep;
+  logic signed [ ExpExtBits:0] shift_amt_signed_prep;
 
   always_comb begin
     mantissa_work_prep = mantissa_retained_prep;
@@ -232,119 +269,134 @@ module fp_sqrt (
     };
     shifted_ext_prep = mantissa_ext_prep;
     shifted_sticky_prep = 1'b0;
-    shift_amt_prep = 6'd0;
-    shift_amt_signed_prep = 11'sb0;
+    shift_amt_prep = '0;
+    shift_amt_signed_prep = '0;
 
     if (result_exp <= 0) begin
-      shift_amt_signed_prep = 11'sd1 - $signed({result_exp[9], result_exp});
-      if (shift_amt_signed_prep >= 27) shift_amt_prep = 6'd27;
-      else shift_amt_prep = shift_amt_signed_prep[5:0];
-      if (shift_amt_prep >= 6'd27) begin
-        shifted_ext_prep = 27'b0;
+      shift_amt_signed_prep = $signed({1'b0, {ExpExtBits{1'b0}}}) + 1 -
+          $signed({result_exp[ExpExtBits-1], result_exp});
+      if (shift_amt_signed_prep >= MantBitsPlus3Signed) shift_amt_prep = MantBitsPlus3Shift;
+      else shift_amt_prep = shift_amt_signed_prep[ShiftBits-1:0];
+      if (shift_amt_prep >= MantBitsPlus3Shift) begin
+        shifted_ext_prep = '0;
         shifted_sticky_prep = |mantissa_ext_prep;
       end else if (shift_amt_prep != 0) begin
         shifted_ext_prep = mantissa_ext_prep >> shift_amt_prep;
         shifted_sticky_prep = 1'b0;
-        for (int i = 0; i < 27; i++) begin
+        for (int i = 0; i < (MantBits + 3); i++) begin
           if (i < shift_amt_prep) shifted_sticky_prep = shifted_sticky_prep | mantissa_ext_prep[i];
         end
       end
-      mantissa_work_prep = shifted_ext_prep[26:3];
+      mantissa_work_prep = shifted_ext_prep[(MantBits+2):3];
       guard_work_prep = shifted_ext_prep[2];
       round_work_prep = shifted_ext_prep[1];
       sticky_work_prep = shifted_ext_prep[0] | shifted_sticky_prep;
-      exp_work_prep = 10'sd0;
+      exp_work_prep = '0;
     end
   end
 
-  // Compute round-up decision (sqrt result is always positive)
-  logic round_up_prep;
-  logic lsb_prep;
+  // =========================================================================
+  // ROUND_SHIFT -> ROUND_PREP Pipeline Registers
+  // =========================================================================
 
-  assign lsb_prep = mantissa_work_prep[0];
+  logic signed [ExpExtBits-1:0] exp_work_shift;
+  logic        [  MantBits-1:0] mantissa_work_shift;
+  logic                         guard_work_shift;
+  logic                         round_work_shift;
+  logic                         sticky_work_shift;
+  logic                         sqrt_is_zero_shift;
+  logic        [           2:0] rm_shift;
+
+  // Compute round-up decision (sqrt result is always positive)
+  logic                         round_up_prep;
+  logic                         lsb_prep;
+
+  assign lsb_prep = mantissa_work_shift[0];
 
   always_comb begin
-    unique case (rm)
+    unique case (rm_shift)
       riscv_pkg::FRM_RNE:
-      round_up_prep = guard_work_prep & (round_work_prep | sticky_work_prep | lsb_prep);
+      round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
       riscv_pkg::FRM_RTZ: round_up_prep = 1'b0;
       riscv_pkg::FRM_RDN: round_up_prep = 1'b0;  // sqrt result is always positive
-      riscv_pkg::FRM_RUP: round_up_prep = guard_work_prep | round_work_prep | sticky_work_prep;
-      riscv_pkg::FRM_RMM: round_up_prep = guard_work_prep;
-      default: round_up_prep = guard_work_prep & (round_work_prep | sticky_work_prep | lsb_prep);
+      riscv_pkg::FRM_RUP: round_up_prep = guard_work_shift | round_work_shift | sticky_work_shift;
+      riscv_pkg::FRM_RMM: round_up_prep = guard_work_shift;
+      default: round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
     endcase
   end
 
   // Compute is_inexact for flags
   logic is_inexact_prep;
-  assign is_inexact_prep = guard_work_prep | round_work_prep | sticky_work_prep;
+  assign is_inexact_prep = guard_work_shift | round_work_shift | sticky_work_shift;
 
   // =========================================================================
   // ROUND_PREP -> ROUND_APPLY Pipeline Registers
   // =========================================================================
 
-  logic signed [ 9:0] exp_work_apply;
-  logic        [23:0] mantissa_work_apply;
-  logic               round_up_apply;
-  logic               is_inexact_apply;
-  logic               sqrt_is_zero_apply;
-  logic        [ 2:0] rm_apply;
+  logic signed [ExpExtBits-1:0] exp_work_apply;
+  logic        [  MantBits-1:0] mantissa_work_apply;
+  logic                         round_up_apply;
+  logic                         is_inexact_apply;
+  logic                         sqrt_is_zero_apply;
+  logic        [           2:0] rm_apply;
 
   // =========================================================================
   // ROUND_APPLY: Apply rounding and format result
   // =========================================================================
 
-  logic        [24:0] rounded_mantissa_apply;
-  logic               mantissa_overflow_apply;
-  logic signed [ 9:0] adjusted_exponent_apply;
-  logic        [22:0] final_mantissa_apply;
+  logic        [    MantBits:0] rounded_mantissa_apply;
+  logic                         mantissa_overflow_apply;
+  logic signed [ExpExtBits-1:0] adjusted_exponent_apply;
+  logic        [  FracBits-1:0] final_mantissa_apply;
   logic is_overflow_apply, is_underflow_apply;
 
-  assign rounded_mantissa_apply  = {1'b0, mantissa_work_apply} + {24'b0, round_up_apply};
-  assign mantissa_overflow_apply = rounded_mantissa_apply[24];
+  assign rounded_mantissa_apply  = {1'b0, mantissa_work_apply} + {{MantBits{1'b0}}, round_up_apply};
+  assign mantissa_overflow_apply = rounded_mantissa_apply[MantBits];
 
   always_comb begin
     if (mantissa_overflow_apply) begin
-      if (exp_work_apply == 10'sd0) begin
-        adjusted_exponent_apply = 10'sd1;
+      if (exp_work_apply == '0) begin
+        adjusted_exponent_apply = ExpExtBits'(1);
       end else begin
         adjusted_exponent_apply = exp_work_apply + 1;
       end
-      final_mantissa_apply = rounded_mantissa_apply[23:1];
+      final_mantissa_apply = rounded_mantissa_apply[MantBits-1:1];
     end else begin
       adjusted_exponent_apply = exp_work_apply;
-      final_mantissa_apply = rounded_mantissa_apply[22:0];
+      final_mantissa_apply = rounded_mantissa_apply[FracBits-1:0];
     end
   end
 
-  assign is_overflow_apply  = (adjusted_exponent_apply >= 10'sd255);
-  assign is_underflow_apply = (adjusted_exponent_apply <= 10'sd0);
+  assign is_overflow_apply = (adjusted_exponent_apply >= $signed(
+      {{(ExpExtBits - ExpBits) {1'b0}}, ExpMax}
+  ));
+  assign is_underflow_apply = (adjusted_exponent_apply <= '0);
 
   // Compute final result (sqrt result is always positive)
-  logic [31:0] final_result_apply_comb;
+  logic [FP_WIDTH-1:0] final_result_apply_comb;
   riscv_pkg::fp_flags_t final_flags_apply_comb;
 
   always_comb begin
-    final_result_apply_comb = 32'b0;
+    final_result_apply_comb = '0;
     final_flags_apply_comb  = '0;
 
     if (sqrt_is_zero_apply) begin
-      final_result_apply_comb = 32'b0;  // +0
+      final_result_apply_comb = '0;  // +0
     end else if (is_overflow_apply) begin
       final_flags_apply_comb.of = 1'b1;
       final_flags_apply_comb.nx = 1'b1;
       if (rm_apply == riscv_pkg::FRM_RTZ) begin
-        final_result_apply_comb = {1'b0, 8'hFE, 23'h7FFFFF};
+        final_result_apply_comb = {1'b0, MaxNormalExp, MaxMant};
       end else begin
-        final_result_apply_comb = {1'b0, 8'hFF, 23'b0};
+        final_result_apply_comb = {1'b0, ExpMax, {FracBits{1'b0}}};
       end
     end else if (is_underflow_apply) begin
       final_flags_apply_comb.uf = is_inexact_apply;
       final_flags_apply_comb.nx = is_inexact_apply;
-      final_result_apply_comb   = {1'b0, 8'b0, final_mantissa_apply};
+      final_result_apply_comb   = {1'b0, {ExpBits{1'b0}}, final_mantissa_apply};
     end else begin
       final_flags_apply_comb.nx = is_inexact_apply;
-      final_result_apply_comb   = {1'b0, adjusted_exponent_apply[7:0], final_mantissa_apply};
+      final_result_apply_comb = {1'b0, adjusted_exponent_apply[ExpBits-1:0], final_mantissa_apply};
     end
   end
 
@@ -352,7 +404,7 @@ module fp_sqrt (
   // ROUND_APPLY -> OUTPUT Pipeline Registers
   // =========================================================================
 
-  logic [31:0] result_output;
+  logic [FP_WIDTH-1:0] result_output;
   riscv_pkg::fp_flags_t flags_output;
 
   // =========================================================================
@@ -376,18 +428,24 @@ module fp_sqrt (
         end
       end
       SETUP: begin
-        if (is_special) begin
+        next_state = PREP;
+      end
+      PREP: begin
+        if (prep_is_special) begin
           next_state = DONE;
         end else begin
           next_state = COMPUTE;
         end
       end
       COMPUTE: begin
-        if (cycle_count == 5'd26) begin
+        if (cycle_count == RootBitsMinus1) begin
           next_state = NORMALIZE;
         end
       end
       NORMALIZE: begin
+        next_state = ROUND_SHIFT;
+      end
+      ROUND_SHIFT: begin
         next_state = ROUND_PREP;
       end
       ROUND_PREP: begin
@@ -410,41 +468,55 @@ module fp_sqrt (
   // Main Datapath
   // =========================================================================
 
-  logic                 [31:0] result_reg;
-  riscv_pkg::fp_flags_t        flags_reg;
-  logic                        valid_reg;
+  logic                 [FP_WIDTH-1:0] result_reg;
+  riscv_pkg::fp_flags_t                flags_reg;
+  // TIMING: Limit fanout to force register replication and improve timing
+  (* max_fanout = 30 *)logic                                valid_reg;
 
   // Digit-by-digit sqrt helpers
-  logic                 [55:0] rem_candidate;
-  logic                 [55:0] trial_divisor;
-  logic                        rem_ge;
+  logic                 [ RemBits-1:0] rem_candidate;
+  logic                 [ RemBits-1:0] trial_divisor;
+  logic                                rem_ge;
 
-  assign rem_candidate = {remainder[53:0], radicand[53:52]};
-  assign trial_divisor = {27'b0, root, 2'b01};
+  assign rem_candidate = {remainder[RemBits-3:0], radicand[RadicandBits-1-:2]};
+  assign trial_divisor = {{RootBits{1'b0}}, root, 2'b01};
   assign rem_ge = rem_candidate >= trial_divisor;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      cycle_count <= 5'd0;
-      root <= 27'b0;
-      remainder <= 56'b0;
-      radicand <= 54'b0;
-      result_exp <= 10'sb0;
+      cycle_count <= '0;
+      root <= '0;
+      remainder <= '0;
+      radicand <= '0;
+      result_exp <= '0;
       rm <= 3'b0;
       result_sign <= 1'b0;
-      operand_reg <= 32'b0;
+      operand_reg <= '0;
+      prep_is_special <= 1'b0;
+      prep_special_result <= '0;
+      prep_special_invalid <= 1'b0;
+      prep_sqrt_adjusted_exp <= '0;
+      prep_sqrt_mantissa_int <= '0;
+      // ROUND_SHIFT -> ROUND_PREP registers
+      exp_work_shift <= '0;
+      mantissa_work_shift <= '0;
+      guard_work_shift <= 1'b0;
+      round_work_shift <= 1'b0;
+      sticky_work_shift <= 1'b0;
+      sqrt_is_zero_shift <= 1'b0;
+      rm_shift <= 3'b0;
       // ROUND_PREP -> ROUND_APPLY registers
-      exp_work_apply <= 10'sb0;
-      mantissa_work_apply <= 24'b0;
+      exp_work_apply <= '0;
+      mantissa_work_apply <= '0;
       round_up_apply <= 1'b0;
       is_inexact_apply <= 1'b0;
       sqrt_is_zero_apply <= 1'b0;
       rm_apply <= 3'b0;
       // ROUND_APPLY -> OUTPUT registers
-      result_output <= 32'b0;
+      result_output <= '0;
       flags_output <= '0;
       // Final output
-      result_reg <= 32'b0;
+      result_reg <= '0;
       flags_reg <= '0;
       valid_reg <= 1'b0;
     end else begin
@@ -455,56 +527,75 @@ module fp_sqrt (
           if (i_valid) begin
             operand_reg <= i_operand;
             rm <= i_rounding_mode;
-            cycle_count <= 5'd0;
+            cycle_count <= '0;
           end
         end
 
         SETUP: begin
+          prep_is_special <= is_special;
+          prep_special_result <= special_result;
+          prep_special_invalid <= special_invalid;
+          prep_sqrt_adjusted_exp <= sqrt_adjusted_exp;
+          prep_sqrt_mantissa_int <= sqrt_mantissa_int;
+        end
+
+        PREP: begin
           result_sign <= 1'b0;  // sqrt result is always positive (or zero)
 
-          if (is_special) begin
-            result_reg <= special_result;
-            flags_reg  <= {special_invalid, 1'b0, 1'b0, 1'b0, 1'b0};
-          end else begin
-            // Initialize sqrt computation
-            // For sqrt: result_exp = (exp - 127) / 2 + 127
-            result_exp <= $signed(sqrt_adjusted_exp[10:1]);
-            root <= 27'b0;
-            remainder <= 56'b0;
-            radicand <= {29'b0, sqrt_mantissa_int} << sqrt_shift_amount;
+          // Initialize sqrt computation (special cases override output and skip compute)
+          // For sqrt: result_exp = (exp - bias) / 2 + bias
+          result_exp <= ExpExtBits'($signed(prep_sqrt_adjusted_exp >>> 1));
+          root <= '0;
+          remainder <= '0;
+          radicand <= {{(RadicandBits-(MantBits+1)){1'b0}}, prep_sqrt_mantissa_int} <<
+                      ShiftBits'(MantBits + 5);
+
+          if (prep_is_special) begin
+            result_reg <= prep_special_result;
+            flags_reg  <= {prep_special_invalid, 1'b0, 1'b0, 1'b0, 1'b0};
           end
         end
 
         COMPUTE: begin
           cycle_count <= cycle_count + 1;
           // Digit-by-digit square root: bring down 2 bits per iteration
-          radicand <= {radicand[51:0], 2'b00};
+          radicand <= {radicand[RadicandBits-3:0], 2'b00};
           if (rem_ge) begin
             remainder <= rem_candidate - trial_divisor;
-            root <= {root[25:0], 1'b1};
+            root <= {root[RootBits-2:0], 1'b1};
           end else begin
             remainder <= rem_candidate;
-            root <= {root[25:0], 1'b0};
+            root <= {root[RootBits-2:0], 1'b0};
           end
         end
 
         NORMALIZE: begin
           // The root should already be normalized
-          // root[26] should be the implicit 1
-          if (!root[26]) begin
+          // root[RootBits-1] should be the implicit 1
+          if (!root[RootBits-1]) begin
             root <= root << 1;
             result_exp <= result_exp - 1;
           end
         end
 
+        ROUND_SHIFT: begin
+          exp_work_shift <= exp_work_prep;
+          mantissa_work_shift <= mantissa_work_prep;
+          guard_work_shift <= guard_work_prep;
+          round_work_shift <= round_work_prep;
+          sticky_work_shift <= sticky_work_prep;
+          sqrt_is_zero_shift <= sqrt_is_zero;
+          rm_shift <= rm;
+        end
+
         ROUND_PREP: begin
           // Capture round-up decision into apply registers
-          exp_work_apply <= exp_work_prep;
-          mantissa_work_apply <= mantissa_work_prep;
+          exp_work_apply <= exp_work_shift;
+          mantissa_work_apply <= mantissa_work_shift;
           round_up_apply <= round_up_prep;
           is_inexact_apply <= is_inexact_prep;
-          sqrt_is_zero_apply <= sqrt_is_zero;
-          rm_apply <= rm;
+          sqrt_is_zero_apply <= sqrt_is_zero_shift;
+          rm_apply <= rm_shift;
         end
 
         ROUND_APPLY: begin

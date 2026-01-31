@@ -120,6 +120,9 @@ HALFWORD_ALIGNMENT: Final[int] = 2
 WORD_ALIGNMENT: Final[int] = 4
 """Word alignment requirement (4-byte boundary)."""
 
+DOUBLEWORD_ALIGNMENT: Final[int] = 8
+"""Doubleword alignment requirement (8-byte boundary)."""
+
 # ============================================================================
 # Immediate Field Constraints
 # ============================================================================

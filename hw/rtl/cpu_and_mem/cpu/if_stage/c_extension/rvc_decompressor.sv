@@ -26,9 +26,8 @@
 
   Compressed registers (3-bit) map to x8-x15: reg' = {2'b01, 3-bit-value}
 
-  Timing optimization: Uses parallel decode with one-hot selection mux
-  instead of nested case statements. All instruction expansions are
-  computed in parallel, then selected via flat one-hot OR structure.
+  Timing optimization: Computes only the selected expansion via a
+  quadrant/funct3 case tree to reduce parallel logic and wide OR trees.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
@@ -93,6 +92,10 @@ module rvc_decompressor (
     5'b0, i_instr_compressed[5], i_instr_compressed[12:10], i_instr_compressed[6], 2'b00
   };
 
+  // C.FLD/C.FSD: uimm[5:3|7:6] from bits [12:10,6:5], scaled by 8
+  logic [11:0] imm_ld_sd;
+  assign imm_ld_sd = {4'b0, i_instr_compressed[6:5], i_instr_compressed[12:10], 3'b000};
+
   // C.ADDI/C.LI/C.ANDI: 6-bit sign-extended immediate
   logic [11:0] imm_ci;
   assign imm_ci = {{6{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
@@ -144,258 +147,215 @@ module rvc_decompressor (
     4'b0, i_instr_compressed[3:2], i_instr_compressed[12], i_instr_compressed[6:4], 2'b00
   };
 
+  // C.FLDSP: uimm[5:3|8:6] from bits [4:2,12,6:5], scaled by 8
+  logic [11:0] imm_ldsp;
+  assign imm_ldsp = {
+    3'b0, i_instr_compressed[4:2], i_instr_compressed[12], i_instr_compressed[6:5], 3'b000
+  };
+
   // C.SWSP: uimm[5:2|7:6] from bits [12:7], scaled by 4
   logic [7:0] imm_swsp;
   assign imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
+
+  // C.FSDSP: uimm[5:3|8:6] from bits [9:7,12:10], scaled by 8
+  logic [11:0] imm_sdsp;
+  assign imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
 
   // Shift amount (5-bit for RV32)
   logic [4:0] shamt;
   assign shamt = i_instr_compressed[6:2];
 
   // ===========================================================================
-  // Pre-compute ALL instruction expansions in parallel
+  // Instruction Expansion (compute only selected instruction)
   // ===========================================================================
-
-  logic [31:0] instr_addi4spn;  // C.ADDI4SPN
-  logic [31:0] instr_lw;  // C.LW
-  logic [31:0] instr_flw;  // C.FLW
-  logic [31:0] instr_sw;  // C.SW
-  logic [31:0] instr_fsw;  // C.FSW
-  logic [31:0] instr_addi;  // C.ADDI / C.NOP
-  logic [31:0] instr_jal;  // C.JAL
-  logic [31:0] instr_li;  // C.LI
-  logic [31:0] instr_addi16sp;  // C.ADDI16SP
-  logic [31:0] instr_lui;  // C.LUI
-  logic [31:0] instr_srli;  // C.SRLI
-  logic [31:0] instr_srai;  // C.SRAI
-  logic [31:0] instr_andi;  // C.ANDI
-  logic [31:0] instr_sub;  // C.SUB
-  logic [31:0] instr_xor;  // C.XOR
-  logic [31:0] instr_or;  // C.OR
-  logic [31:0] instr_and;  // C.AND
-  logic [31:0] instr_j;  // C.J
-  logic [31:0] instr_beqz;  // C.BEQZ
-  logic [31:0] instr_bnez;  // C.BNEZ
-  logic [31:0] instr_slli;  // C.SLLI
-  logic [31:0] instr_lwsp;  // C.LWSP
-  logic [31:0] instr_flwsp;  // C.FLWSP
-  logic [31:0] instr_jr;  // C.JR
-  logic [31:0] instr_mv;  // C.MV
-  logic [31:0] instr_ebreak;  // C.EBREAK
-  logic [31:0] instr_jalr;  // C.JALR
-  logic [31:0] instr_add;  // C.ADD
-  logic [31:0] instr_swsp;  // C.SWSP
-  logic [31:0] instr_fswsp;  // C.FSWSP
-
-  // Quadrant 0 instructions
-  assign instr_addi4spn = {imm_addi4spn, 5'd2, 3'b000, rd_prime, OpcOpImm};
-  assign instr_lw = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoad};
-  assign instr_flw = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoadFp};
-  assign instr_sw = {imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStore};
-  assign instr_fsw = {imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStoreFp};
-
-  // Quadrant 1 instructions
-  assign instr_addi = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm};
-  assign instr_jal = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd1, OpcJal};
-  assign instr_li = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};
-  assign instr_addi16sp = {imm_addi16sp, 5'd2, 3'b000, 5'd2, OpcOpImm};
-  assign instr_lui = {imm_lui, rd_full, OpcLui};
-  assign instr_srli = {7'b0000000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-  assign instr_srai = {7'b0100000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-  assign instr_andi = {imm_ci, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
-  assign instr_sub = {7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp};
-  assign instr_xor = {7'b0000000, rs2_prime, rs1_prime, 3'b100, rs1_prime, OpcOp};
-  assign instr_or = {7'b0000000, rs2_prime, rs1_prime, 3'b110, rs1_prime, OpcOp};
-  assign instr_and = {7'b0000000, rs2_prime, rs1_prime, 3'b111, rs1_prime, OpcOp};
-  assign instr_j = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd0, OpcJal};
-  assign instr_beqz = {
-    imm_b[8], {3{imm_b[8]}}, imm_b[7:5], 5'd0, rs1_prime, 3'b000, imm_b[4:1], imm_b[8], OpcBranch
-  };
-  assign instr_bnez = {
-    imm_b[8], {3{imm_b[8]}}, imm_b[7:5], 5'd0, rs1_prime, 3'b001, imm_b[4:1], imm_b[8], OpcBranch
-  };
-
-  // Quadrant 2 instructions
-  assign instr_slli = {7'b0000000, shamt, rd_full, 3'b001, rd_full, OpcOpImm};
-  assign instr_lwsp = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
-  assign instr_flwsp = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoadFp};
-  assign instr_jr = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
-  assign instr_mv = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
-  assign instr_ebreak = 32'h0010_0073;
-  assign instr_jalr = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};
-  assign instr_add = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};
-  assign instr_swsp = {4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStore};
-  assign instr_fswsp = {4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStoreFp};
-
-  // ===========================================================================
-  // Compute one-hot select signals in parallel
-  // ===========================================================================
-  logic sel_addi4spn, sel_lw, sel_flw, sel_sw, sel_fsw;
-  logic sel_addi, sel_jal, sel_li, sel_addi16sp, sel_lui;
-  logic sel_srli, sel_srai, sel_andi, sel_sub, sel_xor, sel_or, sel_and;
-  logic sel_j, sel_beqz, sel_bnez;
-  logic sel_slli, sel_lwsp, sel_flwsp, sel_jr, sel_mv, sel_ebreak, sel_jalr, sel_add, sel_swsp;
-  logic sel_fswsp;
-  logic sel_passthrough;
-
-  // Helper signals for Quadrant 1 funct3=100 sub-decoding
-  logic q1_f100;  // Quadrant 1, funct3 = 100
-  logic [1:0] q1_f100_type;  // bits [11:10]
-  logic q1_f100_is_alu;  // type = 11 (register-register ALU ops)
-  logic [1:0] q1_f100_alu_op;  // bits [6:5] for SUB/XOR/OR/AND
-
-  assign q1_f100 = (quadrant == 2'b01) && (funct3 == 3'b100);
-  assign q1_f100_type = i_instr_compressed[11:10];
-  assign q1_f100_is_alu = q1_f100 && (q1_f100_type == 2'b11) && !i_instr_compressed[12];
-  assign q1_f100_alu_op = i_instr_compressed[6:5];
-
-  // Helper for Quadrant 2 funct3=100 sub-decoding
-  logic q2_f100;
-  logic q2_f100_bit12;
-
-  assign q2_f100 = (quadrant == 2'b10) && (funct3 == 3'b100);
-  assign q2_f100_bit12 = i_instr_compressed[12];
-
-  // Quadrant 0 selects
-  assign sel_addi4spn = (quadrant == 2'b00) && (funct3 == 3'b000);
-  assign sel_lw = (quadrant == 2'b00) && (funct3 == 3'b010);
-  assign sel_flw = (quadrant == 2'b00) && (funct3 == 3'b011);
-  assign sel_sw = (quadrant == 2'b00) && (funct3 == 3'b110);
-  assign sel_fsw = (quadrant == 2'b00) && (funct3 == 3'b111);
-
-  // Quadrant 1 selects
-  assign sel_addi = (quadrant == 2'b01) && (funct3 == 3'b000);
-  assign sel_jal = (quadrant == 2'b01) && (funct3 == 3'b001);
-  assign sel_li = (quadrant == 2'b01) && (funct3 == 3'b010);
-  assign sel_addi16sp = (quadrant == 2'b01) && (funct3 == 3'b011) && (rd_full == 5'd2);
-  assign sel_lui = (quadrant == 2'b01) && (funct3 == 3'b011) && (rd_full != 5'd2) &&
-                                                                (rd_full != 5'd0);
-  assign sel_srli = q1_f100 && (q1_f100_type == 2'b00);
-  assign sel_srai = q1_f100 && (q1_f100_type == 2'b01);
-  assign sel_andi = q1_f100 && (q1_f100_type == 2'b10);
-  assign sel_sub = q1_f100_is_alu && (q1_f100_alu_op == 2'b00);
-  assign sel_xor = q1_f100_is_alu && (q1_f100_alu_op == 2'b01);
-  assign sel_or = q1_f100_is_alu && (q1_f100_alu_op == 2'b10);
-  assign sel_and = q1_f100_is_alu && (q1_f100_alu_op == 2'b11);
-  assign sel_j = (quadrant == 2'b01) && (funct3 == 3'b101);
-  assign sel_beqz = (quadrant == 2'b01) && (funct3 == 3'b110);
-  assign sel_bnez = (quadrant == 2'b01) && (funct3 == 3'b111);
-
-  // Quadrant 2 selects
-  assign sel_slli = (quadrant == 2'b10) && (funct3 == 3'b000);
-  assign sel_lwsp = (quadrant == 2'b10) && (funct3 == 3'b010);
-  assign sel_flwsp = (quadrant == 2'b10) && (funct3 == 3'b011);
-  assign sel_jr = q2_f100 && !q2_f100_bit12 && (rs2_full == 5'd0);
-  assign sel_mv = q2_f100 && !q2_f100_bit12 && (rs2_full != 5'd0);
-  assign sel_ebreak = q2_f100 && q2_f100_bit12 && (rs2_full == 5'd0) && (rd_full == 5'd0);
-  assign sel_jalr = q2_f100 && q2_f100_bit12 && (rs2_full == 5'd0) && (rd_full != 5'd0);
-  assign sel_add = q2_f100 && q2_f100_bit12 && (rs2_full != 5'd0);
-  assign sel_swsp = (quadrant == 2'b10) && (funct3 == 3'b110);
-  assign sel_fswsp = (quadrant == 2'b10) && (funct3 == 3'b111);
-
-  // Quadrant 3 (not compressed - passthrough)
-  assign sel_passthrough = (quadrant == 2'b11);
-
-  // ===========================================================================
-  // Illegal instruction detection (parallel)
-  // ===========================================================================
-  logic illegal_addi4spn;  // Zero immediate
-  logic illegal_addi16sp;  // Zero immediate
-  logic illegal_lui;  // Zero immediate or rd=0
-  logic illegal_srli_srai;  // shamt[5]=1 for RV32
-  logic illegal_slli;  // shamt[5]=1 or rd=0
-  logic illegal_lwsp;  // rd=0
-  logic illegal_jr;  // rs1=0
-  logic illegal_mv_add;  // rd=0 (hint)
-  logic illegal_q1_f100_reserved;  // RV64 only ops in RV32
-  logic illegal_q0_reserved;  // Reserved Q0 encodings
-  logic illegal_q1_reserved;  // Reserved Q1 encodings
-  logic illegal_q2_reserved;  // Reserved Q2 encodings
-
-  assign illegal_addi4spn = sel_addi4spn && (imm_addi4spn == 12'b0);
-  assign illegal_addi16sp = sel_addi16sp && (imm_addi16sp == 12'b0);
-  assign illegal_lui = (quadrant == 2'b01) && (funct3 == 3'b011) &&
-                       ((rd_full == 5'd0) || ((rd_full != 5'd2) &&
-                       ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0)));
-  assign illegal_srli_srai = (sel_srli || sel_srai) && i_instr_compressed[12];
-  assign illegal_slli = sel_slli && (i_instr_compressed[12] || (rd_full == 5'd0));
-  assign illegal_lwsp = (sel_lwsp || sel_flwsp) && (rd_full == 5'd0);
-  assign illegal_jr = sel_jr && (rd_full == 5'd0);
-  assign illegal_mv_add = (sel_mv || sel_add) && (rd_full == 5'd0);
-  assign illegal_q1_f100_reserved = q1_f100 && (q1_f100_type == 2'b11) && i_instr_compressed[12];
-
-  // Reserved funct3 values in each quadrant
-  assign illegal_q0_reserved = (quadrant == 2'b00) &&
-                               (funct3 != 3'b000) && (funct3 != 3'b010) &&
-                               (funct3 != 3'b011) && (funct3 != 3'b110) &&
-                               (funct3 != 3'b111);
-  assign illegal_q1_reserved = 1'b0;  // All funct3 used in Q1
-  assign illegal_q2_reserved = (quadrant == 2'b10) &&
-                               (funct3 != 3'b000) && (funct3 != 3'b010) &&
-                               (funct3 != 3'b011) && (funct3 != 3'b100) &&
-                               (funct3 != 3'b110) && (funct3 != 3'b111);
-
-  assign o_illegal = illegal_addi4spn | illegal_addi16sp | illegal_lui |
-                     illegal_srli_srai | illegal_slli | illegal_lwsp |
-                     illegal_jr | illegal_mv_add | illegal_q1_f100_reserved |
-                     illegal_q0_reserved | illegal_q2_reserved;
-
-  // ===========================================================================
-  // Hierarchical mux for instruction output (timing optimized)
-  // ===========================================================================
-  // Group by quadrant first, then select within quadrant.
-  // This reduces mux depth: instead of 27-input OR (5 levels), we have:
-  //   - ~8 inputs per quadrant (3 levels) computed in parallel
-  //   - 4-input final mux (2 levels, but quadrant known early from bits[1:0])
-  // Total effective depth reduced since quadrant decode is very fast.
-
-  // Quadrant 0 result (5 instructions: addi4spn, lw, flw, sw, fsw)
-  logic [31:0] q0_result;
-  assign q0_result = ({32{sel_addi4spn}} & instr_addi4spn) |
-                     ({32{sel_lw}} & instr_lw) |
-                     ({32{sel_flw}} & instr_flw) |
-                     ({32{sel_sw}} & instr_sw) |
-                     ({32{sel_fsw}} & instr_fsw);
-
-  // Quadrant 1 result (15 instructions)
-  logic [31:0] q1_result;
-  assign q1_result = ({32{sel_addi}} & instr_addi) |
-                     ({32{sel_jal}} & instr_jal) |
-                     ({32{sel_li}} & instr_li) |
-                     ({32{sel_addi16sp}} & instr_addi16sp) |
-                     ({32{sel_lui}} & instr_lui) |
-                     ({32{sel_srli}} & instr_srli) |
-                     ({32{sel_srai}} & instr_srai) |
-                     ({32{sel_andi}} & instr_andi) |
-                     ({32{sel_sub}} & instr_sub) |
-                     ({32{sel_xor}} & instr_xor) |
-                     ({32{sel_or}} & instr_or) |
-                     ({32{sel_and}} & instr_and) |
-                     ({32{sel_j}} & instr_j) |
-                     ({32{sel_beqz}} & instr_beqz) |
-                     ({32{sel_bnez}} & instr_bnez);
-
-  // Quadrant 2 result (10 instructions: slli, lwsp, flwsp, jr, mv, ebreak, jalr, add, swsp, fswsp)
-  logic [31:0] q2_result;
-  assign q2_result = ({32{sel_slli}} & instr_slli) |
-                     ({32{sel_lwsp}} & instr_lwsp) |
-                     ({32{sel_flwsp}} & instr_flwsp) |
-                     ({32{sel_jr}} & instr_jr) |
-                     ({32{sel_mv}} & instr_mv) |
-                     ({32{sel_ebreak}} & instr_ebreak) |
-                     ({32{sel_jalr}} & instr_jalr) |
-                     ({32{sel_add}} & instr_add) |
-                     ({32{sel_swsp}} & instr_swsp) |
-                     ({32{sel_fswsp}} & instr_fswsp);
-
-  // Final quadrant selection - quadrant bits are available immediately
-  // Use simple 2-bit mux instead of one-hot for final stage
   always_comb begin
+    // Default outputs: zero instruction for reserved encodings.
+    o_instr_expanded = 32'b0;
+    o_illegal = 1'b0;
+
     unique case (quadrant)
-      2'b00:   o_instr_expanded = q0_result;
-      2'b01:   o_instr_expanded = q1_result;
-      2'b10:   o_instr_expanded = q2_result;
-      default: o_instr_expanded = {16'b0, i_instr_compressed};  // Q3: passthrough
+      // -----------------------------------------------------------------------
+      // Quadrant 0 (00)
+      // -----------------------------------------------------------------------
+      2'b00: begin
+        unique case (funct3)
+          3'b000: begin  // C.ADDI4SPN
+            o_instr_expanded = {imm_addi4spn, 5'd2, 3'b000, rd_prime, OpcOpImm};
+            if (imm_addi4spn == 12'b0) o_illegal = 1'b1;
+          end
+          3'b010: o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoad};  // C.LW
+          3'b001: o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoadFp};  // C.FLD
+          3'b011: o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoadFp};  // C.FLW
+          3'b110:
+          o_instr_expanded = {
+            imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStore
+          };  // C.SW
+          3'b101:
+          o_instr_expanded = {
+            imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStoreFp
+          };  // C.FSD
+          3'b111:
+          o_instr_expanded = {
+            imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStoreFp
+          };  // C.FSW
+          default: o_illegal = 1'b1;  // Reserved encoding
+        endcase
+      end
+
+      // -----------------------------------------------------------------------
+      // Quadrant 1 (01)
+      // -----------------------------------------------------------------------
+      2'b01: begin
+        unique case (funct3)
+          3'b000: o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm};  // C.ADDI/NOP
+          3'b001:
+          o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd1, OpcJal};
+          3'b010: o_instr_expanded = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};  // C.LI
+          3'b011: begin
+            if (rd_full == 5'd2) begin  // C.ADDI16SP
+              o_instr_expanded = {imm_addi16sp, 5'd2, 3'b000, 5'd2, OpcOpImm};
+              if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
+            end else if (rd_full != 5'd0) begin  // C.LUI
+              o_instr_expanded = {imm_lui, rd_full, OpcLui};
+              if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
+            end else begin
+              o_illegal = 1'b1;  // rd=0 is illegal
+            end
+          end
+          3'b100: begin
+            unique case (i_instr_compressed[11:10])
+              2'b00: begin  // C.SRLI
+                o_instr_expanded = {7'b0000000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                if (i_instr_compressed[12]) o_illegal = 1'b1;
+              end
+              2'b01: begin  // C.SRAI
+                o_instr_expanded = {7'b0100000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                if (i_instr_compressed[12]) o_illegal = 1'b1;
+              end
+              2'b10: begin  // C.ANDI
+                o_instr_expanded = {imm_ci, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+              end
+              2'b11: begin  // C.SUB/C.XOR/C.OR/C.AND (or reserved when bit12=1)
+                if (i_instr_compressed[12]) begin
+                  o_illegal = 1'b1;  // RV64-only op encodings
+                end else begin
+                  unique case (i_instr_compressed[6:5])
+                    2'b00:
+                    o_instr_expanded = {
+                      7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                    };  // C.SUB
+                    2'b01:
+                    o_instr_expanded = {
+                      7'b0000000, rs2_prime, rs1_prime, 3'b100, rs1_prime, OpcOp
+                    };  // C.XOR
+                    2'b10:
+                    o_instr_expanded = {
+                      7'b0000000, rs2_prime, rs1_prime, 3'b110, rs1_prime, OpcOp
+                    };  // C.OR
+                    2'b11:
+                    o_instr_expanded = {
+                      7'b0000000, rs2_prime, rs1_prime, 3'b111, rs1_prime, OpcOp
+                    };  // C.AND
+                  endcase
+                end
+              end
+            endcase
+          end
+          3'b101:
+          o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd0, OpcJal};
+          3'b110: begin
+            o_instr_expanded = {
+              imm_b[8],
+              {3{imm_b[8]}},
+              imm_b[7:5],
+              5'd0,
+              rs1_prime,
+              3'b000,
+              imm_b[4:1],
+              imm_b[8],
+              OpcBranch
+            };  // C.BEQZ
+          end
+          3'b111: begin
+            o_instr_expanded = {
+              imm_b[8],
+              {3{imm_b[8]}},
+              imm_b[7:5],
+              5'd0,
+              rs1_prime,
+              3'b001,
+              imm_b[4:1],
+              imm_b[8],
+              OpcBranch
+            };  // C.BNEZ
+          end
+          default: o_illegal = 1'b1;  // Reserved encoding
+        endcase
+      end
+
+      // -----------------------------------------------------------------------
+      // Quadrant 2 (10)
+      // -----------------------------------------------------------------------
+      2'b10: begin
+        unique case (funct3)
+          3'b000: begin  // C.SLLI
+            o_instr_expanded = {7'b0000000, shamt, rd_full, 3'b001, rd_full, OpcOpImm};
+            if (i_instr_compressed[12] || (rd_full == 5'd0)) o_illegal = 1'b1;
+          end
+          3'b010: begin  // C.LWSP
+            o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
+            if (rd_full == 5'd0) o_illegal = 1'b1;
+          end
+          3'b001: begin  // C.FLDSP
+            o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoadFp};
+            if (rd_full == 5'd0) o_illegal = 1'b1;
+          end
+          3'b011: begin  // C.FLWSP
+            o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoadFp};
+            if (rd_full == 5'd0) o_illegal = 1'b1;
+          end
+          3'b100: begin
+            if (!i_instr_compressed[12]) begin
+              if (rs2_full == 5'd0) begin  // C.JR
+                o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
+                if (rd_full == 5'd0) o_illegal = 1'b1;
+              end else begin  // C.MV
+                o_instr_expanded = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
+                if (rd_full == 5'd0) o_illegal = 1'b1;
+              end
+            end else begin
+              if (rs2_full == 5'd0) begin
+                if (rd_full == 5'd0) begin
+                  o_instr_expanded = 32'h0010_0073;  // C.EBREAK
+                end else begin
+                  o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};  // C.JALR
+                end
+              end else begin
+                o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};  // C.ADD
+                if (rd_full == 5'd0) o_illegal = 1'b1;
+              end
+            end
+          end
+          3'b110:
+          o_instr_expanded = {
+            4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStore
+          };  // C.SWSP
+          3'b101:
+          o_instr_expanded = {
+            imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStoreFp
+          };  // C.FSDSP
+          3'b111:
+          o_instr_expanded = {
+            4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStoreFp
+          };  // C.FSWSP
+          default: o_illegal = 1'b1;  // Reserved encoding
+        endcase
+      end
+
+      // -----------------------------------------------------------------------
+      // Quadrant 3 (11): not compressed, passthrough
+      // -----------------------------------------------------------------------
+      default: o_instr_expanded = {16'b0, i_instr_compressed};
     endcase
   end
 

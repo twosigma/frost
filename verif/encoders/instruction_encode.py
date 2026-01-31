@@ -99,6 +99,7 @@ class Funct3(IntEnum):
     BYTE = 0x0
     HALFWORD = 0x1
     WORD = 0x2
+    DOUBLEWORD = 0x3
     BYTE_U = 0x4
     HALFWORD_U = 0x5
 
@@ -135,18 +136,31 @@ class FPFunct7(IntEnum):
     """7-bit function codes for F extension operations."""
 
     FADD_S = 0x00
+    FADD_D = 0x01
     FSUB_S = 0x04
+    FSUB_D = 0x05
     FMUL_S = 0x08
+    FMUL_D = 0x09
     FDIV_S = 0x0C
+    FDIV_D = 0x0D
     FSQRT_S = 0x2C  # rs2=0
+    FSQRT_D = 0x2D  # rs2=0
     FSGNJ_S = 0x10  # funct3 selects FSGNJ/FSGNJN/FSGNJX
+    FSGNJ_D = 0x11  # funct3 selects FSGNJ/FSGNJN/FSGNJX
     FMIN_MAX_S = 0x14  # funct3 selects FMIN/FMAX
+    FMIN_MAX_D = 0x15  # funct3 selects FMIN/FMAX
     FCVT_W_S = 0x60  # FP to int, rs2=0 for W, rs2=1 for WU
+    FCVT_W_D = 0x61  # FP to int, rs2=0 for W, rs2=1 for WU
     FCVT_S_W = 0x68  # Int to FP, rs2=0 for W, rs2=1 for WU
+    FCVT_D_W = 0x69  # Int to FP, rs2=0 for W, rs2=1 for WU
+    FCVT_S_D = 0x20  # FP to FP, rs2 selects source (D=1)
+    FCVT_D_S = 0x21  # FP to FP, rs2 selects source (S=0)
     FMV_X_W = 0x70  # Move FP to int (rs2=0, funct3=0)
     FCLASS_S = 0x70  # Classify (rs2=0, funct3=1)
+    FCLASS_D = 0x71  # Classify (rs2=0, funct3=1)
     FMV_W_X = 0x78  # Move int to FP (rs2=0, funct3=0)
     FCMP_S = 0x50  # Compare, funct3 selects FEQ/FLT/FLE
+    FCMP_D = 0x51  # Compare, funct3 selects FEQ/FLT/FLE
 
 
 class Funct5(IntEnum):
@@ -850,7 +864,7 @@ def enc_wfi() -> int:
 
 
 # ============================================================================
-# F extension (single-precision floating-point) encoder functions
+# F/D extensions (single/double-precision floating-point) encoder functions
 # ============================================================================
 
 
@@ -868,6 +882,22 @@ def enc_fsw(rs2: int, rs1: int, imm: int) -> int:
     Stores FP register rs2 to memory at rs1+imm.
     """
     return SType.encode(imm, rs2, rs1, Funct3.WORD, Opcode.STORE_FP)
+
+
+def enc_fld(rd: int, rs1: int, imm: int) -> int:
+    """Encode FLD (Load Float Doubleword) instruction.
+
+    Loads a 64-bit value from memory at rs1+imm into FP register rd.
+    """
+    return IType.encode(imm & 0xFFF, rs1, Funct3.DOUBLEWORD, rd, Opcode.LOAD_FP)
+
+
+def enc_fsd(rs2: int, rs1: int, imm: int) -> int:
+    """Encode FSD (Store Float Doubleword) instruction.
+
+    Stores FP register rs2 to memory at rs1+imm.
+    """
+    return SType.encode(imm, rs2, rs1, Funct3.DOUBLEWORD, Opcode.STORE_FP)
 
 
 def enc_fadd_s(rd: int, rs1: int, rs2: int, rm: int = 7) -> int:
@@ -895,6 +925,31 @@ def enc_fsqrt_s(rd: int, rs1: int, rm: int = 7) -> int:
     return FPType.encode(FPFunct7.FSQRT_S, 0, rs1, rm, rd)
 
 
+def enc_fadd_d(rd: int, rs1: int, rs2: int, rm: int = 7) -> int:
+    """Encode FADD.D (Floating-point Add Double) instruction."""
+    return FPType.encode(FPFunct7.FADD_D, rs2, rs1, rm, rd)
+
+
+def enc_fsub_d(rd: int, rs1: int, rs2: int, rm: int = 7) -> int:
+    """Encode FSUB.D (Floating-point Subtract Double) instruction."""
+    return FPType.encode(FPFunct7.FSUB_D, rs2, rs1, rm, rd)
+
+
+def enc_fmul_d(rd: int, rs1: int, rs2: int, rm: int = 7) -> int:
+    """Encode FMUL.D (Floating-point Multiply Double) instruction."""
+    return FPType.encode(FPFunct7.FMUL_D, rs2, rs1, rm, rd)
+
+
+def enc_fdiv_d(rd: int, rs1: int, rs2: int, rm: int = 7) -> int:
+    """Encode FDIV.D (Floating-point Divide Double) instruction."""
+    return FPType.encode(FPFunct7.FDIV_D, rs2, rs1, rm, rd)
+
+
+def enc_fsqrt_d(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FSQRT.D (Floating-point Square Root Double) instruction."""
+    return FPType.encode(FPFunct7.FSQRT_D, 0, rs1, rm, rd)
+
+
 def enc_fmadd_s(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
     """Encode FMADD.S: rd = rs1 * rs2 + rs3."""
     return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FMADD)
@@ -915,6 +970,26 @@ def enc_fnmsub_s(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
     return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FNMSUB)
 
 
+def enc_fmadd_d(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
+    """Encode FMADD.D: rd = rs1 * rs2 + rs3."""
+    return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FMADD, fmt=1)
+
+
+def enc_fmsub_d(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
+    """Encode FMSUB.D: rd = rs1 * rs2 - rs3."""
+    return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FMSUB, fmt=1)
+
+
+def enc_fnmadd_d(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
+    """Encode FNMADD.D: rd = -(rs1 * rs2) - rs3."""
+    return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FNMADD, fmt=1)
+
+
+def enc_fnmsub_d(rd: int, rs1: int, rs2: int, rs3: int, rm: int = 7) -> int:
+    """Encode FNMSUB.D: rd = -(rs1 * rs2) + rs3."""
+    return R4Type.encode(rs3, rs2, rs1, rm, rd, Opcode.FNMSUB, fmt=1)
+
+
 def enc_fsgnj_s(rd: int, rs1: int, rs2: int) -> int:
     """Encode FSGNJ.S (Sign Inject): rd = |rs1| with sign of rs2."""
     return FPType.encode(FPFunct7.FSGNJ_S, rs2, rs1, 0, rd)
@@ -930,6 +1005,21 @@ def enc_fsgnjx_s(rd: int, rs1: int, rs2: int) -> int:
     return FPType.encode(FPFunct7.FSGNJ_S, rs2, rs1, 2, rd)
 
 
+def enc_fsgnj_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FSGNJ.D (Sign Inject): rd = |rs1| with sign of rs2."""
+    return FPType.encode(FPFunct7.FSGNJ_D, rs2, rs1, 0, rd)
+
+
+def enc_fsgnjn_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FSGNJN.D (Sign Inject Negated): rd = |rs1| with negated sign of rs2."""
+    return FPType.encode(FPFunct7.FSGNJ_D, rs2, rs1, 1, rd)
+
+
+def enc_fsgnjx_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FSGNJX.D (Sign Inject XOR): rd = rs1 with sign XORed with rs2's sign."""
+    return FPType.encode(FPFunct7.FSGNJ_D, rs2, rs1, 2, rd)
+
+
 def enc_fmin_s(rd: int, rs1: int, rs2: int) -> int:
     """Encode FMIN.S (Floating-point Minimum Single) instruction."""
     return FPType.encode(FPFunct7.FMIN_MAX_S, rs2, rs1, 0, rd)
@@ -938,6 +1028,16 @@ def enc_fmin_s(rd: int, rs1: int, rs2: int) -> int:
 def enc_fmax_s(rd: int, rs1: int, rs2: int) -> int:
     """Encode FMAX.S (Floating-point Maximum Single) instruction."""
     return FPType.encode(FPFunct7.FMIN_MAX_S, rs2, rs1, 1, rd)
+
+
+def enc_fmin_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FMIN.D (Floating-point Minimum Double) instruction."""
+    return FPType.encode(FPFunct7.FMIN_MAX_D, rs2, rs1, 0, rd)
+
+
+def enc_fmax_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FMAX.D (Floating-point Maximum Double) instruction."""
+    return FPType.encode(FPFunct7.FMIN_MAX_D, rs2, rs1, 1, rd)
 
 
 def enc_fcvt_w_s(rd: int, rs1: int, rm: int = 7) -> int:
@@ -960,6 +1060,36 @@ def enc_fcvt_s_wu(rd: int, rs1: int, rm: int = 7) -> int:
     return FPType.encode(FPFunct7.FCVT_S_W, 1, rs1, rm, rd)
 
 
+def enc_fcvt_w_d(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.W.D (Convert Double to Signed Int) instruction."""
+    return FPType.encode(FPFunct7.FCVT_W_D, 0, rs1, rm, rd)
+
+
+def enc_fcvt_wu_d(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.WU.D (Convert Double to Unsigned Int) instruction."""
+    return FPType.encode(FPFunct7.FCVT_W_D, 1, rs1, rm, rd)
+
+
+def enc_fcvt_d_w(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.D.W (Convert Signed Int to Double) instruction."""
+    return FPType.encode(FPFunct7.FCVT_D_W, 0, rs1, rm, rd)
+
+
+def enc_fcvt_d_wu(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.D.WU (Convert Unsigned Int to Double) instruction."""
+    return FPType.encode(FPFunct7.FCVT_D_W, 1, rs1, rm, rd)
+
+
+def enc_fcvt_s_d(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.S.D (Convert Double to Single) instruction."""
+    return FPType.encode(FPFunct7.FCVT_S_D, 1, rs1, rm, rd)
+
+
+def enc_fcvt_d_s(rd: int, rs1: int, rm: int = 7) -> int:
+    """Encode FCVT.D.S (Convert Single to Double) instruction."""
+    return FPType.encode(FPFunct7.FCVT_D_S, 0, rs1, rm, rd)
+
+
 def enc_fmv_x_w(rd: int, rs1: int) -> int:
     """Encode FMV.X.W (Move Float Bits to Int Register) instruction."""
     return FPType.encode(FPFunct7.FMV_X_W, 0, rs1, 0, rd)
@@ -975,6 +1105,11 @@ def enc_fclass_s(rd: int, rs1: int) -> int:
     return FPType.encode(FPFunct7.FCLASS_S, 0, rs1, 1, rd)
 
 
+def enc_fclass_d(rd: int, rs1: int) -> int:
+    """Encode FCLASS.D (Classify Floating-point Value) instruction."""
+    return FPType.encode(FPFunct7.FCLASS_D, 0, rs1, 1, rd)
+
+
 def enc_feq_s(rd: int, rs1: int, rs2: int) -> int:
     """Encode FEQ.S (Floating-point Equal) instruction. rd = (rs1 == rs2) ? 1 : 0."""
     return FPType.encode(FPFunct7.FCMP_S, rs2, rs1, 2, rd)
@@ -988,3 +1123,18 @@ def enc_flt_s(rd: int, rs1: int, rs2: int) -> int:
 def enc_fle_s(rd: int, rs1: int, rs2: int) -> int:
     """Encode FLE.S (Floating-point Less or Equal) instruction. rd = (rs1 <= rs2) ? 1 : 0."""
     return FPType.encode(FPFunct7.FCMP_S, rs2, rs1, 0, rd)
+
+
+def enc_feq_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FEQ.D (Floating-point Equal) instruction. rd = (rs1 == rs2) ? 1 : 0."""
+    return FPType.encode(FPFunct7.FCMP_D, rs2, rs1, 2, rd)
+
+
+def enc_flt_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FLT.D (Floating-point Less Than) instruction. rd = (rs1 < rs2) ? 1 : 0."""
+    return FPType.encode(FPFunct7.FCMP_D, rs2, rs1, 1, rd)
+
+
+def enc_fle_d(rd: int, rs1: int, rs2: int) -> int:
+    """Encode FLE.D (Floating-point Less or Equal) instruction. rd = (rs1 <= rs2) ? 1 : 0."""
+    return FPType.encode(FPFunct7.FCMP_D, rs2, rs1, 0, rd)

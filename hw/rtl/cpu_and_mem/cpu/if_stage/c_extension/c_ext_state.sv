@@ -64,7 +64,9 @@ module c_ext_state #(
     output logic o_spanning_to_halfword_registered,
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
-    output logic o_use_buffer_after_spanning  // Use buffer after spanning_to_halfword holdoff
+    output logic o_use_buffer_after_spanning,  // Use buffer after spanning_to_halfword holdoff
+    output logic o_is_compressed_saved,  // Saved is_compressed for fast path
+    output logic o_saved_values_valid  // Saved values are valid (not invalidated by control flow)
 );
 
   // ===========================================================================
@@ -104,21 +106,24 @@ module c_ext_state #(
   // 2. The following cycle, i_control_flow_holdoff clears the state
   // Note: i_prediction_holdoff is already registered (from branch_prediction_controller).
   always_ff @(posedge i_clk) begin
-    if (i_reset) begin
-      effective_instr_saved <= '0;
-      is_compressed_saved <= 1'b0;
-      saved_values_valid <= 1'b0;
-    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
+    if (i_control_flow_holdoff || i_prediction_holdoff) begin
       // Registered control flow change invalidates saved values.
       // We've jumped to a different PC, so saved values are stale.
       // Also clear the data to prevent any stale data from persisting.
       effective_instr_saved <= '0;
-      is_compressed_saved <= 1'b0;
-      saved_values_valid <= 1'b0;
+      is_compressed_saved   <= 1'b0;
     end else if (i_stall & ~i_stall_registered) begin
       // Save at stall start
       effective_instr_saved <= i_effective_instr;
-      is_compressed_saved <= i_is_compressed;
+      is_compressed_saved   <= i_is_compressed;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_reset) begin
+      saved_values_valid <= 1'b0;
+    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
+      saved_values_valid <= 1'b0;
+    end else if (i_stall & ~i_stall_registered) begin
       saved_values_valid <= 1'b1;
     end
   end
@@ -143,10 +148,14 @@ module c_ext_state #(
   logic        is_compressed_for_buffer;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
-  assign is_compressed_for_buffer   = use_saved_values ? is_compressed_saved : i_is_compressed;
+  assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
 
   // Export stall-restored is_compressed for use by pc_controller and spanning detection
   assign o_is_compressed_for_buffer = is_compressed_for_buffer;
+
+  // Export saved values for instruction_aligner's fast path
+  assign o_is_compressed_saved = is_compressed_saved;
+  assign o_saved_values_valid = saved_values_valid;
 
   // Extract instruction halves for spanning
   // Use effective_instr_for_buffer to handle stall restoration correctly.
@@ -161,24 +170,25 @@ module c_ext_state #(
     if (i_reset) begin
       o_spanning_wait_for_fetch <= 1'b0;
       o_spanning_in_progress <= 1'b0;
-      o_spanning_buffer <= 16'b0;
-      o_spanning_second_half <= 16'b0;
-      o_spanning_pc <= '0;
     end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
       // Cancel spanning on control flow change or prediction
       // control_flow_holdoff is registered to break timing path from branch_taken
       // i_prediction_holdoff clears stale state after branch prediction redirect
-      // Also clear data buffers to prevent any stale data from persisting
       o_spanning_wait_for_fetch <= 1'b0;
       o_spanning_in_progress <= 1'b0;
-      o_spanning_buffer <= 16'b0;
-      o_spanning_second_half <= 16'b0;
-      o_spanning_pc <= '0;
     end else if (!i_stall && !i_any_holdoff_safe) begin
       // State transitions
       o_spanning_wait_for_fetch <= i_is_32bit_spanning && !o_spanning_wait_for_fetch;
       o_spanning_in_progress <= spanning_in_progress_next;
-
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_control_flow_holdoff || i_prediction_holdoff) begin
+      // Clear buffers on control flow change/prediction
+      o_spanning_buffer <= 16'b0;
+      o_spanning_second_half <= 16'b0;
+      o_spanning_pc <= '0;
+    end else if (!i_stall && !i_any_holdoff_safe) begin
       if (i_is_32bit_spanning && !o_spanning_wait_for_fetch) begin
         // Save upper 16 bits and PC when first detecting spanning
         o_spanning_buffer <= instr_hi;

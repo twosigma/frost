@@ -37,13 +37,15 @@ This directory contains a comprehensive Python-based verification framework for 
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV32IMACB** (I + M + A + C + B) plus additional extensions:
+The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) plus additional extensions:
 
 | Extension        | Description                                                                        |
 |------------------|------------------------------------------------------------------------------------|
 | **RV32I**        | 32-bit base integer instruction set                                                |
 | **M**            | Integer multiply/divide (mul, div, rem variants)                                   |
 | **A**            | Atomic memory operations (lr.w, sc.w, amoswap/add/xor/and/or/min/max.w)            |
+| **F**            | Single-precision floating-point (32-bit IEEE 754)                                 |
+| **D**            | Double-precision floating-point (64-bit IEEE 754)                                 |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)                                             |
 | **C**            | Compressed instructions (16-bit encodings for reduced code size)                   |
 | **Zba**          | Address generation (sh1add, sh2add, sh3add) - part of B                            |

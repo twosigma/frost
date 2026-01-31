@@ -14,11 +14,13 @@
  *    limitations under the License.
  */
 
-# Compressed FP (C.F) Extension Test
+# Compressed FP (C.F/C.D) Extension Test
 #
 # Tests:
 #   1. C.FLW / C.FSW using compressed registers (f8-f15, x8-x15 base)
 #   2. C.FLWSP / C.FSWSP using stack-pointer base
+#   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
+#   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
 # Prints <<PASS>> on success.
 
@@ -82,6 +84,53 @@ _start:
     jal     ra, print_string
 
     # =========================================
+    # Test 3: C.FLD / C.FSD (compressed regs)
+    # =========================================
+    la      a0, msg_test3
+    jal     ra, print_string
+    # Initialize 64-bit pattern at data_base + 8
+    li      t0, 0x89ABCDEF
+    sw      t0, 8(s1)        # low word
+    li      t1, 0x01234567
+    sw      t1, 12(s1)       # high word
+    .option rvc
+    c.fld   fs0, 8(s1)       # f8 from [s1 + 8]
+    c.fsd   fs0, 16(s1)      # store to [s1 + 16]
+    .option norvc
+    lw      t2, 16(s1)
+    lw      t3, 20(s1)
+    li      t4, 0x89ABCDEF
+    bne     t2, t4, fail_test3
+    li      t5, 0x01234567
+    bne     t3, t5, fail_test3
+    la      a0, msg_ok
+    jal     ra, print_string
+
+    # =========================================
+    # Test 4: C.FLDSP / C.FSDSP (sp base)
+    # =========================================
+    la      a0, msg_test4
+    jal     ra, print_string
+    addi    sp, sp, -32
+    li      t0, 0xA5A5A5A5
+    sw      t0, 0(sp)        # low word
+    li      t1, 0x5A5A5A5A
+    sw      t1, 4(sp)        # high word
+    .option rvc
+    c.fldsp fs1, 0(sp)       # f9 from [sp + 0]
+    c.fsdsp fs1, 8(sp)       # store to [sp + 8]
+    .option norvc
+    lw      t2, 8(sp)
+    lw      t3, 12(sp)
+    addi    sp, sp, 32
+    li      t4, 0xA5A5A5A5
+    bne     t2, t4, fail_test4
+    li      t5, 0x5A5A5A5A
+    bne     t3, t5, fail_test4
+    la      a0, msg_ok
+    jal     ra, print_string
+
+    # =========================================
     # All tests passed
     # =========================================
     la      a0, msg_pass
@@ -101,6 +150,16 @@ fail_test1:
 
 fail_test2:
     la      a0, msg_fail2
+    jal     ra, print_string
+    j       done
+
+fail_test3:
+    la      a0, msg_fail3
+    jal     ra, print_string
+    j       done
+
+fail_test4:
+    la      a0, msg_fail4
     jal     ra, print_string
     j       done
 
@@ -135,12 +194,20 @@ msg_test1:
     .asciz "Test 1: C.FLW/C.FSW... "
 msg_test2:
     .asciz "Test 2: C.FLWSP/C.FSWSP... "
+msg_test3:
+    .asciz "Test 3: C.FLD/C.FSD... "
+msg_test4:
+    .asciz "Test 4: C.FLDSP/C.FSDSP... "
 msg_ok:
     .asciz "OK\n"
 msg_fail1:
     .asciz "FAIL (C.FLW/C.FSW)\n"
 msg_fail2:
     .asciz "FAIL (C.FLWSP/C.FSWSP)\n"
+msg_fail3:
+    .asciz "FAIL (C.FLD/C.FSD)\n"
+msg_fail4:
+    .asciz "FAIL (C.FLDSP/C.FSDSP)\n"
 msg_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_marker:
@@ -152,7 +219,7 @@ msg_marker:
     .section .bss
     .align 4
 data_base:
-    .space 8
+    .space 24
 
 # =========================================
 # Stack

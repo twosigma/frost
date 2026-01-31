@@ -6,9 +6,9 @@
 |--------|-------|
 | Clock Frequency | 133.333 MHz |
 | Clock Period | 7.500 ns |
-| WNS (Setup) | 0.836 ns |
+| WNS (Setup) | 0.043 ns |
 | TNS (Setup) | 0.000 ns (0 failing) |
-| WHS (Hold) | 0.056 ns |
+| WHS (Hold) | 0.050 ns |
 | THS (Hold) | 0.000 ns (0 failing) |
 | Timing Met | Yes |
 
@@ -16,22 +16,22 @@
 
 | Metric | Value |
 |--------|-------|
-| Slack | 0.836 ns |
-| Data Path Delay | 5.945 ns |
-| Logic Delay | 0.362 ns |
-| Route Delay | 5.583 ns |
-| Logic Levels | 1 |
+| Slack | 0.043 ns |
+| Data Path Delay | 6.807 ns |
+| Logic Delay | 0.204 ns |
+| Route Delay | 6.603 ns |
+| Logic Levels | 0 |
 
 ### Path Endpoints
 
 - **Source**: `subsystem/frost_processor/reset_synchronizer_shift_register_reg[2]/C`
-- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/ex_stage_inst/fpu_inst/fma_inst/sum_s6_reg[23]/R`
+- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/ex_stage_inst/fpu_inst/fma_inst_d/normalized_sum_s7_reg[31]/R`
 
 ## Resource Utilization
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 14954 | 203800 | 7.34% |
-| Registers | 9481 | 407600 | 2.33% |
-| Block RAM | 21.5 | 445 | 4.83% |
-| DSPs | 8 | 840 | 0.95% |
+| LUTs | 28329 | 203800 | 13.90% |
+| Registers | 19131 | 407600 | 4.69% |
+| Block RAM | 37.5 | 445 | 8.43% |
+| DSPs | 28 | 840 | 3.33% |
