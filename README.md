@@ -342,6 +342,22 @@ Running `pytest tests/` exercises:
 | PLL | 0 | 6 | 0.0% |
 
 <!-- FPGA_UTILIZATION_END -->
+
+## In-Progress: Tomasulo Out-of-Order Execution
+
+An out-of-order execution backend using the Tomasulo algorithm is under active development. This implementation will add dynamic instruction scheduling while preserving the existing front-end (IF/PD/ID) and ISA support.
+
+Key components being built:
+- **Reorder Buffer (ROB)** — Unified INT/FP, in-order commit, precise exceptions
+- **Register Alias Tables** — Separate INT and FP RATs with checkpoint support
+- **Reservation Stations** — INT, MUL, MEM, FP, FMUL, FDIV
+- **Load/Store Queues** — Memory disambiguation, store-to-load forwarding
+
+The Tomasulo RTL implementation is being developed in a separate directory alongside the existing in-order pipeline:
+`hw/rtl/cpu_and_mem/cpu/tomasulo/`
+
+Once complete, it may replace the in-order processor or remain as an alternative configuration.
+
 ## Glossary
 
 | Term            | Definition                                       |
