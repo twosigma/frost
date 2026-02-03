@@ -30,7 +30,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
 from typing import Any
 
-from config import MASK32, PIPELINE_DEPTH
+from config import MASK32, MASK64, PIPELINE_DEPTH
 from monitors.monitors import regfile_monitor, pc_monitor, fp_regfile_monitor
 from models.memory_model import MemoryModel
 from cocotb_tests.test_helpers import DUTInterface
@@ -71,7 +71,7 @@ async def execute_instruction(
 
     # Update software model
     if is_fp:
-        state.fp_register_file_current[rd] = expected_value & MASK32
+        state.fp_register_file_current[rd] = expected_value & MASK64
     else:
         if rd != 0:
             state.register_file_current[rd] = expected_value & MASK32
@@ -87,7 +87,10 @@ async def execute_instruction(
         )
     state.program_counter_expected_values_queue.append(expected_pc)
 
-    cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:08X}")
+    if is_fp:
+        cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:016X}")
+    else:
+        cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:08X}")
 
     # Drive instruction
     dut_if.instruction = instr
@@ -307,7 +310,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
     dut_if, state, _ = await setup_test(dut, use_fp_monitor=True)
 
     from encoders.instruction_encode import enc_fmv_w_x, enc_fdiv_s, enc_lui
-    from models.fp_model import fdiv_s
+    from models.fp_model import fdiv_s, box32
 
     # Set up FP operands via FMV.W.X (move integer bits to FP register)
     # f1 = 10.0 (0x41200000)
@@ -349,7 +352,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         1,
-        0x41200000,
+        box32(0x41200000),
         "FMV.W.X f1, x1",
         is_fp=True,
         use_fp_monitor=True,
@@ -362,7 +365,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         2,
-        0x40000000,
+        box32(0x40000000),
         "FMV.W.X f2, x2",
         is_fp=True,
         use_fp_monitor=True,
@@ -375,7 +378,7 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         state,
         instr,
         3,
-        0x40A00000,
+        box32(0x40A00000),
         "FMV.W.X f3, x3",
         is_fp=True,
         use_fp_monitor=True,
@@ -386,8 +389,8 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
 
     # FDIV.S f4, f1, f2: 10.0 / 2.0 = 5.0 (0x40A00000)
     instr = enc_fdiv_s(4, 1, 2)
-    expected = fdiv_s(0x41200000, 0x40000000)  # 10.0 / 2.0
-    cocotb.log.info(f"FDIV.S f4, f1, f2: expected result = 0x{expected:08X}")
+    expected = box32(fdiv_s(0x41200000, 0x40000000))  # 10.0 / 2.0
+    cocotb.log.info(f"FDIV.S f4, f1, f2: expected result = 0x{expected:016X}")
     await execute_instruction(
         dut_if,
         state,
@@ -401,8 +404,8 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
 
     # FDIV.S f5, f1, f3: 10.0 / 5.0 = 2.0 (0x40000000)
     instr = enc_fdiv_s(5, 1, 3)
-    expected = fdiv_s(0x41200000, 0x40A00000)  # 10.0 / 5.0
-    cocotb.log.info(f"FDIV.S f5, f1, f3: expected result = 0x{expected:08X}")
+    expected = box32(fdiv_s(0x41200000, 0x40A00000))  # 10.0 / 5.0
+    cocotb.log.info(f"FDIV.S f5, f1, f3: expected result = 0x{expected:016X}")
     await execute_instruction(
         dut_if,
         state,
@@ -418,3 +421,86 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
     await drain_pipeline(dut_if, state, use_fp_monitor=True)
 
     cocotb.log.info("=== Test complete, monitors will verify results ===")
+
+
+@cocotb.test()
+async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
+    """Test FLD followed immediately by FADD.D.
+
+    This targets the load-use hazard path for multi-cycle FP ops to ensure
+    the loaded double is stable before operand capture.
+    """
+    cocotb.log.info("=== Test: FLD -> FADD.D load-use hazard ===")
+
+    dut_if, state, mem_model = await setup_test(dut, use_fp_monitor=True)
+
+    # Get encoders
+    enc_addi, _ = R_ALU.get("addi") or (None, None)
+    if enc_addi is None:
+        from encoders.op_tables import I_ALU
+
+        enc_addi, _ = I_ALU["addi"]
+
+    from encoders.instruction_encode import enc_fld, enc_fadd_d
+    from models.fp_model import fadd_d
+
+    # Initialize memory with a known double at an 8-byte aligned address
+    base_addr = 0x100
+    load_bits = 0x3FF0000000000000  # 1.0 double
+    low_word = load_bits & MASK32
+    high_word = (load_bits >> 32) & MASK32
+    word_index = base_addr >> 2
+
+    dut.data_memory_for_simulation.memory[word_index].value = low_word
+    dut.data_memory_for_simulation.memory[word_index + 1].value = high_word
+    mem_model.write_word(base_addr, low_word)
+    mem_model.write_word(base_addr + 4, high_word)
+
+    cocotb.log.info(
+        f"Memory init @0x{base_addr:08X}: low=0x{low_word:08X}, high=0x{high_word:08X}"
+    )
+
+    # x1 = base_addr (first instruction after warmup)
+    instr = enc_addi(1, 0, base_addr)
+    await execute_instruction(
+        dut_if,
+        state,
+        instr,
+        1,
+        base_addr,
+        f"ADDI x1, x0, 0x{base_addr:X}",
+        use_fp_monitor=True,
+        first_after_warmup=True,
+    )
+
+    # FLD f1, 0(x1)
+    instr = enc_fld(1, 1, 0)
+    await execute_instruction(
+        dut_if,
+        state,
+        instr,
+        1,
+        load_bits,
+        "FLD f1, 0(x1)",
+        is_fp=True,
+        use_fp_monitor=True,
+    )
+
+    # FADD.D f2, f1, f1 (1.0 + 1.0 = 2.0)
+    expected = fadd_d(load_bits, load_bits)
+    instr = enc_fadd_d(2, 1, 1)
+    await execute_instruction(
+        dut_if,
+        state,
+        instr,
+        2,
+        expected,
+        "FADD.D f2, f1, f1",
+        is_fp=True,
+        use_fp_monitor=True,
+    )
+
+    # Drain pipeline
+    await drain_pipeline(dut_if, state, use_fp_monitor=True)
+
+    cocotb.log.info("=== PASSED: FLD -> FADD.D load-use hazard ===")

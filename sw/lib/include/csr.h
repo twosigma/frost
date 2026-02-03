@@ -179,7 +179,7 @@
  * rdcycle - Read low 32 bits of cycle counter
  *
  * Returns the number of clock cycles executed since reset (low 32 bits).
- * Wraps approximately every 13 seconds at 322 MHz.
+ * Wraps approximately every 14 seconds at 300 MHz.
  */
 static inline __attribute__((always_inline)) uint32_t rdcycle(void)
 {

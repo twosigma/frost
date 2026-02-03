@@ -15,20 +15,20 @@
  */
 
 /*
- * Single-Cycle Registered Multiplier - RISC-V M-extension multiply operations
+ * Pipelined Registered Multiplier - RISC-V M-extension multiply operations
  *
- * Implements a 1-cycle latency multiplier for MUL, MULH, MULHSU, MULHU instructions.
+ * Implements a 4-cycle latency multiplier for MUL, MULH, MULHSU, MULHU instructions.
  * Takes 33-bit inputs (sign-extended for signed operations) and produces 64-bit result.
  * Uses FPGA DSP blocks for fast 33x33 signed multiplication.
  *
  * Timing:
- *   - 1-cycle latency: result available at next clock edge after inputs
- *   - Registered output breaks critical timing path through DSP
- *   - Requires 1-cycle stall for dependent instructions
+ *   - 4-cycle latency: result available 4 cycles after valid input
+ *   - Registered pipeline breaks critical timing path through DSP
+ *   - Requires multi-cycle stall for dependent instructions
  *
  * Pipeline Integration:
- *   Cycle N: MUL in EX - operands presented, multiply computes
- *   Cycle N+1: MUL in MA - o_product_result has correct value (registered)
+ *   Cycle N:   MUL in EX - operands presented, multiply computes
+ *   Cycle N+4: MUL in MA - o_product_result has correct value (registered)
  *   The multiply result must be captured separately since o_product_result
  *   is registered and not available combinationally in the same cycle.
  *
@@ -40,7 +40,7 @@
  *
  * Related Modules:
  *   - alu.sv: Instantiates multiplier, selects result portion (low/high 32 bits)
- *   - hazard_resolution_unit.sv: Stalls pipeline for 1 cycle during multiply
+ *   - hazard_resolution_unit.sv: Stalls pipeline for multi-cycle multiply
  */
 module multiplier (
     input logic i_clk,
@@ -48,21 +48,42 @@ module multiplier (
     input logic signed [32:0] i_operand_b,  // 33-bit signed input
     input logic i_valid_input,  // Start multiplication
     output logic [63:0] o_product_result,  // 64-bit product output (registered)
-    output logic o_valid_output,  // Result ready (1 cycle after valid input)
+    output logic o_valid_output,  // Result ready (PipeStages cycles after valid input)
     // Signals completion next cycle - used by hazard unit to end stall
     output logic o_completing_next_cycle
 );
 
-  // Single-cycle registered multiplication using DSP blocks
-  // The multiply is computed combinationally but the output is registered,
-  // breaking the critical timing path through the DSP chain.
+  // Pipeline depth after the DSP multiply (Vivado recommends 4 stages for 33x33).
+  localparam int unsigned PipeStages = 4;
+
+  (* use_dsp = "yes" *) logic [63:0] product;
+  logic [63:0] product_pipe[PipeStages];
+  logic [PipeStages-1:0] valid_pipe;
+
+  // Pipelined registered multiplication using DSP blocks
+  // The multiply is computed combinationally but the output is registered
+  // across multiple stages, breaking the critical timing path.
+  assign product = 64'(i_operand_a * i_operand_b);
   always_ff @(posedge i_clk) begin
-    o_product_result <= 64'(i_operand_a * i_operand_b);
-    o_valid_output   <= i_valid_input;
+    product_pipe[0] <= product;
+    valid_pipe[0]   <= i_valid_input;
+    for (int i = 1; i < PipeStages; i++) begin
+      product_pipe[i] <= product_pipe[i-1];
+      valid_pipe[i]   <= valid_pipe[i-1];
+    end
   end
 
-  // Signal that multiply will complete next cycle (when i_valid_input is high)
-  // This allows hazard unit to anticipate completion and end stall early
-  assign o_completing_next_cycle = i_valid_input;
+  assign o_product_result = product_pipe[PipeStages-1];
+  assign o_valid_output   = valid_pipe[PipeStages-1];
+
+  // Signal that multiply will complete next cycle (one stage before output valid).
+  // This allows hazard unit to anticipate completion and end stall early.
+  generate
+    if (PipeStages > 1) begin : gen_complete_next
+      assign o_completing_next_cycle = valid_pipe[PipeStages-2];
+    end else begin : gen_complete_next_bypass
+      assign o_completing_next_cycle = i_valid_input;
+    end
+  endgenerate
 
 endmodule : multiplier

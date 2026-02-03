@@ -36,12 +36,17 @@ module x3_frost (
   );
 
   // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation
+  // NOTE: Currently targeting 300 MHz for timing closure. May revisit 322 MHz in the future.
+  // Original 322.265625 MHz configuration (preserved for reference):
+  //   .DIVCLK_DIVIDE   (8),       // Pre-divider: 300MHz / 8 = 37.5MHz
+  //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
+  //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
   MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),   // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (8),       // Pre-divider: 300MHz / 8 = 37.5MHz
-      // VCO frequency: 37.5MHz × 34.375 = 1289.0625 MHz
-      .CLKFBOUT_MULT_F (34.375),
-      // Output clock: 1289.0625MHz / 4 = 322.265625 MHz for FROST CPU
+      .CLKIN1_PERIOD   (3.333),  // Input period: 1/300MHz = 3.333ns
+      .DIVCLK_DIVIDE   (1),      // Pre-divider: 300MHz / 1 = 300MHz
+      // VCO frequency: 300MHz × 4 = 1200 MHz
+      .CLKFBOUT_MULT_F (4.0),
+      // Output clock: 1200MHz / 4 = 300 MHz for FROST CPU
       .CLKOUT0_DIVIDE_F(4.0)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
@@ -85,10 +90,10 @@ module x3_frost (
   );
 
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
-  // Clock: 300MHz / 8 * 34.375 / 4 = 322.265625 MHz
+  // Clock: 300 MHz (reduced from 322.265625 MHz for timing closure)
   // X3 has no push-button reset, so always keep reset deasserted
   xilinx_frost_subsystem #(
-      .CLK_FREQ_HZ(322265625)
+      .CLK_FREQ_HZ(300000000)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

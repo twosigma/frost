@@ -49,6 +49,7 @@ Queue Management:
 
 from config import (
     MASK32,
+    MASK64,
     PIPELINE_IF_TO_EX_CYCLES,
     PIPELINE_IF_TO_MA_CYCLES,
 )
@@ -193,10 +194,10 @@ class TestState:
 
         Args:
             register_index: FP register to update (0-31, f0 is writeable unlike x0)
-            value: Value to write (will be masked to 32 bits)
+            value: Value to write (will be masked to 64 bits)
         """
         if register_index < 32:
-            self.fp_register_file_current[register_index] = value & MASK32
+            self.fp_register_file_current[register_index] = value & MASK64
 
     def advance_register_state(self) -> None:
         """Advance both integer and FP register state: current becomes previous."""

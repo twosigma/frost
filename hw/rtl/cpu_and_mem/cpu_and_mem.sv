@@ -19,25 +19,31 @@
   dual-port RAM and memory-mapped I/O peripherals. This module serves as the main
   compute and storage subsystem, managing the instruction fetch interface, data memory
   access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
-  instantiates a 6-stage pipelined RISC-V CPU alongside dual-port RAM that serves both
-  instruction and data memory needs. Timer functionality is provided by memory-mapped
+  instantiates a 6-stage pipelined RISC-V CPU alongside two separate dual-port RAMs:
+  one for instruction fetch and one for data access. Both memories use Port A on the
+  divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
+  clock (i_clk) for runtime operations - instruction fetch from memory 0 and data
+  loads/stores from memory 1. This dual-clock architecture eliminates clock domain
+  crossing logic while ensuring all slow programming operations use Port A and all fast
+  runtime operations use Port B. Timer functionality is provided by memory-mapped
   mtime/mtimecmp registers that generate machine timer interrupts for RTOS scheduling.
   Software interrupts (msip) support inter-processor communication and kernel-to-kernel
   signaling. The UART interface provides console output, and two general-purpose FIFOs
   support peripheral communication. The memory architecture supports byte-level write
-  granularity and concurrent instruction fetch and data access through separate ports
-  of the dual-port RAM.
+  granularity.
 */
 module cpu_and_mem #(
-    parameter int unsigned MEM_SIZE_BYTES = 2 ** 16,
+    parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
     parameter int unsigned SIM_TIMER_SPEEDUP = 1
 ) (
     input logic i_clk,
+    input logic i_clk_div4,  // Divided clock for instruction memory programming
     input logic i_rst,
 
+    // Instruction memory programming interface (directly on div4 clock domain)
     input  logic        i_instr_mem_en,
     input  logic [ 3:0] i_instr_mem_we,
     input  logic [31:0] i_instr_mem_addr,
@@ -71,7 +77,7 @@ module cpu_and_mem #(
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
-  // ((64 KiB total memory)/(4 bytes per word)) = 16k words = 2^14 word address bits
+  // ((128 KiB total memory)/(4 bytes per word)) = 32k words = 2^15 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
 
   // Memory-mapped I/O addresses for peripherals
@@ -168,23 +174,52 @@ module cpu_and_mem #(
   assign is_mmio = (data_memory_address >= MmioAddr) &&
                    (data_memory_address < (MmioAddr + MmioSizeBytes));
 
-  // Dual-port RAM for instruction and data memory (unified memory architecture)
-  // Port A: Instruction fetch (or external write for programming)
-  // Port B: Data memory access (loads/stores from CPU)
+  // Dual memory architecture with separate instruction and data memories
+  // Both memories receive instruction writes (fan out) on Port A (div4 clock)
+  // Memory 0: Port A = instruction programming (div4), Port B = instruction fetch (main clk)
+  // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
+
+  // Memory 0: Instruction memory (uses simpler BRAM without byte enables or write-first)
+  // Port A: Instruction programming only (div4 clock, write only)
+  // Port B: Instruction fetch (main clock, read only)
+  tdp_bram_dc #(
+      .DATA_WIDTH(32),
+      .ADDR_WIDTH(MemWordAddrWidth),
+      .USE_INIT_FILE(1'b1),
+      .INIT_FILE("sw.mem")  // Software initialization file
+  ) instruction_memory (
+      .i_port_a_clk(i_clk_div4),
+      .i_port_a_enable(1'b1),
+      .i_port_b_clk(i_clk),
+      .i_port_b_enable(1'b1),
+      // Port A: Instruction programming (div4 clock, write only)
+      .i_port_a_byte_address(i_instr_mem_addr),
+      .i_port_a_write_data(i_instr_mem_wrdata),
+      .i_port_a_write_enable(i_instr_mem_en),
+      .o_port_a_read_data(  /* unused - write only */),
+      // Port B: Instruction fetch (main clock, read only)
+      .i_port_b_byte_address(program_counter),
+      .i_port_b_write_data('0),
+      .i_port_b_write_enable(1'b0),
+      .o_port_b_read_data(instruction)
+  );
+
+  // Memory 1: Data memory
+  // Port A: Instruction programming (div4 clock, write only - fan out)
+  // Port B: Data access (main clock, loads/stores from CPU)
   tdp_bram_dc_byte_en #(
       .DATA_WIDTH(32),
       .ADDR_WIDTH(MemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem")  // Software initialization file
-  ) unified_instruction_data_memory (
-      // Both ports use same clock (single clock domain operation)
-      .i_port_a_clk(i_clk),
+  ) data_memory (
+      .i_port_a_clk(i_clk_div4),
       .i_port_b_clk(i_clk),
-      // Port A: Instruction memory or external programming interface
-      .i_port_a_byte_address(i_instr_mem_en ? i_instr_mem_addr : program_counter),
+      // Port A: Instruction programming (div4 clock, write only)
+      .i_port_a_byte_address(i_instr_mem_addr),
       .i_port_a_write_data(i_instr_mem_wrdata),
       .i_port_a_byte_write_enable(i_instr_mem_we & {4{i_instr_mem_en}}),
-      .o_port_a_read_data(instruction),
+      .o_port_a_read_data(  /* unused - write only */),
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(data_memory_address),
       .i_port_b_write_data(data_memory_write_data),

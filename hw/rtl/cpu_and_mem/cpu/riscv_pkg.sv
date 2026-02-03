@@ -47,6 +47,8 @@
  *   Zicond  - Conditional zero operations
  *   Zbkb    - Bit manipulation for crypto
  *   Zihintpause - Pause hint
+ *   F       - Single-precision floating-point
+ *   D       - Double-precision floating-point
  *
  * Design Note (Yosys Compatibility):
  * ==================================
@@ -245,7 +247,34 @@ package riscv_pkg;
     FEQ_S,      // FP equal
     FLT_S,      // FP less than
     FLE_S,      // FP less than or equal
-    FCLASS_S    // FP classify
+    FCLASS_S,   // FP classify
+    // D extension (double-precision floating-point)
+    FLD,        // Load double
+    FSD,        // Store double
+    FADD_D,     // FP add (double)
+    FSUB_D,     // FP subtract (double)
+    FMUL_D,     // FP multiply (double)
+    FDIV_D,     // FP divide (double)
+    FSQRT_D,    // FP square root (double)
+    FMADD_D,    // FP fused multiply-add (double)
+    FMSUB_D,    // FP fused multiply-subtract (double)
+    FNMADD_D,   // FP negated fused multiply-add (double)
+    FNMSUB_D,   // FP negated fused multiply-subtract (double)
+    FSGNJ_D,    // FP sign inject (double)
+    FSGNJN_D,   // FP sign inject negated (double)
+    FSGNJX_D,   // FP sign inject XOR (double)
+    FMIN_D,     // FP minimum (double)
+    FMAX_D,     // FP maximum (double)
+    FCVT_W_D,   // FP to signed int (double)
+    FCVT_WU_D,  // FP to unsigned int (double)
+    FCVT_D_W,   // Signed int to FP (double)
+    FCVT_D_WU,  // Unsigned int to FP (double)
+    FCVT_S_D,   // Convert double to single
+    FCVT_D_S,   // Convert single to double
+    FEQ_D,      // FP equal (double)
+    FLT_D,      // FP less than (double)
+    FLE_D,      // FP less than or equal (double)
+    FCLASS_D    // FP classify (double)
   } instr_op_e;
 
   // ===========================================================================
@@ -314,7 +343,8 @@ package riscv_pkg;
   localparam bit [31:0] FpNegZero = 32'h8000_0000;  // -0.0
   localparam bit [31:0] FpPosInf = 32'h7F80_0000;  // +infinity
   localparam bit [31:0] FpNegInf = 32'hFF80_0000;  // -infinity
-  localparam bit [31:0] FpCanonicalNan = 32'h7FC0_0000;  // Canonical quiet NaN
+  localparam bit [31:0] FpCanonicalNan = 32'h7FC0_0000;  // Canonical quiet NaN (single)
+  localparam bit [63:0] FpCanonicalNan64 = 64'h7FF8_0000_0000_0000;  // Canonical quiet NaN (double)
 
   // mstatus bit positions (RV32)
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
@@ -388,6 +418,10 @@ package riscv_pkg;
   localparam bit [15:0] NopLowBits = 16'h0013;  // Low 16 bits of NOP instruction
 
   localparam int unsigned XLEN = 32;
+  // FP register width: 64-bit to support D extension (RV32D).
+  localparam int unsigned FpWidth = 64;
+  localparam int unsigned FpSingleWidth = 32;
+  localparam int unsigned FpDoubleWidth = 64;
 
   // PC increment constants for instruction length handling
   localparam int unsigned PcIncrementCompressed = 2;  // 16-bit compressed instruction
@@ -535,15 +569,17 @@ package riscv_pkg;
     logic is_fp_instruction;  // Any FP instruction
     logic is_fp_load;  // FLW - data goes to FP regfile
     logic is_fp_store;  // FSW
+    logic is_fp_load_double;  // FLD
+    logic is_fp_store_double;  // FSD
     logic is_fp_compute;  // FP compute op (FADD, FSUB, FMUL, FDIV, FSQRT, FMA*, etc.)
     logic is_pipelined_fp_op;  // Multi-cycle FP op that tracks inflight dest (for hazard detection)
     logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
     logic is_fp_to_int;  // FP to integer conversion (result goes to int reg)
     logic is_int_to_fp;  // Integer to FP conversion (uses int rs1)
     // FP source register data (read in ID stage)
-    logic [XLEN-1:0] fp_source_reg_1_data;
-    logic [XLEN-1:0] fp_source_reg_2_data;
-    logic [XLEN-1:0] fp_source_reg_3_data;  // For FMA instructions
+    logic [FpWidth-1:0] fp_source_reg_1_data;
+    logic [FpWidth-1:0] fp_source_reg_2_data;
+    logic [FpWidth-1:0] fp_source_reg_3_data;  // For FMA instructions
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
     // Pre-computed branch/jump targets (pipeline balancing - computed in ID stage)
@@ -615,7 +651,7 @@ package riscv_pkg;
     // F extension fields
     logic stall_for_fpu;  // Stall for multi-cycle FP operation
     logic fpu_completing_next_cycle;  // FPU result will be valid next cycle
-    logic [XLEN-1:0] fp_result;  // FP computation result
+    logic [FpWidth-1:0] fp_result;  // FP computation result
     fp_flags_t fp_flags;  // FP exception flags from this operation
     logic fp_regfile_write_enable;  // Write to FP register file
     logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
@@ -649,10 +685,13 @@ package riscv_pkg;
     logic is_fp_instruction;
     logic is_fp_load;  // FLW - data goes to FP regfile
     logic is_fp_store;  // FSW
+    logic is_fp_load_double;  // FLD
+    logic is_fp_store_double;  // FSD
     logic is_fp_to_int;  // FP-to-int (FMV.X.W, FCVT.W.S, etc.) - result goes to int regfile
     logic fp_regfile_write_enable;
     logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
-    logic [XLEN-1:0] fp_result;  // Result from FPU
+    logic [FpWidth-1:0] fp_result;  // Result from FPU
+    logic [FpWidth-1:0] fp_store_data;  // FP store data (for FSW/FSD)
     fp_flags_t fp_flags;  // FP exception flags
   } from_ex_to_ma_t;
 
@@ -664,18 +703,22 @@ package riscv_pkg;
     // data_memory_read_data uses registered path during stall which has race condition
     // with BRAM timing. This direct signal bypasses that for combinational forwarding.
     logic [XLEN-1:0] data_memory_read_data_direct;
+    // FP load forwarding (FLW/FLD) - boxed to FpWidth for FLW.
+    logic [FpWidth-1:0] fp_load_data;
+    logic [FpWidth-1:0] fp_load_data_direct;
+    logic fp_load_data_valid;
   } from_ma_comb_t;
 
   // Clocked signals passed from Memory Access (MA) stage to Writeback (WB) stage
   typedef struct packed {
-    logic            regfile_write_enable;
-    logic [XLEN-1:0] regfile_write_data;       // Final result to write back
-    instr_t          instruction;
+    logic               regfile_write_enable;
+    logic [XLEN-1:0]    regfile_write_data;       // Final result to write back
+    instr_t             instruction;
     // F extension fields
-    logic            fp_regfile_write_enable;
-    logic [4:0]      fp_dest_reg;              // FP destination register (for forwarding)
-    logic [XLEN-1:0] fp_regfile_write_data;    // Final FP result to write back
-    fp_flags_t       fp_flags;                 // FP exception flags (to accumulate in fflags)
+    logic               fp_regfile_write_enable;
+    logic [4:0]         fp_dest_reg;              // FP destination register (for forwarding)
+    logic [FpWidth-1:0] fp_regfile_write_data;    // Final FP result to write back
+    fp_flags_t          fp_flags;                 // FP exception flags (to accumulate in fflags)
   } from_ma_to_wb_t;
 
   // Signals from L0 Cache
@@ -712,33 +755,33 @@ package riscv_pkg;
 
   // F extension: Forwarded FP register values to Execute stage
   typedef struct packed {
-    logic [XLEN-1:0] fp_source_reg_1_value;
-    logic [XLEN-1:0] fp_source_reg_2_value;
-    logic [XLEN-1:0] fp_source_reg_3_value;        // For FMA instructions
+    logic [FpWidth-1:0] fp_source_reg_1_value;
+    logic [FpWidth-1:0] fp_source_reg_2_value;
+    logic [FpWidth-1:0] fp_source_reg_3_value;        // For FMA instructions
     // Combinational bypass for pipelined FPU operand capture timing:
     // The registered forwarding signals update at the same posedge when the
     // pipelined FPU captures operands. These combinational signals provide
     // the correct forwarding decision for capture.
     // MA bypass (one cycle ahead): producer in EX → consumer in ID
-    logic            capture_bypass_rs1;
-    logic            capture_bypass_rs2;
-    logic            capture_bypass_rs3;
-    logic [XLEN-1:0] capture_bypass_data;          // EX result to forward at capture
+    logic               capture_bypass_rs1;
+    logic               capture_bypass_rs2;
+    logic               capture_bypass_rs3;
+    logic [FpWidth-1:0] capture_bypass_data;          // EX result to forward at capture
     // WB bypass (two cycles ahead): producer in MA → consumer in ID
-    logic            capture_bypass_rs1_from_wb;
-    logic            capture_bypass_rs2_from_wb;
-    logic            capture_bypass_rs3_from_wb;
-    logic [XLEN-1:0] capture_bypass_data_wb;       // MA result to forward at capture
+    logic               capture_bypass_rs1_from_wb;
+    logic               capture_bypass_rs2_from_wb;
+    logic               capture_bypass_rs3_from_wb;
+    logic [FpWidth-1:0] capture_bypass_data_wb;       // MA result to forward at capture
     // Flag indicating the INCOMING instruction (in ID, entering EX) is a
     // pipelined FPU operation. The bypass should only apply to these ops.
-    logic            capture_bypass_is_pipelined;
+    logic               capture_bypass_is_pipelined;
   } fp_fwd_to_ex_t;
 
   // F extension: FP register file read data to Forwarding unit
   typedef struct packed {
-    logic [XLEN-1:0] fp_source_reg_1_data;
-    logic [XLEN-1:0] fp_source_reg_2_data;
-    logic [XLEN-1:0] fp_source_reg_3_data;
+    logic [FpWidth-1:0] fp_source_reg_1_data;
+    logic [FpWidth-1:0] fp_source_reg_2_data;
+    logic [FpWidth-1:0] fp_source_reg_3_data;
   } fp_rf_to_fwd_t;
 
   // ===========================================================================

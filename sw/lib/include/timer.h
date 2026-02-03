@@ -41,7 +41,7 @@ static inline __attribute__((always_inline)) uint32_t read_timer(void)
  * Read full 64-bit cycle count from CSR (Zicntr extension)
  *
  * Use this for long-running benchmarks to avoid 32-bit overflow.
- * At 322 MHz, 32-bit overflows in ~13 seconds; 64-bit lasts ~1800 years.
+ * At 300 MHz, 32-bit overflows in ~14 seconds; 64-bit lasts ~1900 years.
  */
 static inline __attribute__((always_inline)) uint64_t read_timer64(void)
 {

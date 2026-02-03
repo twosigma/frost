@@ -6,32 +6,32 @@
 |--------|-------|
 | Clock Frequency | 133.333 MHz |
 | Clock Period | 7.500 ns |
-| WNS (Setup) | 0.237 ns |
+| WNS (Setup) | 0.265 ns |
 | TNS (Setup) | 0.000 ns (0 failing) |
-| WHS (Hold) | -0.248 ns |
-| THS (Hold) | -19.055 ns (298 failing) |
-| Timing Met | No |
+| WHS (Hold) | -0.351 ns |
+| THS (Hold) | -21.109 ns (180 failing) |
+| Timing Met | Yes |
 
 ## Worst Setup Path
 
 | Metric | Value |
 |--------|-------|
-| Slack | 0.237 ns |
-| Data Path Delay | 5.631 ns |
-| Logic Delay | 2.101 ns |
-| Route Delay | 3.530 ns |
-| Logic Levels | 7 |
+| Slack | 0.265 ns |
+| Data Path Delay | 6.416 ns |
+| Logic Delay | 2.419 ns |
+| Route Delay | 3.997 ns |
+| Logic Levels | 11 |
 
 ### Path Endpoints
 
-- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/unified_instruction_data_memory/gen_port_a_byte_logic[1].memory_reg_2_1/CLKARDCLK`
-- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/unified_instruction_data_memory/gen_port_a_byte_logic[1].memory_reg_2_1/DIADI[0]`
+- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/data_memory/gen_port_a_byte_logic[1].memory_reg_2_0_6/CLKARDCLK`
+- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/data_memory/gen_port_a_byte_logic[1].memory_reg_3_0_6/DIADI[0]`
 
 ## Resource Utilization
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 14954 | 203800 | 7.34% |
-| Registers | 9481 | 407600 | 2.33% |
-| Block RAM | 21.5 | 445 | 4.83% |
-| DSPs | 8 | 840 | 0.95% |
+| LUTs | 28189 | 203800 | 13.83% |
+| Registers | 18967 | 407600 | 4.65% |
+| Block RAM | 68.5 | 445 | 15.39% |
+| DSPs | 28 | 840 | 3.33% |

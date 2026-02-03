@@ -20,7 +20,7 @@
 module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz - must match actual clock from board wrapper
     // Used for UART baud rate calculation (UART runs at CLK_FREQ_HZ / 4)
-    parameter int unsigned CLK_FREQ_HZ = 322265625
+    parameter int unsigned CLK_FREQ_HZ = 300000000
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)

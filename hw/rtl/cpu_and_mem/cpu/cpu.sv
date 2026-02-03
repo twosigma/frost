@@ -197,6 +197,15 @@ module cpu #(
   logic amo_write_enable_delayed;  // Delayed by 1 cycle, for regfile bypass
   logic [XLEN-1:0] amo_result;
   logic amo_read_phase;
+  // FP64 load/store sequencing
+  logic fp_mem_stall;
+  // FP forwarding pipeline stall (extra cycle for timing closure)
+  logic stall_for_fp_forward_pipeline;
+  logic fp_mem_addr_override;
+  logic [XLEN-1:0] fp_mem_address;
+  logic [XLEN-1:0] fp_mem_write_data;
+  logic [3:0] fp_mem_byte_write_enable;
+  logic fp_mem_write_active;
   // Stall signal excluding AMO comes from hazard_resolution_unit as a separate output.
   // This breaks the combinational loop: stall → AMO check → stall_for_amo → stall
   // The hazard unit computes it as: stall_for_mul_div | stall_for_load_use | stall_for_wfi
@@ -207,6 +216,10 @@ module cpu #(
   // Stall signal for FPU input - excludes FPU in-flight hazard so FPU can continue computing
   // to resolve the hazard. Similar to how integer multiply continues during multiply stall.
   logic stall_for_fpu_input;
+
+  // TIMING OPTIMIZATION: Dedicated stall signal for memory write enable path.
+  // Replicated from stall_for_trap_check to reduce fanout on critical timing path.
+  logic stall_for_mem_write;
 
   // Hazard resolution unit - manages stalls, flushes
   hazard_resolution_unit #(
@@ -226,6 +239,10 @@ module cpu #(
       .i_amo_write_enable_delayed(amo_write_enable_delayed),
       // F extension: FPU stall for multi-cycle operations
       .i_stall_for_fpu(from_ex_comb.stall_for_fpu),
+      // FP64 load/store sequencing stall
+      .i_stall_for_fp_mem(fp_mem_stall),
+      // FP forwarding pipeline stall (extra cycle for timing)
+      .i_stall_for_fp_forward_pipeline(stall_for_fp_forward_pipeline),
       // Trap handling
       .i_trap_taken(trap_taken),
       .i_mret_taken(mret_taken),
@@ -234,6 +251,7 @@ module cpu #(
       .o_stall_excluding_amo(stall_excluding_amo),
       .o_stall_for_fpu_input(stall_for_fpu_input),
       .o_mmio_read_pulse(o_mmio_read_pulse),
+      .o_stall_for_mem_write(stall_for_mem_write),
       .o_rst_done,
       .o_vld,
       .o_pc_vld
@@ -298,6 +316,7 @@ module cpu #(
       .XLEN(XLEN)
   ) ex_stage_inst (
       .i_clk,
+      .i_rst,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_id_to_ex(from_id_to_ex),
       .i_fwd_to_ex(fwd_to_ex),
@@ -308,6 +327,8 @@ module cpu #(
       .i_frm_csr(frm_csr),
       // F extension: Stall for FPU (excludes FPU RAW hazard so FPU can continue computing)
       .i_stall_for_fpu(stall_for_fpu_input),
+      // FP64 load/store sequencing stall
+      .i_fp_mem_stall(fp_mem_stall),
       .i_reservation(reservation),
       .o_from_ex_comb(from_ex_comb),
       .o_from_ex_to_ma(from_ex_to_ma)
@@ -317,22 +338,32 @@ module cpu #(
   // During AMO stall, use from_ex_to_ma (current AMO address for read)
   // During AMO write, use captured address (stable even if from_ex_to_ma changes)
   // Otherwise use EX stage combinational signals for normal loads/stores
-  assign o_data_mem_addr = amo.write_enable ? amo.write_address :
+  assign o_data_mem_addr = fp_mem_addr_override ? fp_mem_address :
+                           amo.write_enable ? amo.write_address :
                            amo_stall_for_amo ? from_ex_to_ma.data_memory_address :
                            from_ex_comb.data_memory_address;
-  assign o_data_mem_wr_data = amo.write_enable ? amo.write_data :
-                                                  from_ex_comb.data_memory_write_data;
-  // TIMING OPTIMIZATION: Use stall_for_trap_check instead of stall.
+  assign fp_mem_write_active = |fp_mem_byte_write_enable;
+  assign o_data_mem_wr_data = fp_mem_write_active ? fp_mem_write_data :
+                              amo.write_enable ? amo.write_data :
+                              from_ex_comb.data_memory_write_data;
+  // TIMING OPTIMIZATION: Use dedicated stall_for_mem_write signal.
+  // This is a replicated copy of stall_for_trap_check specifically for the memory
+  // write enable path, reducing fanout on the critical FPU→stall→memory timing path.
   // The regular stall signal depends on ~trap_taken (traps override stall), creating
   // a critical path: forwarding → trap_detection → stall → memory_write_enable.
   // stall_for_trap_check = stall_sources (no trap/mret gating) breaks this path.
   // Functionally safe: non-store instructions have byte_write_enable = 0 anyway,
   // and using stall_sources is more conservative (blocks writes during any stall).
-  assign o_data_mem_per_byte_wr_en = amo.write_enable ? 4'b1111 :
+  assign o_data_mem_per_byte_wr_en = fp_mem_write_active ? fp_mem_byte_write_enable :
+                                     amo.write_enable ? 4'b1111 :
                                      (from_ex_comb.data_memory_byte_write_enable &
-                                      {4{~pipeline_ctrl.stall_for_trap_check}});
-  assign o_data_mem_read_enable = (from_ex_to_ma.is_load_instruction | from_ex_to_ma.is_lr) &
-                                  ~pipeline_ctrl.stall;
+                                      {4{~stall_for_mem_write}});
+  // Allow FP64 high-word reads during FP mem stalls (FLD sequencing).
+  logic fp_mem_read_enable;
+  assign fp_mem_read_enable = fp_mem_addr_override && !fp_mem_write_active;
+  assign o_data_mem_read_enable = ((from_ex_to_ma.is_load_instruction | from_ex_to_ma.is_lr) &
+                                   ~pipeline_ctrl.stall) |
+                                  fp_mem_read_enable;
   assign o_mmio_load_addr = from_ex_to_ma.data_memory_address;
   assign o_mmio_load_valid = from_ex_to_ma.is_load_instruction |
                              from_ex_to_ma.is_lr |
@@ -355,7 +386,12 @@ module cpu #(
       .i_amo_write_enable(amo.write_enable),
       .o_from_ma_comb(from_ma_comb),
       .o_from_ma_to_wb(from_ma_to_wb),
-      .o_amo_write_enable_delayed(amo_write_enable_delayed)
+      .o_amo_write_enable_delayed(amo_write_enable_delayed),
+      .o_stall_for_fp_mem(fp_mem_stall),
+      .o_fp_mem_addr_override(fp_mem_addr_override),
+      .o_fp_mem_address(fp_mem_address),
+      .o_fp_mem_write_data(fp_mem_write_data),
+      .o_fp_mem_byte_write_enable(fp_mem_byte_write_enable)
   );
 
   /*
@@ -415,7 +451,7 @@ module cpu #(
     Unlike integer regfile, there is no hardwired zero register.
   */
   fp_regfile #(
-      .DATA_WIDTH(XLEN)
+      .DATA_WIDTH(riscv_pkg::FpWidth)
   ) fp_regfile_inst (
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
@@ -475,11 +511,12 @@ module cpu #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_pd_to_id(from_pd_to_id),
       .i_from_id_to_ex(from_id_to_ex),
-      .i_from_ex_comb (from_ex_comb),
+      .i_from_ex_comb(from_ex_comb),
       .i_from_ex_to_ma(from_ex_to_ma),
-      .i_from_ma_comb (from_ma_comb),
+      .i_from_ma_comb(from_ma_comb),
       .i_from_ma_to_wb(from_ma_to_wb),
-      .o_fp_fwd_to_ex (fp_fwd_to_ex)
+      .o_fp_fwd_to_ex(fp_fwd_to_ex),
+      .o_stall_for_fp_forward_pipeline(stall_for_fp_forward_pipeline)
   );
 
   /*

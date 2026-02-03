@@ -17,17 +17,19 @@
 /*
   Top-level module for the FROST RISC-V processor system. This module integrates a complete
   32-bit RISC-V processor core with dual-port memory, UART communication interface, and
-  memory-mapped I/O (MMIO) FIFOs. The design features clock domain crossing between the main
-  processor clock (i_clk) and a divided clock (i_clk_div4) used for JTAG and UART operations.
-  The module includes reset synchronization, instruction memory interface for external programming
-  via JTAG, and a debug UART output for printing. The system uses distributed RAM FIFOs for
-  MMIO operations and dual-clock FIFOs for clock domain crossing (the clocks share a common
-  source via MMCM, so Gray code pointers are unnecessary). All submodules use portable RTL
-  without vendor-specific primitives, ensuring design portability across FPGA platforms.
-  No xilinx IP or primitives from this module on down
+  memory-mapped I/O (MMIO) FIFOs. The design uses a divided clock (i_clk_div4) for JTAG,
+  UART, and instruction memory programming, while the main processor clock (i_clk) handles
+  CPU execution and data memory access. The dual-port RAMs use Port A on the div4 clock for
+  programming writes and Port B on the main clock for runtime operations, eliminating the
+  need for clock domain crossing on the instruction memory interface. The module includes
+  reset synchronization and a debug UART output for printing. The system uses distributed
+  RAM FIFOs for MMIO operations and dual-clock FIFOs for UART clock domain crossing (the
+  clocks share a common source via MMCM, so Gray code pointers are unnecessary). All
+  submodules use portable RTL without vendor-specific primitives, ensuring design portability
+  across FPGA platforms.
 */
 module frost #(
-    parameter int unsigned CLK_FREQ_HZ = 322265625,
+    parameter int unsigned CLK_FREQ_HZ = 300000000,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
@@ -60,13 +62,14 @@ module frost #(
   localparam int unsigned NumResetSyncStages = 3;
   (* ASYNC_REG = "TRUE" *)
   logic [NumResetSyncStages-1:0] reset_synchronizer_shift_register;
-  logic reset_synchronized;
+  (* MAX_FANOUT = 1000 *) logic reset_synchronized;
   always_ff @(posedge i_clk)
     for (int i = 0; i < NumResetSyncStages; ++i)
       reset_synchronizer_shift_register[i] <= (i > 0) ?
                                               reset_synchronizer_shift_register[i-1] :
                                               ~i_rst_n;  // Invert: active-low input to active-high
-  assign reset_synchronized = reset_synchronizer_shift_register[NumResetSyncStages-1];
+  always_ff @(posedge i_clk)
+    reset_synchronized <= reset_synchronizer_shift_register[NumResetSyncStages-1];
 
   // Reset synchronization for divided clock domain (JTAG/UART clock)
   (* ASYNC_REG = "TRUE" *)
@@ -87,9 +90,9 @@ module frost #(
   logic       uart_write_enable_from_cpu;
   logic [7:0] uart_write_data_from_cpu;
   localparam int unsigned NumUartDelayStages = 10;
-  // Purposely use register style (not SRL primitive) to physically spread out delay chain
-  (* srl_style = "register" *)logic [NumUartDelayStages-1:0]      uart_write_enable_delay_chain;
-  (* srl_style = "register" *)logic [NumUartDelayStages-1:0][7:0] uart_write_data_delay_chain;
+  // Use SRL primitives for area-efficient delay chain (UART is not timing-critical)
+  (* srl_style = "srl" *)logic [NumUartDelayStages-1:0]      uart_write_enable_delay_chain;
+  (* srl_style = "srl" *)logic [NumUartDelayStages-1:0][7:0] uart_write_data_delay_chain;
   always_ff @(posedge i_clk)
     for (int stage = 0; stage < NumUartDelayStages; ++stage) begin
       uart_write_enable_delay_chain[stage] <= (stage > 0) ?
@@ -99,39 +102,6 @@ module frost #(
                                             uart_write_data_delay_chain[stage-1] :
                                             uart_write_data_from_cpu;
     end
-
-  // Instruction memory interface signals after clock domain crossing from i_clk_div4 to i_clk
-  // These signals come from JTAG interface for programming instruction memory
-  logic        instruction_memory_enable_after_cdc;
-  logic [ 3:0] instruction_memory_write_enable_after_cdc;
-  logic [31:0] instruction_memory_address_after_cdc;
-  logic [31:0] instruction_memory_write_data_after_cdc;
-
-  // Dual-clock FIFO for instruction memory writes - crosses from JTAG clock domain (clk_div4) to CPU clock domain
-  dc_fifo #(
-      .DATA_WIDTH($bits(i_instr_mem_we) + $bits(i_instr_mem_addr) + $bits(i_instr_mem_wrdata)),
-      // FIFO depth could potentially be reduced since read rate >> write rate
-      .DEPTH(512)
-  ) instruction_memory_clock_domain_crossing_fifo (
-      .o_clk(i_clk),  // Output: main CPU clock
-      .i_clk(i_clk_div4),  // Input: JTAG/programming clock
-      /*
-        Purposely don't reset this FIFO - it needs to remain active to write instruction
-        memory while the rest of the system is held in reset during programming
-      */
-      .o_rst(1'b0),
-      .i_rst(1'b0),
-      .i_data({i_instr_mem_we, i_instr_mem_addr, i_instr_mem_wrdata}),
-      .i_valid(i_instr_mem_en),
-      .o_ready(),  // Not used - assume FIFO always has space
-      .o_data({
-        instruction_memory_write_enable_after_cdc,
-        instruction_memory_address_after_cdc,
-        instruction_memory_write_data_after_cdc
-      }),
-      .o_valid(instruction_memory_enable_after_cdc),
-      .i_ready(1'b1)  // Always ready to accept
-  );
 
   // UART RX interface signals - received data from UART to CPU
   logic        uart_rx_data_valid_to_cpu;
@@ -153,16 +123,18 @@ module frost #(
   logic        mmio_fifo1_is_full;
   logic        mmio_fifo1_read_enable;
 
-  // CPU and memory subsystem - contains processor core and unified instruction/data RAM
+  // CPU and memory subsystem - contains processor core and dual instruction/data RAMs
+  // Instruction memory programming interface is directly on div4 clock domain (no CDC needed)
   cpu_and_mem #(
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP)
   ) cpu_and_memory_subsystem (
       .i_clk,
+      .i_clk_div4,
       .i_rst(reset_synchronized),
-      .i_instr_mem_en(instruction_memory_enable_after_cdc),
-      .i_instr_mem_we(instruction_memory_write_enable_after_cdc),
-      .i_instr_mem_addr(instruction_memory_address_after_cdc),
-      .i_instr_mem_wrdata(instruction_memory_write_data_after_cdc),
+      .i_instr_mem_en(i_instr_mem_en),
+      .i_instr_mem_we(i_instr_mem_we),
+      .i_instr_mem_addr(i_instr_mem_addr),
+      .i_instr_mem_wrdata(i_instr_mem_wrdata),
       .o_instr_mem_rddata,
       .o_uart_wr_en(uart_write_enable_from_cpu),
       .o_uart_wr_data(uart_write_data_from_cpu),

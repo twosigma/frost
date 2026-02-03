@@ -49,7 +49,7 @@ VALID_APPS = [
 # Board configurations: clock frequency in Hz and CoreMark iterations
 # Iterations are calibrated for ~10 second runtime on each board
 BOARD_CONFIG = {
-    "x3": {"clock_freq": 322265625, "coremark_iterations": 11000},
+    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000},
     "genesys2": {"clock_freq": 133333333, "coremark_iterations": 3000},
     "nexys_a7": {"clock_freq": 80000000, "coremark_iterations": 2000},
 }

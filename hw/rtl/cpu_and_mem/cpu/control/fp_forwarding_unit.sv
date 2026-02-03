@@ -56,13 +56,17 @@ module fp_forwarding_unit #(
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,
 
     // Forwarded FP register values output to Execute stage
-    output riscv_pkg::fp_fwd_to_ex_t o_fp_fwd_to_ex
+    output riscv_pkg::fp_fwd_to_ex_t o_fp_fwd_to_ex,
+
+    // TIMING: Stall for 1 cycle when FP forward data is captured, allowing
+    // it to be pipelined through a second register stage before fanout.
+    output logic o_stall_for_fp_forward_pipeline
 );
 
   // FP source register values from register file (registered in ID stage)
-  logic [XLEN-1:0] fp_source_reg_1_raw_value;
-  logic [XLEN-1:0] fp_source_reg_2_raw_value;
-  logic [XLEN-1:0] fp_source_reg_3_raw_value;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_1_raw_value;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_raw_value;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_raw_value;
 
   // Unlike integer registers, FP has no hardwired zero register
   assign fp_source_reg_1_raw_value = i_from_id_to_ex.fp_source_reg_1_data;
@@ -77,8 +81,20 @@ module fp_forwarding_unit #(
   logic forward_fp_rs2_from_wb;
   logic forward_fp_rs3_from_wb;
 
-  // Data to forward from Memory Access stage (registered)
-  logic [XLEN-1:0] fp_register_write_data_ma;
+  // Data to forward from Memory Access stage (two-stage pipeline for timing)
+  // TIMING: First stage captures the data, second stage fans out. This breaks
+  // the critical path by adding a register stage before the high-fanout muxes.
+  // The pipeline stall signal (o_stall_for_fp_forward_pipeline) ensures the
+  // consumer waits for data to propagate through both stages.
+  logic [riscv_pkg::FpWidth-1:0] fp_register_write_data_ma;  // Stage 1: capture
+  logic [riscv_pkg::FpWidth-1:0] fp_register_write_data_ma_final;  // Stage 2: fanout
+  logic fp_forward_data_pending;  // New data in stage 1, needs to move to stage 2
+
+  // One-entry capture for FP loads to bridge double-load timing into EX.
+  logic fp_load_capture_valid;
+  logic fp_load_capture_clear;
+  logic [4:0] fp_load_capture_dest;
+  logic [riscv_pkg::FpWidth-1:0] fp_load_capture_data;
 
   // Detect when FP forwarding is needed (RAW hazard detection)
   // Uses early source registers from PD stage for better timing
@@ -136,7 +152,7 @@ module fp_forwarding_unit #(
             i_from_ex_to_ma.fp_dest_reg == i_from_pd_to_id.fp_source_reg_3_early;
       end
     end
-    if (i_pipeline_ctrl.reset) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) begin
       forward_fp_rs1_from_ma <= 1'b0;
       forward_fp_rs2_from_ma <= 1'b0;
       forward_fp_rs3_from_ma <= 1'b0;
@@ -152,10 +168,20 @@ module fp_forwarding_unit #(
   // Also capture when pipelined FPU result becomes ready during stall - this ensures
   // the result is available when the stall ends, since the normal capture condition
   // (~stall) uses OLD stall value at posedge and would miss the capture.
+  // Stage 1: Capture FP data to forward
+  // Detect when new data is being captured (for pending flag)
+  logic fp_data_capture_this_cycle;
+  assign fp_data_capture_this_cycle =
+      (i_pipeline_ctrl.stall_for_load_use_hazard && i_from_ex_to_ma.is_fp_load &&
+       !i_from_ex_to_ma.is_fp_load_double) ||
+      (i_pipeline_ctrl.stall_for_fpu_inflight_hazard && i_from_ex_comb.fp_regfile_write_enable) ||
+      (~i_pipeline_ctrl.stall && i_from_ex_comb.fp_regfile_write_enable);
+
   always_ff @(posedge i_clk)
-    if (i_pipeline_ctrl.stall_for_load_use_hazard && i_from_ex_to_ma.is_fp_load)
-      // Capture the stall-aligned memory data for FP load forwarding.
-      fp_register_write_data_ma <= i_from_ma_comb.data_memory_read_data;
+    if (i_pipeline_ctrl.stall_for_load_use_hazard && i_from_ex_to_ma.is_fp_load &&
+        !i_from_ex_to_ma.is_fp_load_double)
+      // Capture the stall-aligned memory data for FP load forwarding (single only).
+      fp_register_write_data_ma <= i_from_ma_comb.fp_load_data;
     else if (i_pipeline_ctrl.stall_for_fpu_inflight_hazard &&
              i_from_ex_comb.fp_regfile_write_enable)
       // FPU inflight hazard: capture when pipelined result becomes ready
@@ -163,6 +189,55 @@ module fp_forwarding_unit #(
     else if (~i_pipeline_ctrl.stall)
       // Normal case: forward FP compute result
       fp_register_write_data_ma <= i_from_ex_comb.fp_result;
+
+  // Stage 2: Pipeline the data for timing. The pending flag triggers an extra
+  // stall cycle, during which the data moves from stage 1 to stage 2.
+  always_ff @(posedge i_clk)
+    if (fp_forward_data_pending) begin
+      // Pending data moves to final stage
+      fp_register_write_data_ma_final <= fp_register_write_data_ma;
+    end
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      fp_forward_data_pending <= 1'b0;
+    end else if (fp_forward_data_pending) begin
+      // Clear pending after move
+      fp_forward_data_pending <= 1'b0;
+    end else if (fp_data_capture_this_cycle) begin
+      // New data captured, set pending to trigger stall
+      fp_forward_data_pending <= 1'b1;
+    end
+  end
+
+  // Stall the pipeline for 1 cycle when new FP forward data is captured
+  assign o_stall_for_fp_forward_pipeline = fp_forward_data_pending;
+
+  // Capture completed FP load data (single or double) so it can be forwarded
+  // when the consumer enters EX after the load leaves MA (e.g., FLD).
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      fp_load_capture_valid <= 1'b0;
+      fp_load_capture_clear <= 1'b0;
+    end else begin
+      if (i_from_ex_to_ma.is_fp_load && i_from_ma_comb.fp_load_data_valid) begin
+        fp_load_capture_valid <= 1'b1;
+        fp_load_capture_clear <= 1'b0;
+      end else if (fp_load_capture_valid) begin
+        if (fp_load_capture_clear) begin
+          fp_load_capture_valid <= 1'b0;
+          fp_load_capture_clear <= 1'b0;
+        end else if (~i_pipeline_ctrl.stall) begin
+          fp_load_capture_clear <= 1'b1;
+        end
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_from_ex_to_ma.is_fp_load && i_from_ma_comb.fp_load_data_valid) begin
+      fp_load_capture_dest <= i_from_ex_to_ma.fp_dest_reg;
+      fp_load_capture_data <= i_from_ma_comb.fp_load_data;
+    end
+  end
 
   // Final multiplexing: select forwarded value or register file value
   // Priority order: MA stage forward > WB stage forward > Register file
@@ -177,8 +252,9 @@ module fp_forwarding_unit #(
   end
 
   logic use_fp_load_capture;
-  assign use_fp_load_capture = i_pipeline_ctrl.stall_for_load_use_hazard |
-                               load_use_stall_registered;
+  // Use only the registered load-use stall to avoid combinational feedback
+  // into stall generation (the stall cycle itself doesn't advance EX anyway).
+  assign use_fp_load_capture = load_use_stall_registered && !i_from_ex_to_ma.is_fp_load_double;
 
   // Direct EX-stage bypass: handle FP load in MA feeding current EX instruction.
   // These combinational signals check is_fp_load AND the actual register match,
@@ -187,6 +263,10 @@ module fp_forwarding_unit #(
   assign ex_fp_load_rs1_match = i_from_ex_to_ma.is_fp_load &&
                                 (i_from_ex_to_ma.fp_dest_reg ==
                                  i_from_id_to_ex.instruction.source_reg_1);
+  logic fp_load_capture_rs1_match;
+  assign fp_load_capture_rs1_match = fp_load_capture_valid &&
+                                     (fp_load_capture_dest ==
+                                      i_from_id_to_ex.instruction.source_reg_1);
 
   // Combinational register match for MA/WB stage forwarding (guards against stale signals)
   logic ma_dest_matches_rs1;
@@ -195,19 +275,31 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs1;
   assign wb_dest_matches_rs1 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.source_reg_1);
+  logic ma_fp_result_match_rs1;
+  assign ma_fp_result_match_rs1 = i_from_ex_to_ma.fp_regfile_write_enable &&
+                                  !i_from_ex_to_ma.is_fp_load &&
+                                  (i_from_ex_to_ma.fp_dest_reg ==
+                                   i_from_id_to_ex.instruction.source_reg_1);
 
   assign o_fp_fwd_to_ex.fp_source_reg_1_value =
       ex_fp_load_rs1_match ?
-          (use_fp_load_capture ? fp_register_write_data_ma :
-                                 i_from_ma_comb.data_memory_read_data) :
-      (forward_fp_rs1_from_ma && ma_dest_matches_rs1) ? fp_register_write_data_ma :
+          (i_from_ex_to_ma.is_fp_load_double ? i_from_ma_comb.fp_load_data :
+           (use_fp_load_capture ? fp_register_write_data_ma_final :
+                                  i_from_ma_comb.fp_load_data)) :
+      ma_fp_result_match_rs1 ? i_from_ex_to_ma.fp_result :
+      (forward_fp_rs1_from_ma && ma_dest_matches_rs1) ? fp_register_write_data_ma_final :
       (forward_fp_rs1_from_wb && wb_dest_matches_rs1) ? i_from_ma_to_wb.fp_regfile_write_data :
+      fp_load_capture_rs1_match ? fp_load_capture_data :
       fp_source_reg_1_raw_value;
 
   logic ex_fp_load_rs2_match;
   assign ex_fp_load_rs2_match = i_from_ex_to_ma.is_fp_load &&
                                 (i_from_ex_to_ma.fp_dest_reg ==
                                  i_from_id_to_ex.instruction.source_reg_2);
+  logic fp_load_capture_rs2_match;
+  assign fp_load_capture_rs2_match = fp_load_capture_valid &&
+                                     (fp_load_capture_dest ==
+                                      i_from_id_to_ex.instruction.source_reg_2);
 
   logic ma_dest_matches_rs2;
   assign ma_dest_matches_rs2 = (i_from_ex_to_ma.fp_dest_reg ==
@@ -215,19 +307,38 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs2;
   assign wb_dest_matches_rs2 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.source_reg_2);
+  // Store-only WB bypass: FP stores can consume a just-written FP result
+  // even if forwarding flags are stale during a long FP stall.
+  logic fp_store_wb_bypass_rs2;
+  assign fp_store_wb_bypass_rs2 = i_from_id_to_ex.is_fp_store &&
+                                  i_from_ma_to_wb.fp_regfile_write_enable &&
+                                  wb_dest_matches_rs2;
+  logic ma_fp_result_match_rs2;
+  assign ma_fp_result_match_rs2 = i_from_ex_to_ma.fp_regfile_write_enable &&
+                                  !i_from_ex_to_ma.is_fp_load &&
+                                  (i_from_ex_to_ma.fp_dest_reg ==
+                                   i_from_id_to_ex.instruction.source_reg_2);
 
   assign o_fp_fwd_to_ex.fp_source_reg_2_value =
       ex_fp_load_rs2_match ?
-          (use_fp_load_capture ? fp_register_write_data_ma :
-                                 i_from_ma_comb.data_memory_read_data) :
-      (forward_fp_rs2_from_ma && ma_dest_matches_rs2) ? fp_register_write_data_ma :
-      (forward_fp_rs2_from_wb && wb_dest_matches_rs2) ? i_from_ma_to_wb.fp_regfile_write_data :
+          (i_from_ex_to_ma.is_fp_load_double ? i_from_ma_comb.fp_load_data :
+           (use_fp_load_capture ? fp_register_write_data_ma_final :
+                                  i_from_ma_comb.fp_load_data)) :
+      ma_fp_result_match_rs2 ? i_from_ex_to_ma.fp_result :
+      (forward_fp_rs2_from_ma && ma_dest_matches_rs2) ? fp_register_write_data_ma_final :
+      ((forward_fp_rs2_from_wb && wb_dest_matches_rs2) || fp_store_wb_bypass_rs2) ?
+          i_from_ma_to_wb.fp_regfile_write_data :
+      fp_load_capture_rs2_match ? fp_load_capture_data :
       fp_source_reg_2_raw_value;
 
   logic ex_fp_load_rs3_match;
   assign ex_fp_load_rs3_match = i_from_ex_to_ma.is_fp_load &&
                                 (i_from_ex_to_ma.fp_dest_reg ==
                                  i_from_id_to_ex.instruction.funct7[6:2]);
+  logic fp_load_capture_rs3_match;
+  assign fp_load_capture_rs3_match = fp_load_capture_valid &&
+                                     (fp_load_capture_dest ==
+                                      i_from_id_to_ex.instruction.funct7[6:2]);
 
   logic ma_dest_matches_rs3;
   assign ma_dest_matches_rs3 = (i_from_ex_to_ma.fp_dest_reg ==
@@ -235,13 +346,21 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs3;
   assign wb_dest_matches_rs3 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.funct7[6:2]);
+  logic ma_fp_result_match_rs3;
+  assign ma_fp_result_match_rs3 = i_from_ex_to_ma.fp_regfile_write_enable &&
+                                  !i_from_ex_to_ma.is_fp_load &&
+                                  (i_from_ex_to_ma.fp_dest_reg ==
+                                   i_from_id_to_ex.instruction.funct7[6:2]);
 
   assign o_fp_fwd_to_ex.fp_source_reg_3_value =
       ex_fp_load_rs3_match ?
-          (use_fp_load_capture ? fp_register_write_data_ma :
-                                 i_from_ma_comb.data_memory_read_data) :
-      (forward_fp_rs3_from_ma && ma_dest_matches_rs3) ? fp_register_write_data_ma :
+          (i_from_ex_to_ma.is_fp_load_double ? i_from_ma_comb.fp_load_data :
+           (use_fp_load_capture ? fp_register_write_data_ma_final :
+                                  i_from_ma_comb.fp_load_data)) :
+      ma_fp_result_match_rs3 ? i_from_ex_to_ma.fp_result :
+      (forward_fp_rs3_from_ma && ma_dest_matches_rs3) ? fp_register_write_data_ma_final :
       (forward_fp_rs3_from_wb && wb_dest_matches_rs3) ? i_from_ma_to_wb.fp_regfile_write_data :
+      fp_load_capture_rs3_match ? fp_load_capture_data :
       fp_source_reg_3_raw_value;
 
   // ===========================================================================
@@ -295,12 +414,14 @@ module fp_forwarding_unit #(
 
   // Capture bypass data: use registered fp_result to break combinational loop.
   // FMV.W.X is a bitwise move, so fp_result matches the integer operand.
-  logic [XLEN-1:0] fp_result_registered;
+  logic [riscv_pkg::FpWidth-1:0] fp_result_registered;
   always_ff @(posedge i_clk) begin
-    if (~i_pipeline_ctrl.stall) begin
+    if (i_pipeline_ctrl.reset) begin
+      fp_result_registered <= '0;
+    end else if (~i_pipeline_ctrl.stall || i_from_ex_comb.fp_regfile_write_enable) begin
       // Register fp_result to break combinational loop through capture bypass.
-      // At capture posedge, the OLD fp_result (producer's result) is captured,
-      // which is exactly what the consumer needs.
+      // Capture even during stalls when a valid FP result appears, so consumers
+      // entering EX right after a stall see the correct producer value.
       fp_result_registered <= i_from_ex_comb.fp_result;
     end
   end
@@ -347,12 +468,12 @@ module fp_forwarding_unit #(
       riscv_pkg::OPC_FMADD, riscv_pkg::OPC_FMSUB, riscv_pkg::OPC_FNMSUB, riscv_pkg::OPC_FNMADD:
       is_pipelined_fp_incoming = 1'b1;
       riscv_pkg::OPC_OP_FP: begin
-        case (incoming_funct7)
-          7'b0000000,  // FADD.S
-          7'b0000100,  // FSUB.S
-          7'b0001000,  // FMUL.S
-          7'b0001100,  // FDIV.S
-          7'b0101100:  // FSQRT.S
+        case (incoming_funct7[6:1])
+          6'b000000,  // FADD.{S,D}
+          6'b000010,  // FSUB.{S,D}
+          6'b000100,  // FMUL.{S,D}
+          6'b000110,  // FDIV.{S,D}
+          6'b010110:  // FSQRT.{S,D}
           is_pipelined_fp_incoming = 1'b1;
           default: is_pipelined_fp_incoming = 1'b0;
         endcase

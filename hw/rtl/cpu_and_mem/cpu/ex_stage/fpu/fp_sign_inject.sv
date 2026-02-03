@@ -19,9 +19,9 @@
   These operations manipulate the sign bit of the first operand based on
   the second operand's sign bit.
 
-  FSGNJ.S:  result = {fs2[31], fs1[30:0]}      - Copy fs2's sign to fs1
-  FSGNJN.S: result = {~fs2[31], fs1[30:0]}     - Copy negated fs2's sign to fs1
-  FSGNJX.S: result = {fs1[31] ^ fs2[31], fs1[30:0]} - XOR signs
+  FSGNJ.{S,D}:  result = {fs2[sign], fs1[mag]}      - Copy fs2's sign to fs1
+  FSGNJN.{S,D}: result = {~fs2[sign], fs1[mag]}     - Copy negated fs2's sign to fs1
+  FSGNJX.{S,D}: result = {fs1[sign] ^ fs2[sign], fs1[mag]} - XOR signs
 
   Note: These operations are also used for:
     - FMV.S (move): FSGNJ.S with rs1 = rs2 (assembler pseudo-instruction)
@@ -30,37 +30,39 @@
 
   Latency: 2 cycles (registered output to break timing path through FP forwarding)
 */
-module fp_sign_inject (
-    input  logic                        i_clk,
-    input  logic                        i_rst,
-    input  logic                        i_valid,      // Start operation
-    input  logic                 [31:0] i_operand_a,  // fs1
-    input  logic                 [31:0] i_operand_b,  // fs2
-    input  riscv_pkg::instr_op_e        i_operation,
-    output logic                 [31:0] o_result,
-    output logic                        o_valid,      // Result ready
-    output logic                        o_busy        // Operation in progress
+module fp_sign_inject #(
+    parameter int unsigned FP_WIDTH = 32
+) (
+    input  logic                                i_clk,
+    input  logic                                i_rst,
+    input  logic                                i_valid,      // Start operation
+    input  logic                 [FP_WIDTH-1:0] i_operand_a,  // fs1
+    input  logic                 [FP_WIDTH-1:0] i_operand_b,  // fs2
+    input  riscv_pkg::instr_op_e                i_operation,
+    output logic                 [FP_WIDTH-1:0] o_result,
+    output logic                                o_valid,      // Result ready
+    output logic                                o_busy        // Operation in progress
 );
 
   // Combinational result computation
   logic sign_a, sign_b;
-  logic [30:0] magnitude_a;
+  logic [FP_WIDTH-2:0] magnitude_a;
   logic result_sign;
-  logic [31:0] result_comb;
+  logic [FP_WIDTH-1:0] result_comb;
   logic is_sign_inject_op;
 
-  assign sign_a = i_operand_a[31];
-  assign sign_b = i_operand_b[31];
-  assign magnitude_a = i_operand_a[30:0];
+  assign sign_a = i_operand_a[FP_WIDTH-1];
+  assign sign_b = i_operand_b[FP_WIDTH-1];
+  assign magnitude_a = i_operand_a[FP_WIDTH-2:0];
 
   always_comb begin
     result_sign = sign_a;  // Default
     is_sign_inject_op = 1'b1;
 
     unique case (i_operation)
-      riscv_pkg::FSGNJ_S:  result_sign = sign_b;  // Copy fs2's sign
-      riscv_pkg::FSGNJN_S: result_sign = ~sign_b;  // Copy negated fs2's sign
-      riscv_pkg::FSGNJX_S: result_sign = sign_a ^ sign_b;  // XOR signs
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJ_D:   result_sign = sign_b;  // Copy fs2's sign
+      riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJN_D: result_sign = ~sign_b;  // Copy negated fs2's sign
+      riscv_pkg::FSGNJX_S, riscv_pkg::FSGNJX_D: result_sign = sign_a ^ sign_b;  // XOR signs
       default: begin
         result_sign = sign_a;
         is_sign_inject_op = 1'b0;
@@ -72,12 +74,12 @@ module fp_sign_inject (
 
   // Pipeline register - adds 1 cycle latency
   logic started;
-  logic [31:0] result_reg;
+  logic [FP_WIDTH-1:0] result_reg;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       started <= 1'b0;
-      result_reg <= 32'b0;
+      result_reg <= '0;
     end else if (i_valid && is_sign_inject_op && !started) begin
       // Capture result on start
       started <= 1'b1;

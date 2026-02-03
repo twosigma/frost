@@ -11,11 +11,11 @@ This directory contains the complete infrastructure for building, programming, a
 │                                                                             │
 │   ┌──────────────┐     ┌──────────────────┐     ┌───────────────────────┐   │
 │   │  RTL Source  │────>│  build/build.py  │────>│  Bitstream (.bit)     │   │
-│   │  (hw/rtl/)   │     │       -or-       │     │  (build/<board>/work/)│   │
-│   └──────────────┘     │  build_sweep.py  │     └───────────┬───────────┘   │
-│                        └──────────────────┘                 │               │
-│                                                             │               │
-│                                                             v               │
+│   │  (hw/rtl/)   │     │                  │     │  (build/<board>/work/)│   │
+│   └──────────────┘     │  6-Step Pipeline │     └───────────┬───────────┘   │
+│                        │  with parallel   │                 │               │
+│                        │  directive sweeps│                 │               │
+│                        └──────────────────┘                 v               │
 │                                              ┌──────────────────────────┐   │
 │                                              │ program_bitstream.py     │   │
 │                                              │ (programs FPGA via JTAG) │   │
@@ -59,14 +59,14 @@ The FPGA tooling is organized into three main workflows:
 
 | Board    | FPGA                       | FROST Clock | Status         |
 |----------|----------------------------|-------------|----------------|
-| X3       | Alveo UltraScale+ (xcux35) | 322 MHz     | Primary target |
+| X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | Primary target |
 | Genesys2 | Kintex-7 (xc7k325t)        | 133 MHz     | Supported      |
 | Nexys A7 | Artix-7 (xc7a100t)         | 80 MHz      | Supported      |
 
 ## Quick Start
 
 ```bash
-# 1. Build the bitstream (takes ~15-30 minutes)
+# 1. Build the bitstream (runs parallel sweeps at each stage)
 ./fpga/build/build.py x3
 
 # 2. Program the FPGA
@@ -78,83 +78,142 @@ The FPGA tooling is organized into three main workflows:
 
 ## Building
 
-The build system uses Vivado in batch mode to synthesize, place, and route the design.
+The unified build script runs a 6-step pipeline with parallel directive sweeps at each stage for maximum timing closure probability.
 
 ```bash
-./fpga/build/build.py <board> [--synth-only] [--retiming]
+./fpga/build/build.py <board> [--start-at STEP] [--stop-after STEP] [--retiming] [--no-sweeping] [--keep-temps]
 ```
 
-**Arguments:**
-- `board` - Target board: `x3`, `genesys2`, or `nexys_a7`
-- `--synth-only` - (Optional) Stop after synthesis, skipping implementation and bitstream generation
-- `--retiming` - (Optional) Enable global retiming during synthesis for improved timing
+### The Build Steps
 
-**Outputs:**
-- `build/<board>/work/` - Build artifacts (not tracked in git):
-  - `<board>_frost.bit` - Final bitstream (full build only)
-  - `*.dcp` - Design checkpoints (post-synth, post-opt, post-place, post-route)
-  - `*_timing.rpt` - Timing analysis reports
-  - `*_util.rpt` - Resource utilization reports
-- `build/<board>/` - Summaries (tracked in git):
-  - `SUMMARY_post_synth.md` - Timing and utilization after synthesis
-  - `SUMMARY_post_opt.md` - Timing and utilization after optimization
-  - `SUMMARY_post_place.md` - Timing and utilization after placement
-  - `SUMMARY_post_route.md` - Timing and utilization after routing
+| Step | Description | Parallel Jobs |
+|------|-------------|---------------|
+| 1. `synth` | Synthesis with directive sweep | 8 directives |
+| 2. `opt` | Optimization with directive sweep | 8 directives |
+| 3. `place` | Placement with directive sweep (includes 0.5ns overconstrain) | 12 directives |
+| 4. `post_place_physopt` | Post-place phys_opt loop of sweeps | 8 directives per pass |
+| 5-6. `route` + `post_route_physopt` | Route+phys_opt meta-loop (see below) | 8-9 + 8 directives |
 
-**Examples:**
-```bash
-# Full build
-./fpga/build/build.py x3
-# Output: fpga/build/x3/work/x3_frost.bit
+### How It Works
 
-# Synthesis only (faster, useful for checking resource utilization)
-./fpga/build/build.py x3 --synth-only
-# Output: fpga/build/x3/work/post_synth.dcp
+**Early vs Final Steps:**
+- **Early steps** (synth, opt, place, post_place_physopt): Wait for ALL jobs to complete and pick the best WNS. This maximizes timing margin for subsequent steps.
+- **Final steps** (route, post_route_physopt): Early-terminate as soon as any job achieves WNS >= 0. Timing is already met, no need to wait.
 
-# Full build with global retiming enabled
-./fpga/build/build.py x3 --retiming
-```
+**Phys_opt Loops:**
+- Each pass runs a parallel sweep of all phys_opt directives
+- Picks winner based on greatest WNS/TNS improvement
+- Continues until WNS >= 0 OR no improvement in either WNS or TNS
 
-### Placer Directive Sweep
+**Route + Post-route Meta-loop:**
+When both route and post_route_physopt steps are run, they execute as a single iterating meta-loop:
+1. Run route sweep (early-terminates on timing met)
+2. Run post_route phys_opt loop (early-terminates on timing met)
+3. If improvement was made, go back to step 1 (route from post_place_physopt again)
+4. If route doesn't improve over previous iteration, stop and keep the previous best result
+5. Continue until timing is met or no further improvement
 
-For the X3 target (322 MHz), timing closure can be challenging and results vary significantly between different placer directives. The `build_sweep.py` script runs multiple place+route jobs in parallel with different directives and automatically selects the first one that passes timing.
+This allows the build to explore multiple route+physopt combinations to find the best timing closure.
 
-```bash
-./fpga/build/build_sweep.py [--skip-synth-opt] [--auto] [--keep-all]
-```
+### Arguments
 
-**How it works:**
-1. Runs synthesis and opt_design once (shared across all runs)
-2. Launches 12 parallel Vivado place+route jobs, each with a different placer directive
-3. As soon as any run passes timing, kills all remaining jobs and uses that result
-4. If no run passes timing, selects the result with the best WNS
-
-**Arguments:**
-- `--skip-synth-opt` - Skip synthesis/opt and reuse existing `post_opt.dcp` checkpoint (for re-running sweeps)
-- `--auto` - Include ML-predicted Auto_1/2/3 directives (15 total jobs)
-- `--all` - Include SSI-specific directives (19 total jobs, only useful for stacked silicon devices)
-- `--keep-all` - Keep all work directories instead of cleaning up non-winners
+- `board` - Target board: `x3`, `genesys2`, or `nexys_a7` (default: x3)
+- `--start-at STEP` - Start at this step (requires appropriate checkpoint)
+- `--stop-after STEP` - Stop after this step
 - `--retiming` - Enable global retiming during synthesis
+- `--no-sweeping` - Use only Default directive (default for genesys2/nexys_a7)
+- `--sweep` - Force parallel directive sweeps (override default for genesys2/nexys_a7)
+- `--keep-temps` - Keep temporary work directories
+- `--vivado-path PATH` - Path to Vivado executable
 
-**Examples:**
+### Checkpoints
+
+Each step produces a checkpoint that enables resuming:
+
+| Checkpoint | Required to start at |
+|------------|---------------------|
+| `post_synth.dcp` | `opt` |
+| `post_opt.dcp` | `place` |
+| `post_place.dcp` | `post_place_physopt` |
+| `post_place_physopt.dcp` | `route` |
+| `post_route.dcp` | `post_route_physopt` |
+| `final.dcp` | (final output) |
+
+### Examples
+
 ```bash
-# Full sweep (synthesis + 12 parallel place+route jobs)
-./fpga/build/build_sweep.py
+# Full build with all sweeps (default for x3)
+./fpga/build/build.py x3
 
-# Re-run sweep from existing synthesis checkpoint
-./fpga/build/build_sweep.py --skip-synth-opt
+# Build for Genesys2 (no sweeping by default)
+./fpga/build/build.py genesys2
 
-# Include ML-predicted directives
-./fpga/build/build_sweep.py --auto
+# Resume from placement (skip synth and opt)
+./fpga/build/build.py x3 --start-at place
+
+# Run only synth, opt, and place (stop before phys_opt)
+./fpga/build/build.py x3 --stop-after place
+
+# Re-run the route+physopt meta-loop from post_place_physopt checkpoint
+./fpga/build/build.py x3 --start-at route
+
+# Re-run just post-route phys_opt (no re-routing, uses existing post_route.dcp)
+./fpga/build/build.py x3 --start-at post_route_physopt
+
+# Enable retiming during synthesis
+./fpga/build/build.py x3 --retiming
+
+# Fast build with Default directives only (no parallel sweeps)
+./fpga/build/build.py x3 --no-sweeping
+
+# Force parallel sweeps for genesys2 (not default)
+./fpga/build/build.py genesys2 --sweep
+
+# Keep temp directories for debugging
+./fpga/build/build.py x3 --keep-temps
 ```
 
-**Default directives tested:**
-- Default, Explore, WLDrivenBlockPlacement, EarlyBlockPlacement
-- ExtraNetDelay_high, ExtraNetDelay_low
-- AltSpreadLogic_high, AltSpreadLogic_medium, AltSpreadLogic_low
-- ExtraPostPlacementOpt, ExtraTimingOpt, RuntimeOptimized
+### Outputs
 
-Results are printed in a table showing WNS/TNS for each directive, with the winner copied to the main `work/` directory.
+**Build artifacts** (in `build/<board>/work/`, not tracked in git):
+- `<board>_frost.bit` - Final bitstream
+- `*.dcp` - Design checkpoints at each stage
+- `*_timing.rpt` - Timing analysis reports
+- `*_util.rpt` - Resource utilization reports
+- `*_high_fanout.rpt` - High fanout net analysis
+- `*_failing_paths.csv` - Detailed failing path analysis
+
+**Summaries** (in `build/<board>/`, tracked in git):
+- `SUMMARY_post_synth.md` - Timing and utilization after synthesis
+- `SUMMARY_post_opt.md` - Timing and utilization after optimization
+- `SUMMARY_post_place.md` - Timing and utilization after placement
+- `SUMMARY_post_place_physopt.md` - Timing and utilization after post-place phys_opt
+- `SUMMARY_post_route.md` - Timing and utilization after routing
+- `SUMMARY_final.md` - Final timing and utilization
+
+### Directives Tested
+
+**Synthesis (8 directives):**
+- Default, PerformanceOptimized, AreaOptimized_high, AreaOptimized_medium
+- AlternateRoutability, AreaMapLargeShiftRegToBRAM, AreaMultThresholdDSP, FewerCarryChains
+
+**Optimization (8 directives):**
+- Default, Explore, ExploreArea, ExploreWithRemap
+- ExploreSequentialArea, AddRemap, NoBramPowerOpt, RuntimeOptimized
+
+**Placement (12 directives):**
+- Default, Explore, ExtraNetDelay_high, ExtraNetDelay_low
+- ExtraPostPlacementOpt, ExtraTimingOpt, AltSpreadLogic_high, AltSpreadLogic_low
+- AltSpreadLogic_medium, SpreadLogic_high, SpreadLogic_low, EarlyBlockPlacement
+
+**Routing (8-9 directives):**
+- Default, Explore, AggressiveExplore, NoTimingRelaxation
+- MoreGlobalIterations, HigherDelayCost, AdvancedSkewModeling, RuntimeOptimized
+- AlternateCLBRouting (UltraScale only)
+
+**Phys_opt (8 directives):**
+- Default, Explore, ExploreWithHoldFix, AggressiveExplore
+- AlternateReplication, AggressiveFanoutOpt, AlternateFlowWithRetiming, RuntimeOptimized
 
 ## Programming the FPGA
 
@@ -222,6 +281,7 @@ Load software into instruction memory without regenerating the bitstream. This e
 | `branch_pred_test`  | Branch predictor verification (45 tests)             |
 | `ras_test`          | Return Address Stack (RAS) comprehensive test suite  |
 | `ras_stress_test`   | Stress test mixing calls, returns, and branches      |
+| `fpu_assembly_test` | FPU assembly hazard tests                            |
 | `print_clock_speed` | Clock speed measurement utility                      |
 
 The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.
@@ -315,19 +375,6 @@ To program or load software on a remote FPGA:
    ./fpga/load_software/load_software.py x3 coremark remote-hostname
    ```
 
-## Build Directives
-
-The build system uses aggressive optimization settings for maximum frequency:
-
-| Stage        | Directive                   | Purpose                                                             |
-|--------------|-----------------------------|---------------------------------------------------------------------|
-| Synthesis    | `AlternateRoutability`      | Prevent local congestion                                            |
-| Synthesis    | `global_retiming on`        | Move registers across logic for timing (optional, via `--retiming`) |
-| Optimization | `ExploreWithRemap`          | LUT optimization                                                    |
-| Placement    | (varies)                    | `build.py`: AltSpreadLogic_high; `build_sweep.py`: tries 12+ directives |
-| Routing      | `AggressiveExplore`         | Maximum routing effort                                              |
-| Routing      | `AlternateFlowWithRetiming` | Enable retiming optimizations                                       |
-
 ## Customization
 
 ### Adding a New Board
@@ -340,7 +387,7 @@ The build system uses aggressive optimization settings for maximum frequency:
    - `ip/` - Copy Xilinx IP cores from an existing board (Vivado will auto-migrate)
    - `<board>_frost.f` - File list for synthesis
 
-2. Update `build/build.tcl` to handle the new board name
+2. Update `build/build_step.tcl` to handle the new board name
 
 3. Update `program_bitstream/program_bitstream.tcl` with the bitstream path
 
@@ -368,8 +415,8 @@ The build system uses aggressive optimization settings for maximum frequency:
 - Use `--target <pattern>` to select the correct board by index, vendor, or serial number
 
 **Timing failures**
-- Use `build_sweep.py` to try multiple placer directives in parallel
-- Check `build/<board>/work/post_route_timing.rpt` for failing paths
+- The build script automatically sweeps directives at each stage
+- Check `build/<board>/work/final_timing.rpt` for failing paths
 - Consider reducing clock frequency in the board's constraint file
 
 **Software not running after load**

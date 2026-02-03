@@ -390,7 +390,10 @@ async def test_random_riscv_regression_force_one_address(dut: Any) -> None:
 
 
 async def test_random_riscv_regression_with_fp_main(
-    dut: Any, config: TestConfig | None = None, fp_probability: float = 0.3
+    dut: Any,
+    config: TestConfig | None = None,
+    fp_probability: float = 0.3,
+    fp_operations: list[str] | None = None,
 ) -> None:
     """Main coroutine for random RISC-V regression including F extension instructions.
 
@@ -408,6 +411,7 @@ async def test_random_riscv_regression_with_fp_main(
         dut: Device under test (cocotb SimHandle)
         config: Test configuration. If None, uses default configuration.
         fp_probability: Probability (0.0-1.0) of generating FP instruction vs integer
+        fp_operations: Optional list of FP operations to choose from
     """
     if config is None:
         config = TestConfig()
@@ -512,6 +516,7 @@ async def test_random_riscv_regression_with_fp_main(
                 config.force_one_address,
                 mem_constraint,
                 fp_probability,
+                fp_operations,
             )
             operation = instr_params.operation
             rd = instr_params.destination_register
@@ -639,7 +644,10 @@ async def test_random_riscv_regression_with_fp(dut: Any) -> None:
     """
     config = TestConfig(num_loops=24000)
     await test_random_riscv_regression_with_fp_main(
-        dut=dut, config=config, fp_probability=0.3
+        dut=dut,
+        config=config,
+        fp_probability=0.3,
+        fp_operations=InstructionGenerator.get_fp_operations_single(),
     )
 
 
@@ -653,5 +661,73 @@ async def test_random_riscv_regression_fp_heavy(dut: Any) -> None:
     """
     config = TestConfig(num_loops=24000, min_coverage_count=40)
     await test_random_riscv_regression_with_fp_main(
-        dut=dut, config=config, fp_probability=0.7
+        dut=dut,
+        config=config,
+        fp_probability=0.7,
+        fp_operations=InstructionGenerator.get_fp_operations_single(),
+    )
+
+
+@cocotb.test()
+async def test_random_riscv_regression_with_fp_double(dut: Any) -> None:
+    """Random RISC-V regression including D extension floating-point instructions.
+
+    This test mixes integer and double-precision FP instructions randomly,
+    verifying both the integer and FP register files against the software model.
+    FP instructions are generated with ~30% probability.
+    """
+    config = TestConfig(num_loops=24000)
+    await test_random_riscv_regression_with_fp_main(
+        dut=dut,
+        config=config,
+        fp_probability=0.3,
+        fp_operations=InstructionGenerator.get_fp_operations_double(),
+    )
+
+
+@cocotb.test()
+async def test_random_riscv_regression_fp_double_heavy(dut: Any) -> None:
+    """Random RISC-V regression with heavy D extension FP emphasis (70% FP).
+
+    This test stresses the FPU by generating mostly double-precision FP instructions,
+    exercising FP arithmetic, comparisons, conversions, and FP load/store.
+    Uses lower min_coverage_count (40) since integer instructions only get 30% of iterations.
+    """
+    config = TestConfig(num_loops=24000, min_coverage_count=40)
+    await test_random_riscv_regression_with_fp_main(
+        dut=dut,
+        config=config,
+        fp_probability=0.7,
+        fp_operations=InstructionGenerator.get_fp_operations_double(),
+    )
+
+
+@cocotb.test()
+async def test_random_riscv_regression_with_fp_mixed(dut: Any) -> None:
+    """Random RISC-V regression with mixed single- and double-precision FP ops.
+
+    This test mixes integer instructions with both .s and .d FP operations to
+    stress NaN-boxing, FP/FP conversion, and mixed-width hazards.
+    """
+    config = TestConfig(num_loops=24000)
+    await test_random_riscv_regression_with_fp_main(
+        dut=dut,
+        config=config,
+        fp_probability=0.3,
+        fp_operations=InstructionGenerator.get_fp_operations(),
+    )
+
+
+@cocotb.test()
+async def test_random_riscv_regression_fp_mixed_heavy(dut: Any) -> None:
+    """Random RISC-V regression with heavy mixed FP ops (70% FP).
+
+    Uses lower min_coverage_count (40) since integer instructions only get 30% of iterations.
+    """
+    config = TestConfig(num_loops=24000, min_coverage_count=40)
+    await test_random_riscv_regression_with_fp_main(
+        dut=dut,
+        config=config,
+        fp_probability=0.7,
+        fp_operations=InstructionGenerator.get_fp_operations(),
     )

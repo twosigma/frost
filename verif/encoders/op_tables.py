@@ -53,6 +53,7 @@ Adding New Instructions:
 
 from collections.abc import Callable
 
+
 from encoders.instruction_encode import (
     enc_r,
     enc_i,
@@ -91,30 +92,56 @@ from encoders.instruction_encode import (
     # F extension (floating-point)
     enc_flw,
     enc_fsw,
+    enc_fld,
+    enc_fsd,
     enc_fadd_s,
     enc_fsub_s,
     enc_fmul_s,
     enc_fdiv_s,
     enc_fsqrt_s,
+    enc_fadd_d,
+    enc_fsub_d,
+    enc_fmul_d,
+    enc_fdiv_d,
+    enc_fsqrt_d,
     enc_fmadd_s,
     enc_fmsub_s,
     enc_fnmadd_s,
     enc_fnmsub_s,
+    enc_fmadd_d,
+    enc_fmsub_d,
+    enc_fnmadd_d,
+    enc_fnmsub_d,
     enc_fsgnj_s,
     enc_fsgnjn_s,
     enc_fsgnjx_s,
+    enc_fsgnj_d,
+    enc_fsgnjn_d,
+    enc_fsgnjx_d,
     enc_fmin_s,
     enc_fmax_s,
+    enc_fmin_d,
+    enc_fmax_d,
     enc_fcvt_w_s,
     enc_fcvt_wu_s,
     enc_fcvt_s_w,
     enc_fcvt_s_wu,
+    enc_fcvt_w_d,
+    enc_fcvt_wu_d,
+    enc_fcvt_d_w,
+    enc_fcvt_d_wu,
+    enc_fcvt_s_d,
+    enc_fcvt_d_s,
     enc_fmv_x_w,
     enc_fmv_w_x,
     enc_fclass_s,
+    enc_fclass_d,
     enc_feq_s,
     enc_flt_s,
     enc_fle_s,
+    enc_feq_d,
+    enc_flt_d,
+    enc_fle_d,
 )
 from encoders.compressed_encode import (
     # C extension (compressed instructions)
@@ -221,6 +248,8 @@ from models.alu_model import (
     amomaxu,
 )
 from models.fp_model import (
+    box32,
+    unbox32,
     # F extension - arithmetic
     fadd_s,
     fsub_s,
@@ -231,27 +260,59 @@ from models.fp_model import (
     fmsub_s,
     fnmadd_s,
     fnmsub_s,
+    # D extension - arithmetic
+    fadd_d,
+    fsub_d,
+    fmul_d,
+    fdiv_d,
+    fsqrt_d,
+    fmadd_d,
+    fmsub_d,
+    fnmadd_d,
+    fnmsub_d,
     # F extension - sign manipulation
     fsgnj_s,
     fsgnjn_s,
     fsgnjx_s,
+    # D extension - sign manipulation
+    fsgnj_d,
+    fsgnjn_d,
+    fsgnjx_d,
     # F extension - min/max
     fmin_s,
     fmax_s,
+    # D extension - min/max
+    fmin_d,
+    fmax_d,
     # F extension - comparison
     feq_s,
     flt_s,
     fle_s,
+    # D extension - comparison
+    feq_d,
+    flt_d,
+    fle_d,
     # F extension - conversion
     fcvt_w_s,
     fcvt_wu_s,
     fcvt_s_w,
     fcvt_s_wu,
+    # D extension - conversion
+    fcvt_w_d,
+    fcvt_wu_d,
+    fcvt_d_w,
+    fcvt_d_wu,
+    fcvt_s_d,
+    fcvt_d_s,
     # F extension - move
     fmv_x_w,
     fmv_w_x,
     # F extension - classify
     fclass_s,
+    # D extension - classify
+    fclass_d,
+    # FP loads
+    fld,
 )
 
 
@@ -653,6 +714,7 @@ C_FP_STORES_STACK: dict[str, Callable] = {
 #   - FP_CMP: Comparison to int (rd, rs1, rs2) - result in integer reg
 #   - FP_CVT_F2I: FP to int conversion (rd=int, rs1=fp)
 #   - FP_CVT_I2F: Int to FP conversion (rd=fp, rs1=int)
+#   - FP_CVT_F2F: FP to FP conversion (rd=fp, rs1=fp)
 #   - FP_MV_F2I: Move FP bits to int (rd=int, rs1=fp)
 #   - FP_MV_I2F: Move int bits to FP (rd=fp, rs1=int)
 #   - FP_CLASS: Classify FP value (rd=int, rs1=fp)
@@ -665,15 +727,35 @@ C_FP_STORES_STACK: dict[str, Callable] = {
 
 # FP arithmetic operations (two FP operands -> FP result)
 FP_ARITH_2OP: dict[str, tuple[Callable, Callable]] = {
-    "fadd.s": (lambda rd, rs1, rs2: enc_fadd_s(rd, rs1, rs2), fadd_s),
-    "fsub.s": (lambda rd, rs1, rs2: enc_fsub_s(rd, rs1, rs2), fsub_s),
-    "fmul.s": (lambda rd, rs1, rs2: enc_fmul_s(rd, rs1, rs2), fmul_s),
-    "fdiv.s": (lambda rd, rs1, rs2: enc_fdiv_s(rd, rs1, rs2), fdiv_s),
+    "fadd.s": (
+        lambda rd, rs1, rs2: enc_fadd_s(rd, rs1, rs2),
+        lambda a, b: box32(fadd_s(unbox32(a), unbox32(b))),
+    ),
+    "fsub.s": (
+        lambda rd, rs1, rs2: enc_fsub_s(rd, rs1, rs2),
+        lambda a, b: box32(fsub_s(unbox32(a), unbox32(b))),
+    ),
+    "fmul.s": (
+        lambda rd, rs1, rs2: enc_fmul_s(rd, rs1, rs2),
+        lambda a, b: box32(fmul_s(unbox32(a), unbox32(b))),
+    ),
+    "fdiv.s": (
+        lambda rd, rs1, rs2: enc_fdiv_s(rd, rs1, rs2),
+        lambda a, b: box32(fdiv_s(unbox32(a), unbox32(b))),
+    ),
+    "fadd.d": (lambda rd, rs1, rs2: enc_fadd_d(rd, rs1, rs2), fadd_d),
+    "fsub.d": (lambda rd, rs1, rs2: enc_fsub_d(rd, rs1, rs2), fsub_d),
+    "fmul.d": (lambda rd, rs1, rs2: enc_fmul_d(rd, rs1, rs2), fmul_d),
+    "fdiv.d": (lambda rd, rs1, rs2: enc_fdiv_d(rd, rs1, rs2), fdiv_d),
 }
 
 # FP single-operand arithmetic (one FP operand -> FP result)
 FP_ARITH_1OP: dict[str, tuple[Callable, Callable]] = {
-    "fsqrt.s": (lambda rd, rs1: enc_fsqrt_s(rd, rs1), fsqrt_s),
+    "fsqrt.s": (
+        lambda rd, rs1: enc_fsqrt_s(rd, rs1),
+        lambda a: box32(fsqrt_s(unbox32(a))),
+    ),
+    "fsqrt.d": (lambda rd, rs1: enc_fsqrt_d(rd, rs1), fsqrt_d),
 }
 
 # FP fused multiply-add (three FP operands -> FP result)
@@ -681,63 +763,143 @@ FP_ARITH_1OP: dict[str, tuple[Callable, Callable]] = {
 #   encoder: lambda rd, rs1, rs2, rs3 -> 32-bit instruction
 #   evaluator: lambda rs1_bits, rs2_bits, rs3_bits -> result_bits
 FP_FMA: dict[str, tuple[Callable, Callable]] = {
-    "fmadd.s": (lambda rd, rs1, rs2, rs3: enc_fmadd_s(rd, rs1, rs2, rs3), fmadd_s),
-    "fmsub.s": (lambda rd, rs1, rs2, rs3: enc_fmsub_s(rd, rs1, rs2, rs3), fmsub_s),
-    "fnmadd.s": (lambda rd, rs1, rs2, rs3: enc_fnmadd_s(rd, rs1, rs2, rs3), fnmadd_s),
-    "fnmsub.s": (lambda rd, rs1, rs2, rs3: enc_fnmsub_s(rd, rs1, rs2, rs3), fnmsub_s),
+    "fmadd.s": (
+        lambda rd, rs1, rs2, rs3: enc_fmadd_s(rd, rs1, rs2, rs3),
+        lambda a, b, c: box32(fmadd_s(unbox32(a), unbox32(b), unbox32(c))),
+    ),
+    "fmsub.s": (
+        lambda rd, rs1, rs2, rs3: enc_fmsub_s(rd, rs1, rs2, rs3),
+        lambda a, b, c: box32(fmsub_s(unbox32(a), unbox32(b), unbox32(c))),
+    ),
+    "fnmadd.s": (
+        lambda rd, rs1, rs2, rs3: enc_fnmadd_s(rd, rs1, rs2, rs3),
+        lambda a, b, c: box32(fnmadd_s(unbox32(a), unbox32(b), unbox32(c))),
+    ),
+    "fnmsub.s": (
+        lambda rd, rs1, rs2, rs3: enc_fnmsub_s(rd, rs1, rs2, rs3),
+        lambda a, b, c: box32(fnmsub_s(unbox32(a), unbox32(b), unbox32(c))),
+    ),
+    "fmadd.d": (lambda rd, rs1, rs2, rs3: enc_fmadd_d(rd, rs1, rs2, rs3), fmadd_d),
+    "fmsub.d": (lambda rd, rs1, rs2, rs3: enc_fmsub_d(rd, rs1, rs2, rs3), fmsub_d),
+    "fnmadd.d": (
+        lambda rd, rs1, rs2, rs3: enc_fnmadd_d(rd, rs1, rs2, rs3),
+        fnmadd_d,
+    ),
+    "fnmsub.d": (
+        lambda rd, rs1, rs2, rs3: enc_fnmsub_d(rd, rs1, rs2, rs3),
+        fnmsub_d,
+    ),
 }
 
 # FP sign injection (two FP operands -> FP result)
 FP_SGNJ: dict[str, tuple[Callable, Callable]] = {
-    "fsgnj.s": (lambda rd, rs1, rs2: enc_fsgnj_s(rd, rs1, rs2), fsgnj_s),
-    "fsgnjn.s": (lambda rd, rs1, rs2: enc_fsgnjn_s(rd, rs1, rs2), fsgnjn_s),
-    "fsgnjx.s": (lambda rd, rs1, rs2: enc_fsgnjx_s(rd, rs1, rs2), fsgnjx_s),
+    "fsgnj.s": (
+        lambda rd, rs1, rs2: enc_fsgnj_s(rd, rs1, rs2),
+        lambda a, b: box32(fsgnj_s(unbox32(a), unbox32(b))),
+    ),
+    "fsgnjn.s": (
+        lambda rd, rs1, rs2: enc_fsgnjn_s(rd, rs1, rs2),
+        lambda a, b: box32(fsgnjn_s(unbox32(a), unbox32(b))),
+    ),
+    "fsgnjx.s": (
+        lambda rd, rs1, rs2: enc_fsgnjx_s(rd, rs1, rs2),
+        lambda a, b: box32(fsgnjx_s(unbox32(a), unbox32(b))),
+    ),
+    "fsgnj.d": (lambda rd, rs1, rs2: enc_fsgnj_d(rd, rs1, rs2), fsgnj_d),
+    "fsgnjn.d": (lambda rd, rs1, rs2: enc_fsgnjn_d(rd, rs1, rs2), fsgnjn_d),
+    "fsgnjx.d": (lambda rd, rs1, rs2: enc_fsgnjx_d(rd, rs1, rs2), fsgnjx_d),
 }
 
 # FP min/max (two FP operands -> FP result)
 FP_MINMAX: dict[str, tuple[Callable, Callable]] = {
-    "fmin.s": (lambda rd, rs1, rs2: enc_fmin_s(rd, rs1, rs2), fmin_s),
-    "fmax.s": (lambda rd, rs1, rs2: enc_fmax_s(rd, rs1, rs2), fmax_s),
+    "fmin.s": (
+        lambda rd, rs1, rs2: enc_fmin_s(rd, rs1, rs2),
+        lambda a, b: box32(fmin_s(unbox32(a), unbox32(b))),
+    ),
+    "fmax.s": (
+        lambda rd, rs1, rs2: enc_fmax_s(rd, rs1, rs2),
+        lambda a, b: box32(fmax_s(unbox32(a), unbox32(b))),
+    ),
+    "fmin.d": (lambda rd, rs1, rs2: enc_fmin_d(rd, rs1, rs2), fmin_d),
+    "fmax.d": (lambda rd, rs1, rs2: enc_fmax_d(rd, rs1, rs2), fmax_d),
 }
 
 # FP comparison (two FP operands -> integer result: 0 or 1)
 # Note: Result goes to INTEGER register, not FP register
 FP_CMP: dict[str, tuple[Callable, Callable]] = {
-    "feq.s": (lambda rd, rs1, rs2: enc_feq_s(rd, rs1, rs2), feq_s),
-    "flt.s": (lambda rd, rs1, rs2: enc_flt_s(rd, rs1, rs2), flt_s),
-    "fle.s": (lambda rd, rs1, rs2: enc_fle_s(rd, rs1, rs2), fle_s),
+    "feq.s": (
+        lambda rd, rs1, rs2: enc_feq_s(rd, rs1, rs2),
+        lambda a, b: feq_s(unbox32(a), unbox32(b)),
+    ),
+    "flt.s": (
+        lambda rd, rs1, rs2: enc_flt_s(rd, rs1, rs2),
+        lambda a, b: flt_s(unbox32(a), unbox32(b)),
+    ),
+    "fle.s": (
+        lambda rd, rs1, rs2: enc_fle_s(rd, rs1, rs2),
+        lambda a, b: fle_s(unbox32(a), unbox32(b)),
+    ),
+    "feq.d": (lambda rd, rs1, rs2: enc_feq_d(rd, rs1, rs2), feq_d),
+    "flt.d": (lambda rd, rs1, rs2: enc_flt_d(rd, rs1, rs2), flt_d),
+    "fle.d": (lambda rd, rs1, rs2: enc_fle_d(rd, rs1, rs2), fle_d),
 }
 
 # FP to integer conversion (FP operand -> integer result)
 # Note: Result goes to INTEGER register
 FP_CVT_F2I: dict[str, tuple[Callable, Callable]] = {
-    "fcvt.w.s": (lambda rd, rs1: enc_fcvt_w_s(rd, rs1), fcvt_w_s),
-    "fcvt.wu.s": (lambda rd, rs1: enc_fcvt_wu_s(rd, rs1), fcvt_wu_s),
+    "fcvt.w.s": (lambda rd, rs1: enc_fcvt_w_s(rd, rs1), lambda a: fcvt_w_s(unbox32(a))),
+    "fcvt.wu.s": (
+        lambda rd, rs1: enc_fcvt_wu_s(rd, rs1),
+        lambda a: fcvt_wu_s(unbox32(a)),
+    ),
+    "fcvt.w.d": (lambda rd, rs1: enc_fcvt_w_d(rd, rs1), fcvt_w_d),
+    "fcvt.wu.d": (lambda rd, rs1: enc_fcvt_wu_d(rd, rs1), fcvt_wu_d),
 }
 
 # Integer to FP conversion (integer operand -> FP result)
 # Note: Source is INTEGER register, result goes to FP register
 FP_CVT_I2F: dict[str, tuple[Callable, Callable]] = {
-    "fcvt.s.w": (lambda rd, rs1: enc_fcvt_s_w(rd, rs1), fcvt_s_w),
-    "fcvt.s.wu": (lambda rd, rs1: enc_fcvt_s_wu(rd, rs1), fcvt_s_wu),
+    "fcvt.s.w": (
+        lambda rd, rs1: enc_fcvt_s_w(rd, rs1),
+        lambda a: box32(fcvt_s_w(a)),
+    ),
+    "fcvt.s.wu": (
+        lambda rd, rs1: enc_fcvt_s_wu(rd, rs1),
+        lambda a: box32(fcvt_s_wu(a)),
+    ),
+    "fcvt.d.w": (lambda rd, rs1: enc_fcvt_d_w(rd, rs1), fcvt_d_w),
+    "fcvt.d.wu": (lambda rd, rs1: enc_fcvt_d_wu(rd, rs1), fcvt_d_wu),
+}
+
+# FP to FP conversion (single <-> double)
+FP_CVT_F2F: dict[str, tuple[Callable, Callable]] = {
+    "fcvt.s.d": (
+        lambda rd, rs1: enc_fcvt_s_d(rd, rs1),
+        lambda a: box32(fcvt_s_d(a)),
+    ),
+    "fcvt.d.s": (
+        lambda rd, rs1: enc_fcvt_d_s(rd, rs1),
+        lambda a: fcvt_d_s(unbox32(a)),
+    ),
 }
 
 # FP to integer move (copy bits without conversion)
 # Note: Result goes to INTEGER register
 FP_MV_F2I: dict[str, tuple[Callable, Callable]] = {
-    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), fmv_x_w),
+    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), lambda a: fmv_x_w(unbox32(a))),
 }
 
 # Integer to FP move (copy bits without conversion)
 # Note: Source is INTEGER register, result goes to FP register
 FP_MV_I2F: dict[str, tuple[Callable, Callable]] = {
-    "fmv.w.x": (lambda rd, rs1: enc_fmv_w_x(rd, rs1), fmv_w_x),
+    "fmv.w.x": (lambda rd, rs1: enc_fmv_w_x(rd, rs1), lambda a: box32(fmv_w_x(a))),
 }
 
 # FP classify (FP operand -> integer bitmask result)
 # Note: Result goes to INTEGER register
 FP_CLASS: dict[str, tuple[Callable, Callable]] = {
-    "fclass.s": (lambda rd, rs1: enc_fclass_s(rd, rs1), fclass_s),
+    "fclass.s": (lambda rd, rs1: enc_fclass_s(rd, rs1), lambda a: fclass_s(unbox32(a))),
+    "fclass.d": (lambda rd, rs1: enc_fclass_d(rd, rs1), fclass_d),
 }
 
 # FP load (memory -> FP register)
@@ -745,7 +907,8 @@ FP_CLASS: dict[str, tuple[Callable, Callable]] = {
 #   encoder: lambda rd, rs1, imm -> 32-bit instruction
 #   evaluator: same as lw (loads 32 bits)
 FP_LOADS: dict[str, tuple[Callable, Callable]] = {
-    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), lw),
+    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), lambda m, a: box32(lw(m, a))),
+    "fld": (lambda rd, rs1, imm: enc_fld(rd, rs1, imm), fld),
 }
 
 # FP store (FP register -> memory)
@@ -753,4 +916,5 @@ FP_LOADS: dict[str, tuple[Callable, Callable]] = {
 #   encoder: lambda rs2, rs1, imm -> 32-bit instruction
 FP_STORES: dict[str, Callable] = {
     "fsw": lambda rs2, rs1, imm: enc_fsw(rs2, rs1, imm),
+    "fsd": lambda rs2, rs1, imm: enc_fsd(rs2, rs1, imm),
 }

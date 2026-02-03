@@ -43,8 +43,16 @@ module ma_stage #(
     output riscv_pkg::from_ma_comb_t o_from_ma_comb,
     output riscv_pkg::from_ma_to_wb_t o_from_ma_to_wb,
     // Delayed AMO write enable signal for regfile bypass
-    output logic o_amo_write_enable_delayed
+    output logic o_amo_write_enable_delayed,
+    // FP64 load/store sequencing (FLD/FSD)
+    output logic o_stall_for_fp_mem,
+    output logic o_fp_mem_addr_override,
+    output logic [XLEN-1:0] o_fp_mem_address,
+    output logic [XLEN-1:0] o_fp_mem_write_data,
+    output logic [3:0] o_fp_mem_byte_write_enable
 );
+
+  localparam int unsigned FpWidth = riscv_pkg::FpWidth;
 
   // Memory read data handling with block RAM latency compensation
   logic [XLEN-1:0] data_memory_read_data;
@@ -66,10 +74,159 @@ module ma_stage #(
   always_ff @(posedge i_clk)
     if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered & ~is_mmio_load)
       data_memory_read_data_registered <= i_data_mem_rd_data;
-  assign data_memory_read_data = is_mmio_load ? i_data_mem_rd_data :
+
+  // ===========================================================================
+  // FP64 Load/Store Sequencing (FLD/FSD)
+  // ===========================================================================
+  // 32-bit memory interface requires two accesses for 64-bit FP loads/stores.
+  // - FLD: capture low word, issue high-word read (addr+4) with a one-cycle stall
+  // - FSD: write low word, then high word (addr+4) with a two-cycle stall
+
+  typedef enum logic [1:0] {
+    FP_MEM_IDLE,
+    FP_MEM_LOAD_HI,
+    FP_MEM_STORE_HI
+  } fp_mem_state_e;
+
+  fp_mem_state_e fp_mem_state, fp_mem_state_next;
+  logic fp_mem_processed;
+  logic fp_load_start;
+  logic fp_store_start;
+  logic fp_mem_block;
+
+  logic [XLEN-1:0] fp_mem_base_addr;
+  logic [XLEN-1:0] fp_load_low_word;
+  logic [FpWidth-1:0] fp_store_data_reg;
+
+  logic use_direct_mem_data;
+  // For FLD low/high-word reads, bypass the stall-held data to capture fresh words.
+  assign use_direct_mem_data = is_mmio_load | fp_load_start | (fp_mem_state == FP_MEM_LOAD_HI);
+  assign data_memory_read_data = use_direct_mem_data ? i_data_mem_rd_data :
                                  (i_pipeline_ctrl.stall_registered ?
                                   data_memory_read_data_registered :
                                   i_data_mem_rd_data);
+
+  // Only start when pipeline is advancing and address is 8-byte aligned
+  assign fp_mem_block = fp_mem_processed && i_pipeline_ctrl.stall_registered;
+
+  assign fp_load_start = (fp_mem_state == FP_MEM_IDLE) &&
+                         i_from_ex_to_ma.is_fp_load_double &&
+                         !fp_mem_block &&
+                         (i_from_ex_to_ma.data_memory_address[2:0] == 3'b000);
+
+  assign fp_store_start = (fp_mem_state == FP_MEM_IDLE) &&
+                          i_from_ex_to_ma.is_fp_store_double &&
+                          !fp_mem_block &&
+                          (i_from_ex_to_ma.data_memory_address[2:0] == 3'b000);
+
+  // State transitions
+  always_comb begin
+    fp_mem_state_next = fp_mem_state;
+    unique case (fp_mem_state)
+      FP_MEM_IDLE: begin
+        if (fp_load_start) fp_mem_state_next = FP_MEM_LOAD_HI;
+        else if (fp_store_start) fp_mem_state_next = FP_MEM_STORE_HI;
+      end
+      FP_MEM_LOAD_HI: begin
+        fp_mem_state_next = FP_MEM_IDLE;
+      end
+      FP_MEM_STORE_HI: begin
+        fp_mem_state_next = FP_MEM_IDLE;
+      end
+      default: fp_mem_state_next = FP_MEM_IDLE;
+    endcase
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) begin
+      fp_mem_state <= FP_MEM_IDLE;
+    end else begin
+      fp_mem_state <= fp_mem_state_next;
+    end
+  end
+
+  // Capture base address and low word for FLD, and store data for FSD
+  always_ff @(posedge i_clk) begin
+    if (fp_load_start) begin
+      fp_mem_base_addr <= i_from_ex_to_ma.data_memory_address;
+      fp_load_low_word <= data_memory_read_data;
+    end else if (fp_store_start) begin
+      fp_mem_base_addr  <= i_from_ex_to_ma.data_memory_address;
+      fp_store_data_reg <= i_from_ex_to_ma.fp_store_data;
+    end
+  end
+
+  // Prevent re-triggering during stalls (same pattern as AMO)
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) begin
+      fp_mem_processed <= 1'b0;
+    end else if (fp_load_start || fp_store_start) begin
+      fp_mem_processed <= 1'b1;
+    end else if (!o_stall_for_fp_mem && !i_pipeline_ctrl.stall) begin
+      fp_mem_processed <= 1'b0;
+    end
+  end
+
+  // Stall generation: FLD/FSD stall until the high word completes
+  assign o_stall_for_fp_mem = fp_load_start | fp_store_start |
+                              (fp_mem_state == FP_MEM_LOAD_HI) |
+                              (fp_mem_state == FP_MEM_STORE_HI);
+
+  // Memory interface override for FP64 access
+  always_comb begin
+    o_fp_mem_addr_override = 1'b0;
+    o_fp_mem_address = '0;
+    o_fp_mem_write_data = '0;
+    o_fp_mem_byte_write_enable = 4'b0000;
+
+    if (fp_load_start) begin
+      // Issue high-word read (addr + 4) for FLD
+      o_fp_mem_addr_override = 1'b1;
+      o_fp_mem_address = i_from_ex_to_ma.data_memory_address + 32'd4;
+    end else if (fp_store_start) begin
+      // Write low word for FSD
+      o_fp_mem_addr_override = 1'b1;
+      o_fp_mem_address = i_from_ex_to_ma.data_memory_address;
+      o_fp_mem_write_data = i_from_ex_to_ma.fp_store_data[31:0];
+      o_fp_mem_byte_write_enable = 4'b1111;
+    end else if (fp_mem_state == FP_MEM_STORE_HI) begin
+      // Write high word for FSD
+      o_fp_mem_addr_override = 1'b1;
+      o_fp_mem_address = fp_mem_base_addr + 32'd4;
+      o_fp_mem_write_data = fp_store_data_reg[FpWidth-1:32];
+      o_fp_mem_byte_write_enable = 4'b1111;
+    end
+  end
+
+  // FP load data assembly (boxed for FLW)
+  logic [FpWidth-1:0] fp_load_data;
+  logic [FpWidth-1:0] fp_load_data_direct;
+  logic fp_load_data_valid;
+  logic [FpWidth-1:0] fp_load_data_latched;
+
+  // Latch full 64-bit load data when high word arrives so it stays stable
+  // across later stalls (e.g., FPU pipeline stalls).
+  always_ff @(posedge i_clk) begin
+    if (fp_mem_state == FP_MEM_LOAD_HI) begin
+      fp_load_data_latched <= {data_memory_read_data, fp_load_low_word};
+    end
+  end
+
+  assign fp_load_data = i_from_ex_to_ma.is_fp_load_double ?
+                        ((fp_mem_state == FP_MEM_LOAD_HI) ?
+                         {data_memory_read_data, fp_load_low_word} :
+                         fp_load_data_latched) :
+                        {{(FpWidth-32){1'b1}}, data_memory_read_data};
+
+  assign fp_load_data_direct = i_from_ex_to_ma.is_fp_load_double ?
+                               ((fp_mem_state == FP_MEM_LOAD_HI) ?
+                                {i_data_mem_rd_data, fp_load_low_word} :
+                                fp_load_data_latched) :
+                               {{(FpWidth-32){1'b1}}, i_data_mem_rd_data};
+
+  assign fp_load_data_valid = i_from_ex_to_ma.is_fp_load_double ?
+                              (fp_mem_state == FP_MEM_LOAD_HI) :
+                              i_from_ex_to_ma.is_fp_load;
 
   // Load unit extracts and sign/zero-extends the appropriate bytes
   load_unit #(
@@ -104,15 +261,19 @@ module ma_stage #(
       if (i_pipeline_ctrl.stall) begin
         // AMO completed but another stall is active - save for later
         amo_update_pending <= 1'b1;
-        saved_amo_result <= i_amo_result;
-        saved_amo_instruction <= i_from_ex_to_ma.instruction;
-        saved_amo_regfile_write_enable <= i_from_ex_to_ma.regfile_write_enable;
       end
       // If not stalled, we'll update directly (handled below), no pending needed
     end else if (~i_pipeline_ctrl.stall && amo_update_pending) begin
       // Stall ended and we have a pending AMO update - clear the flag
       // (the actual update happens in the pipeline register block below)
       amo_update_pending <= 1'b0;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (amo_write_enable_delayed && i_pipeline_ctrl.stall) begin
+      saved_amo_result <= i_amo_result;
+      saved_amo_instruction <= i_from_ex_to_ma.instruction;
+      saved_amo_regfile_write_enable <= i_from_ex_to_ma.regfile_write_enable;
     end
   end
 
@@ -169,14 +330,14 @@ module ma_stage #(
         o_from_ma_to_wb.regfile_write_data <= {31'b0, ~i_from_ex_to_ma.sc_success};
       end else if (i_from_ex_to_ma.is_fp_to_int) begin
         // FP-to-int: use FP result for integer regfile write
-        o_from_ma_to_wb.regfile_write_data <= i_from_ex_to_ma.fp_result;
+        o_from_ma_to_wb.regfile_write_data <= i_from_ex_to_ma.fp_result[XLEN-1:0];
       end else begin
         o_from_ma_to_wb.regfile_write_data <= i_from_ex_to_ma.alu_result;
       end
       // F extension: FP write data and flags
-      // FLW: use memory data, FP compute: use fp_result from EX stage
+      // FLW/FLD: use memory data (boxed/assembled), FP compute: use fp_result from EX stage
       if (i_from_ex_to_ma.is_fp_load) begin
-        o_from_ma_to_wb.fp_regfile_write_data <= data_memory_read_data;
+        o_from_ma_to_wb.fp_regfile_write_data <= fp_load_data;
       end else begin
         o_from_ma_to_wb.fp_regfile_write_data <= i_from_ex_to_ma.fp_result;
       end
@@ -190,6 +351,9 @@ module ma_stage #(
   assign o_from_ma_comb.data_memory_read_data = data_memory_read_data;
   // F extension: Direct BRAM output for FP load forwarding (bypasses stall_registered mux)
   assign o_from_ma_comb.data_memory_read_data_direct = i_data_mem_rd_data;
+  assign o_from_ma_comb.fp_load_data = fp_load_data;
+  assign o_from_ma_comb.fp_load_data_direct = fp_load_data_direct;
+  assign o_from_ma_comb.fp_load_data_valid = fp_load_data_valid;
 
   // Output the delayed AMO write enable for regfile bypass
   assign o_amo_write_enable_delayed = amo_write_enable_delayed;

@@ -71,7 +71,7 @@ Arena allocator and malloc/free for dynamic memory management:
 - **read_timer64()**: Read full 64-bit hardware timer counter (for long benchmarks)
 - **delay_ticks()**: Delay for specified timer ticks
 - **delay_1_second()**: Delay for one second (uses FPGA_CPU_CLK_FREQ)
-- Default clock frequency: 322.265625 MHz (override with FPGA_CPU_CLK_FREQ macro)
+- Default clock frequency: 300 MHz (override with FPGA_CPU_CLK_FREQ macro)
 - Note: Use `read_timer64()` for benchmarks longer than ~13 seconds to avoid 32-bit overflow
 
 ### FIFO Interface (`fifo.h`)
@@ -134,7 +134,7 @@ int main(void) {
 ## Configuration
 
 Key compile-time configurations:
-- `FPGA_CPU_CLK_FREQ`: CPU clock frequency in Hz (default: 322265625)
+- `FPGA_CPU_CLK_FREQ`: CPU clock frequency in Hz (default: 300000000)
 - `TARGET_SCALE`: Fixed-point decimal scale for FIX prices (default: 8)
 
 ## Dependencies

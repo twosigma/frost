@@ -170,14 +170,24 @@ module id_stage #(
 
   // F extension - floating-point instruction detection
   // Direct decode from opcode for timing optimization
-  logic is_fp_load_direct;  // FLW
-  logic is_fp_store_direct;  // FSW
+  logic is_fp_load_direct;  // FLW/FLD
+  logic is_fp_store_direct;  // FSW/FSD
+  logic is_fp_load_double_direct;  // FLD
+  logic is_fp_store_double_direct;  // FSD
   logic is_fp_compute_direct;  // All F arithmetic/compare/convert ops
   logic is_fp_fma_direct;  // FMA instructions (separate opcode)
   logic is_fp_instruction_direct;
 
-  assign is_fp_load_direct = instruction.opcode == riscv_pkg::OPC_LOAD_FP;
-  assign is_fp_store_direct = instruction.opcode == riscv_pkg::OPC_STORE_FP;
+  assign is_fp_load_direct = (instruction.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                             ((instruction.funct3 == 3'b010) ||
+                              (instruction.funct3 == 3'b011));
+  assign is_fp_store_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
+                              ((instruction.funct3 == 3'b010) ||
+                               (instruction.funct3 == 3'b011));
+  assign is_fp_load_double_direct = (instruction.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                                    (instruction.funct3 == 3'b011);
+  assign is_fp_store_double_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
+                                     (instruction.funct3 == 3'b011);
   assign is_fp_compute_direct = instruction.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct = (instruction.opcode == riscv_pkg::OPC_FMADD) |
                             (instruction.opcode == riscv_pkg::OPC_FMSUB) |
@@ -256,9 +266,9 @@ module id_stage #(
   logic fp_wb_bypass_rs1;
   logic fp_wb_bypass_rs2;
   logic fp_wb_bypass_rs3;
-  logic [XLEN-1:0] fp_source_reg_1_data_bypassed;
-  logic [XLEN-1:0] fp_source_reg_2_data_bypassed;
-  logic [XLEN-1:0] fp_source_reg_3_data_bypassed;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_1_data_bypassed;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_data_bypassed;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_data_bypassed;
 
   // Use fp_dest_reg instead of instruction.dest_reg because for pipelined FPU
   // operations, the original instruction has moved on but fp_dest_reg tracks the
@@ -356,6 +366,8 @@ module id_stage #(
       o_from_id_to_ex.is_fp_instruction            <= 1'b0;
       o_from_id_to_ex.is_fp_load                   <= 1'b0;
       o_from_id_to_ex.is_fp_store                  <= 1'b0;
+      o_from_id_to_ex.is_fp_load_double            <= 1'b0;
+      o_from_id_to_ex.is_fp_store_double           <= 1'b0;
       o_from_id_to_ex.is_fp_compute                <= 1'b0;
       o_from_id_to_ex.is_pipelined_fp_op           <= 1'b0;
       o_from_id_to_ex.is_fp_to_int                 <= 1'b0;
@@ -430,6 +442,9 @@ module id_stage #(
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
       o_from_id_to_ex.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
+      o_from_id_to_ex.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_double_direct;
+      o_from_id_to_ex.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
+                                            is_fp_store_double_direct;
       o_from_id_to_ex.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
                                        (is_fp_compute_direct | is_fp_fma_direct);
       o_from_id_to_ex.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :

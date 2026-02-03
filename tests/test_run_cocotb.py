@@ -17,12 +17,16 @@
 """Unified runner for cocotb simulations - works with pytest and standalone."""
 
 import os
+import random
 import re
 import subprocess
 import sys
+import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 import pytest
 
@@ -112,6 +116,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="fpu_test",
         description="FPU compliance test",
+    ),
+    "fpu_assembly_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fpu_assembly_test",
+        description="FPU assembly hazard tests",
     ),
     "hello_world": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -333,13 +343,20 @@ class CocotbRunner:
 
         return False
 
-    def _verilator_needs_rebuild(self) -> bool:
+    def _get_sim_build_dir(self, env: Mapping[str, str] | None = None) -> Path:
+        """Return sim_build directory, honoring SIM_BUILD if set."""
+        env_map = os.environ if env is None else env
+        sim_build = env_map.get("SIM_BUILD", "")
+        if sim_build:
+            return Path(sim_build).expanduser().resolve()
+        return self.test_directory / "sim_build"
+
+    def _verilator_needs_rebuild(self, sim_build_dir: Path) -> bool:
         """Check if Verilator needs a full rebuild due to toplevel change.
 
         Returns:
             True if rebuild needed (toplevel changed), False for incremental build.
         """
-        sim_build_dir = self.test_directory / "sim_build"
         toplevel_marker = sim_build_dir / ".last_toplevel"
         verilator_binary = sim_build_dir / "Vtop"
 
@@ -357,9 +374,8 @@ class CocotbRunner:
         except OSError:
             return False
 
-    def _update_verilator_toplevel_marker(self) -> None:
+    def _update_verilator_toplevel_marker(self, sim_build_dir: Path) -> None:
         """Record the current toplevel for future incremental build checks."""
-        sim_build_dir = self.test_directory / "sim_build"
         sim_build_dir.mkdir(exist_ok=True)
         toplevel_marker = sim_build_dir / ".last_toplevel"
         toplevel_marker.write_text(self.hdl_toplevel_module)
@@ -375,13 +391,17 @@ class CocotbRunner:
         original_dir = os.getcwd()
         os.chdir(self.test_directory)
         env = self.setup_environment()
+        sim_build_dir = self._get_sim_build_dir(env)
+        env["SIM_BUILD"] = str(sim_build_dir)
 
         try:
             # For Verilator, skip clean to enable incremental builds when RTL unchanged.
             # However, if the toplevel module changed, we must rebuild.
             # For other simulators, always clean to ensure fresh state.
             simulator = env.get("SIM", "icarus")
-            needs_clean = simulator != "verilator" or self._verilator_needs_rebuild()
+            needs_clean = simulator != "verilator" or self._verilator_needs_rebuild(
+                sim_build_dir
+            )
 
             if needs_clean:
                 # Don't fail on clean errors (e.g., permission denied on root-owned files)
@@ -422,7 +442,7 @@ class CocotbRunner:
             # For Verilator, update the toplevel marker only after successful build.
             # This ensures we don't mark a toplevel as built if compilation failed.
             if simulator == "verilator" and result.returncode == 0:
-                self._update_verilator_toplevel_marker()
+                self._update_verilator_toplevel_marker(sim_build_dir)
 
             return result
 
@@ -509,6 +529,146 @@ class TestRealPrograms:
 
 
 # =============================================================================
+# Seed Sweep Support
+# =============================================================================
+
+
+def _run_single_seed(
+    test_name: str,
+    simulator: str,
+    seed: int,
+    testcase: str | None,
+    temp_dir: str,
+) -> tuple[int, bool, str]:
+    """Run a single simulation with the given seed.
+
+    This function is designed to be called from a separate process.
+
+    Args:
+        test_name: Name of the test from TEST_REGISTRY
+        simulator: Simulator to use
+        seed: Random seed for this run
+        testcase: Optional specific test case to run
+        temp_dir: Temporary directory for build artifacts
+
+    Returns:
+        Tuple of (seed, passed, error_message)
+    """
+    # Set up environment for this specific run
+    os.environ["SIM"] = simulator
+    os.environ["GUI"] = "0"
+    os.environ["COCOTB_RANDOM_SEED"] = str(seed)
+    os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
+
+    if testcase:
+        os.environ["COCOTB_TEST_FILTER"] = f"{testcase}$"
+
+    config = TEST_REGISTRY[test_name]
+    runner = CocotbRunner.from_config(config)
+
+    try:
+        result = runner.run_simulation(check=False, capture_output=True)
+        passed = not runner.check_for_failures(result)
+        error_msg = ""
+        if not passed:
+            # Extract relevant error info from output
+            combined = (result.stdout or "") + (result.stderr or "")
+            # Get last 20 lines for context
+            lines = combined.strip().split("\n")
+            error_msg = "\n".join(lines[-20:]) if lines else "Unknown error"
+        return (seed, passed, error_msg)
+    except Exception as e:
+        return (seed, False, str(e))
+
+
+def run_seed_sweep(
+    test_name: str,
+    simulator: str,
+    num_seeds: int,
+    testcase: str | None = None,
+    max_workers: int | None = None,
+) -> dict[str, Any]:
+    """Run multiple simulations with different random seeds in parallel.
+
+    Args:
+        test_name: Name of the test from TEST_REGISTRY
+        simulator: Simulator to use
+        num_seeds: Number of different seeds to test
+        testcase: Optional specific test case to run
+        max_workers: Maximum number of parallel workers (default: num_seeds)
+
+    Returns:
+        Dictionary with results summary
+    """
+    # Generate random seeds
+    seeds = [random.randint(0, 2**31 - 1) for _ in range(num_seeds)]
+
+    print(f"\n{'='*60}")
+    print(f"Seed Sweep: Running {num_seeds} simulations in parallel")
+    print(f"Test: {test_name}, Simulator: {simulator}")
+    print(f"Seeds: {seeds}")
+    print(f"{'='*60}\n")
+
+    results: dict[int, tuple[bool, str]] = {}
+    workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
+
+    with tempfile.TemporaryDirectory(prefix="frost_seed_sweep_") as temp_dir:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            # Submit all jobs
+            futures = {
+                executor.submit(
+                    _run_single_seed, test_name, simulator, seed, testcase, temp_dir
+                ): seed
+                for seed in seeds
+            }
+
+            # Collect results as they complete
+            for future in as_completed(futures):
+                seed = futures[future]
+                try:
+                    ret_seed, passed, error_msg = future.result()
+                    results[ret_seed] = (passed, error_msg)
+                    status = "PASSED" if passed else "FAILED"
+                    print(f"  Seed {ret_seed}: {status}")
+                except Exception as e:
+                    results[seed] = (False, str(e))
+                    print(f"  Seed {seed}: FAILED (exception: {e})")
+
+    # Generate report
+    passed_seeds = [s for s, (p, _) in results.items() if p]
+    failed_seeds = [s for s, (p, _) in results.items() if not p]
+
+    print(f"\n{'='*60}")
+    print("SEED SWEEP REPORT")
+    print(f"{'='*60}")
+    print(f"Total runs: {num_seeds}")
+    print(f"Passed: {len(passed_seeds)}")
+    print(f"Failed: {len(failed_seeds)}")
+    print()
+
+    if passed_seeds:
+        print(f"Passing seeds: {sorted(passed_seeds)}")
+    if failed_seeds:
+        print(f"Failing seeds: {sorted(failed_seeds)}")
+        print("\nTo reproduce a failure, run:")
+        for seed in sorted(failed_seeds):
+            print(
+                f"  ./test_run_cocotb.py {test_name} --sim={simulator} --random-seed={seed}"
+            )
+
+    print(f"{'='*60}\n")
+
+    return {
+        "total": num_seeds,
+        "passed": len(passed_seeds),
+        "failed": len(failed_seeds),
+        "passed_seeds": passed_seeds,
+        "failed_seeds": failed_seeds,
+        "details": results,
+    }
+
+
+# =============================================================================
 # Command-line Interface
 # =============================================================================
 
@@ -529,8 +689,10 @@ Examples:
   %(prog)s hello_world --sim=verilator  # Run Hello World with Verilator
   %(prog)s isa_test --sim=icarus  # Run ISA compliance tests
   %(prog)s coremark --sim=questa --gui  # Run Coremark with Questa in GUI mode
+  %(prog)s cpu --sim=verilator --seed-sweep 10  # Run 10 seeds in parallel, report results
 
 Note: GUI mode only works with questa simulator.
+      Seed sweep runs simulations in parallel and reports pass/fail for each seed.
 
 Available tests:
 """
@@ -562,8 +724,46 @@ Available tests:
         default=None,
         help="Random seed for reproducibility (sets COCOTB_RANDOM_SEED env var)",
     )
+    parser.add_argument(
+        "--seed-sweep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Run N simulations with different random seeds in parallel and report results",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        metavar="W",
+        help="Maximum parallel workers for seed sweep (default: min(N, cpu_count))",
+    )
 
     args = parser.parse_args()
+
+    # Handle seed sweep mode
+    if args.seed_sweep:
+        if args.seed_sweep < 1:
+            print("Error: --seed-sweep requires a positive integer")
+            sys.exit(1)
+        if args.random_seed:
+            print("Error: --seed-sweep and --random-seed are mutually exclusive")
+            sys.exit(1)
+        if args.gui:
+            print("Error: --seed-sweep does not support GUI mode")
+            sys.exit(1)
+
+        results = run_seed_sweep(
+            test_name=args.test,
+            simulator=args.sim,
+            num_seeds=args.seed_sweep,
+            testcase=args.testcase,
+            max_workers=args.max_workers,
+        )
+
+        if results["failed"] > 0:
+            sys.exit(1)
+        sys.exit(0)
 
     # Set environment based on args
     os.environ["SIM"] = args.sim
