@@ -336,6 +336,7 @@ module ex_stage #(
     end
   end
 
+
   // Integer operand for FMV.W.X and FCVT.S.W/FCVT.S.WU
   // Use capture bypass during load-use stalls so the FPU captures MA load data.
   assign fpu_int_operand = i_fwd_to_ex.capture_bypass_int_valid ?

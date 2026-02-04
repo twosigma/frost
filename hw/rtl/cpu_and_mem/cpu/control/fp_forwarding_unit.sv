@@ -275,6 +275,10 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs1;
   assign wb_dest_matches_rs1 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.source_reg_1);
+  // WB bypass: allow stalled FP consumers to see the just-written FP result
+  // even if forwarding flags are stale during a long stall.
+  logic fp_wb_bypass_rs1;
+  assign fp_wb_bypass_rs1 = i_from_ma_to_wb.fp_regfile_write_enable && wb_dest_matches_rs1;
   logic ma_fp_result_match_rs1;
   assign ma_fp_result_match_rs1 = i_from_ex_to_ma.fp_regfile_write_enable &&
                                   !i_from_ex_to_ma.is_fp_load &&
@@ -288,7 +292,8 @@ module fp_forwarding_unit #(
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs1 ? i_from_ex_to_ma.fp_result :
       (forward_fp_rs1_from_ma && ma_dest_matches_rs1) ? fp_register_write_data_ma_final :
-      (forward_fp_rs1_from_wb && wb_dest_matches_rs1) ? i_from_ma_to_wb.fp_regfile_write_data :
+      ((forward_fp_rs1_from_wb && wb_dest_matches_rs1) || fp_wb_bypass_rs1) ?
+          i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs1_match ? fp_load_capture_data :
       fp_source_reg_1_raw_value;
 
@@ -307,12 +312,8 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs2;
   assign wb_dest_matches_rs2 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.source_reg_2);
-  // Store-only WB bypass: FP stores can consume a just-written FP result
-  // even if forwarding flags are stale during a long FP stall.
-  logic fp_store_wb_bypass_rs2;
-  assign fp_store_wb_bypass_rs2 = i_from_id_to_ex.is_fp_store &&
-                                  i_from_ma_to_wb.fp_regfile_write_enable &&
-                                  wb_dest_matches_rs2;
+  logic fp_wb_bypass_rs2;
+  assign fp_wb_bypass_rs2 = i_from_ma_to_wb.fp_regfile_write_enable && wb_dest_matches_rs2;
   logic ma_fp_result_match_rs2;
   assign ma_fp_result_match_rs2 = i_from_ex_to_ma.fp_regfile_write_enable &&
                                   !i_from_ex_to_ma.is_fp_load &&
@@ -326,7 +327,7 @@ module fp_forwarding_unit #(
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs2 ? i_from_ex_to_ma.fp_result :
       (forward_fp_rs2_from_ma && ma_dest_matches_rs2) ? fp_register_write_data_ma_final :
-      ((forward_fp_rs2_from_wb && wb_dest_matches_rs2) || fp_store_wb_bypass_rs2) ?
+      ((forward_fp_rs2_from_wb && wb_dest_matches_rs2) || fp_wb_bypass_rs2) ?
           i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs2_match ? fp_load_capture_data :
       fp_source_reg_2_raw_value;
@@ -346,6 +347,8 @@ module fp_forwarding_unit #(
   logic wb_dest_matches_rs3;
   assign wb_dest_matches_rs3 = (i_from_ma_to_wb.fp_dest_reg ==
                                 i_from_id_to_ex.instruction.funct7[6:2]);
+  logic fp_wb_bypass_rs3;
+  assign fp_wb_bypass_rs3 = i_from_ma_to_wb.fp_regfile_write_enable && wb_dest_matches_rs3;
   logic ma_fp_result_match_rs3;
   assign ma_fp_result_match_rs3 = i_from_ex_to_ma.fp_regfile_write_enable &&
                                   !i_from_ex_to_ma.is_fp_load &&
@@ -359,7 +362,8 @@ module fp_forwarding_unit #(
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs3 ? i_from_ex_to_ma.fp_result :
       (forward_fp_rs3_from_ma && ma_dest_matches_rs3) ? fp_register_write_data_ma_final :
-      (forward_fp_rs3_from_wb && wb_dest_matches_rs3) ? i_from_ma_to_wb.fp_regfile_write_data :
+      ((forward_fp_rs3_from_wb && wb_dest_matches_rs3) || fp_wb_bypass_rs3) ?
+          i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs3_match ? fp_load_capture_data :
       fp_source_reg_3_raw_value;
 

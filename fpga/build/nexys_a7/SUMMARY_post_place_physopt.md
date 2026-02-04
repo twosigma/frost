@@ -6,32 +6,32 @@
 |--------|-------|
 | Clock Frequency | 80.000 MHz |
 | Clock Period | 12.500 ns |
-| WNS (Setup) | 0.007 ns |
+| WNS (Setup) | 0.496 ns |
 | TNS (Setup) | 0.000 ns (0 failing) |
-| WHS (Hold) | -0.344 ns |
-| THS (Hold) | -14.766 ns (183 failing) |
+| WHS (Hold) | -0.327 ns |
+| THS (Hold) | -14.623 ns (141 failing) |
 | Timing Met | Yes |
 
 ## Worst Setup Path
 
 | Metric | Value |
 |--------|-------|
-| Slack | 0.007 ns |
-| Data Path Delay | 12.395 ns |
-| Logic Delay | 2.649 ns |
-| Route Delay | 9.746 ns |
+| Slack | 0.496 ns |
+| Data Path Delay | 11.316 ns |
+| Logic Delay | 2.891 ns |
+| Route Delay | 8.425 ns |
 | Logic Levels | 12 |
 
 ### Path Endpoints
 
-- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/forwarding_unit_inst/forward_source_reg_1_from_wb_reg/C`
-- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/ma_stage_inst/o_from_ma_to_wb_reg[regfile_write_data][2]/D`
+- **Source**: `subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/l0_cache_inst/data_loaded_from_cache_reg_reg[19]/C`
+- **Destination**: `subsystem/frost_processor/cpu_and_memory_subsystem/data_memory/gen_port_a_byte_logic[1].memory_reg_1_0_0/WEA[0]`
 
 ## Resource Utilization
 
 | Resource | Used | Available | Util% |
 |----------|------|-----------|-------|
-| LUTs | 28183 | 63400 | 44.45% |
-| Registers | 18890 | 126800 | 14.90% |
+| LUTs | 28159 | 63400 | 44.41% |
+| Registers | 18878 | 126800 | 14.89% |
 | Block RAM | 68.5 | 135 | 50.74% |
 | DSPs | 28 | 240 | 11.67% |
