@@ -63,16 +63,12 @@ module cache_hit_detector #(
     output logic o_cache_hit_on_load
 );
 
-  localparam int unsigned UnallocatedAddrBitsWidth = 32 - MEM_BYTE_ADDR_WIDTH;
-
   // ===========================================================================
   // Address Checks
   // ===========================================================================
   logic is_memory_mapped_io;
-  logic [UnallocatedAddrBitsWidth-1:0] unallocated_address_bits;
 
   assign is_memory_mapped_io = i_full_address >= MMIO_ADDR;
-  assign unallocated_address_bits = i_full_address[31:MEM_BYTE_ADDR_WIDTH];
 
   // ===========================================================================
   // Validity Checks (parallel with tag comparison)
@@ -137,8 +133,7 @@ module cache_hit_detector #(
   // is_load_instruction is registered from ID stage and available early.
   logic cache_access_eligible;
   assign cache_access_eligible = i_is_load_instruction &&
-                                  !is_memory_mapped_io &&
-                                  (unallocated_address_bits == '0);
+                                  !is_memory_mapped_io;
 
   // ===========================================================================
   // Final Cache Hit

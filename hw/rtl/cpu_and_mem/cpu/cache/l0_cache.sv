@@ -53,6 +53,11 @@ module l0_cache #(
     input riscv_pkg::from_ex_to_ma_t i_from_ex_to_ma,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     input riscv_pkg::from_ma_comb_t i_from_ma_comb,
+    // FP store write interface (MA stage override)
+    input logic i_fp_mem_write_active,
+    input logic [XLEN-1:0] i_fp_mem_address,
+    input logic [XLEN-1:0] i_fp_mem_write_data,
+    input logic [XLEN/8-1:0] i_fp_mem_byte_write_enable,
     // A extension: AMO write interface for cache coherence
     input riscv_pkg::amo_interface_t i_amo,
     // Outputs to Forwarding Unit, Hazard Resolution Unit
@@ -68,7 +73,6 @@ module l0_cache #(
 
   // Cache addressing - bottom 2 bits ignored (word-aligned 32-bit access)
   localparam int unsigned CacheTagWidth = (MEM_BYTE_ADDR_WIDTH - 2) - CacheIndexWidth;
-  localparam int unsigned UnallocatedAddrBitsWidth = 32 - MEM_BYTE_ADDR_WIDTH;
 
   // Cache entry structure: data + tag + valid bits
   typedef struct packed {
@@ -89,7 +93,6 @@ module l0_cache #(
 
   logic [CacheIndexWidth-1:0] cache_index_ex, cache_index_ma;
   logic [CacheTagWidth-1:0] tag_ex, tag_ma;
-  logic [UnallocatedAddrBitsWidth-1:0] unallocated_address_bits_ex;
   logic cache_write_enable;
   logic [XLEN/8-1:0] cache_byte_write_enable;
   logic [CacheIndexWidth-1:0] cache_write_index, cache_read_index;
@@ -100,7 +103,6 @@ module l0_cache #(
   // Extract cache index and tag from memory address
   assign cache_index_ex = i_from_ex_comb.data_memory_address[2+:CacheIndexWidth];
   assign tag_ex = i_from_ex_comb.data_memory_address[(2+CacheIndexWidth)+:CacheTagWidth];
-  assign unallocated_address_bits_ex = i_from_ex_comb.data_memory_address[31:MEM_BYTE_ADDR_WIDTH];
   // Check if address is memory-mapped I/O (bypass cache for peripherals)
   assign is_memory_mapped_io_ex = i_from_ex_comb.data_memory_address >= MMIO_ADDR;
 
@@ -136,8 +138,11 @@ module l0_cache #(
       .i_tag_ma(tag_ma),
       // AMO interface
       .i_amo,
-      // Unallocated address bits
-      .i_unallocated_address_bits_zero(unallocated_address_bits_ex == '0),
+      // FP store override
+      .i_fp_mem_write_active,
+      .i_fp_mem_address,
+      .i_fp_mem_write_data,
+      .i_fp_mem_byte_write_enable,
       // Current cache entry (for valid bit merging)
       .i_cache_read_tag(cache_read_entry_ex.tag),
       .i_cache_read_valid(cache_read_entry_ex.valid),
@@ -264,6 +269,7 @@ module l0_cache #(
   //   2. Data forwarding (data_loaded_from_cache_reg in forwarding_unit.sv)
   // By using registered signals for both, we ensure consistency and break the
   // critical timing path from cache lookup to stall/forwarding decisions.
+  //
   always_ff @(posedge i_clk)
     if (i_rst) begin
       cache_hit_on_load_reg <= 1'b0;

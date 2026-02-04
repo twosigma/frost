@@ -474,6 +474,11 @@ module cpu #(
       .i_from_ex_comb(from_ex_comb),
       .i_from_ex_to_ma(from_ex_to_ma),
       .i_from_ma_comb(from_ma_comb),
+      // FP store override (fsw/fsd)
+      .i_fp_mem_write_active(fp_mem_write_active),
+      .i_fp_mem_address(fp_mem_address),
+      .i_fp_mem_write_data(fp_mem_write_data),
+      .i_fp_mem_byte_write_enable(fp_mem_byte_write_enable),
       // A extension: AMO write interface for cache coherence
       .i_amo(amo),
       .o_from_cache(from_cache)

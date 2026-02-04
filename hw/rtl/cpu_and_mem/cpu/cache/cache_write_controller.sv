@@ -75,8 +75,11 @@ module cache_write_controller #(
     // AMO interface
     input riscv_pkg::amo_interface_t i_amo,
 
-    // Unallocated address bits (for load filtering)
-    input logic i_unallocated_address_bits_zero,
+    // FP store write interface (MA stage override)
+    input logic i_fp_mem_write_active,
+    input logic [XLEN-1:0] i_fp_mem_address,
+    input logic [XLEN-1:0] i_fp_mem_write_data,
+    input logic [XLEN/8-1:0] i_fp_mem_byte_write_enable,
 
     // Current cache entry (for valid bit merging on stores)
     input logic [CacheTagWidth-1:0] i_cache_read_tag,
@@ -97,6 +100,10 @@ module cache_write_controller #(
   logic is_memory_mapped_io_amo;
   assign is_memory_mapped_io_amo = i_amo.write_address >= MMIO_ADDR;
 
+  // MMIO Detection for FP store
+  logic is_memory_mapped_io_fp;
+  assign is_memory_mapped_io_fp = i_fp_mem_address >= MMIO_ADDR;
+
   // ===========================================================================
   // Store Write Enable (Combinational - EX Stage Timing)
   // ===========================================================================
@@ -114,7 +121,16 @@ module cache_write_controller #(
   // Select store index independent of stall to avoid pulling stall logic into the
   // cache write address path. Write enable still gates the actual write.
   logic store_write_select;
-  assign store_write_select = |i_data_memory_byte_write_enable_ex & ~is_memory_mapped_io_ex;
+  assign store_write_select = |i_data_memory_byte_write_enable_ex &
+                              ~is_memory_mapped_io_ex;
+
+  // ===========================================================================
+  // FP Store Write Enable (MA Stage Override)
+  // ===========================================================================
+  logic cache_write_enable_from_fp_store;
+  assign cache_write_enable_from_fp_store = i_fp_mem_write_active &
+                                            (|i_fp_mem_byte_write_enable) &
+                                            ~is_memory_mapped_io_fp;
 
   // ===========================================================================
   // Load Write Enable (Pipelined - WB Stage Timing)
@@ -129,12 +145,11 @@ module cache_write_controller #(
     if (i_rst || i_flush) cache_write_enable_from_load_registered <= 1'b0;
     else if (~i_stall)
       cache_write_enable_from_load_registered <= i_is_load_instruction_ma &
-                                        ~i_is_memory_mapped_io_ma &
-                                        i_unallocated_address_bits_zero;
+                                        ~i_is_memory_mapped_io_ma;
 
   // Load data, index, tag - don't need flush gating (enable is cleared)
   always_ff @(posedge i_clk)
-    if (~i_stall_for_trap_check) begin
+    if (~i_stall) begin
       load_write_data_registered <= i_data_memory_read_data_ma;
       cache_index_load_registered <= i_cache_index_ma;
       tag_load_registered <= i_tag_ma;
@@ -147,7 +162,8 @@ module cache_write_controller #(
   // AMO Write Enable
   // ===========================================================================
   logic cache_write_enable_from_amo;
-  assign cache_write_enable_from_amo = i_amo.write_enable & ~is_memory_mapped_io_amo;
+  assign cache_write_enable_from_amo = i_amo.write_enable &
+                                       ~is_memory_mapped_io_amo;
 
   // Track previous cycle's AMO write enable to block stale load writes.
   // When AMO stall ends, the frozen load write enable would fire on the same
@@ -165,12 +181,13 @@ module cache_write_controller #(
   // stale load data (frozen during AMO stall) from overwriting AMO result.
   assign o_cache_write_enable = cache_write_enable_from_store ||
                                 cache_write_enable_from_amo ||
-                                (cache_write_enable_from_load && i_unallocated_address_bits_zero &&
-                                 ~amo_write_enable_prev);
+                                cache_write_enable_from_fp_store ||
+                                (cache_write_enable_from_load && ~amo_write_enable_prev);
 
-  // For stores, use EX stage per-byte write enables; for loads and AMOs, write all bytes
-  assign o_cache_byte_write_enable = cache_write_enable_from_store ?
-                                     i_data_memory_byte_write_enable_ex :
+  // For stores, use EX stage per-byte write enables; for loads/AMO/FP stores, write all bytes
+  assign o_cache_byte_write_enable = cache_write_enable_from_amo ? '1 :
+                                     cache_write_enable_from_fp_store ? i_fp_mem_byte_write_enable :
+                                     cache_write_enable_from_store ? i_data_memory_byte_write_enable_ex :
                                      '1;
 
   // ===========================================================================
@@ -178,8 +195,11 @@ module cache_write_controller #(
   // ===========================================================================
   logic [CacheIndexWidth-1:0] cache_index_amo;
   assign cache_index_amo = i_amo.write_address[2+:CacheIndexWidth];
+  logic [CacheIndexWidth-1:0] cache_index_fp;
+  assign cache_index_fp = i_fp_mem_address[2+:CacheIndexWidth];
 
   assign o_cache_write_index = i_amo.write_enable ? cache_index_amo :
+                               cache_write_enable_from_fp_store ? cache_index_fp :
                                store_write_select ? i_cache_index_ex :
                                cache_index_load_registered;
 
@@ -187,6 +207,7 @@ module cache_write_controller #(
   // Write Data Selection
   // ===========================================================================
   assign o_cache_write_data = cache_write_enable_from_amo ? i_amo.write_data :
+                              cache_write_enable_from_fp_store ? i_fp_mem_write_data :
                               cache_write_enable_from_store ? i_data_memory_write_data_ex :
                               load_write_data_registered;
 
@@ -195,8 +216,11 @@ module cache_write_controller #(
   // ===========================================================================
   logic [CacheTagWidth-1:0] tag_amo;
   assign tag_amo = i_amo.write_address[(2+CacheIndexWidth)+:CacheTagWidth];
+  logic [CacheTagWidth-1:0] tag_fp;
+  assign tag_fp = i_fp_mem_address[(2+CacheIndexWidth)+:CacheTagWidth];
 
   assign o_cache_write_tag = cache_write_enable_from_amo ? tag_amo :
+                             cache_write_enable_from_fp_store ? tag_fp :
                              cache_write_enable_from_store ? i_tag_ex :
                              tag_load_registered;
 
@@ -205,8 +229,9 @@ module cache_write_controller #(
   // ===========================================================================
   // For AMO: all bytes are valid (word-only access)
   // For stores: if tag matches, OR new bytes with existing; otherwise only new bytes
-  // For loads: all bytes become valid
+  // For loads/FP stores: all bytes become valid
   assign o_cache_write_valid = cache_write_enable_from_amo ?
+      '1 : cache_write_enable_from_fp_store ?
       '1 : cache_write_enable_from_store ?
       (i_cache_read_tag == i_tag_ex ?
       (o_cache_byte_write_enable | i_cache_read_valid) :

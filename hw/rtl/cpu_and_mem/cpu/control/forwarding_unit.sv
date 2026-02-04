@@ -187,7 +187,7 @@ module forwarding_unit #(
   // TIMING: Replicated registers - identical logic drives both copies
   always_ff @(posedge i_clk)
     if (i_pipeline_ctrl.stall_for_load_use_hazard || (i_pipeline_ctrl.stall && mmio_load_in_ma))
-      // Load/AMO-use hazard or MMIO-load stall: use memory data
+      // Load-use hazard or MMIO-load stall: use memory data
       // (refresh during MMIO stall so forwarding sees the updated read data).
       if (i_amo_read_phase) begin
         register_write_data_ma_rs1 <= i_from_ma_comb.data_memory_read_data;
@@ -213,7 +213,12 @@ module forwarding_unit #(
   logic [XLEN-1:0] forward_data_ma_rs1;
   logic [XLEN-1:0] forward_data_ma_rs2;
 
-  assign use_cache_hit_forward = i_from_cache.cache_hit_on_load_reg;
+  // Only use cache-hit forwarding when the MA stage instruction is a load/LR.
+  // Otherwise a cache hit for an unrelated load in EX would incorrectly override
+  // MA forwarding data (e.g., AMO result), corrupting source operands.
+  assign use_cache_hit_forward =
+      i_from_cache.cache_hit_on_load_reg &&
+      (i_from_ex_to_ma.is_load_instruction || i_from_ex_to_ma.is_lr);
   assign forward_data_ma_rs1 = use_cache_hit_forward ?
                                i_from_cache.data_loaded_from_cache_reg :
                                register_write_data_ma_rs1;
@@ -221,6 +226,10 @@ module forwarding_unit #(
                                i_from_cache.data_loaded_from_cache_reg :
                                register_write_data_ma_rs2;
 
+  // Forwarding priority (highest to lowest):
+  //   1. MA stage forward (registered): ALU result or cached data
+  //   2. WB stage forward (registered): writeback data
+  //   3. Register file raw value: data read in ID stage
   assign o_fwd_to_ex.source_reg_1_value =
       forward_source_reg_1_from_ma ? forward_data_ma_rs1 :
       forward_source_reg_1_from_wb ? i_from_ma_to_wb.regfile_write_data :
