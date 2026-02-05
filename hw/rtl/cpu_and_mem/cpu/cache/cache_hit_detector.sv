@@ -132,8 +132,7 @@ module cache_hit_detector #(
   // Combine conditions that don't depend on cache RAM read (tag/valid bits).
   // is_load_instruction is registered from ID stage and available early.
   logic cache_access_eligible;
-  assign cache_access_eligible = i_is_load_instruction &&
-                                  !is_memory_mapped_io;
+  assign cache_access_eligible = i_is_load_instruction && !is_memory_mapped_io;
 
   // ===========================================================================
   // Final Cache Hit
@@ -142,6 +141,6 @@ module cache_hit_detector #(
   // - cache_access_eligible: depends on address (for MMIO check) + registered is_load_instruction
   // - tag_match: depends on address + cache tag RAM read
   // - data_valid_for_access_type: depends on address + cache valid RAM read + registered load type
-  assign o_cache_hit_on_load = cache_access_eligible && tag_match && data_valid_for_access_type;
+  assign o_cache_hit_on_load   = cache_access_eligible && tag_match && data_valid_for_access_type;
 
 endmodule : cache_hit_detector

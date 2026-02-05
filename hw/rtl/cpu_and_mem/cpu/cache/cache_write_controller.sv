@@ -121,8 +121,7 @@ module cache_write_controller #(
   // Select store index independent of stall to avoid pulling stall logic into the
   // cache write address path. Write enable still gates the actual write.
   logic store_write_select;
-  assign store_write_select = |i_data_memory_byte_write_enable_ex &
-                              ~is_memory_mapped_io_ex;
+  assign store_write_select = |i_data_memory_byte_write_enable_ex & ~is_memory_mapped_io_ex;
 
   // ===========================================================================
   // FP Store Write Enable (MA Stage Override)
@@ -162,8 +161,7 @@ module cache_write_controller #(
   // AMO Write Enable
   // ===========================================================================
   logic cache_write_enable_from_amo;
-  assign cache_write_enable_from_amo = i_amo.write_enable &
-                                       ~is_memory_mapped_io_amo;
+  assign cache_write_enable_from_amo = i_amo.write_enable & ~is_memory_mapped_io_amo;
 
   // Track previous cycle's AMO write enable to block stale load writes.
   // When AMO stall ends, the frozen load write enable would fire on the same
@@ -185,10 +183,10 @@ module cache_write_controller #(
                                 (cache_write_enable_from_load && ~amo_write_enable_prev);
 
   // For stores, use EX stage per-byte write enables; for loads/AMO/FP stores, write all bytes
-  assign o_cache_byte_write_enable = cache_write_enable_from_amo ? '1 :
-                                     cache_write_enable_from_fp_store ? i_fp_mem_byte_write_enable :
-                                     cache_write_enable_from_store ? i_data_memory_byte_write_enable_ex :
-                                     '1;
+  assign o_cache_byte_write_enable =
+    cache_write_enable_from_amo ? '1 :
+    cache_write_enable_from_fp_store ? i_fp_mem_byte_write_enable :
+    cache_write_enable_from_store ? i_data_memory_byte_write_enable_ex : '1;
 
   // ===========================================================================
   // Write Index Selection (Priority: AMO > Store > Load)
