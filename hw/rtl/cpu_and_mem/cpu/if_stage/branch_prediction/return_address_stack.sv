@@ -86,7 +86,10 @@ module return_address_stack #(
   // ===========================================================================
   // RAS Storage
   // ===========================================================================
-  logic [riscv_pkg::XLEN-1:0] ras_stack[RAS_DEPTH];
+  logic [riscv_pkg::XLEN-1:0] ras_read_data;
+  logic ras_write_enable;
+  logic [RAS_PTR_BITS-1:0] ras_write_address;
+  logic [riscv_pkg::XLEN-1:0] ras_write_data;
   logic [RAS_PTR_BITS-1:0] tos;  // Top of stack pointer (points to current top entry)
   logic [RAS_PTR_BITS:0] valid_count;  // Number of valid entries (0 to RAS_DEPTH)
 
@@ -169,6 +172,22 @@ module return_address_stack #(
   // Call: push only - NOT gated by prediction_allowed (i_is_call includes instruction validity)
   assign do_push = is_call_only;
 
+  assign ras_write_enable = !i_rst && !i_misprediction && !i_stall && (do_pop_then_push || do_push);
+  assign ras_write_address = do_pop_then_push ? tos : tos_plus_one;
+  assign ras_write_data = link_address_r;
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(RAS_PTR_BITS),
+      .DATA_WIDTH(riscv_pkg::XLEN)
+  ) ras_ram (
+      .i_clk,
+      .i_write_enable(ras_write_enable),
+      .i_write_address(ras_write_address),
+      .i_write_data(ras_write_data),
+      .i_read_address(tos),
+      .o_read_data(ras_read_data)
+  );
+
   // ===========================================================================
   // Prediction Output
   // ===========================================================================
@@ -186,7 +205,7 @@ module return_address_stack #(
   //   - Breaks the WNS path allowing the design to meet timing
 
   assign o_ras_valid = (is_return_r || is_coroutine_r) && stack_not_empty && prediction_allowed_r;
-  assign o_ras_target = ras_stack[tos];
+  assign o_ras_target = ras_read_data;
 
   // ===========================================================================
   // Checkpoint Output
@@ -222,12 +241,10 @@ module return_address_stack #(
       end
     end else if (!i_stall) begin
       if (do_pop_then_push) begin
-        // Coroutine: pop then push - TOS stays same position, just update value
-        ras_stack[tos] <= link_address_r;
+        // Coroutine: pop then push - TOS stays same position
         // valid_count unchanged (pop + push = net zero change)
       end else if (do_push) begin
         // Push: write to next slot, increment TOS
-        ras_stack[tos_plus_one] <= link_address_r;
         tos <= tos_plus_one;
         // Increment valid_count if not full (if full, oldest entry overwritten)
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin

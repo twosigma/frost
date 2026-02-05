@@ -92,12 +92,16 @@ module branch_predictor #(
   localparam logic [1:0] WeaklyTaken = 2'b10;
   localparam logic [1:0] StronglyTaken = 2'b11;
 
-  // BTB storage - separate arrays for Icarus Verilog compatibility
-  // (Icarus doesn't support struct array member assignment)
+  // BTB storage
+  // Keep valid bits in FFs for explicit reset. Move tag/target/counter to LUTRAM.
   logic btb_valid[BtbEntries];
-  logic [TagBits-1:0] btb_tag[BtbEntries];
-  logic [XLEN-1:0] btb_target[BtbEntries];
-  logic [1:0] btb_counter[BtbEntries];  // 2-bit saturating counter
+  logic [TagBits-1:0] btb_tag_lookup;
+  logic [TagBits-1:0] btb_tag_update;
+  logic [XLEN-1:0] btb_target_lookup;
+  logic [1:0] btb_counter_lookup;
+  logic [1:0] btb_counter_update;
+
+  logic [1:0] next_counter;
 
   // Index and tag extraction for lookup
   // Index: PC[6:2] (5 bits) - selects which of 32 entries
@@ -109,11 +113,74 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
 
+  // Tag RAMs (replicated for lookup/update reads)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(TagBits)
+  ) btb_tag_ram_lookup (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(update_tag),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_tag_lookup)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(TagBits)
+  ) btb_tag_ram_update (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(update_tag),
+      .i_read_address(update_index),
+      .o_read_data(btb_tag_update)
+  );
+
+  // Target RAM (lookup read only)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(XLEN)
+  ) btb_target_ram (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_target),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_target_lookup)
+  );
+
+  // Counter RAMs (replicated for lookup/update reads)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(2)
+  ) btb_counter_ram_lookup (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(next_counter),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_counter_lookup)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(2)
+  ) btb_counter_ram_update (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(next_counter),
+      .i_read_address(update_index),
+      .o_read_data(btb_counter_update)
+  );
+
   // Combinational lookup
   wire lookup_valid = btb_valid[lookup_index];
-  wire [TagBits-1:0] lookup_tag_stored = btb_tag[lookup_index];
-  wire [XLEN-1:0] lookup_target = btb_target[lookup_index];
-  wire [1:0] lookup_counter = btb_counter[lookup_index];
+  wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
+  wire [XLEN-1:0] lookup_target = btb_target_lookup;
+  wire [1:0] lookup_counter = btb_counter_lookup;
 
   // Hit detection: valid entry with matching tag
   assign o_btb_hit = lookup_valid && (lookup_tag_stored == lookup_tag);
@@ -123,11 +190,10 @@ module branch_predictor #(
   assign o_predicted_target = lookup_target;
 
   // Current counter value for the entry being updated
-  wire [1:0] current_counter = btb_counter[update_index];
-  wire current_tag_matches = btb_valid[update_index] && (btb_tag[update_index] == update_tag);
+  wire [1:0] current_counter = btb_counter_update;
+  wire current_tag_matches = btb_valid[update_index] && (btb_tag_update == update_tag);
 
   // Calculate next counter value with saturation
-  logic [1:0] next_counter;
   always_comb begin
     if (!current_tag_matches) begin
       // New entry or tag mismatch: initialize counter based on outcome
@@ -151,10 +217,7 @@ module branch_predictor #(
       end
     end else if (i_update) begin
       // Update BTB entry on branch resolution
-      btb_valid[update_index]   <= 1'b1;
-      btb_tag[update_index]     <= update_tag;
-      btb_target[update_index]  <= i_update_target;
-      btb_counter[update_index] <= next_counter;
+      btb_valid[update_index] <= 1'b1;
     end
   end
 
