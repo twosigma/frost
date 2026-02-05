@@ -37,7 +37,14 @@ export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 # Default is 1000 for simulation; set to 1 for synthesis
 SIM_TIMER_SPEEDUP ?= 1000
 
-# Compilation arguments - RTL file list
+# Compilation arguments - RTL file list (varies by toplevel)
+ifeq ($(TOPLEVEL),reorder_buffer)
+# Reorder Buffer unit test - minimal dependencies
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f
+VERILOG_SOURCES :=
+else
+# Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/frost.f \
 
@@ -53,6 +60,7 @@ VERILOG_SOURCES := \
         $(ROOT)/hw/rtl/frost.sv
 else
 VERILOG_SOURCES :=
+endif
 endif
 endif
 

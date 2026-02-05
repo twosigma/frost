@@ -33,6 +33,7 @@
  *   Section 9: A-Extension Support (reservation_t, amo_interface_t)
  *   Section 10: Trap/Exception Handling
  *   Section 11: Bit Manipulation Helper Functions (clz, ctz, cpop)
+ *   Section 12: Tomasulo OOO Execution (Reorder Buffer, RS, LQ, SQ, CDB, RAT)
  *
  * Supported Extensions:
  * =====================
@@ -1008,6 +1009,847 @@ package riscv_pkg;
       unzip32[i]    = val[2*i];  // Even bits to lower half
       unzip32[16+i] = val[2*i+1];  // Odd bits to upper half
     end
+  endfunction
+
+  // ===========================================================================
+  // Section 12: Tomasulo Out-of-Order Execution Structures
+  // ===========================================================================
+  // Parameters, types, and data structures for the Tomasulo OOO execution engine.
+  // Includes Reorder Buffer, Reservation Stations, Load/Store Queues, CDB, RAT.
+
+  // ---------------------------------------------------------------------------
+  // Tomasulo Core Parameters
+  // ---------------------------------------------------------------------------
+  // Configurable depths for all major structures. Power-of-2 sizes simplify
+  // circular buffer pointer arithmetic.
+
+  // Reorder Buffer parameters
+  localparam int unsigned ReorderBufferDepth = 32;  // Number of Reorder Buffer entries (power of 2)
+  localparam int unsigned ReorderBufferTagWidth = $clog2(
+      ReorderBufferDepth
+  );  // 5 bits for 32-entry Reorder Buffer
+
+  // Reservation Station depths (per RS type)
+  localparam int unsigned IntRsDepth = 8;  // Integer ALU operations
+  localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
+  localparam int unsigned MemRsDepth = 8;  // Load/store operations
+  localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj
+  localparam int unsigned FmulRsDepth = 4;  // FP multiply/FMA (3 sources)
+  localparam int unsigned FdivRsDepth = 2;  // FP divide/sqrt (long latency)
+
+  // Memory queue depths
+  localparam int unsigned LqDepth = 8;  // Load queue entries
+  localparam int unsigned SqDepth = 8;  // Store queue entries
+
+  // Checkpoint parameters
+  localparam int unsigned NumCheckpoints = 4;  // For branch speculation recovery
+  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 2 bits
+
+  // Register file sizes
+  localparam int unsigned NumIntRegs = 32;  // x0-x31
+  localparam int unsigned NumFpRegs = 32;  // f0-f31
+  localparam int unsigned RegAddrWidth = 5;  // $clog2(32)
+
+  // Alias for FP register width (FLEN) - uses FpWidth from Section 5
+  localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
+
+  // CDB parameters
+  localparam int unsigned NumCdbLanes = 1;  // Single CDB (future expansion)
+  localparam int unsigned NumFus = 7;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV
+
+  // ---------------------------------------------------------------------------
+  // Functional Unit Enumeration and RS Assignment
+  // ---------------------------------------------------------------------------
+  // Identifies which functional unit an instruction uses. Used for RS routing
+  // at dispatch and CDB arbitration at completion.
+
+  // Functional unit identifier (for RS routing and CDB arbitration)
+  typedef enum logic [2:0] {
+    FU_ALU    = 3'd0,  // Integer ALU (ADD, SUB, AND, OR, XOR, SLT, branches)
+    FU_MUL    = 3'd1,  // Integer multiplier
+    FU_DIV    = 3'd2,  // Integer divider
+    FU_MEM    = 3'd3,  // Load/store unit (both INT and FP)
+    FU_FP_ADD = 3'd4,  // FP adder (add/sub/cmp/cvt/classify/sgnj)
+    FU_FP_MUL = 3'd5,  // FP multiplier (mul/FMA)
+    FU_FP_DIV = 3'd6   // FP divider/sqrt (long latency)
+  } fu_type_e;
+
+  // Reservation station type (for dispatch routing)
+  typedef enum logic [2:0] {
+    RS_INT  = 3'd0,  // INT_RS: Integer ALU ops, branches, CSR
+    RS_MUL  = 3'd1,  // MUL_RS: MUL/DIV
+    RS_MEM  = 3'd2,  // MEM_RS: All loads/stores (INT and FP)
+    RS_FP   = 3'd3,  // FP_RS: FP add/sub/cmp/cvt/classify/sgnj
+    RS_FMUL = 3'd4,  // FMUL_RS: FP mul/FMA (3 sources)
+    RS_FDIV = 3'd5,  // FDIV_RS: FP div/sqrt
+    RS_NONE = 3'd6   // No RS needed (e.g., WFI, FENCE dispatches to Reorder Buffer only)
+  } rs_type_e;
+
+  // ---------------------------------------------------------------------------
+  // Reorder Buffer Entry Structure
+  // ---------------------------------------------------------------------------
+  // Unified Reorder Buffer entry supporting both integer and floating-point instructions.
+  // ~120 bits per entry.
+
+  // Exception cause codes specific to Tomasulo (extends riscv_pkg causes)
+  // Width: 5 bits covers synchronous exception causes 0-31 (RISC-V max is 11 for ecall M-mode)
+  // NOTE: Interrupts are handled separately by the trap unit, not stored in Reorder Buffer.
+  // The Reorder Buffer only tracks synchronous exceptions from instruction execution.
+  //
+  // Mapping from riscv_pkg 32-bit constants to Reorder Buffer 5-bit cause:
+  //   exc_cause = riscv_pkg::Exc*[4:0]  (low 5 bits)
+  //   Examples: ExcBreakpoint (3) -> 5'd3, ExcLoadAddrMisalign (4) -> 5'd4
+  // The mcause CSR's interrupt bit (bit 31) is never set for Reorder Buffer-tracked exceptions.
+  // When committing an exception, the trap unit constructs the full mcause value.
+  localparam int unsigned ExcCauseWidth = 5;
+
+  // Typedef for exception cause to make the encoding explicit
+  typedef logic [ExcCauseWidth-1:0] exc_cause_t;
+
+  // Reorder Buffer entry structure
+  typedef struct packed {
+    // Core fields
+    logic       valid;      // Entry is allocated
+    logic       done;       // Execution complete
+    logic       exception;  // Exception occurred
+    exc_cause_t exc_cause;  // Exception cause code
+
+    // Instruction identification
+    logic [XLEN-1:0] pc;  // Instruction PC (for mepc)
+
+    // Destination register
+    logic dest_rf;  // 0=INT (x-reg), 1=FP (f-reg)
+    logic [RegAddrWidth-1:0] dest_reg;  // Architectural destination (rd)
+    logic dest_valid;  // Has destination register (not stores/branches w/o link)
+
+    // Result value (FLEN-wide to support FP double)
+    // For JAL: set to zero-extended link_addr at dispatch with done=1 (target known)
+    // For JALR: set to zero-extended link_addr at dispatch with done=0, marked done=1 via reorder_buffer_branch_update_t
+    // For other instructions: set by CDB broadcast (reorder_buffer_cdb_write_t) when execution completes
+    // NOTE: When storing XLEN values, zero-extend to FLEN: value = {{FLEN-XLEN{1'b0}}, xlen_result}
+    logic [FLEN-1:0] value;  // Result value
+
+    // Store tracking
+    logic is_store;     // Is store instruction
+    logic is_fp_store;  // Is FP store (FSW/FSD)
+
+    // Branch tracking (for speculation recovery)
+    // NOTE: is_branch should be set for conditional branches AND JAL/JALR
+    // so checkpoint allocation and misprediction recovery apply uniformly
+    logic            is_branch;         // Is branch/jump instruction (BEQ/BNE/.../JAL/JALR)
+    logic            branch_taken;      // Actual branch outcome
+    logic [XLEN-1:0] branch_target;     // Actual branch target
+    logic            predicted_taken;   // BTB prediction (for misprediction detection)
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+    logic            mispredicted;      // Branch unit determined misprediction (authoritative)
+    logic            is_call;           // Is call (for RAS recovery)
+    logic            is_return;         // Is return (for RAS recovery)
+    logic            is_jal;            // JAL instruction (can mark done=1 at dispatch)
+    logic            is_jalr;           // JALR instruction (must wait for execute)
+
+    // Checkpoint index (for branches that allocated a checkpoint)
+    logic                         has_checkpoint;  // This branch has a checkpoint
+    logic [CheckpointIdWidth-1:0] checkpoint_id;   // Checkpoint index
+
+    // FP exception flags (accumulated at commit)
+    fp_flags_t fp_flags;  // NV, DZ, OF, UF, NX
+
+    // Serializing instruction flags
+    logic is_csr;      // CSR instruction (execute at commit)
+    logic is_fence;    // FENCE (drain SQ at commit)
+    logic is_fence_i;  // FENCE.I (drain SQ, flush pipeline)
+    logic is_wfi;      // WFI (stall at head until interrupt)
+    logic is_mret;     // MRET (restore mstatus, redirect to mepc)
+    logic is_amo;      // AMO (execute at head with SQ empty)
+    logic is_lr;       // LR (sets reservation)
+    logic is_sc;       // SC (checks reservation at head)
+  } reorder_buffer_entry_t;
+
+  // Reorder Buffer interface signals (for module ports)
+  typedef struct packed {
+    logic                    alloc_valid;       // Request Reorder Buffer allocation
+    logic [XLEN-1:0]         pc;
+    logic                    dest_rf;
+    logic [RegAddrWidth-1:0] dest_reg;
+    logic                    dest_valid;
+    logic                    is_store;
+    logic                    is_fp_store;
+    logic                    is_branch;
+    logic                    predicted_taken;
+    logic [XLEN-1:0]         predicted_target;  // BTB/RAS predicted target
+    logic                    is_call;
+    logic                    is_return;
+    // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
+    // - JAL: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=1 (target known)
+    // - JALR: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=0 (target resolved in execute)
+    // NOTE: link_addr is XLEN (32-bit), must be zero-extended to FLEN (64-bit) when assigning to value
+    logic [XLEN-1:0]         link_addr;
+    logic                    is_jal;            // JAL: can mark done=1 at dispatch
+    logic                    is_jalr;           // JALR: must wait for execute to resolve target
+    logic                    is_csr;
+    logic                    is_fence;
+    logic                    is_fence_i;
+    logic                    is_wfi;
+    logic                    is_mret;
+    logic                    is_amo;
+    logic                    is_lr;
+    logic                    is_sc;
+  } reorder_buffer_alloc_req_t;
+
+  typedef struct packed {
+    logic                             alloc_ready;  // Reorder Buffer can accept allocation
+    logic [ReorderBufferTagWidth-1:0] alloc_tag;    // Allocated Reorder Buffer entry index
+    logic                             full;         // Reorder Buffer is full
+  } reorder_buffer_alloc_resp_t;
+
+  // CDB write to Reorder Buffer (for ALU, FPU, load results - NOT for branches/jumps)
+  // NOTE: Branch/jump completion uses reorder_buffer_branch_update_t, not this interface.
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [FLEN-1:0]                  value;      // Result value to write to Reorder Buffer entry
+    logic                             exception;
+    exc_cause_t                       exc_cause;
+    fp_flags_t                        fp_flags;
+  } reorder_buffer_cdb_write_t;
+
+  // Branch resolution update to Reorder Buffer (separate from CDB)
+  // Sent by branch unit when a branch/jump resolves in execute stage.
+  // This is the ONLY path for branch/jump completion - do NOT use reorder_buffer_cdb_write_t for branches.
+  typedef struct packed {
+    logic                             valid;         // Branch resolution valid
+    logic [ReorderBufferTagWidth-1:0] tag;           // Reorder Buffer entry of the branch
+    logic                             taken;         // Actual branch outcome
+    logic [XLEN-1:0]                  target;        // Actual branch target
+    // Misprediction flag (AUTHORITATIVE - computed by branch unit, not recomputed by Reorder Buffer):
+    // - If taken != predicted_taken: direction misprediction
+    // - If taken && predicted_taken && target != predicted_target: target misprediction
+    // - Target comparison only meaningful when both taken and predicted_taken are true
+    // The branch unit is the single source of truth for misprediction to avoid divergence.
+    logic                             mispredicted;
+    // Completion behavior:
+    // - JAL: entry was already marked done=1 at dispatch (this update only records branch info)
+    // - JALR: marks entry done=1 (value already contains link_addr from dispatch)
+    // - Conditional branches: marks entry done=1 (no result value needed)
+  } reorder_buffer_branch_update_t;
+
+  // Reorder Buffer commit signals
+  // NOTE: Exposes all serializing instruction flags so outer control logic can react
+  typedef struct packed {
+    logic valid;  // Commit this cycle
+    logic [ReorderBufferTagWidth-1:0] tag;  // Reorder Buffer entry being committed
+    logic dest_rf;  // 0=INT, 1=FP
+    logic [RegAddrWidth-1:0] dest_reg;
+    logic dest_valid;  // Has destination register to write
+    logic [FLEN-1:0] value;
+    logic is_store;
+    logic is_fp_store;
+    logic exception;
+    logic [XLEN-1:0] pc;  // For mepc
+    exc_cause_t exc_cause;
+    fp_flags_t fp_flags;  // FP flags to accumulate
+    // Branch misprediction recovery
+    logic misprediction;  // Branch mispredicted
+    logic has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
+    // Serializing instruction flags (for outer control logic)
+    logic is_csr;  // CSR instruction (Reorder Buffer executes at commit)
+    logic is_fence;  // FENCE (SQ must be drained)
+    logic is_fence_i;  // FENCE.I (SQ drained, pipeline flush)
+    logic is_wfi;  // WFI (stall until interrupt)
+    logic is_mret;  // MRET (restore mstatus, redirect to mepc)
+    // Atomic operation flags (for memory ordering and reservation handling)
+    logic is_amo;  // AMO instruction (executed at head with SQ empty)
+    logic is_lr;  // LR (load-reserved, sets reservation)
+    logic is_sc;  // SC (store-conditional, checks reservation)
+  } reorder_buffer_commit_t;
+
+  // ---------------------------------------------------------------------------
+  // RAT Entry and Checkpoint Structures
+  // ---------------------------------------------------------------------------
+  // Separate INT and FP RATs, each with checkpoint storage for speculation.
+
+  // RAT entry (per architectural register)
+  typedef struct packed {
+    logic                             valid;  // Register is renamed (has in-flight producer)
+    logic [ReorderBufferTagWidth-1:0] tag;    // Reorder Buffer tag of producer
+  } rat_entry_t;
+
+  // RAT lookup result (returned on source register read)
+  typedef struct packed {
+    logic                             renamed;  // Source is renamed (wait for Reorder Buffer tag)
+    logic [ReorderBufferTagWidth-1:0] tag;      // Reorder Buffer tag if renamed
+    logic [FLEN-1:0]                  value;    // Value from regfile if not renamed
+  } rat_lookup_t;
+
+  // Full RAT state (for checkpointing)
+  // Note: x0 entry is included for simplicity but always returns 0/not-renamed
+  typedef struct packed {rat_entry_t [NumIntRegs-1:0] entries;} int_rat_state_t;
+
+  typedef struct packed {rat_entry_t [NumFpRegs-1:0] entries;} fp_rat_state_t;
+
+  // Checkpoint structure (stores RAT state for branch recovery)
+  typedef struct packed {
+    logic                             valid;            // Checkpoint is active
+    logic [ReorderBufferTagWidth-1:0] branch_tag;       // Reorder Buffer tag of associated branch
+    int_rat_state_t                   int_rat;          // INT RAT snapshot
+    fp_rat_state_t                    fp_rat;           // FP RAT snapshot
+    // RAS state for recovery
+    logic [RasPtrBits-1:0]            ras_tos;          // RAS top-of-stack pointer
+    logic [RasPtrBits:0]              ras_valid_count;  // RAS valid entry count
+  } checkpoint_t;
+
+  // ---------------------------------------------------------------------------
+  // Memory Operation Size Encoding
+  // ---------------------------------------------------------------------------
+  // Size encoding for memory operations.
+
+  typedef enum logic [1:0] {
+    MEM_SIZE_BYTE   = 2'b00,  // 8-bit
+    MEM_SIZE_HALF   = 2'b01,  // 16-bit
+    MEM_SIZE_WORD   = 2'b10,  // 32-bit
+    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD only)
+  } mem_size_e;
+
+  // ---------------------------------------------------------------------------
+  // Reservation Station Entry Structure
+  // ---------------------------------------------------------------------------
+  // Generic RS entry supporting up to 3 source operands (for FMA).
+  // All values are FLEN-wide to support FP double precision.
+
+  // RS entry structure (generic, used by all RS types)
+  typedef struct packed {
+    logic                             valid;    // Entry is allocated
+    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Destination Reorder Buffer entry
+    instr_op_e                        op;       // Operation to perform
+
+    // Source operand 1
+    logic                             src1_ready;  // Operand 1 is available
+    logic [ReorderBufferTagWidth-1:0] src1_tag;    // Reorder Buffer tag if not ready
+    logic [FLEN-1:0]                  src1_value;  // Value if ready
+
+    // Source operand 2
+    logic                             src2_ready;  // Operand 2 is available
+    logic [ReorderBufferTagWidth-1:0] src2_tag;    // Reorder Buffer tag if not ready
+    logic [FLEN-1:0]                  src2_value;  // Value if ready
+
+    // Source operand 3 (for FMA: rs3/fs3)
+    logic                             src3_ready;  // Operand 3 is available
+    logic [ReorderBufferTagWidth-1:0] src3_tag;    // Reorder Buffer tag if not ready
+    logic [FLEN-1:0]                  src3_value;  // Value if ready
+
+    // Immediate value (for immediate instructions)
+    logic [XLEN-1:0] imm;      // Immediate value
+    logic            use_imm;  // Use imm instead of src2
+
+    // FP rounding mode (resolved from instruction rm or fcsr.frm at dispatch)
+    logic [2:0] rm;  // Rounding mode (FRM_RNE, etc.)
+
+    // For branches: pre-computed target from ID stage and BTB/RAS prediction
+    logic [XLEN-1:0] branch_target;     // Pre-computed PC + imm (for branches/JAL)
+    logic            predicted_taken;   // BTB predicted taken
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+
+    // For memory operations: additional info
+    logic      is_fp_mem;   // FP load/store (for LQ/SQ routing)
+    mem_size_e mem_size;    // Memory operation size
+    logic      mem_signed;  // Sign-extend on load
+
+    // For CSR: address and immediate
+    logic [11:0] csr_addr;  // CSR address
+    logic [4:0]  csr_imm;   // Zero-extended CSR immediate
+  } rs_entry_t;
+
+  // RS dispatch request (from dispatch unit to RS)
+  typedef struct packed {
+    logic                             valid;             // Dispatch request valid
+    rs_type_e                         rs_type;           // Which RS to dispatch to
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    instr_op_e                        op;
+    // Source 1
+    logic                             src1_ready;
+    logic [ReorderBufferTagWidth-1:0] src1_tag;
+    logic [FLEN-1:0]                  src1_value;
+    // Source 2
+    logic                             src2_ready;
+    logic [ReorderBufferTagWidth-1:0] src2_tag;
+    logic [FLEN-1:0]                  src2_value;
+    // Source 3 (FMA only)
+    logic                             src3_ready;
+    logic [ReorderBufferTagWidth-1:0] src3_tag;
+    logic [FLEN-1:0]                  src3_value;
+    // Immediate
+    logic [XLEN-1:0]                  imm;
+    logic                             use_imm;
+    // FP rounding mode
+    logic [2:0]                       rm;
+    // Branch info
+    logic [XLEN-1:0]                  branch_target;
+    logic                             predicted_taken;
+    logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
+    // Memory info
+    logic                             is_fp_mem;
+    mem_size_e                        mem_size;
+    logic                             mem_signed;
+    // CSR info
+    logic [11:0]                      csr_addr;
+    logic [4:0]                       csr_imm;
+  } rs_dispatch_t;
+
+  // RS issue signals (from RS to functional unit)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    instr_op_e                        op;
+    logic [FLEN-1:0]                  src1_value;
+    logic [FLEN-1:0]                  src2_value;
+    logic [FLEN-1:0]                  src3_value;        // For FMA
+    logic [XLEN-1:0]                  imm;
+    logic                             use_imm;
+    logic [2:0]                       rm;                // Rounding mode
+    logic [XLEN-1:0]                  branch_target;     // Pre-computed target
+    logic                             predicted_taken;
+    logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
+    // Memory info (for MEM_RS)
+    logic                             is_fp_mem;
+    mem_size_e                        mem_size;
+    logic                             mem_signed;
+    // CSR info
+    logic [11:0]                      csr_addr;
+    logic [4:0]                       csr_imm;
+  } rs_issue_t;
+
+  // ---------------------------------------------------------------------------
+  // Load Queue Entry Structure
+  // ---------------------------------------------------------------------------
+  // Supports INT and FP loads, including 2-phase FLD (64-bit double on 32-bit bus).
+
+  // Load queue entry
+  typedef struct packed {
+    logic valid;  // Entry allocated
+    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Associated Reorder Buffer entry
+    logic is_fp;  // FP load (FLW/FLD)
+    logic addr_valid;  // Address has been calculated
+    logic [XLEN-1:0] address;  // Load address
+    mem_size_e size;  // Memory operation size (FLD uses MEM_SIZE_DOUBLE)
+    logic sign_ext;  // Sign extend result (INT only)
+    logic is_mmio;  // MMIO address (non-speculative only)
+    logic fp64_phase;  // FLD phase: 0=low word, 1=high word
+    logic issued;  // Sent to memory
+    logic data_valid;  // Data received
+    logic [FLEN-1:0] data;  // Loaded data (FLEN for FLD)
+    logic forwarded;  // Data from store queue forward
+  } lq_entry_t;
+
+  // LQ allocation request (from MEM_RS)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             is_fp;
+    mem_size_e                        size;
+    logic                             sign_ext;
+  } lq_alloc_req_t;
+
+  // LQ address update (from address calculation)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
+  } lq_addr_update_t;
+
+  // ---------------------------------------------------------------------------
+  // Store Queue Entry Structure
+  // ---------------------------------------------------------------------------
+  // Supports INT and FP stores, including 2-phase FSD.
+
+  // Store queue entry
+  typedef struct packed {
+    logic valid;  // Entry allocated
+    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Associated Reorder Buffer entry
+    logic is_fp;  // FP store (FSW/FSD)
+    logic addr_valid;  // Address has been calculated
+    logic [XLEN-1:0] address;  // Store address
+    logic data_valid;  // Data is available
+    logic [FLEN-1:0] data;  // Store data (FLEN for FSD)
+    mem_size_e size;  // Memory operation size (FSD uses MEM_SIZE_DOUBLE)
+    logic is_mmio;  // MMIO address (bypass cache)
+    logic fp64_phase;  // FSD phase: 0=low word, 1=high word
+    logic committed;  // Reorder Buffer has committed this store
+    logic sent;  // Written to memory
+  } sq_entry_t;
+
+  // SQ allocation request (from MEM_RS)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic                             is_fp;
+    mem_size_e                        size;
+  } sq_alloc_req_t;
+
+  // SQ address update (from address calculation)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
+  } sq_addr_update_t;
+
+  // SQ data update (from RS operand becoming ready)
+  typedef struct packed {
+    logic                             valid;
+    logic [ReorderBufferTagWidth-1:0] rob_tag;
+    logic [FLEN-1:0]                  data;
+  } sq_data_update_t;
+
+  // Store-to-load forwarding check result
+  typedef struct packed {
+    logic            match;        // Address match found
+    logic            can_forward;  // Size compatible, can forward
+    logic [FLEN-1:0] data;         // Forwarded data
+  } sq_forward_result_t;
+
+  // ---------------------------------------------------------------------------
+  // CDB (Common Data Bus) Structures
+  // ---------------------------------------------------------------------------
+  // FLEN-wide CDB to support FP double precision results.
+
+  // CDB broadcast (from functional unit to RS/Reorder Buffer/RAT)
+  typedef struct packed {
+    logic                             valid;      // Broadcast valid
+    logic [ReorderBufferTagWidth-1:0] tag;        // Reorder Buffer tag of producing instruction
+    logic [FLEN-1:0]                  value;      // Result value (FLEN for FP double)
+    logic                             exception;  // Exception occurred
+    exc_cause_t                       exc_cause;  // Exception cause
+    fp_flags_t                        fp_flags;   // FP exception flags
+    fu_type_e                         fu_type;    // Which FU produced this result
+  } cdb_broadcast_t;
+
+  // FU completion request (from FU to CDB arbiter)
+  typedef struct packed {
+    logic                             valid;      // FU has result ready
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [FLEN-1:0]                  value;
+    logic                             exception;
+    exc_cause_t                       exc_cause;
+    fp_flags_t                        fp_flags;
+  } fu_complete_t;
+
+  // CDB arbiter grant (to FU)
+  typedef struct packed {
+    logic granted;  // FU can broadcast this cycle
+  } cdb_grant_t;
+
+  // ---------------------------------------------------------------------------
+  // Dispatch Interface Structures
+  // ---------------------------------------------------------------------------
+  // Signals between decode stage and dispatch unit.
+
+  // Decoded instruction info (from ID stage to dispatch)
+  typedef struct packed {
+    logic            valid;  // Valid instruction
+    logic [XLEN-1:0] pc;
+    instr_op_e       op;
+
+    // Destination register
+    logic                    has_dest;  // Has destination register
+    logic                    dest_rf;   // 0=INT, 1=FP
+    logic [RegAddrWidth-1:0] dest_reg;
+
+    // Source registers
+    logic                    uses_rs1;
+    logic                    rs1_rf;    // 0=INT, 1=FP
+    logic [RegAddrWidth-1:0] rs1_addr;
+    logic                    uses_rs2;
+    logic                    rs2_rf;    // 0=INT, 1=FP
+    logic [RegAddrWidth-1:0] rs2_addr;
+    logic                    uses_rs3;  // For FMA
+    logic [RegAddrWidth-1:0] rs3_addr;  // Always FP
+
+    // Immediate
+    logic [XLEN-1:0] imm;
+    logic            use_imm;
+
+    // FP rounding mode (from instruction or DYN)
+    logic [2:0] rm;
+    logic       rm_is_dyn;  // Use fcsr.frm instead
+
+    // Instruction classification
+    rs_type_e rs_type;      // Which RS to use
+    logic     is_branch;
+    logic     is_call;
+    logic     is_return;
+    logic     is_store;
+    logic     is_fp_store;
+    logic     is_load;
+    logic     is_fp_load;
+    logic     is_csr;
+    logic     is_fence;
+    logic     is_fence_i;
+    logic     is_wfi;
+    logic     is_amo;
+    logic     is_lr;
+    logic     is_sc;
+
+    // Memory operation info
+    mem_size_e mem_size;
+    logic      mem_signed;
+
+    // Branch prediction info (passed through from IF)
+    logic            predicted_taken;
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0] branch_target;     // Pre-computed PC + imm
+
+    // JAL/JALR link address (pre-computed PC+2 or PC+4 from IF)
+    logic [XLEN-1:0] link_addr;
+    logic            is_jal;     // JAL instruction
+    logic            is_jalr;    // JALR instruction
+    logic            is_mret;    // MRET instruction
+
+    // CSR info
+    logic [11:0] csr_addr;
+    logic [4:0]  csr_imm;
+  } decoded_instr_t;
+
+  // Dispatch status (from dispatch to front-end)
+  typedef struct packed {
+    logic stall;                // Stall decode (Reorder Buffer/RS/LQ/SQ full)
+    logic reorder_buffer_full;
+    logic rs_full;              // Target RS is full
+    logic lq_full;
+    logic sq_full;
+    logic checkpoint_full;      // All checkpoints in use (branch)
+  } dispatch_status_t;
+
+  // ---------------------------------------------------------------------------
+  // Instruction Routing Table
+  // ---------------------------------------------------------------------------
+  // Helper function to determine RS assignment from instruction operation.
+
+  function automatic rs_type_e get_rs_type(instr_op_e op);
+    case (op)
+      // Integer ALU operations -> INT_RS
+      ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+      ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
+      LUI, AUIPC, JAL, JALR,
+      BEQ, BNE, BLT, BGE, BLTU, BGEU,
+      // Zba/Zbb/Zbs/Zbkb/Zicond -> INT_RS (all 1-cycle ALU ops)
+      SH1ADD, SH2ADD, SH3ADD,
+      BSET, BCLR, BINV, BEXT, BSETI, BCLRI, BINVI, BEXTI,
+      ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
+      SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
+      CZERO_EQZ, CZERO_NEZ,
+      PACK, PACKH, BREV8, ZIP, UNZIP,
+      // CSR instructions -> INT_RS (execute at Reorder Buffer head)
+      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      // Privileged (exceptions) -> INT_RS
+      ECALL, EBREAK:
+      get_rs_type = RS_INT;
+
+      // Multiply/divide -> MUL_RS
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU: get_rs_type = RS_MUL;
+
+      // Memory operations -> MEM_RS (both INT and FP)
+      LB, LH, LW, LBU, LHU, SB, SH, SW,
+      FLW, FSW, FLD, FSD,
+      LR_W, SC_W,
+      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
+      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      FENCE, FENCE_I:
+      get_rs_type = RS_MEM;
+
+      // FP add/sub/cmp/cvt/classify/sgnj -> FP_RS
+      FADD_S, FSUB_S, FADD_D, FSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
+      FCVT_W_D, FCVT_WU_D, FCVT_D_W, FCVT_D_WU,
+      FCVT_S_D, FCVT_D_S,
+      FMV_X_W, FMV_W_X,
+      FCLASS_S, FCLASS_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D:
+      get_rs_type = RS_FP;
+
+      // FP multiply/FMA -> FMUL_RS (3 sources for FMA)
+      FMUL_S, FMUL_D, FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D:
+      get_rs_type = RS_FMUL;
+
+      // FP divide/sqrt -> FDIV_RS (long latency)
+      FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
+
+      // Instructions that don't need RS (dispatch directly to Reorder Buffer)
+      WFI, MRET, PAUSE: get_rs_type = RS_NONE;
+
+      default: get_rs_type = RS_INT;  // Default fallback
+    endcase
+  endfunction
+
+  // Helper function to determine if instruction has integer destination
+  function automatic logic has_int_dest(instr_op_e op);
+    case (op)
+      // Integer ALU ops with rd
+      ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+      ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
+      LUI, AUIPC, JAL, JALR,
+      // B-extension
+      SH1ADD, SH2ADD, SH3ADD,
+      BSET, BCLR, BINV, BEXT, BSETI, BCLRI, BINVI, BEXTI,
+      ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
+      SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
+      CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8, ZIP, UNZIP,
+      // M-extension
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+      // Integer loads
+      LB, LH, LW, LBU, LHU,
+      // Atomics (return old value to rd)
+      LR_W, SC_W,
+      AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
+      AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      // CSR (return old CSR value to rd)
+      CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+      // FP compare -> INT rd
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP classify -> INT rd
+      FCLASS_S, FCLASS_D,
+      // FP to INT conversion -> INT rd
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      // FP to INT bit move -> INT rd
+      FMV_X_W:
+      has_int_dest = 1'b1;
+
+      default: has_int_dest = 1'b0;
+    endcase
+  endfunction
+
+  // Helper function to determine if instruction has FP destination
+  function automatic logic has_fp_dest(instr_op_e op);
+    case (op)
+      // FP loads
+      FLW, FLD,
+      // FP compute ops
+      FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // INT to FP conversion -> FP fd
+      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU,
+      // FP format conversion
+      FCVT_S_D, FCVT_D_S,
+      // INT to FP bit move -> FP fd
+      FMV_W_X:
+      has_fp_dest = 1'b1;
+
+      default: has_fp_dest = 1'b0;
+    endcase
+  endfunction
+
+  // Helper function to determine if instruction uses FP rs1
+  function automatic logic uses_fp_rs1(instr_op_e op);
+    case (op)
+      // FP compute ops (fs1)
+      FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // FP compare (fs1, fs2) -> INT rd
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP classify (fs1) -> INT rd
+      FCLASS_S, FCLASS_D,
+      // FP to INT conversion (fs1) -> INT rd
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      // FP to INT bit move (fs1) -> INT rd
+      FMV_X_W,
+      // FP format conversion
+      FCVT_S_D, FCVT_D_S:
+      uses_fp_rs1 = 1'b1;
+
+      default: uses_fp_rs1 = 1'b0;
+    endcase
+  endfunction
+
+  // Helper function to determine if instruction uses FP rs2
+  function automatic logic uses_fp_rs2(instr_op_e op);
+    case (op)
+      // FP compute ops with 2+ sources
+      FADD_S, FSUB_S, FMUL_S,
+      FADD_D, FSUB_D, FMUL_D,
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
+      FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FMIN_S, FMAX_S, FMIN_D, FMAX_D,
+      FSGNJ_S, FSGNJN_S, FSGNJX_S,
+      FSGNJ_D, FSGNJN_D, FSGNJX_D,
+      // FP compare (fs1, fs2)
+      FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
+      // FP stores (base=INT rs1, data=FP rs2)
+      FSW, FSD:
+      uses_fp_rs2 = 1'b1;
+
+      default: uses_fp_rs2 = 1'b0;
+    endcase
+  endfunction
+
+  // Helper function to determine if instruction uses FP rs3 (FMA only)
+  function automatic logic uses_fp_rs3(instr_op_e op);
+    case (op)
+      FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D:
+      uses_fp_rs3 = 1'b1;
+
+      default: uses_fp_rs3 = 1'b0;
+    endcase
+  endfunction
+
+  // ---------------------------------------------------------------------------
+  // Control Flow Classification Helpers
+  // ---------------------------------------------------------------------------
+  // Unified classification functions to prevent flag drift between is_branch,
+  // is_jal, is_jalr, is_call, is_return.
+
+  // Is this a branch or jump instruction? (needs checkpoint, can mispredict)
+  function automatic logic is_branch_or_jump_op(instr_op_e op);
+    case (op)
+      BEQ, BNE, BLT, BGE, BLTU, BGEU,  // Conditional branches
+      JAL, JALR:  // Unconditional jumps
+      is_branch_or_jump_op = 1'b1;
+      default: is_branch_or_jump_op = 1'b0;
+    endcase
+  endfunction
+
+  // Is this a JAL instruction? (target known at decode, can mark done=1 at dispatch)
+  function automatic logic is_jal_op(instr_op_e op);
+    is_jal_op = (op == JAL);
+  endfunction
+
+  // Is this a JALR instruction? (target depends on rs1, resolved in execute)
+  function automatic logic is_jalr_op(instr_op_e op);
+    is_jalr_op = (op == JALR);
+  endfunction
+
+  // Is this a call instruction? (pushes to RAS)
+  // Note: This function only checks the opcode; caller must also check rd
+  function automatic logic is_potential_call_op(instr_op_e op);
+    is_potential_call_op = (op == JAL) || (op == JALR);
+  endfunction
+
+  // Is this a return instruction? (pops from RAS)
+  // Note: This function only checks the opcode; caller must also check rs1/rd/imm
+  function automatic logic is_potential_return_op(instr_op_e op);
+    is_potential_return_op = (op == JALR);
+  endfunction
+
+  // Is this a conditional branch? (not JAL/JALR)
+  function automatic logic is_conditional_branch_op(instr_op_e op);
+    case (op)
+      BEQ, BNE, BLT, BGE, BLTU, BGEU: is_conditional_branch_op = 1'b1;
+      default: is_conditional_branch_op = 1'b0;
+    endcase
   endfunction
 
 endpackage : riscv_pkg

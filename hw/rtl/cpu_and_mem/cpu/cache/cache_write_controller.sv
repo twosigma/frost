@@ -184,9 +184,10 @@ module cache_write_controller #(
 
   // For stores, use EX stage per-byte write enables; for loads/AMO/FP stores, write all bytes
   assign o_cache_byte_write_enable =
-    cache_write_enable_from_amo ? '1 :
-    cache_write_enable_from_fp_store ? i_fp_mem_byte_write_enable :
-    cache_write_enable_from_store ? i_data_memory_byte_write_enable_ex : '1;
+      cache_write_enable_from_amo ? '1 :
+      cache_write_enable_from_fp_store ? i_fp_mem_byte_write_enable :
+      cache_write_enable_from_store ? i_data_memory_byte_write_enable_ex :
+      '1;
 
   // ===========================================================================
   // Write Index Selection (Priority: AMO > Store > Load)

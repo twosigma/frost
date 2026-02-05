@@ -57,20 +57,37 @@ SYNTHESIS_TARGETS = [
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
 
+# Design file lists available for synthesis
+DESIGN_FILELISTS = {
+    "frost": "hw/rtl/cpu_and_mem/cpu_and_mem.f",
+    "tomasulo": "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo.f",
+}
+
 
 class YosysRunner:
     """Run Yosys synthesis with proper environment setup."""
 
-    def __init__(self) -> None:
-        """Initialize runner with paths."""
+    def __init__(self, filelist_key: str = "frost") -> None:
+        """Initialize runner with paths.
+
+        Args:
+            filelist_key: Key from DESIGN_FILELISTS dict (e.g., "frost", "tomasulo").
+        """
         self.test_dir = Path(__file__).parent.resolve()
         self.root_dir = self.test_dir.parent
-        self.frost_filelist = (
-            self.root_dir / "hw" / "rtl" / "cpu_and_mem" / "cpu_and_mem.f"
-        )
+        self.filelist_key = filelist_key
 
-        # Create symlink to sw.mem if needed
-        self.setup_sw_mem()
+        if filelist_key not in DESIGN_FILELISTS:
+            raise ValueError(
+                f"Unknown filelist key '{filelist_key}'. "
+                f"Available: {list(DESIGN_FILELISTS.keys())}"
+            )
+
+        self.filelist = self.root_dir / DESIGN_FILELISTS[filelist_key]
+
+        # Create symlink to sw.mem only for designs that need it (frost has BRAM init)
+        if filelist_key == "frost":
+            self.setup_sw_mem()
 
     def setup_sw_mem(self) -> None:
         """Compile hello_world and set up sw.mem symlink for synthesis."""
@@ -122,11 +139,11 @@ class YosysRunner:
             synth_command: Yosys synthesis command (e.g., "synth", "synth_xilinx",
                           "synth_intel_alm", "synth_ice40").
         """
-        if not self.frost_filelist.exists():
-            raise FileNotFoundError(f"Filelist not found: {self.frost_filelist}")
+        if not self.filelist.exists():
+            raise FileNotFoundError(f"Filelist not found: {self.filelist}")
 
         # Parse the filelist
-        verilog_files = self.parse_filelist(self.frost_filelist)
+        verilog_files = self.parse_filelist(self.filelist)
 
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
@@ -148,7 +165,7 @@ class YosysRunner:
         script_content = "\n".join(yosys_script)
 
         # Run Yosys
-        print(f"Parsing filelist: {self.frost_filelist}")
+        print(f"Parsing filelist: {self.filelist}")
         print(f"Using ROOT: {self.root_dir}")
         print(f"Found {len(verilog_files)} Verilog files")
 
@@ -281,6 +298,72 @@ class TestYosysSynthesis:
             pytest.fail(f"Unexpected error during {target_name} synthesis: {e}")
 
 
+@pytest.mark.synthesis
+class TestYosysTomasuloSynthesis:
+    """Test cases for Yosys synthesis of Tomasulo out-of-order modules."""
+
+    @pytest.mark.parametrize(
+        "target_name,synth_command,description",
+        SYNTHESIS_TARGETS,
+        ids=[t[0] for t in SYNTHESIS_TARGETS],
+    )
+    def test_tomasulo_synthesis(
+        self, target_name: str, synth_command: str, description: str, capsys: Any
+    ) -> None:
+        """Run synthesis for Tomasulo modules on a specific target."""
+        runner = YosysRunner(filelist_key="tomasulo")
+
+        # Check if Yosys is available
+        try:
+            subprocess.run(["yosys", "-V"], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pytest.fail("Yosys not installed - required for synthesis tests")
+
+        with capsys.disabled():
+            print(f"\nRunning Yosys Tomasulo synthesis for {description}...")
+
+        try:
+            result = runner.run_synthesis(
+                capture_output=True, synth_command=synth_command
+            )
+
+            # Check for errors
+            has_error, error_lines = runner.check_for_errors(result)
+
+            # Print summary for debugging
+            with capsys.disabled():
+                if has_error:
+                    print(f"\nTomasulo synthesis for {target_name} failed with errors:")
+                    for line in error_lines:
+                        print(f"  {line}")
+                else:
+                    print(
+                        f"\nTomasulo synthesis for {target_name} completed successfully"
+                    )
+                    if result.stdout and "End of script" in result.stdout:
+                        # Extract and print statistics if available
+                        for line in result.stdout.splitlines():
+                            if "Number of cells:" in line or "Number of wires:" in line:
+                                print(f"  {line.strip()}")
+
+            # Assert no errors
+            if has_error:
+                error_msg = (
+                    f"Yosys Tomasulo synthesis for {target_name} failed:\n"
+                    + "\n".join(error_lines)
+                )
+                pytest.fail(error_msg)
+
+        except subprocess.TimeoutExpired:
+            pytest.fail(
+                f"Yosys Tomasulo synthesis for {target_name} timed out after 5 minutes"
+            )
+        except Exception as e:
+            pytest.fail(
+                f"Unexpected error during {target_name} Tomasulo synthesis: {e}"
+            )
+
+
 # Command-line interface for standalone execution
 def main() -> int:
     """Run Yosys synthesis from command line."""
@@ -291,18 +374,28 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                    # Run default targets (generic, xilinx)
-  %(prog)s --target xilinx    # Run synthesis for Xilinx only
-  %(prog)s --target generic   # Run generic/ASIC synthesis
-  %(prog)s --target ice40     # Run iCE40 synthesis (any Yosys target works)
-  %(prog)s --verbose          # Show full Yosys output
+  %(prog)s                           # Run frost targets (generic, xilinx)
+  %(prog)s --design tomasulo         # Run tomasulo out-of-order modules
+  %(prog)s --target xilinx           # Run synthesis for Xilinx only
+  %(prog)s --target generic          # Run generic/ASIC synthesis
+  %(prog)s --target ice40            # Run iCE40 synthesis (any Yosys target works)
+  %(prog)s --verbose                 # Show full Yosys output
 
 This script can also be run via pytest:
-  pytest test_run_yosys.py   # Run as pytest test
+  pytest test_run_yosys.py                        # Run all synthesis tests
+  pytest test_run_yosys.py::TestYosysSynthesis    # Run frost only
+  pytest test_run_yosys.py::TestYosysTomasuloSynthesis  # Run tomasulo only
 """,
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show full Yosys output"
+    )
+    parser.add_argument(
+        "--design",
+        "-d",
+        default="frost",
+        choices=list(DESIGN_FILELISTS.keys()),
+        help=f"Design to synthesize (default: frost). Available: {list(DESIGN_FILELISTS.keys())}",
     )
     parser.add_argument(
         "--target",
@@ -324,7 +417,8 @@ This script can also be run via pytest:
         print("Error: Yosys is not installed or not in PATH")
         return 1
 
-    runner = YosysRunner()
+    runner = YosysRunner(filelist_key=args.design)
+    print(f"Design: {args.design} ({runner.filelist})")
 
     # Determine which targets to run
     if args.target:

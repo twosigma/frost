@@ -183,6 +183,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="uart_echo",
         description="UART RX echo demo (driven via cocotb UART input)",
     ),
+    # Tomasulo unit tests
+    "reorder_buffer": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
+        hdl_toplevel_module="reorder_buffer",
+        description="Reorder Buffer unit tests (allocation, commit, flush, serialization)",
+    ),
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)
