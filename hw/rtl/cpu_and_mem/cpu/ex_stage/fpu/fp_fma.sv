@@ -227,7 +227,7 @@ module fp_fma #(
   // =========================================================================
   // Deep pipeline after DSP multiply to satisfy timing (MulPipeStages stages).
 
-  logic        [     ProdBits-1:0] prod_pipe          [MulPipeStages];
+  (* srl_style = "srl_reg" *)logic        [     ProdBits-1:0] prod_pipe          [MulPipeStages];
   logic        [MulPipeStages-1:0] prod_valid_pipe;
 
   // =========================================================================
@@ -783,10 +783,8 @@ module fp_fma #(
       is_special_s2 <= 1'b0;
       special_result_s2 <= '0;
       special_invalid_s2 <= 1'b0;
-      // Stage 2B (TIMING: after DSP multiply)
-      for (int i = 0; i < MulPipeStages; i++) begin
-        prod_pipe[i] <= '0;
-      end
+      // Stage 2B (TIMING: after DSP multiply -- prod_pipe reset removed for SRL
+      // inference; prod_valid_pipe gates consumption so reset of data is unnecessary)
       prod_valid_pipe <= '0;
       // Stage 3 (before LZC)
       prod_mant_s3 <= '0;

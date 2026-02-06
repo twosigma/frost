@@ -109,10 +109,10 @@ module divider #(
   logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];  // +1 bit for subtraction
   logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
   logic [WIDTH-1:0] divisor_pipeline       [NumPipelineStages+1];
-  logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
-  logic             quotient_sign_pipeline [NumPipelineStages+1];
-  logic             remainder_sign_pipeline[NumPipelineStages+1];
-  logic             divide_by_zero_pipeline[NumPipelineStages+1];
+  (* srl_style = "srl_reg" *)logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
+  (* srl_style = "srl_reg" *)logic             quotient_sign_pipeline [NumPipelineStages+1];
+  (* srl_style = "srl_reg" *)logic             remainder_sign_pipeline[NumPipelineStages+1];
+  (* srl_style = "srl_reg" *)logic             divide_by_zero_pipeline[NumPipelineStages+1];
   logic             valid_pipeline         [NumPipelineStages+1];
 
   // Stage 0: Initialize pipeline with input values

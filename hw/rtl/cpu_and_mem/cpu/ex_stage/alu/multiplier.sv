@@ -57,7 +57,7 @@ module multiplier (
   localparam int unsigned PipeStages = 4;
 
   (* use_dsp = "yes" *) logic [63:0] product;
-  logic [63:0] product_pipe[PipeStages];
+  (* srl_style = "srl_reg" *) logic [63:0] product_pipe[PipeStages];
   logic [PipeStages-1:0] valid_pipe;
 
   // Pipelined registered multiplication using DSP blocks

@@ -206,7 +206,7 @@ module fp_multiplier #(
   // =========================================================================
   // Deep pipeline after DSP multiply to satisfy timing (MulPipeStages stages).
 
-  logic        [     ProdBits-1:0] product_pipe       [MulPipeStages];
+  (* srl_style = "srl_reg" *)logic        [     ProdBits-1:0] product_pipe       [MulPipeStages];
   logic        [MulPipeStages-1:0] product_valid_pipe;
 
   // =========================================================================
@@ -504,10 +504,8 @@ module fp_multiplier #(
       special_result_s2 <= '0;
       special_invalid_s2 <= 1'b0;
       rm_s2 <= 3'b0;
-      // Post-multiply product pipeline
-      for (int i = 0; i < MulPipeStages; i++) begin
-        product_pipe[i] <= '0;
-      end
+      // Post-multiply product pipeline (product_pipe reset removed for SRL inference;
+      // product_valid_pipe gates consumption so reset of data is unnecessary)
       product_valid_pipe <= '0;
       // Stage 3 registers (before LZC)
       result_sign_s3 <= 1'b0;
