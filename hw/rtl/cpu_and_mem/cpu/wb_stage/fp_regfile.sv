@@ -44,47 +44,34 @@ module fp_regfile #(
   logic write_enable;
   assign write_enable = i_from_ma_to_wb.fp_regfile_write_enable & ~i_pipeline_ctrl.stall;
 
-  // First RAM instance: provides fs1 read port
-  // Note: Write address uses tracked fp_dest_reg from FPU pipeline, not instruction.dest_reg
+  // Three RAM instances sharing the same write port, with independent read ports for fs1, fs2, fs3.
+  // fs3 is needed for FMA instructions (R4-type format, encoded in funct7[6:2]).
+  // Note: Write address uses tracked fp_dest_reg from FPU pipeline, not instruction.dest_reg.
   // This is necessary because pipelined FPU operations complete cycles after the instruction
   // has moved through the pipeline, so the tracked dest_reg ensures we write to the correct register.
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(DATA_WIDTH)
-  ) fp_source_reg_1_ram (
-      .i_clk,
-      .i_write_enable(write_enable),
-      .i_write_address(i_from_ma_to_wb.fp_dest_reg),
-      .i_write_data(i_from_ma_to_wb.fp_regfile_write_data),
-      .i_read_address(i_from_pd_to_id.source_reg_1_early),
-      .o_read_data(o_fp_rf_to_fwd.fp_source_reg_1_data)
-  );
+  logic [4:0] read_addresses[3];
+  assign read_addresses[0] = i_from_pd_to_id.source_reg_1_early;
+  assign read_addresses[1] = i_from_pd_to_id.source_reg_2_early;
+  assign read_addresses[2] = i_from_pd_to_id.fp_source_reg_3_early;
 
-  // Second RAM instance: provides fs2 read port
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(DATA_WIDTH)
-  ) fp_source_reg_2_ram (
-      .i_clk,
-      .i_write_enable(write_enable),
-      .i_write_address(i_from_ma_to_wb.fp_dest_reg),
-      .i_write_data(i_from_ma_to_wb.fp_regfile_write_data),
-      .i_read_address(i_from_pd_to_id.source_reg_2_early),
-      .o_read_data(o_fp_rf_to_fwd.fp_source_reg_2_data)
-  );
+  logic [DATA_WIDTH-1:0] read_data[3];
 
-  // Third RAM instance: provides fs3 read port (for FMA instructions)
-  // fs3 is encoded in funct7[6:2] of the R4-type instruction format
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(DATA_WIDTH)
-  ) fp_source_reg_3_ram (
-      .i_clk,
-      .i_write_enable(write_enable),
-      .i_write_address(i_from_ma_to_wb.fp_dest_reg),
-      .i_write_data(i_from_ma_to_wb.fp_regfile_write_data),
-      .i_read_address(i_from_pd_to_id.fp_source_reg_3_early),
-      .o_read_data(o_fp_rf_to_fwd.fp_source_reg_3_data)
-  );
+  for (genvar i = 0; i < 3; i++) begin : gen_fp_source_ram
+    sdp_dist_ram #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) fp_source_reg_ram (
+        .i_clk,
+        .i_write_enable(write_enable),
+        .i_write_address(i_from_ma_to_wb.fp_dest_reg),
+        .i_write_data(i_from_ma_to_wb.fp_regfile_write_data),
+        .i_read_address(read_addresses[i]),
+        .o_read_data(read_data[i])
+    );
+  end
+
+  assign o_fp_rf_to_fwd.fp_source_reg_1_data = read_data[0];
+  assign o_fp_rf_to_fwd.fp_source_reg_2_data = read_data[1];
+  assign o_fp_rf_to_fwd.fp_source_reg_3_data = read_data[2];
 
 endmodule : fp_regfile

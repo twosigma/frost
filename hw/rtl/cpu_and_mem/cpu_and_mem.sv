@@ -171,8 +171,8 @@ module cpu_and_mem #(
   );
 
   logic is_mmio;
-  assign is_mmio = (data_memory_address >= MmioAddr) &&
-                   (data_memory_address < (MmioAddr + MmioSizeBytes));
+  assign is_mmio = (data_memory_address >= MmioAddr)
+                 && (data_memory_address < (MmioAddr + MmioSizeBytes));
 
   // Dual memory architecture with separate instruction and data memories
   // Both memories receive instruction writes (fan out) on Port A (div4 clock)
@@ -236,9 +236,9 @@ module cpu_and_mem #(
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
-  assign is_mmio_registered = mmio_load_valid &&
-                              (mmio_load_addr >= MmioAddr) &&
-                              (mmio_load_addr < (MmioAddr + MmioSizeBytes));
+  assign is_mmio_registered = mmio_load_valid
+                           && (mmio_load_addr >= MmioAddr)
+                           && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse)
   always_comb begin

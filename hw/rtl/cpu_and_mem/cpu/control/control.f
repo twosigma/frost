@@ -8,6 +8,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/forwarding_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/fp_forwarding_unit.sv
 
 # Hazard resolution unit - manages pipeline stalls and flushes
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/control/hru_fp_hazards.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/hazard_resolution_unit.sv
 
 # Trap unit - handles exceptions and interrupts for RTOS support

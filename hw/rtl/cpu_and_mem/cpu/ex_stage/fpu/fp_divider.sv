@@ -84,15 +84,10 @@ module fp_divider #(
   localparam int unsigned LzcMantBits = $clog2(FracBits + 1);
   localparam int unsigned QuotLzcBits = $clog2(DivBits + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
-  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
-  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam int unsigned DivCycles = MantBits + 2;
   localparam int unsigned CycleCountBits = $clog2(DivCycles + 1);
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
-  localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
-    {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
-  };
   localparam logic [CycleCountBits-1:0] DivCyclesMinus1 = CycleCountBits'(DivCycles - 1);
 
   logic [CycleCountBits-1:0] cycle_count;
@@ -367,75 +362,44 @@ module fp_divider #(
   // ROUND_PREP -> ROUND_APPLY Pipeline Registers
   // =========================================================================
 
-  logic                         result_sign_apply;
-  logic signed [ExpExtBits-1:0] exp_work_apply;
-  logic        [  MantBits-1:0] mantissa_work_apply;
-  logic                         round_up_apply;
-  logic                         is_inexact_apply;
-  logic                         div_is_zero_apply;
-  logic        [           2:0] rm_apply;
+  logic                                  result_sign_apply;
+  logic signed          [ExpExtBits-1:0] exp_work_apply;
+  logic                 [  MantBits-1:0] mantissa_work_apply;
+  logic                                  round_up_apply;
+  logic                                  is_inexact_apply;
+  logic                                  div_is_zero_apply;
+  logic                 [           2:0] rm_apply;
 
   // =========================================================================
   // ROUND_APPLY: Apply rounding and format result
   // =========================================================================
 
-  logic        [    MantBits:0] rounded_mantissa_apply;
-  logic                         mantissa_overflow_apply;
-  logic signed [ExpExtBits-1:0] adjusted_exponent_apply;
-  logic        [  FracBits-1:0] final_mantissa_apply;
-  logic is_overflow_apply, is_underflow_apply;
+  // Compute final result using shared result assembler
+  logic                 [  FP_WIDTH-1:0] final_result_apply_comb;
+  riscv_pkg::fp_flags_t                  final_flags_apply_comb;
 
-  assign rounded_mantissa_apply  = {1'b0, mantissa_work_apply} + {{MantBits{1'b0}}, round_up_apply};
-  assign mantissa_overflow_apply = rounded_mantissa_apply[MantBits];
-
-  always_comb begin
-    if (mantissa_overflow_apply) begin
-      if (exp_work_apply == '0) begin
-        adjusted_exponent_apply = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
-      end else begin
-        adjusted_exponent_apply = exp_work_apply + 1;
-      end
-      final_mantissa_apply = rounded_mantissa_apply[MantBits-1:1];
-    end else begin
-      adjusted_exponent_apply = exp_work_apply;
-      final_mantissa_apply = rounded_mantissa_apply[FracBits-1:0];
-    end
-  end
-
-  assign is_overflow_apply  = (adjusted_exponent_apply >= ExpMaxSigned);
-  assign is_underflow_apply = (adjusted_exponent_apply <= '0);
-
-  // Compute final result
-  logic [FP_WIDTH-1:0] final_result_apply_comb;
-  riscv_pkg::fp_flags_t final_flags_apply_comb;
-
-  always_comb begin
-    final_result_apply_comb = '0;
-    final_flags_apply_comb  = '0;
-
-    if (div_is_zero_apply) begin
-      final_result_apply_comb = {result_sign_apply, {(FP_WIDTH - 1) {1'b0}}};
-    end else if (is_overflow_apply) begin
-      final_flags_apply_comb.of = 1'b1;
-      final_flags_apply_comb.nx = 1'b1;
-      if ((rm_apply == riscv_pkg::FRM_RTZ) ||
-          (rm_apply == riscv_pkg::FRM_RDN && !result_sign_apply) ||
-          (rm_apply == riscv_pkg::FRM_RUP && result_sign_apply)) begin
-        final_result_apply_comb = {result_sign_apply, MaxNormalExp, MaxMant};
-      end else begin
-        final_result_apply_comb = {result_sign_apply, ExpMax, {FracBits{1'b0}}};
-      end
-    end else if (is_underflow_apply) begin
-      final_flags_apply_comb.uf = is_inexact_apply;
-      final_flags_apply_comb.nx = is_inexact_apply;
-      final_result_apply_comb   = {result_sign_apply, {ExpBits{1'b0}}, final_mantissa_apply};
-    end else begin
-      final_flags_apply_comb.nx = is_inexact_apply;
-      final_result_apply_comb = {
-        result_sign_apply, adjusted_exponent_apply[ExpBits-1:0], final_mantissa_apply
-      };
-    end
-  end
+  fp_result_assembler #(
+      .FP_WIDTH  (FP_WIDTH),
+      .ExpBits   (ExpBits),
+      .FracBits  (FracBits),
+      .MantBits  (MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work        (exp_work_apply),
+      .i_mantissa_work   (mantissa_work_apply),
+      .i_round_up        (round_up_apply),
+      .i_is_inexact      (is_inexact_apply),
+      .i_result_sign     (result_sign_apply),
+      .i_rm              (rm_apply),
+      .i_is_special      (1'b0),
+      .i_special_result  ({FP_WIDTH{1'b0}}),
+      .i_special_invalid (1'b0),
+      .i_special_div_zero(1'b0),
+      .i_is_zero_result  (div_is_zero_apply),
+      .i_zero_sign       (result_sign_apply),
+      .o_result          (final_result_apply_comb),
+      .o_flags           (final_flags_apply_comb)
+  );
 
   // =========================================================================
   // ROUND_APPLY -> OUTPUT Pipeline Registers

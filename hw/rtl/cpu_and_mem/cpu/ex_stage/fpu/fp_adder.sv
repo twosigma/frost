@@ -84,13 +84,8 @@ module fp_adder #(
   localparam int unsigned LzcBits = $clog2(SumBits + 1);
   localparam int unsigned ExpExtBits = ExpBits + 2;
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
-  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
-  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam logic [ExpBits-1:0] AlignBitsExp = ExpBits'(AlignBits);
-  localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
-    {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
-  };
 
   // =========================================================================
   // Captured Operands (registered at start of operation)
@@ -474,85 +469,56 @@ module fp_adder #(
   // Stage 5 -> Stage 6 Pipeline Register (after round-up decision)
   // =========================================================================
 
-  logic                         result_sign_s6;
-  logic signed [ExpExtBits-1:0] exp_work_s6;
-  logic        [  MantBits-1:0] mantissa_work_s6;
-  logic                         round_up_s6;
-  logic                         is_inexact_s6;
-  logic                         sum_is_zero_s6;
-  logic                         sticky_s6_saved;
-  logic                         sign_large_s6;
-  logic                         sign_small_s6;
-  logic        [           2:0] rm_s6;
-  logic                         is_special_s6;
-  logic        [  FP_WIDTH-1:0] special_result_s6;
-  logic                         special_invalid_s6;
+  logic                                  result_sign_s6;
+  logic signed          [ExpExtBits-1:0] exp_work_s6;
+  logic                 [  MantBits-1:0] mantissa_work_s6;
+  logic                                  round_up_s6;
+  logic                                  is_inexact_s6;
+  logic                                  sum_is_zero_s6;
+  logic                                  sticky_s6_saved;
+  logic                                  sign_large_s6;
+  logic                                  sign_small_s6;
+  logic                 [           2:0] rm_s6;
+  logic                                  is_special_s6;
+  logic                 [  FP_WIDTH-1:0] special_result_s6;
+  logic                                  special_invalid_s6;
 
   // =========================================================================
   // Stage 6: Apply rounding and format result (combinational from s6 regs)
   // =========================================================================
 
-  logic        [    MantBits:0] rounded_mantissa_s6;
-  logic                         mantissa_overflow_s6;
-  logic signed [ExpExtBits-1:0] adjusted_exponent_s6;
-  logic        [  FracBits-1:0] final_mantissa_s6;
-  logic is_overflow_s6, is_underflow_s6;
-
-  assign rounded_mantissa_s6  = {1'b0, mantissa_work_s6} + {{MantBits{1'b0}}, round_up_s6};
-  assign mantissa_overflow_s6 = rounded_mantissa_s6[MantBits];
-
-  always_comb begin
-    if (mantissa_overflow_s6) begin
-      if (exp_work_s6 == '0) begin
-        adjusted_exponent_s6 = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
-      end else begin
-        adjusted_exponent_s6 = exp_work_s6 + 1;
-      end
-      final_mantissa_s6 = rounded_mantissa_s6[MantBits-1:1];
-    end else begin
-      adjusted_exponent_s6 = exp_work_s6;
-      final_mantissa_s6 = rounded_mantissa_s6[FracBits-1:0];
-    end
-  end
-
-  assign is_overflow_s6  = (adjusted_exponent_s6 >= ExpMaxSigned);
-  assign is_underflow_s6 = (adjusted_exponent_s6 <= '0);
-
-  // Compute final result
-  logic [FP_WIDTH-1:0] final_result_s6_comb;
-  riscv_pkg::fp_flags_t final_flags_s6_comb;
-  logic zero_sign_s6;
+  // Compute final result using shared result assembler
+  logic                 [  FP_WIDTH-1:0] final_result_s6_comb;
+  riscv_pkg::fp_flags_t                  final_flags_s6_comb;
+  logic                                  zero_sign_s6;
 
   always_comb begin
     zero_sign_s6 = (rm_s6 == riscv_pkg::FRM_RDN) ? 1'b1 : 1'b0;
-    final_result_s6_comb = '0;
-    final_flags_s6_comb = '0;
-
-    if (is_special_s6) begin
-      final_result_s6_comb   = special_result_s6;
-      final_flags_s6_comb.nv = special_invalid_s6;
-    end else if (sum_is_zero_s6 && !sticky_s6_saved) begin
-      if (sign_large_s6 == sign_small_s6) zero_sign_s6 = sign_large_s6;
-      final_result_s6_comb = {zero_sign_s6, {(FP_WIDTH - 1) {1'b0}}};
-    end else if (is_overflow_s6) begin
-      final_flags_s6_comb.of = 1'b1;
-      final_flags_s6_comb.nx = 1'b1;
-      if ((rm_s6 == riscv_pkg::FRM_RTZ) ||
-          (rm_s6 == riscv_pkg::FRM_RDN && !result_sign_s6) ||
-          (rm_s6 == riscv_pkg::FRM_RUP && result_sign_s6)) begin
-        final_result_s6_comb = {result_sign_s6, MaxNormalExp, MaxMant};
-      end else begin
-        final_result_s6_comb = {result_sign_s6, ExpMax, {FracBits{1'b0}}};
-      end
-    end else if (is_underflow_s6) begin
-      final_flags_s6_comb.uf = is_inexact_s6;
-      final_flags_s6_comb.nx = is_inexact_s6;
-      final_result_s6_comb   = {result_sign_s6, {ExpBits{1'b0}}, final_mantissa_s6};
-    end else begin
-      final_flags_s6_comb.nx = is_inexact_s6;
-      final_result_s6_comb = {result_sign_s6, adjusted_exponent_s6[ExpBits-1:0], final_mantissa_s6};
-    end
+    if (sign_large_s6 == sign_small_s6) zero_sign_s6 = sign_large_s6;
   end
+
+  fp_result_assembler #(
+      .FP_WIDTH  (FP_WIDTH),
+      .ExpBits   (ExpBits),
+      .FracBits  (FracBits),
+      .MantBits  (MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work        (exp_work_s6),
+      .i_mantissa_work   (mantissa_work_s6),
+      .i_round_up        (round_up_s6),
+      .i_is_inexact      (is_inexact_s6),
+      .i_result_sign     (result_sign_s6),
+      .i_rm              (rm_s6),
+      .i_is_special      (is_special_s6),
+      .i_special_result  (special_result_s6),
+      .i_special_invalid (special_invalid_s6),
+      .i_special_div_zero(1'b0),
+      .i_is_zero_result  (sum_is_zero_s6 && !sticky_s6_saved),
+      .i_zero_sign       (zero_sign_s6),
+      .o_result          (final_result_s6_comb),
+      .o_flags           (final_flags_s6_comb)
+  );
 
   // =========================================================================
   // Stage 6 -> Stage 7 Pipeline Register (final output)

@@ -83,15 +83,10 @@ module fp_multiplier #(
   localparam int signed ExpBias = (1 << (ExpBits - 1)) - 1;
   localparam int unsigned LzcBits = $clog2(ProdBits + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
-  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
-  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
   localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
   localparam logic [LzcBits-1:0] MantBitsPlus3Shift = LzcBits'(MantBits + 3);
-  localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
-    {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
-  };
   // Post-multiply pipeline depth (Vivado recommends 10 stages for wide multiplier).
   localparam int unsigned MulPipeStages = 10;
 
@@ -380,79 +375,47 @@ module fp_multiplier #(
   // Stage 4B -> Stage 5 Pipeline Register (after round-up decision)
   // =========================================================================
 
-  logic                         result_sign_s5;
-  logic signed [ExpExtBits-1:0] exp_work_s5;
-  logic        [  MantBits-1:0] mantissa_work_s5;
-  logic                         round_up_s5;
-  logic                         is_inexact_s5;
-  logic                         product_is_zero_s5;
-  logic        [           2:0] rm_s5;
-  logic                         is_special_s5;
-  logic        [  FP_WIDTH-1:0] special_result_s5;
-  logic                         special_invalid_s5;
+  logic                                  result_sign_s5;
+  logic signed          [ExpExtBits-1:0] exp_work_s5;
+  logic                 [  MantBits-1:0] mantissa_work_s5;
+  logic                                  round_up_s5;
+  logic                                  is_inexact_s5;
+  logic                                  product_is_zero_s5;
+  logic                 [           2:0] rm_s5;
+  logic                                  is_special_s5;
+  logic                 [  FP_WIDTH-1:0] special_result_s5;
+  logic                                  special_invalid_s5;
 
   // =========================================================================
   // Stage 5: Apply rounding and format result (combinational from s5 regs)
   // =========================================================================
 
-  logic        [    MantBits:0] rounded_mantissa_s5;
-  logic                         mantissa_overflow_s5;
-  logic signed [ExpExtBits-1:0] adjusted_exponent_s5;
-  logic        [  FracBits-1:0] final_mantissa_s5;
-  logic is_overflow_s5, is_underflow_s5;
+  // Compute final result using shared result assembler
+  logic                 [  FP_WIDTH-1:0] final_result_s5_comb;
+  riscv_pkg::fp_flags_t                  final_flags_s5_comb;
 
-  assign rounded_mantissa_s5  = {1'b0, mantissa_work_s5} + {{MantBits{1'b0}}, round_up_s5};
-  assign mantissa_overflow_s5 = rounded_mantissa_s5[MantBits];
-
-  always_comb begin
-    if (mantissa_overflow_s5) begin
-      if (exp_work_s5 == '0) begin
-        adjusted_exponent_s5 = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
-      end else begin
-        adjusted_exponent_s5 = exp_work_s5 + 1;
-      end
-      final_mantissa_s5 = rounded_mantissa_s5[MantBits-1:1];
-    end else begin
-      adjusted_exponent_s5 = exp_work_s5;
-      final_mantissa_s5 = rounded_mantissa_s5[FracBits-1:0];
-    end
-  end
-
-  assign is_overflow_s5  = (adjusted_exponent_s5 >= ExpMaxSigned);
-  assign is_underflow_s5 = (adjusted_exponent_s5 <= '0);
-
-  // Compute final result
-  logic [FP_WIDTH-1:0] final_result_s5_comb;
-  riscv_pkg::fp_flags_t final_flags_s5_comb;
-
-  always_comb begin
-    final_result_s5_comb = '0;
-    final_flags_s5_comb  = '0;
-
-    if (is_special_s5) begin
-      final_result_s5_comb   = special_result_s5;
-      final_flags_s5_comb.nv = special_invalid_s5;
-    end else if (product_is_zero_s5) begin
-      final_result_s5_comb = {result_sign_s5, {(FP_WIDTH - 1) {1'b0}}};
-    end else if (is_overflow_s5) begin
-      final_flags_s5_comb.of = 1'b1;
-      final_flags_s5_comb.nx = 1'b1;
-      if ((rm_s5 == riscv_pkg::FRM_RTZ) ||
-          (rm_s5 == riscv_pkg::FRM_RDN && !result_sign_s5) ||
-          (rm_s5 == riscv_pkg::FRM_RUP && result_sign_s5)) begin
-        final_result_s5_comb = {result_sign_s5, MaxNormalExp, MaxMant};
-      end else begin
-        final_result_s5_comb = {result_sign_s5, ExpMax, {FracBits{1'b0}}};
-      end
-    end else if (is_underflow_s5) begin
-      final_flags_s5_comb.uf = is_inexact_s5;
-      final_flags_s5_comb.nx = is_inexact_s5;
-      final_result_s5_comb   = {result_sign_s5, {ExpBits{1'b0}}, final_mantissa_s5};
-    end else begin
-      final_flags_s5_comb.nx = is_inexact_s5;
-      final_result_s5_comb = {result_sign_s5, adjusted_exponent_s5[ExpBits-1:0], final_mantissa_s5};
-    end
-  end
+  fp_result_assembler #(
+      .FP_WIDTH  (FP_WIDTH),
+      .ExpBits   (ExpBits),
+      .FracBits  (FracBits),
+      .MantBits  (MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work        (exp_work_s5),
+      .i_mantissa_work   (mantissa_work_s5),
+      .i_round_up        (round_up_s5),
+      .i_is_inexact      (is_inexact_s5),
+      .i_result_sign     (result_sign_s5),
+      .i_rm              (rm_s5),
+      .i_is_special      (is_special_s5),
+      .i_special_result  (special_result_s5),
+      .i_special_invalid (special_invalid_s5),
+      .i_special_div_zero(1'b0),
+      .i_is_zero_result  (product_is_zero_s5),
+      .i_zero_sign       (result_sign_s5),
+      .o_result          (final_result_s5_comb),
+      .o_flags           (final_flags_s5_comb)
+  );
 
   // =========================================================================
   // Stage 5 -> Stage 6 Pipeline Register (final output)

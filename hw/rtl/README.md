@@ -716,6 +716,7 @@ rtl/
         │       ├── fp_classify.sv    # FCLASS.S (1-cycle)
         │       ├── fp_sign_inject.sv # Sign injection (1-cycle)
         │       ├── fp_convert_sd.sv  # Single/double conversion (5-cycle)
+        │       ├── fp_result_assembler.sv # Rounding + overflow/underflow + result formatting (shared)
         │       ├── fp_round.sv       # Rounding logic (shared)
         │       ├── fp_lzc.sv         # Leading zero counter (shared)
         │       ├── fp_classify_operand.sv # Operand classifier (shared)
@@ -742,6 +743,7 @@ rtl/
             ├── forwarding_unit.sv    # Integer data hazard forwarding
             ├── fp_forwarding_unit.sv # FP data hazard forwarding (F/D extensions)
             ├── hazard_resolution_unit.sv # Stall/flush control (incl. FPU stalls)
+            ├── hru_fp_hazards.sv    # FP hazard detection (submodule of HRU)
             ├── trap_unit.sv          # Interrupt/exception handling
             └── lr_sc_reservation.sv  # A extension: LR/SC address reservation
 ```

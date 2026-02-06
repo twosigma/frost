@@ -39,38 +39,36 @@ module regfile #(
     output riscv_pkg::rf_to_fwd_t o_rf_to_fwd
 );
 
-  // First RAM instance: provides rs1 read port, shares write port
-  // Read address uses early source regs from PD stage (registered at PD→ID boundary)
-  // so the RAM read occurs in ID stage, not EX stage
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(DATA_WIDTH)
-  ) source_register_1_ram (
-      .i_clk,
-      // Write enable: only if instruction writes, destination is not x0, and pipeline not stalled
-      .i_write_enable(i_from_ma_to_wb.regfile_write_enable &
-                      ~i_pipeline_ctrl.stall &
-                      |i_from_ma_to_wb.instruction.dest_reg),
-      .i_write_address(i_from_ma_to_wb.instruction.dest_reg),
-      .i_write_data(i_from_ma_to_wb.regfile_write_data),
-      .i_read_address(i_from_pd_to_id.source_reg_1_early),
-      .o_read_data(o_rf_to_fwd.source_reg_1_data)
-  );
+  // Write enable: only if instruction writes, destination is not x0, and pipeline not stalled
+  logic write_enable;
+  assign write_enable = i_from_ma_to_wb.regfile_write_enable &
+                        ~i_pipeline_ctrl.stall &
+                        |i_from_ma_to_wb.instruction.dest_reg;
 
-  // Second RAM instance: provides rs2 read port, shares write port
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(DATA_WIDTH)
-  ) source_register_2_ram (
-      .i_clk,
-      // Write enable: same logic as source_register_1_ram
-      .i_write_enable(i_from_ma_to_wb.regfile_write_enable &
-                      ~i_pipeline_ctrl.stall &
-                      |i_from_ma_to_wb.instruction.dest_reg),
-      .i_write_address(i_from_ma_to_wb.instruction.dest_reg),
-      .i_write_data(i_from_ma_to_wb.regfile_write_data),
-      .i_read_address(i_from_pd_to_id.source_reg_2_early),
-      .o_read_data(o_rf_to_fwd.source_reg_2_data)
-  );
+  // Two RAM instances sharing the same write port, with independent read ports for rs1 and rs2.
+  // Read addresses use early source regs from PD stage (registered at PD→ID boundary)
+  // so the RAM read occurs in ID stage, not EX stage.
+  logic [4:0] read_addresses[2];
+  assign read_addresses[0] = i_from_pd_to_id.source_reg_1_early;
+  assign read_addresses[1] = i_from_pd_to_id.source_reg_2_early;
+
+  logic [DATA_WIDTH-1:0] read_data[2];
+
+  for (genvar i = 0; i < 2; i++) begin : gen_source_ram
+    sdp_dist_ram #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) source_register_ram (
+        .i_clk,
+        .i_write_enable(write_enable),
+        .i_write_address(i_from_ma_to_wb.instruction.dest_reg),
+        .i_write_data(i_from_ma_to_wb.regfile_write_data),
+        .i_read_address(read_addresses[i]),
+        .o_read_data(read_data[i])
+    );
+  end
+
+  assign o_rf_to_fwd.source_reg_1_data = read_data[0];
+  assign o_rf_to_fwd.source_reg_2_data = read_data[1];
 
 endmodule : regfile

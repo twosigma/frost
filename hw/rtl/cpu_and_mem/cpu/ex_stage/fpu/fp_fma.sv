@@ -92,8 +92,6 @@ module fp_fma #(
   localparam int unsigned LzcSumBits = $clog2(SumBits + 1);
   localparam int unsigned ShiftBits = $clog2(ProdBits + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
-  localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
-  localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   // Post-multiply pipeline depth (Vivado recommends 10 stages for wide multiplier).
   localparam int unsigned MulPipeStages = 10;
@@ -648,81 +646,47 @@ module fp_fma #(
   // Stage 7B -> Stage 8 Pipeline Register (after round-up decision)
   // =========================================================================
 
-  logic                         result_sign_s8;
-  logic signed [ExpExtBits-1:0] exp_work_s8;
-  logic        [  MantBits-1:0] mantissa_work_s8;
-  logic                         round_up_s8;
-  logic                         is_inexact_s8;
-  logic                         is_zero_result_s8;
-  logic        [           2:0] rm_s8;
-  logic                         is_special_s8;
-  logic        [  FP_WIDTH-1:0] special_result_s8;
-  logic                         special_invalid_s8;
+  logic                                  result_sign_s8;
+  logic signed          [ExpExtBits-1:0] exp_work_s8;
+  logic                 [  MantBits-1:0] mantissa_work_s8;
+  logic                                  round_up_s8;
+  logic                                  is_inexact_s8;
+  logic                                  is_zero_result_s8;
+  logic                 [           2:0] rm_s8;
+  logic                                  is_special_s8;
+  logic                 [  FP_WIDTH-1:0] special_result_s8;
+  logic                                  special_invalid_s8;
 
   // =========================================================================
   // Stage 8: Apply rounding and format result (combinational from s8 regs)
   // =========================================================================
 
-  logic        [    MantBits:0] rounded_mantissa_s8;
-  logic                         mantissa_overflow_s8;
-  logic signed [ExpExtBits-1:0] adjusted_exponent_s8;
-  logic        [  FracBits-1:0] final_mantissa_s8;
-  logic is_overflow_s8, is_underflow_s8;
+  // Compute final result using shared result assembler
+  logic                 [  FP_WIDTH-1:0] final_result_s8_comb;
+  riscv_pkg::fp_flags_t                  final_flags_s8_comb;
 
-  assign rounded_mantissa_s8  = {1'b0, mantissa_work_s8} + {{MantBits{1'b0}}, round_up_s8};
-  assign mantissa_overflow_s8 = rounded_mantissa_s8[MantBits];
-
-  always_comb begin
-    if (mantissa_overflow_s8) begin
-      if (exp_work_s8 == '0) begin
-        adjusted_exponent_s8 = ExpExtBits'(1);
-      end else begin
-        adjusted_exponent_s8 = exp_work_s8 + 1;
-      end
-      final_mantissa_s8 = rounded_mantissa_s8[MantBits-1:1];
-    end else begin
-      adjusted_exponent_s8 = exp_work_s8;
-      final_mantissa_s8 = rounded_mantissa_s8[FracBits-1:0];
-    end
-  end
-
-  assign is_overflow_s8 = (adjusted_exponent_s8 >= $signed(
-      {{(ExpExtBits - ExpBits) {1'b0}}, ExpMax}
-  ));
-  assign is_underflow_s8 = (adjusted_exponent_s8 <= '0);
-
-  // Compute final result
-  logic [FP_WIDTH-1:0] final_result_s8_comb;
-  riscv_pkg::fp_flags_t final_flags_s8_comb;
-
-  always_comb begin
-    final_result_s8_comb = '0;
-    final_flags_s8_comb  = '0;
-
-    if (is_special_s8) begin
-      final_result_s8_comb   = special_result_s8;
-      final_flags_s8_comb.nv = special_invalid_s8;
-    end else if (is_zero_result_s8) begin
-      final_result_s8_comb = {result_sign_s8, {(FP_WIDTH - 1) {1'b0}}};
-    end else if (is_overflow_s8) begin
-      final_flags_s8_comb.of = 1'b1;
-      final_flags_s8_comb.nx = 1'b1;
-      if ((rm_s8 == riscv_pkg::FRM_RTZ) ||
-          (rm_s8 == riscv_pkg::FRM_RDN && !result_sign_s8) ||
-          (rm_s8 == riscv_pkg::FRM_RUP && result_sign_s8)) begin
-        final_result_s8_comb = {result_sign_s8, MaxNormalExp, MaxMant};
-      end else begin
-        final_result_s8_comb = {result_sign_s8, ExpMax, {FracBits{1'b0}}};
-      end
-    end else if (is_underflow_s8) begin
-      final_flags_s8_comb.uf = is_inexact_s8;
-      final_flags_s8_comb.nx = is_inexact_s8;
-      final_result_s8_comb   = {result_sign_s8, {ExpBits{1'b0}}, final_mantissa_s8};
-    end else begin
-      final_flags_s8_comb.nx = is_inexact_s8;
-      final_result_s8_comb = {result_sign_s8, adjusted_exponent_s8[ExpBits-1:0], final_mantissa_s8};
-    end
-  end
+  fp_result_assembler #(
+      .FP_WIDTH  (FP_WIDTH),
+      .ExpBits   (ExpBits),
+      .FracBits  (FracBits),
+      .MantBits  (MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work        (exp_work_s8),
+      .i_mantissa_work   (mantissa_work_s8),
+      .i_round_up        (round_up_s8),
+      .i_is_inexact      (is_inexact_s8),
+      .i_result_sign     (result_sign_s8),
+      .i_rm              (rm_s8),
+      .i_is_special      (is_special_s8),
+      .i_special_result  (special_result_s8),
+      .i_special_invalid (special_invalid_s8),
+      .i_special_div_zero(1'b0),
+      .i_is_zero_result  (is_zero_result_s8),
+      .i_zero_sign       (result_sign_s8),
+      .o_result          (final_result_s8_comb),
+      .o_flags           (final_flags_s8_comb)
+  );
 
   // =========================================================================
   // Stage 8 -> Stage 9 Pipeline Register (final output)

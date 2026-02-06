@@ -351,13 +351,13 @@ package riscv_pkg;
   function automatic logic fp_compute_round_up(input logic [2:0] rounding_mode, input logic guard,
                                                input logic round_bit, input logic sticky,
                                                input logic lsb, input logic sign);
-    unique case (rounding_mode)
-      FRM_RNE: return guard & (round_bit | sticky | lsb);
-      FRM_RTZ: return 1'b0;
-      FRM_RDN: return sign & (guard | round_bit | sticky);
-      FRM_RUP: return ~sign & (guard | round_bit | sticky);
-      FRM_RMM: return guard;
-      default: return guard & (round_bit | sticky | lsb);
+    case (rounding_mode)
+      3'b000:  fp_compute_round_up = guard & (round_bit | sticky | lsb);  // RNE
+      3'b001:  fp_compute_round_up = 1'b0;  // RTZ
+      3'b010:  fp_compute_round_up = sign & (guard | round_bit | sticky);  // RDN
+      3'b011:  fp_compute_round_up = ~sign & (guard | round_bit | sticky);  // RUP
+      3'b100:  fp_compute_round_up = guard;  // RMM
+      default: fp_compute_round_up = guard & (round_bit | sticky | lsb);
     endcase
   endfunction
 
