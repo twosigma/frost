@@ -82,6 +82,52 @@ repos:
             hw/third_party/.*
           )$
 
+  # Copyright header check/insert
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.5
+    hooks:
+      - id: insert-license
+        name: insert-license (Python)
+        files: \.py$
+        exclude: |
+          (?x)^(
+            sw/FreeRTOS-Kernel/.*|
+            sw/apps/coremark/coremark/.*
+          )$
+        args:
+          - --license-filepath=.license-header.txt
+          - --comment-style=#
+
+      - id: insert-license
+        name: insert-license (C/C++)
+        files: \.(c|h|cpp|hpp)$
+        exclude: |
+          (?x)^(
+            sw/FreeRTOS-Kernel/.*|
+            sw/apps/coremark/coremark/.*
+          )$
+        args:
+          - --license-filepath=.license-header.txt
+          - --comment-style=/*| *| */
+
+      - id: insert-license
+        name: insert-license (SystemVerilog)
+        files: \.(sv|svh|v|vh)$
+        exclude: |
+          (?x)^(
+            hw/third_party/.*
+          )$
+        args:
+          - --license-filepath=.license-header.txt
+          - --comment-style=/*| *| */
+
+      - id: insert-license
+        name: insert-license (Tcl/Makefile/Shell)
+        files: (\.tcl$|Makefile$|\.mk$|\.sh$)
+        args:
+          - --license-filepath=.license-header.txt
+          - --comment-style=#
+
   # General file checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
