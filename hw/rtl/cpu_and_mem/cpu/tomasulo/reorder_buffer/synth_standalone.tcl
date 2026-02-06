@@ -26,6 +26,7 @@ set target_period_ns [expr {1000.0 / $target_freq_mhz}]
 set script_dir [file dirname [file normalize [info script]]]
 set project_root [file normalize "$script_dir/../../../../../.."]
 set work_dir "$script_dir/synth_work"
+set rtl_file_list "$script_dir/reorder_buffer.f"
 
 puts "=============================================="
 puts "Standalone Synthesis: $top_module"
@@ -37,14 +38,35 @@ puts "=============================================="
 file delete -force $work_dir
 file mkdir $work_dir
 
+# Recursively read file list and expand nested file lists
+proc flatten_rtl_file_list {file_list_path project_root} {
+    set rtl_files_list {}
+    set file_handle [open $file_list_path r]
+
+    while {[gets $file_handle current_line] >= 0} {
+        set current_line [string trim $current_line]
+        if {$current_line eq "" || [string match "#*" $current_line]} {continue}
+
+        set current_line [string map [list {$(ROOT)} $project_root] $current_line]
+
+        if {[string match {-f *} $current_line]} {
+            foreach {flag nested_file_list} $current_line {}
+            lappend rtl_files_list {*}[flatten_rtl_file_list $nested_file_list $project_root]
+        } elseif {[string match {+incdir+*} $current_line]} {
+            lappend rtl_files_list $current_line
+        } else {
+            lappend rtl_files_list $current_line
+        }
+    }
+    close $file_handle
+    return $rtl_files_list
+}
+
 # Create in-memory project
 create_project -in_memory -part $fpga_part
 
-# Read RTL sources (order matters for package dependencies)
-set rtl_files [list \
-    "$project_root/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv" \
-    "$script_dir/reorder_buffer.sv" \
-]
+# Read RTL sources from file list
+set rtl_files [flatten_rtl_file_list $rtl_file_list $project_root]
 
 puts "\nReading RTL files:"
 foreach f $rtl_files {
