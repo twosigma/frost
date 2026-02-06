@@ -37,6 +37,13 @@
  *   - Branch misprediction detection and flush
  *   - FP exception flag propagation for fcsr accumulation
  *
+ * Storage:
+ *   Multi-bit fields use distributed RAM (LUTRAM) to reduce FF usage.
+ *   Single-write-port fields (written only at allocation) use sdp_dist_ram.
+ *   Multi-write-port fields (allocation + CDB/branch) use mwp_dist_ram
+ *   with a Live Value Table. 1-bit packed vectors that need per-entry
+ *   flush/reset remain in flip-flops.
+ *
  * External Coordination:
  *   The Reorder Buffer coordinates with several external units via handshake signals:
  *   - Store Queue: i_sq_empty for FENCE/AMO ordering
@@ -156,6 +163,9 @@ module reorder_buffer (
   localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
+  localparam int unsigned ExcCauseWidth = riscv_pkg::ExcCauseWidth;
+  localparam int unsigned FpFlagsWidth = $bits(riscv_pkg::fp_flags_t);
+  localparam int unsigned RegAddrWidth = riscv_pkg::RegAddrWidth;
 
   // ===========================================================================
   // Helper Functions
@@ -214,32 +224,24 @@ module reorder_buffer (
   // Internal Signals
   // ===========================================================================
 
-  // Reorder Buffer storage - separate arrays for Icarus compatibility
-  // (Icarus doesn't support arrays of packed structs with field access)
+  // Reorder Buffer storage — 1-bit packed vectors remain in FFs for
+  // per-entry flush/reset.  Multi-bit fields are in distributed RAM below.
   logic [ReorderBufferDepth-1:0] rob_valid;
   logic [ReorderBufferDepth-1:0] rob_done;
   logic [ReorderBufferDepth-1:0] rob_exception;
-  riscv_pkg::exc_cause_t rob_exc_cause[ReorderBufferDepth];
-  logic [XLEN-1:0] rob_pc[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_dest_rf;
-  logic [riscv_pkg::RegAddrWidth-1:0] rob_dest_reg[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_dest_valid;
-  logic [FLEN-1:0] rob_value[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_is_store;
   logic [ReorderBufferDepth-1:0] rob_is_fp_store;
   logic [ReorderBufferDepth-1:0] rob_is_branch;
   logic [ReorderBufferDepth-1:0] rob_branch_taken;
-  logic [XLEN-1:0] rob_branch_target[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_predicted_taken;
-  logic [XLEN-1:0] rob_predicted_target[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_mispredicted;
   logic [ReorderBufferDepth-1:0] rob_is_call;
   logic [ReorderBufferDepth-1:0] rob_is_return;
   logic [ReorderBufferDepth-1:0] rob_is_jal;
   logic [ReorderBufferDepth-1:0] rob_is_jalr;
   logic [ReorderBufferDepth-1:0] rob_has_checkpoint;
-  logic [CheckpointIdWidth-1:0] rob_checkpoint_id[ReorderBufferDepth];
-  riscv_pkg::fp_flags_t rob_fp_flags[ReorderBufferDepth];
   logic [ReorderBufferDepth-1:0] rob_is_csr;
   logic [ReorderBufferDepth-1:0] rob_is_fence;
   logic [ReorderBufferDepth-1:0] rob_is_fence_i;
@@ -262,31 +264,32 @@ module reorder_buffer (
   logic empty;
   logic [ReorderBufferTagWidth:0] count;
 
-  // Head entry fields for commit (directly indexed from arrays)
+  // Head entry fields for commit — RAM-backed fields are driven by RAM
+  // read ports directly; FF-backed fields are assigned from packed vectors.
   logic head_valid;
   logic head_done;
   logic head_exception;
-  riscv_pkg::exc_cause_t head_exc_cause;
-  logic [XLEN-1:0] head_pc;
+  riscv_pkg::exc_cause_t head_exc_cause;  // from RAM
+  logic [XLEN-1:0] head_pc;  // from RAM
   logic head_dest_rf;
-  logic [riscv_pkg::RegAddrWidth-1:0] head_dest_reg;
+  logic [RegAddrWidth-1:0] head_dest_reg;  // from RAM
   logic head_dest_valid;
-  logic [FLEN-1:0] head_value;
+  logic [FLEN-1:0] head_value;  // from RAM
   logic head_is_store;
   logic head_is_fp_store;
   logic head_is_branch;
   logic head_branch_taken;
-  logic [XLEN-1:0] head_branch_target;
+  logic [XLEN-1:0] head_branch_target;  // from RAM
   logic head_predicted_taken;
-  logic [XLEN-1:0] head_predicted_target;
+  logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
   logic head_is_call;
   logic head_is_return;
   logic head_is_jal;
   logic head_is_jalr;
   logic head_has_checkpoint;
-  logic [CheckpointIdWidth-1:0] head_checkpoint_id;
-  riscv_pkg::fp_flags_t head_fp_flags;
+  logic [CheckpointIdWidth-1:0] head_checkpoint_id;  // from RAM
+  riscv_pkg::fp_flags_t head_fp_flags;  // from RAM
   logic head_is_csr;
   logic head_is_fence;
   logic head_is_fence_i;
@@ -336,31 +339,23 @@ module reorder_buffer (
   // Count of valid entries
   assign count = tail_ptr - head_ptr;
 
-  // Head entry fields (indexed from separate arrays)
+  // Head entry fields from FF-backed packed vectors
   assign head_valid = rob_valid[head_idx];
   assign head_done = rob_done[head_idx];
   assign head_exception = rob_exception[head_idx];
-  assign head_exc_cause = rob_exc_cause[head_idx];
-  assign head_pc = rob_pc[head_idx];
   assign head_dest_rf = rob_dest_rf[head_idx];
-  assign head_dest_reg = rob_dest_reg[head_idx];
   assign head_dest_valid = rob_dest_valid[head_idx];
-  assign head_value = rob_value[head_idx];
   assign head_is_store = rob_is_store[head_idx];
   assign head_is_fp_store = rob_is_fp_store[head_idx];
   assign head_is_branch = rob_is_branch[head_idx];
   assign head_branch_taken = rob_branch_taken[head_idx];
-  assign head_branch_target = rob_branch_target[head_idx];
   assign head_predicted_taken = rob_predicted_taken[head_idx];
-  assign head_predicted_target = rob_predicted_target[head_idx];
   assign head_mispredicted = rob_mispredicted[head_idx];
   assign head_is_call = rob_is_call[head_idx];
   assign head_is_return = rob_is_return[head_idx];
   assign head_is_jal = rob_is_jal[head_idx];
   assign head_is_jalr = rob_is_jalr[head_idx];
   assign head_has_checkpoint = rob_has_checkpoint[head_idx];
-  assign head_checkpoint_id = rob_checkpoint_id[head_idx];
-  assign head_fp_flags = rob_fp_flags[head_idx];
   assign head_is_csr = rob_is_csr[head_idx];
   assign head_is_fence = rob_is_fence[head_idx];
   assign head_is_fence_i = rob_is_fence_i[head_idx];
@@ -372,6 +367,165 @@ module reorder_buffer (
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done;
+
+  // ===========================================================================
+  // Distributed RAM Write Enables and Data
+  // ===========================================================================
+
+  logic alloc_en;
+  assign alloc_en = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+
+  logic cdb_wr_en;
+  assign cdb_wr_en = i_cdb_write.valid && !i_flush_all && rob_valid[i_cdb_write.tag];
+
+  logic branch_wr_en;
+  assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
+
+  // Allocation data precomputation for fields with instruction-type-dependent values
+  logic [FLEN-1:0] alloc_value_data;
+  always_comb begin
+    if (i_alloc_req.is_jal || i_alloc_req.is_jalr)
+      alloc_value_data = {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
+    else alloc_value_data = '0;
+  end
+
+  logic [XLEN-1:0] alloc_branch_target_data;
+  assign alloc_branch_target_data = i_alloc_req.is_jal ? i_alloc_req.predicted_target : '0;
+
+  logic [CheckpointIdWidth-1:0] alloc_checkpoint_id_data;
+  assign alloc_checkpoint_id_data = (i_checkpoint_valid && i_alloc_req.is_branch) ?
+                                     i_checkpoint_id : '0;
+
+  // ===========================================================================
+  // Distributed RAM Instances
+  // ===========================================================================
+  // Single-write-port fields (written only at allocation, read at head).
+  // These use sdp_dist_ram — one write port, one async read port.
+  // ---------------------------------------------------------------------------
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_rob_pc (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.pc),
+      .i_read_address (head_idx),
+      .o_read_data    (head_pc)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(RegAddrWidth)
+  ) u_rob_dest_reg (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.dest_reg),
+      .i_read_address (head_idx),
+      .o_read_data    (head_dest_reg)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_rob_predicted_target (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.predicted_target),
+      .i_read_address (head_idx),
+      .o_read_data    (head_predicted_target)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(CheckpointIdWidth)
+  ) u_rob_checkpoint_id (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (alloc_checkpoint_id_data),
+      .i_read_address (head_idx),
+      .o_read_data    (head_checkpoint_id)
+  );
+
+  // ---------------------------------------------------------------------------
+  // Multi-write-port fields (allocation + CDB or branch update).
+  // These use mwp_dist_ram with 2 write ports.
+  // Port 0 = allocation (lower priority), Port 1 = CDB/branch (higher priority).
+  // ---------------------------------------------------------------------------
+
+  // rob_value: 2 write ports (alloc + CDB), 2 read ports (head + RAT bypass).
+  // Two instances with identical writes, different read addresses.
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_head (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (head_idx),
+      .o_read_data    (head_value)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_rat (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_read_tag),
+      .o_read_data    (o_read_value)
+  );
+
+  // rob_exc_cause: 2 write ports (alloc='0 + CDB), 1 read port (head)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (ExcCauseWidth),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_exc_cause (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0)}),
+      .i_read_address (head_idx),
+      .o_read_data    (head_exc_cause)
+  );
+
+  // rob_fp_flags: 2 write ports (alloc='0 + CDB), 1 read port (head)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FpFlagsWidth),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_fp_flags (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0)}),
+      .i_read_address (head_idx),
+      .o_read_data    (head_fp_flags)
+  );
+
+  // rob_branch_target: 2 write ports (alloc + branch update), 1 read port (head)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_branch_target (
+      .i_clk,
+      .i_write_enable ({branch_wr_en, alloc_en}),
+      .i_write_address({i_branch_update.tag, tail_idx}),
+      .i_write_data   ({i_branch_update.target, alloc_branch_target_data}),
+      .i_read_address (head_idx),
+      .o_read_data    (head_branch_target)
+  );
 
   // ===========================================================================
   // Allocation Logic
@@ -405,10 +559,12 @@ module reorder_buffer (
   end
 
   // ===========================================================================
-  // Reorder Buffer Entry Storage (Icarus-compatible: separate arrays)
+  // Reorder Buffer FF Storage (1-bit packed vectors)
   // ===========================================================================
 
-  // Handle allocation, CDB writes, branch updates, checkpoint assignment, and flush
+  // Handle allocation, CDB writes, branch updates, and flush for FF-backed fields.
+  // Multi-bit fields (pc, dest_reg, value, branch_target, predicted_target,
+  // checkpoint_id, exc_cause, fp_flags) are handled by distributed RAM above.
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
       // Reset all entries to invalid
@@ -436,16 +592,6 @@ module reorder_buffer (
       rob_is_amo          <= '0;
       rob_is_lr           <= '0;
       rob_is_sc           <= '0;
-      for (int i = 0; i < ReorderBufferDepth; i++) begin
-        rob_exc_cause[i]        <= '0;
-        rob_pc[i]               <= '0;
-        rob_dest_reg[i]         <= '0;
-        rob_value[i]            <= '0;
-        rob_branch_target[i]    <= '0;
-        rob_predicted_target[i] <= '0;
-        rob_checkpoint_id[i]    <= '0;
-        rob_fp_flags[i]         <= '0;
-      end
     end else begin
       // ---------------------------------------------------------------------
       // Flush Logic
@@ -466,63 +612,51 @@ module reorder_buffer (
       end
 
       // ---------------------------------------------------------------------
-      // Allocation Write
+      // Allocation Write (FF-backed fields only)
       // ---------------------------------------------------------------------
-      if (i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en) begin
-        rob_valid[tail_idx]            <= 1'b1;
-        rob_pc[tail_idx]               <= i_alloc_req.pc;
-        rob_dest_rf[tail_idx]          <= i_alloc_req.dest_rf;
-        rob_dest_reg[tail_idx]         <= i_alloc_req.dest_reg;
-        rob_dest_valid[tail_idx]       <= i_alloc_req.dest_valid;
-        rob_is_store[tail_idx]         <= i_alloc_req.is_store;
-        rob_is_fp_store[tail_idx]      <= i_alloc_req.is_fp_store;
-        rob_is_branch[tail_idx]        <= i_alloc_req.is_branch;
-        rob_predicted_taken[tail_idx]  <= i_alloc_req.predicted_taken;
-        rob_predicted_target[tail_idx] <= i_alloc_req.predicted_target;
-        rob_is_call[tail_idx]          <= i_alloc_req.is_call;
-        rob_is_return[tail_idx]        <= i_alloc_req.is_return;
-        rob_is_jal[tail_idx]           <= i_alloc_req.is_jal;
-        rob_is_jalr[tail_idx]          <= i_alloc_req.is_jalr;
-        rob_is_csr[tail_idx]           <= i_alloc_req.is_csr;
-        rob_is_fence[tail_idx]         <= i_alloc_req.is_fence;
-        rob_is_fence_i[tail_idx]       <= i_alloc_req.is_fence_i;
-        rob_is_wfi[tail_idx]           <= i_alloc_req.is_wfi;
-        rob_is_mret[tail_idx]          <= i_alloc_req.is_mret;
-        rob_is_amo[tail_idx]           <= i_alloc_req.is_amo;
-        rob_is_lr[tail_idx]            <= i_alloc_req.is_lr;
-        rob_is_sc[tail_idx]            <= i_alloc_req.is_sc;
+      if (alloc_en) begin
+        rob_valid[tail_idx]           <= 1'b1;
+        rob_dest_rf[tail_idx]         <= i_alloc_req.dest_rf;
+        rob_dest_valid[tail_idx]      <= i_alloc_req.dest_valid;
+        rob_is_store[tail_idx]        <= i_alloc_req.is_store;
+        rob_is_fp_store[tail_idx]     <= i_alloc_req.is_fp_store;
+        rob_is_branch[tail_idx]       <= i_alloc_req.is_branch;
+        rob_predicted_taken[tail_idx] <= i_alloc_req.predicted_taken;
+        rob_is_call[tail_idx]         <= i_alloc_req.is_call;
+        rob_is_return[tail_idx]       <= i_alloc_req.is_return;
+        rob_is_jal[tail_idx]          <= i_alloc_req.is_jal;
+        rob_is_jalr[tail_idx]         <= i_alloc_req.is_jalr;
+        rob_is_csr[tail_idx]          <= i_alloc_req.is_csr;
+        rob_is_fence[tail_idx]        <= i_alloc_req.is_fence;
+        rob_is_fence_i[tail_idx]      <= i_alloc_req.is_fence_i;
+        rob_is_wfi[tail_idx]          <= i_alloc_req.is_wfi;
+        rob_is_mret[tail_idx]         <= i_alloc_req.is_mret;
+        rob_is_amo[tail_idx]          <= i_alloc_req.is_amo;
+        rob_is_lr[tail_idx]           <= i_alloc_req.is_lr;
+        rob_is_sc[tail_idx]           <= i_alloc_req.is_sc;
 
         // Initialize done/exception/checkpoint/misprediction fields
-        rob_exception[tail_idx]        <= 1'b0;
-        rob_exc_cause[tail_idx]        <= '0;
-        rob_fp_flags[tail_idx]         <= '0;
-        rob_has_checkpoint[tail_idx]   <= 1'b0;
-        rob_checkpoint_id[tail_idx]    <= '0;
-        rob_branch_taken[tail_idx]     <= 1'b0;
-        rob_branch_target[tail_idx]    <= '0;
-        rob_mispredicted[tail_idx]     <= 1'b0;
+        rob_exception[tail_idx]       <= 1'b0;
+        rob_has_checkpoint[tail_idx]  <= 1'b0;
+        rob_branch_taken[tail_idx]    <= 1'b0;
+        rob_mispredicted[tail_idx]    <= 1'b0;
 
         // JAL: target is known at dispatch, mark done immediately
         // Value is link address (PC+2 or PC+4), zero-extended to FLEN
         if (i_alloc_req.is_jal) begin
-          rob_done[tail_idx]          <= 1'b1;
-          rob_value[tail_idx]         <= {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
+          rob_done[tail_idx]         <= 1'b1;
           // For JAL, branch is always taken with known target
-          rob_branch_taken[tail_idx]  <= 1'b1;
-          rob_branch_target[tail_idx] <= i_alloc_req.predicted_target;
+          rob_branch_taken[tail_idx] <= 1'b1;
         end else if (i_alloc_req.is_jalr) begin
           // JALR: target unknown until execute, but link addr is known
-          rob_done[tail_idx]  <= 1'b0;
-          rob_value[tail_idx] <= {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
+          rob_done[tail_idx] <= 1'b0;
         end else if (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
                      i_alloc_req.is_fence_i || i_alloc_req.is_mret) begin
           // These instructions are "done" from execution perspective at dispatch
           // but commit is gated by serialization logic
-          rob_done[tail_idx]  <= 1'b1;
-          rob_value[tail_idx] <= '0;
+          rob_done[tail_idx] <= 1'b1;
         end else begin
-          rob_done[tail_idx]  <= 1'b0;
-          rob_value[tail_idx] <= '0;
+          rob_done[tail_idx] <= 1'b0;
         end
       end
 
@@ -533,20 +667,17 @@ module reorder_buffer (
       if (i_checkpoint_valid && i_alloc_req.alloc_valid && i_alloc_req.is_branch &&
           !full && !i_flush_all && !i_flush_en) begin
         rob_has_checkpoint[tail_idx] <= 1'b1;
-        rob_checkpoint_id[tail_idx]  <= i_checkpoint_id;
       end
 
       // ---------------------------------------------------------------------
       // CDB Write (mark entry done with result)
       // ---------------------------------------------------------------------
       // For non-branch instructions (ALU, MUL, DIV, MEM, FP)
+      // Value, exc_cause, fp_flags are written via distributed RAM.
       if (i_cdb_write.valid && !i_flush_all) begin
         if (rob_valid[i_cdb_write.tag]) begin
           rob_done[i_cdb_write.tag]      <= 1'b1;
-          rob_value[i_cdb_write.tag]     <= i_cdb_write.value;
           rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
-          rob_exc_cause[i_cdb_write.tag] <= i_cdb_write.exc_cause;
-          rob_fp_flags[i_cdb_write.tag]  <= i_cdb_write.fp_flags;
         end
       end
 
@@ -556,12 +687,12 @@ module reorder_buffer (
       // For branch/jump instructions only.
       // The mispredicted field from branch unit is authoritative - it knows about
       // RAS/indirect predictor specifics that the ROB doesn't track.
+      // branch_target is written via distributed RAM.
       if (i_branch_update.valid && !i_flush_all) begin
         if (rob_valid[i_branch_update.tag]) begin
           // Record branch resolution
-          rob_branch_taken[i_branch_update.tag]  <= i_branch_update.taken;
-          rob_branch_target[i_branch_update.tag] <= i_branch_update.target;
-          rob_mispredicted[i_branch_update.tag]  <= i_branch_update.mispredicted;
+          rob_branch_taken[i_branch_update.tag] <= i_branch_update.taken;
+          rob_mispredicted[i_branch_update.tag] <= i_branch_update.mispredicted;
 
           // For JALR and conditional branches: mark done now
           // JAL was already marked done at dispatch
@@ -825,7 +956,7 @@ module reorder_buffer (
   // ===========================================================================
 
   assign o_read_done = rob_valid[i_read_tag] && rob_done[i_read_tag];
-  assign o_read_value = rob_value[i_read_tag];
+  // o_read_value is driven by u_rob_value_rat distributed RAM instance
 
   // ===========================================================================
   // Assertions (Simulation Only)

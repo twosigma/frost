@@ -1427,30 +1427,33 @@ The existing FROST front-end optimizations are preserved:
     |  |                                                                  |  |
     |  +------------------------------------------------------------------+  |
     |                                                                        |
-    |  ENTRY STRUCTURE (per entry):                                          |
+    |  ENTRY STRUCTURE (per entry, ~120 bits):                                |
+    |  Multi-bit fields stored in LUTRAM; 1-bit flags in FFs.              |
     |  +------------------------------------------------------------------+  |
-    |  |  Field          | Width        | Description                     |  |
-    |  +-----------------+--------------+---------------------------------+  |
-    |  |  valid          | 1 bit        | Entry is allocated              |  |
-    |  |  done           | 1 bit        | Execution complete              |  |
-    |  |  exception      | 1 bit        | Exception occurred              |  |
-    |  |  exc_cause      | 5 bits       | Exception cause code (inc FP)   |  |
-    |  |  pc             | 32 bits      | Instruction PC (for mepc)       |  |
-    |  |  dest_rf        | 1 bit        | 0=INT (x-reg), 1=FP (f-reg)     |  |
-    |  |  dest_reg       | 5 bits       | Architectural dest (rd)         |  |
-    |  |  dest_valid     | 1 bit        | Has destination register        |  |
-    |  |  value          | FLEN (64b)   | Result value (XLEN INT, FLEN FP)|  |
-    |  |  is_store       | 1 bit        | Is store instruction            |  |
-    |  |  is_fp_store    | 1 bit        | Is FP store (FSW/FSD)           |  |
-    |  |  is_branch      | 1 bit        | Is branch/jump instruction      |  |
-    |  |  branch_taken   | 1 bit        | Branch outcome (for recovery)   |  |
-    |  |  branch_target  | 32 bits      | Branch target (for recovery)    |  |
-    |  |  predicted_taken| 1 bit        | BTB prediction (for comparison) |  |
-    |  |  is_call        | 1 bit        | Is call (for RAS recovery)      |  |
-    |  |  is_return      | 1 bit        | Is return (for RAS recovery)    |  |
-    |  |  fp_flags       | 5 bits       | FP exception flags (NV/DZ/OF/UF/NX)|
-    |  +-----------------+--------------+---------------------------------+  |
-    |  |  TOTAL          | ~120 bits/entry                                |  |
+    |  |  Field          | Width        | Store  | Description             |  |
+    |  +-----------------+--------------+--------+-------------------------+  |
+    |  |  valid          | 1 bit        | FF     | Entry is allocated      |  |
+    |  |  done           | 1 bit        | FF     | Execution complete      |  |
+    |  |  exception      | 1 bit        | FF     | Exception occurred      |  |
+    |  |  exc_cause      | 5 bits       | LUTRAM | Exception cause (2-wr)  |  |
+    |  |  pc             | 32 bits      | LUTRAM | Instruction PC (1-wr)   |  |
+    |  |  dest_rf        | 1 bit        | FF     | 0=INT, 1=FP            |  |
+    |  |  dest_reg       | 5 bits       | LUTRAM | Arch dest rd (1-wr)     |  |
+    |  |  dest_valid     | 1 bit        | FF     | Has dest register       |  |
+    |  |  value          | FLEN (64b)   | LUTRAM | Result value (2-wr)     |  |
+    |  |  is_store       | 1 bit        | FF     | Is store instruction    |  |
+    |  |  is_fp_store    | 1 bit        | FF     | Is FP store (FSW/FSD)   |  |
+    |  |  is_branch      | 1 bit        | FF     | Is branch/jump          |  |
+    |  |  branch_taken   | 1 bit        | FF     | Branch outcome          |  |
+    |  |  branch_target  | 32 bits      | LUTRAM | Branch target (2-wr)    |  |
+    |  |  predicted_taken| 1 bit        | FF     | BTB prediction          |  |
+    |  |  predicted_tgt  | 32 bits      | LUTRAM | Predicted target (1-wr) |  |
+    |  |  is_call        | 1 bit        | FF     | Is call (RAS recovery)  |  |
+    |  |  is_return      | 1 bit        | FF     | Is return (RAS recovery)|  |
+    |  |  fp_flags       | 5 bits       | LUTRAM | FP exc flags (2-wr)     |  |
+    |  |  checkpoint_id  | 2 bits       | LUTRAM | Checkpoint idx (1-wr)   |  |
+    |  +-----------------+--------------+--------+-------------------------+  |
+    |  |  1-wr = sdp_dist_ram, 2-wr = mwp_dist_ram (LVT)              |  |
     |  +------------------------------------------------------------------+  |
     |                                                                        |
     |  CONTROL LOGIC:                                                        |

@@ -648,6 +648,7 @@ rtl/
 ├── lib/                              # Generic FPGA library components
 │   ├── ram/
 │   │   ├── sdp_dist_ram.sv           # Simple dual-port distributed RAM (async read)
+│   │   ├── mwp_dist_ram.sv        # Multi-write-port distributed RAM (LVT-based)
 │   │   ├── sdp_block_ram.sv          # Simple dual-port block RAM (sync read)
 │   │   ├── sdp_block_ram_dc.sv       # Dual-clock block RAM (for CDC)
 │   │   ├── tdp_bram_dc.sv            # True dual-port RAM (dual-clock, simple)
@@ -1122,7 +1123,8 @@ l0_cache
 
 | Module                     | Read Latency     | Use Case                                              |
 |----------------------------|------------------|-------------------------------------------------------|
-| `sdp_dist_ram.sv`          | 0 cycles (async) | Register file, L0 cache                               |
+| `sdp_dist_ram.sv`          | 0 cycles (async) | Register file, L0 cache, ROB single-write fields      |
+| `mwp_dist_ram.sv`      | 0 cycles (async) | ROB multi-write fields (LVT-based N-write-port RAM)   |
 | `sdp_block_ram.sv`         | 1 cycle (sync)   | Larger memories                                       |
 | `sdp_block_ram_dc.sv`      | 1 cycle (sync)   | Clock domain crossing                                 |
 | `tdp_bram_dc.sv`           | 1 cycle (sync)   | Instruction memory (true dual-port, dual-clock, write-first)       |

@@ -83,33 +83,52 @@ to distinguish between integer and floating-point destinations.
 
 ## Entry Structure
 
-Each Reorder Buffer entry contains approximately 120 bits of state:
+Each Reorder Buffer entry contains approximately 120 bits of state.
 
-| Field           | Width    | Description                                    |
-|-----------------|----------|------------------------------------------------|
-| valid           | 1 bit    | Entry is allocated                             |
-| done            | 1 bit    | Execution complete                             |
-| exception       | 1 bit    | Exception occurred                             |
-| exc_cause       | 5 bits   | Exception cause code                           |
-| pc              | 32 bits  | Instruction PC (for mepc)                      |
-| dest_rf         | 1 bit    | 0=INT (x-reg), 1=FP (f-reg)                    |
-| dest_reg        | 5 bits   | Architectural destination (rd)                 |
-| dest_valid      | 1 bit    | Has destination register                       |
-| value           | 64 bits  | Result value (FLEN for FP double support)      |
-| is_store        | 1 bit    | Is store instruction                           |
-| is_fp_store     | 1 bit    | Is FP store (FSW/FSD)                          |
-| is_branch       | 1 bit    | Is branch/jump instruction                     |
-| branch_taken    | 1 bit    | Actual branch outcome                          |
-| branch_target   | 32 bits  | Actual branch target                           |
-| predicted_taken | 1 bit    | BTB prediction                                 |
-| predicted_target| 32 bits  | BTB/RAS predicted target                       |
-| mispredicted    | 1 bit    | Branch unit determined misprediction (authoritative) |
-| is_call         | 1 bit    | Is call (for RAS recovery)                     |
-| is_return       | 1 bit    | Is return (for RAS recovery)                   |
-| fp_flags        | 5 bits   | FP exception flags (NV/DZ/OF/UF/NX)            |
-| has_checkpoint  | 1 bit    | Branch has allocated checkpoint                |
-| checkpoint_id   | 2 bits   | Checkpoint index for recovery                  |
-| is_csr/fence/...| various  | Serializing instruction flags                  |
+### Storage Strategy
+
+Multi-bit fields are stored in **distributed RAM (LUTRAM)** to reduce flip-flop usage.
+Single-bit packed vectors that require per-entry flush/reset remain in **flip-flops**.
+
+- **`sdp_dist_ram`** (1 write port): Fields written only at allocation — `pc`,
+  `dest_reg`, `predicted_target`, `checkpoint_id`.
+- **`mwp_dist_ram`** (2 write ports, LVT): Fields written at allocation *and*
+  updated by the CDB or branch unit — `value`, `exc_cause`, `fp_flags`,
+  `branch_target`. Port 0 = allocation (lower priority), port 1 = CDB/branch
+  (higher priority). `value` has two read ports (head commit + RAT bypass), so
+  it uses two `mwp_dist_ram` instances with identical writes.
+- **Flip-flops**: All 1-bit packed vectors (`valid`, `done`, `exception`,
+  `is_branch`, `mispredicted`, etc.) — need per-entry clear on flush/reset.
+
+This saves approximately 5,500 FFs compared to a pure register-based design.
+
+### Fields
+
+| Field           | Width    | Storage  | Description                                    |
+|-----------------|----------|----------|------------------------------------------------|
+| valid           | 1 bit    | FF       | Entry is allocated                             |
+| done            | 1 bit    | FF       | Execution complete                             |
+| exception       | 1 bit    | FF       | Exception occurred                             |
+| exc_cause       | 5 bits   | LUTRAM   | Exception cause code                           |
+| pc              | 32 bits  | LUTRAM   | Instruction PC (for mepc)                      |
+| dest_rf         | 1 bit    | FF       | 0=INT (x-reg), 1=FP (f-reg)                    |
+| dest_reg        | 5 bits   | LUTRAM   | Architectural destination (rd)                 |
+| dest_valid      | 1 bit    | FF       | Has destination register                       |
+| value           | 64 bits  | LUTRAM   | Result value (FLEN for FP double support)      |
+| is_store        | 1 bit    | FF       | Is store instruction                           |
+| is_fp_store     | 1 bit    | FF       | Is FP store (FSW/FSD)                          |
+| is_branch       | 1 bit    | FF       | Is branch/jump instruction                     |
+| branch_taken    | 1 bit    | FF       | Actual branch outcome                          |
+| branch_target   | 32 bits  | LUTRAM   | Actual branch target                           |
+| predicted_taken | 1 bit    | FF       | BTB prediction                                 |
+| predicted_target| 32 bits  | LUTRAM   | BTB/RAS predicted target                       |
+| mispredicted    | 1 bit    | FF       | Branch unit determined misprediction (authoritative) |
+| is_call         | 1 bit    | FF       | Is call (for RAS recovery)                     |
+| is_return       | 1 bit    | FF       | Is return (for RAS recovery)                   |
+| fp_flags        | 5 bits   | LUTRAM   | FP exception flags (NV/DZ/OF/UF/NX)            |
+| has_checkpoint  | 1 bit    | FF       | Branch has allocated checkpoint                |
+| checkpoint_id   | 2 bits   | LUTRAM   | Checkpoint index for recovery                  |
+| is_csr/fence/...| various  | FF       | Serializing instruction flags                  |
 
 ## Interfaces
 
@@ -276,6 +295,8 @@ reorder_buffer u_reorder_buffer (
 
 - `riscv_pkg.sv` - RISC-V constants and types
 - `tomasulo_pkg.sv` - Tomasulo-specific types (reorder_buffer_entry_t, etc.)
+- `sdp_dist_ram.sv` - Distributed RAM primitive (single-write-port fields)
+- `mwp_dist_ram.sv` - Multi-write-port distributed RAM (CDB/branch-updated fields)
 
 ## Testing
 

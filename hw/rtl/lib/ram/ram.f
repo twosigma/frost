@@ -4,6 +4,9 @@
 # Simple dual-port distributed RAM (async read, sync write)
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 
+# Multi-write-port distributed RAM using Live Value Table (async read, sync write)
+$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
+
 # Simple dual-port block RAM (sync read, sync write)
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv
 
