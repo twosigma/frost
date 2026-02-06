@@ -164,7 +164,7 @@ module reorder_buffer (
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned ExcCauseWidth = riscv_pkg::ExcCauseWidth;
-  localparam int unsigned FpFlagsWidth = $bits(riscv_pkg::fp_flags_t);
+  localparam int unsigned FpFlagsWidth = 5;  // $bits(riscv_pkg::fp_flags_t) — nv,dz,of,uf,nx
   localparam int unsigned RegAddrWidth = riscv_pkg::RegAddrWidth;
 
   // ===========================================================================
