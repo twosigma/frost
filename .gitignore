@@ -71,3 +71,4 @@ sw/apps/*/sw.S
 *.str
 .Xil/
 fpga/build/*/work*
+fpga/build/*/SUMMARY_*.md

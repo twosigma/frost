@@ -1386,28 +1386,18 @@ Examples:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
 
-    # Generate SUMMARY files only for the stages that were actually run
-    print(f"\n{'='*70}")
-    print("Generating SUMMARY files...")
-    print(f"{'='*70}")
+    # Update README.md utilization tables
+    from extract_timing_and_util_summary import (
+        collect_all_board_utilization,
+        update_readme_utilization,
+    )
 
-    # Determine which report prefixes correspond to the steps we ran
-    stages_run = [STEP_REPORT_PREFIX[s] for s in steps_to_run]
-
-    extract_script = script_dir / "extract_timing_and_util_summary.py"
-    if extract_script.exists():
-        subprocess.run(
-            [
-                "python3",
-                str(extract_script),
-                board_name,
-                "--stages",
-                ",".join(stages_run),
-            ],
-            check=True,
-        )
+    all_util = collect_all_board_utilization(script_dir)
+    if all_util:
+        update_readme_utilization(script_dir, all_util)
 
     # Final summary - use timing from the last step that was actually run
+    stages_run = [STEP_REPORT_PREFIX[s] for s in steps_to_run]
     print(f"\n{'#'*70}")
     print("# BUILD COMPLETE!")
     print(f"{'#'*70}")
