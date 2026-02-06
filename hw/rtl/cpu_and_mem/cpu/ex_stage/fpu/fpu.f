@@ -26,5 +26,15 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sqrt.sv
 # Fused multiply-add (4-cycle pipelined)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv
 
+# FPU sub-unit wrappers (S+D with tracking FSM, NaN-boxing, dest reg)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_adder_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_mult_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_compare_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_sign_inject_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_classify_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_div_sqrt_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_convert_unit.sv
+
 # FPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu.sv

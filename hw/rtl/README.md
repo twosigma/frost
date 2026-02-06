@@ -706,6 +706,14 @@ rtl/
         │   │   └── divider.sv        # 17-cycle radix-2 divider (2x folded)
         │   └── fpu/                  # Floating-Point Unit (F/D extensions)
         │       ├── fpu.sv            # FPU top-level, operation routing
+        │       ├── fpu_adder_unit.sv # S+D adder wrapper (tracking FSM, NaN-boxing)
+        │       ├── fpu_mult_unit.sv  # S+D multiplier wrapper
+        │       ├── fpu_fma_unit.sv   # S+D FMA wrapper
+        │       ├── fpu_compare_unit.sv # S+D compare/min/max wrapper
+        │       ├── fpu_sign_inject_unit.sv # S+D sign injection wrapper
+        │       ├── fpu_classify_unit.sv # S+D classify wrapper
+        │       ├── fpu_div_sqrt_unit.sv # S+D divider + sqrt wrapper (shared FSM)
+        │       ├── fpu_convert_unit.sv # S+D+SD conversion wrapper
         │       ├── fp_adder.sv       # Addition/subtraction (4-cycle)
         │       ├── fp_multiplier.sv  # Multiplication (8-cycle)
         │       ├── fp_divider.sv     # Division (~32-cycle)

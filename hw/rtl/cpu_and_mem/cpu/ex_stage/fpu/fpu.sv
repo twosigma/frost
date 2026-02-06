@@ -350,646 +350,261 @@ module fpu #(
   assign use_sign_inject = op_sgnj | op_sgnjn | op_sgnjx;
 
   // ===========================================================================
-  // Sub-Unit Instantiations
+  // Sub-Unit Wrapper Instantiations
   // ===========================================================================
 
-  // --- Adder (FADD, FSUB) ---
-  // Non-pipelined multi-cycle adder: captures operands at start, busy until done
-  logic                 [       31:0] adder_result_s;
-  logic                               adder_valid_s;
-  riscv_pkg::fp_flags_t               adder_flags_s;
-  logic                 [FpWidth-1:0] adder_result_d;
-  logic                               adder_valid_d;
-  riscv_pkg::fp_flags_t               adder_flags_d;
+  // --- Wrapper output signals ---
   logic                 [FpWidth-1:0] adder_result;
   logic                               adder_valid;
   riscv_pkg::fp_flags_t               adder_flags;
-
-  // Adder busy detection: registered signal tracks when operation is in progress
-  // The fpu_entering_ex_hazard in hazard_resolution_unit handles stalling on
-  // the cycle when FADD enters EX (before adder_started is set).
-  //
-  // IMPORTANT: adder_busy includes ~adder_valid so stall releases when result is ready.
-  // The clearing of adder_started must have priority over setting to prevent
-  // re-triggering on the same stalled instruction when valid goes high.
-  // Adder busy signal: asserted after the start cycle until result is valid.
-  // Start-cycle stall is handled by the top-level fpu_active gating.
-  //
-  // Adder tracking: We need to prevent re-triggering the same instruction during stall.
-  // When the pipeline is stalled for the adder, the same FADD instruction stays in
-  // i_from_id_to_ex. If we allowed starting when adder_valid=1, we'd restart the same
-  // instruction. Instead, only allow starting when completely idle (~adder_started).
-  // The pipeline must advance (at next posedge) before a new instruction enters EX.
-  logic                               adder_started;
-  logic                               adder_can_start;
   logic                               adder_start;
-  logic                               adder_start_s;
-  logic                               adder_start_d;
-  assign adder_can_start = ~adder_started;  // Can only start when idle
-  assign adder_start_s = valid_r & use_adder & ~op_is_double & adder_can_start;
-  assign adder_start_d = valid_r & use_adder & op_is_double & adder_can_start;
-  assign adder_start = adder_start_s | adder_start_d;
+  logic                 [        4:0] dest_reg_adder;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) adder_started <= 1'b0;
-    else if (adder_valid) adder_started <= 1'b0;  // Clear when operation completes
-    else if (adder_start) adder_started <= 1'b1;  // Set when starting new operation
-  end
-  assign adder_valid = adder_valid_s | adder_valid_d;
-  assign adder_result = adder_valid_s ? box32(adder_result_s) : adder_valid_d ? adder_result_d : '0;
-  assign adder_flags = adder_valid_s ? adder_flags_s : adder_valid_d ? adder_flags_d : '0;
-  assign adder_busy = adder_started & ~adder_valid;
-
-  fp_adder #(
-      .FP_WIDTH(32)
-  ) adder_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(adder_start_s),  // Only start when idle
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
-      .i_is_subtract(op_sub),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),  // Not used in non-pipelined mode
-      .o_result(adder_result_s),
-      .o_valid(adder_valid_s),
-      .o_flags(adder_flags_s)
-  );
-
-  fp_adder #(
-      .FP_WIDTH(FpWidth)
-  ) adder_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(adder_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
-      .i_is_subtract(op_sub),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),
-      .o_result(adder_result_d),
-      .o_valid(adder_valid_d),
-      .o_flags(adder_flags_d)
-  );
-
-  // --- Multiplier (FMUL) ---
-  // Non-pipelined multi-cycle multiplier: captures operands at start, busy until done
-  logic                 [       31:0] multiplier_result_s;
-  logic                               multiplier_valid_s;
-  riscv_pkg::fp_flags_t               multiplier_flags_s;
-  logic                 [FpWidth-1:0] multiplier_result_d;
-  logic                               multiplier_valid_d;
-  riscv_pkg::fp_flags_t               multiplier_flags_d;
   logic                 [FpWidth-1:0] multiplier_result;
   logic                               multiplier_valid;
   riscv_pkg::fp_flags_t               multiplier_flags;
-
-  // Multiplier tracking: same logic as adder - only start when idle to prevent
-  // re-triggering the same stalled instruction.
-  logic                               multiplier_started;
-  logic                               multiplier_can_start;
   logic                               multiplier_start;
-  logic                               multiplier_start_s;
-  logic                               multiplier_start_d;
-  assign multiplier_can_start = ~multiplier_started;
-  assign multiplier_start_s = valid_r & use_multiplier & ~op_is_double & multiplier_can_start;
-  assign multiplier_start_d = valid_r & use_multiplier & op_is_double & multiplier_can_start;
-  assign multiplier_start = multiplier_start_s | multiplier_start_d;
+  logic                 [        4:0] dest_reg_multiplier;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) multiplier_started <= 1'b0;
-    else if (multiplier_valid) multiplier_started <= 1'b0;  // Clear when operation completes
-    else if (multiplier_start) multiplier_started <= 1'b1;
-  end
-  assign multiplier_valid = multiplier_valid_s | multiplier_valid_d;
-  assign multiplier_result = multiplier_valid_s ? box32(
-      multiplier_result_s
-  ) : multiplier_valid_d ? multiplier_result_d : '0;
-  assign multiplier_flags  = multiplier_valid_s ? multiplier_flags_s :
-                             multiplier_valid_d ? multiplier_flags_d : '0;
-  assign multiplier_busy = multiplier_started & ~multiplier_valid;
-
-  fp_multiplier #(
-      .FP_WIDTH(32)
-  ) multiplier_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(multiplier_start_s),
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),  // Not used in non-pipelined mode
-      .o_result(multiplier_result_s),
-      .o_valid(multiplier_valid_s),
-      .o_flags(multiplier_flags_s)
-  );
-
-  fp_multiplier #(
-      .FP_WIDTH(FpWidth)
-  ) multiplier_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(multiplier_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),
-      .o_result(multiplier_result_d),
-      .o_valid(multiplier_valid_d),
-      .o_flags(multiplier_flags_d)
-  );
-
-  // --- Divider (FDIV.S/D) ---
-  logic                 [       31:0] divider_result_s;
-  logic                               divider_valid_s;
-  riscv_pkg::fp_flags_t               divider_flags_s;
-  logic                 [FpWidth-1:0] divider_result_d;
-  logic                               divider_valid_d;
-  riscv_pkg::fp_flags_t               divider_flags_d;
-  logic                 [FpWidth-1:0] divider_result;
-  logic                               divider_valid;
-  riscv_pkg::fp_flags_t               divider_flags;
-
-  // --- Square Root (FSQRT.S/D) ---
-  logic                 [       31:0] sqrt_result_s;
-  logic                               sqrt_valid_s;
-  riscv_pkg::fp_flags_t               sqrt_flags_s;
-  logic                 [FpWidth-1:0] sqrt_result_d;
-  logic                               sqrt_valid_d;
-  riscv_pkg::fp_flags_t               sqrt_flags_d;
-  logic                 [FpWidth-1:0] sqrt_result;
-  logic                               sqrt_valid;
-  riscv_pkg::fp_flags_t               sqrt_flags;
-
-  // Sequential op tracking (divider/sqrt): prevent re-trigger on stalled instruction.
-  logic                               seq_started;
-  logic                               seq_can_start;
-  logic                               divider_start;
-  logic                               sqrt_start;
-  logic                               divider_start_s;
-  logic                               divider_start_d;
-  logic                               sqrt_start_s;
-  logic                               sqrt_start_d;
-  logic                               seq_start;
-
-  // Can only start when not already started
-  assign seq_can_start = ~seq_started;
-  assign divider_start_s = valid_r & use_divider & ~op_is_double & seq_can_start;
-  assign divider_start_d = valid_r & use_divider & op_is_double & seq_can_start;
-  assign sqrt_start_s = valid_r & use_sqrt & ~op_is_double & seq_can_start;
-  assign sqrt_start_d = valid_r & use_sqrt & op_is_double & seq_can_start;
-  assign divider_start = divider_start_s | divider_start_d;
-  assign sqrt_start = sqrt_start_s | sqrt_start_d;
-  assign seq_start = divider_start | sqrt_start;
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst) seq_started <= 1'b0;
-    else if (divider_valid || sqrt_valid) seq_started <= 1'b0;  // Clear when op completes
-    else if (seq_start) begin
-      seq_started <= 1'b1;  // Set when starting new sequential op
-    end
-  end
-
-  assign divider_valid = divider_valid_s | divider_valid_d;
-  assign divider_result = divider_valid_s ? box32(
-      divider_result_s
-  ) : divider_valid_d ? divider_result_d : '0;
-  assign divider_flags = divider_valid_s ? divider_flags_s : divider_valid_d ? divider_flags_d : '0;
-
-  assign sqrt_valid = sqrt_valid_s | sqrt_valid_d;
-  assign sqrt_result = sqrt_valid_s ? box32(sqrt_result_s) : sqrt_valid_d ? sqrt_result_d : '0;
-  assign sqrt_flags = sqrt_valid_s ? sqrt_flags_s : sqrt_valid_d ? sqrt_flags_d : '0;
-
-  fp_divider #(
-      .FP_WIDTH(32)
-  ) divider_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(divider_start_s),
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
-      .i_rounding_mode(effective_rm),
-      .o_result(divider_result_s),
-      .o_valid(divider_valid_s),
-      .o_stall(  /*unused*/),
-      .o_flags(divider_flags_s)
-  );
-
-  fp_divider #(
-      .FP_WIDTH(FpWidth)
-  ) divider_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(divider_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
-      .i_rounding_mode(effective_rm),
-      .o_result(divider_result_d),
-      .o_valid(divider_valid_d),
-      .o_stall(  /*unused*/),
-      .o_flags(divider_flags_d)
-  );
-
-  fp_sqrt #(
-      .FP_WIDTH(32)
-  ) sqrt_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(sqrt_start_s),
-      .i_operand(operand_a_s),
-      .i_rounding_mode(effective_rm),
-      .o_result(sqrt_result_s),
-      .o_valid(sqrt_valid_s),
-      .o_stall(  /*unused*/),
-      .o_flags(sqrt_flags_s)
-  );
-
-  fp_sqrt #(
-      .FP_WIDTH(FpWidth)
-  ) sqrt_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(sqrt_start_d),
-      .i_operand(operand_a_d),
-      .i_rounding_mode(effective_rm),
-      .o_result(sqrt_result_d),
-      .o_valid(sqrt_valid_d),
-      .o_stall(  /*unused*/),
-      .o_flags(sqrt_flags_d)
-  );
-
-  // --- FMA (FMADD, FMSUB, FNMADD, FNMSUB) ---
-  // FMADD:  (rs1 * rs2) + rs3      -> negate_product=0, negate_c=0
-  // FMSUB:  (rs1 * rs2) - rs3      -> negate_product=0, negate_c=1
-  // FNMADD: -(rs1 * rs2) - rs3     -> negate_product=1, negate_c=1
-  // FNMSUB: -(rs1 * rs2) + rs3     -> negate_product=1, negate_c=0
-  logic fma_negate_product, fma_negate_c;
-  assign fma_negate_product = op_fnmadd | op_fnmsub;
-  assign fma_negate_c       = op_fmsub | op_fnmadd;
-
-  logic                 [       31:0] fma_result_s;
-  logic                               fma_valid_s;
-  riscv_pkg::fp_flags_t               fma_flags_s;
-  logic                 [FpWidth-1:0] fma_result_d;
-  logic                               fma_valid_d;
-  riscv_pkg::fp_flags_t               fma_flags_d;
   logic                 [FpWidth-1:0] fma_result;
   logic                               fma_valid;
   riscv_pkg::fp_flags_t               fma_flags;
-
-  // FMA tracking: same logic as adder - only start when idle to prevent
-  // re-triggering the same stalled instruction.
-  logic                               fma_started;
-  logic                               fma_can_start;
   logic                               fma_start;
-  logic                               fma_start_s;
-  logic                               fma_start_d;
-  assign fma_can_start = ~fma_started;
-  assign fma_start_s = valid_r & use_fma & ~op_is_double & fma_can_start;
-  assign fma_start_d = valid_r & use_fma & op_is_double & fma_can_start;
-  assign fma_start = fma_start_s | fma_start_d;
+  logic                 [        4:0] dest_reg_fma;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) fma_started <= 1'b0;
-    else if (fma_valid) fma_started <= 1'b0;  // Clear when operation completes
-    else if (fma_start) fma_started <= 1'b1;
-  end
-  assign fma_valid  = fma_valid_s | fma_valid_d;
-  assign fma_result = fma_valid_s ? box32(fma_result_s) : fma_valid_d ? fma_result_d : '0;
-  assign fma_flags  = fma_valid_s ? fma_flags_s : fma_valid_d ? fma_flags_d : '0;
-  assign fma_busy   = fma_started & ~fma_valid;
-
-  fp_fma #(
-      .FP_WIDTH(32)
-  ) fma_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(fma_start_s),
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
-      .i_operand_c(operand_c_s),
-      .i_negate_product(fma_negate_product),
-      .i_negate_c(fma_negate_c),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),  // Not used in non-pipelined mode
-      .o_result(fma_result_s),
-      .o_valid(fma_valid_s),
-      .o_flags(fma_flags_s)
-  );
-
-  fp_fma #(
-      .FP_WIDTH(FpWidth)
-  ) fma_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(fma_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
-      .i_operand_c(operand_c_d),
-      .i_negate_product(fma_negate_product),
-      .i_negate_c(fma_negate_c),
-      .i_rounding_mode(effective_rm),
-      .i_stall(1'b0),
-      .o_result(fma_result_d),
-      .o_valid(fma_valid_d),
-      .o_flags(fma_flags_d)
-  );
-
-
-  // --- Compare (FEQ, FLT, FLE, FMIN, FMAX) ---
-  // Multi-cycle 3-cycle compare: captures operands at start, busy until done
-  logic                 [       31:0] compare_result_s;
-  logic                               compare_is_compare_s;
-  logic                               compare_valid_s;
-  riscv_pkg::fp_flags_t               compare_flags_s;
-  logic                 [FpWidth-1:0] compare_result_d;
-  logic                               compare_is_compare_d;
-  logic                               compare_valid_d;
-  riscv_pkg::fp_flags_t               compare_flags_d;
   logic                 [FpWidth-1:0] compare_result;
   logic                               compare_is_compare;
   logic                               compare_valid;
   riscv_pkg::fp_flags_t               compare_flags;
-
-  // Compare tracking: same logic as adder - only start when idle to prevent
-  // re-triggering the same stalled instruction.
-  logic                               compare_started;
-  logic                               compare_can_start;
   logic                               compare_start;
-  logic                               compare_start_s;
-  logic                               compare_start_d;
-  assign compare_can_start = ~compare_started;
-  assign compare_start_s = valid_r & use_compare & ~op_is_double & compare_can_start;
-  assign compare_start_d = valid_r & use_compare & op_is_double & compare_can_start;
-  assign compare_start = compare_start_s | compare_start_d;
+  logic                 [        4:0] dest_reg_compare;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) compare_started <= 1'b0;
-    else if (compare_valid) compare_started <= 1'b0;  // Clear when operation completes
-    else if (compare_start) compare_started <= 1'b1;
-  end
-  assign compare_valid = compare_valid_s | compare_valid_d;
-  assign compare_result = compare_valid_s ? box32(
-      compare_result_s
-  ) : compare_valid_d ? compare_result_d : '0;
-  assign compare_is_compare = compare_valid_s ? compare_is_compare_s :
-                              compare_valid_d ? compare_is_compare_d : 1'b0;
-  assign compare_flags = compare_valid_s ? compare_flags_s : compare_valid_d ? compare_flags_d : '0;
-  assign compare_busy = compare_started & ~compare_valid;
+  logic                 [FpWidth-1:0] sign_inject_result;
+  logic                               sign_inject_valid;
+  logic                               sign_inject_start;
+  logic                 [        4:0] dest_reg_sign_inject;
 
-  fp_compare #(
-      .FP_WIDTH(32)
-  ) compare_inst_s (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(compare_start_s),
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
-      .i_operation(operation_r),
-      .o_result(compare_result_s),
-      .o_is_compare(compare_is_compare_s),
-      .o_valid(compare_valid_s),
-      .o_flags(compare_flags_s)
-  );
+  logic                 [       31:0] classify_result;
+  logic                               classify_valid;
+  logic                               classify_start;
+  logic                 [        4:0] dest_reg_classify;
 
-  fp_compare #(
-      .FP_WIDTH(FpWidth)
-  ) compare_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(compare_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
-      .i_operation(operation_r),
-      .o_result(compare_result_d),
-      .o_is_compare(compare_is_compare_d),
-      .o_valid(compare_valid_d),
-      .o_flags(compare_flags_d)
-  );
+  logic                 [FpWidth-1:0] divider_result;
+  logic                               divider_valid;
+  riscv_pkg::fp_flags_t               divider_flags;
+  logic                 [FpWidth-1:0] sqrt_result;
+  logic                               sqrt_valid;
+  riscv_pkg::fp_flags_t               sqrt_flags;
+  logic                               seq_start;
+  logic                 [        4:0] dest_reg_seq;
+  logic                               dest_reg_seq_valid;
 
-  // --- Convert (FCVT.W.S, FCVT.WU.S, FCVT.S.W, FCVT.S.WU, FMV.X.W, FMV.W.X) ---
-  // Multi-cycle converter: captures operands at start, busy until done
-  logic                 [       31:0] convert_fp_result_s;
-  logic                 [   XLEN-1:0] convert_int_result_s;
-  logic                               convert_is_fp_to_int_s;
-  logic                               convert_valid_s;
-  riscv_pkg::fp_flags_t               convert_flags_s;
-  logic                 [FpWidth-1:0] convert_fp_result_d;
-  logic                 [   XLEN-1:0] convert_int_result_d;
-  logic                               convert_is_fp_to_int_d;
-  logic                               convert_valid_d;
-  riscv_pkg::fp_flags_t               convert_flags_d;
-  logic                 [FpWidth-1:0] convert_sd_result;
-  logic                               convert_sd_valid;
-  riscv_pkg::fp_flags_t               convert_sd_flags;
   logic                 [FpWidth-1:0] convert_fp_result;
   logic                 [   XLEN-1:0] convert_int_result;
   logic                               convert_is_fp_to_int;
   logic                               convert_valid;
   riscv_pkg::fp_flags_t               convert_flags;
-
-  // Convert tracking: same logic as adder - only start when idle to prevent
-  // re-triggering the same stalled instruction.
-  logic                               convert_started;
-  logic                               convert_can_start;
   logic                               convert_start;
-  logic                               convert_start_s;
-  logic                               convert_start_d;
-  logic                               convert_start_sd;
-  assign convert_can_start = ~convert_started;
-  assign convert_start_s = valid_r & use_convert_s & convert_can_start;
-  assign convert_start_d = valid_r & use_convert_d & convert_can_start;
-  assign convert_start_sd = valid_r & use_convert_sd & convert_can_start;
-  assign convert_start = convert_start_s | convert_start_d | convert_start_sd;
+  logic                 [        4:0] dest_reg_convert;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) convert_started <= 1'b0;
-    else if (convert_valid) convert_started <= 1'b0;  // Clear when operation completes
-    else if (convert_start) convert_started <= 1'b1;
-  end
-  assign convert_valid = convert_valid_s | convert_valid_d | convert_sd_valid;
-  assign convert_fp_result = convert_valid_s ? box32(
-      convert_fp_result_s
-  ) : convert_valid_d ? convert_fp_result_d : convert_sd_valid ? convert_sd_result : '0;
-  assign convert_int_result = convert_valid_s ? convert_int_result_s :
-                              convert_valid_d ? convert_int_result_d : '0;
-  assign convert_is_fp_to_int = convert_valid_s ? convert_is_fp_to_int_s :
-                                convert_valid_d ? convert_is_fp_to_int_d : 1'b0;
-  assign convert_flags = convert_valid_s ? convert_flags_s :
-                         convert_valid_d ? convert_flags_d :
-                         convert_sd_valid ? convert_sd_flags : '0;
-  assign convert_busy = convert_started & ~convert_valid;
+  // --- FMA control signals ---
+  logic fma_negate_product, fma_negate_c;
+  assign fma_negate_product = op_fnmadd | op_fnmsub;
+  assign fma_negate_c       = op_fmsub | op_fnmadd;
 
-  fp_convert #(
-      .XLEN(XLEN),
-      .FP_WIDTH(32)
-  ) convert_inst_s (
+  // --- Adder (FADD, FSUB) ---
+  fpu_adder_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_adder (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(convert_start_s),
-      .i_fp_operand(operand_a_s),
-      .i_int_operand(int_operand_r),
-      .i_operation(operation_r),
+      .i_valid(valid_r),
+      .i_use_unit(use_adder),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
+      .i_is_subtract(op_sub),
       .i_rounding_mode(effective_rm),
-      .o_fp_result(convert_fp_result_s),
-      .o_int_result(convert_int_result_s),
-      .o_is_fp_to_int(convert_is_fp_to_int_s),
-      .o_valid(convert_valid_s),
-      .o_flags(convert_flags_s)
+      .i_dest_reg(dest_reg_r),
+      .o_result(adder_result),
+      .o_valid(adder_valid),
+      .o_flags(adder_flags),
+      .o_busy(adder_busy),
+      .o_dest_reg(dest_reg_adder),
+      .o_start(adder_start)
   );
 
-  fp_convert #(
-      .XLEN(XLEN),
-      .FP_WIDTH(FpWidth)
-  ) convert_inst_d (
+  // --- Multiplier (FMUL) ---
+  fpu_mult_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_multiplier (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(convert_start_d),
-      .i_fp_operand(operand_a_d),
-      .i_int_operand(int_operand_r),
-      .i_operation(operation_r),
+      .i_valid(valid_r),
+      .i_use_unit(use_multiplier),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
       .i_rounding_mode(effective_rm),
-      .o_fp_result(convert_fp_result_d),
-      .o_int_result(convert_int_result_d),
-      .o_is_fp_to_int(convert_is_fp_to_int_d),
-      .o_valid(convert_valid_d),
-      .o_flags(convert_flags_d)
+      .i_dest_reg(dest_reg_r),
+      .o_result(multiplier_result),
+      .o_valid(multiplier_valid),
+      .o_flags(multiplier_flags),
+      .o_busy(multiplier_busy),
+      .o_dest_reg(dest_reg_multiplier),
+      .o_start(multiplier_start)
   );
 
-  fp_convert_sd #(
-      .FP_WIDTH(FpWidth)
-  ) convert_sd_inst (
+  // --- FMA (FMADD, FMSUB, FNMADD, FNMSUB) ---
+  fpu_fma_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_fma (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(convert_start_sd),
-      .i_operand_s(operand_a_s),
-      .i_operand_d(operand_a_d),
-      .i_operation(operation_r),
+      .i_valid(valid_r),
+      .i_use_unit(use_fma),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_c_s(operand_c_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
+      .i_operand_c_d(operand_c_d),
+      .i_negate_product(fma_negate_product),
+      .i_negate_c(fma_negate_c),
       .i_rounding_mode(effective_rm),
-      .o_result(convert_sd_result),
-      .o_valid(convert_sd_valid),
-      .o_flags(convert_sd_flags)
+      .i_dest_reg(dest_reg_r),
+      .o_result(fma_result),
+      .o_valid(fma_valid),
+      .o_flags(fma_flags),
+      .o_busy(fma_busy),
+      .o_dest_reg(dest_reg_fma),
+      .o_start(fma_start)
   );
 
-  // --- Classify (FCLASS.S) ---
-  // 2-cycle operation to break timing path through FP forwarding
-  logic [31:0] classify_result_s;
-  logic        classify_valid_s;
-  logic        classify_busy_s;
-  logic [31:0] classify_result_d;
-  logic        classify_valid_d;
-  logic        classify_busy_d;
-  logic [31:0] classify_result;
-  logic        classify_valid;
-  logic        classify_busy;
-
-  // Classify tracking: same pattern as other multi-cycle ops
-  logic        classify_started;
-  logic        classify_can_start;
-  logic        classify_start;
-  logic        classify_start_s;
-  logic        classify_start_d;
-  assign classify_can_start = ~classify_started;
-  assign classify_start_s = valid_r & use_classify & ~op_is_double & classify_can_start;
-  assign classify_start_d = valid_r & use_classify & op_is_double & classify_can_start;
-  assign classify_start = classify_start_s | classify_start_d;
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst) classify_started <= 1'b0;
-    else if (classify_valid) classify_started <= 1'b0;
-    else if (classify_start) classify_started <= 1'b1;
-  end
-
-  assign classify_valid = classify_valid_s | classify_valid_d;
-  assign classify_result = classify_valid_s ? classify_result_s :
-                           classify_valid_d ? classify_result_d : 32'b0;
-  assign classify_busy = classify_busy_s | classify_busy_d;
-
-  fp_classify #(
-      .FP_WIDTH(32)
-  ) classify_inst_s (
+  // --- Compare (FEQ, FLT, FLE, FMIN, FMAX) ---
+  fpu_compare_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_compare (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(classify_start_s),
-      .i_operand(operand_a_s),
-      .o_result(classify_result_s),
-      .o_valid(classify_valid_s),
-      .o_busy(classify_busy_s)
-  );
-
-  fp_classify #(
-      .FP_WIDTH(FpWidth)
-  ) classify_inst_d (
-      .i_clk(i_clk),
-      .i_rst(i_rst),
-      .i_valid(classify_start_d),
-      .i_operand(operand_a_d),
-      .o_result(classify_result_d),
-      .o_valid(classify_valid_d),
-      .o_busy(classify_busy_d)
+      .i_valid(valid_r),
+      .i_use_unit(use_compare),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
+      .i_operation(operation_r),
+      .i_dest_reg(dest_reg_r),
+      .o_result(compare_result),
+      .o_is_compare(compare_is_compare),
+      .o_valid(compare_valid),
+      .o_flags(compare_flags),
+      .o_busy(compare_busy),
+      .o_dest_reg(dest_reg_compare),
+      .o_start(compare_start)
   );
 
   // --- Sign Injection (FSGNJ, FSGNJN, FSGNJX) ---
-  // 2-cycle operation to break timing path through FP forwarding
-  logic [       31:0] sign_inject_result_s;
-  logic               sign_inject_valid_s;
-  logic               sign_inject_busy_s;
-  logic [FpWidth-1:0] sign_inject_result_d;
-  logic               sign_inject_valid_d;
-  logic               sign_inject_busy_d;
-  logic [FpWidth-1:0] sign_inject_result;
-  logic               sign_inject_valid;
-  logic               sign_inject_busy;
-
-  // Sign inject tracking: same pattern as other multi-cycle ops
-  logic               sign_inject_started;
-  logic               sign_inject_can_start;
-  logic               sign_inject_start;
-  logic               sign_inject_start_s;
-  logic               sign_inject_start_d;
-  assign sign_inject_can_start = ~sign_inject_started;
-  assign sign_inject_start_s = valid_r & use_sign_inject & ~op_is_double & sign_inject_can_start;
-  assign sign_inject_start_d = valid_r & use_sign_inject & op_is_double & sign_inject_can_start;
-  assign sign_inject_start = sign_inject_start_s | sign_inject_start_d;
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst) sign_inject_started <= 1'b0;
-    else if (sign_inject_valid) sign_inject_started <= 1'b0;
-    else if (sign_inject_start) sign_inject_started <= 1'b1;
-  end
-
-  assign sign_inject_valid = sign_inject_valid_s | sign_inject_valid_d;
-  assign sign_inject_result = sign_inject_valid_s ? box32(
-      sign_inject_result_s
-  ) : sign_inject_valid_d ? sign_inject_result_d : '0;
-  assign sign_inject_busy = sign_inject_busy_s | sign_inject_busy_d;
-
-  fp_sign_inject #(
-      .FP_WIDTH(32)
-  ) sign_inject_inst_s (
+  fpu_sign_inject_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_sign_inject (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(sign_inject_start_s),
-      .i_operand_a(operand_a_s),
-      .i_operand_b(operand_b_s),
+      .i_valid(valid_r),
+      .i_use_unit(use_sign_inject),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
       .i_operation(operation_r),
-      .o_result(sign_inject_result_s),
-      .o_valid(sign_inject_valid_s),
-      .o_busy(sign_inject_busy_s)
+      .i_dest_reg(dest_reg_r),
+      .o_result(sign_inject_result),
+      .o_valid(sign_inject_valid),
+      .o_flags(  /*unused*/),
+      .o_busy(  /*unused*/),
+      .o_dest_reg(dest_reg_sign_inject),
+      .o_start(sign_inject_start)
   );
 
-  fp_sign_inject #(
-      .FP_WIDTH(FpWidth)
-  ) sign_inject_inst_d (
+  // --- Classify (FCLASS) ---
+  fpu_classify_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_classify (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(sign_inject_start_d),
-      .i_operand_a(operand_a_d),
-      .i_operand_b(operand_b_d),
+      .i_valid(valid_r),
+      .i_use_unit(use_classify),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_a_d(operand_a_d),
+      .i_dest_reg(dest_reg_r),
+      .o_result(classify_result),
+      .o_valid(classify_valid),
+      .o_busy(  /*unused*/),
+      .o_dest_reg(dest_reg_classify),
+      .o_start(classify_start)
+  );
+
+  // --- Divider/Sqrt (FDIV, FSQRT) ---
+  fpu_div_sqrt_unit #(
+      .FP_WIDTH_D(FpWidth)
+  ) u_div_sqrt (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid(valid_r),
+      .i_use_divider(use_divider),
+      .i_use_sqrt(use_sqrt),
+      .i_op_is_double(op_is_double),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_b_s(operand_b_s),
+      .i_operand_a_d(operand_a_d),
+      .i_operand_b_d(operand_b_d),
+      .i_rounding_mode(effective_rm),
+      .i_dest_reg(dest_reg_r),
+      .o_divider_result(divider_result),
+      .o_divider_valid(divider_valid),
+      .o_divider_flags(divider_flags),
+      .o_sqrt_result(sqrt_result),
+      .o_sqrt_valid(sqrt_valid),
+      .o_sqrt_flags(sqrt_flags),
+      .o_busy(  /*unused*/),
+      .o_dest_reg(dest_reg_seq),
+      .o_dest_reg_valid(dest_reg_seq_valid),
+      .o_start(seq_start)
+  );
+
+  // --- Convert (FCVT, FMV) ---
+  fpu_convert_unit #(
+      .XLEN(XLEN),
+      .FP_WIDTH_D(FpWidth)
+  ) u_convert (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid(valid_r),
+      .i_use_convert_s(use_convert_s),
+      .i_use_convert_d(use_convert_d),
+      .i_use_convert_sd(use_convert_sd),
+      .i_operand_a_s(operand_a_s),
+      .i_operand_a_d(operand_a_d),
+      .i_int_operand(int_operand_r),
       .i_operation(operation_r),
-      .o_result(sign_inject_result_d),
-      .o_valid(sign_inject_valid_d),
-      .o_busy(sign_inject_busy_d)
+      .i_rounding_mode(effective_rm),
+      .i_dest_reg(dest_reg_r),
+      .o_fp_result(convert_fp_result),
+      .o_int_result(convert_int_result),
+      .o_is_fp_to_int(convert_is_fp_to_int),
+      .o_valid(convert_valid),
+      .o_flags(convert_flags),
+      .o_busy(convert_busy),
+      .o_dest_reg(dest_reg_convert),
+      .o_start(convert_start)
   );
 
   // ===========================================================================
@@ -1002,54 +617,6 @@ module fpu #(
   logic result_is_integer;
   assign result_is_integer = op_cvt_w_s | op_cvt_wu_s | op_cvt_w_d | op_cvt_wu_d |
                              op_mv_x_w | op_eq | op_lt | op_le | op_fclass;
-
-  // ===========================================================================
-  // Destination Register Tracking (Simplified for Non-Pipelined Mode)
-  // ===========================================================================
-  // For multi-cycle operations, capture dest_reg at start and hold until done.
-  // Since operations aren't pipelined, we only need one register per unit type.
-
-  logic [4:0] dest_reg_adder;  // Destination for adder operation
-  logic [4:0] dest_reg_multiplier;  // Destination for multiplier operation
-  logic [4:0] dest_reg_fma;  // Destination for FMA operation
-  logic [4:0] dest_reg_compare;  // Destination for compare operation
-  logic [4:0] dest_reg_convert;  // Destination for convert operation
-  logic [4:0] dest_reg_classify;  // Destination for classify operation
-  logic [4:0] dest_reg_sign_inject;  // Destination for sign inject operation
-  logic [4:0] dest_reg_seq;  // For sequential operations (div/sqrt)
-  logic       dest_reg_seq_valid;
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      dest_reg_adder <= 5'b0;
-      dest_reg_multiplier <= 5'b0;
-      dest_reg_fma <= 5'b0;
-      dest_reg_compare <= 5'b0;
-      dest_reg_convert <= 5'b0;
-      dest_reg_classify <= 5'b0;
-      dest_reg_sign_inject <= 5'b0;
-      dest_reg_seq <= 5'b0;
-      dest_reg_seq_valid <= 1'b0;
-    end else begin
-      // Capture dest_reg when starting each operation (only when unit is idle)
-      // Uses registered inputs for timing
-      if (valid_r && use_adder && adder_can_start) dest_reg_adder <= dest_reg_r;
-      if (valid_r && use_multiplier && multiplier_can_start) dest_reg_multiplier <= dest_reg_r;
-      if (valid_r && use_fma && fma_can_start) dest_reg_fma <= dest_reg_r;
-      if (valid_r && use_compare && compare_can_start) dest_reg_compare <= dest_reg_r;
-      if (valid_r && use_convert && convert_can_start) dest_reg_convert <= dest_reg_r;
-      if (valid_r && use_classify && classify_can_start) dest_reg_classify <= dest_reg_r;
-      if (valid_r && use_sign_inject && sign_inject_can_start) dest_reg_sign_inject <= dest_reg_r;
-
-      // Sequential operations: latch dest_reg at start, clear when done
-      if (divider_valid || sqrt_valid) begin
-        dest_reg_seq_valid <= 1'b0;
-      end else if (seq_start) begin
-        dest_reg_seq <= dest_reg_r;
-        dest_reg_seq_valid <= 1'b1;
-      end
-    end
-  end
 
   // Select the appropriate dest_reg based on which operation is producing results
   logic [4:0] selected_dest_reg;
