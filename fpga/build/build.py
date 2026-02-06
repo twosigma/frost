@@ -1379,25 +1379,38 @@ Examples:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
 
-    # Generate SUMMARY files
+    # Generate SUMMARY files only for the stages that were actually run
     print(f"\n{'='*70}")
     print("Generating SUMMARY files...")
     print(f"{'='*70}")
 
+    # Determine which report prefixes correspond to the steps we ran
+    stages_run = [STEP_REPORT_PREFIX[s] for s in steps_to_run]
+
     extract_script = script_dir / "extract_timing_and_util_summary.py"
     if extract_script.exists():
-        subprocess.run(["python3", str(extract_script), board_name], check=True)
+        subprocess.run(
+            [
+                "python3",
+                str(extract_script),
+                board_name,
+                "--stages",
+                ",".join(stages_run),
+            ],
+            check=True,
+        )
 
-    # Final summary
+    # Final summary - use timing from the last step that was actually run
     print(f"\n{'#'*70}")
     print("# BUILD COMPLETE!")
     print(f"{'#'*70}")
 
-    final_timing_rpt = main_work / "final_timing.rpt"
-    if final_timing_rpt.exists():
-        timing = extract_timing_from_report(final_timing_rpt)
+    last_stage = stages_run[-1]
+    last_timing_rpt = main_work / f"{last_stage}_timing.rpt"
+    if last_timing_rpt.exists():
+        timing = extract_timing_from_report(last_timing_rpt)
         if timing.get("wns_ns") is not None:
-            print("\nFinal Timing:")
+            print(f"\nTiming (after {last_stage}):")
             print(f"  WNS: {timing['wns_ns']:.3f} ns")
             print(f"  TNS: {timing['tns_ns']:.3f} ns")
             print(f"  Timing Met: {'YES!' if timing['wns_ns'] >= 0 else 'No'}")

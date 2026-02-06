@@ -504,24 +504,30 @@ def update_readme_utilization(
 
 def main() -> None:
     """Extract timing and utilization summaries from Vivado reports."""
-    if len(sys.argv) < 2:
-        print("Usage: extract_timing_and_util_summary.py <board>")
-        print("  board: x3, genesys2, or nexys_a7")
-        sys.exit(1)
+    import argparse
 
-    board = sys.argv[1]
-    if board not in ["x3", "genesys2", "nexys_a7"]:
-        print(
-            f"Error: Invalid board '{board}'. Must be 'x3', 'genesys2', or 'nexys_a7'"
-        )
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Extract timing and utilization summaries from Vivado reports"
+    )
+    parser.add_argument(
+        "board",
+        choices=["x3", "genesys2", "nexys_a7"],
+        help="Target board",
+    )
+    parser.add_argument(
+        "--stages",
+        help="Comma-separated list of stages to process (default: all available)",
+    )
+    args = parser.parse_args()
+
+    board = args.board
 
     script_dir = Path(__file__).parent.resolve()
     board_dir = script_dir / board
     work_dir = board_dir / "work"
 
-    # Process all available build stages
-    stages = [
+    # Process specified stages or all available if not specified
+    all_stages = [
         "post_synth",
         "post_opt",
         "post_place",
@@ -529,6 +535,18 @@ def main() -> None:
         "post_route",
         "final",
     ]
+
+    if args.stages:
+        stages = [s.strip() for s in args.stages.split(",")]
+        # Validate that all specified stages are valid
+        for stage in stages:
+            if stage not in all_stages:
+                print(
+                    f"Error: Invalid stage '{stage}'. Valid stages: {', '.join(all_stages)}"
+                )
+                sys.exit(1)
+    else:
+        stages = all_stages
 
     summaries_written = 0
     for stage in stages:
