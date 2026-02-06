@@ -1,7 +1,10 @@
 # Floating-Point Unit (FPU) file list - F extension support
 # Single-precision IEEE 754 floating-point operations
 
-# Shared rounding logic used by all FP arithmetic operations
+# Shared utilities used by all FP arithmetic operations
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_round.sv
 
 # Simple 1-cycle operations

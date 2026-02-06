@@ -107,15 +107,23 @@ module fp_convert #(
   logic fp_is_zero, fp_is_inf, fp_is_nan, fp_is_subnormal;
   logic [MantBits-1:0] fp_mantissa;
 
-  assign fp_sign         = fp_operand_reg[FP_WIDTH-1];
-  assign fp_exp          = fp_operand_reg[FP_WIDTH-2-:ExpBits];
-  assign fp_mant         = fp_operand_reg[FracBits-1:0];
+  assign fp_sign = fp_operand_reg[FP_WIDTH-1];
+  assign fp_exp  = fp_operand_reg[FP_WIDTH-2-:ExpBits];
+  assign fp_mant = fp_operand_reg[FracBits-1:0];
 
-  assign fp_is_zero      = (fp_exp == '0) && (fp_mant == '0);
-  assign fp_is_subnormal = (fp_exp == '0) && (fp_mant != '0);
-  assign fp_is_inf       = (fp_exp == {ExpBits{1'b1}}) && (fp_mant == '0);
-  assign fp_is_nan       = (fp_exp == {ExpBits{1'b1}}) && (fp_mant != '0);
-  assign fp_mantissa     = (fp_exp == '0) ? {1'b0, fp_mant} : {1'b1, fp_mant};
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify (
+      .i_exp(fp_exp),
+      .i_frac(fp_mant),
+      .o_is_zero(fp_is_zero),
+      .o_is_subnormal(fp_is_subnormal),
+      .o_is_inf(fp_is_inf),
+      .o_is_nan(fp_is_nan),
+      .o_is_snan()
+  );
+  assign fp_mantissa = (fp_exp == '0) ? {1'b0, fp_mant} : {1'b1, fp_mant};
 
   // Unbiased exponent
   logic signed [ExpExtBits-1:0] unbiased_exp;
@@ -126,11 +134,11 @@ module fp_convert #(
   ) - ExpExtBits'(ExpBias);
 
   // Integer to FP: get absolute value and compute LZC
-  logic [      XLEN-1:0] abs_int;
-  logic                  int_sign;
-  logic                  is_signed_conv;
-  logic [IntLzcBits-1:0] int_lzc;
-  logic                  int_lzc_found;
+  logic [          XLEN-1:0] abs_int;
+  logic                      int_sign;
+  logic                      is_signed_conv;
+  logic [    IntLzcBits-1:0] int_lzc;
+  logic [$clog2(XLEN+1)-1:0] int_lzc_full;
 
   assign is_signed_conv = (operation_reg == riscv_pkg::FCVT_S_W) ||
                           (operation_reg == riscv_pkg::FCVT_D_W);
@@ -146,19 +154,14 @@ module fp_convert #(
   end
 
   // LZC for integer to FP - computed combinationally in stage 1
-  always_comb begin
-    int_lzc = '0;
-    int_lzc_found = 1'b0;
-    for (int i = XLEN - 1; i >= 0; i--) begin
-      if (!int_lzc_found) begin
-        if (abs_int[i]) begin
-          int_lzc_found = 1'b1;
-        end else begin
-          int_lzc = int_lzc + 1;
-        end
-      end
-    end
-  end
+  fp_lzc #(
+      .WIDTH(XLEN)
+  ) u_int_lzc (
+      .i_value (abs_int),
+      .o_lzc   (int_lzc_full),
+      .o_is_zero()
+  );
+  assign int_lzc = int_lzc_full[IntLzcBits-1:0];
 
   // =========================================================================
   // Stage 1 -> Stage 2 Pipeline Registers
@@ -390,17 +393,8 @@ module fp_convert #(
 
         int_to_fp_inexact = int_to_fp_r_bit | int_to_fp_s_bit;
 
-        unique case (rm_s2)
-          riscv_pkg::FRM_RNE:
-          int_to_fp_round_up = int_to_fp_r_bit & (int_to_fp_s_bit | int_to_fp_mant[0]);
-          riscv_pkg::FRM_RTZ: int_to_fp_round_up = 1'b0;
-          riscv_pkg::FRM_RDN:
-          int_to_fp_round_up = int_sign_s2 & (int_to_fp_r_bit | int_to_fp_s_bit);
-          riscv_pkg::FRM_RUP:
-          int_to_fp_round_up = !int_sign_s2 & (int_to_fp_r_bit | int_to_fp_s_bit);
-          riscv_pkg::FRM_RMM: int_to_fp_round_up = int_to_fp_r_bit;
-          default: int_to_fp_round_up = int_to_fp_r_bit & (int_to_fp_s_bit | int_to_fp_mant[0]);
-        endcase
+        int_to_fp_round_up = riscv_pkg::fp_compute_round_up(
+            rm_s2, int_to_fp_r_bit, 1'b0, int_to_fp_s_bit, int_to_fp_mant[0], int_sign_s2);
 
         int_to_fp_rounded_mant = {1'b0, int_to_fp_mant} + {{FracBits{1'b0}}, int_to_fp_round_up};
 
@@ -440,22 +434,14 @@ module fp_convert #(
     fp_to_int_rounded_value_s3_comb = '0;
 
     if (!fp_to_int_force_valid_s3) begin
-      unique case (rm_s3)
-        riscv_pkg::FRM_RNE:
-        fp_to_int_do_round_up_s3_comb = fp_to_int_round_bit_s3 &
-                                        (fp_to_int_sticky_bit_s3 | fp_to_int_shifted_value_s3[0]);
-        riscv_pkg::FRM_RTZ: fp_to_int_do_round_up_s3_comb = 1'b0;
-        riscv_pkg::FRM_RDN:
-        fp_to_int_do_round_up_s3_comb = fp_to_int_sign_s3 &
-                                        (fp_to_int_round_bit_s3 | fp_to_int_sticky_bit_s3);
-        riscv_pkg::FRM_RUP:
-        fp_to_int_do_round_up_s3_comb = ~fp_to_int_sign_s3 &
-                                        (fp_to_int_round_bit_s3 | fp_to_int_sticky_bit_s3);
-        riscv_pkg::FRM_RMM: fp_to_int_do_round_up_s3_comb = fp_to_int_round_bit_s3;
-        default:
-        fp_to_int_do_round_up_s3_comb = fp_to_int_round_bit_s3 &
-                                        (fp_to_int_sticky_bit_s3 | fp_to_int_shifted_value_s3[0]);
-      endcase
+      fp_to_int_do_round_up_s3_comb = riscv_pkg::fp_compute_round_up(
+        rm_s3,
+        fp_to_int_round_bit_s3,
+        1'b0,
+        fp_to_int_sticky_bit_s3,
+        fp_to_int_shifted_value_s3[0],
+        fp_to_int_sign_s3
+      );
 
       fp_to_int_rounded_value_s3_comb =
           {1'b0, fp_to_int_shifted_value_s3} +

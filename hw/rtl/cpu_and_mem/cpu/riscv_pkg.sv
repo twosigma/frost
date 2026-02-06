@@ -347,6 +347,20 @@ package riscv_pkg;
   localparam bit [31:0] FpCanonicalNan = 32'h7FC0_0000;  // Canonical quiet NaN (single)
   localparam bit [63:0] FpCanonicalNan64 = 64'h7FF8_0000_0000_0000;  // Canonical quiet NaN (double)
 
+  // IEEE 754 rounding decision: returns 1 if the mantissa should be incremented.
+  function automatic logic fp_compute_round_up(input logic [2:0] rounding_mode, input logic guard,
+                                               input logic round_bit, input logic sticky,
+                                               input logic lsb, input logic sign);
+    unique case (rounding_mode)
+      FRM_RNE: return guard & (round_bit | sticky | lsb);
+      FRM_RTZ: return 1'b0;
+      FRM_RDN: return sign & (guard | round_bit | sticky);
+      FRM_RUP: return ~sign & (guard | round_bit | sticky);
+      FRM_RMM: return guard;
+      default: return guard & (round_bit | sticky | lsb);
+    endcase
+  endfunction
+
   // mstatus bit positions (RV32)
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable

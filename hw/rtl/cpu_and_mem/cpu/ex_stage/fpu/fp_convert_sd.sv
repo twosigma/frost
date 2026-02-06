@@ -95,13 +95,21 @@ module fp_convert_sd #(
   logic d_is_zero, d_is_inf, d_is_nan, d_is_snan;
 
   assign sign_d = op_d_reg[FP_WIDTH-1];
-  assign exp_d = op_d_reg[FP_WIDTH-2-:11];
+  assign exp_d  = op_d_reg[FP_WIDTH-2-:11];
   assign frac_d = op_d_reg[51:0];
 
-  assign d_is_zero = (exp_d == 11'b0) && (frac_d == 52'b0);
-  assign d_is_inf = (exp_d == 11'h7FF) && (frac_d == 52'b0);
-  assign d_is_nan = (exp_d == 11'h7FF) && (frac_d != 52'b0);
-  assign d_is_snan = d_is_nan && ~frac_d[51];
+  fp_classify_operand #(
+      .EXP_BITS (11),
+      .FRAC_BITS(52)
+  ) u_classify_d (
+      .i_exp(exp_d),
+      .i_frac(frac_d),
+      .o_is_zero(d_is_zero),
+      .o_is_subnormal(),
+      .o_is_inf(d_is_inf),
+      .o_is_nan(d_is_nan),
+      .o_is_snan(d_is_snan)
+  );
 
   // Stage 1 registers for D->S conversion
   logic               sign_d_s1;
@@ -123,7 +131,6 @@ module fp_convert_sd #(
   logic        [52:0] mant_norm_d;
   logic signed [12:0] exp_unbiased_d;
   logic        [ 5:0] lzc_d;
-  logic               lzc_d_found;
 
   // TIMING: Register LZC result to break critical path
   logic        [ 5:0] lzc_d_reg;
@@ -134,16 +141,14 @@ module fp_convert_sd #(
   // TIMING: Compute LZC from input operand (for registering on i_valid)
   // This breaks the critical path by computing LZC from input and registering it,
   // rather than computing it from the registered op_d_reg in the next cycle.
-  always_comb begin
-    lzc_d = '0;
-    lzc_d_found = 1'b0;
-    for (int i = 51; i >= 0; i--) begin
-      if (!lzc_d_found) begin
-        if (i_operand_d[i]) lzc_d_found = 1'b1;
-        else lzc_d = lzc_d + 1'b1;
-      end
-    end
-  end
+  logic               lzc_d_is_zero;
+  fp_lzc #(
+      .WIDTH(52)
+  ) u_lzc_d (
+      .i_value (i_operand_d[51:0]),
+      .o_lzc   (lzc_d),
+      .o_is_zero(lzc_d_is_zero)
+  );
 
   // TIMING: Use registered LZC for subnormal path
   always_comb begin
@@ -179,11 +184,6 @@ module fp_convert_sd #(
   logic               round_bit_s1;
   logic               sticky_bit_s1;
   logic signed [ 9:0] round_exp_s1;
-  logic        [26:0] mantissa_ext_s1;
-  logic        [26:0] shifted_ext_s1;
-  logic               shifted_sticky_s1;
-  logic        [ 5:0] shift_amt_s1;
-  logic signed [10:0] shift_amt_signed_s1;
   logic        [23:0] mantissa_work_s1_comb;
   logic               guard_work_s1_comb;
   logic               round_work_s1_comb;
@@ -196,39 +196,21 @@ module fp_convert_sd #(
   assign sticky_bit_s1 = round_s_s1 | sticky_s_s1;
   assign round_exp_s1 = exp_s_biased_s1[9:0];
 
-  always_comb begin
-    mantissa_work_s1_comb = mantissa_retained_s1;
-    guard_work_s1_comb = guard_bit_s1;
-    round_work_s1_comb = round_bit_s1;
-    sticky_work_s1_comb = sticky_bit_s1;
-    exp_work_s1_comb = round_exp_s1;
-    mantissa_ext_s1 = {mantissa_retained_s1, guard_bit_s1, round_bit_s1, sticky_bit_s1};
-    shifted_ext_s1 = mantissa_ext_s1;
-    shifted_sticky_s1 = 1'b0;
-    shift_amt_s1 = 6'd0;
-    shift_amt_signed_s1 = 11'sd0;
-
-    if (round_exp_s1 <= 0) begin
-      shift_amt_signed_s1 = 11'sd1 - $signed({round_exp_s1[9], round_exp_s1});
-      if (shift_amt_signed_s1 >= 27) shift_amt_s1 = 6'd27;
-      else shift_amt_s1 = shift_amt_signed_s1[5:0];
-      if (shift_amt_s1 >= 6'd27) begin
-        shifted_ext_s1 = 27'b0;
-        shifted_sticky_s1 = |mantissa_ext_s1;
-      end else if (shift_amt_s1 != 0) begin
-        shifted_ext_s1 = mantissa_ext_s1 >> shift_amt_s1;
-        shifted_sticky_s1 = 1'b0;
-        for (int i = 0; i < 27; i++) begin
-          if (i < shift_amt_s1) shifted_sticky_s1 = shifted_sticky_s1 | mantissa_ext_s1[i];
-        end
-      end
-      mantissa_work_s1_comb = shifted_ext_s1[26:3];
-      guard_work_s1_comb = shifted_ext_s1[2];
-      round_work_s1_comb = shifted_ext_s1[1];
-      sticky_work_s1_comb = shifted_ext_s1[0] | shifted_sticky_s1;
-      exp_work_s1_comb = 10'sd0;
-    end
-  end
+  fp_subnorm_shift #(
+      .MANT_BITS(24),
+      .EXP_EXT_BITS(10)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained_s1),
+      .i_guard   (guard_bit_s1),
+      .i_round   (round_bit_s1),
+      .i_sticky  (sticky_bit_s1),
+      .i_exponent(round_exp_s1),
+      .o_mantissa(mantissa_work_s1_comb),
+      .o_guard   (guard_work_s1_comb),
+      .o_round   (round_work_s1_comb),
+      .o_sticky  (sticky_work_s1_comb),
+      .o_exponent(exp_work_s1_comb)
+  );
 
   // Stage B: Apply rounding and format result
   logic                        round_up_s2_comb;
@@ -245,21 +227,11 @@ module fp_convert_sd #(
 
   assign lsb_s2 = mantissa_work_s2a[0];
 
-  always_comb begin
-    unique case (rm_reg_s2)
-      riscv_pkg::FRM_RNE:
-      round_up_s2_comb = guard_work_s2a & (round_work_s2a | sticky_work_s2a | lsb_s2);
-      riscv_pkg::FRM_RTZ: round_up_s2_comb = 1'b0;
-      riscv_pkg::FRM_RDN:
-      round_up_s2_comb = sign_d_s2 & (guard_work_s2a | round_work_s2a | sticky_work_s2a);
-      riscv_pkg::FRM_RUP:
-      round_up_s2_comb = ~sign_d_s2 & (guard_work_s2a | round_work_s2a | sticky_work_s2a);
-      riscv_pkg::FRM_RMM: round_up_s2_comb = guard_work_s2a;
-      default: round_up_s2_comb = guard_work_s2a & (round_work_s2a | sticky_work_s2a | lsb_s2);
-    endcase
-  end
+  assign round_up_s2_comb = riscv_pkg::fp_compute_round_up(
+      rm_reg_s2, guard_work_s2a, round_work_s2a, sticky_work_s2a, lsb_s2, sign_d_s2
+  );
 
-  assign rounded_mantissa_s2_comb  = {1'b0, mantissa_work_s2a} + {{24{1'b0}}, round_up_s2_comb};
+  assign rounded_mantissa_s2_comb = {1'b0, mantissa_work_s2a} + {{24{1'b0}}, round_up_s2_comb};
   assign mantissa_overflow_s2_comb = rounded_mantissa_s2_comb[24];
 
   always_comb begin
@@ -351,13 +323,21 @@ module fp_convert_sd #(
   logic s_is_zero, s_is_inf, s_is_nan, s_is_snan;
 
   assign sign_s = op_s_reg[31];
-  assign exp_s = op_s_reg[30:23];
+  assign exp_s  = op_s_reg[30:23];
   assign frac_s = op_s_reg[22:0];
 
-  assign s_is_zero = (exp_s == 8'b0) && (frac_s == 23'b0);
-  assign s_is_inf = (exp_s == 8'hFF) && (frac_s == 23'b0);
-  assign s_is_nan = (exp_s == 8'hFF) && (frac_s != 23'b0);
-  assign s_is_snan = s_is_nan && ~frac_s[22];
+  fp_classify_operand #(
+      .EXP_BITS (8),
+      .FRAC_BITS(23)
+  ) u_classify_s (
+      .i_exp(exp_s),
+      .i_frac(frac_s),
+      .o_is_zero(s_is_zero),
+      .o_is_subnormal(),
+      .o_is_inf(s_is_inf),
+      .o_is_nan(s_is_nan),
+      .o_is_snan(s_is_snan)
+  );
 
   // Stage 1 registers for S->D conversion
   logic               sign_s_s1;
@@ -371,18 +351,15 @@ module fp_convert_sd #(
   logic        [23:0] mant_norm_s;
   logic signed [11:0] exp_unbiased_s;
   logic        [ 4:0] lzc_s;
-  logic               lzc_s_found;
 
-  always_comb begin
-    lzc_s = '0;
-    lzc_s_found = 1'b0;
-    for (int i = 22; i >= 0; i--) begin
-      if (!lzc_s_found) begin
-        if (frac_s[i]) lzc_s_found = 1'b1;
-        else lzc_s = lzc_s + 1'b1;
-      end
-    end
-  end
+  logic               lzc_s_is_zero;
+  fp_lzc #(
+      .WIDTH(23)
+  ) u_lzc_s (
+      .i_value (frac_s),
+      .o_lzc   (lzc_s),
+      .o_is_zero(lzc_s_is_zero)
+  );
 
   always_comb begin
     mant_norm_s = {1'b1, frac_s};

@@ -91,7 +91,6 @@ module fp_fma #(
   localparam int unsigned LzcProdBits = $clog2(ProdBits + 1);
   localparam int unsigned LzcSumBits = $clog2(SumBits + 1);
   localparam int unsigned ShiftBits = $clog2(ProdBits + 1);
-  localparam int unsigned SubShiftBits = $clog2(MantBits + 3 + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [ExpBits-1:0] MaxNormalExp = ExpMax - 1'b1;
   localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
@@ -124,29 +123,55 @@ module fp_fma #(
   assign sign_a = operand_a_reg[FP_WIDTH-1];
   assign sign_b = operand_b_reg[FP_WIDTH-1];
   assign sign_c = operand_c_reg[FP_WIDTH-1];
-  assign exp_a = operand_a_reg[FP_WIDTH-2-:ExpBits];
-  assign exp_b = operand_b_reg[FP_WIDTH-2-:ExpBits];
-  assign exp_c = operand_c_reg[FP_WIDTH-2-:ExpBits];
+  assign exp_a  = operand_a_reg[FP_WIDTH-2-:ExpBits];
+  assign exp_b  = operand_b_reg[FP_WIDTH-2-:ExpBits];
+  assign exp_c  = operand_c_reg[FP_WIDTH-2-:ExpBits];
   assign mant_a = operand_a_reg[FracBits-1:0];
   assign mant_b = operand_b_reg[FracBits-1:0];
   assign mant_c = operand_c_reg[FracBits-1:0];
 
-  assign is_zero_a = (exp_a == '0) && (mant_a == '0);
-  assign is_zero_b = (exp_b == '0) && (mant_b == '0);
-  assign is_zero_c = (exp_c == '0) && (mant_c == '0);
-  assign is_inf_a = (exp_a == ExpMax) && (mant_a == '0);
-  assign is_inf_b = (exp_b == ExpMax) && (mant_b == '0);
-  assign is_inf_c = (exp_c == ExpMax) && (mant_c == '0);
-  assign is_nan_a = (exp_a == ExpMax) && (mant_a != '0);
-  assign is_nan_b = (exp_b == ExpMax) && (mant_b != '0);
-  assign is_nan_c = (exp_c == ExpMax) && (mant_c != '0);
-  assign is_snan_a = is_nan_a && ~mant_a[FracBits-1];
-  assign is_snan_b = is_nan_b && ~mant_b[FracBits-1];
-  assign is_snan_c = is_nan_c && ~mant_c[FracBits-1];
+  logic is_subnormal_a, is_subnormal_b, is_subnormal_c;
 
-  assign exp_a_adj = (exp_a == '0 && mant_a != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_a;
-  assign exp_b_adj = (exp_b == '0 && mant_b != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_b;
-  assign exp_c_adj = (exp_c == '0 && mant_c != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_c;
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_a (
+      .i_exp(exp_a),
+      .i_frac(mant_a),
+      .o_is_zero(is_zero_a),
+      .o_is_subnormal(is_subnormal_a),
+      .o_is_inf(is_inf_a),
+      .o_is_nan(is_nan_a),
+      .o_is_snan(is_snan_a)
+  );
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_b (
+      .i_exp(exp_b),
+      .i_frac(mant_b),
+      .o_is_zero(is_zero_b),
+      .o_is_subnormal(is_subnormal_b),
+      .o_is_inf(is_inf_b),
+      .o_is_nan(is_nan_b),
+      .o_is_snan(is_snan_b)
+  );
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_c (
+      .i_exp(exp_c),
+      .i_frac(mant_c),
+      .o_is_zero(is_zero_c),
+      .o_is_subnormal(is_subnormal_c),
+      .o_is_inf(is_inf_c),
+      .o_is_nan(is_nan_c),
+      .o_is_snan(is_snan_c)
+  );
+
+  assign exp_a_adj  = (exp_a == '0 && mant_a != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_a;
+  assign exp_b_adj  = (exp_b == '0 && mant_b != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_b;
+  assign exp_c_adj  = (exp_c == '0 && mant_c != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_c;
   assign mant_a_int = (exp_a == '0) ? {1'b0, mant_a} : {1'b1, mant_a};
   assign mant_b_int = (exp_b == '0) ? {1'b0, mant_b} : {1'b1, mant_b};
   assign mant_c_int = (exp_c == '0) ? {1'b0, mant_c} : {1'b1, mant_c};
@@ -250,28 +275,21 @@ module fp_fma #(
   // =========================================================================
 
   logic        [  LzcProdBits-1:0] prod_lzc;
-  logic                            prod_lzc_found;
   logic                            prod_is_zero;
   logic                            prod_msb_set;
 
   assign prod_is_zero = (prod_mant_s3 == '0);
   assign prod_msb_set = prod_mant_s3[ProdBits-1];
 
-  always_comb begin
-    prod_lzc = '0;
-    prod_lzc_found = 1'b0;
-    if (!prod_is_zero && !prod_msb_set) begin
-      for (int i = ProdBits - 2; i >= 0; i--) begin
-        if (!prod_lzc_found) begin
-          if (prod_mant_s3[i]) begin
-            prod_lzc_found = 1'b1;
-          end else begin
-            prod_lzc = prod_lzc + 1;
-          end
-        end
-      end
-    end
-  end
+  // LZC on bits [ProdBits-2:0] (MSB checked separately)
+  logic prod_lzc_is_zero;
+  fp_lzc #(
+      .WIDTH(ProdBits - 1)
+  ) u_prod_lzc (
+      .i_value (prod_mant_s3[ProdBits-2:0]),
+      .o_lzc   (prod_lzc),
+      .o_is_zero(prod_lzc_is_zero)
+  );
 
   // =========================================================================
   // Stage 3A -> Stage 3B Pipeline Registers (after LZC, before shift)
@@ -467,23 +485,16 @@ module fp_fma #(
   // =========================================================================
 
   logic [LzcSumBits-1:0] lzc_s5b_comb;
-  logic lzc_s5b_found;
+  logic lzc_sum_is_zero;
 
-  always_comb begin
-    lzc_s5b_comb  = '0;
-    lzc_s5b_found = 1'b0;
-    if (!sum_is_zero_s5a && !sum_s5a[SumBits-1]) begin
-      for (int i = SumBits - 2; i >= 0; i--) begin
-        if (!lzc_s5b_found) begin
-          if (sum_s5a[i]) begin
-            lzc_s5b_found = 1'b1;
-          end else begin
-            lzc_s5b_comb = lzc_s5b_comb + 1'b1;
-          end
-        end
-      end
-    end
-  end
+  // LZC on bits [SumBits-2:0] (MSB checked separately in normalize stage)
+  fp_lzc #(
+      .WIDTH(SumBits - 1)
+  ) u_sum_lzc (
+      .i_value (sum_s5a[SumBits-2:0]),
+      .o_lzc   (lzc_s5b_comb),
+      .o_is_zero(lzc_sum_is_zero)
+  );
 
   // =========================================================================
   // Stage 5B -> Stage 6 Pipeline Registers (after add/LZC, before normalize)
@@ -592,47 +603,22 @@ module fp_fma #(
   logic [MantBits-1:0] mantissa_work_s7a_comb;
   logic guard_work_s7a_comb, round_work_s7a_comb, sticky_work_s7a_comb;
   logic signed [ExpExtBits-1:0] exp_work_s7a_comb;
-  logic [MantBits+2:0] mantissa_ext_s7a, shifted_ext_s7a;
-  logic                           shifted_sticky_s7a;
-  logic        [SubShiftBits-1:0] shift_amt_s7a;
-  logic signed [    ExpExtBits:0] shift_amt_signed_s7a;
-  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
-  localparam logic [SubShiftBits-1:0] MantBitsPlus3Shift = SubShiftBits'(MantBits + 3);
 
-  always_comb begin
-    mantissa_work_s7a_comb = mantissa_retained_s7;
-    guard_work_s7a_comb = guard_bit_s7;
-    round_work_s7a_comb = round_bit_s7;
-    sticky_work_s7a_comb = sticky_bit_s7;
-    exp_work_s7a_comb = normalized_exp_s7;
-    mantissa_ext_s7a = {mantissa_retained_s7, guard_bit_s7, round_bit_s7, sticky_bit_s7};
-    shifted_ext_s7a = mantissa_ext_s7a;
-    shifted_sticky_s7a = 1'b0;
-    shift_amt_s7a = '0;
-    shift_amt_signed_s7a = '0;
-
-    if (normalized_exp_s7 <= 0) begin
-      shift_amt_signed_s7a = ExpExtBits'(1) -
-          $signed({normalized_exp_s7[ExpExtBits-1], normalized_exp_s7});
-      if (shift_amt_signed_s7a >= MantBitsPlus3Signed) shift_amt_s7a = MantBitsPlus3Shift;
-      else shift_amt_s7a = shift_amt_signed_s7a[SubShiftBits-1:0];
-      if (shift_amt_s7a >= MantBitsPlus3Shift) begin
-        shifted_ext_s7a = '0;
-        shifted_sticky_s7a = |mantissa_ext_s7a;
-      end else if (shift_amt_s7a != 0) begin
-        shifted_ext_s7a = mantissa_ext_s7a >> shift_amt_s7a;
-        shifted_sticky_s7a = 1'b0;
-        for (int i = 0; i < (MantBits + 3); i++) begin
-          if (i < shift_amt_s7a) shifted_sticky_s7a = shifted_sticky_s7a | mantissa_ext_s7a[i];
-        end
-      end
-      mantissa_work_s7a_comb = shifted_ext_s7a[MantBits+2:3];
-      guard_work_s7a_comb = shifted_ext_s7a[2];
-      round_work_s7a_comb = shifted_ext_s7a[1];
-      sticky_work_s7a_comb = shifted_ext_s7a[0] | shifted_sticky_s7a;
-      exp_work_s7a_comb = '0;
-    end
-  end
+  fp_subnorm_shift #(
+      .MANT_BITS   (MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained_s7),
+      .i_guard   (guard_bit_s7),
+      .i_round   (round_bit_s7),
+      .i_sticky  (sticky_bit_s7),
+      .i_exponent(normalized_exp_s7),
+      .o_mantissa(mantissa_work_s7a_comb),
+      .o_guard   (guard_work_s7a_comb),
+      .o_round   (round_work_s7a_comb),
+      .o_sticky  (sticky_work_s7a_comb),
+      .o_exponent(exp_work_s7a_comb)
+  );
 
   // =========================================================================
   // Stage 7A -> Stage 7B Pipeline Register (after subnormal handling)
@@ -650,19 +636,9 @@ module fp_fma #(
 
   assign lsb_s7b = mantissa_work_s7b[0];
 
-  always_comb begin
-    unique case (rm_s7)
-      riscv_pkg::FRM_RNE:
-      round_up_s7b_comb = guard_work_s7b & (round_work_s7b | sticky_work_s7b | lsb_s7b);
-      riscv_pkg::FRM_RTZ: round_up_s7b_comb = 1'b0;
-      riscv_pkg::FRM_RDN:
-      round_up_s7b_comb = fp_round_sign_s7b & (guard_work_s7b | round_work_s7b | sticky_work_s7b);
-      riscv_pkg::FRM_RUP:
-      round_up_s7b_comb = ~fp_round_sign_s7b & (guard_work_s7b | round_work_s7b | sticky_work_s7b);
-      riscv_pkg::FRM_RMM: round_up_s7b_comb = guard_work_s7b;
-      default: round_up_s7b_comb = guard_work_s7b & (round_work_s7b | sticky_work_s7b | lsb_s7b);
-    endcase
-  end
+  assign round_up_s7b_comb = riscv_pkg::fp_compute_round_up(
+      rm_s7, guard_work_s7b, round_work_s7b, sticky_work_s7b, lsb_s7b, fp_round_sign_s7b
+  );
 
   // Compute is_inexact for flags
   logic is_inexact_s7b;

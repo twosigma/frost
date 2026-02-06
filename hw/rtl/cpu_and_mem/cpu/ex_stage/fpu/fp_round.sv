@@ -71,45 +71,22 @@ module fp_round (
   logic               round_work;
   logic               sticky_work;
   logic signed [ 9:0] exp_work;
-  logic        [26:0] mantissa_ext;
-  logic        [26:0] shifted_ext;
-  logic               shifted_sticky;
-  logic        [ 5:0] shift_amt;
-  logic signed [10:0] shift_amt_signed;
 
-  always_comb begin
-    mantissa_work = mantissa_retained;
-    guard_work = guard_bit;
-    round_work = round_bit;
-    sticky_work = sticky_bit;
-    exp_work = i_exponent;
-    mantissa_ext = {mantissa_retained, guard_bit, round_bit, sticky_bit};
-    shifted_ext = mantissa_ext;
-    shifted_sticky = 1'b0;
-    shift_amt = 6'd0;
-    shift_amt_signed = 11'sb0;
-
-    if (i_exponent <= 0) begin
-      shift_amt_signed = 11'sd1 - $signed({i_exponent[9], i_exponent});
-      if (shift_amt_signed >= 27) shift_amt = 6'd27;
-      else shift_amt = shift_amt_signed[5:0];
-      if (shift_amt >= 6'd27) begin
-        shifted_ext = 27'b0;
-        shifted_sticky = |mantissa_ext;
-      end else if (shift_amt != 0) begin
-        shifted_ext = mantissa_ext >> shift_amt;
-        shifted_sticky = 1'b0;
-        for (int i = 0; i < 27; i++) begin
-          if (i < shift_amt) shifted_sticky = shifted_sticky | mantissa_ext[i];
-        end
-      end
-      mantissa_work = shifted_ext[26:3];
-      guard_work = shifted_ext[2];
-      round_work = shifted_ext[1];
-      sticky_work = shifted_ext[0] | shifted_sticky;
-      exp_work = 10'sd0;
-    end
-  end
+  fp_subnorm_shift #(
+      .MANT_BITS   (24),
+      .EXP_EXT_BITS(10)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained),
+      .i_guard   (guard_bit),
+      .i_round   (round_bit),
+      .i_sticky  (sticky_bit),
+      .i_exponent(i_exponent),
+      .o_mantissa(mantissa_work),
+      .o_guard   (guard_work),
+      .o_round   (round_work),
+      .o_sticky  (sticky_work),
+      .o_exponent(exp_work)
+  );
 
   // Determine if we should round up
   logic round_up;
@@ -117,37 +94,9 @@ module fp_round (
 
   assign lsb = mantissa_work[0];
 
-  always_comb begin
-    unique case (i_rounding_mode)
-      riscv_pkg::FRM_RNE: begin
-        // Round to nearest, ties to even
-        // Round up if guard=1 AND (round|sticky|lsb)
-        round_up = guard_work & (round_work | sticky_work | lsb);
-      end
-      riscv_pkg::FRM_RTZ: begin
-        // Round towards zero (truncate)
-        round_up = 1'b0;
-      end
-      riscv_pkg::FRM_RDN: begin
-        // Round down (towards -infinity)
-        // Round up (increase magnitude) only for negative numbers
-        round_up = i_sign & (guard_work | round_work | sticky_work);
-      end
-      riscv_pkg::FRM_RUP: begin
-        // Round up (towards +infinity)
-        // Round up (increase magnitude) only for positive numbers
-        round_up = ~i_sign & (guard_work | round_work | sticky_work);
-      end
-      riscv_pkg::FRM_RMM: begin
-        // Round to nearest, ties to max magnitude
-        round_up = guard_work;
-      end
-      default: begin
-        // Default to RNE
-        round_up = guard_work & (round_work | sticky_work | lsb);
-      end
-    endcase
-  end
+  assign round_up = riscv_pkg::fp_compute_round_up(
+      i_rounding_mode, guard_work, round_work, sticky_work, lsb, i_sign
+  );
 
   // Apply rounding to mantissa
   logic [24:0] rounded_mantissa;

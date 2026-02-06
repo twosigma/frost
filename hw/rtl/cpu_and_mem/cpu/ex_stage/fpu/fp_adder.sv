@@ -88,8 +88,6 @@ module fp_adder #(
   localparam logic [FracBits-1:0] MaxMant = {FracBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam logic [ExpBits-1:0] AlignBitsExp = ExpBits'(AlignBits);
-  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
-  localparam logic [LzcBits-1:0] MantBitsPlus3Shift = LzcBits'(MantBits + 3);
   localparam logic signed [ExpExtBits-1:0] ExpMaxSigned = {
     {(ExpExtBits - ExpBits - 1) {1'b0}}, 1'b0, ExpMax
   };
@@ -137,14 +135,32 @@ module fp_adder #(
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
 
-  assign is_zero_a = (exp_a == '0) && (op_a[FracBits-1:0] == '0);
-  assign is_zero_b = (exp_b == '0) && (op_b[FracBits-1:0] == '0);
-  assign is_inf_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] == '0);
-  assign is_inf_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] == '0);
-  assign is_nan_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] != '0);
-  assign is_nan_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] != '0);
-  assign is_snan_a = is_nan_a && ~op_a[FracBits-1];
-  assign is_snan_b = is_nan_b && ~op_b[FracBits-1];
+  logic is_subnormal_a, is_subnormal_b;
+
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_a (
+      .i_exp(exp_a),
+      .i_frac(op_a[FracBits-1:0]),
+      .o_is_zero(is_zero_a),
+      .o_is_subnormal(is_subnormal_a),
+      .o_is_inf(is_inf_a),
+      .o_is_nan(is_nan_a),
+      .o_is_snan(is_snan_a)
+  );
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_b (
+      .i_exp(exp_b),
+      .i_frac(op_b[FracBits-1:0]),
+      .o_is_zero(is_zero_b),
+      .o_is_subnormal(is_subnormal_b),
+      .o_is_inf(is_inf_b),
+      .o_is_nan(is_nan_b),
+      .o_is_snan(is_snan_b)
+  );
 
   // Exponent difference and swap if needed (make the larger-magnitude operand "large")
   // When exponents are equal, compare mantissas to decide the larger magnitude.
@@ -307,25 +323,14 @@ module fp_adder #(
 
   logic [LzcBits-1:0] lzc_s3b_comb;
   logic               sum_is_zero_s3b_comb;
-  logic               lzc_found_s3b;
 
-  always_comb begin
-    lzc_s3b_comb = '0;
-    sum_is_zero_s3b_comb = (sum_s3a == '0);
-    lzc_found_s3b = 1'b0;
-
-    if (!sum_is_zero_s3b_comb) begin
-      for (int i = SumBits - 1; i >= 0; i--) begin
-        if (!lzc_found_s3b) begin
-          if (sum_s3a[i]) begin
-            lzc_found_s3b = 1'b1;
-          end else begin
-            lzc_s3b_comb = lzc_s3b_comb + 1;
-          end
-        end
-      end
-    end
-  end
+  fp_lzc #(
+      .WIDTH(SumBits)
+  ) u_sum_lzc (
+      .i_value (sum_s3a),
+      .o_lzc   (lzc_s3b_comb),
+      .o_is_zero(sum_is_zero_s3b_comb)
+  );
 
   // =========================================================================
   // Stage 3 -> Stage 4 Pipeline Register (after add/LZC, before normalize)
@@ -380,24 +385,7 @@ module fp_adder #(
   logic overflow_guard_s4_comb;
   assign overflow_guard_s4_comb = sum_s4[SumBits-1] ? sum_s4[0] : 1'b0;
 
-  // TIMING: Pre-compute subnormal shift amount in STAGE4 to reduce STAGE5A path depth
-  logic                       is_subnorm_s4_comb;
-  logic        [ LzcBits-1:0] subnorm_shift_amt_s4_comb;
-  logic signed [ExpExtBits:0] subnorm_shift_signed_s4;
-
-  assign is_subnorm_s4_comb = (normalized_exp_s4_comb <= 0);
-  assign subnorm_shift_signed_s4 = $signed(
-      {1'b0, {ExpExtBits{1'b0}}}
-  ) + 1 - $signed(
-      {normalized_exp_s4_comb[ExpExtBits-1], normalized_exp_s4_comb}
-  );
-
-  always_comb begin
-    if (subnorm_shift_signed_s4 >= MantBitsPlus3Signed)
-      subnorm_shift_amt_s4_comb = MantBitsPlus3Shift;
-    else if (subnorm_shift_signed_s4 <= 0) subnorm_shift_amt_s4_comb = '0;
-    else subnorm_shift_amt_s4_comb = subnorm_shift_signed_s4[LzcBits-1:0];
-  end
+  // (Subnormal shift is now handled by fp_subnorm_shift module in stage 5A)
 
   // =========================================================================
   // Stage 4 -> Stage 5 Pipeline Register (after normalize, before round)
@@ -415,9 +403,6 @@ module fp_adder #(
   logic        [  FP_WIDTH-1:0] special_result_s5;
   logic                         special_invalid_s5;
   logic        [           2:0] rm_s5;
-  // TIMING: Pre-computed subnormal shift amount to reduce STAGE5A combinational depth
-  logic        [   LzcBits-1:0] subnorm_shift_amt_s5;
-  logic                         is_subnorm_s5;
 
   // =========================================================================
   // Stage 5A: Prepare rounding inputs (subnormal handling)
@@ -443,44 +428,25 @@ module fp_adder #(
   assign sticky_bit_s5 = final_round | final_sticky;
 
   // Subnormal handling: compute shift and apply
-  // TIMING: Use pre-computed shift amount from STAGE4 to reduce combinational depth
   logic [MantBits-1:0] mantissa_work_s5a_comb;
   logic guard_work_s5a_comb, round_work_s5a_comb, sticky_work_s5a_comb;
   logic signed [ExpExtBits-1:0] exp_work_s5a_comb;
-  logic [MantBits+2:0] mantissa_ext_s5a, shifted_ext_s5a;
-  logic shifted_sticky_s5a;
 
-  always_comb begin
-    mantissa_work_s5a_comb = mantissa_retained_s5;
-    guard_work_s5a_comb = guard_bit_s5;
-    round_work_s5a_comb = round_bit_s5;
-    sticky_work_s5a_comb = sticky_bit_s5;
-    exp_work_s5a_comb = normalized_exp_s5;
-    mantissa_ext_s5a = {mantissa_retained_s5, guard_bit_s5, round_bit_s5, sticky_bit_s5};
-    shifted_ext_s5a = mantissa_ext_s5a;
-    shifted_sticky_s5a = 1'b0;
-
-    // TIMING: Use pre-computed is_subnorm_s5 and subnorm_shift_amt_s5 instead of
-    // computing from normalized_exp_s5 to reduce critical path depth
-    if (is_subnorm_s5) begin
-      if (subnorm_shift_amt_s5 >= MantBitsPlus3Shift) begin
-        shifted_ext_s5a = '0;
-        shifted_sticky_s5a = |mantissa_ext_s5a;
-      end else if (subnorm_shift_amt_s5 != 0) begin
-        shifted_ext_s5a = mantissa_ext_s5a >> subnorm_shift_amt_s5;
-        shifted_sticky_s5a = 1'b0;
-        for (int i = 0; i < (MantBits + 3); i++) begin
-          if (i < subnorm_shift_amt_s5)
-            shifted_sticky_s5a = shifted_sticky_s5a | mantissa_ext_s5a[i];
-        end
-      end
-      mantissa_work_s5a_comb = shifted_ext_s5a[(MantBits+2):3];
-      guard_work_s5a_comb = shifted_ext_s5a[2];
-      round_work_s5a_comb = shifted_ext_s5a[1];
-      sticky_work_s5a_comb = shifted_ext_s5a[0] | shifted_sticky_s5a;
-      exp_work_s5a_comb = '0;
-    end
-  end
+  fp_subnorm_shift #(
+      .MANT_BITS   (MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained_s5),
+      .i_guard   (guard_bit_s5),
+      .i_round   (round_bit_s5),
+      .i_sticky  (sticky_bit_s5),
+      .i_exponent(normalized_exp_s5),
+      .o_mantissa(mantissa_work_s5a_comb),
+      .o_guard   (guard_work_s5a_comb),
+      .o_round   (round_work_s5a_comb),
+      .o_sticky  (sticky_work_s5a_comb),
+      .o_exponent(exp_work_s5a_comb)
+  );
 
   // =========================================================================
   // Stage 5A -> Stage 5B Pipeline Register (after subnormal handling)
@@ -496,19 +462,9 @@ module fp_adder #(
 
   assign lsb_s5b = mantissa_work_s5b[0];
 
-  always_comb begin
-    unique case (rm_s5)
-      riscv_pkg::FRM_RNE:
-      round_up_s5b_comb = guard_work_s5b & (round_work_s5b | sticky_work_s5b | lsb_s5b);
-      riscv_pkg::FRM_RTZ: round_up_s5b_comb = 1'b0;
-      riscv_pkg::FRM_RDN:
-      round_up_s5b_comb = result_sign_s5 & (guard_work_s5b | round_work_s5b | sticky_work_s5b);
-      riscv_pkg::FRM_RUP:
-      round_up_s5b_comb = ~result_sign_s5 & (guard_work_s5b | round_work_s5b | sticky_work_s5b);
-      riscv_pkg::FRM_RMM: round_up_s5b_comb = guard_work_s5b;
-      default: round_up_s5b_comb = guard_work_s5b & (round_work_s5b | sticky_work_s5b | lsb_s5b);
-    endcase
-  end
+  assign round_up_s5b_comb = riscv_pkg::fp_compute_round_up(
+      rm_s5, guard_work_s5b, round_work_s5b, sticky_work_s5b, lsb_s5b, result_sign_s5
+  );
 
   // Compute is_inexact for flags
   logic is_inexact_s5b;
@@ -669,8 +625,6 @@ module fp_adder #(
       special_result_s5 <= '0;
       special_invalid_s5 <= 1'b0;
       rm_s5 <= 3'b0;
-      subnorm_shift_amt_s5 <= '0;
-      is_subnorm_s5 <= 1'b0;
       // Stage 5B registers (after subnormal handling)
       mantissa_work_s5b <= '0;
       guard_work_s5b <= 1'b0;
@@ -774,9 +728,6 @@ module fp_adder #(
           special_result_s5 <= special_result_s4;
           special_invalid_s5 <= special_invalid_s4;
           rm_s5 <= rm_s4;
-          // TIMING: Pre-computed subnormal handling values
-          subnorm_shift_amt_s5 <= subnorm_shift_amt_s4_comb;
-          is_subnorm_s5 <= is_subnorm_s4_comb;
         end
 
         STAGE5A: begin

@@ -136,14 +136,32 @@ module fp_multiplier #(
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
 
-  assign is_zero_a = (exp_a == '0) && (op_a[FracBits-1:0] == '0);
-  assign is_zero_b = (exp_b == '0) && (op_b[FracBits-1:0] == '0);
-  assign is_inf_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] == '0);
-  assign is_inf_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] == '0);
-  assign is_nan_a  = (exp_a == ExpMax) && (op_a[FracBits-1:0] != '0);
-  assign is_nan_b  = (exp_b == ExpMax) && (op_b[FracBits-1:0] != '0);
-  assign is_snan_a = is_nan_a && ~op_a[FracBits-1];
-  assign is_snan_b = is_nan_b && ~op_b[FracBits-1];
+  logic is_subnormal_a, is_subnormal_b;
+
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_a (
+      .i_exp(exp_a),
+      .i_frac(op_a[FracBits-1:0]),
+      .o_is_zero(is_zero_a),
+      .o_is_subnormal(is_subnormal_a),
+      .o_is_inf(is_inf_a),
+      .o_is_nan(is_nan_a),
+      .o_is_snan(is_snan_a)
+  );
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify_b (
+      .i_exp(exp_b),
+      .i_frac(op_b[FracBits-1:0]),
+      .o_is_zero(is_zero_b),
+      .o_is_subnormal(is_subnormal_b),
+      .o_is_inf(is_inf_b),
+      .o_is_nan(is_nan_b),
+      .o_is_snan(is_snan_b)
+  );
 
   // Compute tentative exponent (before normalization)
   logic signed [ExpExtBits-1:0] tentative_exp;
@@ -232,23 +250,16 @@ module fp_multiplier #(
   assign product_msb_set_s3 = product_s3[ProdBits-1];
 
   logic [LzcBits-1:0] lzc_s3;
-  logic               lzc_found_s3;
+  logic               lzc_prod_is_zero;
 
-  always_comb begin
-    lzc_s3 = '0;
-    lzc_found_s3 = 1'b0;
-    if (!product_is_zero_s3 && !product_msb_set_s3) begin
-      for (int i = ProdBits - 2; i >= 0; i--) begin
-        if (!lzc_found_s3) begin
-          if (product_s3[i]) begin
-            lzc_found_s3 = 1'b1;
-          end else begin
-            lzc_s3 = lzc_s3 + 1;
-          end
-        end
-      end
-    end
-  end
+  // LZC on bits [ProdBits-2:0] (MSB checked separately)
+  fp_lzc #(
+      .WIDTH(ProdBits - 1)
+  ) u_prod_lzc (
+      .i_value (product_s3[ProdBits-2:0]),
+      .o_lzc   (lzc_s3),
+      .o_is_zero(lzc_prod_is_zero)
+  );
 
   // =========================================================================
   // Stage 3A -> Stage 3B Pipeline Register (after LZC, before shift)
@@ -297,7 +308,6 @@ module fp_multiplier #(
   // TIMING OPTIMIZATION: Pre-compute subnormal condition in stage 3B to reduce
   // critical path depth in stage 4A. The comparison is done on normalized_exp_s3b
   // and registered, so the mux select is ready immediately in stage 4A.
-  logic                         is_subnormal_s4;
   logic        [  FP_WIDTH-1:0] special_result_s4;
   logic                         special_invalid_s4;
   logic        [           2:0] rm_s4;
@@ -324,49 +334,25 @@ module fp_multiplier #(
   logic [MantBits-1:0] mantissa_work_s4;
   logic guard_work_s4, round_work_s4, sticky_work_s4;
   logic signed [ExpExtBits-1:0] exp_work_s4;
-  logic [MantBits+2:0] mantissa_ext_s4, shifted_ext_s4;
-  logic                       shifted_sticky_s4;
-  logic        [ LzcBits-1:0] shift_amt_s4;
-  logic signed [ExpExtBits:0] shift_amt_signed_s4;
 
-  always_comb begin
-    mantissa_work_s4 = mantissa_retained_s4;
-    guard_work_s4 = pre_round_mant_s4[0];
-    round_work_s4 = guard_bit_s4;
-    sticky_work_s4 = round_bit_s4 | sticky_bit_s4;
-    exp_work_s4 = exp_s4;
-    mantissa_ext_s4 = {
-      mantissa_retained_s4, pre_round_mant_s4[0], guard_bit_s4, round_bit_s4 | sticky_bit_s4
-    };
-    shifted_ext_s4 = mantissa_ext_s4;
-    shifted_sticky_s4 = 1'b0;
-    shift_amt_s4 = '0;
-    shift_amt_signed_s4 = '0;
-
-    // TIMING OPTIMIZATION: Use pre-computed subnormal condition (registered)
-    // instead of comparing exp_s4 <= 0 here (which was on the critical path).
-    if (is_subnormal_s4) begin
-      shift_amt_signed_s4 = $signed({1'b0, {ExpExtBits{1'b0}}}) + 1 -
-          $signed({exp_s4[ExpExtBits-1], exp_s4});
-      if (shift_amt_signed_s4 >= MantBitsPlus3Signed) shift_amt_s4 = MantBitsPlus3Shift;
-      else shift_amt_s4 = shift_amt_signed_s4[LzcBits-1:0];
-      if (shift_amt_s4 >= MantBitsPlus3Shift) begin
-        shifted_ext_s4 = '0;
-        shifted_sticky_s4 = |mantissa_ext_s4;
-      end else if (shift_amt_s4 != 0) begin
-        shifted_ext_s4 = mantissa_ext_s4 >> shift_amt_s4;
-        shifted_sticky_s4 = 1'b0;
-        for (int i = 0; i < (MantBits + 3); i++) begin
-          if (i < shift_amt_s4) shifted_sticky_s4 = shifted_sticky_s4 | mantissa_ext_s4[i];
-        end
-      end
-      mantissa_work_s4 = shifted_ext_s4[(MantBits+2):3];
-      guard_work_s4 = shifted_ext_s4[2];
-      round_work_s4 = shifted_ext_s4[1];
-      sticky_work_s4 = shifted_ext_s4[0] | shifted_sticky_s4;
-      exp_work_s4 = '0;
-    end
-  end
+  // TIMING OPTIMIZATION: Use pre-computed subnormal condition (registered)
+  // instead of comparing exp_s4 <= 0 here (which was on the critical path).
+  // When is_subnormal_s4 is false, exp_s4 > 0 so fp_subnorm_shift passes through.
+  fp_subnorm_shift #(
+      .MANT_BITS   (MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained_s4),
+      .i_guard   (pre_round_mant_s4[0]),
+      .i_round   (guard_bit_s4),
+      .i_sticky  (round_bit_s4 | sticky_bit_s4),
+      .i_exponent(exp_s4),
+      .o_mantissa(mantissa_work_s4),
+      .o_guard   (guard_work_s4),
+      .o_round   (round_work_s4),
+      .o_sticky  (sticky_work_s4),
+      .o_exponent(exp_work_s4)
+  );
 
   // =========================================================================
   // Stage 4A -> Stage 4B Pipeline Register (after subnormal handling)
@@ -382,19 +368,9 @@ module fp_multiplier #(
 
   assign lsb_s4b = mantissa_work_s4b[0];
 
-  always_comb begin
-    unique case (rm_s4)
-      riscv_pkg::FRM_RNE:
-      round_up_s4b_comb = guard_work_s4b & (round_work_s4b | sticky_work_s4b | lsb_s4b);
-      riscv_pkg::FRM_RTZ: round_up_s4b_comb = 1'b0;
-      riscv_pkg::FRM_RDN:
-      round_up_s4b_comb = result_sign_s4 & (guard_work_s4b | round_work_s4b | sticky_work_s4b);
-      riscv_pkg::FRM_RUP:
-      round_up_s4b_comb = ~result_sign_s4 & (guard_work_s4b | round_work_s4b | sticky_work_s4b);
-      riscv_pkg::FRM_RMM: round_up_s4b_comb = guard_work_s4b;
-      default: round_up_s4b_comb = guard_work_s4b & (round_work_s4b | sticky_work_s4b | lsb_s4b);
-    endcase
-  end
+  assign round_up_s4b_comb = riscv_pkg::fp_compute_round_up(
+      rm_s4, guard_work_s4b, round_work_s4b, sticky_work_s4b, lsb_s4b, result_sign_s4
+  );
 
   // Compute is_inexact for flags
   logic is_inexact_s4b;
@@ -532,7 +508,6 @@ module fp_multiplier #(
       product_s4 <= '0;
       product_is_zero_s4 <= 1'b0;
       is_special_s4 <= 1'b0;
-      is_subnormal_s4 <= 1'b0;
       special_result_s4 <= '0;
       special_invalid_s4 <= 1'b0;
       rm_s4 <= 3'b0;
@@ -629,8 +604,6 @@ module fp_multiplier #(
           special_result_s4 <= special_result_s3b;
           special_invalid_s4 <= special_invalid_s3b;
           rm_s4 <= rm_s3b;
-          // TIMING: Pre-compute subnormal condition for stage 4A
-          is_subnormal_s4 <= (normalized_exp_s3b <= 0);
         end
 
         STAGE4A: begin

@@ -715,7 +715,11 @@ rtl/
         │       ├── fp_convert.sv     # Integer/FP conversions (3-cycle)
         │       ├── fp_classify.sv    # FCLASS.S (1-cycle)
         │       ├── fp_sign_inject.sv # Sign injection (1-cycle)
-        │       └── fp_round.sv       # Rounding logic (shared)
+        │       ├── fp_convert_sd.sv  # Single/double conversion (5-cycle)
+        │       ├── fp_round.sv       # Rounding logic (shared)
+        │       ├── fp_lzc.sv         # Leading zero counter (shared)
+        │       ├── fp_classify_operand.sv # Operand classifier (shared)
+        │       └── fp_subnorm_shift.sv # Subnormal right-shift (shared)
         │
         ├── ma_stage/                 # Memory Access stage
         │   ├── ma_stage.sv           # Load completion, AMO coordination

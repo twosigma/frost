@@ -89,8 +89,6 @@ module fp_sqrt #(
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
   localparam logic signed [ExpExtBits-1:0] ExpBiasMinus1Ext = ExpExtBits'(ExpBias - 1);
-  localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
-  localparam logic [ShiftBits-1:0] MantBitsPlus3Shift = ShiftBits'(MantBits + 3);
   localparam logic [CycleCountBits-1:0] RootBitsMinus1 = CycleCountBits'(RootBits - 1);
 
   logic [CycleCountBits-1:0] cycle_count;
@@ -108,8 +106,6 @@ module fp_sqrt #(
   logic        [    MantBits-1:0] mant_norm;
   logic        [ LzcMantBits-1:0] mant_lzc;
   logic        [   LzcMantBits:0] sub_shift;
-  logic                           mant_lzc_found;
-
   // Special case handling
   logic                           is_special;
   logic        [    FP_WIDTH-1:0] special_result;
@@ -149,18 +145,33 @@ module fp_sqrt #(
   // Operand Unpacking
   // =========================================================================
 
+  assign sign = operand_reg[FP_WIDTH-1];
+  assign exp  = operand_reg[FP_WIDTH-2-:ExpBits];
+  assign mant = operand_reg[FracBits-1:0];
+
+  fp_classify_operand #(
+      .EXP_BITS (ExpBits),
+      .FRAC_BITS(FracBits)
+  ) u_classify (
+      .i_exp(exp),
+      .i_frac(mant),
+      .o_is_zero(is_zero),
+      .o_is_subnormal(is_subnormal),
+      .o_is_inf(is_inf),
+      .o_is_nan(is_nan),
+      .o_is_snan(is_snan)
+  );
+
+  logic mant_lzc_zero;
+  fp_lzc #(
+      .WIDTH(FracBits)
+  ) u_mant_lzc (
+      .i_value (mant),
+      .o_lzc   (mant_lzc),
+      .o_is_zero(mant_lzc_zero)
+  );
+
   always_comb begin
-    sign = operand_reg[FP_WIDTH-1];
-    exp = operand_reg[FP_WIDTH-2-:ExpBits];
-    mant = operand_reg[FracBits-1:0];
-
-    is_zero = (exp == '0) && (mant == '0);
-    is_inf = (exp == ExpMax) && (mant == '0);
-    is_nan = (exp == ExpMax) && (mant != '0);
-    is_snan = is_nan && ~mant[FracBits-1];
-    is_subnormal = (exp == '0) && (mant != '0);
-
-    mant_lzc = '0;
     sub_shift = '0;
     exp_adj = '0;
     mant_norm = '0;
@@ -170,18 +181,7 @@ module fp_sqrt #(
     sqrt_mantissa_int = '0;
     sqrt_shift_amount = '0;
 
-    mant_lzc_found = 1'b0;
-
     if (is_subnormal) begin
-      for (int i = FracBits - 1; i >= 0; i--) begin
-        if (!mant_lzc_found) begin
-          if (mant[i]) begin
-            mant_lzc_found = 1'b1;
-          end else begin
-            mant_lzc = mant_lzc + 1;
-          end
-        end
-      end
       sub_shift = {1'b0, mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
       exp_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
           $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift});
@@ -250,50 +250,22 @@ module fp_sqrt #(
   logic [MantBits-1:0] mantissa_work_prep;
   logic guard_work_prep, round_work_prep, sticky_work_prep;
   logic signed [ExpExtBits-1:0] exp_work_prep;
-  logic [MantBits+2:0] mantissa_ext_prep, shifted_ext_prep;
-  logic                        shifted_sticky_prep;
-  logic        [ShiftBits-1:0] shift_amt_prep;
-  logic signed [ ExpExtBits:0] shift_amt_signed_prep;
 
-  always_comb begin
-    mantissa_work_prep = mantissa_retained_prep;
-    guard_work_prep = sqrt_pre_round_mant[0];
-    round_work_prep = sqrt_guard_bit;
-    sticky_work_prep = sqrt_round_bit | sqrt_sticky_bit;
-    exp_work_prep = result_exp;
-    mantissa_ext_prep = {
-      mantissa_retained_prep,
-      sqrt_pre_round_mant[0],
-      sqrt_guard_bit,
-      sqrt_round_bit | sqrt_sticky_bit
-    };
-    shifted_ext_prep = mantissa_ext_prep;
-    shifted_sticky_prep = 1'b0;
-    shift_amt_prep = '0;
-    shift_amt_signed_prep = '0;
-
-    if (result_exp <= 0) begin
-      shift_amt_signed_prep = $signed({1'b0, {ExpExtBits{1'b0}}}) + 1 -
-          $signed({result_exp[ExpExtBits-1], result_exp});
-      if (shift_amt_signed_prep >= MantBitsPlus3Signed) shift_amt_prep = MantBitsPlus3Shift;
-      else shift_amt_prep = shift_amt_signed_prep[ShiftBits-1:0];
-      if (shift_amt_prep >= MantBitsPlus3Shift) begin
-        shifted_ext_prep = '0;
-        shifted_sticky_prep = |mantissa_ext_prep;
-      end else if (shift_amt_prep != 0) begin
-        shifted_ext_prep = mantissa_ext_prep >> shift_amt_prep;
-        shifted_sticky_prep = 1'b0;
-        for (int i = 0; i < (MantBits + 3); i++) begin
-          if (i < shift_amt_prep) shifted_sticky_prep = shifted_sticky_prep | mantissa_ext_prep[i];
-        end
-      end
-      mantissa_work_prep = shifted_ext_prep[(MantBits+2):3];
-      guard_work_prep = shifted_ext_prep[2];
-      round_work_prep = shifted_ext_prep[1];
-      sticky_work_prep = shifted_ext_prep[0] | shifted_sticky_prep;
-      exp_work_prep = '0;
-    end
-  end
+  fp_subnorm_shift #(
+      .MANT_BITS   (MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(mantissa_retained_prep),
+      .i_guard   (sqrt_pre_round_mant[0]),
+      .i_round   (sqrt_guard_bit),
+      .i_sticky  (sqrt_round_bit | sqrt_sticky_bit),
+      .i_exponent(result_exp),
+      .o_mantissa(mantissa_work_prep),
+      .o_guard   (guard_work_prep),
+      .o_round   (round_work_prep),
+      .o_sticky  (sticky_work_prep),
+      .o_exponent(exp_work_prep)
+  );
 
   // =========================================================================
   // ROUND_SHIFT -> ROUND_PREP Pipeline Registers
@@ -313,17 +285,10 @@ module fp_sqrt #(
 
   assign lsb_prep = mantissa_work_shift[0];
 
-  always_comb begin
-    unique case (rm_shift)
-      riscv_pkg::FRM_RNE:
-      round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
-      riscv_pkg::FRM_RTZ: round_up_prep = 1'b0;
-      riscv_pkg::FRM_RDN: round_up_prep = 1'b0;  // sqrt result is always positive
-      riscv_pkg::FRM_RUP: round_up_prep = guard_work_shift | round_work_shift | sticky_work_shift;
-      riscv_pkg::FRM_RMM: round_up_prep = guard_work_shift;
-      default: round_up_prep = guard_work_shift & (round_work_shift | sticky_work_shift | lsb_prep);
-    endcase
-  end
+  // sqrt result is always positive (sign=0), so RDN->0, RUP->guard|round|sticky
+  assign round_up_prep = riscv_pkg::fp_compute_round_up(
+      rm_shift, guard_work_shift, round_work_shift, sticky_work_shift, lsb_prep, 1'b0
+  );
 
   // Compute is_inexact for flags
   logic is_inexact_prep;
