@@ -1021,6 +1021,13 @@ def copy_winner_to_main_work(
             shutil.copy2(rpt, dst)
             break
 
+    # Copy vivado.log
+    vivado_log = winner.work_dir / "vivado.log"
+    if vivado_log.exists():
+        dst = main_work / f"{report_prefix}_vivado.log"
+        shutil.copy2(vivado_log, dst)
+        print(f"  Log: {dst}")
+
 
 def cleanup_temp_dirs(script_dir: Path, board_name: str, step: str) -> None:
     """Clean up temporary work directories for a step."""
