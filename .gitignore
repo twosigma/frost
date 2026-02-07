@@ -67,7 +67,6 @@ sw/apps/*/sw.S
 # Vivado
 *.jou
 *.log
-*.txt
 *.str
 .Xil/
 fpga/build/*/work*
