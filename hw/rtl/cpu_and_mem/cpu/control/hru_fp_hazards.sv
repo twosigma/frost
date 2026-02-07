@@ -61,18 +61,8 @@ module hru_fp_hazards (
   // FPU In-Flight Hazard Detection
   // ===========================================================================
   // Fine-grained check: only stall when the incoming FP consumer's source
-  // registers actually match an in-flight destination.  Each source is compared
-  // against every non-zero inflight dest slot.
-  logic fpu_inflight_any;
-
-  assign fpu_inflight_any =
-      (i_from_ex_comb.fpu_inflight_dest_1 != 5'b0) ||
-      (i_from_ex_comb.fpu_inflight_dest_2 != 5'b0) ||
-      (i_from_ex_comb.fpu_inflight_dest_3 != 5'b0) ||
-      (i_from_ex_comb.fpu_inflight_dest_4 != 5'b0) ||
-      (i_from_ex_comb.fpu_inflight_dest_5 != 5'b0) ||
-      (i_from_ex_comb.fpu_inflight_dest_6 != 5'b0);
-
+  // registers actually match an in-flight destination. Each source is compared
+  // against every occupied inflight slot.
   // Shorthand aliases for inflight destination slots
   logic [4:0] ifd1, ifd2, ifd3, ifd4, ifd5, ifd6;
   assign ifd1 = i_from_ex_comb.fpu_inflight_dest_1;
@@ -83,34 +73,35 @@ module hru_fp_hazards (
   assign ifd6 = i_from_ex_comb.fpu_inflight_dest_6;
 
   // Per-source match against each inflight destination slot.
-  // A match is valid only when the inflight dest is non-zero (slot occupied).
+  // Match validity comes from explicit inflight-valid bits so f0 is handled
+  // correctly as a writable FP destination.
   logic src1_matches_inflight;
   logic src2_matches_inflight;
   logic src3_matches_inflight;
 
   assign src1_matches_inflight =
-      (fpu_src1 == ifd1 && ifd1 != 5'b0) ||
-      (fpu_src1 == ifd2 && ifd2 != 5'b0) ||
-      (fpu_src1 == ifd3 && ifd3 != 5'b0) ||
-      (fpu_src1 == ifd4 && ifd4 != 5'b0) ||
-      (fpu_src1 == ifd5 && ifd5 != 5'b0) ||
-      (fpu_src1 == ifd6 && ifd6 != 5'b0);
+      (fpu_src1 == ifd1 && i_from_ex_comb.fpu_inflight_valid_1) ||
+      (fpu_src1 == ifd2 && i_from_ex_comb.fpu_inflight_valid_2) ||
+      (fpu_src1 == ifd3 && i_from_ex_comb.fpu_inflight_valid_3) ||
+      (fpu_src1 == ifd4 && i_from_ex_comb.fpu_inflight_valid_4) ||
+      (fpu_src1 == ifd5 && i_from_ex_comb.fpu_inflight_valid_5) ||
+      (fpu_src1 == ifd6 && i_from_ex_comb.fpu_inflight_valid_6);
 
   assign src2_matches_inflight =
-      (fpu_src2 == ifd1 && ifd1 != 5'b0) ||
-      (fpu_src2 == ifd2 && ifd2 != 5'b0) ||
-      (fpu_src2 == ifd3 && ifd3 != 5'b0) ||
-      (fpu_src2 == ifd4 && ifd4 != 5'b0) ||
-      (fpu_src2 == ifd5 && ifd5 != 5'b0) ||
-      (fpu_src2 == ifd6 && ifd6 != 5'b0);
+      (fpu_src2 == ifd1 && i_from_ex_comb.fpu_inflight_valid_1) ||
+      (fpu_src2 == ifd2 && i_from_ex_comb.fpu_inflight_valid_2) ||
+      (fpu_src2 == ifd3 && i_from_ex_comb.fpu_inflight_valid_3) ||
+      (fpu_src2 == ifd4 && i_from_ex_comb.fpu_inflight_valid_4) ||
+      (fpu_src2 == ifd5 && i_from_ex_comb.fpu_inflight_valid_5) ||
+      (fpu_src2 == ifd6 && i_from_ex_comb.fpu_inflight_valid_6);
 
   assign src3_matches_inflight =
-      (fpu_src3 == ifd1 && ifd1 != 5'b0) ||
-      (fpu_src3 == ifd2 && ifd2 != 5'b0) ||
-      (fpu_src3 == ifd3 && ifd3 != 5'b0) ||
-      (fpu_src3 == ifd4 && ifd4 != 5'b0) ||
-      (fpu_src3 == ifd5 && ifd5 != 5'b0) ||
-      (fpu_src3 == ifd6 && ifd6 != 5'b0);
+      (fpu_src3 == ifd1 && i_from_ex_comb.fpu_inflight_valid_1) ||
+      (fpu_src3 == ifd2 && i_from_ex_comb.fpu_inflight_valid_2) ||
+      (fpu_src3 == ifd3 && i_from_ex_comb.fpu_inflight_valid_3) ||
+      (fpu_src3 == ifd4 && i_from_ex_comb.fpu_inflight_valid_4) ||
+      (fpu_src3 == ifd5 && i_from_ex_comb.fpu_inflight_valid_5) ||
+      (fpu_src3 == ifd6 && i_from_ex_comb.fpu_inflight_valid_6);
 
   // True when at least one FP source depends on an in-flight result.
   logic fpu_inflight_src_match;
@@ -150,9 +141,9 @@ module hru_fp_hazards (
 
   logic fpu_entering_ex_src_match;
   assign fpu_entering_ex_src_match =
-      (fpu_src1 == ex_dest && ex_dest != 5'b0) ||
-      (fpu_src2 == ex_dest && ex_dest != 5'b0) ||
-      (fpu_src3 == ex_dest && ex_dest != 5'b0);
+      (fpu_src1 == ex_dest && i_from_id_to_ex.is_pipelined_fp_op) ||
+      (fpu_src2 == ex_dest && i_from_id_to_ex.is_pipelined_fp_op) ||
+      (fpu_src3 == ex_dest && i_from_id_to_ex.is_pipelined_fp_op);
 
   assign o_fpu_inflight_hazard = is_incoming_fp_consumer &&
                                  (fpu_inflight_src_match ||

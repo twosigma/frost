@@ -664,13 +664,20 @@ package riscv_pkg;
     fp_flags_t fp_flags;  // FP exception flags from this operation
     logic fp_regfile_write_enable;  // Write to FP register file
     logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
-    // FPU in-flight destination registers (for RAW hazard detection)
+    // FPU in-flight destination registers and occupancy (for RAW hazard detection).
+    // Valid bits are required because FP destination register f0 is writable.
     logic [4:0] fpu_inflight_dest_1;  // 3-cycle ops: 2 cycles remaining
+    logic fpu_inflight_valid_1;
     logic [4:0] fpu_inflight_dest_2;  // 3-cycle ops: 1 cycle remaining
+    logic fpu_inflight_valid_2;
     logic [4:0] fpu_inflight_dest_3;  // FMA: 3 cycles remaining
+    logic fpu_inflight_valid_3;
     logic [4:0] fpu_inflight_dest_4;  // FMA: 2 cycles remaining
+    logic fpu_inflight_valid_4;
     logic [4:0] fpu_inflight_dest_5;  // FMA: 1 cycle remaining
+    logic fpu_inflight_valid_5;
     logic [4:0] fpu_inflight_dest_6;  // Sequential (div/sqrt)
+    logic fpu_inflight_valid_6;
   } from_ex_comb_t;
 
   // Clocked signals passed from Execute (EX) stage to Memory Access (MA) stage

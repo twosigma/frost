@@ -100,12 +100,18 @@ module fpu #(
 
     // In-flight destination registers for RAW hazard detection
     // These are destinations of pipelined ops that haven't completed yet
-    output logic [4:0] o_inflight_dest_1,  // Adder/mult stage 0
-    output logic [4:0] o_inflight_dest_2,  // Adder/mult stage 1
-    output logic [4:0] o_inflight_dest_3,  // FMA stage 0
-    output logic [4:0] o_inflight_dest_4,  // FMA stage 1
-    output logic [4:0] o_inflight_dest_5,  // FMA stage 2
-    output logic [4:0] o_inflight_dest_6   // Sequential (div/sqrt)
+    output logic [4:0] o_inflight_dest_1,   // Adder/mult stage 0
+    output logic       o_inflight_valid_1,
+    output logic [4:0] o_inflight_dest_2,   // Adder/mult stage 1
+    output logic       o_inflight_valid_2,
+    output logic [4:0] o_inflight_dest_3,   // FMA stage 0
+    output logic       o_inflight_valid_3,
+    output logic [4:0] o_inflight_dest_4,   // FMA stage 1
+    output logic       o_inflight_valid_4,
+    output logic [4:0] o_inflight_dest_5,   // FMA stage 2
+    output logic       o_inflight_valid_5,
+    output logic [4:0] o_inflight_dest_6,   // Sequential (div/sqrt)
+    output logic       o_inflight_valid_6
 );
 
   localparam int unsigned FpWidth = riscv_pkg::FpWidth;
@@ -752,14 +758,20 @@ module fpu #(
   // In-flight destinations for RAW hazard detection
   // These go to 0 when the operation is complete (busy goes low) so hazards clear.
   // The next instruction should use forwarding from MA.
-  assign o_inflight_dest_1 = adder_busy ? dest_reg_adder : 5'b0;
-  assign o_inflight_dest_2 = multiplier_busy ? dest_reg_multiplier : 5'b0;
-  assign o_inflight_dest_3 = fma_busy ? dest_reg_fma : 5'b0;
-  assign o_inflight_dest_4 = compare_busy ? dest_reg_compare : 5'b0;
-  assign o_inflight_dest_5 = convert_busy ? dest_reg_convert : 5'b0;
+  assign o_inflight_valid_1 = adder_busy;
+  assign o_inflight_dest_1 = dest_reg_adder;
+  assign o_inflight_valid_2 = multiplier_busy;
+  assign o_inflight_dest_2 = dest_reg_multiplier;
+  assign o_inflight_valid_3 = fma_busy;
+  assign o_inflight_dest_3 = dest_reg_fma;
+  assign o_inflight_valid_4 = compare_busy;
+  assign o_inflight_dest_4 = dest_reg_compare;
+  assign o_inflight_valid_5 = convert_busy;
+  assign o_inflight_dest_5 = dest_reg_convert;
   logic seq_inflight;
   // Drop sequential inflight hazard when the result is valid so EX->MA can capture it.
   assign seq_inflight = dest_reg_seq_valid & ~(divider_valid | sqrt_valid);
-  assign o_inflight_dest_6 = seq_inflight ? dest_reg_seq : 5'b0;
+  assign o_inflight_valid_6 = seq_inflight;
+  assign o_inflight_dest_6 = dest_reg_seq;
 
 endmodule : fpu

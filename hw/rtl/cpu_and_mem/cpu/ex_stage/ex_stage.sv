@@ -379,11 +379,17 @@ module ex_stage #(
       .o_flags(fpu_flags),
       // In-flight destinations for hazard detection
       .o_inflight_dest_1(o_from_ex_comb.fpu_inflight_dest_1),
+      .o_inflight_valid_1(o_from_ex_comb.fpu_inflight_valid_1),
       .o_inflight_dest_2(o_from_ex_comb.fpu_inflight_dest_2),
+      .o_inflight_valid_2(o_from_ex_comb.fpu_inflight_valid_2),
       .o_inflight_dest_3(o_from_ex_comb.fpu_inflight_dest_3),
+      .o_inflight_valid_3(o_from_ex_comb.fpu_inflight_valid_3),
       .o_inflight_dest_4(o_from_ex_comb.fpu_inflight_dest_4),
+      .o_inflight_valid_4(o_from_ex_comb.fpu_inflight_valid_4),
       .o_inflight_dest_5(o_from_ex_comb.fpu_inflight_dest_5),
-      .o_inflight_dest_6(o_from_ex_comb.fpu_inflight_dest_6)
+      .o_inflight_valid_5(o_from_ex_comb.fpu_inflight_valid_5),
+      .o_inflight_dest_6(o_from_ex_comb.fpu_inflight_dest_6),
+      .o_inflight_valid_6(o_from_ex_comb.fpu_inflight_valid_6)
   );
 
   // FPU combinational outputs
