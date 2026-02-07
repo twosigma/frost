@@ -52,9 +52,6 @@
  *   - Interrupt Controller: i_interrupt_pending for WFI
  */
 
-/* verilator lint_off UNUSEDSIGNAL */
-/* verilator lint_off UNUSEDPARAM */
-
 module reorder_buffer (
     input logic i_clk,
     input logic i_rst_n,
@@ -283,8 +280,8 @@ module reorder_buffer (
   logic head_predicted_taken;
   logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
-  logic head_is_call;
-  logic head_is_return;
+  logic head_is_call;  // TODO: wire to BPU update at commit
+  logic head_is_return;  // TODO: wire to BPU update at commit
   logic head_is_jal;
   logic head_is_jalr;
   logic head_has_checkpoint;
@@ -532,7 +529,7 @@ module reorder_buffer (
   // ===========================================================================
 
   // Allocation response
-  assign o_alloc_resp.alloc_ready = !full;
+  assign o_alloc_resp.alloc_ready = !full && !i_flush_all && !i_flush_en;
   assign o_alloc_resp.alloc_tag = tail_idx;
   assign o_alloc_resp.full = full;
 
@@ -548,7 +545,7 @@ module reorder_buffer (
     end else if (i_flush_all) begin
       // Full flush: reset tail to head
       tail_ptr <= head_ptr;
-    end else if (i_flush_en && !i_flush_all) begin
+    end else if (i_flush_en) begin
       // Partial flush: set tail to flush_tag + 1
       // Use age-based arithmetic to handle wrap correctly (extend 5-bit age to 6-bit)
       tail_ptr <= head_ptr + {1'b0, flush_age} + 1'b1;

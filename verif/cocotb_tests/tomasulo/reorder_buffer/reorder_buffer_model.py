@@ -279,10 +279,7 @@ class ReorderBufferModel:
     @property
     def count(self) -> int:
         """Number of valid entries."""
-        if self.tail_ptr >= self.head_ptr:
-            return self.tail_ptr - self.head_ptr
-        else:
-            return self.tail_ptr + 2 * self.depth - self.head_ptr
+        return (self.tail_ptr - self.head_ptr) % (2 * self.depth)
 
     @property
     def head_entry(self) -> ReorderBufferEntry:
@@ -380,7 +377,8 @@ class ReorderBufferModel:
         if not entry.valid:
             raise ValueError(f"CDB write to invalid entry {write.tag}")
 
-        # Skip if already done (e.g., JAL)
+        # Note: RTL always writes value/exception/fp_flags even if already done.
+        # Model skips the write since the observable commit output is unchanged.
         if entry.done:
             return
 
@@ -513,7 +511,9 @@ class ReorderBufferModel:
         # Use the authoritative misprediction flag from branch unit
         misprediction = entry.is_branch and entry.mispredicted
         redirect_pc = 0
-        if misprediction:
+        if entry.is_mret:
+            redirect_pc = self.mepc & MASK32
+        elif misprediction:
             if entry.branch_taken:
                 # Mispredicted as not-taken but actually taken -> go to taken target
                 redirect_pc = entry.branch_target

@@ -173,7 +173,7 @@ class CommitMonitor:
                 f"misprediction: got {commit['misprediction']}, expected {expected.misprediction}"
             )
 
-        if expected.misprediction:
+        if expected.misprediction or expected.is_mret:
             if commit["redirect_pc"] != expected.redirect_pc:
                 errors.append(
                     f"redirect_pc: got {commit['redirect_pc']:08x}, expected {expected.redirect_pc:08x}"

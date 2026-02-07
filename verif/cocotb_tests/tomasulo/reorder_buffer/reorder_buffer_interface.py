@@ -39,32 +39,30 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (118 bits total, MSB to LSB):
-# [117]    alloc_valid
-# [116:85] pc (32 bits)
-# [84]     dest_rf
-# [83:79]  dest_reg (5 bits)
-# [78]     dest_valid
-# [77]     is_store
-# [76]     is_fp_store
-# [75]     is_branch
-# [74]     predicted_taken
-# [73:42]  predicted_target (32 bits)
-# [41]     is_call
-# [40]     is_return
-# [39:8]   link_addr (32 bits)
-# [7]      is_jal
-# [6]      is_jalr
-# [5]      is_csr
-# [4]      is_fence
-# [3]      is_fence_i
-# [2]      is_wfi
-# [1]      is_mret
-# [0]      is_amo
-# Note: is_lr and is_sc are below bit 0, need to recalculate
-
-# Let me recalculate total width:
-# 1 + 32 + 1 + 5 + 1 + 1 + 1 + 1 + 1 + 32 + 1 + 1 + 32 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 = 120 bits
+# reorder_buffer_alloc_req_t field positions (120 bits total, MSB to LSB):
+# [119]     alloc_valid
+# [118:87]  pc (32 bits)
+# [86]      dest_rf
+# [85:81]   dest_reg (5 bits)
+# [80]      dest_valid
+# [79]      is_store
+# [78]      is_fp_store
+# [77]      is_branch
+# [76]      predicted_taken
+# [75:44]   predicted_target (32 bits)
+# [43]      is_call
+# [42]      is_return
+# [41:10]   link_addr (32 bits)
+# [9]       is_jal
+# [8]       is_jalr
+# [7]       is_csr
+# [6]       is_fence
+# [5]       is_fence_i
+# [4]       is_wfi
+# [3]       is_mret
+# [2]       is_amo
+# [1]       is_lr
+# [0]       is_sc
 ALLOC_REQ_WIDTH = 120
 
 
