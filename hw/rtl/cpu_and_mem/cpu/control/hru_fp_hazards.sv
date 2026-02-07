@@ -20,7 +20,7 @@
 
   Hazards detected:
   - FP load-use: FLW in EX with FP consumer in PD (fp_load_potential_hazard)
-  - FPU in-flight: any pipelined FP op in flight with FP consumer in PD
+  - FPU in-flight: pipelined FP op in flight whose dest matches FP consumer src in PD
   - Single-to-pipelined: FSGNJ* in EX feeding FADD/FMUL/FMA in ID
   - FP-to-int-to-int-to-fp: FP-to-int in EX feeding int-to-FP in PD
   - FP load MA: FLW in MA with multi-cycle FP consumer in PD
@@ -60,9 +60,9 @@ module hru_fp_hazards (
   // ===========================================================================
   // FPU In-Flight Hazard Detection
   // ===========================================================================
-  // Conservative timing-friendly rule: if ANY FP op is in flight, stall any FP consumer.
-  // This removes wide register-compare trees from the critical path. FP throughput drops,
-  // but correctness is preserved (extra stalls only).
+  // Fine-grained check: only stall when the incoming FP consumer's source
+  // registers actually match an in-flight destination.  Each source is compared
+  // against every non-zero inflight dest slot.
   logic fpu_inflight_any;
 
   assign fpu_inflight_any =
@@ -72,6 +72,51 @@ module hru_fp_hazards (
       (i_from_ex_comb.fpu_inflight_dest_4 != 5'b0) ||
       (i_from_ex_comb.fpu_inflight_dest_5 != 5'b0) ||
       (i_from_ex_comb.fpu_inflight_dest_6 != 5'b0);
+
+  // Shorthand aliases for inflight destination slots
+  logic [4:0] ifd1, ifd2, ifd3, ifd4, ifd5, ifd6;
+  assign ifd1 = i_from_ex_comb.fpu_inflight_dest_1;
+  assign ifd2 = i_from_ex_comb.fpu_inflight_dest_2;
+  assign ifd3 = i_from_ex_comb.fpu_inflight_dest_3;
+  assign ifd4 = i_from_ex_comb.fpu_inflight_dest_4;
+  assign ifd5 = i_from_ex_comb.fpu_inflight_dest_5;
+  assign ifd6 = i_from_ex_comb.fpu_inflight_dest_6;
+
+  // Per-source match against each inflight destination slot.
+  // A match is valid only when the inflight dest is non-zero (slot occupied).
+  logic src1_matches_inflight;
+  logic src2_matches_inflight;
+  logic src3_matches_inflight;
+
+  assign src1_matches_inflight =
+      (fpu_src1 == ifd1 && ifd1 != 5'b0) ||
+      (fpu_src1 == ifd2 && ifd2 != 5'b0) ||
+      (fpu_src1 == ifd3 && ifd3 != 5'b0) ||
+      (fpu_src1 == ifd4 && ifd4 != 5'b0) ||
+      (fpu_src1 == ifd5 && ifd5 != 5'b0) ||
+      (fpu_src1 == ifd6 && ifd6 != 5'b0);
+
+  assign src2_matches_inflight =
+      (fpu_src2 == ifd1 && ifd1 != 5'b0) ||
+      (fpu_src2 == ifd2 && ifd2 != 5'b0) ||
+      (fpu_src2 == ifd3 && ifd3 != 5'b0) ||
+      (fpu_src2 == ifd4 && ifd4 != 5'b0) ||
+      (fpu_src2 == ifd5 && ifd5 != 5'b0) ||
+      (fpu_src2 == ifd6 && ifd6 != 5'b0);
+
+  assign src3_matches_inflight =
+      (fpu_src3 == ifd1 && ifd1 != 5'b0) ||
+      (fpu_src3 == ifd2 && ifd2 != 5'b0) ||
+      (fpu_src3 == ifd3 && ifd3 != 5'b0) ||
+      (fpu_src3 == ifd4 && ifd4 != 5'b0) ||
+      (fpu_src3 == ifd5 && ifd5 != 5'b0) ||
+      (fpu_src3 == ifd6 && ifd6 != 5'b0);
+
+  // True when at least one FP source depends on an in-flight result.
+  logic fpu_inflight_src_match;
+  assign fpu_inflight_src_match = src1_matches_inflight ||
+                                  src2_matches_inflight ||
+                                  src3_matches_inflight;
 
   // Also stall on the cycle a pipelined FP op enters EX (before inflight dest is recorded).
   // Gate by ~i_stall_registered: only detect on the cycle the instruction actually advances.
@@ -97,8 +142,21 @@ module hru_fp_hazards (
       (i_from_pd_to_id.instruction.opcode ==
        riscv_pkg::OPC_STORE_FP);
 
+  // For the entering-EX case, use the existing dest-match logic: the op that is
+  // entering EX has its dest in i_from_id_to_ex.instruction.dest_reg.  Check if
+  // the incoming consumer's sources match that dest.
+  logic [4:0] ex_dest;
+  assign ex_dest = i_from_id_to_ex.instruction.dest_reg;
+
+  logic fpu_entering_ex_src_match;
+  assign fpu_entering_ex_src_match =
+      (fpu_src1 == ex_dest && ex_dest != 5'b0) ||
+      (fpu_src2 == ex_dest && ex_dest != 5'b0) ||
+      (fpu_src3 == ex_dest && ex_dest != 5'b0);
+
   assign o_fpu_inflight_hazard = is_incoming_fp_consumer &&
-                                 (fpu_inflight_any || fpu_entering_ex_hazard);
+                                 (fpu_inflight_src_match ||
+                                  (fpu_entering_ex_hazard && fpu_entering_ex_src_match));
 
   // ===========================================================================
   // FP Single-Cycle to Pipelined Hazard Detection

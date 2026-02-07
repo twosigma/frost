@@ -32,5 +32,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 # CSR file (Zicsr + Zicntr extensions)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/csr/csr.f
 
+# Data memory interface arbiter (EX/AMO/FP64 muxing)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/data_mem_arbiter.sv
+
 # CPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu.sv

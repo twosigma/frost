@@ -267,30 +267,31 @@ The EX stage performs computation, branch resolution, and exception detection:
 
 ### MA Stage Internal Architecture
 
-The MA stage completes memory operations and handles atomics:
+The MA stage completes memory operations, handles atomics, and sequences FP64 memory accesses:
 
 ```
                             MA Stage (ma_stage.sv)
   +---------------------------------------------------------------------------------+
   |                                                                                 |
   |   from EX ----------------------------------------------------------------------|
-  |                |                           |                                    |
-  |                v                           v                                    |
-  |   +--------------------+      +----------------------------+                    |
-  |   |     load_unit      |      |        amo_unit            |                    |
-  |   |                    |      |                            |                    |
-  |   | - LB/LH/LW extract |      | - LR/SC coordination       |                    |
-  |   | - sign/zero extend |      | - AMO read-modify-write    |                    |
-  |   | - byte alignment   |      | - AMOSWAP, AMOADD, etc.    |                    |
-  |   +---------+----------+      +-------------+--------------+                    |
-  |             |                               |                                   |
-  |             +---------------+---------------+                                   |
-  |                             |                                                   |
-  |                             v                                                   |
-  |                    +-----------------+                                          |
-  |                    |   Result Mux    |--------------------------------------> WB|
-  |                    | (load/alu/amo)  |                                          |
-  |                    +-----------------+                                          |
+  |                |                           |                  |                 |
+  |                v                           v                  v                 |
+  |   +--------------------+      +--------------+   +---------------------+        |
+  |   |     load_unit      |      |   amo_unit   |   |  fp64_sequencer     |        |
+  |   |                    |      |              |   |                     |        |
+  |   | - LB/LH/LW extract |      | - LR/SC      |   | - FLD/FSD 2-phase   |        |
+  |   | - sign/zero extend |      | - AMO R-M-W  |   |   over 32-bit bus   |        |
+  |   | - byte alignment   |      | - AMOSWAP,.. |   | - stall generation  |        |
+  |   +---------+----------+      +------+-------+   | - load data assembly|        |
+  |             |                        |            +----------+----------+        |
+  |             +------------+-----------+                       |                  |
+  |                          |                                   |                  |
+  |                          v                                   |                  |
+  |                 +-----------------+                          |                  |
+  |                 |   Result Mux    |<-------------------------+                  |
+  |                 | (load/alu/amo/  |--------------------------------------> WB   |
+  |                 |  fp_load_data)  |                                             |
+  |                 +-----------------+                                             |
   |                                                                                 |
   |   i_data_mem_rd_data -----------------------------------------------------------+
   |   (from memory)                                                                 |
@@ -319,7 +320,7 @@ The MA stage completes memory operations and handles atomics:
 | **ID** | `id_stage.sv`  | Full instruction decode, extract immediates, pre-compute branch/JAL targets, register file read |
 | **EX** | `ex_stage.sv`  | ALU operations, branch evaluation, JALR target calc, memory address, multiply/divide      |
 | **MA** | `ma_stage.sv`  | Complete loads, extract/sign-extend loaded data, execute AMO operations                   |
-| **WB** | `regfile.sv`   | Write results back to register file                                                        |
+| **WB** | `generic_regfile.sv` | Write results back to register file                                                  |
 
 **Pipeline Balancing:** Work is distributed across stages to reduce critical path timing:
 - **ID stage** pre-computes branch and JAL target addresses (PC + immediate), since these
@@ -653,6 +654,7 @@ rtl/
 │   │   ├── sdp_block_ram_dc.sv       # Dual-clock block RAM (for CDC)
 │   │   ├── tdp_bram_dc.sv            # True dual-port RAM (dual-clock, simple)
 │   │   └── tdp_bram_dc_byte_en.sv    # True dual-port RAM (dual-clock, byte enables)
+│   ├── stall_capture_reg.sv          # Pipeline stall capture register (generic utility)
 │   └── fifo/
 │       ├── sync_dist_ram_fifo.sv     # Synchronous FIFO (distributed RAM)
 │       └── dc_fifo.sv                # Dual-clock FIFO (binary pointers)
@@ -666,6 +668,7 @@ rtl/
     │
     └── cpu/
         ├── cpu.sv                    # 6-stage pipeline top-level
+        ├── data_mem_arbiter.sv       # Data memory interface mux (EX/AMO/FP64 arbitration)
         ├── riscv_pkg.sv              # Type definitions, opcodes, structs
         │
         ├── if_stage/                 # Instruction Fetch stage
@@ -728,16 +731,17 @@ rtl/
         │       ├── fp_round.sv       # Rounding logic (shared)
         │       ├── fp_lzc.sv         # Leading zero counter (shared)
         │       ├── fp_classify_operand.sv # Operand classifier (shared)
+        │       ├── fp_operand_unpacker.sv # Field extraction + classification (shared)
         │       └── fp_subnorm_shift.sv # Subnormal right-shift (shared)
         │
         ├── ma_stage/                 # Memory Access stage
         │   ├── ma_stage.sv           # Load completion, AMO coordination
         │   ├── load_unit.sv          # Load data extraction/extension
-        │   └── amo_unit.sv           # Atomic memory operation state machine
+        │   ├── amo_unit.sv           # Atomic memory operation state machine
+        │   └── fp64_sequencer.sv     # FP64 load/store sequencer (FLD/FSD over 32-bit bus)
         │
         ├── wb_stage/                 # Writeback stage
-        │   ├── regfile.sv            # 32x32 integer register file (2R/1W)
-        │   └── fp_regfile.sv         # 32x64 floating-point register file (3R/1W)
+        │   └── generic_regfile.sv    # Parameterized register file (int 2R/1W, FP 3R/1W)
         │
         ├── cache/                    # Cache subsystem
         │   ├── l0_cache.sv           # Direct-mapped L0 data cache

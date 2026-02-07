@@ -131,9 +131,9 @@ async def run_compressed_instruction_test(
     )
 
     # Reference to register file for reading values
-    regfile_ram = dut_if.dut.device_under_test.regfile_inst.gen_source_ram[
+    regfile_ram = dut_if.dut.device_under_test.regfile_inst.gen_read_port[
         0
-    ].source_register_ram.ram
+    ].read_port_ram.ram
 
     def read_reg(reg: int) -> int:
         """Read a register value from the register file."""
@@ -413,12 +413,12 @@ async def run_compressed_fp_instruction_test(
     # correctness by loading values back (store-then-load pattern).
 
     # Reference to register files for reading values
-    int_regfile_ram = dut_if.dut.device_under_test.regfile_inst.gen_source_ram[
+    int_regfile_ram = dut_if.dut.device_under_test.regfile_inst.gen_read_port[
         0
-    ].source_register_ram.ram
-    fp_regfile_ram = dut_if.dut.device_under_test.fp_regfile_inst.gen_fp_source_ram[
+    ].read_port_ram.ram
+    fp_regfile_ram = dut_if.dut.device_under_test.fp_regfile_inst.gen_read_port[
         0
-    ].fp_source_reg_ram.ram
+    ].read_port_ram.ram
 
     def read_int_reg(reg: int) -> int:
         """Read an integer register value from the register file."""

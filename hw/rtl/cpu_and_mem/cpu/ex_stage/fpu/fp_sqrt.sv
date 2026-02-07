@@ -143,16 +143,15 @@ module fp_sqrt #(
   // Operand Unpacking
   // =========================================================================
 
-  assign sign = operand_reg[FP_WIDTH-1];
-  assign exp  = operand_reg[FP_WIDTH-2-:ExpBits];
-  assign mant = operand_reg[FracBits-1:0];
-
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify (
-      .i_exp(exp),
-      .i_frac(mant),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack (
+      .i_operand(operand_reg),
+      .o_sign(sign),
+      .o_exp(exp),
+      .o_exp_adj(),
+      .o_frac(mant),
+      .o_mant(),
       .o_is_zero(is_zero),
       .o_is_subnormal(is_subnormal),
       .o_is_inf(is_inf),

@@ -109,53 +109,48 @@ module fp_adder #(
   logic [ExpBits-1:0] exp_a_adj, exp_b_adj;
   logic [MantBits-1:0] mant_a, mant_b;
 
-  assign sign_a = op_a[FP_WIDTH-1];
-  assign exp_a = op_a[FP_WIDTH-2-:ExpBits];
-  assign exp_b = op_b[FP_WIDTH-2-:ExpBits];
-  assign exp_a_adj = (exp_a == '0 && op_a[FracBits-1:0] != '0) ?
-                     {{(ExpBits-1){1'b0}}, 1'b1} : exp_a;
-  assign exp_b_adj = (exp_b == '0 && op_b[FracBits-1:0] != '0) ?
-                     {{(ExpBits-1){1'b0}}, 1'b1} : exp_b;
-
-  // For subtraction, negate B's sign
-  assign sign_b = op_b[FP_WIDTH-1] ^ is_subtract_reg;
-
-  // Mantissa with implicit 1 (or 0 for subnormal/zero)
-  assign mant_a = (exp_a == '0) ? {1'b0, op_a[FracBits-1:0]} : {1'b1, op_a[FracBits-1:0]};
-  assign mant_b = (exp_b == '0) ? {1'b0, op_b[FracBits-1:0]} : {1'b1, op_b[FracBits-1:0]};
-
   // Special value detection
   logic is_zero_a, is_zero_b;
   logic is_inf_a, is_inf_b;
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
-
   logic is_subnormal_a, is_subnormal_b;
 
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_a (
-      .i_exp(exp_a),
-      .i_frac(op_a[FracBits-1:0]),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_a (
+      .i_operand(op_a),
+      .o_sign(sign_a),
+      .o_exp(exp_a),
+      .o_exp_adj(exp_a_adj),
+      .o_frac(),
+      .o_mant(mant_a),
       .o_is_zero(is_zero_a),
       .o_is_subnormal(is_subnormal_a),
       .o_is_inf(is_inf_a),
       .o_is_nan(is_nan_a),
       .o_is_snan(is_snan_a)
   );
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_b (
-      .i_exp(exp_b),
-      .i_frac(op_b[FracBits-1:0]),
+
+  logic sign_b_raw;
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_b (
+      .i_operand(op_b),
+      .o_sign(sign_b_raw),
+      .o_exp(exp_b),
+      .o_exp_adj(exp_b_adj),
+      .o_frac(),
+      .o_mant(mant_b),
       .o_is_zero(is_zero_b),
       .o_is_subnormal(is_subnormal_b),
       .o_is_inf(is_inf_b),
       .o_is_nan(is_nan_b),
       .o_is_snan(is_snan_b)
   );
+
+  // For subtraction, negate B's sign
+  assign sign_b = sign_b_raw ^ is_subtract_reg;
 
   // Exponent difference and swap if needed (make the larger-magnitude operand "large")
   // When exponents are equal, compare mantissas to decide the larger magnitude.

@@ -371,11 +371,6 @@ package riscv_pkg;
   localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
 
   // Exception cause codes (mcause values when interrupt bit = 0)
-  // Note: ExcInstrAddrMisalign and ExcIllegalInstr are defined for completeness
-  // per RISC-V spec but not currently used (C extension handles alignment,
-  // illegal instructions currently decode as NOPs)
-  localparam bit [31:0] ExcInstrAddrMisalign = 32'd0;  // Reserved for future use
-  localparam bit [31:0] ExcIllegalInstr = 32'd2;  // Reserved for future use
   localparam bit [31:0] ExcBreakpoint = 32'd3;
   localparam bit [31:0] ExcLoadAddrMisalign = 32'd4;
   localparam bit [31:0] ExcStoreAddrMisalign = 32'd6;
@@ -430,7 +425,6 @@ package riscv_pkg;
   } instr_t;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
-  localparam bit [15:0] NopLowBits = 16'h0013;  // Low 16 bits of NOP instruction
 
   localparam int unsigned XLEN = 32;
   // FP register width: 64-bit to support D extension (RV32D).

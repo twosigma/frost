@@ -6,3 +6,6 @@
 
 # FIFO primitives (sync and async)
 -f $(ROOT)/hw/rtl/lib/fifo/fifo.f
+
+# Pipeline utilities
+$(ROOT)/hw/rtl/lib/stall_capture_reg.sv

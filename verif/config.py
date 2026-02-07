@@ -184,27 +184,27 @@ class DUTSignalPaths:
     """
 
     regfile_ram_rs1_path: str = (
-        "device_under_test.regfile_inst.gen_source_ram[0].source_register_ram.ram"
+        "device_under_test.regfile_inst.gen_read_port[0].read_port_ram.ram"
     )
     """Path to integer register file RAM for rs1 read port."""
 
     regfile_ram_rs2_path: str = (
-        "device_under_test.regfile_inst.gen_source_ram[1].source_register_ram.ram"
+        "device_under_test.regfile_inst.gen_read_port[1].read_port_ram.ram"
     )
     """Path to integer register file RAM for rs2 read port."""
 
     fp_regfile_ram_fs1_path: str = (
-        "device_under_test.fp_regfile_inst.gen_fp_source_ram[0].fp_source_reg_ram.ram"
+        "device_under_test.fp_regfile_inst.gen_read_port[0].read_port_ram.ram"
     )
     """Path to FP register file RAM for fs1 read port."""
 
     fp_regfile_ram_fs2_path: str = (
-        "device_under_test.fp_regfile_inst.gen_fp_source_ram[1].fp_source_reg_ram.ram"
+        "device_under_test.fp_regfile_inst.gen_read_port[1].read_port_ram.ram"
     )
     """Path to FP register file RAM for fs2 read port."""
 
     fp_regfile_ram_fs3_path: str = (
-        "device_under_test.fp_regfile_inst.gen_fp_source_ram[2].fp_source_reg_ram.ram"
+        "device_under_test.fp_regfile_inst.gen_read_port[2].read_port_ram.ram"
     )
     """Path to FP register file RAM for fs3 read port (for FMA instructions)."""
 

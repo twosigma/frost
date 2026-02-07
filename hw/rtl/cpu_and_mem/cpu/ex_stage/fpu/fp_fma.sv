@@ -117,62 +117,53 @@ module fp_fma #(
   logic is_snan_a, is_snan_b, is_snan_c;
   logic [ExpBits-1:0] exp_a_adj, exp_b_adj, exp_c_adj;
   logic [MantBits-1:0] mant_a_int, mant_b_int, mant_c_int;
-
-  assign sign_a = operand_a_reg[FP_WIDTH-1];
-  assign sign_b = operand_b_reg[FP_WIDTH-1];
-  assign sign_c = operand_c_reg[FP_WIDTH-1];
-  assign exp_a  = operand_a_reg[FP_WIDTH-2-:ExpBits];
-  assign exp_b  = operand_b_reg[FP_WIDTH-2-:ExpBits];
-  assign exp_c  = operand_c_reg[FP_WIDTH-2-:ExpBits];
-  assign mant_a = operand_a_reg[FracBits-1:0];
-  assign mant_b = operand_b_reg[FracBits-1:0];
-  assign mant_c = operand_c_reg[FracBits-1:0];
-
   logic is_subnormal_a, is_subnormal_b, is_subnormal_c;
 
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_a (
-      .i_exp(exp_a),
-      .i_frac(mant_a),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_a (
+      .i_operand(operand_a_reg),
+      .o_sign(sign_a),
+      .o_exp(exp_a),
+      .o_exp_adj(exp_a_adj),
+      .o_frac(mant_a),
+      .o_mant(mant_a_int),
       .o_is_zero(is_zero_a),
       .o_is_subnormal(is_subnormal_a),
       .o_is_inf(is_inf_a),
       .o_is_nan(is_nan_a),
       .o_is_snan(is_snan_a)
   );
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_b (
-      .i_exp(exp_b),
-      .i_frac(mant_b),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_b (
+      .i_operand(operand_b_reg),
+      .o_sign(sign_b),
+      .o_exp(exp_b),
+      .o_exp_adj(exp_b_adj),
+      .o_frac(mant_b),
+      .o_mant(mant_b_int),
       .o_is_zero(is_zero_b),
       .o_is_subnormal(is_subnormal_b),
       .o_is_inf(is_inf_b),
       .o_is_nan(is_nan_b),
       .o_is_snan(is_snan_b)
   );
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_c (
-      .i_exp(exp_c),
-      .i_frac(mant_c),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_c (
+      .i_operand(operand_c_reg),
+      .o_sign(sign_c),
+      .o_exp(exp_c),
+      .o_exp_adj(exp_c_adj),
+      .o_frac(mant_c),
+      .o_mant(mant_c_int),
       .o_is_zero(is_zero_c),
       .o_is_subnormal(is_subnormal_c),
       .o_is_inf(is_inf_c),
       .o_is_nan(is_nan_c),
       .o_is_snan(is_snan_c)
   );
-
-  assign exp_a_adj  = (exp_a == '0 && mant_a != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_a;
-  assign exp_b_adj  = (exp_b == '0 && mant_b != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_b;
-  assign exp_c_adj  = (exp_c == '0 && mant_c != '0) ? {{(ExpBits - 1) {1'b0}}, 1'b1} : exp_c;
-  assign mant_a_int = (exp_a == '0) ? {1'b0, mant_a} : {1'b1, mant_a};
-  assign mant_b_int = (exp_b == '0) ? {1'b0, mant_b} : {1'b1, mant_b};
-  assign mant_c_int = (exp_c == '0) ? {1'b0, mant_c} : {1'b1, mant_c};
 
   // Sign control for FMA variants
   logic sign_prod;

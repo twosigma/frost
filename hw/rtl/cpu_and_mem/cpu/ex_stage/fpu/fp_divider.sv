@@ -109,30 +109,31 @@ module fp_divider #(
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
 
-  assign sign_a = operand_a_reg[FP_WIDTH-1];
-  assign sign_b = operand_b_reg[FP_WIDTH-1];
-  assign exp_a  = operand_a_reg[FP_WIDTH-2-:ExpBits];
-  assign exp_b  = operand_b_reg[FP_WIDTH-2-:ExpBits];
-
-  // Classification
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_a (
-      .i_exp(exp_a),
-      .i_frac(operand_a_reg[FracBits-1:0]),
+  // Unpack and classify operands
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_a (
+      .i_operand(operand_a_reg),
+      .o_sign(sign_a),
+      .o_exp(exp_a),
+      .o_exp_adj(),
+      .o_frac(),
+      .o_mant(),
       .o_is_zero(is_zero_a),
       .o_is_subnormal(is_subnormal_a),
       .o_is_inf(is_inf_a),
       .o_is_nan(is_nan_a),
       .o_is_snan(is_snan_a)
   );
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify_b (
-      .i_exp(exp_b),
-      .i_frac(operand_b_reg[FracBits-1:0]),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack_b (
+      .i_operand(operand_b_reg),
+      .o_sign(sign_b),
+      .o_exp(exp_b),
+      .o_exp_adj(),
+      .o_frac(),
+      .o_mant(),
       .o_is_zero(is_zero_b),
       .o_is_subnormal(is_subnormal_b),
       .o_is_inf(is_inf_b),

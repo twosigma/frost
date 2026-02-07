@@ -89,11 +89,12 @@
  *   │   ├── branch_jump_unit  Branch condition evaluation
  *   │   ├── store_unit        Store address/data preparation
  *   │   └── exception_detector  ECALL, EBREAK, misaligned access
+ *   ├── data_mem_arbiter  Data memory interface mux (EX/AMO/FP64 arbitration)
  *   ├── ma_stage          Memory access, load completion
  *   │   ├── load_unit         Load data extraction/sign-extension
  *   │   └── amo_unit          Atomic memory operations FSM
- *   ├── regfile           32x32 integer register file (2R/1W)
- *   ├── fp_regfile        32x32 FP register file (3R/1W for FMA)
+ *   ├── generic_regfile (regfile_inst)     32x32 integer register file (2R/1W)
+ *   ├── generic_regfile (fp_regfile_inst)  32x64 FP register file (3R/1W for FMA)
  *   ├── l0_cache          Direct-mapped data cache (128 entries)
  *   ├── csr_file          Control/Status registers (M-mode + counters)
  *   ├── forwarding_unit   Integer RAW hazard resolution via bypass
@@ -217,8 +218,7 @@ module cpu #(
   // to resolve the hazard. Similar to how integer multiply continues during multiply stall.
   logic stall_for_fpu_input;
 
-  // TIMING OPTIMIZATION: Dedicated stall signal for memory write enable path.
-  // Replicated from stall_for_trap_check to reduce fanout on critical timing path.
+  // Stall signal for memory write enable path (excludes CSR stall, no trap/mret gating).
   logic stall_for_mem_write;
 
   // Hazard resolution unit - manages stalls, flushes
@@ -334,40 +334,43 @@ module cpu #(
       .o_from_ex_to_ma(from_ex_to_ma)
   );
 
-  // Data memory interface outputs
-  // During AMO stall, use from_ex_to_ma (current AMO address for read)
-  // During AMO write, use captured address (stable even if from_ex_to_ma changes)
-  // Otherwise use EX stage combinational signals for normal loads/stores
-  assign o_data_mem_addr = fp_mem_addr_override ? fp_mem_address :
-                           amo.write_enable ? amo.write_address :
-                           amo_stall_for_amo ? from_ex_to_ma.data_memory_address :
-                           from_ex_comb.data_memory_address;
-  assign fp_mem_write_active = |fp_mem_byte_write_enable;
-  assign o_data_mem_wr_data = fp_mem_write_active ? fp_mem_write_data :
-                              amo.write_enable ? amo.write_data :
-                              from_ex_comb.data_memory_write_data;
-  // TIMING OPTIMIZATION: Use dedicated stall_for_mem_write signal.
-  // This is a replicated copy of stall_for_trap_check specifically for the memory
-  // write enable path, reducing fanout on the critical FPU→stall→memory timing path.
-  // The regular stall signal depends on ~trap_taken (traps override stall), creating
-  // a critical path: forwarding → trap_detection → stall → memory_write_enable.
-  // stall_for_trap_check = stall_sources (no trap/mret gating) breaks this path.
-  // Functionally safe: non-store instructions have byte_write_enable = 0 anyway,
-  // and using stall_sources is more conservative (blocks writes during any stall).
-  assign o_data_mem_per_byte_wr_en = fp_mem_write_active ? fp_mem_byte_write_enable :
-                                     amo.write_enable ? 4'b1111 :
-                                     (from_ex_comb.data_memory_byte_write_enable &
-                                      {4{~stall_for_mem_write}});
-  // Allow FP64 high-word reads during FP mem stalls (FLD sequencing).
-  logic fp_mem_read_enable;
-  assign fp_mem_read_enable = fp_mem_addr_override && !fp_mem_write_active;
-  assign o_data_mem_read_enable = ((from_ex_to_ma.is_load_instruction | from_ex_to_ma.is_lr) &
-                                   ~pipeline_ctrl.stall) |
-                                  fp_mem_read_enable;
-  assign o_mmio_load_addr = from_ex_to_ma.data_memory_address;
-  assign o_mmio_load_valid = from_ex_to_ma.is_load_instruction |
-                             from_ex_to_ma.is_lr |
-                             from_ex_to_ma.is_fp_load;
+  // Data memory interface arbiter - muxes address/data/enables from multiple sources
+  data_mem_arbiter #(
+      .XLEN(XLEN)
+  ) data_mem_arbiter_inst (
+      // EX stage combinational path (normal loads/stores)
+      .i_ex_comb_data_memory_address(from_ex_comb.data_memory_address),
+      .i_ex_comb_data_memory_write_data(from_ex_comb.data_memory_write_data),
+      .i_ex_comb_data_memory_byte_write_enable(from_ex_comb.data_memory_byte_write_enable),
+      // EX-to-MA registered path (for read enable gating and MMIO)
+      .i_ex_to_ma_data_memory_address(from_ex_to_ma.data_memory_address),
+      .i_ex_to_ma_is_load_instruction(from_ex_to_ma.is_load_instruction),
+      .i_ex_to_ma_is_lr(from_ex_to_ma.is_lr),
+      .i_ex_to_ma_is_fp_load(from_ex_to_ma.is_fp_load),
+      // AMO unit interface
+      .i_amo_write_enable(amo.write_enable),
+      .i_amo_write_data(amo.write_data),
+      .i_amo_write_address(amo.write_address),
+      .i_amo_stall_for_amo(amo_stall_for_amo),
+      // FP64 load/store sequencer (from MA stage)
+      .i_fp_mem_addr_override(fp_mem_addr_override),
+      .i_fp_mem_address(fp_mem_address),
+      .i_fp_mem_write_data(fp_mem_write_data),
+      .i_fp_mem_byte_write_enable(fp_mem_byte_write_enable),
+      // Stall signals
+      .i_stall_for_mem_write(stall_for_mem_write),
+      .i_pipeline_stall(pipeline_ctrl.stall),
+      // Data memory interface outputs
+      .o_data_mem_addr,
+      .o_data_mem_wr_data,
+      .o_data_mem_per_byte_wr_en,
+      .o_data_mem_read_enable,
+      // MMIO interface outputs
+      .o_mmio_load_addr,
+      .o_mmio_load_valid,
+      // FP write active indicator (needed by L0 cache)
+      .o_fp_mem_write_active(fp_mem_write_active)
+  );
 
   /*
     Stage 5: Memory Access (MA)
@@ -432,33 +435,57 @@ module cpu #(
   /*
     Register File (reads in ID stage, writes in WB stage)
     Read addresses come from PD stage (early source registers) so reads occur in ID stage.
-    Read data is registered at ID→EX boundary, removing regfile from EX critical path.
+    Read data is registered at ID->EX boundary, removing regfile from EX critical path.
     Note: x0 (register 0) is hardwired to zero, so writes to it are blocked.
   */
-  regfile #(
-      .DATA_WIDTH(XLEN)
+  logic [2*XLEN-1:0] int_rf_read_data;
+
+  generic_regfile #(
+      .DATA_WIDTH(XLEN),
+      .NUM_READ_PORTS(2),
+      .HARDWIRE_ZERO(1)
   ) regfile_inst (
       .i_clk,
-      .i_pipeline_ctrl(pipeline_ctrl),
-      .i_from_pd_to_id(from_pd_to_id),  // Read address from PD stage (early source regs)
-      .i_from_ma_to_wb(from_ma_to_wb),
-      .o_rf_to_fwd(rf_to_fwd)
+      .i_write_enable(from_ma_to_wb.regfile_write_enable),
+      .i_write_addr(from_ma_to_wb.instruction.dest_reg),
+      .i_write_data(from_ma_to_wb.regfile_write_data),
+      .i_stall(pipeline_ctrl.stall),
+      .i_read_addr({from_pd_to_id.source_reg_2_early, from_pd_to_id.source_reg_1_early}),
+      .o_read_data(int_rf_read_data)
   );
+
+  assign rf_to_fwd.source_reg_1_data = int_rf_read_data[XLEN-1:0];
+  assign rf_to_fwd.source_reg_2_data = int_rf_read_data[2*XLEN-1:XLEN];
 
   /*
     F extension: Floating-Point Register File
-    32x32 FP registers (f0-f31), with 3 read ports (for FMA) and 1 write port.
+    32x64 FP registers (f0-f31), with 3 read ports (for FMA) and 1 write port.
     Unlike integer regfile, there is no hardwired zero register.
   */
-  fp_regfile #(
-      .DATA_WIDTH(riscv_pkg::FpWidth)
+  localparam int unsigned FpW = riscv_pkg::FpWidth;
+  logic [3*FpW-1:0] fp_rf_read_data;
+
+  generic_regfile #(
+      .DATA_WIDTH(FpW),
+      .NUM_READ_PORTS(3),
+      .HARDWIRE_ZERO(0)
   ) fp_regfile_inst (
       .i_clk,
-      .i_pipeline_ctrl(pipeline_ctrl),
-      .i_from_pd_to_id(from_pd_to_id),  // Read addresses from PD stage
-      .i_from_ma_to_wb(from_ma_to_wb),  // Write data from WB stage
-      .o_fp_rf_to_fwd (fp_rf_to_fwd)
+      .i_write_enable(from_ma_to_wb.fp_regfile_write_enable),
+      .i_write_addr(from_ma_to_wb.fp_dest_reg),
+      .i_write_data(from_ma_to_wb.fp_regfile_write_data),
+      .i_stall(pipeline_ctrl.stall),
+      .i_read_addr({
+        from_pd_to_id.fp_source_reg_3_early,
+        from_pd_to_id.source_reg_2_early,
+        from_pd_to_id.source_reg_1_early
+      }),
+      .o_read_data(fp_rf_read_data)
   );
+
+  assign fp_rf_to_fwd.fp_source_reg_1_data = fp_rf_read_data[FpW-1:0];
+  assign fp_rf_to_fwd.fp_source_reg_2_data = fp_rf_read_data[2*FpW-1:FpW];
+  assign fp_rf_to_fwd.fp_source_reg_3_data = fp_rf_read_data[3*FpW-1:2*FpW];
 
   // L0 data cache - reduces memory latency for frequently accessed data
   l0_cache #(

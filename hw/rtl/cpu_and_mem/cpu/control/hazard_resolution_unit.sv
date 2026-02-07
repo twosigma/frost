@@ -85,9 +85,7 @@ module hazard_resolution_unit #(
     output logic o_stall_for_fpu_input,
     // One-cycle pulse to trigger MMIO read side-effects (UART RX/FIFO pop).
     output logic o_mmio_read_pulse,
-    // TIMING OPTIMIZATION: Replicated stall signal dedicated to memory write path.
-    // This breaks the high-fanout path from FPU valid through stall to memory WEA.
-    // Identical logic to stall_for_trap_check but synthesized as separate copy.
+    // Stall signal for memory write path (same as stall_sources_for_trap, excludes CSR stall).
     output logic o_stall_for_mem_write,
     output logic o_rst_done,
     output logic o_vld,
@@ -255,31 +253,13 @@ module hazard_resolution_unit #(
   // F extension: fpu_inflight_hazard uses combinational signal since it compares registered values
   // and needs to clear immediately when the FPU operation completes
   //
-  // Use reduction-OR to encourage a balanced tree and trim OR-chain depth.
-  logic stall_sources;
-  assign stall_sources = |{
-      stall_for_multiply_divide_optimized,
-      stall_for_load_use_hazard,
-      fp_load_use_hazard_early,
-      fp_load_ma_hazard_stall,
-      i_stall_for_amo,
-      i_stall_for_fp_mem,
-      i_stall_for_fp_forward_pipeline,
-      fpu_stall_gated,
-      fpu_inflight_hazard,
-      fpu_single_to_pipelined_hazard,
-      fp_to_int_to_int_to_fp_hazard,
-      csr_fflags_read_hazard,
-      stall_for_csr_read,
-      mmio_load_stall,
-      i_stall_for_wfi
-  };
-
-  // Stall sources excluding CSR read stall - used for trap check.
+  // stall_sources_for_trap excludes CSR read stall - used for trap check and memory write path.
   // When a trap fires, the CSR instruction will be flushed anyway, so blocking
   // the trap for CSR read data is unnecessary. This allows traps to fire
   // immediately when interrupt_pending becomes 1, without waiting for a
   // potentially stalling CSR instruction to complete.
+  //
+  // Use reduction-OR to encourage a balanced tree and trim OR-chain depth.
   logic stall_sources_for_trap;
   assign stall_sources_for_trap = |{
       stall_for_multiply_divide_optimized,
@@ -298,27 +278,12 @@ module hazard_resolution_unit #(
       i_stall_for_wfi
   };
 
-  // TIMING OPTIMIZATION: Replicated stall signal for memory write enable path.
-  // Identical logic to stall_sources_for_trap but kept as separate net to reduce fanout.
-  // The KEEP attribute prevents Vivado from merging this with stall_sources_for_trap.
-  (* KEEP = "TRUE" *) logic stall_for_mem_write;
-  assign stall_for_mem_write = |{
-      stall_for_multiply_divide_optimized,
-      stall_for_load_use_hazard,
-      fp_load_use_hazard_early,
-      fp_load_ma_hazard_stall,
-      i_stall_for_amo,
-      i_stall_for_fp_mem,
-      i_stall_for_fp_forward_pipeline,
-      fpu_stall_gated,
-      fpu_inflight_hazard,
-      fpu_single_to_pipelined_hazard,
-      fp_to_int_to_int_to_fp_hazard,
-      csr_fflags_read_hazard,
-      mmio_load_stall,
-      i_stall_for_wfi
-  };
-  assign o_stall_for_mem_write = stall_for_mem_write;
+  // Full stall sources including CSR read stall (for pipeline stall generation)
+  logic stall_sources;
+  assign stall_sources = stall_sources_for_trap | stall_for_csr_read;
+
+  // Memory write path uses stall_sources_for_trap (same logic, no replication needed)
+  assign o_stall_for_mem_write = stall_sources_for_trap;
 
   // ===========================================================================
   // Internal Pipeline Control Signal Generation

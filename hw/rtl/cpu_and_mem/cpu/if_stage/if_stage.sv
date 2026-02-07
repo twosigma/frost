@@ -235,12 +235,10 @@ module if_stage #(
   logic [31:0] ras_spanning_instr;
 
   assign sel_spanning_effective = use_saved_values ? sel_spanning_saved : sel_spanning;
-  assign ras_spanning_instr = use_saved_values ? spanning_instr_saved : spanning_instr;
+  assign ras_spanning_instr = spanning_instr_sc;
 
-  assign ras_instruction = sel_spanning_effective ? ras_spanning_instr :
-                           (use_saved_values ? effective_instr_saved : effective_instr);
-  assign ras_raw_parcel = sel_spanning_effective ? ras_spanning_instr[15:0] :
-                          (use_saved_values ? raw_parcel_saved : raw_parcel);
+  assign ras_instruction = sel_spanning_effective ? ras_spanning_instr : effective_instr_sc;
+  assign ras_raw_parcel = sel_spanning_effective ? ras_spanning_instr[15:0] : raw_parcel_sc;
   assign ras_is_compressed = sel_spanning_effective ? 1'b0 :
                              (use_saved_values ? is_compressed_for_buffer : is_compressed);
 
@@ -293,7 +291,7 @@ module if_stage #(
       // IMPORTANT: Use saved link_address when using saved instruction data. When coming
       // out of stall, the saved instruction triggers RAS push/pop but link_address is
       // now for the NEW instruction. Using the wrong link_address corrupts RAS.
-      .i_link_address(use_saved_values ? link_address_saved : link_address),
+      .i_link_address(link_address_sc),
 
       // RAS misprediction recovery (from EX stage)
       .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
@@ -480,26 +478,73 @@ module if_stage #(
   // Save raw instruction data when stall begins for restoration after unstall.
   // This is needed because BRAM output changes while stalled.
 
-  logic [15:0] raw_parcel_saved;
-  logic [31:0] effective_instr_saved;
-  logic [31:0] spanning_instr_saved;
   logic        sel_nop_saved;
   logic        sel_spanning_saved;
-  logic        sel_compressed_saved;
 
+  // Stall-capture outputs (muxed: stall_registered ? saved : live)
+  logic [15:0] raw_parcel_sc;
+  logic [31:0] effective_instr_sc;
+  logic [31:0] spanning_instr_sc;
+  logic        sel_compressed_sc;
+
+  stall_capture_reg #(
+      .WIDTH(16)
+  ) u_raw_parcel_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(raw_parcel),
+      .o_data(raw_parcel_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(32)
+  ) u_effective_instr_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(effective_instr),
+      .o_data(effective_instr_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(32)
+  ) u_spanning_instr_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(spanning_instr),
+      .o_data(spanning_instr_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_sel_compressed_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(sel_compressed),
+      .o_data(sel_compressed_sc)
+  );
+
+  // sel_nop_saved and sel_spanning_saved have non-standard flush behavior:
+  // sel_nop_saved flushes to 1'b1 (not '0), and both are also passed as raw
+  // saved values to prediction_metadata_tracker, so they remain manual.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
-      // Flush invalidates pre-flush state; keep only selection controls
       sel_nop_saved <= 1'b1;
       sel_spanning_saved <= 1'b0;
-      sel_compressed_saved <= 1'b0;
     end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
-      raw_parcel_saved <= raw_parcel;
-      effective_instr_saved <= effective_instr;
-      spanning_instr_saved <= spanning_instr;
       sel_nop_saved <= sel_nop;
       sel_spanning_saved <= sel_spanning;
-      sel_compressed_saved <= sel_compressed;
     end
   end
 
@@ -535,17 +580,16 @@ module if_stage #(
   assign use_saved_values = i_pipeline_ctrl.stall_registered;
 
   // Raw parcel output: use saved during stall
-  assign o_from_if_to_pd.raw_parcel = use_saved_values ? raw_parcel_saved : raw_parcel;
+  assign o_from_if_to_pd.raw_parcel = raw_parcel_sc;
 
   // Selection signals
   assign o_from_if_to_pd.sel_nop = use_saved_values ? sel_nop_saved : sel_nop;
   assign o_from_if_to_pd.sel_spanning = use_saved_values ? sel_spanning_saved : sel_spanning;
-  assign o_from_if_to_pd.sel_compressed = use_saved_values ? sel_compressed_saved : sel_compressed;
+  assign o_from_if_to_pd.sel_compressed = sel_compressed_sc;
 
   // Pre-assembled instructions for PD stage mux
-  assign o_from_if_to_pd.spanning_instr = use_saved_values ? spanning_instr_saved : spanning_instr;
-  assign o_from_if_to_pd.effective_instr = use_saved_values ? effective_instr_saved :
-                                                              effective_instr;
+  assign o_from_if_to_pd.spanning_instr = spanning_instr_sc;
+  assign o_from_if_to_pd.effective_instr = effective_instr_sc;
 
   // PC output: use spanning PC when in spanning mode
   assign o_from_if_to_pd.program_counter = spanning_in_progress ? spanning_pc : pc_reg;
@@ -554,7 +598,7 @@ module if_stage #(
   // Link address = instruction_pc + 2 (compressed) or + 4 (32-bit)
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
-  logic [XLEN-1:0] link_address_saved;
+  logic [XLEN-1:0] link_address_sc;
 
   // Determine if current instruction is compressed for link address calculation
   logic is_compressed_for_link;
@@ -567,13 +611,19 @@ module if_stage #(
   assign link_address = instruction_pc + (is_compressed_for_link ?
                         riscv_pkg::PcIncrementCompressed : riscv_pkg::PcIncrement32bit);
 
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
-      link_address_saved <= link_address;
-    end
-  end
+  stall_capture_reg #(
+      .WIDTH(XLEN)
+  ) u_link_address_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(link_address),
+      .o_data(link_address_sc)
+  );
 
-  assign o_from_if_to_pd.link_address = use_saved_values ? link_address_saved : link_address;
+  assign o_from_if_to_pd.link_address = link_address_sc;
 
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
@@ -582,11 +632,10 @@ module if_stage #(
   // The checkpoint is taken at the time of RAS prediction and passed through the
   // pipeline for misprediction recovery in EX stage.
 
-  logic                             ras_predicted_saved;
-  logic [                 XLEN-1:0] ras_predicted_target_saved;
-  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_saved;
-  logic [  riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_saved;
+  logic ras_predicted_saved;
 
+  // ras_predicted_saved has a non-standard flush condition (includes
+  // prediction_holdoff), so it remains a manual always_ff block.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe || prediction_holdoff) begin
       // Clear control bit on flush or prediction-driven control flow change.
@@ -596,13 +645,46 @@ module if_stage #(
       ras_predicted_saved <= ras_predicted;
     end
   end
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
-      ras_predicted_target_saved <= ras_predicted_target;
-      ras_checkpoint_tos_saved <= ras_checkpoint_tos;
-      ras_checkpoint_valid_count_saved <= ras_checkpoint_valid_count;
-    end
-  end
+
+  logic [                 XLEN-1:0] ras_predicted_target_sc;
+  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_sc;
+  logic [  riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_sc;
+
+  stall_capture_reg #(
+      .WIDTH(XLEN)
+  ) u_ras_predicted_target_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(ras_predicted_target),
+      .o_data(ras_predicted_target_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(riscv_pkg::RasPtrBits)
+  ) u_ras_checkpoint_tos_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(ras_checkpoint_tos),
+      .o_data(ras_checkpoint_tos_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(riscv_pkg::RasPtrBits + 1)
+  ) u_ras_checkpoint_valid_count_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(ras_checkpoint_valid_count),
+      .o_data(ras_checkpoint_valid_count_sc)
+  );
 
   // Output RAS metadata - clear for NOP/spanning, use saved during stall
   logic sel_nop_effective;
@@ -610,13 +692,9 @@ module if_stage #(
 
   assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
                                          (use_saved_values ? ras_predicted_saved : ras_predicted);
-  assign o_from_if_to_pd.ras_predicted_target = use_saved_values ? ras_predicted_target_saved :
-                                                                   ras_predicted_target;
-  assign o_from_if_to_pd.ras_checkpoint_tos = use_saved_values ? ras_checkpoint_tos_saved :
-                                                                 ras_checkpoint_tos;
-  assign o_from_if_to_pd.ras_checkpoint_valid_count = use_saved_values ?
-                                                      ras_checkpoint_valid_count_saved :
-                                                      ras_checkpoint_valid_count;
+  assign o_from_if_to_pd.ras_predicted_target = ras_predicted_target_sc;
+  assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos_sc;
+  assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count_sc;
 
   // ===========================================================================
   // Prediction Metadata Tracker

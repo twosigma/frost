@@ -107,23 +107,21 @@ module fp_convert #(
   logic fp_is_zero, fp_is_inf, fp_is_nan, fp_is_subnormal;
   logic [MantBits-1:0] fp_mantissa;
 
-  assign fp_sign = fp_operand_reg[FP_WIDTH-1];
-  assign fp_exp  = fp_operand_reg[FP_WIDTH-2-:ExpBits];
-  assign fp_mant = fp_operand_reg[FracBits-1:0];
-
-  fp_classify_operand #(
-      .EXP_BITS (ExpBits),
-      .FRAC_BITS(FracBits)
-  ) u_classify (
-      .i_exp(fp_exp),
-      .i_frac(fp_mant),
+  fp_operand_unpacker #(
+      .FP_WIDTH(FP_WIDTH)
+  ) u_unpack (
+      .i_operand(fp_operand_reg),
+      .o_sign(fp_sign),
+      .o_exp(fp_exp),
+      .o_exp_adj(),
+      .o_frac(fp_mant),
+      .o_mant(fp_mantissa),
       .o_is_zero(fp_is_zero),
       .o_is_subnormal(fp_is_subnormal),
       .o_is_inf(fp_is_inf),
       .o_is_nan(fp_is_nan),
       .o_is_snan()
   );
-  assign fp_mantissa = (fp_exp == '0) ? {1'b0, fp_mant} : {1'b1, fp_mant};
 
   // Unbiased exponent
   logic signed [ExpExtBits-1:0] unbiased_exp;
