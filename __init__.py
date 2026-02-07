@@ -14,9 +14,10 @@
 
 """FROST - RISC-V processor package.
 
-This package contains a complete RV32IMAB RISC-V processor implementation
-with Zicsr, Zifencei, Zicond, Zbkb, and Zihintpause extensions,
-along with verification infrastructure, build tools, and software libraries.
+This package contains a complete RV32GCB (G = IMAFD) RISC-V processor
+implementation with full machine-mode support and additional extensions
+(Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause), along with
+verification infrastructure, build tools, and software libraries.
 
 Note: B extension = Zba + Zbb + Zbs (address generation, basic bit manipulation,
 single-bit operations).

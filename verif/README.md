@@ -211,7 +211,7 @@ Real-time verification monitors that continuously check (`monitors.py`):
 | Parameter                      | Default | Description                                        |
 |--------------------------------|---------|----------------------------------------------------|
 | `num_loops`                    | 16000   | Number of random instructions to generate          |
-| `min_coverage_count`           | 200     | Minimum executions required per instruction type   |
+| `min_coverage_count`           | 80      | Minimum executions required per instruction type   |
 | `memory_init_size`             | 0x2000  | Size of initialized memory region (8KB)            |
 | `clock_period_ns`              | 3       | Clock period in nanoseconds                        |
 | `reset_cycles`                 | 3       | Number of clock cycles to hold reset               |
