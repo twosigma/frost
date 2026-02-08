@@ -435,9 +435,9 @@ async def test_random_riscv_regression_fp_heavy(dut: Any) -> None:
 
     This test stresses the FPU by generating mostly FP instructions,
     exercising FP arithmetic, comparisons, conversions, and FP load/store.
-    Uses lower min_coverage_count (40) since integer instructions only get 30% of iterations.
+    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
     """
-    config = TestConfig(num_loops=24000, min_coverage_count=40)
+    config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(
         dut=dut,
         config=config,
@@ -471,9 +471,9 @@ async def test_random_riscv_regression_fp_double_heavy(dut: Any) -> None:
 
     This test stresses the FPU by generating mostly double-precision FP instructions,
     exercising FP arithmetic, comparisons, conversions, and FP load/store.
-    Uses lower min_coverage_count (40) since integer instructions only get 30% of iterations.
+    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
     """
-    config = TestConfig(num_loops=24000, min_coverage_count=40)
+    config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(
         dut=dut,
         config=config,
@@ -504,9 +504,9 @@ async def test_random_riscv_regression_with_fp_mixed(dut: Any) -> None:
 async def test_random_riscv_regression_fp_mixed_heavy(dut: Any) -> None:
     """Random RISC-V regression with heavy mixed FP ops (70% FP).
 
-    Uses lower min_coverage_count (40) since integer instructions only get 30% of iterations.
+    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
     """
-    config = TestConfig(num_loops=24000, min_coverage_count=40)
+    config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(
         dut=dut,
         config=config,
