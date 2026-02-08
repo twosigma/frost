@@ -1,0 +1,23 @@
+[tasks]
+bmc    # Bounded model checking - prove properties hold for N cycles
+cover  # Cover - prove interesting scenarios are reachable
+
+[options]
+bmc: mode bmc
+bmc: depth 25
+cover: mode cover
+cover: depth 30
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv hru_fp_hazards.sv
+read -formal -sv hazard_resolution_unit.sv
+prep -top hazard_resolution_unit
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/control/hru_fp_hazards.sv
+../hw/rtl/cpu_and_mem/cpu/control/hazard_resolution_unit.sv

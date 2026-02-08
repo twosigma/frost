@@ -25,6 +25,9 @@ def pytest_configure(config: Any) -> None:
     """Register custom pytest markers."""
     config.addinivalue_line("markers", "cocotb: mark test as a cocotb simulation test")
     config.addinivalue_line("markers", "synthesis: mark test as a synthesis test")
+    config.addinivalue_line(
+        "markers", "formal: mark test as a formal verification test"
+    )
     config.addinivalue_line("markers", "slow: mark test as slow running")
 
 

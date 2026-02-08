@@ -189,6 +189,7 @@ frost/
 │   ├── models/               # Software reference models
 │   ├── encoders/             # Instruction encoding
 │   └── monitors/             # Runtime verification
+├── formal/                   # Formal verification (SymbiYosys)
 ├── tests/                    # Test runners (pytest integration)
 ├── scripts/                  # Helper scripts (clang-tidy wrapper, etc.)
 ├── fpga/                     # FPGA build and programming scripts
@@ -259,6 +260,7 @@ Running `pytest tests/` exercises:
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL synthesizes cleanly for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+ targets
+- **Formal verification** — SymbiYosys bounded model checking proves pipeline control invariants (stall/flush mutex, hazard detection correctness, reset behavior) for all possible inputs
 
 ### FPGA Deployment
 

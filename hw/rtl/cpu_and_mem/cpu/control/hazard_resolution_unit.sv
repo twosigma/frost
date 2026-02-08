@@ -501,4 +501,126 @@ module hazard_resolution_unit #(
   assign o_pipeline_ctrl.trap_taken_registered = trap_taken_registered;
   assign o_pipeline_ctrl.mret_taken_registered = mret_taken_registered;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+  // Only compiled when FORMAL is defined (SymbiYosys sets this automatically).
+  // These assertions are invisible to synthesis and simulation.
+`ifdef FORMAL
+
+  // Assume reset is active at startup so registers start in known state.
+  initial assume (i_rst);
+
+  // Track whether we've had at least 2 clock edges (for $past safety)
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      // Property 1: Stall and flush are mutually exclusive.
+      p1_stall_flush_mutex : assert (!(pipeline_stall && pipeline_flush));
+
+      // Property 5: Trap/mret override stalls.
+      p5a_trap_overrides_stall : assert (!i_trap_taken || !pipeline_stall);
+
+      p5b_mret_overrides_stall : assert (!i_mret_taken || !pipeline_stall);
+
+      // Property 6: MMIO stall counter never exceeds 2.
+      p6a_mmio_counter_bounded : assert (mmio_stall_count <= 2'd2);
+
+      // MMIO read pulse fires only when counter is 0.
+      p6b_mmio_pulse_at_zero : assert (!mmio_read_pulse || (mmio_stall_count == 2'd0));
+
+      // MMIO read pulse requires an MMIO load in MA.
+      p6c_mmio_pulse_needs_load : assert (!mmio_read_pulse || mmio_load_in_ma);
+
+      // Property 7: vld requires top bit of shift register.
+      p7a_vld_needs_shift_reg : assert (!o_vld || validation_shift_register[NUM_PIPELINE_STAGES-1]);
+
+      // Valid output requires pipeline not stalled.
+      p7b_vld_not_during_stall : assert (!o_vld || !pipeline_stall);
+
+      // Property 8: Load-use hazard stall requires detected hazard.
+      p8a_load_stall_needs_hazard : assert (!stall_for_load_use_hazard || load_use_hazard_detected);
+
+      // Load-use hazard detected requires a registered load or AMO hazard.
+      p8b_hazard_needs_load_or_amo :
+      assert (!load_use_hazard_detected || (load_potential_hazard_reg || amo_potential_hazard_reg));
+
+      // Load-use stall must not fire when multiply/divide takes precedence.
+      p8c_mul_div_precedence :
+      assert (!stall_for_load_use_hazard || !stall_for_multiply_divide_optimized);
+
+      // Cache hit prevents hazard detection (when not back-to-back).
+      p8d_cache_hit_prevents_hazard :
+      assert (!(cache_hit_on_load_reg && !is_load_registered) || !load_use_hazard_detected);
+
+      // is_load_registered prevents back-to-back load-use stalls.
+      p8e_back_to_back_prevention : assert (!is_load_registered || !load_use_hazard_detected);
+
+      // Property 9: CSR stall is at most one cycle.
+      p9_csr_one_cycle : assert (!csr_read_waiting || !stall_for_csr_read);
+
+      // Property 10: Output struct consistency.
+      p10a_output_reset : assert (o_pipeline_ctrl.reset == pipeline_reset);
+
+      p10b_output_stall : assert (o_pipeline_ctrl.stall == pipeline_stall);
+
+      p10c_output_flush : assert (o_pipeline_ctrl.flush == pipeline_flush);
+
+      // Property 11: FP load hazard seen prevents repeated stalls.
+      p11_fp_no_repeat : assert (!fp_load_hazard_seen || !fp_load_use_hazard_early);
+    end
+
+    // Sequential properties (need valid $past)
+    if (f_past_valid && !i_rst && $past(!i_rst)) begin
+      // Property 2: Reset clears all registered hazard state.
+      if ($past(pipeline_reset)) begin
+        p2a_reset_load_hazard : assert (!load_potential_hazard_reg);
+        p2b_reset_amo_hazard : assert (!amo_potential_hazard_reg);
+        p2c_reset_branch_reg : assert (!branch_taken_registered);
+        p2d_reset_trap_reg : assert (!trap_taken_registered);
+        p2e_reset_mret_reg : assert (!mret_taken_registered);
+        p2f_reset_stall_reg : assert (!stall_registered);
+        p2g_reset_validation : assert (validation_shift_register == '0);
+        p2h_reset_is_load_reg : assert (!is_load_registered);
+      end
+
+      // Property 3: Flush clears hazard registers.
+      if ($past(pipeline_flush) && !$past(pipeline_reset)) begin
+        p3a_flush_clears_load : assert (!load_potential_hazard_reg);
+        p3b_flush_clears_amo : assert (!amo_potential_hazard_reg);
+      end
+
+      // Property 4: Stale flush prevention (critical documented fix).
+      // During a stall, branch/trap/mret registered signals must be cleared
+      // to prevent spurious flushes when the stall ends.
+      if ($past(pipeline_stall) && !$past(pipeline_reset)) begin
+        p4a_stall_clears_branch : assert (!branch_taken_registered);
+        p4b_stall_clears_trap : assert (!trap_taken_registered);
+        p4c_stall_clears_mret : assert (!mret_taken_registered);
+      end
+    end
+  end
+
+  // Cover properties - prove these scenarios are reachable
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_load_use_stall : cover (stall_for_load_use_hazard);
+      cover_branch_flush : cover (pipeline_flush && branch_taken_registered);
+      cover_trap_flush : cover (pipeline_flush && i_trap_taken);
+      cover_mret_flush : cover (pipeline_flush && i_mret_taken);
+      cover_multiply_stall : cover (stall_for_multiply_divide_optimized);
+      cover_mmio_pulse : cover (mmio_read_pulse);
+      cover_csr_stall : cover (stall_for_csr_read);
+      cover_vld_asserts : cover (o_vld);
+      cover_fpu_stall : cover (fpu_stall_gated);
+      cover_cache_hit_avoids_stall :
+      cover (cache_hit_on_load_reg && load_potential_hazard_reg && !load_use_hazard_detected);
+    end
+  end
+
+`endif  // FORMAL
+
 endmodule : hazard_resolution_unit

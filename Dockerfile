@@ -25,6 +25,12 @@ ARG VERILATOR_VERSION=5.044
 # Yosys version (Ubuntu 24.04 apt has 0.33, we need 0.60+)
 ARG YOSYS_VERSION=0.60
 
+# SymbiYosys version (formal verification frontend for Yosys)
+ARG SBY_VERSION=0.62
+
+# Z3 SMT solver version (used by SymbiYosys for bounded model checking)
+ARG Z3_VERSION=4.15.0
+
 # xPack RISC-V toolchain version (bare-metal, includes newlib)
 ARG XPACK_RISCV_VERSION=15.2.0-1
 
@@ -91,6 +97,23 @@ RUN git clone https://github.com/YosysHQ/yosys.git /tmp/yosys \
     && make install \
     && rm -rf /tmp/yosys
 
+# Build SymbiYosys from source (formal verification frontend for Yosys)
+RUN git clone https://github.com/YosysHQ/sby.git /tmp/sby \
+    && cd /tmp/sby \
+    && git checkout v${SBY_VERSION} \
+    && make install \
+    && rm -rf /tmp/sby
+
+# Build Z3 SMT solver from source (yosys-smtbmc needs the z3 CLI binary)
+RUN git clone https://github.com/Z3Prover/z3.git /tmp/z3 \
+    && cd /tmp/z3 \
+    && git checkout z3-${Z3_VERSION} \
+    && python3 scripts/mk_make.py \
+    && cd build \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/z3
+
 # Install xPack RISC-V GCC toolchain (bare-metal with newlib)
 RUN curl -fL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-linux-x64.tar.gz \
     | tar -xz -C /opt \
@@ -109,7 +132,8 @@ RUN pip install --no-cache-dir --break-system-packages \
     pytest-cov \
     mypy \
     ruff \
-    pre-commit
+    pre-commit \
+    click
 
 # Set working directory
 WORKDIR /workspace
