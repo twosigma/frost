@@ -78,6 +78,12 @@ MEMORY_BYTE_OFFSET_MASK: Final[int] = 0x3
 MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
 
+MMIO_BASE_ADDR: Final[int] = 0x40000000
+"""Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
+
+MMIO_SIZE_BYTES: Final[int] = 0x28
+"""Size of MMIO peripheral range in bytes (40 bytes: 0x40000000-0x40000027)."""
+
 # ============================================================================
 # Register File Configuration
 # ============================================================================

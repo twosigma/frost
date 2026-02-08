@@ -49,12 +49,15 @@ Example Usage:
 import random
 from typing import NamedTuple
 from config import (
+    MASK32,
     IMM_12BIT_MIN,
     IMM_12BIT_MAX,
     SHIFT_AMOUNT_MASK,
     HALFWORD_ALIGNMENT,
     WORD_ALIGNMENT,
     DOUBLEWORD_ALIGNMENT,
+    MMIO_BASE_ADDR,
+    MMIO_SIZE_BYTES,
 )
 from encoders.op_tables import (
     R_ALU,
@@ -181,6 +184,54 @@ def _is_single_precision_fp_op(operation: str) -> bool:
         return True
     # Default to single-precision for legacy F ops without .s/.d suffix
     return True
+
+
+def _adjust_imm_to_avoid_mmio(
+    rs1_value: int, immediate: int, alignment: int = 1
+) -> int:
+    """Adjust immediate if the effective address would land in the MMIO range.
+
+    The MMIO range (0x40000000-0x40000027) contains hardware peripherals
+    (mtime, UART, etc.) that the software memory model doesn't simulate.
+    Random loads/stores hitting these addresses cause model-vs-DUT mismatches
+    because the model reads from a masked RAM address while the DUT reads from
+    the actual MMIO hardware register.
+
+    Args:
+        rs1_value: Base register value
+        immediate: Current immediate value
+        alignment: Address alignment requirement (1, 2, 4, or 8)
+
+    Returns:
+        Adjusted immediate that avoids MMIO addresses, or original if not needed.
+    """
+    effective_address = (rs1_value + immediate) & MASK32
+    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
+
+    if not (MMIO_BASE_ADDR <= effective_address < mmio_end):
+        return immediate
+
+    # Try moving address just past the end of the MMIO range
+    distance_to_end = mmio_end - effective_address
+    if alignment > 1:
+        distance_to_end = ((distance_to_end + alignment - 1) // alignment) * alignment
+    new_imm = immediate + distance_to_end
+    if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
+        return new_imm
+
+    # Try moving address just before the start of the MMIO range
+    distance_to_start = effective_address - MMIO_BASE_ADDR + alignment
+    if alignment > 1:
+        distance_to_start = (
+            (distance_to_start + alignment - 1) // alignment
+        ) * alignment
+    new_imm = immediate - distance_to_start
+    if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
+        return new_imm
+
+    # Fallback: use 0 (extremely rare - only if rs1 is right at MMIO boundary
+    # and both directions overflow the 12-bit immediate range)
+    return 0
 
 
 class InstructionGenerator:
@@ -364,6 +415,21 @@ class InstructionGenerator:
             immediate_value = 0
             # Note: The test framework should ensure rs1 contains a valid aligned address
 
+        # Avoid MMIO addresses for loads and stores (the software memory model
+        # doesn't simulate MMIO peripherals, so these cause model-vs-DUT mismatches)
+        if operation in LOADS or operation in STORES:
+            if operation in ("lh", "lhu", "sh"):
+                mem_alignment = HALFWORD_ALIGNMENT
+            elif operation in ("lw", "sw", "lwu"):
+                mem_alignment = WORD_ALIGNMENT
+            else:
+                mem_alignment = 1
+            immediate_value = _adjust_imm_to_avoid_mmio(
+                register_file_state[source_register_1],
+                immediate_value,
+                mem_alignment,
+            )
+
         # Generate branch/jump offsets
         # With C extension IF stage, PC can be at halfword boundaries. To keep
         # the 32-bit instruction test working (no compressed instructions),
@@ -463,6 +529,17 @@ class InstructionGenerator:
                 constrain_to_memory_size,
             )
         # Other FP ops don't use immediates
+
+        # Avoid MMIO addresses for FP loads and stores
+        if operation in FP_LOADS or operation in FP_STORES:
+            fp_alignment = (
+                DOUBLEWORD_ALIGNMENT if operation in ("fld", "fsd") else WORD_ALIGNMENT
+            )
+            immediate_value = _adjust_imm_to_avoid_mmio(
+                int_register_file_state[source_register_1],
+                immediate_value,
+                fp_alignment,
+            )
 
         return InstructionParams(
             operation=operation,
