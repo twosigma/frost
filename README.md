@@ -103,6 +103,7 @@ Validated with these tool versions:
 | **Synthesis** | Yosys             | 0.60    |
 | **Formal**    | SymbiYosys        | 0.62    |
 |               | Z3                | 4.15.0  |
+|               | Boolector         | 3.2.4   |
 | **FPGA**      | Vivado (optional) | 2025.2  |
 | **Linting**   | pre-commit        | 4.0     |
 |               | clang-format      | 19.0    |
@@ -129,7 +130,7 @@ The Docker image includes:
 - Verilator 5.044 (built from source)
 - Icarus Verilog 12.0
 - Yosys 0.60 (built from source)
-- SymbiYosys 0.62 + Z3 4.15.0 (formal verification)
+- SymbiYosys 0.62 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
 - RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
 - Python 3.12 with Cocotb 2.0.1 and pytest
 - Pre-commit with all linters (clang-format, clang-tidy, Verible, ruff, mypy)

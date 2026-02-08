@@ -114,7 +114,7 @@ This saves approximately 5,500 FFs compared to a pure register-based design.
 | dest_rf         | 1 bit    | FF       | 0=INT (x-reg), 1=FP (f-reg)                    |
 | dest_reg        | 5 bits   | LUTRAM   | Architectural destination (rd)                 |
 | dest_valid      | 1 bit    | FF       | Has destination register                       |
-| value           | 64 bits  | LUTRAM   | Result value (FLEN for FP double support)      |
+| value           | FLEN (64) bits | LUTRAM | Result value (FLEN for FP double support)      |
 | is_store        | 1 bit    | FF       | Is store instruction                           |
 | is_fp_store     | 1 bit    | FF       | Is FP store (FSW/FSD)                          |
 | is_branch       | 1 bit    | FF       | Is branch/jump instruction                     |
@@ -144,9 +144,9 @@ returns the allocated tag (entry index) which becomes the instruction's identifi
 throughout the pipeline.
 
 **Invariant**: Dispatch must not assert `alloc_valid` during flush cycles (`i_flush_en`
-or `i_flush_all`). The `alloc_ready` signal does not gate on flush; instead, dispatch
-is expected to be stalled by the flush controller. An assertion in simulation verifies
-this invariant.
+or `i_flush_all`). The `alloc_ready` signal gates on flush (deasserts during flush
+cycles), but dispatch is also expected to be independently stalled by the flush
+controller. An assertion in simulation verifies this invariant.
 
 ### CDB Write Interface (from Functional Units)
 

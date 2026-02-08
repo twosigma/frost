@@ -1,7 +1,3 @@
-# SymbiYosys working directories (generated per-run)
-*_bmc/
-*_cover/
-*_prove/
-
-# SymbiYosys status database
-status.sqlite
+# SymbiYosys run output directories (e.g., hru_bmc/, trap_unit_cover/)
+# Source files (.sby, README.md) are all at the top level, not in subdirs.
+*/

@@ -67,6 +67,10 @@ FORMAL_TARGETS = [
     FormalTarget("cache_hit.sby", "Cache hit detector - L0 cache hit logic"),
     FormalTarget("cache_write.sby", "Cache write controller - L0 cache writes"),
     FormalTarget("data_mem_arb.sby", "Data memory arbiter - memory interface mux"),
+    FormalTarget(
+        "reorder_buffer.sby",
+        "Reorder buffer - in-order commit with serialization",
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)

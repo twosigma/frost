@@ -31,6 +31,9 @@ ARG SBY_VERSION=0.62
 # Z3 SMT solver version (used by SymbiYosys for bounded model checking)
 ARG Z3_VERSION=4.15.0
 
+# Boolector SMT solver version (word-level solver, efficient for bitvector-heavy designs)
+ARG BOOLECTOR_VERSION=3.2.4
+
 # xPack RISC-V toolchain version (bare-metal, includes newlib)
 ARG XPACK_RISCV_VERSION=15.2.0-1
 
@@ -42,8 +45,9 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     # HDL simulators (Verilator and Yosys built from source below)
     iverilog \
-    # Build tools (shared by Verilator and Yosys)
+    # Build tools (shared by Verilator, Yosys, and Boolector)
     make \
+    cmake \
     git \
     xxd \
     gawk \
@@ -113,6 +117,30 @@ RUN git clone https://github.com/Z3Prover/z3.git /tmp/z3 \
     && make -j$(nproc) \
     && make install \
     && rm -rf /tmp/z3
+
+# Build Boolector SMT solver from source (word-level, efficient for memory arrays)
+# Lingeling (SAT dependency) needs -Wno-error=incompatible-pointer-types for GCC 14+
+# so we build it manually instead of using contrib/setup-lingeling.sh
+RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
+    && cd /tmp/boolector \
+    && git checkout ${BOOLECTOR_VERSION} \
+    && mkdir -p deps/install/lib deps/install/include \
+    && cd deps \
+    && git clone https://github.com/arminbiere/lingeling.git \
+    && cd lingeling \
+    && git checkout 7d5db72420b95ab356c98ca7f7a4681ed2c59c70 \
+    && ./configure.sh -fPIC \
+    && sed -i 's/^CFLAGS=\(.*\)/CFLAGS=\1 -Wno-error=incompatible-pointer-types/' makefile \
+    && make -j$(nproc) \
+    && cp liblgl.a ../install/lib/ \
+    && cp lglib.h ../install/include/ \
+    && cd /tmp/boolector \
+    && ./contrib/setup-btor2tools.sh \
+    && ./configure.sh \
+    && cd build \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/boolector
 
 # Install xPack RISC-V GCC toolchain (bare-metal with newlib)
 RUN curl -fL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-linux-x64.tar.gz \

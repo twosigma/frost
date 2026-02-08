@@ -549,7 +549,7 @@ module reorder_buffer (
       // Partial flush: set tail to flush_tag + 1
       // Use age-based arithmetic to handle wrap correctly (extend 5-bit age to 6-bit)
       tail_ptr <= head_ptr + {1'b0, flush_age} + 1'b1;
-    end else if (i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en) begin
+    end else if (alloc_en) begin
       // Normal allocation: advance tail
       tail_ptr <= tail_ptr + 1'b1;
     end
@@ -868,7 +868,11 @@ module reorder_buffer (
                         head_is_mret && !head_exception &&
                         !i_flush_en && !i_flush_all;
 
-  // Trap pending signal - asserted when exception at head
+  // Trap pending signal - asserted when exception at head.
+  // Note: during the IDLE->TRAP_WAIT transition, both the state check and the
+  // combinational path assert o_trap_pending simultaneously. This overlap is
+  // intentional and benign (result is still 1'b1); the state check sustains
+  // the signal while the combinational term covers the initial detection cycle.
   assign o_trap_pending = (serial_state == SERIAL_TRAP_WAIT) ||
                           (head_ready && head_exception && !i_flush_all);
   assign o_trap_pc = head_pc;
@@ -914,6 +918,9 @@ module reorder_buffer (
       // - Mispredicted taken: redirect to branch_target (actual taken target)
       // - Mispredicted not-taken: redirect to pc+4 (fall-through)
       if (head_is_mret) begin
+        // i_mepc is guaranteed stable here: the MRET handshake
+        // (o_mret_start/i_mret_done) completes before commit_en asserts,
+        // so the trap unit has finished updating mepc by this point.
         o_commit.redirect_pc = i_mepc;
       end else if (head_branch_taken) begin
         // Mispredicted as not-taken but actually taken -> go to taken target
@@ -960,6 +967,7 @@ module reorder_buffer (
   // ===========================================================================
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
   // Check that we don't allocate when full
   always @(posedge i_clk) begin
     if (i_rst_n && i_alloc_req.alloc_valid && full) begin
@@ -968,7 +976,7 @@ module reorder_buffer (
   end
 
   // Check that dispatch doesn't allocate during flush (invariant: dispatch must be stalled)
-  // Note: alloc_ready doesn't gate on flush, so this assertion documents the required behavior
+  // Note: alloc_ready also deasserts during flush, but dispatch should be independently stalled
   always @(posedge i_clk) begin
     if (i_rst_n && i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: Allocation attempted during flush!");
@@ -995,6 +1003,162 @@ module reorder_buffer (
       $warning("Reorder Buffer: Serialization state %0d but head not ready", serial_state);
     end
   end
-`endif
+`endif  // FORMAL
+`endif  // SYNTHESIS
+
+  // ===========================================================================
+  // Formal Verification
+  // ===========================================================================
+
+`ifdef FORMAL
+
+  initial assume (!i_rst_n);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  // Force reset to deassert after the initial cycle and stay deasserted.
+  // Without this, the solver can hold i_rst_n low forever, making all
+  // i_rst_n-gated asserts vacuously true.
+  always @(posedge i_clk) begin
+    if (f_past_valid) assume (i_rst_n);
+  end
+
+  // -------------------------------------------------------------------------
+  // Structural constraints (assumes)
+  // -------------------------------------------------------------------------
+  // These are interface contracts — the upstream dispatch/CDB/branch units
+  // guarantee these conditions. They are intentionally kept as assumes
+  // (not relaxed) because the ROB's correctness depends on them.
+
+  // CDB write and branch update cannot target the same tag simultaneously
+  always_comb begin
+    assume (!(i_cdb_write.valid && i_branch_update.valid &&
+              i_cdb_write.tag == i_branch_update.tag));
+  end
+
+  // alloc_valid not asserted during flush (matches existing simulation assertion)
+  always_comb begin
+    assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
+  end
+
+  // -------------------------------------------------------------------------
+  // Combinational properties (asserts, active when i_rst_n)
+  // -------------------------------------------------------------------------
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      // full and empty cannot both be true
+      p_full_empty_mutex : assert (!(full && empty));
+
+      // count == tail_ptr - head_ptr
+      p_count_consistent : assert (count == (tail_ptr - head_ptr));
+
+      // full iff pointers match with different MSB
+      p_full_matches_ptrs :
+      assert (full ==
+        ((head_ptr[ReorderBufferTagWidth] != tail_ptr[ReorderBufferTagWidth]) &&
+         (head_idx == tail_idx)));
+
+      // empty iff pointers exactly equal
+      p_empty_matches_ptrs : assert (empty == (head_ptr == tail_ptr));
+
+      // alloc_en implies !full
+      p_alloc_not_when_full : assert (!alloc_en || !full);
+
+      // commit_en implies head_valid && head_done
+      p_commit_requires_valid_done : assert (!commit_en || (head_valid && head_done));
+
+      // commit output tag equals head_idx
+      p_commit_only_at_head : assert (!commit_en || (o_commit.tag == head_idx));
+
+      // commit_stall implies !commit_en
+      p_serial_stall_blocks_commit : assert (!commit_stall || !commit_en);
+    end
+  end
+
+  // -------------------------------------------------------------------------
+  // Sequential properties (asserts, require f_past_valid)
+  // -------------------------------------------------------------------------
+
+  always @(posedge i_clk) begin
+    if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+      // After allocation, rob_valid at $past(tail_idx) is set
+      if ($past(alloc_en)) begin
+        p_alloc_sets_valid : assert (rob_valid[$past(tail_idx)]);
+      end
+
+      // After commit, rob_valid at $past(head_idx) is cleared
+      if ($past(commit_en) && !$past(i_flush_all) && !$past(i_flush_en)) begin
+        p_commit_clears_valid : assert (!rob_valid[$past(head_idx)]);
+      end
+
+      // After flush_all, buffer is empty
+      if ($past(i_flush_all)) begin
+        p_flush_all_empties : assert (empty);
+      end
+
+      // o_csr_start only in IDLE with CSR at head
+      if ($past(o_csr_start)) begin
+        p_csr_start_contract : assert ($past(serial_state) == SERIAL_IDLE && $past(head_is_csr));
+      end
+
+      // o_mret_start only in IDLE with MRET at head
+      if ($past(o_mret_start)) begin
+        p_mret_start_contract : assert ($past(serial_state) == SERIAL_IDLE && $past(head_is_mret));
+      end
+
+      // o_fence_i_flush is registered (one cycle after commit of FENCE.I)
+      p_fence_i_flush_delayed :
+      assert (o_fence_i_flush == ($past(commit_en) && $past(head_is_fence_i)));
+    end
+
+    // Reset properties (check state after reset deasserts)
+    if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
+      // After reset, all rob_valid bits are 0
+      p_reset_clears_valid : assert (rob_valid == '0);
+
+      // After reset, head_ptr and tail_ptr are 0
+      p_reset_clears_ptrs : assert (head_ptr == '0 && tail_ptr == '0);
+
+      // After reset, serial_state is IDLE
+      p_reset_serial_idle : assert (serial_state == SERIAL_IDLE);
+    end
+  end
+
+  // -------------------------------------------------------------------------
+  // Cover properties
+  // -------------------------------------------------------------------------
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      // Allocation and commit in same cycle
+      cover_alloc_and_commit : cover (alloc_en && commit_en);
+
+      // Buffer reaches full state
+      cover_buffer_full : cover (full);
+
+      // Partial flush occurs
+      cover_partial_flush : cover (i_flush_en);
+
+      // CSR serialization completes
+      cover_csr_serialize : cover (serial_state == SERIAL_CSR_EXEC && i_csr_done);
+
+      // WFI wakes on interrupt
+      cover_wfi_wakeup : cover (serial_state == SERIAL_WFI_WAIT && i_interrupt_pending);
+
+      // MRET completes
+      cover_mret_complete : cover (serial_state == SERIAL_MRET_EXEC && i_mret_done);
+
+      // Exception triggers trap
+      cover_exception_trap : cover (serial_state == SERIAL_TRAP_WAIT);
+
+      // FENCE.I commit generates flush pulse
+      cover_fence_i_flush : cover (o_fence_i_flush);
+    end
+  end
+
+`endif  // FORMAL
 
 endmodule : reorder_buffer
