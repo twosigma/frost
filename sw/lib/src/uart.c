@@ -28,19 +28,9 @@
  */
 
 #include "uart.h"
+#include "mmio.h"
 
 #include <stdarg.h>
-#include <stdint.h> /* for uint64_t on 64-bit targets */
-
-/* MMIO registers for UART TX and RX */
-/* These addresses are provided by the linker script (sw/common/link.ld) */
-extern const unsigned long UART_ADDR;
-extern const unsigned long UART_RX_DATA_ADDR;
-extern const unsigned long UART_RX_STATUS_ADDR;
-
-#define UART_TX_REG (*(volatile uint8_t *) &UART_ADDR)
-#define UART_RX_DATA_REG (*(volatile uint8_t *) &UART_RX_DATA_ADDR)
-#define UART_RX_STATUS_REG (*(volatile uint32_t *) &UART_RX_STATUS_ADDR)
 
 /* ------------------------------------------------------------------------- */
 /* basic helpers                                                             */
@@ -50,8 +40,8 @@ void uart_putchar(char c)
 {
     /* Terminals that expect CR+LF line endings need CR (carriage return) before LF (line feed) */
     if (c == '\n')
-        UART_TX_REG = (uint8_t) '\r';
-    UART_TX_REG = (uint8_t) c;
+        UART_TX = (uint8_t) '\r';
+    UART_TX = (uint8_t) c;
 }
 
 void uart_puts(const char *s)
@@ -126,7 +116,8 @@ static void uart_put_signed_decimal(long long val, int max_digits)
 {
     if (val < 0) {
         uart_putchar('-');
-        val = -val;
+        uart_put_unsigned_decimal((unsigned long long) (-(val + 1LL)) + 1ULL, max_digits);
+        return;
     }
     uart_put_unsigned_decimal((unsigned long long) val, max_digits);
 }
@@ -347,7 +338,7 @@ void uart_printf(const char *fmt, ...)
 int uart_rx_available(void)
 {
     /* Status register bit 0 indicates data available */
-    return (UART_RX_STATUS_REG & 1) != 0;
+    return (UART_RX_STATUS & 1) != 0;
 }
 
 char uart_getchar(void)
@@ -356,14 +347,14 @@ char uart_getchar(void)
     while (!uart_rx_available())
         ;
     /* Reading the data register consumes the byte from the FIFO */
-    return (char) UART_RX_DATA_REG;
+    return (char) UART_RX_DATA;
 }
 
 int uart_getchar_nonblocking(void)
 {
     if (!uart_rx_available())
         return -1;
-    return (int) UART_RX_DATA_REG;
+    return (int) UART_RX_DATA;
 }
 
 size_t uart_getline(char *buf, size_t maxlen)

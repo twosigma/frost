@@ -84,7 +84,7 @@ MABI ?= ilp32d
 #
 #   -ffunction-sections -fdata-sections:
 #     Place each function and data item in its own section. Combined with the
-#     linker's --gc-sections flag, this allows unused functoins to be removed
+#     linker's --gc-sections flag, this allows unused functions to be removed
 #     from the final binary. Essential for library code like uart.c where apps
 #     may only use a subset of functions (e.g., Coremark uses uart_printf but
 #     not uart_getchar).

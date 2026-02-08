@@ -28,17 +28,8 @@
 
 #include <stdint.h>
 
+#include "string.h"
 #include "uart.h"
-
-/* Simple string comparison */
-static int str_equal(const char *a, const char *b)
-{
-    while (*a && *b) {
-        if (*a++ != *b++)
-            return 0;
-    }
-    return *a == *b;
-}
 
 int main(void)
 {
@@ -69,7 +60,7 @@ int main(void)
         }
 
         /* Process commands */
-        if (str_equal(line_buffer, "help")) {
+        if (strcmp(line_buffer, "help") == 0) {
             uart_puts("\nAvailable commands:\n");
             uart_puts("  help     - Show this help message\n");
             uart_puts("  echo     - Enter character echo mode (Ctrl+C to exit)\n");
@@ -77,7 +68,7 @@ int main(void)
             uart_puts("  count    - Count received characters for 10 seconds\n");
             uart_puts("  info     - Show UART status information\n");
             uart_puts("\n");
-        } else if (str_equal(line_buffer, "echo")) {
+        } else if (strcmp(line_buffer, "echo") == 0) {
             uart_puts("\nEcho mode: Type characters to see them echoed.\n");
             uart_puts("Press Ctrl+C (0x03) to exit.\n\n");
 
@@ -93,7 +84,7 @@ int main(void)
                 if (c == '\r')
                     uart_putchar('\n');
             }
-        } else if (str_equal(line_buffer, "hex")) {
+        } else if (strcmp(line_buffer, "hex") == 0) {
             uart_puts("\nHex dump mode: Shows hex value of each character.\n");
             uart_puts("Press Ctrl+C (0x03) to exit.\n\n");
 
@@ -108,7 +99,7 @@ int main(void)
                             (c >= 32 && c < 127) ? c : '.',
                             (unsigned int) (unsigned char) c);
             }
-        } else if (str_equal(line_buffer, "count")) {
+        } else if (strcmp(line_buffer, "count") == 0) {
             uart_puts("\nCounting mode: Type as fast as you can!\n");
             uart_puts("Counting characters for approximately 10 seconds...\n\n");
 
@@ -128,7 +119,7 @@ int main(void)
             }
 
             uart_printf("\nReceived %u characters.\n\n", count);
-        } else if (str_equal(line_buffer, "info")) {
+        } else if (strcmp(line_buffer, "info") == 0) {
             uart_puts("\nUART Status:\n");
             uart_printf("  RX data available: %s\n", uart_rx_available() ? "yes" : "no");
             uart_puts("  Baud rate: 115200\n");

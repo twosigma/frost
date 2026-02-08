@@ -27,10 +27,14 @@
  * in the constant expression itself.
  */
 
-/* Limits for 32-bit integers */
+/* Limits for 32-bit signed integers */
 #define INT_MIN (-2147483647 - 1)
 #define INT_MAX 2147483647
 #define LONG_MIN (-2147483647L - 1L)
 #define LONG_MAX 2147483647L
+
+/* Limits for 32-bit unsigned integers */
+#define UINT_MAX 4294967295U
+#define ULONG_MAX 4294967295UL
 
 #endif /* LIMITS_H */

@@ -37,6 +37,8 @@
 /* ========================================================================== */
 
 extern const unsigned long UART_ADDR;
+extern const unsigned long UART_RX_DATA_ADDR;
+extern const unsigned long UART_RX_STATUS_ADDR;
 extern const unsigned long FIFO0_ADDR;
 extern const unsigned long FIFO1_ADDR;
 extern volatile uint32_t MTIME_LO_ADDR;
@@ -50,6 +52,8 @@ extern volatile uint32_t MSIP_ADDR;
 /* ========================================================================== */
 
 #define UART_TX (*(volatile uint8_t *) &UART_ADDR)
+#define UART_RX_DATA (*(volatile uint8_t *) &UART_RX_DATA_ADDR)
+#define UART_RX_STATUS (*(volatile uint32_t *) &UART_RX_STATUS_ADDR)
 
 /* ========================================================================== */
 /* FIFOs (0x40000008, 0x4000000C)                                             */

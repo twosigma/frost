@@ -31,8 +31,10 @@
  */
 
 #include "memory.h"
+#include "string.h"
+
+#include <stddef.h>
 #include <stdint.h>
-#define NULL 0x0
 
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
 extern char _heap_start;
@@ -87,10 +89,9 @@ void *arena_push(arena_t *arena, uint32_t size)
 
 void *arena_push_zero(arena_t *arena, uint32_t size)
 {
-    char *p = arena_push(arena, size);
-    for (uint32_t i = 0; i < size; i++) {
-        p[i] = 0;
-    }
+    void *p = arena_push(arena, size);
+    if (p != NULL)
+        memset(p, 0, size);
     return p;
 }
 
@@ -107,14 +108,16 @@ void arena_clear(arena_t *arena)
 void arena_release(arena_t *arena)
 {
     (void) arena;
-    // Intentionally a no-op: This bare-metal allocator uses a simple bump-pointer
-    // heap (_sbrk), which cannot reclaim memory from the middle. Arenas are designed
-    // for long-lived allocations (e.g., entire program lifetime) or bulk deallocation
-    // via arena_clear(). For short-lived allocations that need true deallocation,
-    // use malloc/free instead.
+    /* Intentionally a no-op: This bare-metal allocator uses a simple bump-pointer
+     * heap (_sbrk), which cannot reclaim memory from the middle. Arenas are designed
+     * for long-lived allocations (e.g., entire program lifetime) or bulk deallocation
+     * via arena_clear(). For short-lived allocations that need true deallocation,
+     * use malloc/free instead. */
 }
 
-/// MALLOC ///
+/* ========================================================================== */
+/* malloc / free                                                              */
+/* ========================================================================== */
 
 struct free_slot {
     struct free_slot *next;
@@ -122,7 +125,7 @@ struct free_slot {
 };
 
 _Static_assert(sizeof(struct free_slot) == DEFAULT_ALIGN,
-               "Can't fit a free slot int he minimum space that malloc aligns to");
+               "Can't fit a free slot in the minimum space that malloc aligns to");
 
 static struct free_slot *freelist = NULL;
 
@@ -130,13 +133,13 @@ struct metadata {
     uint32_t size;
 };
 
-void *malloc(uint32_t size)
+void *malloc(size_t size)
 {
     if (size == 0) {
         return NULL;
     }
 
-    // allocate using a first-fit algorithm
+    /* Allocate using a first-fit algorithm */
     struct free_slot **p = &freelist;
     uint32_t block_size =
         ALIGN(size, DEFAULT_ALIGN) + ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
@@ -146,12 +149,12 @@ void *malloc(uint32_t size)
         struct free_slot *slot = *p;
 
         if (block_size <= slot->size) {
-            // shrink down free slot
+            /* Shrink down free slot */
             slot->size -= block_size;
             result = (char *) slot + slot->size + ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
 
             if (slot->size == 0) {
-                // delete this node from the freelist
+                /* Delete this node from the freelist */
                 *p = slot->next;
             }
             break;
@@ -161,13 +164,14 @@ void *malloc(uint32_t size)
     }
 
     if (result == NULL) {
-        result = ((void *) ALIGN((uintptr_t) _sbrk(block_size + ALIGN_PADDING((uintptr_t) heap_mark,
-                                                                              DEFAULT_ALIGN)),
-                                 DEFAULT_ALIGN)) +
+        char *raw = _sbrk(block_size + ALIGN_PADDING((uintptr_t) heap_mark, DEFAULT_ALIGN));
+        if (raw == NULL)
+            return NULL;
+        result = (char *) ALIGN((uintptr_t) raw, DEFAULT_ALIGN) +
                  ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
     }
 
-    // write metadata
+    /* Write metadata */
     struct metadata *md = (struct metadata *) result - 1;
     *md = (struct metadata) {.size = block_size};
 
@@ -176,6 +180,8 @@ void *malloc(uint32_t size)
 
 void free(void *ptr)
 {
+    if (ptr == NULL)
+        return;
     struct free_slot *slot = ptr - ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
     slot->next = freelist;
     struct metadata *md = ptr;

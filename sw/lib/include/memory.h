@@ -17,6 +17,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -43,7 +44,7 @@ void arena_pop(arena_t *arena, uint32_t size);
 /* Clear all bytes from arena. */
 void arena_clear(arena_t *arena);
 
-void *malloc(uint32_t size);
-void free(void *);
+void *malloc(size_t size);
+void free(void *ptr);
 
 #endif /* MEMORY_H */
