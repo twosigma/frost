@@ -1,0 +1,21 @@
+[tasks]
+bmc    # Bounded model checking
+cover  # Cover checking
+
+[options]
+bmc: mode bmc
+bmc: depth 15
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv fp_forwarding_unit.sv
+prep -top fp_forwarding_unit
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/control/fp_forwarding_unit.sv

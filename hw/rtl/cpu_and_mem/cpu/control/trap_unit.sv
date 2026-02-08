@@ -218,9 +218,9 @@ module trap_unit #(
   logic take_trap;
   assign take_trap = (interrupt_pending || i_exception_valid) && !i_pipeline_stall;
 
-  // MRET execution
+  // MRET execution (trap has priority: if interrupt/exception fires same cycle, trap wins)
   logic take_mret;
-  assign take_mret = i_mret_in_ex && !i_pipeline_stall;
+  assign take_mret = i_mret_in_ex && !i_pipeline_stall && !take_trap;
 
   // Output trap signals
   assign o_trap_taken = take_trap;
@@ -262,5 +262,110 @@ module trap_unit #(
       o_trap_pc = i_exception_pc;
     end
   end
+
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  initial assume (i_rst);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  // Structural constraints: these combos can't happen in real pipeline.
+  // In the real pipeline, only one instruction type can be in EX at a time.
+  always_comb begin
+    assume (!(i_mret_in_ex && i_exception_valid));
+    assume (!(i_wfi_in_ex && i_mret_in_ex));
+    assume (!(i_wfi_in_ex && i_exception_valid));
+    // Note: MRET + interrupt_pending is NOT assumed away. The RTL handles it
+    // by giving trap priority (!take_trap gate on take_mret), and the
+    // p_trap_mret_mutex assertion proves this without over-constraining.
+  end
+
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      // Trap/MRET mutex: cannot both fire simultaneously.
+      p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
+
+      // Trap needs source: trap_taken requires interrupt or exception.
+      p_trap_needs_source : assert (!o_trap_taken || (interrupt_pending || i_exception_valid));
+
+      // Trap not during stall: traps only fire when pipeline not stalled.
+      p_trap_not_stalled : assert (!o_trap_taken || !i_pipeline_stall);
+
+      // MRET not during stall.
+      p_mret_not_stalled : assert (!o_mret_taken || !i_pipeline_stall);
+
+      // MRET target is mepc: when MRET fires, target must be mepc.
+      p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
+
+      // WFI stall contract: if stall_for_wfi_comb, wfi must be active.
+      p_wfi_stall_needs_active : assert (!stall_for_wfi_comb || wfi_active);
+    end
+
+    if (f_past_valid && !i_rst && $past(!i_rst)) begin
+      // Interrupt priority: external > software > timer.
+      // If external interrupt was enabled, cause must be external.
+      if ($past(meip_enabled)) begin
+        p_meip_priority : assert (interrupt_cause == riscv_pkg::IntMachineExternal);
+      end
+
+      // Software interrupt: if external not enabled but software is.
+      if ($past(!meip_enabled && msip_enabled)) begin
+        p_msip_priority : assert (interrupt_cause == riscv_pkg::IntMachineSoftware);
+      end
+
+      // Timer interrupt: if neither external nor software enabled but timer is.
+      if ($past(!meip_enabled && !msip_enabled && mtip_enabled)) begin
+        p_mtip_priority : assert (interrupt_cause == riscv_pkg::IntMachineTimer);
+      end
+
+      // Vectored offset correctness for external interrupt.
+      if ($past(meip_enabled)) begin
+        p_vectored_meip : assert (vectored_offset == 6'd44);
+      end
+
+      // Vectored offset correctness for software interrupt.
+      if ($past(!meip_enabled && msip_enabled)) begin
+        p_vectored_msip : assert (vectored_offset == 6'd12);
+      end
+
+      // Vectored offset correctness for timer interrupt.
+      if ($past(!meip_enabled && !msip_enabled && mtip_enabled)) begin
+        p_vectored_mtip : assert (vectored_offset == 6'd28);
+      end
+
+      // Re-entry prevention: after trap_taken, interrupt enables are blocked
+      // for one cycle via trap_taken_prev.
+      if (trap_taken_prev) begin
+        p_reentry_prevention : assert (!meip_enabled && !mtip_enabled && !msip_enabled);
+      end
+
+      // Reset clears all state.
+      if ($past(i_rst)) begin
+        p_reset_trap_prev : assert (!trap_taken_prev);
+        p_reset_wfi : assert (!wfi_active);
+        p_reset_int_pending : assert (!interrupt_pending);
+      end
+    end
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_trap_taken : cover (o_trap_taken);
+      cover_mret_taken : cover (o_mret_taken);
+      cover_wfi_stall : cover (stall_for_wfi_comb);
+      cover_wfi_wakeup : cover (f_past_valid && !wfi_active && $past(wfi_active));
+      cover_external_interrupt :
+      cover (interrupt_pending && interrupt_cause == riscv_pkg::IntMachineExternal);
+      cover_exception : cover (o_trap_taken && i_exception_valid && !interrupt_pending);
+    end
+  end
+
+`endif  // FORMAL
 
 endmodule : trap_unit

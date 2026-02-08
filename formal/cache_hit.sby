@@ -1,0 +1,21 @@
+[tasks]
+bmc    # Bounded model checking - combinational, depth 1
+cover  # Cover checking
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+cover: mode cover
+cover: depth 1
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv cache_hit_detector.sv
+prep -top cache_hit_detector
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/cache/cache_hit_detector.sv

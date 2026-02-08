@@ -1,0 +1,24 @@
+[tasks]
+bmc    # Bounded model checking
+cover  # Cover checking
+prove  # Induction proof - unbounded safety
+
+[options]
+bmc: mode bmc
+bmc: depth 15
+cover: mode cover
+cover: depth 20
+prove: mode prove
+prove: depth 15
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv lr_sc_reservation.sv
+prep -top lr_sc_reservation
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/control/lr_sc_reservation.sv

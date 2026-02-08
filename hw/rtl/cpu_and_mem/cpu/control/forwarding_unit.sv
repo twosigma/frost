@@ -227,4 +227,74 @@ module forwarding_unit #(
   assign o_fwd_to_ex.capture_bypass_int_valid = int_capture_bypass_valid;
   assign o_fwd_to_ex.capture_bypass_int_data = int_capture_bypass_data;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    // MA priority over WB: when forwarding from MA, output uses forward_data_ma.
+    p_ma_priority_rs1 :
+    assert (!forward_source_reg_1_from_ma || (o_fwd_to_ex.source_reg_1_value == forward_data_ma));
+
+    p_ma_priority_rs2 :
+    assert (!forward_source_reg_2_from_ma || (o_fwd_to_ex.source_reg_2_value == forward_data_ma));
+
+    // x0 always zero: if source_reg_1 is x0, raw value must be 0.
+    p_x0_rs1_zero : assert (!i_from_id_to_ex.source_reg_1_is_x0 || (source_reg_1_raw_value == '0));
+
+    p_x0_rs2_zero : assert (!i_from_id_to_ex.source_reg_2_is_x0 || (source_reg_2_raw_value == '0));
+
+    // No forwarding -> raw value: when no forward active, output is raw value.
+    p_no_fwd_rs1 :
+    assert (forward_source_reg_1_from_ma ||
+        forward_source_reg_1_from_wb ||
+        (o_fwd_to_ex.source_reg_1_value == source_reg_1_raw_value));
+
+    p_no_fwd_rs2 :
+    assert (forward_source_reg_2_from_ma ||
+        forward_source_reg_2_from_wb ||
+        (o_fwd_to_ex.source_reg_2_value == source_reg_2_raw_value));
+
+    if (f_past_valid) begin
+      // Reset clears forward enables.
+      if ($past(i_pipeline_ctrl.reset)) begin
+        p_reset_fwd_rs1_ma : assert (!forward_source_reg_1_from_ma);
+        p_reset_fwd_rs2_ma : assert (!forward_source_reg_2_from_ma);
+        p_reset_fwd_rs1_wb : assert (!forward_source_reg_1_from_wb);
+        p_reset_fwd_rs2_wb : assert (!forward_source_reg_2_from_wb);
+      end
+
+      // Forward from MA requires write enable and dest != 0.
+      // After an unstalled cycle, if MA forward is set, the previous cycle
+      // must have had a writing instruction with dest_reg != 0.
+      if (!$past(i_pipeline_ctrl.stall) && !$past(i_pipeline_ctrl.reset)) begin
+        p_fwd_ma_rs1_needs_write :
+        assert (!forward_source_reg_1_from_ma || $past(
+            ex_writes_int_reg && i_from_id_to_ex.instruction.dest_reg != 0
+        ));
+
+        p_fwd_ma_rs2_needs_write :
+        assert (!forward_source_reg_2_from_ma || $past(
+            ex_writes_int_reg && i_from_id_to_ex.instruction.dest_reg != 0
+        ));
+      end
+    end
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    cover_ma_forward : cover (forward_source_reg_1_from_ma);
+    cover_wb_forward : cover (forward_source_reg_1_from_wb);
+    cover_both_ma_wins : cover (forward_source_reg_1_from_ma && forward_source_reg_1_from_wb);
+    cover_cache_hit_fwd : cover (use_cache_hit_forward && forward_source_reg_1_from_ma);
+    cover_no_forwarding : cover (!forward_source_reg_1_from_ma && !forward_source_reg_1_from_wb);
+  end
+
+`endif  // FORMAL
+
 endmodule : forwarding_unit

@@ -1,6 +1,7 @@
 # SymbiYosys working directories (generated per-run)
 *_bmc/
 *_cover/
+*_prove/
 
 # SymbiYosys status database
 status.sqlite

@@ -496,4 +496,70 @@ module fp_forwarding_unit #(
 
   assign o_fp_fwd_to_ex.capture_bypass_is_pipelined = is_pipelined_fp_in_id;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    if (f_past_valid) begin
+      // Reset clears all forward enables and pending state.
+      if ($past(i_pipeline_ctrl.reset)) begin
+        p_reset_fwd_rs1_ma : assert (!forward_fp_rs1_from_ma);
+        p_reset_fwd_rs2_ma : assert (!forward_fp_rs2_from_ma);
+        p_reset_fwd_rs3_ma : assert (!forward_fp_rs3_from_ma);
+        p_reset_fwd_rs1_wb : assert (!forward_fp_rs1_from_wb);
+        p_reset_fwd_rs2_wb : assert (!forward_fp_rs2_from_wb);
+        p_reset_fwd_rs3_wb : assert (!forward_fp_rs3_from_wb);
+        p_reset_pending : assert (!fp_forward_data_pending);
+        p_reset_load_capture : assert (!fp_load_capture_valid);
+        p_reset_id_regs : assert (id_source_reg_1 == 5'b0);
+      end
+
+      // Flush clears all forward enables.
+      if ($past(i_pipeline_ctrl.flush) && !$past(i_pipeline_ctrl.reset)) begin
+        p_flush_fwd_rs1_ma : assert (!forward_fp_rs1_from_ma);
+        p_flush_fwd_rs2_ma : assert (!forward_fp_rs2_from_ma);
+        p_flush_fwd_rs3_ma : assert (!forward_fp_rs3_from_ma);
+        p_flush_fwd_rs1_wb : assert (!forward_fp_rs1_from_wb);
+        p_flush_fwd_rs2_wb : assert (!forward_fp_rs2_from_wb);
+        p_flush_fwd_rs3_wb : assert (!forward_fp_rs3_from_wb);
+      end
+
+      // Pending flag is self-clearing: if pending was set, it clears next cycle.
+      if ($past(fp_forward_data_pending) && !$past(i_pipeline_ctrl.reset)) begin
+        p_pending_self_clearing : assert (!fp_forward_data_pending);
+      end
+    end
+
+    // Pipeline stall signal matches pending flag.
+    p_stall_matches_pending : assert (o_stall_for_fp_forward_pipeline == fp_forward_data_pending);
+
+    // Capture bypass requires write enable: bypass only fires when
+    // fp_regfile_write_enable is active.
+    p_bypass_rs1_needs_write :
+    assert (!o_fp_fwd_to_ex.capture_bypass_rs1 || i_from_ex_comb.fp_regfile_write_enable);
+
+    p_bypass_rs2_needs_write :
+    assert (!o_fp_fwd_to_ex.capture_bypass_rs2 || i_from_ex_comb.fp_regfile_write_enable);
+
+    p_bypass_rs3_needs_write :
+    assert (!o_fp_fwd_to_ex.capture_bypass_rs3 || i_from_ex_comb.fp_regfile_write_enable);
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    cover_ma_forward : cover (forward_fp_rs1_from_ma);
+    cover_wb_forward : cover (forward_fp_rs1_from_wb);
+    cover_fp_load_capture : cover (fp_load_capture_valid);
+    cover_capture_bypass : cover (o_fp_fwd_to_ex.capture_bypass_rs1);
+    cover_pipeline_stall : cover (o_stall_for_fp_forward_pipeline);
+  end
+
+`endif  // FORMAL
+
 endmodule : fp_forwarding_unit

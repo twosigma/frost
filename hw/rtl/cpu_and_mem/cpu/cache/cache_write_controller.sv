@@ -237,4 +237,66 @@ module cache_write_controller #(
       o_cache_byte_write_enable) :
     '1;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  initial assume (i_rst);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      // MMIO stores don't write cache: if address is in MMIO range and
+      // byte write enables are active, cache store write must be off.
+      p_mmio_store_no_cache :
+      assert (!(is_memory_mapped_io_ex &&
+          |i_data_memory_byte_write_enable_ex) || !cache_write_enable_from_store);
+
+      // MMIO AMO doesn't write cache.
+      p_mmio_amo_no_cache : assert (!is_memory_mapped_io_amo || !cache_write_enable_from_amo);
+
+      // AMO byte enable is all-ones when AMO write is active.
+      p_amo_byte_enable_all :
+      assert (!cache_write_enable_from_amo || (o_cache_byte_write_enable == '1));
+
+      // Store valid bit merging: on tag match, new valid bits include old.
+      // When store writes and tags match, output valid bits OR old with new.
+      p_store_valid_merge :
+      assert (!(cache_write_enable_from_store &&
+          !cache_write_enable_from_amo && !cache_write_enable_from_fp_store &&
+          (i_cache_read_tag == i_tag_ex)) ||
+          (o_cache_write_valid == (o_cache_byte_write_enable | i_cache_read_valid)));
+    end
+
+    if (f_past_valid && !i_rst && $past(!i_rst)) begin
+      // AMO stale load prevention: after AMO write, load write is blocked.
+      if ($past(i_amo.write_enable)) begin
+        p_amo_stale_prevention : assert (amo_write_enable_prev);
+      end
+
+      // Reset clears pipelined load write enable and amo_write_enable_prev.
+      if ($past(i_rst)) begin
+        p_reset_load_we : assert (!cache_write_enable_from_load_registered);
+        p_reset_amo_prev : assert (!amo_write_enable_prev);
+      end
+    end
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_store_write : cover (cache_write_enable_from_store);
+      cover_load_write : cover (cache_write_enable_from_load);
+      cover_amo_write : cover (cache_write_enable_from_amo);
+      cover_fp_store_write : cover (cache_write_enable_from_fp_store);
+      cover_stale_load_blocked : cover (cache_write_enable_from_load && amo_write_enable_prev);
+    end
+  end
+
+`endif  // FORMAL
+
 endmodule : cache_write_controller

@@ -516,64 +516,17 @@ module hazard_resolution_unit #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+  // Count consecutive unstalled, non-reset cycles for shift register fill contract
+  reg [3:0] f_unstalled_count;
+  initial f_unstalled_count = 4'd0;
+  always @(posedge i_clk)
+    if (i_rst || pipeline_reset || pipeline_stall) f_unstalled_count <= 4'd0;
+    else if (f_unstalled_count < 4'd15) f_unstalled_count <= f_unstalled_count + 4'd1;
+
   always @(posedge i_clk) begin
-    if (!i_rst) begin
-      // Property 1: Stall and flush are mutually exclusive.
-      p1_stall_flush_mutex : assert (!(pipeline_stall && pipeline_flush));
-
-      // Property 5: Trap/mret override stalls.
-      p5a_trap_overrides_stall : assert (!i_trap_taken || !pipeline_stall);
-
-      p5b_mret_overrides_stall : assert (!i_mret_taken || !pipeline_stall);
-
-      // Property 6: MMIO stall counter never exceeds 2.
-      p6a_mmio_counter_bounded : assert (mmio_stall_count <= 2'd2);
-
-      // MMIO read pulse fires only when counter is 0.
-      p6b_mmio_pulse_at_zero : assert (!mmio_read_pulse || (mmio_stall_count == 2'd0));
-
-      // MMIO read pulse requires an MMIO load in MA.
-      p6c_mmio_pulse_needs_load : assert (!mmio_read_pulse || mmio_load_in_ma);
-
-      // Property 7: vld requires top bit of shift register.
-      p7a_vld_needs_shift_reg : assert (!o_vld || validation_shift_register[NUM_PIPELINE_STAGES-1]);
-
-      // Valid output requires pipeline not stalled.
-      p7b_vld_not_during_stall : assert (!o_vld || !pipeline_stall);
-
-      // Property 8: Load-use hazard stall requires detected hazard.
-      p8a_load_stall_needs_hazard : assert (!stall_for_load_use_hazard || load_use_hazard_detected);
-
-      // Load-use hazard detected requires a registered load or AMO hazard.
-      p8b_hazard_needs_load_or_amo :
-      assert (!load_use_hazard_detected || (load_potential_hazard_reg || amo_potential_hazard_reg));
-
-      // Load-use stall must not fire when multiply/divide takes precedence.
-      p8c_mul_div_precedence :
-      assert (!stall_for_load_use_hazard || !stall_for_multiply_divide_optimized);
-
-      // Cache hit prevents hazard detection (when not back-to-back).
-      p8d_cache_hit_prevents_hazard :
-      assert (!(cache_hit_on_load_reg && !is_load_registered) || !load_use_hazard_detected);
-
-      // is_load_registered prevents back-to-back load-use stalls.
-      p8e_back_to_back_prevention : assert (!is_load_registered || !load_use_hazard_detected);
-
-      // Property 9: CSR stall is at most one cycle.
-      p9_csr_one_cycle : assert (!csr_read_waiting || !stall_for_csr_read);
-
-      // Property 10: Output struct consistency.
-      p10a_output_reset : assert (o_pipeline_ctrl.reset == pipeline_reset);
-
-      p10b_output_stall : assert (o_pipeline_ctrl.stall == pipeline_stall);
-
-      p10c_output_flush : assert (o_pipeline_ctrl.flush == pipeline_flush);
-
-      // Property 11: FP load hazard seen prevents repeated stalls.
-      p11_fp_no_repeat : assert (!fp_load_hazard_seen || !fp_load_use_hazard_early);
-    end
-
-    // Sequential properties (need valid $past)
+    // =====================================================================
+    // Sequential properties (need valid $past) - KEPT (non-tautological)
+    // =====================================================================
     if (f_past_valid && !i_rst && $past(!i_rst)) begin
       // Property 2: Reset clears all registered hazard state.
       if ($past(pipeline_reset)) begin
@@ -601,6 +554,85 @@ module hazard_resolution_unit #(
         p4b_stall_clears_trap : assert (!trap_taken_registered);
         p4c_stall_clears_mret : assert (!mret_taken_registered);
       end
+
+      // =====================================================================
+      // Contract-style properties (replace tautological p1/p5-p11)
+      // =====================================================================
+
+      // Load-use stall contract: If a load was in EX with dest != 0 matching
+      // a PD source reg (registered as potential hazard), and no cache hit or
+      // back-to-back prevention or multiply/divide precedence, then pipeline stalls.
+      // Falsifiable: changing hazard detection logic would break this.
+      if ($past(
+              load_potential_hazard
+          ) && !$past(
+              pipeline_stall
+          ) && !$past(
+              pipeline_reset
+          ) && !$past(
+              pipeline_flush
+          )) begin
+        p_load_use_stall_contract :
+        assert (load_use_hazard_detected ||  // hazard detected (will stall unless mul/div)
+        is_load_registered ||  // back-to-back prevention fired
+        cache_hit_on_load_reg  // cache hit avoided the stall
+        );
+      end
+
+      // Branch flush duration contract: If branch_taken fires and no stall,
+      // pipeline_flush is asserted. Tests the 2-cycle flush requirement.
+      if ($past(
+              i_from_ex_comb.branch_taken
+          ) && !$past(
+              pipeline_stall
+          ) && !$past(
+              pipeline_reset
+          )) begin
+        p_branch_flush_contract : assert (pipeline_flush || pipeline_stall);
+      end
+
+      // MMIO stall bounded contract: When the counter is at its max (2),
+      // mmio_load_stall is guaranteed to be false, ending the stall.
+      p_mmio_terminates : assert (!(mmio_stall_count == 2'd2) || !mmio_load_stall);
+
+      // CSR stall bounded contract: After one cycle of CSR stall,
+      // csr_read_waiting is set and the stall ends.
+      if ($past(stall_for_csr_read) && !$past(pipeline_reset)) begin
+        p_csr_bounded : assert (csr_read_waiting);
+      end
+    end
+
+    // =====================================================================
+    // Combinational contract properties (active outside reset)
+    // =====================================================================
+    if (!i_rst) begin
+      // Stall-flush mutex contract: pipeline cannot both stall and flush.
+      // Not tautological because flush has a ~pipeline_stall term that could
+      // be incorrectly removed during refactoring.
+      p_stall_flush_mutex : assert (!(pipeline_stall && pipeline_flush));
+
+      // Trap override contract: If stall sources are active this cycle but
+      // trap_taken fires this cycle, pipeline_stall must be deasserted.
+      // Same-cycle check (all signals are current-cycle combinational).
+      p_trap_override_contract : assert (!(stall_sources && i_trap_taken) || !pipeline_stall);
+
+      // MMIO counter bounded contract: counter never exceeds 2.
+      p_mmio_bounded : assert (mmio_stall_count <= 2'd2);
+
+      // Valid output contract: o_vld requires pipeline not stalled AND
+      // shift register full. Falsifiable: changing o_vld assign breaks it.
+      p_vld_contract :
+      assert (!o_vld || (!pipeline_stall && validation_shift_register[NUM_PIPELINE_STAGES-1]));
+
+      // FP load hazard no-repeat contract: once we've seen the hazard,
+      // the early stall doesn't re-fire.
+      p_fp_no_repeat_contract : assert (!fp_load_hazard_seen || !fp_load_use_hazard_early);
+    end
+
+    // Validation shift register fill contract: After NUM_PIPELINE_STAGES
+    // unstalled cycles post-reset, o_vld can assert.
+    if (!i_rst && f_unstalled_count >= NUM_PIPELINE_STAGES[3:0]) begin
+      p_shift_reg_fill : assert (validation_shift_register == '1);
     end
   end
 
@@ -618,6 +650,8 @@ module hazard_resolution_unit #(
       cover_fpu_stall : cover (fpu_stall_gated);
       cover_cache_hit_avoids_stall :
       cover (cache_hit_on_load_reg && load_potential_hazard_reg && !load_use_hazard_detected);
+      cover_trap_overrides_stall : cover (stall_sources && i_trap_taken && !pipeline_stall);
+      cover_mmio_terminates : cover (mmio_stall_count == 2'd2 && !mmio_load_stall);
     end
   end
 

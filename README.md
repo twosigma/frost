@@ -9,9 +9,9 @@ A 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with f
 There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
-- **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is hand-written with extensive documentation, suitable for teaching, learning, and extending.
+- **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
 - **Practical performance** — 1.76 CoreMark/MHz (527 CoreMark at 300 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
-- **Layered verification** — constrained-random tests, directed tests, and real C programs all run in Cocotb simulation with pass/fail markers. Bugs that slip past one layer get caught by another. More accessible than SystemVerilog/UVM.
+- **Layered verification** — constrained-random tests, directed tests, and real C programs all run in Cocotb simulation with pass/fail markers, along with some basic formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, and ISA compliance suite all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
@@ -101,6 +101,8 @@ Validated with these tool versions:
 |               | Icarus Verilog    | 12.0    |
 |               | Questa (optional) | 2023.1  |
 | **Synthesis** | Yosys             | 0.60    |
+| **Formal**    | SymbiYosys        | 0.62    |
+|               | Z3                | 4.15.0  |
 | **FPGA**      | Vivado (optional) | 2025.2  |
 | **Linting**   | pre-commit        | 4.0     |
 |               | clang-format      | 19.0    |
@@ -260,7 +262,7 @@ Running `pytest tests/` exercises:
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL synthesizes cleanly for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+ targets
-- **Formal verification** — SymbiYosys bounded model checking proves pipeline control invariants (stall/flush mutex, hazard detection correctness, reset behavior) for all possible inputs
+- **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
 
 ### FPGA Deployment
 
@@ -313,14 +315,14 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 28,094 | 203,800 | 13.8% |
-|   LUT as Logic | 26,491 | 203,800 | 13.0% |
+| Slice LUTs | 27,906 | 203,800 | 13.7% |
+|   LUT as Logic | 26,304 | 203,800 | 12.9% |
 |   LUT as Distributed RAM | 1,308 | — | — |
-|   LUT as Shift Register | 295 | — | — |
-| Slice Registers | 18,500 | 407,600 | 4.5% |
+|   LUT as Shift Register | 294 | — | — |
+| Slice Registers | 18,524 | 407,600 | 4.5% |
 | Block RAM Tile | 68.5 | 445 | 15.4% |
 | DSPs | 28 | 840 | 3.3% |
-| F7 Muxes | 307 | 101,900 | 0.3% |
+| F7 Muxes | 320 | 101,900 | 0.3% |
 | F8 Muxes | 0 | 50,950 | 0.0% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |

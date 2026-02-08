@@ -143,4 +143,54 @@ module cache_hit_detector #(
   // - data_valid_for_access_type: depends on address + cache valid RAM read + registered load type
   assign o_cache_hit_on_load   = cache_access_eligible && tag_match && data_valid_for_access_type;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  // Structural constraints: byte and halfword loads are mutually exclusive
+  always_comb begin
+    assume (!(i_is_load_byte && i_is_load_halfword));
+  end
+
+  always_comb begin
+    // MMIO exclusion: addresses in MMIO range never produce a cache hit.
+    p_mmio_exclusion : assert (!(i_full_address >= MMIO_ADDR) || !o_cache_hit_on_load);
+
+    // Non-load exclusion: if not a load instruction, no cache hit.
+    p_non_load_exclusion : assert (i_is_load_instruction || !o_cache_hit_on_load);
+
+    // Tag mismatch exclusion: if tags don't match, no cache hit.
+    p_tag_mismatch : assert ((i_cache_tag == i_address_tag) || !o_cache_hit_on_load);
+
+    // Hit requires valid bits for accessed bytes.
+    // Byte load hit requires the selected byte to be valid.
+    p_byte_hit_valid : assert (!(o_cache_hit_on_load && i_is_load_byte) || selected_byte_valid);
+
+    // Word load hit requires all bytes valid.
+    p_word_hit_valid :
+    assert (!(o_cache_hit_on_load && !i_is_load_byte && !i_is_load_halfword) || all_bytes_valid);
+
+    // Halfword lower hit requires lower bytes valid.
+    p_half_lower_valid :
+    assert (!(o_cache_hit_on_load && i_is_load_halfword &&
+        !i_byte_offset[1]) || lower_halfword_valid);
+
+    // Halfword upper hit requires upper bytes valid.
+    p_half_upper_valid :
+    assert (!(o_cache_hit_on_load && i_is_load_halfword &&
+        i_byte_offset[1]) || upper_halfword_valid);
+  end
+
+  // Cover properties
+  always_comb begin
+    cover_byte_hit : cover (o_cache_hit_on_load && i_is_load_byte);
+    cover_half_upper : cover (o_cache_hit_on_load && i_is_load_halfword && i_byte_offset[1]);
+    cover_half_lower : cover (o_cache_hit_on_load && i_is_load_halfword && !i_byte_offset[1]);
+    cover_word_hit : cover (o_cache_hit_on_load && !i_is_load_byte && !i_is_load_halfword);
+    cover_mmio_miss : cover (i_is_load_instruction && is_memory_mapped_io && !o_cache_hit_on_load);
+  end
+
+`endif  // FORMAL
+
 endmodule : cache_hit_detector

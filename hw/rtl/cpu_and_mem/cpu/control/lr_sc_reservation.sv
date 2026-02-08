@@ -83,4 +83,70 @@ module lr_sc_reservation #(
     end
   end
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  initial assume (i_rst);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    if (f_past_valid && !i_rst && $past(!i_rst)) begin
+      // SC clears reservation: after SC executes (unstalled, no reset),
+      // valid_registered must be cleared.
+      if ($past(!i_stall && i_is_sc_in_ex && !i_rst)) begin
+        p_sc_clears : assert (!valid_registered);
+      end
+
+      // LR sets reservation: after LR completes in MA (unstalled, no SC, no reset),
+      // reservation must be valid at the LR address.
+      if ($past(!i_stall && i_is_lr_in_ma && !i_is_sc_in_ex && !i_rst)) begin
+        p_lr_sets_valid : assert (valid_registered);
+        p_lr_sets_addr : assert (address_registered == $past(i_lr_address));
+      end
+
+      // SC takes priority over LR: if both SC in EX and LR in MA,
+      // reservation is cleared (SC wins).
+      if ($past(!i_stall && i_is_sc_in_ex && i_is_lr_in_ma && !i_rst)) begin
+        p_sc_priority : assert (!valid_registered);
+      end
+
+      // Stall preserves state: during stall (no reset), reservation is unchanged.
+      if ($past(i_stall && !i_rst)) begin
+        p_stall_preserves_valid : assert (valid_registered == $past(valid_registered));
+        p_stall_preserves_addr : assert (address_registered == $past(address_registered));
+      end
+
+      // Reset clears all: after reset, valid is cleared and address is zero.
+      if ($past(i_rst)) begin
+        p_reset_clears_valid : assert (!valid_registered);
+        p_reset_clears_addr : assert (address_registered == '0);
+      end
+    end
+
+    // Forwarding outputs are direct wiring (wiring guard).
+    if (!i_rst) begin
+      p_lr_in_flight_wiring : assert (o_reservation.lr_in_flight == i_is_lr_in_ma);
+      p_lr_in_flight_addr_wiring : assert (o_reservation.lr_in_flight_addr == i_lr_address);
+      p_valid_wiring : assert (o_reservation.valid == valid_registered);
+      p_addr_wiring : assert (o_reservation.address == address_registered);
+    end
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_reservation_set : cover (valid_registered);
+      cover_reservation_cleared_by_sc :
+      cover (f_past_valid && !valid_registered && $past(valid_registered) && $past(i_is_sc_in_ex));
+      cover_lr_in_flight : cover (o_reservation.lr_in_flight);
+    end
+  end
+
+`endif  // FORMAL
+
 endmodule : lr_sc_reservation

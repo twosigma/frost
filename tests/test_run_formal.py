@@ -39,6 +39,7 @@ class FormalTarget:
 
     sby_file: str  # Filename of the .sby file (e.g., "hru.sby")
     description: str  # Human-readable description
+    tasks: tuple[str, ...] = ("bmc", "cover")  # Tasks this target supports
 
     @property
     def name(self) -> str:
@@ -49,13 +50,30 @@ class FormalTarget:
 # Registry of formal verification targets.
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
-    FormalTarget("hru.sby", "Hazard resolution unit - pipeline stall/flush control"),
+    FormalTarget(
+        "hru.sby",
+        "Hazard resolution unit - pipeline stall/flush control",
+        ("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
+        "lr_sc.sby",
+        "LR/SC reservation register - atomic synchronization",
+        ("bmc", "cover", "prove"),
+    ),
+    FormalTarget("trap_unit.sby", "Trap unit - exception and interrupt handling"),
+    FormalTarget("csr_file.sby", "CSR file - control/status registers"),
+    FormalTarget("fwd_unit.sby", "Forwarding unit - integer RAW hazard bypass"),
+    FormalTarget("fp_fwd_unit.sby", "FP forwarding unit - FP RAW hazard bypass"),
+    FormalTarget("cache_hit.sby", "Cache hit detector - L0 cache hit logic"),
+    FormalTarget("cache_write.sby", "Cache write controller - L0 cache writes"),
+    FormalTarget("data_mem_arb.sby", "Data memory arbiter - memory interface mux"),
 ]
 
-# SymbiYosys task types to run for each target
+# SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
+    ("prove", "Induction proof (unbounded safety)"),
 ]
 
 
@@ -205,11 +223,13 @@ class TestFormalVerification:
             (target, task_name, task_desc)
             for target in FORMAL_TARGETS
             for task_name, task_desc in SBY_TASKS
+            if task_name in target.tasks
         ],
         ids=[
             f"{target.name}_{task_name}"
             for target in FORMAL_TARGETS
             for task_name, _ in SBY_TASKS
+            if task_name in target.tasks
         ],
     )
     def test_formal(
@@ -338,6 +358,9 @@ This script can also be run via pytest:
     passed = 0
     for target in targets:
         for task_name, task_desc in tasks:
+            # Skip tasks not supported by this target
+            if task_name not in target.tasks:
+                continue
             test_id = f"{target.name}:{task_name}"
             try:
                 print(f"\n{'=' * 60}")

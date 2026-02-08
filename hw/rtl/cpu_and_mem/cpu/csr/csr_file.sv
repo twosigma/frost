@@ -423,4 +423,105 @@ module csr_file #(
 
   assign o_csr_read_data = csr_read_data_reg;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  initial assume (i_rst);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  // Structural constraints
+  always_comb begin
+    assume (!(i_trap_taken && i_mret_taken));
+    assume (!(i_trap_taken && i_csr_write_enable));
+    assume (!(i_mret_taken && i_csr_write_enable));
+    // PCs are at least 2-byte aligned (compressed extension minimum)
+    assume (i_trap_pc[0] == 1'b0);
+  end
+
+  always @(posedge i_clk) begin
+    if (f_past_valid && !i_rst && $past(!i_rst)) begin
+      // Trap saves state: after trap entry, mepc/mcause/mtval are saved.
+      if ($past(i_trap_taken)) begin
+        p_trap_saves_mepc : assert (mepc == $past(i_trap_pc));
+        p_trap_saves_mcause : assert (mcause == $past(i_trap_cause));
+        p_trap_saves_mtval : assert (mtval == $past(i_trap_value));
+      end
+
+      // Trap clears MIE: after trap, MIE is cleared and MPIE saves old MIE.
+      if ($past(i_trap_taken)) begin
+        p_trap_clears_mie : assert (!mstatus_mie);
+        p_trap_saves_mpie : assert (mstatus_mpie == $past(mstatus_mie));
+      end
+
+      // MRET restores MIE: after MRET, MIE = old MPIE, MPIE = 1.
+      if ($past(i_mret_taken)) begin
+        p_mret_restores_mie : assert (mstatus_mie == $past(mstatus_mpie));
+        p_mret_sets_mpie : assert (mstatus_mpie);
+      end
+
+      // Cycle counter increments every cycle (not in reset).
+      p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
+
+      // Instret increments on retire.
+      if ($past(i_instruction_retired)) begin
+        p_instret_increments : assert (instret_counter == $past(instret_counter) + 64'd1);
+      end
+
+      // Instret stable when no retire and no reset.
+      if ($past(!i_instruction_retired)) begin
+        p_instret_stable : assert (instret_counter == $past(instret_counter));
+      end
+
+      // fflags sticky: when no CSR write to fflags/fcsr and no fp_flags_valid,
+      // fflags does not shrink.
+      if ($past(
+              !i_fp_flags_valid && !(i_csr_write_enable && i_csr_read_enable &&
+          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFcsr))
+          )) begin
+        p_fflags_sticky : assert (fflags == $past(fflags));
+      end
+
+      // Reset clears all.
+      if ($past(i_rst)) begin
+        p_reset_cycle : assert (cycle_counter == 64'd0);
+        p_reset_instret : assert (instret_counter == 64'd0);
+        p_reset_mie : assert (!mstatus_mie);
+        p_reset_mpie : assert (!mstatus_mpie);
+        p_reset_fflags : assert (fflags == 5'b0);
+        p_reset_frm : assert (frm == 3'b0);
+      end
+    end
+
+    if (!i_rst) begin
+      // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
+      p_mepc_aligned : assert (mepc[0] == 1'b0);
+
+      // mtvec alignment: bits [1:0] always 00 (forced by write path).
+      p_mtvec_aligned : assert (mtvec[1:0] == 2'b00);
+
+      // mip is read-only and reflects inputs.
+      p_mip_reflects_inputs :
+      assert (mip == {20'b0, i_interrupts.meip, 3'b0,
+          i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0});
+    end
+  end
+
+  // Cover properties
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_trap_entry : cover (f_past_valid && $past(i_trap_taken));
+      cover_mret : cover (f_past_valid && $past(i_mret_taken));
+      cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
+      cover_fp_flags : cover (i_fp_flags_valid);
+      cover_instret : cover (f_past_valid && instret_counter > 64'd0);
+    end
+  end
+
+`endif  // FORMAL
+
 endmodule : csr_file

@@ -121,4 +121,59 @@ module data_mem_arbiter #(
                              i_ex_to_ma_is_lr |
                              i_ex_to_ma_is_fp_load;
 
+  // ===========================================================================
+  // Formal Verification Properties
+  // ===========================================================================
+`ifdef FORMAL
+
+  always_comb begin
+    // FP override highest priority: when FP addr override is active,
+    // data memory address must be FP address.
+    p_fp_highest_priority :
+    assert (!i_fp_mem_addr_override || (o_data_mem_addr == i_fp_mem_address));
+
+    // AMO write second priority: when no FP override but AMO write is active.
+    p_amo_write_priority :
+    assert (!(!i_fp_mem_addr_override && i_amo_write_enable) ||
+        (o_data_mem_addr == i_amo_write_address));
+
+    // AMO stall third priority: when no FP, no AMO write, but AMO stall.
+    p_amo_stall_priority :
+    assert (!(!i_fp_mem_addr_override && !i_amo_write_enable &&
+        i_amo_stall_for_amo) ||
+        (o_data_mem_addr == i_ex_to_ma_data_memory_address));
+
+    // Default path: when none of the above, use EX comb address.
+    p_default_path :
+    assert (!(!i_fp_mem_addr_override && !i_amo_write_enable &&
+        !i_amo_stall_for_amo) ||
+        (o_data_mem_addr == i_ex_comb_data_memory_address));
+
+    // FP write active = any FP byte enable set.
+    p_fp_write_active : assert (o_fp_mem_write_active == |i_fp_mem_byte_write_enable);
+
+    // Stall gates store byte enables: when stall and no FP/AMO override,
+    // byte write enables must be zero.
+    p_stall_gates_store :
+    assert (!(i_stall_for_mem_write && !o_fp_mem_write_active &&
+        !i_amo_write_enable) || (o_data_mem_per_byte_wr_en == 4'b0000));
+
+    // AMO write gets all byte enables (when FP is not overriding).
+    p_amo_all_bytes :
+    assert (!(i_amo_write_enable && !o_fp_mem_write_active) ||
+        (o_data_mem_per_byte_wr_en == 4'b1111));
+  end
+
+  // Cover properties
+  always_comb begin
+    cover_fp_priority : cover (i_fp_mem_addr_override);
+    cover_amo_write : cover (!i_fp_mem_addr_override && i_amo_write_enable);
+    cover_amo_stall : cover (!i_fp_mem_addr_override && !i_amo_write_enable && i_amo_stall_for_amo);
+    cover_default : cover (!i_fp_mem_addr_override && !i_amo_write_enable && !i_amo_stall_for_amo);
+    cover_read_enable : cover (o_data_mem_read_enable);
+    cover_read_stalled : cover (!o_data_mem_read_enable && i_pipeline_stall);
+  end
+
+`endif  // FORMAL
+
 endmodule : data_mem_arbiter

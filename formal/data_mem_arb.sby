@@ -1,0 +1,21 @@
+[tasks]
+bmc    # Bounded model checking - combinational, depth 1
+cover  # Cover checking
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+cover: mode cover
+cover: depth 1
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv data_mem_arbiter.sv
+prep -top data_mem_arbiter
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/data_mem_arbiter.sv

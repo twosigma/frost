@@ -128,6 +128,31 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
+  # Run SymbiYosys formal verification
+  test-formal:
+    name: Formal Verification
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run formal verification
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            pytest tests/ -m formal -v
+
   # Run linting inside Docker to ensure version consistency with pre-commit
   lint:
     name: Lint
