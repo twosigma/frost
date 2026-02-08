@@ -129,8 +129,9 @@ The Docker image includes:
 - Verilator 5.044 (built from source)
 - Icarus Verilog 12.0
 - Yosys 0.60 (built from source)
-- RISC-V GCC toolchain
-- Cocotb and Python dependencies
+- SymbiYosys 0.62 + Z3 4.15.0 (formal verification)
+- RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
+- Python 3.12 with Cocotb 2.0.1 and pytest
 - Pre-commit with all linters (clang-format, clang-tidy, Verible, ruff, mypy)
 
 ## Setting Up Pre-commit Hooks
