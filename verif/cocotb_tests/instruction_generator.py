@@ -160,6 +160,20 @@ ALL_FP_OPS = FP_OPS_TO_FP_REG | FP_OPS_TO_INT_REG | FP_OPS_NO_WRITE
 """All floating-point operations."""
 
 
+# Grouped FP op tables by encoder signature for encode_instruction()
+_FP_ENCODE_RD_RS1_RS2 = {**FP_ARITH_2OP, **FP_SGNJ, **FP_MINMAX, **FP_CMP}
+_FP_ENCODE_RD_RS1 = {
+    **FP_ARITH_1OP,
+    **FP_CVT_F2I,
+    **FP_CVT_I2F,
+    **FP_CVT_F2F,
+    **FP_MV_F2I,
+    **FP_MV_I2F,
+    **FP_CLASS,
+}
+_FP_ENCODE_RD_RS1_RS2_RS3 = {**FP_FMA}
+
+
 def _is_double_precision_fp_op(operation: str) -> bool:
     """Return True if operation uses double-precision encoding/data path."""
     if operation in ("fld", "fsd"):
@@ -727,76 +741,29 @@ class InstructionGenerator:
             # These take no operands - fixed encodings
             encoder_function = TRAP_INSTRS[operation]
             return encoder_function()
-        # F extension (floating-point) instruction encoding
-        elif operation in FP_ARITH_2OP:
-            # Two-operand FP arithmetic (fadd.s, fsub.s, fmul.s, fdiv.s)
-            encoder_function, _ = FP_ARITH_2OP[operation]
+        # F/D extension (floating-point) instruction encoding
+        elif operation in _FP_ENCODE_RD_RS1_RS2:
+            encoder_function, _ = _FP_ENCODE_RD_RS1_RS2[operation]
             return encoder_function(
                 destination_register, source_register_1, source_register_2
             )
-        elif operation in FP_ARITH_1OP:
-            # Single-operand FP arithmetic (fsqrt.s)
-            encoder_function, _ = FP_ARITH_1OP[operation]
+        elif operation in _FP_ENCODE_RD_RS1:
+            encoder_function, _ = _FP_ENCODE_RD_RS1[operation]
             return encoder_function(destination_register, source_register_1)
-        elif operation in FP_FMA:
-            # Fused multiply-add (fmadd.s, fmsub.s, fnmadd.s, fnmsub.s)
-            encoder_function, _ = FP_FMA[operation]
+        elif operation in _FP_ENCODE_RD_RS1_RS2_RS3:
+            encoder_function, _ = _FP_ENCODE_RD_RS1_RS2_RS3[operation]
             return encoder_function(
                 destination_register,
                 source_register_1,
                 source_register_2,
                 source_register_3,
             )
-        elif operation in FP_SGNJ:
-            # Sign injection (fsgnj.s, fsgnjn.s, fsgnjx.s)
-            encoder_function, _ = FP_SGNJ[operation]
-            return encoder_function(
-                destination_register, source_register_1, source_register_2
-            )
-        elif operation in FP_MINMAX:
-            # Min/max (fmin.s, fmax.s)
-            encoder_function, _ = FP_MINMAX[operation]
-            return encoder_function(
-                destination_register, source_register_1, source_register_2
-            )
-        elif operation in FP_CMP:
-            # Comparison (feq.s, flt.s, fle.s) - result to integer register
-            encoder_function, _ = FP_CMP[operation]
-            return encoder_function(
-                destination_register, source_register_1, source_register_2
-            )
-        elif operation in FP_CVT_F2I:
-            # FP to integer conversion (fcvt.w.s, fcvt.wu.s)
-            encoder_function, _ = FP_CVT_F2I[operation]
-            return encoder_function(destination_register, source_register_1)
-        elif operation in FP_CVT_I2F:
-            # Integer to FP conversion (fcvt.s.w, fcvt.s.wu)
-            encoder_function, _ = FP_CVT_I2F[operation]
-            return encoder_function(destination_register, source_register_1)
-        elif operation in FP_CVT_F2F:
-            # FP to FP conversion (fcvt.s.d, fcvt.d.s)
-            encoder_function, _ = FP_CVT_F2F[operation]
-            return encoder_function(destination_register, source_register_1)
-        elif operation in FP_MV_F2I:
-            # FP bits to integer move (fmv.x.w)
-            encoder_function, _ = FP_MV_F2I[operation]
-            return encoder_function(destination_register, source_register_1)
-        elif operation in FP_MV_I2F:
-            # Integer bits to FP move (fmv.w.x)
-            encoder_function, _ = FP_MV_I2F[operation]
-            return encoder_function(destination_register, source_register_1)
-        elif operation in FP_CLASS:
-            # Classify (fclass.s)
-            encoder_function, _ = FP_CLASS[operation]
-            return encoder_function(destination_register, source_register_1)
         elif operation in FP_LOADS:
-            # FP load (flw)
             encoder_function, _ = FP_LOADS[operation]
             return encoder_function(
                 destination_register, source_register_1, immediate_value
             )
         elif operation in FP_STORES:
-            # FP store (fsw)
             encoder_function = FP_STORES[operation]
             return encoder_function(
                 source_register_2, source_register_1, immediate_value

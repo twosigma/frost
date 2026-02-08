@@ -50,9 +50,11 @@ Queue Management:
 from config import (
     MASK32,
     MASK64,
+    MEMORY_WORD_ALIGN_MASK,
     PIPELINE_IF_TO_EX_CYCLES,
     PIPELINE_IF_TO_MA_CYCLES,
 )
+from encoders.instruction_encode import CSRAddress
 
 
 class TestState:
@@ -204,18 +206,21 @@ class TestState:
         self.register_file_previous = self.register_file_current.copy()
         self.fp_register_file_previous = self.fp_register_file_current.copy()
 
-    def queue_expected_outputs(self, expected_pc: int) -> None:
-        """Queue expected register files (int and FP) and PC for monitor verification.
+    def queue_expected_outputs(self, expected_pc: int, include_fp: bool = True) -> None:
+        """Queue expected register files and PC for monitor verification.
 
         Args:
             expected_pc: Expected program counter value
+            include_fp: If True, also queue FP register file expectations.
+                Set to False for integer-only tests where no FP monitor runs.
         """
         self.register_file_current_expected_queue.append(
             self.register_file_current.copy()
         )
-        self.fp_register_file_current_expected_queue.append(
-            self.fp_register_file_current.copy()
-        )
+        if include_fp:
+            self.fp_register_file_current_expected_queue.append(
+                self.fp_register_file_current.copy()
+            )
         self.program_counter_expected_values_queue.append(expected_pc)
 
     def has_pending_expectations(self) -> bool:
@@ -254,7 +259,7 @@ class TestState:
             address: Word-aligned memory address (lower 2 bits ignored)
         """
         self.reservation_valid = True
-        self.reservation_address = address & ~0x3  # Word-align
+        self.reservation_address = address & MEMORY_WORD_ALIGN_MASK
 
     def clear_reservation(self) -> None:
         """Clear any active LR/SC reservation.
@@ -278,7 +283,7 @@ class TestState:
         """
         if not self.reservation_valid:
             return False
-        return (address & ~0x3) == self.reservation_address
+        return (address & MEMORY_WORD_ALIGN_MASK) == self.reservation_address
 
     def schedule_reservation(self, address: int) -> None:
         """Schedule a reservation to be set after pipeline delay.
@@ -289,7 +294,7 @@ class TestState:
         Args:
             address: Word-aligned address for reservation
         """
-        self.pending_lr_address = address & ~0x3
+        self.pending_lr_address = address & MEMORY_WORD_ALIGN_MASK
         self.pending_lr_countdown = (
             PIPELINE_IF_TO_MA_CYCLES  # LR.W sets reservation at MA stage
         )
@@ -331,8 +336,6 @@ class TestState:
         Returns:
             Expected 32-bit CSR value
         """
-        from encoders.instruction_encode import CSRAddress
-
         # Cycle counter: increments every clock, so add pipeline offset
         cycle_at_ex = self.csr_cycle_counter + pipeline_offset
 

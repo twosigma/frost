@@ -46,11 +46,13 @@ from typing import Any
 
 from config import (
     MASK32,
+    NOP_INSTRUCTION,
     DEFAULT_NUM_TEST_LOOPS,
     DEFAULT_MIN_COVERAGE_COUNT,
     DEFAULT_MEMORY_INIT_SIZE,
     DEFAULT_CLOCK_PERIOD_NS,
     DEFAULT_RESET_CYCLES,
+    PIPELINE_DEPTH,
     PIPELINE_FLUSH_CYCLES,
 )
 from cocotb_tests.test_state import TestState
@@ -181,6 +183,39 @@ async def flush_remaining_outputs(
             await RisingEdge(dut.i_clk)
         cocotb.log.info(
             f"len(register_file_expected_values_queue) is {len(state.register_file_current_expected_queue)}"
+        )
+
+
+async def warmup_pipeline(
+    dut_if: DUTInterface, state: TestState, enable_fp: bool = False
+) -> None:
+    """Fill the pipeline with NOPs to synchronize expected value queues.
+
+    With a 6-stage pipeline, we need to queue expected values for the first
+    PIPELINE_DEPTH cycles before o_vld starts firing. Drive NOPs to ensure
+    predictable initial state.
+
+    Args:
+        dut_if: DUT interface for signal access
+        state: Test state for tracking expectations
+        enable_fp: If True, also queue FP register file expectations
+    """
+    cocotb.log.info(f"=== Warming up pipeline ({PIPELINE_DEPTH} NOPs) ===")
+    for warmup_cycle in range(PIPELINE_DEPTH):
+        expected_pc = (state.program_counter_current + 4) & MASK32
+        state.queue_expected_outputs(expected_pc, include_fp=enable_fp)
+
+        dut_if.instruction = NOP_INSTRUCTION
+
+        await RisingEdge(dut_if.clock)
+        state.increment_cycle_counter()
+        state.increment_instret_counter()
+
+        state.update_program_counter(expected_pc)
+        state.advance_register_state()
+
+        cocotb.log.info(
+            f"Warmup NOP {warmup_cycle}: pc_cur={state.program_counter_current}"
         )
 
 

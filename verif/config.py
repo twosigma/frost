@@ -244,6 +244,9 @@ DEFAULT_RESET_CYCLES: Final[int] = 3
 XLEN: Final[int] = 32
 """RISC-V XLEN parameter (32 for RV32)."""
 
+NOP_INSTRUCTION: Final[int] = 0x00000013
+"""32-bit NOP encoding (addi x0, x0, 0)."""
+
 # ============================================================================
 # Pipeline Configuration
 # ============================================================================

@@ -85,6 +85,19 @@ from utils.memory_utils import (
 from cocotb_tests.test_state import TestState
 
 
+# Grouped FP op tables by evaluator signature for _compute_writeback_value()
+_FP_EVAL_2SRC_FP = {**FP_ARITH_2OP, **FP_SGNJ, **FP_MINMAX, **FP_CMP}
+_FP_EVAL_1SRC_FP = {
+    **FP_ARITH_1OP,
+    **FP_CVT_F2I,
+    **FP_MV_F2I,
+    **FP_CLASS,
+    **FP_CVT_F2F,
+}
+_FP_EVAL_3SRC_FP = {**FP_FMA}
+_FP_EVAL_1SRC_INT = {**FP_CVT_I2F, **FP_MV_I2F}
+
+
 class CPUModel:
     """Software model of CPU behavior for verification against hardware.
 
@@ -161,7 +174,7 @@ class CPUModel:
         elif operation in AMO or operation == "lr.w":
             # AMO and LR.W use rs1 as address (word-aligned)
             memory_model.read_address = (
-                state.register_file_previous[source_register_1] & ~0x3
+                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
             )
 
         # Determine whether branch or jump was taken
@@ -301,7 +314,9 @@ class CPUModel:
         elif operation == "sc.w":
             # SC.W: rd receives 0 on success, 1 on failure
             # Check reservation and clear it (SC always clears reservation)
-            sc_address = state.register_file_previous[source_register_1] & ~0x3
+            sc_address = (
+                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
+            )
             success = state.check_reservation(sc_address)
             state.clear_reservation()
             # Store SC result for memory write modeling
@@ -309,75 +324,29 @@ class CPUModel:
             state.last_sc_address = sc_address
             state.last_sc_data = state.register_file_previous[source_register_2]
             return 0 if success else 1
-        # ===== F extension (floating-point) operations =====
+        # ===== F/D extension (floating-point) operations =====
         elif operation in FP_LOADS:
-            # FLW: Load 32 bits from memory to FP register
             _, fn = FP_LOADS[operation]
             return fn(memory_model, memory_model.read_address)
-        elif operation in FP_ARITH_2OP:
-            # Two-operand FP arithmetic (fadd.s, fsub.s, fmul.s, fdiv.s)
-            _, fn = FP_ARITH_2OP[operation]
+        elif operation in _FP_EVAL_2SRC_FP:
+            _, fn = _FP_EVAL_2SRC_FP[operation]
             return fn(
                 state.fp_register_file_previous[source_register_1],
                 state.fp_register_file_previous[source_register_2],
             )
-        elif operation in FP_ARITH_1OP:
-            # Single-operand FP arithmetic (fsqrt.s)
-            _, fn = FP_ARITH_1OP[operation]
+        elif operation in _FP_EVAL_1SRC_FP:
+            _, fn = _FP_EVAL_1SRC_FP[operation]
             return fn(state.fp_register_file_previous[source_register_1])
-        elif operation in FP_FMA:
-            # Fused multiply-add (fmadd.s, fmsub.s, fnmadd.s, fnmsub.s)
-            _, fn = FP_FMA[operation]
+        elif operation in _FP_EVAL_3SRC_FP:
+            _, fn = _FP_EVAL_3SRC_FP[operation]
             return fn(
                 state.fp_register_file_previous[source_register_1],
                 state.fp_register_file_previous[source_register_2],
                 state.fp_register_file_previous[source_register_3],
             )
-        elif operation in FP_SGNJ:
-            # Sign injection (fsgnj.s, fsgnjn.s, fsgnjx.s)
-            _, fn = FP_SGNJ[operation]
-            return fn(
-                state.fp_register_file_previous[source_register_1],
-                state.fp_register_file_previous[source_register_2],
-            )
-        elif operation in FP_MINMAX:
-            # Min/max (fmin.s, fmax.s)
-            _, fn = FP_MINMAX[operation]
-            return fn(
-                state.fp_register_file_previous[source_register_1],
-                state.fp_register_file_previous[source_register_2],
-            )
-        elif operation in FP_CMP:
-            # Comparison (feq.s, flt.s, fle.s) -> integer result
-            _, fn = FP_CMP[operation]
-            return fn(
-                state.fp_register_file_previous[source_register_1],
-                state.fp_register_file_previous[source_register_2],
-            )
-        elif operation in FP_CVT_F2I:
-            # FP to integer conversion (fcvt.w.s, fcvt.wu.s)
-            _, fn = FP_CVT_F2I[operation]
-            return fn(state.fp_register_file_previous[source_register_1])
-        elif operation in FP_CVT_I2F:
-            # Integer to FP conversion (fcvt.s.w, fcvt.s.wu)
-            _, fn = FP_CVT_I2F[operation]
+        elif operation in _FP_EVAL_1SRC_INT:
+            _, fn = _FP_EVAL_1SRC_INT[operation]
             return fn(state.register_file_previous[source_register_1])
-        elif operation in FP_CVT_F2F:
-            # FP to FP conversion (fcvt.s.d, fcvt.d.s)
-            _, fn = FP_CVT_F2F[operation]
-            return fn(state.fp_register_file_previous[source_register_1])
-        elif operation in FP_MV_F2I:
-            # FP bits to integer move (fmv.x.w)
-            _, fn = FP_MV_F2I[operation]
-            return fn(state.fp_register_file_previous[source_register_1])
-        elif operation in FP_MV_I2F:
-            # Integer bits to FP move (fmv.w.x)
-            _, fn = FP_MV_I2F[operation]
-            return fn(state.register_file_previous[source_register_1])
-        elif operation in FP_CLASS:
-            # Classify (fclass.s) -> integer result
-            _, fn = FP_CLASS[operation]
-            return fn(state.fp_register_file_previous[source_register_1])
         else:
             # Stores, branches, and fences don't produce writeback
             return 0
@@ -392,17 +361,10 @@ class CPUModel:
     ) -> int:
         """Compute the expected program counter after instruction execution.
 
-        In the 6-stage pipeline, o_pc_vld fires at ID stage (before branch resolution
-        in EX). So o_pc shows sequential PC regardless of whether branch is taken.
-        The branch/jump target affects subsequent flush NOPs, not the instruction's
-        own o_pc output.
-
-        All instruction types return sequential PC (program_counter_current + 4):
-        - Sequential: PC + 4
-        - Taken branch: PC + 4 (target affects flush NOPs)
-        - Not-taken branch: PC + 4
-        - JAL: PC + 4 (target affects flush NOPs)
-        - JALR: PC + 4 (target affects flush NOPs)
+        In the 6-stage pipeline, o_pc_vld fires at ID stage (before branch
+        resolution in EX). So o_pc always shows sequential PC regardless of
+        instruction type. Branch/jump targets affect subsequent flush NOPs,
+        not the instruction's own o_pc output.
 
         Args:
             state: Test state with current PC values
@@ -412,28 +374,9 @@ class CPUModel:
             offset: Branch/jump offset
 
         Returns:
-            Expected program counter value
+            Expected program counter value (always PC + 4)
         """
-        if operation in BRANCHES:
-            # In 6-stage pipeline, o_pc_vld fires at ID stage (before branch resolution in EX).
-            # So o_pc shows sequential PC regardless of whether branch is taken.
-            # The branch target affects subsequent flush NOPs, not the branch's own o_pc.
-            return (state.program_counter_current + 4) & MASK32
-        elif operation == "jal":
-            # JAL is now resolved in EX stage (like JALR and branches).
-            # In 6-stage pipeline, o_pc_vld fires at ID stage (before JAL resolution in EX).
-            # So o_pc shows sequential PC, just like branches and JALR.
-            # The JAL target affects subsequent flush NOPs, not the JAL's own o_pc.
-            return (state.program_counter_current + 4) & MASK32
-        elif operation == "jalr":
-            # JALR is resolved in EX stage (like branches) because it needs register values.
-            # In 6-stage pipeline, o_pc_vld fires at ID stage (before JALR resolution in EX).
-            # So o_pc shows sequential PC, just like branches.
-            # The JALR target affects subsequent flush NOPs, not the JALR's own o_pc.
-            return (state.program_counter_current + 4) & MASK32
-        else:
-            # Sequential execution: PC + 4
-            return (state.program_counter_current + 4) & MASK32
+        return (state.program_counter_current + 4) & MASK32
 
     @staticmethod
     def calculate_internal_pc_update(
@@ -544,7 +487,9 @@ class CPUModel:
         # Handle AMO memory writes (atomic read-modify-write)
         if operation in AMO:
             # AMO address is rs1 (word-aligned)
-            write_address = state.register_file_previous[source_register_1] & ~0x3
+            write_address = (
+                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
+            )
             # Read old value from memory
             old_value = lw(mem_model, write_address)
             # Compute new value using AMO evaluator
