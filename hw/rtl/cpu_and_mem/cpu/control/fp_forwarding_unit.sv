@@ -291,8 +291,10 @@ module fp_forwarding_unit #(
            (use_fp_load_capture ? fp_register_write_data_ma_final :
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs1 ? i_from_ex_to_ma.fp_result :
-      (forward_fp_rs1_from_ma && ma_dest_matches_rs1) ? fp_register_write_data_ma_final :
-      ((forward_fp_rs1_from_wb && wb_dest_matches_rs1) || fp_wb_bypass_rs1) ?
+      (forward_fp_rs1_from_ma && ma_dest_matches_rs1 &&
+       i_from_ex_to_ma.fp_regfile_write_enable) ? fp_register_write_data_ma_final :
+      ((forward_fp_rs1_from_wb && wb_dest_matches_rs1 &&
+        i_from_ma_to_wb.fp_regfile_write_enable) || fp_wb_bypass_rs1) ?
           i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs1_match ? fp_load_capture_data :
       fp_source_reg_1_raw_value;
@@ -326,8 +328,10 @@ module fp_forwarding_unit #(
            (use_fp_load_capture ? fp_register_write_data_ma_final :
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs2 ? i_from_ex_to_ma.fp_result :
-      (forward_fp_rs2_from_ma && ma_dest_matches_rs2) ? fp_register_write_data_ma_final :
-      ((forward_fp_rs2_from_wb && wb_dest_matches_rs2) || fp_wb_bypass_rs2) ?
+      (forward_fp_rs2_from_ma && ma_dest_matches_rs2 &&
+       i_from_ex_to_ma.fp_regfile_write_enable) ? fp_register_write_data_ma_final :
+      ((forward_fp_rs2_from_wb && wb_dest_matches_rs2 &&
+        i_from_ma_to_wb.fp_regfile_write_enable) || fp_wb_bypass_rs2) ?
           i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs2_match ? fp_load_capture_data :
       fp_source_reg_2_raw_value;
@@ -361,8 +365,10 @@ module fp_forwarding_unit #(
            (use_fp_load_capture ? fp_register_write_data_ma_final :
                                   i_from_ma_comb.fp_load_data)) :
       ma_fp_result_match_rs3 ? i_from_ex_to_ma.fp_result :
-      (forward_fp_rs3_from_ma && ma_dest_matches_rs3) ? fp_register_write_data_ma_final :
-      ((forward_fp_rs3_from_wb && wb_dest_matches_rs3) || fp_wb_bypass_rs3) ?
+      (forward_fp_rs3_from_ma && ma_dest_matches_rs3 &&
+       i_from_ex_to_ma.fp_regfile_write_enable) ? fp_register_write_data_ma_final :
+      ((forward_fp_rs3_from_wb && wb_dest_matches_rs3 &&
+        i_from_ma_to_wb.fp_regfile_write_enable) || fp_wb_bypass_rs3) ?
           i_from_ma_to_wb.fp_regfile_write_data :
       fp_load_capture_rs3_match ? fp_load_capture_data :
       fp_source_reg_3_raw_value;
