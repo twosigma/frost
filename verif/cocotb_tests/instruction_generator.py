@@ -186,6 +186,13 @@ def _is_single_precision_fp_op(operation: str) -> bool:
     return True
 
 
+def _is_mmio_address(address: int) -> bool:
+    """Return True if the address falls in the MMIO peripheral window."""
+    masked_address = address & MASK32
+    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
+    return MMIO_BASE_ADDR <= masked_address < mmio_end
+
+
 def _adjust_imm_to_avoid_mmio(
     rs1_value: int, immediate: int, alignment: int = 1
 ) -> int:
@@ -206,12 +213,12 @@ def _adjust_imm_to_avoid_mmio(
         Adjusted immediate that avoids MMIO addresses, or original if not needed.
     """
     effective_address = (rs1_value + immediate) & MASK32
-    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
 
-    if not (MMIO_BASE_ADDR <= effective_address < mmio_end):
+    if not _is_mmio_address(effective_address):
         return immediate
 
     # Try moving address just past the end of the MMIO range
+    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
     distance_to_end = mmio_end - effective_address
     if alignment > 1:
         distance_to_end = ((distance_to_end + alignment - 1) // alignment) * alignment
@@ -231,6 +238,18 @@ def _adjust_imm_to_avoid_mmio(
 
     # Fallback: use 0 (extremely rare - only if rs1 is right at MMIO boundary
     # and both directions overflow the 12-bit immediate range)
+    return 0
+
+
+def _choose_non_mmio_word_aligned_rs1(register_file_state: list[int]) -> int:
+    """Choose rs1 whose value is word-aligned and outside MMIO space."""
+    candidates = [
+        reg
+        for reg, value in enumerate(register_file_state)
+        if (value % WORD_ALIGNMENT) == 0 and not _is_mmio_address(value)
+    ]
+    if candidates:
+        return random.choice(candidates)
     return 0
 
 
@@ -410,10 +429,10 @@ class InstructionGenerator:
                 immediate_value += 4
         elif operation in AMO or operation in AMO_LR_SC:
             # AMO operations use rs1 directly as address (no immediate offset)
-            # but we need to ensure rs1 contains a word-aligned address
+            # but we need to ensure rs1 contains a word-aligned RAM address
             # Set immediate to 0 (AMO doesn't use immediate) and rs1 will be used directly
             immediate_value = 0
-            # Note: The test framework should ensure rs1 contains a valid aligned address
+            source_register_1 = _choose_non_mmio_word_aligned_rs1(register_file_state)
 
         # Avoid MMIO addresses for loads and stores (the software memory model
         # doesn't simulate MMIO peripherals, so these cause model-vs-DUT mismatches)
