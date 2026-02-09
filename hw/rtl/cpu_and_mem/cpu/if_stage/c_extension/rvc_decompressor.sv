@@ -308,11 +308,9 @@ module rvc_decompressor (
           end
           3'b001: begin  // C.FLDSP
             o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoadFp};
-            if (rd_full == 5'd0) o_illegal = 1'b1;
           end
           3'b011: begin  // C.FLWSP
             o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoadFp};
-            if (rd_full == 5'd0) o_illegal = 1'b1;
           end
           3'b100: begin
             if (!i_instr_compressed[12]) begin

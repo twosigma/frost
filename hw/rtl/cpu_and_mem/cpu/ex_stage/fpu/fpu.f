@@ -6,7 +6,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_round.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
 
 # Simple 1-cycle operations

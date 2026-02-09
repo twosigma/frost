@@ -268,6 +268,7 @@ module ex_stage #(
   ) exception_detector_inst (
       .i_is_ecall(i_from_id_to_ex.is_ecall),
       .i_is_ebreak(i_from_id_to_ex.is_ebreak),
+      .i_is_illegal_instruction(i_from_id_to_ex.is_illegal_instruction),
       .i_is_load_instruction(i_from_id_to_ex.is_load_instruction),
       .i_is_load_halfword(i_from_id_to_ex.is_load_halfword),
       .i_is_load_byte(i_from_id_to_ex.is_load_byte),

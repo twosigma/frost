@@ -118,6 +118,7 @@ module pd_stage #(
       o_from_pd_to_id.source_reg_1_early         <= 5'd0;
       o_from_pd_to_id.source_reg_2_early         <= 5'd0;
       o_from_pd_to_id.fp_source_reg_3_early      <= 5'd0;  // F extension: FMA rs3
+      o_from_pd_to_id.illegal_instruction        <= 1'b0;
       // Branch prediction metadata
       o_from_pd_to_id.btb_hit                    <= 1'b0;
       o_from_pd_to_id.btb_predicted_taken        <= 1'b0;
@@ -136,6 +137,11 @@ module pd_stage #(
       o_from_pd_to_id.source_reg_1_early <= i_pipeline_ctrl.flush ? 5'd0 : source_reg_1;
       o_from_pd_to_id.source_reg_2_early <= i_pipeline_ctrl.flush ? 5'd0 : source_reg_2;
       o_from_pd_to_id.fp_source_reg_3_early <= i_pipeline_ctrl.flush ? 5'd0 : fp_source_reg_3;
+      // Illegal compressed indication is only valid when compressed decode path is selected.
+      o_from_pd_to_id.illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                             (!i_from_if_to_pd.sel_nop &&
+                                              i_from_if_to_pd.sel_compressed &&
+                                              decomp_is_compressed && decomp_illegal);
       // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
       o_from_pd_to_id.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_if_to_pd.btb_hit;
       o_from_pd_to_id.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :

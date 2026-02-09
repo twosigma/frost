@@ -234,6 +234,16 @@ module if_stage #(
   logic        sel_spanning_effective;
   logic [31:0] ras_spanning_instr;
 
+  // Forward declarations (moved before first use to avoid Vivado warnings)
+  logic        use_saved_values;
+  assign use_saved_values = i_pipeline_ctrl.stall_registered;
+  logic            sel_spanning_saved;
+  logic [    15:0] raw_parcel_sc;
+  logic [    31:0] effective_instr_sc;
+  logic [    31:0] spanning_instr_sc;
+  logic [XLEN-1:0] link_address_sc;
+  logic            prediction_from_buffer_holdoff;
+
   assign sel_spanning_effective = use_saved_values ? sel_spanning_saved : sel_spanning;
   assign ras_spanning_instr = spanning_instr_sc;
 
@@ -478,14 +488,10 @@ module if_stage #(
   // Save raw instruction data when stall begins for restoration after unstall.
   // This is needed because BRAM output changes while stalled.
 
-  logic        sel_nop_saved;
-  logic        sel_spanning_saved;
+  logic sel_nop_saved;
 
   // Stall-capture outputs (muxed: stall_registered ? saved : live)
-  logic [15:0] raw_parcel_sc;
-  logic [31:0] effective_instr_sc;
-  logic [31:0] spanning_instr_sc;
-  logic        sel_compressed_sc;
+  logic sel_compressed_sc;
 
   stall_capture_reg #(
       .WIDTH(16)
@@ -555,7 +561,6 @@ module if_stage #(
   // flight that will arrive next cycle with STALE data (it was fetched for the
   // PC after the buffered instruction, not for the predicted target).
   // This holdoff signal suppresses that stale instruction for one cycle.
-  logic prediction_from_buffer_holdoff;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       prediction_from_buffer_holdoff <= 1'b0;
@@ -571,13 +576,6 @@ module if_stage #(
   // ===========================================================================
 
   assign o_pc = pc;
-
-  // TIMING OPTIMIZATION: Removed ~flush gate from use_saved_values.
-  // During flush, PD stage overrides with NOP anyway, so IF outputs don't affect
-  // the final instruction. This breaks the timing path from branch_taken through
-  // flush to IF stage output muxes.
-  logic use_saved_values;
-  assign use_saved_values = i_pipeline_ctrl.stall_registered;
 
   // Raw parcel output: use saved during stall
   assign o_from_if_to_pd.raw_parcel = raw_parcel_sc;
@@ -598,7 +596,6 @@ module if_stage #(
   // Link address = instruction_pc + 2 (compressed) or + 4 (32-bit)
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
-  logic [XLEN-1:0] link_address_sc;
 
   // Determine if current instruction is compressed for link address calculation
   logic is_compressed_for_link;

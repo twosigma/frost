@@ -39,31 +39,32 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (120 bits total, MSB to LSB):
-# [119]     alloc_valid
-# [118:87]  pc (32 bits)
-# [86]      dest_rf
-# [85:81]   dest_reg (5 bits)
-# [80]      dest_valid
-# [79]      is_store
-# [78]      is_fp_store
-# [77]      is_branch
-# [76]      predicted_taken
-# [75:44]   predicted_target (32 bits)
-# [43]      is_call
-# [42]      is_return
-# [41:10]   link_addr (32 bits)
-# [9]       is_jal
-# [8]       is_jalr
-# [7]       is_csr
-# [6]       is_fence
-# [5]       is_fence_i
-# [4]       is_wfi
-# [3]       is_mret
-# [2]       is_amo
-# [1]       is_lr
-# [0]       is_sc
-ALLOC_REQ_WIDTH = 120
+# reorder_buffer_alloc_req_t field positions (121 bits total, MSB to LSB):
+# [120]     alloc_valid
+# [119:88]  pc (32 bits)
+# [87]      dest_rf
+# [86:82]   dest_reg (5 bits)
+# [81]      dest_valid
+# [80]      is_store
+# [79]      is_fp_store
+# [78]      is_branch
+# [77]      predicted_taken
+# [76:45]   predicted_target (32 bits)
+# [44]      is_call
+# [43]      is_return
+# [42:11]   link_addr (32 bits)
+# [10]      is_jal
+# [9]       is_jalr
+# [8]       is_csr
+# [7]       is_fence
+# [6]       is_fence_i
+# [5]       is_wfi
+# [4]       is_mret
+# [3]       is_amo
+# [2]       is_lr
+# [1]       is_sc
+# [0]       is_compressed
+ALLOC_REQ_WIDTH = 121
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -75,6 +76,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit = 0  # Start from LSB
 
     # Pack from LSB to MSB (reverse order of struct declaration)
+    val |= (1 if req.is_compressed else 0) << bit
+    bit += 1
     val |= (1 if req.is_sc else 0) << bit
     bit += 1
     val |= (1 if req.is_lr else 0) << bit

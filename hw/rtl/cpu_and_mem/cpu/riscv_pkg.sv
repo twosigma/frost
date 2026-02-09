@@ -371,6 +371,7 @@ package riscv_pkg;
   localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
 
   // Exception cause codes (mcause values when interrupt bit = 0)
+  localparam bit [31:0] ExcIllegalInstr = 32'd2;
   localparam bit [31:0] ExcBreakpoint = 32'd3;
   localparam bit [31:0] ExcLoadAddrMisalign = 32'd4;
   localparam bit [31:0] ExcStoreAddrMisalign = 32'd6;
@@ -523,6 +524,7 @@ package riscv_pkg;
     logic [4:0] source_reg_2_early;
     // F extension: Early FP source reg 3 for FMA instructions (rs3 = funct7[6:2])
     logic [4:0] fp_source_reg_3_early;
+    logic illegal_instruction;  // Illegal compressed instruction detected by decompressor
     // Branch prediction metadata (passed through from IF)
     logic btb_hit;
     logic btb_predicted_taken;
@@ -574,6 +576,7 @@ package riscv_pkg;
     logic is_wfi;  // WFI instruction
     logic is_ecall;  // ECALL instruction
     logic is_ebreak;  // EBREAK instruction
+    logic is_illegal_instruction;  // Illegal instruction (unknown opcode or illegal compressed)
     // F extension fields
     logic is_fp_instruction;  // Any FP instruction
     logic is_fp_load;  // FLW - data goes to FP regfile
@@ -641,8 +644,6 @@ package riscv_pkg;
     logic multiply_completing_next_cycle;
     // A extension: SC.W success flag (0=success, 1=fail as value for rd)
     logic sc_success;
-    // A extension: stall for AMO read-modify-write operations
-    logic stall_for_amo;
     // Exception signals
     logic exception_valid;  // Exception detected in EX stage
     logic [XLEN-1:0] exception_cause;  // Exception cause code
@@ -1209,6 +1210,7 @@ package riscv_pkg;
     logic                    is_amo;
     logic                    is_lr;
     logic                    is_sc;
+    logic                    is_compressed;     // Compressed (16-bit) instruction
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {

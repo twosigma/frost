@@ -1076,3 +1076,256 @@ async def run_directed_csrsi_enable_mie_test(
 async def test_directed_csrsi_enable_mie(dut: Any) -> None:
     """Directed test for CSRSI enabling MIE while interrupt pending."""
     await run_directed_csrsi_enable_mie_test(dut)
+
+
+# ============================================================================
+# Directed Test for Illegal Instruction Trapping (mcause=2)
+# ============================================================================
+
+
+async def run_directed_illegal_instruction_test(
+    dut: Any, config: TestConfig | None = None
+) -> None:
+    """Directed test for illegal instruction detection (mcause=2).
+
+    This test exercises the illegal instruction trap mechanism by injecting
+    several hand-crafted encodings that do not correspond to any valid
+    RISC-V instruction. For each illegal encoding, the test verifies:
+    1. The processor traps to the mtvec address
+    2. mcause is set to 2 (Illegal instruction)
+    3. MRET successfully returns to continue execution
+
+    Illegal encodings tested:
+        - Unknown opcode (0x7F - all ones in opcode field)
+        - Reserved funct3 in BRANCH (funct3=010)
+        - Reserved funct7 in OP (funct7=0x7F, funct3=000)
+        - Reserved funct3 in LOAD (funct3=011)
+        - Reserved funct3 in STORE (funct3=011)
+
+    Args:
+        dut: Device under test (cocotb SimHandle)
+        config: Test configuration. If None, uses default configuration.
+    """
+    from encoders.op_tables import TRAP_INSTRS, CSRS
+    from encoders.instruction_encode import (
+        CSRAddress,
+        RType,
+        IType,
+        SType,
+        BType,
+        FPType,
+        R4Type,
+        FPFunct7,
+        Opcode,
+    )
+
+    if config is None:
+        config = TestConfig(num_loops=100)
+
+    # ========================================================================
+    # Initialization Phase
+    # ========================================================================
+    dut_if = DUTInterface(dut)
+    state = TestState()
+
+    dut_if.instruction = 0x00000013  # 32-bit NOP (addi x0, x0, 0)
+
+    # Initialize registers to known values
+    state.register_file_current = [0] * 32
+    for i in range(1, 32):
+        state.register_file_current[i] = (i * 0x11111111) & MASK32
+
+    # Set up specific values for trap testing
+    trap_handler_address = 0x1000  # Trap handler at 0x1000
+    state.register_file_current[1] = trap_handler_address  # x1 = trap handler addr
+
+    # Write registers to DUT
+    for i in range(1, 32):
+        dut_if.write_register(i, state.register_file_current[i])
+
+    # Start clock
+    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+
+    # Reset DUT
+    await dut_if.reset_dut(config.reset_cycles)
+
+    # Initialize memory model (needed for pipeline to work correctly)
+    mem_model = MemoryModel(dut)
+    cocotb.start_soon(
+        mem_model.driver_and_monitor(
+            state.memory_write_data_expected_queue,
+            state.memory_write_address_expected_queue,
+        )
+    )
+
+    # Initialize register file pipeline states for 6-stage pipeline.
+    state.register_file_previous = state.register_file_current.copy()
+
+    # ========================================================================
+    # Warmup: Let pipeline stabilize
+    # ========================================================================
+    cocotb.log.info("=== Warming up pipeline ===")
+    for _ in range(8):
+        await execute_nop(dut_if, state)
+
+    # ========================================================================
+    # Step 1: Set up mtvec (trap vector base address)
+    # Use CSRRW to write trap_handler_address to mtvec
+    # ========================================================================
+    cocotb.log.info("=== Setting up mtvec ===")
+
+    # CSRRW x0, mtvec, x1 - write x1 to mtvec, discard old value
+    enc_csrrw = CSRS["csrrw"]
+    instr_csrrw_mtvec = enc_csrrw(0, CSRAddress.MTVEC, 1)  # rd=0, csr=mtvec, rs1=x1
+
+    await FallingEdge(dut_if.clock)
+    await dut_if.wait_ready()
+    dut_if.instruction = instr_csrrw_mtvec
+    await RisingEdge(dut_if.clock)
+
+    # Track state
+    state.register_file_current_expected_queue.append(
+        state.register_file_current.copy()
+    )
+    expected_pc = (state.program_counter_current + 4) & MASK32
+    state.program_counter_expected_values_queue.append(expected_pc)
+    state.update_program_counter(expected_pc)
+    state.advance_register_state()
+
+    cocotb.log.info(f"Set mtvec = 0x{trap_handler_address:08X}")
+
+    # Let the CSR write complete through pipeline
+    for _ in range(PIPELINE_DEPTH):
+        await execute_nop(dut_if, state)
+
+    # ========================================================================
+    # Step 2: Define illegal instruction encodings to test
+    # ========================================================================
+    illegal_cases = [
+        ("unknown opcode 0x7F", IType.encode(0, 0, 0, 0, 0b1111111)),
+        ("bad funct3=010 in BRANCH", BType.encode(0, 0, 0, 0b010, 0x63)),
+        ("bad funct7=0x7F in OP", RType.encode(0b1111111, 0, 0, 0b000, 0, 0x33)),
+        ("bad funct3=011 in LOAD", IType.encode(0, 0, 0b011, 0, 0x03)),
+        ("bad funct3=011 in STORE", SType.encode(0, 0, 0, 0b011, 0x23)),
+        # FP reserved rounding mode: rm=101 on FADD.S (OPC_OP_FP arithmetic)
+        ("reserved rm=5 in FADD.S", FPType.encode(FPFunct7.FADD_S, 2, 1, 5, 3)),
+        # FP reserved rounding mode: rm=110 on FMADD.S (FMA opcode)
+        ("reserved rm=6 in FMADD.S", R4Type.encode(0, 2, 1, 6, 3, Opcode.FMADD, fmt=0)),
+    ]
+
+    # Prepare MRET and CSRRS instructions for reuse
+    enc_mret = TRAP_INSTRS["mret"]
+    instr_mret = enc_mret()
+
+    enc_csrrs = CSRS["csrrs"]
+    instr_read_mcause = enc_csrrs(3, CSRAddress.MCAUSE, 0)  # rd=x3, csr=mcause, rs1=x0
+
+    # ========================================================================
+    # Step 3: Test each illegal instruction encoding
+    # ========================================================================
+    for name, encoding in illegal_cases:
+        cocotb.log.info(f"=== Testing illegal: {name} (0x{encoding:08X}) ===")
+
+        # Record the PC where the illegal instruction will be executed
+        illegal_pc = state.program_counter_current
+
+        # Execute the illegal instruction
+        await FallingEdge(dut_if.clock)
+        await dut_if.wait_ready()
+        dut_if.instruction = encoding
+        await RisingEdge(dut_if.clock)
+
+        # After illegal instruction, PC should jump to mtvec (trap_handler_address)
+        state.register_file_current_expected_queue.append(
+            state.register_file_current.copy()
+        )
+        state.program_counter_expected_values_queue.append(trap_handler_address)
+        state.update_program_counter(trap_handler_address)
+        state.advance_register_state()
+
+        cocotb.log.info(
+            f"Illegal instruction executed at PC=0x{illegal_pc:08X}, "
+            f"expecting jump to trap handler"
+        )
+
+        # Wait for trap to be taken and pipeline to stabilize
+        for _ in range(10):
+            await execute_nop(dut_if, state)
+
+        # Read mcause into x3: CSRRS x3, mcause, x0
+        await FallingEdge(dut_if.clock)
+        await dut_if.wait_ready()
+        dut_if.instruction = instr_read_mcause
+        await RisingEdge(dut_if.clock)
+
+        state.register_file_current_expected_queue.append(
+            state.register_file_current.copy()
+        )
+        expected_pc = (state.program_counter_current + 4) & MASK32
+        state.program_counter_expected_values_queue.append(expected_pc)
+        state.update_program_counter(expected_pc)
+        state.advance_register_state()
+
+        # Let read complete through pipeline
+        for _ in range(PIPELINE_DEPTH):
+            await execute_nop(dut_if, state)
+
+        # Verify mcause is 2 (Illegal instruction)
+        mcause_value = dut_if.read_register(3)
+        cocotb.log.info(f"mcause = {mcause_value} (expected 2 for illegal instruction)")
+        assert (
+            mcause_value == 2
+        ), f"mcause mismatch for '{name}': got {mcause_value}, expected 2"
+        cocotb.log.info(f"mcause verification PASSED for '{name}'")
+
+        # Execute MRET to return from trap handler
+        await FallingEdge(dut_if.clock)
+        await dut_if.wait_ready()
+        dut_if.instruction = instr_mret
+        await RisingEdge(dut_if.clock)
+
+        # After MRET, PC returns to mepc
+        state.register_file_current_expected_queue.append(
+            state.register_file_current.copy()
+        )
+        state.program_counter_expected_values_queue.append(0)  # Will be mepc
+        state.update_program_counter(0)
+        state.advance_register_state()
+
+        cocotb.log.info("MRET executed, returning from trap handler")
+
+        # Wait for MRET to complete and pipeline to stabilize
+        for _ in range(10):
+            await execute_nop(dut_if, state)
+
+        # Re-set mtvec before next test case (may have been affected)
+        await FallingEdge(dut_if.clock)
+        await dut_if.wait_ready()
+        dut_if.instruction = instr_csrrw_mtvec
+        await RisingEdge(dut_if.clock)
+
+        state.register_file_current_expected_queue.append(
+            state.register_file_current.copy()
+        )
+        expected_pc = (state.program_counter_current + 4) & MASK32
+        state.program_counter_expected_values_queue.append(expected_pc)
+        state.update_program_counter(expected_pc)
+        state.advance_register_state()
+
+        for _ in range(PIPELINE_DEPTH):
+            await execute_nop(dut_if, state)
+
+    # ========================================================================
+    # Cleanup
+    # ========================================================================
+    cocotb.log.info("=== Flushing pipeline ===")
+    for _ in range(10):
+        await execute_nop(dut_if, state)
+
+    cocotb.log.info("=== All illegal instruction trap tests passed! ===")
+
+
+@cocotb.test()
+async def test_directed_illegal_instruction(dut: Any) -> None:
+    """Directed test for illegal instruction trapping (mcause=2)."""
+    await run_directed_illegal_instruction_test(dut)

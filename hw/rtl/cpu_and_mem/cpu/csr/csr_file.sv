@@ -123,7 +123,7 @@ module csr_file #(
   logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
   logic [XLEN-1:0] mstatus;  // Constructed from mie and mpie
-  assign mstatus = {24'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0};
+  assign mstatus = {19'b0, 2'b11, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0};
 
   // mie CSR: store each interrupt enable as separate register
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
@@ -335,7 +335,7 @@ module csr_file #(
       mtval  <= i_trap_value;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
-        riscv_pkg::CsrMtvec: mtvec <= {csr_new_value[XLEN-1:2], 2'b00};
+        riscv_pkg::CsrMtvec: mtvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
         riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
@@ -501,8 +501,8 @@ module csr_file #(
       // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
       p_mepc_aligned : assert (mepc[0] == 1'b0);
 
-      // mtvec alignment: bits [1:0] always 00 (forced by write path).
-      p_mtvec_aligned : assert (mtvec[1:0] == 2'b00);
+      // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
+      p_mtvec_aligned : assert (mtvec[1] == 1'b0);
 
       // mip is read-only and reflects inputs.
       p_mip_reflects_inputs :

@@ -93,12 +93,18 @@ module id_stage #(
   // ===========================================================================
 
   // Instantiate instruction decoder to determine operation type
+  logic decoder_illegal;
+
   instr_decoder instr_decoder_inst (
       .i_instr(instruction),
       .o_instr_op(instruction_operation),
       .o_store_op(store_operation),
-      .o_branch_taken_op(branch_operation)
+      .o_branch_taken_op(branch_operation),
+      .o_illegal(decoder_illegal)
   );
+
+  logic is_illegal_instruction;
+  assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
 
   // Instantiate immediate decoder for all immediate formats
   immediate_decoder #(
@@ -335,6 +341,7 @@ module id_stage #(
       o_from_id_to_ex.is_wfi                       <= 1'b0;
       o_from_id_to_ex.is_ecall                     <= 1'b0;
       o_from_id_to_ex.is_ebreak                    <= 1'b0;
+      o_from_id_to_ex.is_illegal_instruction       <= 1'b0;
       o_from_id_to_ex.link_address                 <= '0;
       // Pre-computed branch/jump targets (pipeline balancing)
       o_from_id_to_ex.branch_target_precomputed    <= '0;
@@ -410,6 +417,8 @@ module id_stage #(
       o_from_id_to_ex.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
       o_from_id_to_ex.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
       o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
+      o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                is_illegal_instruction;
       // Pre-computed link address from IF stage
       o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
       // Pre-computed branch/jump targets (computed here, used by EX stage)

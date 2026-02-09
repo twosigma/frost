@@ -145,6 +145,9 @@ module fpu #(
   // Track when input capture is in progress (for stall generation)
   logic            input_capture_pending;
 
+  // Forward declaration (moved before first use to avoid Vivado warnings)
+  logic            fpu_active;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       valid_r <= 1'b0;
@@ -735,7 +738,6 @@ module fpu #(
   // Use a registered active flag plus a small range check to avoid feeding
   // the full operation decode into the stall path.
   logic start_any;
-  logic fpu_active;
   assign start_any = adder_start | multiplier_start | fma_start | compare_start |
                      convert_start | classify_start | sign_inject_start | seq_start;
 

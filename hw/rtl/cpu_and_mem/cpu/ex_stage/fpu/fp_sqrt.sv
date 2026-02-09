@@ -19,17 +19,18 @@
 
   Implements FSQRT.S operation using a digit-by-digit algorithm.
 
-  Latency: 21 cycles (not pipelined, stalls pipeline during operation)
-    - 1 cycle: Input capture
-    - 1 cycle: Special case detection and setup
-    - 1 cycle: Prep register capture
-    - 12 cycles: Square root computation
-    - 1 cycle: Normalization
-    - 1 cycle: Subnormal handling and shift prep
-    - 1 cycle: Compute round-up decision
-    - 1 cycle: Apply rounding increment, format result
-    - 1 cycle: Capture result
-    - 1 cycle: Output registered result
+  Latency: RootBits + 9 cycles (not pipelined, stalls pipeline during operation)
+    where RootBits = MantBits + 3 = FracBits + 4 (27 for SP, 56 for DP)
+    - 1 cycle:  Input capture (IDLE -> SETUP)
+    - 1 cycle:  Special case detection and setup (SETUP -> PREP)
+    - 1 cycle:  Prep register capture (PREP -> COMPUTE)
+    - RootBits cycles: Square root computation (COMPUTE, one digit per cycle)
+    - 1 cycle:  Normalization (NORMALIZE)
+    - 1 cycle:  Subnormal handling and shift prep (ROUND_SHIFT)
+    - 1 cycle:  Compute round-up decision (ROUND_PREP)
+    - 1 cycle:  Apply rounding increment, format result (ROUND_APPLY)
+    - 1 cycle:  Capture result (OUTPUT)
+    - 1 cycle:  Output registered result (DONE)
 
   Algorithm: Non-restoring digit recurrence
     sqrt(x) where x = 2^(2k) * m, m in [1, 4)

@@ -68,9 +68,8 @@ module fpu_div_sqrt_unit #(
     else if (o_start) started <= 1'b1;
   end
 
-  // Busy: sequential ops don't have a separate "busy" signal like multicycle;
-  // the top-level uses fpu_active tracking instead. But expose for inflight hazard.
-  // (No o_busy needed for stall - fpu_active handles it.)
+  // Busy: expose started state for inflight hazard detection.
+  assign o_busy = started;
 
   // S/D divider results
   logic                 [          31:0] divider_result_s;

@@ -41,12 +41,11 @@ module uart_rx #(
 );
 
   // Baud rate generation: clock cycles per bit = CLK_FREQ / BAUD_RATE
-  // Multiply by DATA_WIDTH to get cycles per byte, then divide during reception
-  localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / (BAUD_RATE * DATA_WIDTH);
+  localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / BAUD_RATE;
   localparam int unsigned PrescalerCounterWidth = 19;
 
   // Half-bit delay for sampling in the middle of each bit
-  localparam int unsigned HalfBitCycles = (ClockCyclesPerBit << 3) / 2;
+  localparam int unsigned HalfBitCycles = ClockCyclesPerBit / 2;
 
   // UART receiver FSM states (8N1 format: 1 start, 8 data, 1 stop)
   typedef enum logic [1:0] {
@@ -71,7 +70,7 @@ module uart_rx #(
   logic [DATA_WIDTH-1:0] data_shift_register;  // Holds data being received
   logic [DATA_WIDTH-1:0] data_output_register;  // Holds completed received data
   logic [PrescalerCounterWidth-1:0] baud_rate_prescaler_counter;
-  logic [3:0] bits_remaining_counter;  // Counts down from 8 to 0
+  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
   logic output_valid_registered;
 
   // Wire assignments for module outputs
@@ -150,7 +149,7 @@ module uart_rx #(
             // Falling edge detected - start bit beginning
             // Wait half a bit period to sample at middle of start bit
             baud_rate_prescaler_counter <= PrescalerCounterWidth'(HalfBitCycles - 1);
-            bits_remaining_counter <= 4'(DATA_WIDTH);  // Will receive 8 bits
+            bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will receive 8 bits
             data_shift_register <= '0;
           end
         end
@@ -162,7 +161,7 @@ module uart_rx #(
             // At mid-bit of start bit, set up for first data bit
             // Wait full bit period to reach middle of first data bit
             if (!uart_input_synchronized) begin
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
+              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
             end
             // If start bit invalid (high), FSM returns to IDLE - no action needed here
           end
@@ -176,10 +175,10 @@ module uart_rx #(
               // Sample current bit at mid-bit, shift into MSB (LSB first reception)
               data_shift_register <= {uart_input_synchronized, data_shift_register[DATA_WIDTH-1:1]};
               bits_remaining_counter <= bits_remaining_counter - 1;
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
+              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
             end else begin
               // All data bits received, wait for stop bit
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
+              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
             end
           end
         end

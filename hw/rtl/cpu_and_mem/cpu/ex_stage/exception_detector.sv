@@ -41,6 +41,7 @@ module exception_detector #(
     // Instruction type signals
     input logic i_is_ecall,
     input logic i_is_ebreak,
+    input logic i_is_illegal_instruction,
     input logic i_is_load_instruction,
     input logic i_is_load_halfword,
     input logic i_is_load_byte,
@@ -63,6 +64,7 @@ module exception_detector #(
   // Individual exception detection signals
   logic exception_ecall;
   logic exception_ebreak;
+  logic exception_illegal;
   /* verilator lint_off UNOPTFLAT */
   logic exception_load_misalign;
   logic exception_store_misalign;
@@ -70,6 +72,7 @@ module exception_detector #(
 
   assign exception_ecall = i_is_ecall;
   assign exception_ebreak = i_is_ebreak;
+  assign exception_illegal = i_is_illegal_instruction;
 
   // Load misalignment: halfword access at odd address, or word access not 4-byte aligned
   // TIMING OPTIMIZATION: Use data_memory_address_low (computed without CARRY8 chain)
@@ -99,7 +102,7 @@ module exception_detector #(
   // Priority is only needed for cause/tval selection, not for the valid signal.
   // This breaks the serial chain: ecall → ebreak → load_misalign → store_misalign
   // into a parallel structure that computes all in one LUT level.
-  assign o_exception_valid = exception_ecall | exception_ebreak |
+  assign o_exception_valid = exception_ecall | exception_ebreak | exception_illegal |
                              exception_load_misalign | exception_store_misalign;
 
   // Priority mux for cause and tval (only used when exception_valid is true)
@@ -111,7 +114,10 @@ module exception_detector #(
     o_exception_cause   = '0;
     exception_tval_comb = '0;
 
-    if (exception_ecall) begin
+    if (exception_illegal) begin
+      o_exception_cause   = riscv_pkg::ExcIllegalInstr;
+      exception_tval_comb = '0;
+    end else if (exception_ecall) begin
       o_exception_cause   = riscv_pkg::ExcEcallMmode;
       exception_tval_comb = '0;
     end else if (exception_ebreak) begin

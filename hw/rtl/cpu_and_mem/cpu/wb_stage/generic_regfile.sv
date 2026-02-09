@@ -31,19 +31,20 @@
     HARDWIRE_ZERO  - When 1, writes to register 0 are blocked (RISC-V x0 convention)
 */
 module generic_regfile #(
-    parameter int unsigned DATA_WIDTH     = 32,
-    parameter int unsigned NUM_READ_PORTS = 2,
-    parameter bit          HARDWIRE_ZERO  = 1,
-    parameter int unsigned DEPTH          = 32
+    parameter  int unsigned DATA_WIDTH     = 32,
+    parameter  int unsigned NUM_READ_PORTS = 2,
+    parameter  bit          HARDWIRE_ZERO  = 1,
+    parameter  int unsigned DEPTH          = 32,
+    localparam int unsigned AddrWidth      = $clog2(DEPTH)
 ) (
     input  logic                                 i_clk,
     input  logic                                 i_write_enable,
-    input  logic [                          4:0] i_write_addr,
+    input  logic [                AddrWidth-1:0] i_write_addr,
     input  logic [               DATA_WIDTH-1:0] i_write_data,
     input  logic                                 i_stall,
     // Packed vectors for Icarus Verilog compatibility
     // (Icarus does not support unpacked arrays as module ports)
-    input  logic [         NUM_READ_PORTS*5-1:0] i_read_addr,
+    input  logic [ NUM_READ_PORTS*AddrWidth-1:0] i_read_addr,
     output logic [NUM_READ_PORTS*DATA_WIDTH-1:0] o_read_data
 );
 
@@ -60,14 +61,14 @@ module generic_regfile #(
   for (genvar i = 0; i < NUM_READ_PORTS; i++) begin : gen_read_port
     logic [DATA_WIDTH-1:0] rd;
     sdp_dist_ram #(
-        .ADDR_WIDTH($clog2(DEPTH)),
+        .ADDR_WIDTH(AddrWidth),
         .DATA_WIDTH(DATA_WIDTH)
     ) read_port_ram (
         .i_clk,
         .i_write_enable(write_enable),
         .i_write_address(i_write_addr),
         .i_write_data(i_write_data),
-        .i_read_address(i_read_addr[i*5+:5]),
+        .i_read_address(i_read_addr[i*AddrWidth+:AddrWidth]),
         .o_read_data(rd)
     );
     assign o_read_data[i*DATA_WIDTH+:DATA_WIDTH] = rd;

@@ -39,7 +39,7 @@
     - NaN propagation (quiet NaN result)
     - Infinity arithmetic (+inf + (-inf) = NaN, etc.)
     - Zero handling (signed zero rules)
-    - Subnormal inputs (treated as zero for simplicity)
+    - Subnormal inputs (handled via fp_operand_unpacker with exp_adj normalization)
 */
 module fp_adder #(
     parameter int unsigned FP_WIDTH = 32

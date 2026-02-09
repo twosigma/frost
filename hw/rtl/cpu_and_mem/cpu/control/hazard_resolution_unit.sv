@@ -164,20 +164,13 @@ module hazard_resolution_unit #(
   // Priority: multiply/divide stalls take precedence over load-use stalls
   // Use optimized multiply stall for correct behavior with timing optimization
   //
-  // CONSERVATIVE APPROACH: Always stall on potential load-use hazard.
+  // CACHE-HIT OPTIMIZATION: Only stall on load-use hazard when the cache misses.
   //
-  // The cache hit optimization (skipping stall if cache hit) has subtle timing
-  // issues with forwarding that cause incorrect data to be used. The registered
-  // cache_hit signal can be stale when captured at the same posedge as the
-  // consumer's operand capture, leading to forwarding from wrong data.
-  //
-  // By always stalling on a potential hazard, we ensure:
-  // 1. Correct behavior (memory data is always available after stall)
-  // 2. Good timing (no cache lookup in critical path)
-  // 3. Slight performance cost (extra stall when cache would hit)
-  //
-  // The cache hit optimization can be revisited with more careful pipeline
-  // analysis to ensure forwarding data capture timing is correct.
+  // When a potential load-use hazard is detected (load dest matches a following
+  // instruction's source), the registered cache_hit_on_load_reg signal is checked.
+  // If the cache hit, the load data is already available for forwarding and no
+  // stall is needed. If the cache missed, a one-cycle stall is inserted to wait
+  // for the memory data to become available.
   logic load_use_hazard_int_amo;
   assign load_use_hazard_int_amo = load_potential_hazard_reg || amo_potential_hazard_reg;
 
@@ -260,6 +253,12 @@ module hazard_resolution_unit #(
   // potentially stalling CSR instruction to complete.
   //
   // Use reduction-OR to encourage a balanced tree and trim OR-chain depth.
+  // Forward declarations (moved before first use to avoid Vivado warnings)
+  logic fpu_inflight_hazard;
+  logic fpu_single_to_pipelined_hazard;
+  logic fp_to_int_to_int_to_fp_hazard;
+  logic csr_fflags_read_hazard;
+
   logic stall_sources_for_trap;
   assign stall_sources_for_trap = |{
       stall_for_multiply_divide_optimized,
@@ -394,10 +393,6 @@ module hazard_resolution_unit #(
   // ===========================================================================
   // FP Hazard Detection (submodule)
   // ===========================================================================
-  logic fpu_inflight_hazard;
-  logic fpu_single_to_pipelined_hazard;
-  logic fp_to_int_to_int_to_fp_hazard;
-  logic csr_fflags_read_hazard;
 
   hru_fp_hazards u_fp_hazards (
       .i_from_pd_to_id,
@@ -470,6 +465,7 @@ module hazard_resolution_unit #(
                                   fp_load_use_hazard_early |
                                   fp_load_ma_hazard_stall |
                                   i_stall_for_fp_mem |
+                                  i_stall_for_fp_forward_pipeline |
                                   fpu_stall_gated |
                                   fpu_inflight_hazard |
                                   fpu_single_to_pipelined_hazard |

@@ -199,7 +199,7 @@ module reorder_buffer (
   assign dbg_alloc_condition = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
 
   // Raw packed struct debug
-  logic [119:0] dbg_raw_alloc_req  /* verilator public_flat_rd */;
+  logic [120:0] dbg_raw_alloc_req  /* verilator public_flat_rd */;
   assign dbg_raw_alloc_req = i_alloc_req;
 
   logic dbg_full_signal  /* verilator public_flat_rd */;
@@ -247,6 +247,7 @@ module reorder_buffer (
   logic [ReorderBufferDepth-1:0] rob_is_amo;
   logic [ReorderBufferDepth-1:0] rob_is_lr;
   logic [ReorderBufferDepth-1:0] rob_is_sc;
+  logic [ReorderBufferDepth-1:0] rob_is_compressed;
 
   // Head and tail pointers (with extra bit for full/empty detection)
   logic [ReorderBufferTagWidth:0] head_ptr;
@@ -295,6 +296,7 @@ module reorder_buffer (
   logic head_is_amo;
   logic head_is_lr;
   logic head_is_sc;
+  logic head_is_compressed;
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
@@ -361,6 +363,7 @@ module reorder_buffer (
   assign head_is_amo = rob_is_amo[head_idx];
   assign head_is_lr = rob_is_lr[head_idx];
   assign head_is_sc = rob_is_sc[head_idx];
+  assign head_is_compressed = rob_is_compressed[head_idx];
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done;
@@ -589,6 +592,7 @@ module reorder_buffer (
       rob_is_amo          <= '0;
       rob_is_lr           <= '0;
       rob_is_sc           <= '0;
+      rob_is_compressed   <= '0;
     end else begin
       // ---------------------------------------------------------------------
       // Flush Logic
@@ -631,6 +635,7 @@ module reorder_buffer (
         rob_is_amo[tail_idx]          <= i_alloc_req.is_amo;
         rob_is_lr[tail_idx]           <= i_alloc_req.is_lr;
         rob_is_sc[tail_idx]           <= i_alloc_req.is_sc;
+        rob_is_compressed[tail_idx]   <= i_alloc_req.is_compressed;
 
         // Initialize done/exception/checkpoint/misprediction fields
         rob_exception[tail_idx]       <= 1'b0;
@@ -926,8 +931,8 @@ module reorder_buffer (
         // Mispredicted as not-taken but actually taken -> go to taken target
         o_commit.redirect_pc = head_branch_target;
       end else begin
-        // Mispredicted as taken but actually not-taken -> go to pc+4
-        o_commit.redirect_pc = head_pc + 32'd4;
+        // Mispredicted as taken but actually not-taken -> go to fall-through
+        o_commit.redirect_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
       end
 
       // Serializing instruction flags (for external units)

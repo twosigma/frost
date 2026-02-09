@@ -39,8 +39,7 @@ module uart_tx #(
 );
 
   // Baud rate generation: clock cycles per bit = CLK_FREQ / BAUD_RATE
-  // Multiply by DATA_WIDTH to get cycles per byte, then divide during transmission
-  localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / (BAUD_RATE * DATA_WIDTH);
+  localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / BAUD_RATE;
   localparam int unsigned PrescalerCounterWidth = 19;
 
   // UART transmitter FSM states (8N1 format: 1 start, 8 data, 1 stop)
@@ -57,7 +56,7 @@ module uart_tx #(
   logic uart_output_bit_registered;
   logic [DATA_WIDTH-1:0] data_shift_register;  // Holds data being transmitted
   logic [PrescalerCounterWidth-1:0] baud_rate_prescaler_counter;
-  logic [3:0] bits_remaining_counter;  // Counts down from 8 to 0
+  logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
 
   // Wire assignments for module outputs
   assign o_ready = ready_registered;
@@ -127,8 +126,8 @@ module uart_tx #(
             // Capture incoming data and begin transmission
             data_shift_register <= i_data;
             ready_registered <= 1'b0;  // Not ready during transmission
-            baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
-            bits_remaining_counter <= 4'(DATA_WIDTH);  // Will send 8 bits
+            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
+            bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will send 8 bits
           end
         end
 
@@ -139,7 +138,7 @@ module uart_tx #(
             baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
           end else begin
             // Start bit complete, move to data bits
-            baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
+            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
             bits_remaining_counter <= bits_remaining_counter - 1;
           end
         end
@@ -155,10 +154,10 @@ module uart_tx #(
               // Shift right for next bit (LSB first transmission)
               data_shift_register <= data_shift_register >> 1;
               bits_remaining_counter <= bits_remaining_counter - 1;
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3) - 1);
+              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
             end else begin
               // All data bits sent, prepare for stop bit
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'((ClockCyclesPerBit << 3));
+              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit);
             end
           end
         end

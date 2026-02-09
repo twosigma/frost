@@ -107,6 +107,7 @@ class ReorderBufferEntry:
     is_amo: bool = False
     is_lr: bool = False
     is_sc: bool = False
+    is_compressed: bool = False
 
 
 @dataclass
@@ -135,6 +136,7 @@ class AllocationRequest:
     is_amo: bool = False
     is_lr: bool = False
     is_sc: bool = False
+    is_compressed: bool = False
 
 
 @dataclass
@@ -339,6 +341,7 @@ class ReorderBufferModel:
         entry.is_amo = req.is_amo
         entry.is_lr = req.is_lr
         entry.is_sc = req.is_sc
+        entry.is_compressed = req.is_compressed
 
         # Handle JAL: done immediately, value is link address
         if req.is_jal:
@@ -518,8 +521,8 @@ class ReorderBufferModel:
                 # Mispredicted as not-taken but actually taken -> go to taken target
                 redirect_pc = entry.branch_target
             else:
-                # Mispredicted as taken but actually not-taken -> go to pc+4
-                redirect_pc = (entry.pc + 4) & MASK32
+                # Mispredicted as taken but actually not-taken -> go to fall-through.
+                redirect_pc = (entry.pc + (2 if entry.is_compressed else 4)) & MASK32
 
         # Build expected commit
         expected = ExpectedCommit(
