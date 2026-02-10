@@ -32,18 +32,24 @@
 #include "uart.h"
 
 #define TASK_STACK_SIZE (512)
+#define ATOMIC_TASK_STACK_SIZE (256)
 #define QUEUE_LENGTH (3)
 #define NUM_ITEMS (5)
+#define ATOMIC_WORKER_TASKS (2U)
+#define ATOMIC_ITERATIONS_PER_WORKER (4000U)
 
 extern void freertos_risc_v_trap_handler(void);
 
 /* Shared resources */
 static QueueHandle_t xDataQueue = NULL;
 static SemaphoreHandle_t xUartMutex = NULL;
+static TaskHandle_t xConsumerTaskHandle = NULL;
 
 /* Counters for demonstration */
 static volatile uint32_t ulProducerCount = 0;
 static volatile uint32_t ulConsumerCount = 0;
+static volatile uint32_t ulAtomicCounter = 0;
+static const uint32_t ulAtomicWorkerIds[ATOMIC_WORKER_TASKS] = {1U, 2U};
 
 /*-----------------------------------------------------------*/
 /* Safe UART output with mutex protection */
@@ -96,12 +102,49 @@ static void vProducerTask(void *pvParameters)
 }
 
 /*-----------------------------------------------------------*/
+/* Atomic increment helper (A extension) */
+
+static inline void atomic_inc_amo(volatile uint32_t *target)
+{
+    uint32_t one = 1U;
+    __asm volatile("amoadd.w zero, %1, (%0)" : : "r"(target), "r"(one) : "memory");
+}
+
+/*-----------------------------------------------------------*/
+/* Atomic worker task - stress A extension under preemption */
+
+static void vAtomicWorkerTask(void *pvParameters)
+{
+    (void) pvParameters;
+    uint32_t i;
+
+    for (i = 0; i < ATOMIC_ITERATIONS_PER_WORKER; i++) {
+        atomic_inc_amo(&ulAtomicCounter);
+
+        /* Force frequent interleaving across tasks. */
+        if ((i & 0x3FU) == 0U) {
+            taskYIELD();
+        }
+    }
+
+    if (xConsumerTaskHandle != NULL) {
+        xTaskNotifyGive(xConsumerTaskHandle);
+    }
+
+    vTaskDelete(NULL);
+}
+
+/*-----------------------------------------------------------*/
 /* Consumer Task - receives data from queue */
 
 static void vConsumerTask(void *pvParameters)
 {
     (void) pvParameters;
     uint32_t ulReceived;
+    uint32_t i;
+    BaseType_t xQueueOk;
+    BaseType_t xAtomicOk;
+    const uint32_t ulAtomicExpected = ATOMIC_WORKER_TASKS * ATOMIC_ITERATIONS_PER_WORKER;
 
     safe_print("[Consumer] Task started (higher priority)\r\n");
 
@@ -121,19 +164,33 @@ static void vConsumerTask(void *pvParameters)
         }
     }
 
+    safe_print("[Consumer] Waiting for atomic worker completion...\r\n");
+    for (i = 0; i < ATOMIC_WORKER_TASKS; i++) {
+        (void) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    }
+
+    xQueueOk = (ulProducerCount == NUM_ITEMS) && (ulConsumerCount == NUM_ITEMS);
+    xAtomicOk = (ulAtomicCounter == ulAtomicExpected);
+
     /* Print summary */
     if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
         uart_puts("\r\n");
         uart_puts("=== Demo Complete ===\r\n");
-        uart_puts("Producer sent: ");
-        uart_putchar('0' + ulProducerCount);
-        uart_puts(" items\r\n");
-        uart_puts("Consumer received: ");
-        uart_putchar('0' + ulConsumerCount);
-        uart_puts(" items\r\n");
-        uart_puts("Queue + Mutex + Preemption: Working!\r\n");
-        uart_puts("\r\nPASS\r\n");
-        uart_puts("<<PASS>>\r\n");
+        uart_printf("Producer sent: %lu items\r\n", (unsigned long) ulProducerCount);
+        uart_printf("Consumer received: %lu items\r\n", (unsigned long) ulConsumerCount);
+        uart_printf("Atomic counter: %lu/%lu\r\n",
+                    (unsigned long) ulAtomicCounter,
+                    (unsigned long) ulAtomicExpected);
+        uart_puts("Queue + Mutex + Preemption + A-extension stress: ");
+        if (xQueueOk == pdTRUE && xAtomicOk == pdTRUE) {
+            uart_puts("Working!\r\n");
+            uart_puts("\r\nPASS\r\n");
+            uart_puts("<<PASS>>\r\n");
+        } else {
+            uart_puts("FAILED\r\n");
+            uart_puts("\r\nFAIL\r\n");
+            uart_puts("<<FAIL>>\r\n");
+        }
         xSemaphoreGive(xUartMutex);
     }
 
@@ -198,13 +255,41 @@ int main(void)
     uart_puts("[Main] Created Producer task (priority 1)\r\n");
 
     /* Create consumer task (priority 2 - higher, runs first when data available) */
-    if (xTaskCreate(vConsumerTask, "Consumer", TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY + 2, NULL) !=
-        pdPASS) {
+    if (xTaskCreate(vConsumerTask,
+                    "Consumer",
+                    TASK_STACK_SIZE,
+                    NULL,
+                    tskIDLE_PRIORITY + 2,
+                    &xConsumerTaskHandle) != pdPASS) {
         uart_puts("[ERROR] Consumer task creation failed\r\n");
         for (;;)
             ;
     }
     uart_puts("[Main] Created Consumer task (priority 2)\r\n");
+
+    /* Create atomic stress workers (priority 1) */
+    if (xTaskCreate(vAtomicWorkerTask,
+                    "Atomic1",
+                    ATOMIC_TASK_STACK_SIZE,
+                    (void *) &ulAtomicWorkerIds[0],
+                    tskIDLE_PRIORITY + 1,
+                    NULL) != pdPASS) {
+        uart_puts("[ERROR] Atomic1 task creation failed\r\n");
+        for (;;)
+            ;
+    }
+
+    if (xTaskCreate(vAtomicWorkerTask,
+                    "Atomic2",
+                    ATOMIC_TASK_STACK_SIZE,
+                    (void *) &ulAtomicWorkerIds[1],
+                    tskIDLE_PRIORITY + 1,
+                    NULL) != pdPASS) {
+        uart_puts("[ERROR] Atomic2 task creation failed\r\n");
+        for (;;)
+            ;
+    }
+    uart_puts("[Main] Created Atomic workers (priority 1)\r\n");
 
     uart_puts("[Main] Starting scheduler...\r\n\r\n");
 
