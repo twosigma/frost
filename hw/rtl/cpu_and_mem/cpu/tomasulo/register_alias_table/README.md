@@ -33,12 +33,12 @@ branch speculation recovery.
                 ▼                        ▼                        ▼
    ┌─────────────────────────────────────────────────────────────────────┐
    │                                                                     │
-   │  FF: Active INT RAT (32 × 6b = 192b)                               │
-   │  ┊  int_rat[0] = {valid=0, tag=---}  (x0 hardwired, never valid)   │
-   │  ┊  int_rat[1..31] = {valid, tag}                                  │
+   │  FF: Active INT RAT (32 × 6b = 192b)                                │
+   │  ┊  int_rat[0] = {valid=0, tag=---}  (x0 hardwired, never valid)    │
+   │  ┊  int_rat[1..31] = {valid, tag}                                   │
    │                                                                     │
-   │  FF: Active FP RAT (32 × 6b = 192b)                                │
-   │  ┊  fp_rat[0..31] = {valid, tag}                                   │
+   │  FF: Active FP RAT (32 × 6b = 192b)                                 │
+   │  ┊  fp_rat[0..31] = {valid, tag}                                    │
    │                                                                     │
    └────────────────────────────┬────────────────────────────────────────┘
                                 │
@@ -52,11 +52,11 @@ branch speculation recovery.
    │                                                                     │
    │  FF: checkpoint_valid[3:0]                                          │
    │                                                                     │
-   │  sdp_dist_ram: RAT snapshots (384b wide × 4 deep)                  │
-   │  ┊  INT RAT[31:0] + FP RAT[31:0] packed per checkpoint             │
+   │  sdp_dist_ram: RAT snapshots (384b wide × 4 deep)                   │
+   │  ┊  INT RAT[31:0] + FP RAT[31:0] packed per checkpoint              │
    │                                                                     │
-   │  sdp_dist_ram: Metadata (12b wide × 4 deep)                        │
-   │  ┊  branch_tag[4:0] + ras_tos[2:0] + ras_valid_count[3:0]          │
+   │  sdp_dist_ram: Metadata (12b wide × 4 deep)                         │
+   │  ┊  branch_tag[4:0] + ras_tos[2:0] + ras_valid_count[3:0]           │
    │                                                                     │
    └─────────────────────────────────────────────────────────────────────┘
             │                                        │
