@@ -946,9 +946,12 @@ def run_route_physopt_meta_loop(
                     if d.is_dir():
                         shutil.rmtree(d)
 
-        # Update best result
-        improved = (physopt_wns > best_wns) or (
-            physopt_wns == best_wns and physopt_tns > best_tns
+        # Update best result (always accept first iteration since post-place
+        # WNS baseline is an optimistic pre-route estimate)
+        improved = (
+            best_result is None
+            or (physopt_wns > best_wns)
+            or (physopt_wns == best_wns and physopt_tns > best_tns)
         )
         if improved:
             best_wns = physopt_wns
