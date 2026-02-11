@@ -21,13 +21,13 @@ branch speculation recovery.
 ```
                      Register Alias Table Block Diagram
 
-      Dispatch (Source Lookup)        Dispatch (Rename)       ROB (Commit)
-     ┌───────────────────────┐      ┌──────────────┐       ┌──────────────┐
-     │ int_src1/src2_addr    │      │ alloc_valid  │       │ commit.valid │
-     │ fp_src1/src2/src3_addr│      │ alloc_dest_rf│       │ commit.tag   │
+      Dispatch (Source Lookup)       Dispatch (Rename)       ROB (Commit)
+     ┌───────────────────────┐      ┌───────────────┐      ┌──────────────┐
+     │ int_src1/src2_addr    │      │ alloc_valid   │      │ commit.valid │
+     │ fp_src1/src2/src3_addr│      │ alloc_dest_rf │      │ commit.tag   │
      │ regfile_data (INT/FP) │      │ alloc_dest_reg│      │ commit.dest* │
-     └──────────┬────────────┘      │ alloc_rob_tag│       └──────┬───────┘
-                │                   └──────┬───────┘              │
+     └──────────┬────────────┘      │ alloc_rob_tag │      └──────┬───────┘
+                │                   └──────┬────────┘             │
            comb read               sync write @ reg         sync clear if
                 │                        │                   tag matches
                 ▼                        ▼                        ▼
