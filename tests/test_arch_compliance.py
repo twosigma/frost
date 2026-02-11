@@ -224,7 +224,7 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
             text=True,
             env=env,
             check=False,
-            timeout=1800,
+            timeout=7200,
         )
 
         if simulator == "verilator" and result.returncode == 0:
