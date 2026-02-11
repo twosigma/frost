@@ -105,7 +105,7 @@ jobs:
       - name: Run arch compliance tests (${{ matrix.extension }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python tests/test_arch_compliance.py --sim verilator --extensions ${{ matrix.extension }}
+            python3 tests/test_arch_compliance.py --sim verilator --extensions ${{ matrix.extension }}
 
   # Run Cocotb tests with Icarus Verilog
   test-icarus:
