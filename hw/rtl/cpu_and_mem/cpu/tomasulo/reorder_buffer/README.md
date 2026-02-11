@@ -31,8 +31,8 @@ instruction types.
                          Reorder Buffer Block Diagram
 
         Dispatch          CDB (FUs)        Branch Unit      Checkpoint
-       ┌─────────┐      ┌──────────┐      ┌───────────┐    ┌──────────┐
-       │alloc_req│      │cdb_write │      │branch_upd │    │ckpt_valid│
+       ┌──────────┐     ┌──────────┐      ┌───────────┐    ┌──────────┐
+       │alloc_req │     │cdb_write │      │branch_upd │    │ckpt_valid│
        │alloc_resp│     │          │      │           │    │ckpt_id   │
        └────┬─────┘     └────┬─────┘      └─────┬─────┘    └────┬─────┘
             │                │                   │              │
