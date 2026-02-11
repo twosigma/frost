@@ -107,21 +107,21 @@ module cache_write_controller #(
   // ===========================================================================
   // Store Write Enable (Combinational - EX Stage Timing)
   // ===========================================================================
-  // NOTE: Pipelining store cache writes was attempted but causes race conditions
-  // in 4-state simulators. Keep stores combinational for correctness.
+  // NOTE: Keep stores combinational, but gate with stall so cache writes stay
+  // aligned with real memory writes. During stalls, EX metadata can be held while
+  // other paths (e.g., AMO) are active; allowing store cache writes in that window
+  // can corrupt unrelated cache lines.
   logic is_memory_mapped_io_ex;
   assign is_memory_mapped_io_ex = i_data_memory_address_ex >= MMIO_ADDR;
 
-  logic cache_write_enable_from_store;
-  // Don't gate store writes with stall here; repeated writes while stalled are
-  // idempotent, and the external memory write is already stall-gated.
-  assign cache_write_enable_from_store = |i_data_memory_byte_write_enable_ex &
-                                         ~is_memory_mapped_io_ex;
+  logic store_write_request;
+  assign store_write_request = |i_data_memory_byte_write_enable_ex & ~is_memory_mapped_io_ex;
 
-  // Select store index independent of stall to avoid pulling stall logic into the
-  // cache write address path. Write enable still gates the actual write.
+  logic cache_write_enable_from_store;
+  assign cache_write_enable_from_store = store_write_request & ~i_stall;
+
   logic store_write_select;
-  assign store_write_select = |i_data_memory_byte_write_enable_ex & ~is_memory_mapped_io_ex;
+  assign store_write_select = store_write_request & ~i_stall;
 
   // ===========================================================================
   // FP Store Write Enable (MA Stage Override)
