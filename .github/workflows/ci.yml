@@ -86,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei]
+        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

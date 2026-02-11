@@ -55,17 +55,41 @@ SUPPORTED_EXTENSIONS = [
     "K",
     "Zicond",
     "Zifencei",
+    "privilege",
+    "F_Zcf",
+    "D_Zcd",
+    "hints",
 ]
+
+# Filter for extensions where only a subset of tests applies.
+# Frost is M-mode only (no S/U mode), so privilege tests are filtered
+# to exclude supervisor, user, and hypervisor tests.
+EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
+    "privilege": {
+        "ebreak",
+        "ecall",
+        "misalign",
+        "menvcfg_m",
+    },
+}
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
 
 
 def discover_tests(extension: str) -> list[Path]:
-    """Find all .S test files for an extension."""
+    """Find all .S test files for an extension, applying filters."""
     src_dir = SUITE_DIR / extension / "src"
     if not src_dir.is_dir():
         return []
-    return sorted(src_dir.glob("*.S"))
+    tests = sorted(src_dir.glob("*.S"))
+    allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
+    if allowed_prefixes is not None:
+        tests = [
+            t
+            for t in tests
+            if any(t.stem.startswith(prefix) for prefix in allowed_prefixes)
+        ]
+    return tests
 
 
 def generate_one_reference(
