@@ -43,6 +43,11 @@ ifeq ($(TOPLEVEL),reorder_buffer)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),register_alias_table)
+# Register Alias Table unit test - minimal dependencies
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.f
+VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \

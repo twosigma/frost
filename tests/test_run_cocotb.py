@@ -189,6 +189,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="reorder_buffer",
         description="Reorder Buffer unit tests (allocation, commit, flush, serialization)",
     ),
+    "register_alias_table": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.register_alias_table.test_register_alias_table",
+        hdl_toplevel_module="register_alias_table",
+        description="Register Alias Table unit tests (rename, lookup, checkpoint, flush)",
+    ),
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)

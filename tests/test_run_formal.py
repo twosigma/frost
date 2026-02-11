@@ -71,6 +71,10 @@ FORMAL_TARGETS = [
         "reorder_buffer.sby",
         "Reorder buffer - in-order commit with serialization",
     ),
+    FormalTarget(
+        "register_alias_table.sby",
+        "Register alias table - rename mapping with checkpoints",
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
