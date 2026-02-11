@@ -26,11 +26,14 @@ def main() -> int:
     # Get the directory where this script lives (sw/apps)
     apps_dir = Path(__file__).parent.resolve()
 
-    # Find all subdirectories (excluding hidden directories and __pycache__)
+    # Directories to skip: __pycache__ and apps that require special parameters
+    skip_dirs = {"__pycache__", "arch_test"}
+
+    # Find all subdirectories (excluding hidden directories and skip list)
     app_dirs = sorted(
         d
         for d in apps_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".") and d.name != "__pycache__"
+        if d.is_dir() and not d.name.startswith(".") and d.name not in skip_dirs
     )
 
     failed = []

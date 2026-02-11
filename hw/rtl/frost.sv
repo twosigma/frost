@@ -30,6 +30,8 @@
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
+    // Memory size in bytes - default 128KB for synthesis, override via Verilator -G for simulation
+    parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
@@ -126,6 +128,7 @@ module frost #(
   // CPU and memory subsystem - contains processor core and dual instruction/data RAMs
   // Instruction memory programming interface is directly on div4 clock domain (no CDC needed)
   cpu_and_mem #(
+      .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP)
   ) cpu_and_memory_subsystem (
       .i_clk,

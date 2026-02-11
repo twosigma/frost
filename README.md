@@ -11,8 +11,8 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
 - **Practical performance** — 1.76 CoreMark/MHz (527 CoreMark at 300 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
-- **Layered verification** — constrained-random tests, directed tests, and real C programs all run in Cocotb simulation with pass/fail markers, along with some basic formal verification.
-- **Real workloads included** — FreeRTOS demo, CoreMark benchmark, and ISA compliance suite all run in simulation and on hardware.
+- **Layered verification** — constrained-random tests, directed tests, real C programs, and the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite all run in Cocotb simulation, along with formal verification.
+- **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
@@ -185,6 +185,7 @@ frost/
 │   └── apps/                 # Applications
 │       ├── hello_world/      # Simple test program
 │       ├── isa_test/         # ISA compliance suite
+│       ├── arch_test/        # riscv-arch-test compliance (400+ tests)
 │       ├── coremark/         # CPU benchmark
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
@@ -261,6 +262,7 @@ Running `pytest tests/` exercises:
 
 - **CPU verification** — constrained-random instruction sequences validated against Python reference models
 - **Directed tests** — atomic operations (LR/SC), trap handling, compressed instructions
+- **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across I, M, A, F, D, C, B, K, Zicond, and Zifencei extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL synthesizes cleanly for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+ targets

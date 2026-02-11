@@ -62,9 +62,9 @@ markers = [
 ]
 
 [tool.mypy]
-exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark"]
+exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark", "sw/apps/arch_test/riscv-arch-test"]
 files = ["verif", "tests"]
-mypy_path = ["verif", "sw/apps", "stubs"]
+mypy_path = ["verif", "sw/apps", "stubs", "tests"]
 explicit_package_bases = true
 disallow_untyped_defs = true
 warn_redundant_casts = true

@@ -38,7 +38,8 @@ sw/
     ├── branch_pred_test/ # Branch predictor verification (assembly)
     ├── ras_test/     # Return Address Stack (RAS) verification (assembly)
     ├── ras_stress_test/  # Stress test mixing calls, returns, and branches
-    └── print_clock_speed/ # Clock speed measurement utility
+    ├── print_clock_speed/ # Clock speed measurement utility
+    └── arch_test/        # riscv-arch-test compliance suite (400+ tests)
 ```
 
 ## Libraries
@@ -436,6 +437,16 @@ C-based stress test that mixes loops, branches, function pointers, and nested ca
 
 Simple utility that measures and reports the CPU clock frequency. Useful for verifying the clock configuration on different FPGA boards.
 
+### Arch Test (`apps/arch_test/`)
+
+RISC-V Architecture Compliance Test suite using the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) framework. Each test executes an auto-generated assembly program that exercises a specific instruction covergroup, then compares the output signature against Spike-generated golden references.
+
+**Tested extensions:** I, M, A, F, D, C, B, K (subset: Zbkb), Zicond, Zifencei (400+ tests total)
+
+This app uses its own linker script (`link_arch_test.ld`) with a 2MB memory layout (1MB ROM + 1MB RAM) to accommodate large test data sections. It is intended for Verilator simulation only, where the memory size is overridden via `-GMEM_SIZE_BYTES=2097152`.
+
+The test runner lives in `tests/test_arch_compliance.py` (not in this directory) and handles compilation, simulation, signature extraction, and comparison. See the [tests README](../../tests/README.md) for usage.
+
 ## Building
 
 ### Automatic Compilation
@@ -509,8 +520,8 @@ Defined in `common/link.ld`:
 
 | Region | Address      | Size  | Description                   |
 |--------|--------------|-------|-------------------------------|
-| ROM    | `0x00000000` | 48 KB | Code and read-only data       |
-| RAM    | `0x0000C000` | 16 KB | Variables, BSS, and stack     |
+| ROM    | `0x00000000` | 96 KB | Code and read-only data       |
+| RAM    | `0x00018000` | 32 KB | Variables, BSS, and stack     |
 | MMIO   | `0x40000000` | 40 B  | Memory-mapped I/O peripherals |
 
 ### Peripheral Addresses

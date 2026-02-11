@@ -91,6 +91,13 @@ ifeq ($(SIM),verilator)
 	else
 		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT
 	endif
+
+	# Simulation-only memory override (2MB default, allows arch tests with large data)
+	# Only for toplevels that have the MEM_SIZE_BYTES parameter
+	SIM_MEM_SIZE_BYTES ?= 2097152
+	ifeq ($(TOPLEVEL),frost)
+		EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES)
+	endif
 endif
 
 # Include Cocotb simulation makefile rules

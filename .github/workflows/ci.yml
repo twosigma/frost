@@ -53,7 +53,7 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Run Cocotb tests with Verilator
+  # Run Cocotb tests with Verilator (excludes arch compliance, which has its own matrix job)
   test-verilator:
     name: Cocotb Tests (Verilator)
     runs-on: ubuntu-24.04
@@ -76,7 +76,36 @@ jobs:
       - name: Run Cocotb tests with Verilator
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m cocotb --sim verilator -v
+            pytest tests/ -m cocotb --sim verilator -v --ignore=tests/test_arch_compliance.py
+
+  # RISC-V Architecture Compliance Tests - parallelized by extension
+  test-arch-compliance:
+    name: Arch Tests (${{ matrix.extension }})
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run arch compliance tests (${{ matrix.extension }})
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python tests/test_arch_compliance.py --sim verilator --extensions ${{ matrix.extension }}
 
   # Run Cocotb tests with Icarus Verilog
   test-icarus:

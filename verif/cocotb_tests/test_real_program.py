@@ -68,7 +68,8 @@ async def generate_divided_clock(dut: Any) -> None:
 
 
 # Maximum cycles to run (prevents infinite loops)
-MAX_CYCLES = 500000
+# Override with COCOTB_MAX_CYCLES env var for tests needing more cycles (e.g. arch tests)
+MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 
 # Coremark needs more cycles since it runs the full benchmark even with ITERATIONS=1
 COREMARK_MAX_CYCLES = 5000000

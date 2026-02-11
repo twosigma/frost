@@ -5,26 +5,26 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 ## Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            Test Infrastructure                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌───────────────────────────────────┐  ┌─────────────────────────────────┐ │
-│  │       test_run_cocotb.py          │  │       test_run_yosys.py         │ │
-│  │                                   │  │                                 │ │
-│  │  RTL Simulation                   │  │  Synthesis Check                │ │
-│  │  • CPU unit tests                 │  │  • Yosys synthesis              │ │
-│  │  • Real C programs                │  │  • No vendor IPs                │ │
-│  │  • Verification                   │  │                                 │ │
-│  └─────────────────┬─────────────────┘  └────────────────┬────────────────┘ │
-│                    │                                     │                  │
-│                    v                                     v                  │
-│  ┌───────────────────────────────────┐  ┌─────────────────────────────────┐ │
-│  │           Simulator               │  │            Yosys                │ │
-│  │    Icarus/Verilator/Questa        │  │     (open-source synthesis)     │ │
-│  └───────────────────────────────────┘  └─────────────────────────────────┘ │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                                Test Infrastructure                                    │
+├──────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                      │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────────┐    │
+│  │  test_run_cocotb.py  │  │ test_arch_compliance │  │   test_run_yosys.py      │    │
+│  │                      │  │         .py          │  │                          │    │
+│  │  RTL Simulation      │  │  Arch Compliance     │  │  Synthesis Check         │    │
+│  │  • CPU unit tests    │  │  • riscv-arch-test   │  │  • Yosys synthesis       │    │
+│  │  • Real C programs   │  │  • 400+ tests        │  │  • No vendor IPs         │    │
+│  │  • Verification      │  │  • 10 extensions     │  │                          │    │
+│  └──────────┬───────────┘  └──────────┬───────────┘  └─────────────┬────────────┘    │
+│             │                         │                            │                 │
+│             v                         v                            v                 │
+│  ┌──────────────────────────────────────────────────┐  ┌────────────────────────┐    │
+│  │                  Simulator                        │  │         Yosys          │    │
+│  │           Icarus/Verilator/Questa                 │  │  (open-source synth)   │    │
+│  └──────────────────────────────────────────────────┘  └────────────────────────┘    │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Test Files
@@ -121,6 +121,43 @@ pytest test_run_cocotb.py -k "verilator and hello_world"  # Specific test, one s
 pytest test_run_cocotb.py -s                       # Show live output
 ```
 
+### `test_arch_compliance.py`
+
+Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite on Frost. Each test compiles an assembly test case, runs it in Verilator simulation, extracts the signature from UART output, and compares it against Spike-generated golden references.
+
+**Supported extensions:** I, M, A, F, D, C, B, K, Zicond, Zifencei (400+ tests total)
+
+**Standalone Usage:**
+
+```bash
+# Run all supported extensions
+./test_arch_compliance.py --sim verilator --all
+
+# Run specific extensions
+./test_arch_compliance.py --sim verilator --extensions I M A
+
+# Run a single test
+./test_arch_compliance.py --sim verilator --test rv32i_m/I/src/add-01.S
+
+# Parallel execution
+./test_arch_compliance.py --sim verilator --all --parallel 4
+
+# Include tests too large for simulation (hardware validation)
+./test_arch_compliance.py --sim verilator --all --no-sim-filter
+```
+
+**Pytest Usage:**
+
+```bash
+pytest test_arch_compliance.py -v --sim verilator -m slow
+```
+
+**Notes:**
+- Verilator only (too slow for Icarus, skips automatically for non-Verilator sims)
+- Tests with >5000 test cases are filtered by default (12 tests with 7K-14K cases that take >30 min each). Use `--no-sim-filter` for hardware validation runs
+- In CI, runs as 10 parallel jobs (one per extension) via GitHub Actions matrix strategy
+- Simulation uses 2MB memory override (`-GMEM_SIZE_BYTES=2097152`) to fit large test data sections
+
 ### `test_run_yosys.py`
 
 Runs Yosys synthesis to verify the design can be synthesized without errors. Uses open-source tools only (no Xilinx IP cores).
@@ -140,11 +177,12 @@ pytest test_run_yosys.py                           # Run synthesis test
 
 ## Configuration Files
 
-| File          | Purpose                             |
-|---------------|-------------------------------------|
-| `conftest.py` | Pytest configuration and fixtures   |
-| `Makefile`    | Cocotb simulation build rules       |
-| `.gitignore`  | Excludes build artifacts            |
+| File                       | Purpose                                   |
+|----------------------------|-------------------------------------------|
+| `conftest.py`              | Pytest configuration and fixtures         |
+| `Makefile`                 | Cocotb simulation build rules             |
+| `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
+| `.gitignore`               | Excludes build artifacts                  |
 
 ## Running Tests
 
@@ -248,6 +286,8 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 ## CI Integration
 
 All tests are run automatically in CI. Tests gracefully skip if required tools are not installed.
+
+Architecture compliance tests run as 10 parallel GitHub Actions jobs (one per extension) using a matrix strategy with `fail-fast: false`, so all extensions are tested even if one fails. These are separate from the main Cocotb test job to avoid blocking it with long-running FP tests.
 
 ### Test Markers
 
