@@ -36,8 +36,9 @@ def pytest_addoption(parser: Any) -> None:
     parser.addoption(
         "--sim",
         action="store",
-        default="verilator",
-        help="Simulator to use (verilator, questa, or icarus)",
+        default=None,
+        help="Simulator to use (verilator, questa, or icarus). "
+        "When set, only parametrized tests for this simulator are run.",
     )
     parser.addoption(
         "--gui",
@@ -56,15 +57,34 @@ def setup_cocotb_env(request: Any) -> None:
     # Set GUI environment variable
     os.environ["GUI"] = "1" if gui_mode else "0"
 
-    # Note: SIM is now set by the parametrized tests or command line option
-    # Only set SIM if explicitly provided via command line
+    # Set SIM if explicitly provided via command line.
+    # Parametrized tests override this in run_test_with_simulator().
     sim = request.config.getoption("--sim")
-    if sim != "verilator":  # Only override if not default
+    if sim:
         os.environ["SIM"] = sim
 
 
 def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Mark cocotb tests as failing for Python version 3.11."""
+    """Filter cocotb tests by simulator and mark unsupported Python versions."""
+    # Filter parametrized cocotb tests by --sim option.
+    # Tests parametrized with "simulator" (e.g., test_cpu[verilator], test_cpu[icarus])
+    # are deselected if they don't match the requested --sim value.
+    sim = config.getoption("--sim")
+    if sim:
+        selected = []
+        deselected = []
+        for item in items:
+            # Check if this test has a "simulator" parameter from parametrize
+            callspec = getattr(item, "callspec", None)
+            if callspec and "simulator" in callspec.params:
+                if callspec.params["simulator"] != sim:
+                    deselected.append(item)
+                    continue
+            selected.append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = selected
+
     if sys.version_info[:2] == (3, 11):
         reason = (
             f"Cocotb tests not supported for Python 3.11, "
