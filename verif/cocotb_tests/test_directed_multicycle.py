@@ -504,3 +504,115 @@ async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
     await drain_pipeline(dut_if, state, use_fp_monitor=True)
 
     cocotb.log.info("=== PASSED: FLD -> FADD.D load-use hazard ===")
+
+
+@cocotb.test()
+async def test_lh_bext_load_use_hazard(dut: Any) -> None:
+    """Test LH followed immediately by BEXT after an unrelated stall.
+
+    This reproduces a stale load-hit forwarding corner case:
+    1. Warm cache with LH from address A (value has bit1=1)
+    2. Trigger a multi-cycle DIV stall
+    3. Execute LH from uncached address B (value bit1=0)
+    4. Immediately consume with BEXT x3, x27, x15
+
+    Expected result is x3=0. Any stale forwarding from address A produces x3=1.
+    """
+    cocotb.log.info("=== Test: LH -> BEXT integer load-use hazard ===")
+
+    dut_if, state, mem_model = await setup_test(dut, use_fp_monitor=False)
+
+    from encoders.op_tables import I_ALU, LOADS
+
+    enc_addi, _ = I_ALU["addi"]
+    enc_lh, _ = LOADS["lh"]
+    enc_bext, eval_bext = R_ALU["bext"]
+    enc_div, eval_div = R_ALU["div"]
+
+    # Address A (cache warmup, bit1=1) and address B (expected miss, bit1=0)
+    addr_a = 0x120
+    addr_b = 0x220
+    value_a = 0x00000002
+    value_b = 0x00000000
+    bit_index = 1
+
+    dut.data_memory_for_simulation.memory[addr_a >> 2].value = value_a
+    dut.data_memory_for_simulation.memory[addr_b >> 2].value = value_b
+    mem_model.write_word(addr_a, value_a)
+    mem_model.write_word(addr_b, value_b)
+
+    cocotb.log.info(
+        f"Memory init: A=0x{addr_a:08X}->0x{value_a:08X}, "
+        f"B=0x{addr_b:08X}->0x{value_b:08X}"
+    )
+
+    # Setup integer operands/registers.
+    await execute_instruction(
+        dut_if,
+        state,
+        enc_addi(10, 0, addr_a),
+        10,
+        addr_a,
+        f"ADDI x10, x0, 0x{addr_a:X}",
+        first_after_warmup=True,
+    )
+    await execute_instruction(
+        dut_if,
+        state,
+        enc_addi(11, 0, addr_b),
+        11,
+        addr_b,
+        f"ADDI x11, x0, 0x{addr_b:X}",
+    )
+    await execute_instruction(
+        dut_if, state, enc_addi(15, 0, bit_index), 15, bit_index, "ADDI x15, x0, 1"
+    )
+    await execute_instruction(
+        dut_if, state, enc_addi(7, 0, 100), 7, 100, "ADDI x7, x0, 100"
+    )
+    await execute_instruction(dut_if, state, enc_addi(8, 0, 3), 8, 3, "ADDI x8, x0, 3")
+
+    # Warm cache entry for address A (first load may miss and fill).
+    await execute_instruction(
+        dut_if, state, enc_lh(5, 10, 0), 5, 0x00000002, "LH x5, 0(x10)"
+    )
+    # Second load from same address should be served via cache-hit path.
+    await execute_instruction(
+        dut_if, state, enc_lh(6, 10, 0), 6, 0x00000002, "LH x6, 0(x10)"
+    )
+
+    # Insert unrelated multi-cycle stall to stress stale forwarding state.
+    div_expected = eval_div(100, 3)
+    await execute_instruction(
+        dut_if, state, enc_div(9, 7, 8), 9, div_expected, "DIV x9, x7, x8 (100/3)"
+    )
+
+    # Critical pair: load from B then immediate dependent BEXT.
+    await execute_instruction(
+        dut_if, state, enc_lh(27, 11, 0), 27, 0x00000000, "LH x27, 0(x11)"
+    )
+    bext_expected = eval_bext(0x00000000, bit_index)
+    await execute_instruction(
+        dut_if,
+        state,
+        enc_bext(3, 27, 15),
+        3,
+        bext_expected,
+        "BEXT x3, x27, x15",
+    )
+
+    await drain_pipeline(dut_if, state, use_fp_monitor=False)
+
+    x27_hw = dut_if.read_register(27)
+    x3_hw = dut_if.read_register(3)
+    cocotb.log.info(f"Final x27 = 0x{x27_hw:08X} (expected 0x00000000)")
+    cocotb.log.info(f"Final x3  = 0x{x3_hw:08X} (expected 0x{bext_expected:08X})")
+
+    assert (
+        x27_hw == 0x00000000
+    ), f"x27 mismatch: got 0x{x27_hw:08X}, expected 0x00000000"
+    assert (
+        x3_hw == bext_expected
+    ), f"x3 mismatch: got 0x{x3_hw:08X}, expected 0x{bext_expected:08X}"
+
+    cocotb.log.info("=== PASSED: LH -> BEXT integer load-use hazard ===")

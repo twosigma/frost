@@ -155,7 +155,10 @@ module cache_write_controller #(
     end
 
   logic cache_write_enable_from_load;
-  assign cache_write_enable_from_load = cache_write_enable_from_load_registered;
+  // Only fire the deferred load fill when the pipeline is advancing.
+  // Otherwise the registered load enable can remain high across multi-cycle stalls
+  // and repeatedly overwrite cache lines with stale load data.
+  assign cache_write_enable_from_load = cache_write_enable_from_load_registered & ~i_stall;
 
   // ===========================================================================
   // AMO Write Enable
