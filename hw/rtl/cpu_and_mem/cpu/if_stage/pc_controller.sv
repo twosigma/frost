@@ -218,27 +218,10 @@ module pc_controller #(
                                   !i_spanning_in_progress && !i_spanning_wait_for_fetch;
 
   // ===========================================================================
-  // Final PC Selection - Single Flat Priority Mux
+  // Final PC Selection - Priority-Encoded Muxes
   // ===========================================================================
-  // Minimize logic depth from branch_taken to output.
-  // Priority selects are computed in parallel, then one-hot OR structure.
-  //
-  // Priority order (highest first):
-  //   1. Reset
-  //   2. Trap/MRET
-  //   3. Stall (hold current)
-  //   4. Branch/Jump taken (actual, from EX stage)
-  //   5. Predicted taken (from BTB) - only when not in holdoff
-  //   6. Sequential
-
-  logic sel_reset, sel_trap, sel_stall, sel_branch, sel_seq;
-
-  assign sel_reset = i_reset;
-  assign sel_trap = !i_reset && (i_trap_taken || i_mret_taken);
-  assign sel_stall = !i_reset && !i_trap_taken && !i_mret_taken && i_stall;
-  assign sel_branch = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall && i_branch_taken;
-  // i_prediction_used comes from branch_prediction_controller (gated prediction)
-  assign sel_seq = !sel_reset & !sel_trap & !sel_stall & !sel_branch & !i_prediction_used;
+  // Use explicit priority muxes instead of one-hot AND/OR trees so trap/stall
+  // gating doesn't get duplicated across every select term.
 
   // For next_pc_reg, use the REGISTERED prediction (1 cycle delayed).
   // This is because o_pc_reg represents the PC of the instruction being processed,
@@ -254,35 +237,34 @@ module pc_controller #(
   // i_prediction_used for a halfword-aligned PC but used raw BTB output here, pc_reg
   // would jump to the target while pc stays sequential - a mismatch.
   logic sel_prediction_r;
-  assign sel_prediction_r = !sel_reset && !sel_trap && !sel_stall && !sel_branch &&
-                            !o_any_holdoff_safe && i_sel_prediction_r;
+  assign sel_prediction_r = !i_reset && !o_any_holdoff_safe && i_sel_prediction_r;
 
   logic [XLEN-1:0] next_pc, next_pc_reg;
+  logic trap_or_mret;
+  assign trap_or_mret = i_trap_taken || i_mret_taken;
 
-  // One-hot parallel OR mux - all AND gates computed in parallel
-  // This is flatter than cascaded ternary operators
-  assign next_pc = ({XLEN{sel_reset}} & {XLEN{1'b0}}) |
-                   ({XLEN{sel_trap}} & i_trap_target) |
-                   ({XLEN{sel_stall}} & o_pc) |
-                   ({XLEN{sel_branch}} & i_branch_target) |
-                   ({XLEN{i_prediction_used}} & i_predicted_target) |
-                   ({XLEN{sel_seq}} & seq_next_pc);
+  always_comb begin
+    if (i_reset) next_pc = '0;
+    else if (trap_or_mret) next_pc = i_trap_target;
+    else if (i_stall) next_pc = o_pc;
+    else if (i_branch_taken) next_pc = i_branch_target;
+    else if (i_prediction_used) next_pc = i_predicted_target;
+    else next_pc = seq_next_pc;
+  end
 
   // For next_pc_reg, use the REGISTERED prediction (sel_prediction_r).
   // This ensures o_pc_reg tracks the instruction PC correctly:
   //   - In cycle N (prediction made): next_pc_reg = sequential (for current instruction)
   //   - In cycle N+1 (registered): next_pc_reg = predicted_target_r (for branch instruction)
   //   - In cycle N+2: o_pc_reg = predicted_target_r (for target instruction)
-  logic sel_seq_for_pc_reg;
-  assign sel_seq_for_pc_reg = !sel_reset && !sel_trap && !sel_stall && !sel_branch &&
-                              !sel_prediction_r;
-
-  assign next_pc_reg = ({XLEN{sel_reset}} & {XLEN{1'b0}}) |
-                       ({XLEN{sel_trap}} & i_trap_target) |
-                       ({XLEN{sel_stall}} & o_pc_reg) |
-                       ({XLEN{sel_branch}} & i_branch_target) |
-                       ({XLEN{sel_prediction_r}} & i_predicted_target_r) |
-                       ({XLEN{sel_seq_for_pc_reg}} & seq_next_pc_reg);
+  always_comb begin
+    if (i_reset) next_pc_reg = '0;
+    else if (trap_or_mret) next_pc_reg = i_trap_target;
+    else if (i_stall) next_pc_reg = o_pc_reg;
+    else if (i_branch_taken) next_pc_reg = i_branch_target;
+    else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
+    else next_pc_reg = seq_next_pc_reg;
+  end
 
   // PC registers
   always_ff @(posedge i_clk) begin
