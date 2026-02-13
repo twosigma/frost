@@ -181,19 +181,31 @@ module forwarding_unit #(
   end
 
   // Select data to forward from MA stage
-  // Special handling for load-use hazards and AMO-use hazards
-  always_ff @(posedge i_clk)
-    if (i_pipeline_ctrl.stall_for_load_use_hazard || (i_pipeline_ctrl.stall && mmio_load_in_ma))
+  // Special handling for load-use hazards and AMO-use hazards.
+  // Keep an explicit next-value mux and always assign the register to discourage
+  // CE inference on this flop (the CE control path was timing-critical).
+  logic [XLEN-1:0] register_write_data_ma_next;
+
+  always_comb begin
+    register_write_data_ma_next = register_write_data_ma;
+
+    if (i_pipeline_ctrl.stall_for_load_use_hazard ||
+        (i_pipeline_ctrl.stall && mmio_load_in_ma)) begin
       // Load-use hazard or MMIO-load stall: use memory data
       // (refresh during MMIO stall so forwarding sees the updated read data).
-      if (i_amo_read_phase)
-        register_write_data_ma <= i_from_ma_comb.data_memory_read_data;
-      else register_write_data_ma <= i_from_ma_comb.data_loaded_from_memory;
-    else if (~i_pipeline_ctrl.stall)
+      if (i_amo_read_phase) register_write_data_ma_next = i_from_ma_comb.data_memory_read_data;
+      else register_write_data_ma_next = i_from_ma_comb.data_loaded_from_memory;
+    end else if (~i_pipeline_ctrl.stall) begin
       // Normal case: use ALU result (cache-hit forwarding uses registered path below)
-      register_write_data_ma <= i_from_id_to_ex.is_fp_to_int ?
-                                i_from_ex_comb.fp_result[XLEN-1:0] :
-                                i_from_ex_comb.alu_result;
+      register_write_data_ma_next = i_from_id_to_ex.is_fp_to_int ?
+                                    i_from_ex_comb.fp_result[XLEN-1:0] :
+                                    i_from_ex_comb.alu_result;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    register_write_data_ma <= register_write_data_ma_next;
+  end
 
   // Final multiplexing: select forwarded value or register file value
   // Priority order: MA stage forward > WB stage forward > Register file
