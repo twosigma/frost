@@ -2,7 +2,7 @@
 # RV32IMAB ALU with base integer, M, A, and B extensions
 # Note: B = Zba + Zbb + Zbs (full bit manipulation extension)
 
-# 2-stage pipelined multiplier (uses FPGA DSP blocks)
+# 4-cycle pipelined multiplier (DSP48E2-tiled 27x18 partial products)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 
 # 32-stage radix-2 restoring divider (fully pipelined)

@@ -26,11 +26,11 @@
     FNMADD.S: fd = -(fs1 * fs2) - fs3
     FNMSUB.S: fd = -(fs1 * fs2) + fs3
 
-  Multi-cycle implementation (23-cycle latency, non-pipelined, deep post-multiply pipeline):
+  Multi-cycle implementation (non-pipelined):
     Cycle 0: Capture operands
     Cycle 1: Unpack operands, detect special cases
     Cycle 2: Multiply mantissas (24x24 -> 48 bits)
-    Cycle 2B: TIMING: 10-stage pipeline after DSP multiply
+    Cycle 2B: TIMING: 3-cycle DSP-tiled multiplier pipeline
     Cycle 3A: Product LZC computation
     Cycle 3B: Normalize product (apply shift)
     Cycle 4: Align exponent/shift amount prep
@@ -65,7 +65,7 @@ module fp_fma #(
     IDLE    = 5'b00000,
     STAGE1  = 5'b00001,
     STAGE2  = 5'b00010,
-    STAGE2B = 5'b10000,  // TIMING: Post-multiply pipeline shift (MulPipeStages deep)
+    STAGE2B = 5'b10000,  // TIMING: Wait for DSP-tiled multiplier result
     STAGE3A = 5'b00011,
     STAGE3B = 5'b00100,
     STAGE4  = 5'b00101,
@@ -93,9 +93,6 @@ module fp_fma #(
   localparam int unsigned ShiftBits = $clog2(ProdBits + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
-  // Post-multiply pipeline depth (Vivado recommends 10 stages for wide multiplier).
-  localparam int unsigned MulPipeStages = 10;
-
   // Input registers
   logic [FP_WIDTH-1:0] operand_a_reg;
   logic [FP_WIDTH-1:0] operand_b_reg;
@@ -228,44 +225,49 @@ module fp_fma #(
   logic                         special_invalid_s2;
 
   // =========================================================================
-  // Stage 2: Multiply (combinational 24x24 from stage 2 regs)
-  // Use DSP48 blocks to reduce LUT congestion
+  // Stage 2: Start mantissa multiply
+  // Uses DSP-tiled {27x35} unsigned multiplier (18+17 cascade-friendly).
   // =========================================================================
 
-  (* use_dsp = "yes" *)
-  logic        [  ProdBits-1:0] prod_mant_s2_comb;
-  assign prod_mant_s2_comb = mant_a_s2 * mant_b_s2;
+  logic        [  ProdBits-1:0] prod_mant_s2_tiled;
+  logic                         prod_mant_s2_tiled_valid;
 
-  // =========================================================================
-  // Post-Multiply Product Pipeline (TIMING: break DSP critical path)
-  // =========================================================================
-  // Deep pipeline after DSP multiply to satisfy timing (MulPipeStages stages).
-
-  (* srl_style = "srl_reg" *)logic        [     ProdBits-1:0] prod_pipe          [MulPipeStages];
-  logic        [MulPipeStages-1:0] prod_valid_pipe;
+  dsp_tiled_multiplier_unsigned #(
+      .A_WIDTH(MantBits),
+      .B_WIDTH(MantBits)
+  ) u_mantissa_multiplier (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid_input(state == STAGE2),
+      .i_operand_a(mant_a_s2),
+      .i_operand_b(mant_b_s2),
+      .o_product_result(prod_mant_s2_tiled),
+      .o_valid_output(prod_mant_s2_tiled_valid),
+      .o_completing_next_cycle(  /*unused*/)
+  );
 
   // =========================================================================
   // Stage 2B -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
   // =========================================================================
 
-  logic        [     ProdBits-1:0] prod_mant_s3;
-  logic signed [   ExpExtBits-1:0] prod_exp_s3;
-  logic                            prod_sign_s3;
-  logic signed [   ExpExtBits-1:0] c_exp_s3;
-  logic        [     MantBits-1:0] mant_c_s3;
-  logic                            c_sign_s3;
-  logic        [              2:0] rm_s3;
-  logic                            is_special_s3;
-  logic        [     FP_WIDTH-1:0] special_result_s3;
-  logic                            special_invalid_s3;
+  logic        [   ProdBits-1:0] prod_mant_s3;
+  logic signed [ ExpExtBits-1:0] prod_exp_s3;
+  logic                          prod_sign_s3;
+  logic signed [ ExpExtBits-1:0] c_exp_s3;
+  logic        [   MantBits-1:0] mant_c_s3;
+  logic                          c_sign_s3;
+  logic        [            2:0] rm_s3;
+  logic                          is_special_s3;
+  logic        [   FP_WIDTH-1:0] special_result_s3;
+  logic                          special_invalid_s3;
 
   // =========================================================================
   // Stage 3A: Product LZC (combinational from stage 3 regs)
   // =========================================================================
 
-  logic        [  LzcProdBits-1:0] prod_lzc;
-  logic                            prod_is_zero;
-  logic                            prod_msb_set;
+  logic        [LzcProdBits-1:0] prod_lzc;
+  logic                          prod_is_zero;
+  logic                          prod_msb_set;
 
   assign prod_is_zero = (prod_mant_s3 == '0);
   assign prod_msb_set = prod_mant_s3[ProdBits-1];
@@ -714,9 +716,6 @@ module fp_fma #(
       is_special_s2 <= 1'b0;
       special_result_s2 <= '0;
       special_invalid_s2 <= 1'b0;
-      // Stage 2B (TIMING: after DSP multiply -- prod_pipe reset removed for SRL
-      // inference; prod_valid_pipe gates consumption so reset of data is unnecessary)
-      prod_valid_pipe <= '0;
       // Stage 3 (before LZC)
       prod_mant_s3 <= '0;
       prod_exp_s3 <= '0;
@@ -829,13 +828,6 @@ module fp_fma #(
     end else begin
       state <= next_state;
       valid_reg <= (state == STAGE9);
-      // Post-multiply product pipeline (free-running for DSP register inference)
-      prod_pipe[0] <= prod_mant_s2_comb;
-      prod_valid_pipe[0] <= (state == STAGE2);
-      for (int i = 1; i < MulPipeStages; i++) begin
-        prod_pipe[i] <= prod_pipe[i-1];
-        prod_valid_pipe[i] <= prod_valid_pipe[i-1];
-      end
 
       case (state)
         IDLE: begin
@@ -868,9 +860,9 @@ module fp_fma #(
         end
 
         STAGE2B: begin
-          // TIMING: Wait for pipelined product to emerge, then load stage 3 regs
-          if (prod_valid_pipe[MulPipeStages-1]) begin
-            prod_mant_s3 <= prod_pipe[MulPipeStages-1];
+          // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
+          if (prod_mant_s2_tiled_valid) begin
+            prod_mant_s3 <= prod_mant_s2_tiled;
             prod_exp_s3 <= prod_exp_s2;
             prod_sign_s3 <= prod_sign_s2;
             c_exp_s3 <= c_exp_s2;
@@ -1027,7 +1019,7 @@ module fp_fma #(
       IDLE:    if (i_valid) next_state = STAGE1;
       STAGE1:  next_state = STAGE2;
       STAGE2:  next_state = STAGE2B;
-      STAGE2B: next_state = state_e'(prod_valid_pipe[MulPipeStages - 1] ? STAGE3A : STAGE2B);
+      STAGE2B: next_state = state_e'(prod_mant_s2_tiled_valid ? STAGE3A : STAGE2B);
       STAGE3A: next_state = STAGE3B;
       STAGE3B: next_state = STAGE4;
       STAGE4:  next_state = STAGE4B;

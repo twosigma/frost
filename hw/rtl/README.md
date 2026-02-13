@@ -233,7 +233,7 @@ The EX stage performs computation, branch resolution, and exception detection:
   |   |        v                    |                    v                     |    |
   |   |   +----------+              |             +-----------+                |    |
   |   |   |multiplier|              |             |  divider  |                |    |
-  |   |   | 1-cycle  |              |             | 17-cycle  |                |    |
+  |   |   | 4-cycle  |              |             | 17-cycle  |                |    |
   |   |   +----------+              |             +-----------+                |    |
   |   |                             |                                          |    |
   |   +-----------------------------+------------------------------------------+    |
@@ -341,12 +341,12 @@ The MA stage completes memory operations, handles atomics, and sequences FP64 me
    - Registering both signals at cycle end
    - Combining registered signals in the next cycle with minimal logic (one AND gate)
 
-2. **Multiply stall path**: The multiply valid signal feeds through stall logic to cache
+2. **Multiply stall path**: The multiply completion signal feeds through stall logic to cache
    write address, creating a long combinational path. Optimized by:
-   - Exposing `valid_stage1` from the multiplier (one cycle before output valid)
+   - Exposing `o_multiply_completing_next_cycle` from the multiplier (one cycle before output valid)
    - Registering this signal in the hazard unit to predict completion
-   - Using the registered signal for stall decisions instead of multiplier output
-   - The registered signal has the same timing as multiplier_valid but no combinational
+   - Using the registered signal for stall decisions instead of raw multiplier completion logic
+   - The registered signal has the same cycle alignment as multiplier completion but no combinational
      dependency, breaking the critical path with no latency penalty
 
 ### Data Forwarding Paths
@@ -383,7 +383,7 @@ ID is reading in the same cycle.
 | **AMO operation**              | AMO unit                     | Stall for read-modify-write        | 2 cycles  |
 | **Branch/Jump (predicted)**    | BTB hit or RAS return, correct prediction | No flush needed                    | 0 cycles  |
 | **Branch/Jump (mispredicted)** | BTB miss/wrong prediction or RAS miss/wrong target | Flush pipeline                     | 3 cycles  |
-| **Multiply**                   | ALU                          | Stall pipeline                     | 1 cycle   |
+| **Multiply**                   | ALU                          | Stall pipeline                     | 4 cycles  |
 | **Divide**                     | ALU                          | Stall pipeline                     | 17 cycles |
 | **FP Add/Sub**                 | FPU                          | Stall pipeline                     | 4 cycles  |
 | **FP Multiply**                | FPU                          | Stall pipeline                     | 8 cycles  |
@@ -443,18 +443,16 @@ ADD x3,x1,..         | IF |-->| PD |-->| ID |---->|----->| EX |-->| MA |-->| WB 
 Note: If x1's address hits in L0 cache, data forwards in same cycle (no stall).
 ```
 
-**Multiply (1-cycle latency):**
-```
-Cycle:       1        2        3        4        5        6        7
-            +----+   +----+   +----+   +----+   +----+   +----+
-MUL x1,x2,x3| IF |-->| PD |-->| ID |-->| EX |-->| MA |-->| WB |  <- 1-cycle MUL
-            +----+   +----+   +----+   +----+   +----+   +----+
-                     +----+   +----+   STALL    +----+   +----+   +----+
-ADD x4,...           | IF |-->| PD |---->|----->| ID |-->| EX |-->| MA |-->...
-                     +----+   +----+            +----+   +----+   +----+
+**Multiply (4-cycle latency):**
 
-1-cycle stall: multiply result registered at end of EX, forwarded to next instruction.
-```
+Integer multiply uses a 4-cycle DSP-tiled pipeline (33x33 signed via 27x18 partial products).
+The hazard unit stalls while multiply is in-flight, and uses
+`o_multiply_completing_next_cycle` to release stall with a registered timing path.
+
+Typical behavior:
+- MUL enters EX and starts multiply
+- Pipeline stalls for 4 cycles
+- Result is written when multiply valid asserts (MULH/MULHSU/MULHU use upper 32 bits)
 
 **Divide (17-cycle latency):**
 ```
@@ -705,8 +703,9 @@ rtl/
         │   ├── exception_detector.sv # ECALL, EBREAK, misaligned access detection
         │   ├── alu/
         │   │   ├── alu.sv            # Main ALU (all extensions)
-        │   │   ├── multiplier.sv     # 1-cycle registered multiplier
+        │   │   ├── multiplier.sv     # 4-cycle DSP-tiled multiplier
         │   │   └── divider.sv        # 17-cycle radix-2 divider (2x folded)
+        │   ├── dsp_tiled_multiplier_unsigned.sv # Shared 27x35 tiled unsigned multiply core
         │   └── fpu/                  # Floating-Point Unit (F/D extensions)
         │       ├── fpu.sv            # FPU top-level, operation routing
         │       ├── fpu_adder_unit.sv # S+D adder wrapper (tracking FSM, NaN-boxing)
@@ -718,17 +717,16 @@ rtl/
         │       ├── fpu_div_sqrt_unit.sv # S+D divider + sqrt wrapper (shared FSM)
         │       ├── fpu_convert_unit.sv # S+D+SD conversion wrapper
         │       ├── fp_adder.sv       # Addition/subtraction (4-cycle)
-        │       ├── fp_multiplier.sv  # Multiplication (8-cycle)
+        │       ├── fp_multiplier.sv  # Multiplication (multi-cycle, non-pipelined)
         │       ├── fp_divider.sv     # Division (~32-cycle)
         │       ├── fp_sqrt.sv        # Square root (~32-cycle)
-        │       ├── fp_fma.sv         # Fused multiply-add (12-cycle)
+        │       ├── fp_fma.sv         # Fused multiply-add (multi-cycle, non-pipelined)
         │       ├── fp_compare.sv     # Comparisons and min/max (3-cycle)
         │       ├── fp_convert.sv     # Integer/FP conversions (3-cycle)
         │       ├── fp_classify.sv    # FCLASS.S (1-cycle)
         │       ├── fp_sign_inject.sv # Sign injection (1-cycle)
         │       ├── fp_convert_sd.sv  # Single/double conversion (5-cycle)
         │       ├── fp_result_assembler.sv # Rounding + overflow/underflow + result formatting (shared)
-        │       ├── fp_round.sv       # Rounding logic (shared)
         │       ├── fp_lzc.sv         # Leading zero counter (shared)
         │       ├── fp_classify_operand.sv # Operand classifier (shared)
         │       ├── fp_operand_unpacker.sv # Field extraction + classification (shared)
@@ -860,13 +858,17 @@ Special cases (per RISC-V spec):
 Total latency: 17 cycles (1 init + 16 division stages)
 ```
 
-#### Multiplier (1-Cycle Registered)
+#### Multiplier (4-Cycle DSP-Tiled)
 
-The multiplier uses FPGA DSP blocks with 1-cycle latency:
+The integer multiplier uses a DSP-oriented tiled datapath:
+- Decomposes 33x33 multiply into 27x35 partial products (27x(18+17), cascade-friendly)
+- Registers partial products and adder tree sums across 3 stages
+- Applies final sign correction in a dedicated registered stage
 
 ```
-Cycle N:   Operands presented, multiply computes combinationally
-Cycle N+1: Result registered and available (MULH/MULHSU/MULHU select upper 32 bits)
+Cycle N:   Operands captured, sign recorded
+Cycle N+1..N+3: Tiled unsigned product pipeline
+Cycle N+4: Signed corrected result valid (MULH/MULHSU/MULHU select upper 32 bits)
 ```
 
 | Category                       | Operations                                                                                              |
@@ -877,7 +879,7 @@ Cycle N+1: Result registered and available (MULH/MULHSU/MULHU select upper 32 bi
 | **Comparison**                 | SLT, SLTU, SLTI, SLTIU                                                                                  |
 | **Upper Immediate**            | LUI, AUIPC                                                                                              |
 | **Jump**                       | JAL, JALR (return address calculation)                                                                  |
-| **Multiply**                   | MUL, MULH, MULHSU, MULHU (1 cycle)                                                                      |
+| **Multiply**                   | MUL, MULH, MULHSU, MULHU (4 cycles)                                                                     |
 | **Divide**                     | DIV, DIVU, REM, REMU (17 cycles)                                                                        |
 | **Address Gen (Zba)**          | SH1ADD, SH2ADD, SH3ADD                                                                                  |
 | **Bit Manipulation (Zbb)**     | ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, SEXT.B, SEXT.H, ZEXT.H, ROL, ROR, RORI, ORC.B, REV8 |
@@ -951,7 +953,7 @@ execution** — each FP operation stalls the pipeline until completion.
   |   |                         |     |  FNMADD(.S/.D), FNMSUB(.S/.D)            |  |
   |   |                         |     |  FMIN(.S/.D), FMAX(.S/.D), FEQ(.S/.D),   |  |
   |   |                         |     |  FLT(.S/.D), FLE(.S/.D)                  |  |
-  |   |  Multiplier (1-cycle)   |     |  FCVT.*, FMV.*, FSGNJ*, FCLASS           |  |
+  |   |  Multiplier (4-cycle)   |     |  FCVT.*, FMV.*, FSGNJ*, FCLASS           |  |
   |   |  Divider (17-cycle)     |     |                                          |  |
   |   +------------+------------+     +---------------------+--------------------+  |
   |                |                                        |                       |
@@ -997,8 +999,8 @@ intensive FP workloads (e.g., DSP, graphics).
 | **Comparison** | FEQ.{S,D}, FLT.{S,D}, FLE.{S,D}, FMIN.{S,D}, FMAX.{S,D} | 3 cycles | Multi-cycle with special case handling |
 | **Conversion** | FCVT.W.{S,D}, FCVT.WU.{S,D}, FCVT.{S,D}.W, FCVT.{S,D}.WU, FCVT.S.D, FCVT.D.S, FMV.X.W, FMV.W.X | 3 cycles | Includes rounding logic |
 | **Addition** | FADD.{S,D}, FSUB.{S,D} | 4 cycles | Alignment, add, normalize, round |
-| **Multiplication** | FMUL.{S,D} | 8 cycles | Mantissa multiply, normalize, round |
-| **Fused Multiply-Add** | FMADD.{S,D}, FMSUB.{S,D}, FNMADD.{S,D}, FNMSUB.{S,D} | 12 cycles | Single rounding (not mul + add) |
+| **Multiplication** | FMUL.{S,D} | multi-cycle | DSP-tiled mantissa multiply, normalize, round |
+| **Fused Multiply-Add** | FMADD.{S,D}, FMSUB.{S,D}, FNMADD.{S,D}, FNMSUB.{S,D} | multi-cycle | DSP-tiled mantissa multiply + fused add, single rounding |
 | **Division** | FDIV.{S,D} | ~32 cycles | Goldschmidt iteration |
 | **Square Root** | FSQRT.{S,D} | ~32 cycles | Newton-Raphson iteration |
 
@@ -1555,7 +1557,7 @@ The CPU provides signals for testbench verification:
 |-------------|-----------|------------------------------|
 | **Yosys**   | Supported | Primary open-source target   |
 | **Vivado**  | Supported | Tested on Xilinx FPGAs       |
-| **Quartus** | Expected  | No vendor primitives used    |
+| **Quartus** | Expected  | No hard vendor primitives (synthesis attributes/hints only) |
 
 ### Resource Usage (Approximate)
 
@@ -1564,7 +1566,7 @@ The CPU provides signals for testbench verification:
 | LUTs       | ~3000-4000  | Depends on cache size        |
 | FFs        | ~1500-2000  | Pipeline registers           |
 | Block RAM  | 2-4         | Main memory + async FIFOs    |
-| DSP        | 1-4         | Multiplier (tool-dependent)  |
+| DSP        | Tool/config dependent | Integer + FP multiply/FMA datapaths |
 
 ### Synthesis Attributes
 

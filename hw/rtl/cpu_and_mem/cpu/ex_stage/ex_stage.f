@@ -1,6 +1,9 @@
 # Execute (EX) stage file list
 # ALU, branches, memory address generation, FPU
 
+# Shared DSP-tiled wide multiplier utility (used by ALU and FPU)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
+
 # Arithmetic Logic Unit with multiply/divide support
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.f
 

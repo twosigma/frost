@@ -58,7 +58,7 @@ module alu #(
 );
 
   // Multiplier signals (M extension)
-  logic [XLEN:0] multiplier_input_a, multiplier_input_b;  // 33-bit for signed extension
+  logic signed [XLEN:0] multiplier_input_a, multiplier_input_b;  // 33-bit signed inputs
   logic [2*XLEN-1:0] multiplier_result;  // 64-bit product
   logic multiplier_valid_input, multiplier_valid_output;
   logic multiplier_valid_input_registered;  // Tracks if multiply is in progress
@@ -72,9 +72,10 @@ module alu #(
   logic [XLEN:0] difference;
   logic sltu;
 
-  // Multiplier unit - 1-cycle latency 32x32 -> 64-bit multiply using DSP blocks
+  // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
   multiplier multiplier_inst (
       .i_clk,
+      .i_rst,
       .i_operand_a(multiplier_input_a),
       .i_operand_b(multiplier_input_b),
       .i_valid_input(multiplier_valid_input),

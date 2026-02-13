@@ -29,7 +29,7 @@
  *   ex_stage
  *   ├── alu/                       Arithmetic/Logic Unit
  *   │   ├── alu.sv                     Main ALU (RV32I + B extensions)
- *   │   ├── multiplier.sv              2-cycle pipelined multiply
+ *   │   ├── multiplier.sv              4-cycle pipelined DSP-tiled multiply
  *   │   └── divider.sv                 17-cycle pipelined divide
  *   ├── branch_jump_unit.sv        Branch condition eval, target mux
  *   ├── branch_redirect_unit.sv    Misprediction detection, BTB/RAS recovery
@@ -54,7 +54,7 @@
  *   |  |        v                     |                     v             |   |
  *   |  |   +----------+               |              +-----------+        |   |
  *   |  |   |multiplier|               |              |  divider  |        |   |
- *   |  |   | 2-cycle  |               |              | 17-cycle  |        |   |
+ *   |  |   | 4-cycle  |               |              | 17-cycle  |        |   |
  *   |  |   +----------+               |              +-----------+        |   |
  *   |  +------------------------------+-----------------------------------+   |
  *   |                                 |                                       |
