@@ -110,7 +110,7 @@ module forwarding_unit #(
   logic forward_source_reg_1_from_wb;
   logic forward_source_reg_2_from_wb;
 
-  // Data to forward from Memory Access stage (registered)
+  // Data to forward from Memory Access stage (registered).
   logic [XLEN-1:0] register_write_data_ma;
 
   // MMIO load detection (used to refresh forward data during MMIO stalls).
@@ -203,9 +203,27 @@ module forwarding_unit #(
     end
   end
 
+`ifdef SYNTHESIS
+  // Vivado-specific timing steering:
+  // Instantiate explicit flops with CE tied high so this register cannot map to a
+  // variable CE cone on critical paths.
+  for (genvar idx = 0; idx < XLEN; idx++) begin : gen_register_write_data_ma_reg
+    FDRE #(
+        .INIT(1'b0)
+    ) register_write_data_ma_ff (
+        .C (i_clk),
+        .CE(1'b1),
+        .D (register_write_data_ma_next[idx]),
+        .Q (register_write_data_ma[idx]),
+        .R (1'b0)
+    );
+  end
+`else
+  // Keep generic RTL flop modeling for simulation tools.
   always_ff @(posedge i_clk) begin
     register_write_data_ma <= register_write_data_ma_next;
   end
+`endif
 
   // Final multiplexing: select forwarded value or register file value
   // Priority order: MA stage forward > WB stage forward > Register file
