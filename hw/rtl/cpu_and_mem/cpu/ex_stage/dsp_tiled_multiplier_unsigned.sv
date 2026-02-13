@@ -62,11 +62,11 @@ module dsp_tiled_multiplier_unsigned #(
 
   logic [PaddedWidth-1:0] aligned_term_comb[NumTerms];
 
-  logic [NumTerms-1:0][PaddedWidth-1:0] work_terms_reg;
-  logic [NumTerms-1:0][PaddedWidth-1:0] partial_terms_reg;
-  logic [NumTerms-1:0][PaddedWidth-1:0] partial_terms_next;
-  logic [NumTerms-1:0] carry_reg;
-  logic [NumTerms-1:0] carry_next;
+  logic [PaddedWidth-1:0] work_terms_reg[NumTerms];
+  logic [PaddedWidth-1:0] partial_terms_reg[NumTerms];
+  logic [PaddedWidth-1:0] partial_terms_next[NumTerms];
+  logic carry_reg[NumTerms];
+  logic carry_next[NumTerms];
 
   logic [A_WIDTH-1:0] operand_a_reg;
   logic [B_WIDTH-1:0] operand_b_reg;
@@ -123,16 +123,16 @@ module dsp_tiled_multiplier_unsigned #(
     prev_terms_current = terms_at_level(int'(level_reg));
     next_terms_current = terms_at_level(int'(level_reg) + 1);
 
-    partial_terms_next = partial_terms_reg;
-    carry_next = carry_reg;
-
     for (int t = 0; t < NumTerms; t++) begin
       logic [ADD_CHUNK_WIDTH-1:0] chunk_a;
       logic [ADD_CHUNK_WIDTH-1:0] chunk_b;
       logic [  ADD_CHUNK_WIDTH:0] chunk_sum;
 
-      chunk_a   = '0;
-      chunk_b   = '0;
+      partial_terms_next[t] = partial_terms_reg[t];
+      carry_next[t] = carry_reg[t];
+
+      chunk_a = '0;
+      chunk_b = '0;
       chunk_sum = '0;
 
       if (t < next_terms_current) begin
@@ -164,9 +164,11 @@ module dsp_tiled_multiplier_unsigned #(
       load_terms_pending <= 1'b0;
       level_reg <= '0;
       chunk_reg <= '0;
-      work_terms_reg <= '0;
-      partial_terms_reg <= '0;
-      carry_reg <= '0;
+      for (int t = 0; t < NumTerms; t++) begin
+        work_terms_reg[t] <= '0;
+        partial_terms_reg[t] <= '0;
+        carry_reg[t] <= 1'b0;
+      end
     end else begin
       o_valid_output <= 1'b0;
 
@@ -175,11 +177,11 @@ module dsp_tiled_multiplier_unsigned #(
           busy <= 1'b1;
           level_reg <= '0;
           chunk_reg <= '0;
-          partial_terms_reg <= '0;
-          carry_reg <= '0;
           load_terms_pending <= 1'b0;
           for (int t = 0; t < NumTerms; t++) begin
             work_terms_reg[t] <= aligned_term_comb[t];
+            partial_terms_reg[t] <= '0;
+            carry_reg[t] <= 1'b0;
           end
         end else if (i_valid_input) begin
           operand_a_reg <= i_operand_a;
@@ -188,8 +190,10 @@ module dsp_tiled_multiplier_unsigned #(
         end
       end else begin
         // Apply one 32-bit chunk add across all active term pairs.
-        partial_terms_reg <= partial_terms_next;
-        carry_reg <= carry_next;
+        for (int t = 0; t < NumTerms; t++) begin
+          partial_terms_reg[t] <= partial_terms_next[t];
+          carry_reg[t] <= carry_next[t];
+        end
 
         if (chunk_reg == LastChunk) begin
           // Completed all chunks for this reduction level.
@@ -203,9 +207,9 @@ module dsp_tiled_multiplier_unsigned #(
             for (int t = 0; t < NumTerms; t++) begin
               if (t < next_terms_current) work_terms_reg[t] <= partial_terms_next[t];
               else work_terms_reg[t] <= '0;
+              partial_terms_reg[t] <= '0;
+              carry_reg[t] <= 1'b0;
             end
-            partial_terms_reg <= '0;
-            carry_reg <= '0;
             level_reg <= level_reg + 1'b1;
             chunk_reg <= '0;
           end
