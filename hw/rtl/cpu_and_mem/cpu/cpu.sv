@@ -514,9 +514,7 @@ module cpu #(
   // Forwarding unit - resolves data hazards by forwarding results from later stages
   // Uses registered regfile data from from_id_to_ex (read in ID stage, not EX stage)
   forwarding_unit #(
-      .XLEN(XLEN),
-      .MMIO_ADDR(MMIO_ADDR),
-      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES)
+      .XLEN(XLEN)
   ) forwarding_unit_inst (
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),

@@ -232,10 +232,12 @@ module hazard_resolution_unit #(
   assign mmio_load_stall = mmio_load_in_ma && (mmio_stall_count < 2);
   assign mmio_read_pulse = mmio_load_in_ma && (mmio_stall_count == 2'b0);
 
+  // Keep pipeline_flush off the flip-flop reset pin. Mapping flush onto /R created a
+  // long high-fanout control path; clear on flush through the D path instead.
   always_ff @(posedge i_clk)
-    if (pipeline_reset || pipeline_flush) begin
+    if (pipeline_reset) begin
       mmio_stall_count <= 2'b0;
-    end else if (~pipeline_stall) begin
+    end else if (pipeline_flush || ~pipeline_stall) begin
       mmio_stall_count <= 2'b0;
     end else if (mmio_load_in_ma && (mmio_stall_count < 2)) begin
       mmio_stall_count <= mmio_stall_count + 1'b1;

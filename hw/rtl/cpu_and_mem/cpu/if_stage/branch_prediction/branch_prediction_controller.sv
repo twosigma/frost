@@ -186,8 +186,9 @@ module branch_prediction_controller (
   // After a prediction redirects PC, the next cycle has stale instruction data.
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
   //
-  // TIMING OPTIMIZATION: Pre-compute stable/registered terms separately from the
-  // late i_branch_taken signal. This reduces logic depth after branch_taken arrives.
+  // TIMING OPTIMIZATION: Keep BTB/RAS allow logic independent of late
+  // i_branch_taken. Branch filtering is applied at the final "prediction used"
+  // stage to avoid dragging branch resolution through the full predictor cone.
   logic prediction_common;
   logic prediction_allowed_stable;
   assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall &&
@@ -199,15 +200,14 @@ module branch_prediction_controller (
   assign prediction_allowed_stable = prediction_common && !i_pc[1];
 
   logic prediction_allowed;
-  assign prediction_allowed = prediction_allowed_stable && !i_branch_taken;
+  assign prediction_allowed = prediction_allowed_stable;
 
   // Compute ras_prediction_allowed - allows halfword-aligned PCs for compressed instructions.
-  // TIMING OPTIMIZATION: Pre-compute stable terms, combine with branch_taken at the end.
   logic ras_prediction_allowed_stable;
   assign ras_prediction_allowed_stable = prediction_common && (!i_pc[1] || i_is_compressed);
 
   logic ras_prediction_allowed;
-  assign ras_prediction_allowed = ras_prediction_allowed_stable && !i_branch_taken;
+  assign ras_prediction_allowed = ras_prediction_allowed_stable;
 
   return_address_stack #(
       .RAS_DEPTH(RasDepth),
@@ -260,17 +260,23 @@ module branch_prediction_controller (
   logic sel_prediction;
   assign sel_prediction = sel_ras_prediction || sel_btb_prediction;
 
+  // Actual prediction use must still be blocked when branch resolution is taking
+  // priority this cycle. Keep this as a final gate to shorten branch_taken depth.
+  logic prediction_used_effective;
+  assign prediction_used_effective = sel_prediction && !i_branch_taken;
+
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
   assign o_predicted_taken = sel_ras_prediction || btb_predicted_taken;
   assign o_predicted_target = sel_ras_prediction ? ras_target : btb_predicted_target;
-  assign o_prediction_used = sel_prediction;
+  assign o_prediction_used = prediction_used_effective;
 
   // Detect prediction to halfword-aligned address
   logic predicted_target_is_halfword;
   assign predicted_target_is_halfword = sel_ras_prediction ?
                                         ras_target[1] : btb_predicted_target[1];
-  assign o_control_flow_to_halfword_pred = sel_prediction && predicted_target_is_halfword;
+  assign o_control_flow_to_halfword_pred = prediction_used_effective &&
+                                           predicted_target_is_halfword;
 
   // RAS prediction outputs (for pipeline passthrough)
   assign o_ras_predicted = sel_ras_prediction;
@@ -290,24 +296,20 @@ module branch_prediction_controller (
   // If prediction was blocked (e.g., halfword-aligned PC), but we still pass
   // the raw BTB output, EX stage will think we predicted and skip the redirect.
 
-  // TIMING OPTIMIZATION: Removed redundant i_flush mux from registered outputs.
-  // When i_flush is true, sel_prediction is already false because:
-  // - branch_taken=true → prediction_allowed=false → sel_prediction=false
-  // - trap_taken=true → prediction_allowed_stable=false → sel_prediction=false
-  // - mret_taken=true → prediction_allowed_stable=false → sel_prediction=false
-  // This removes one LUT level from the critical path.
+  // Keep branch filtering in prediction_used_effective so registered metadata
+  // only tracks predictions that were actually used.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_prediction_used_r  <= 1'b0;
       o_predicted_target_r <= '0;
       o_sel_prediction_r   <= 1'b0;
     end else if (~i_stall) begin
-      o_prediction_used_r  <= sel_prediction;
+      o_prediction_used_r  <= prediction_used_effective;
       // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
       o_predicted_target_r <= o_predicted_target;
-      o_sel_prediction_r   <= sel_prediction;
+      o_sel_prediction_r   <= prediction_used_effective;
     end
   end
 
@@ -326,7 +328,7 @@ module branch_prediction_controller (
       o_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
       // Set holdoff on cycle after prediction; clear on flush
-      o_prediction_holdoff <= i_flush ? 1'b0 : sel_prediction;
+      o_prediction_holdoff <= i_flush ? 1'b0 : prediction_used_effective;
     end
   end
 
@@ -346,12 +348,14 @@ module branch_prediction_controller (
   // btb_only_prediction = BTB predicted AND RAS did NOT predict
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
+  logic btb_only_prediction_effective;
+  assign btb_only_prediction_effective = btb_only_prediction && !i_branch_taken;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
-      o_btb_only_prediction_holdoff <= i_flush ? 1'b0 : btb_only_prediction;
+      o_btb_only_prediction_holdoff <= i_flush ? 1'b0 : btb_only_prediction_effective;
     end
   end
 
