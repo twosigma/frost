@@ -148,15 +148,21 @@ class YosysRunner:
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
 
+        # Enable Xilinx primitive instantiations only for synth_xilinx targets.
+        # Generic/ASIC synthesis stays technology-agnostic.
+        xilinx_define = (
+            "-DFROST_XILINX_PRIMS" if synth_command.startswith("synth_xilinx") else ""
+        )
+
         # Build Yosys script
         yosys_script = []
 
         # Read all Verilog files with SystemVerilog support for .sv files
         for vfile in verilog_files:
             if vfile.endswith(".sv"):
-                yosys_script.append(f"read_verilog -sv {vfile}")
+                yosys_script.append(f"read_verilog -sv {xilinx_define} {vfile}".strip())
             else:
-                yosys_script.append(f"read_verilog {vfile}")
+                yosys_script.append(f"read_verilog {xilinx_define} {vfile}".strip())
 
         # Add synthesis command
         yosys_script.append(synth_command)

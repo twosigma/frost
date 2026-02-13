@@ -218,6 +218,18 @@ if {$step eq "synth"} {
     synth_ip [get_ips]
 
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
+
+    # Enable Xilinx primitive instantiations in RTL for Vivado synthesis.
+    # This keeps generic synthesis flows technology-agnostic.
+    set current_verilog_defines [get_property verilog_define [current_fileset]]
+    if {$current_verilog_defines eq ""} {
+        set current_verilog_defines [list]
+    }
+    if {[lsearch -exact $current_verilog_defines "FROST_XILINX_PRIMS"] < 0} {
+        lappend current_verilog_defines FROST_XILINX_PRIMS
+        set_property verilog_define $current_verilog_defines [current_fileset]
+    }
+
     read_verilog {*}$rtl_source_files
     read_mem $project_root_directory/sw/apps/hello_world/sw.mem
     read_xdc $constraints_file

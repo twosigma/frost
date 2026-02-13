@@ -203,8 +203,8 @@ module forwarding_unit #(
     end
   end
 
-`ifdef SYNTHESIS
-  // Vivado-specific timing steering:
+`ifdef FROST_XILINX_PRIMS
+  // Xilinx-specific timing steering:
   // Instantiate explicit flops with CE tied high so this register cannot map to a
   // variable CE cone on critical paths.
   for (genvar idx = 0; idx < XLEN; idx++) begin : gen_register_write_data_ma_reg
@@ -219,7 +219,7 @@ module forwarding_unit #(
     );
   end
 `else
-  // Keep generic RTL flop modeling for simulation tools.
+  // Generic technology-agnostic flop modeling.
   always_ff @(posedge i_clk) begin
     register_write_data_ma <= register_write_data_ma_next;
   end
