@@ -1099,18 +1099,18 @@ The existing FROST front-end optimizations are preserved:
     |                                                                        |
     |  - Average basic block size: 4-6 instructions                          |
     |  - With ROB_DEPTH=32, expect ~5-8 branches in flight                   |
-    |  - 4 checkpoints means some branches share checkpoints                 |
+    |  - 4 checkpoints may cause stalls in branch-heavy windows              |
     |                                                                        |
-    |  CHECKPOINT SHARING STRATEGY:                                          |
+    |  CHECKPOINT EXHAUSTION STRATEGY:                                       |
     |                                                                        |
     |  +------------------------------------------------------------------+  |
     |  |                                                                  |  |
-    |  |  Option A: Stall on checkpoint exhaustion                        |  |
+    |  |  Option A: Stall on checkpoint exhaustion (implemented)          |  |
     |  |    - If all 4 checkpoints in use, stall dispatch                 |  |
-    |  |    - Simple, guarantees recovery for any misprediction           |  |
+    |  |    - Simple, precise recovery for any misprediction              |  |
     |  |    - May reduce performance with many branches                   |  |
     |  |                                                                  |  |
-    |  |  Option B: Reuse checkpoints (implemented)                       |  |
+    |  |  Option B: Reuse checkpoints (future option)                     |  |
     |  |    - New branch reuses oldest checkpoint if exhausted            |  |
     |  |    - If old checkpoint's branch mispredicts: full flush          |  |
     |  |    - Trade-off: rare full flush vs dispatch stall                |  |

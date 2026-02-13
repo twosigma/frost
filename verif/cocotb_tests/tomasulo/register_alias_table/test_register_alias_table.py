@@ -28,6 +28,9 @@ Directed Tests:
 - test_commit_tag_mismatch_preserves: Commit with wrong tag preserves entry
 - test_rename_and_commit_same_cycle: Rename takes priority over commit to same register
 - test_flush_all_clears_everything: Flush clears all RAT and checkpoint state
+- test_flush_all_priority_over_commit_save_free: Flush dominates commit/save/free collisions
+- test_checkpoint_restore_priority_over_commit: Restore dominates same-cycle commit
+- test_checkpoint_save_free_same_cycle_precedence: Save/free same-cycle behavior is deterministic
 
 Checkpoint Tests:
 - test_checkpoint_save_restore: Save and restore round-trip
@@ -114,6 +117,10 @@ def check_lookup(actual: Any, expected: Any, label: str) -> None:
         assert (
             actual.tag == expected.tag
         ), f"{label}: tag mismatch: got {actual.tag}, expected {expected.tag}"
+    else:
+        assert (
+            actual.tag == 0
+        ), f"{label}: tag should be 0 when not renamed, got {actual.tag}"
     assert (
         actual.value == expected.value
     ), f"{label}: value mismatch: got {actual.value:#x}, expected {expected.value:#x}"
@@ -972,6 +979,165 @@ async def test_flush_all_after_checkpoints(dut: Any) -> None:
     # All checkpoints should be free
     assert dut_if.checkpoint_available, "All checkpoints should be free after flush"
     assert dut_if.checkpoint_alloc_id == 0  # type: ignore[unreachable]
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Priority/Collision Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
+    """Test flush_all dominates commit/checkpoint save/checkpoint free in same cycle."""
+    cocotb.log.info("=== Test: Flush All Priority Over Commit/Save/Free ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # Seed state: renamed INT entries and two active checkpoints.
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    model.rename(0, 5, 3)
+    await dut_if.rename(dest_rf=0, dest_reg=6, rob_tag=4)
+    model.rename(0, 6, 4)
+    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=10)
+    model.checkpoint_save(0, 10, 0, 0)
+    await dut_if.checkpoint_save(checkpoint_id=1, branch_tag=11)
+    model.checkpoint_save(1, 11, 0, 0)
+
+    # Collision cycle:
+    # - commit would clear x5
+    # - save would allocate checkpoint 2
+    # - free would release checkpoint 0
+    # - flush_all should dominate and clear everything regardless
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_commit(tag=3, dest_rf=0, dest_reg=5)
+    dut_if.drive_checkpoint_save(
+        checkpoint_id=2, branch_tag=12, ras_tos=3, ras_valid_count=5
+    )
+    dut_if.drive_checkpoint_free(checkpoint_id=0)
+    dut_if.drive_flush_all()
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_commit()
+    dut_if.clear_checkpoint_save()
+    dut_if.clear_checkpoint_free()
+    dut_if.clear_flush_all()
+    model.flush_all()
+
+    # All renamed state must be gone.
+    for reg in [5, 6]:
+        dut_if.set_int_src1(reg, 0x1234)
+        await RisingEdge(dut_if.clock)
+        result = dut_if.read_int_src1()
+        expected = model.lookup_int(reg, 0x1234)
+        check_lookup(result, expected, f"INT x{reg} after flush collision")
+        assert not result.renamed, f"x{reg} should not be renamed after flush collision"
+
+    # Checkpoint save/free in collision cycle must not matter: flush leaves all free.
+    assert (
+        dut_if.checkpoint_available
+    ), "Checkpoint should be available after flush collision"
+    assert (
+        dut_if.checkpoint_alloc_id == 0
+    ), "All checkpoints should be free after flush collision"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
+    """Test checkpoint_restore dominates same-cycle commit updates."""
+    cocotb.log.info("=== Test: Checkpoint Restore Priority Over Commit ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # Pre-checkpoint mapping: x5 -> ROB[1]
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=1)
+    model.rename(0, 5, 1)
+
+    # Save this state.
+    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=20)
+    model.checkpoint_save(0, 20, 0, 0)
+
+    # Post-checkpoint mapping: x5 -> ROB[2]
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=2)
+    model.rename(0, 5, 2)
+
+    # Collision cycle:
+    # - restore should bring x5 back to tag 1
+    # - commit(tag=1) would clear x5 if commit logic ran this cycle
+    # Expected: restore wins, x5 remains renamed tag 1.
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_checkpoint_restore(0)
+    dut_if.drive_commit(tag=1, dest_rf=0, dest_reg=5)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_checkpoint_restore()
+    dut_if.clear_commit()
+    model.checkpoint_restore(0)
+
+    dut_if.set_int_src1(5, 0x77)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(5, 0x77)
+    check_lookup(result, expected, "INT x5 after restore+commit collision")
+    assert result.renamed, "x5 should remain renamed after restore+commit collision"
+    assert (
+        result.tag == 1
+    ), f"x5 tag should be 1 after restore+commit collision, got {result.tag}"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
+    """Test deterministic same-cycle behavior for checkpoint save/free."""
+    cocotb.log.info("=== Test: Checkpoint Save/Free Same-Cycle Precedence ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # Same slot: save+free for slot 0 in same cycle -> free should win.
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_checkpoint_save(checkpoint_id=0, branch_tag=1)
+    dut_if.drive_checkpoint_free(checkpoint_id=0)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_checkpoint_save()
+    dut_if.clear_checkpoint_free()
+    # Model equivalent: save then free in same cycle.
+    model.checkpoint_save(0, 1, 0, 0)
+    model.checkpoint_free(0)
+
+    assert (
+        dut_if.checkpoint_available
+    ), "Checkpoint should remain available after same-slot save+free"
+    assert (
+        dut_if.checkpoint_alloc_id == 0
+    ), "Slot 0 should be free when save+free target same slot"
+
+    # Different slots: save slot 1 and free slot 0 in same cycle.
+    # Seed slot 0 valid first so free has effect.
+    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=2)
+    model.checkpoint_save(0, 2, 0, 0)
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_checkpoint_save(checkpoint_id=1, branch_tag=3)
+    dut_if.drive_checkpoint_free(checkpoint_id=0)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_checkpoint_save()
+    dut_if.clear_checkpoint_free()
+    model.checkpoint_save(1, 3, 0, 0)
+    model.checkpoint_free(0)
+
+    # Slot 0 should now be free, slot 1 should be in use, so next free is 0.
+    assert (
+        dut_if.checkpoint_available
+    ), "Checkpoint should be available after save/free on different slots"
+    assert (
+        dut_if.checkpoint_alloc_id == 0
+    ), "Slot 0 should be next free after save(slot1)+free(slot0)"
 
     cocotb.log.info("=== Test Passed ===")
 
