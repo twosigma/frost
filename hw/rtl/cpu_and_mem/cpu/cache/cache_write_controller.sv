@@ -117,11 +117,16 @@ module cache_write_controller #(
   logic store_write_request;
   assign store_write_request = |i_data_memory_byte_write_enable_ex & ~is_memory_mapped_io_ex;
 
+  // Use the trap-check stall domain for cache write gating. This matches memory write
+  // gating in data_mem_arbiter and avoids pulling trap/mret gating into cache WE paths.
+  logic cache_write_path_stall;
+  assign cache_write_path_stall = i_stall_for_trap_check;
+
   logic cache_write_enable_from_store;
-  assign cache_write_enable_from_store = store_write_request & ~i_stall;
+  assign cache_write_enable_from_store = store_write_request & ~cache_write_path_stall;
 
   logic store_write_select;
-  assign store_write_select = store_write_request & ~i_stall;
+  assign store_write_select = store_write_request & ~cache_write_path_stall;
 
   // ===========================================================================
   // FP Store Write Enable (MA Stage Override)
@@ -158,7 +163,8 @@ module cache_write_controller #(
   // Only fire the deferred load fill when the pipeline is advancing.
   // Otherwise the registered load enable can remain high across multi-cycle stalls
   // and repeatedly overwrite cache lines with stale load data.
-  assign cache_write_enable_from_load = cache_write_enable_from_load_registered & ~i_stall;
+  assign cache_write_enable_from_load = cache_write_enable_from_load_registered &
+                                        ~cache_write_path_stall;
 
   // ===========================================================================
   // AMO Write Enable
