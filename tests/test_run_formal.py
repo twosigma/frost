@@ -75,6 +75,10 @@ FORMAL_TARGETS = [
         "register_alias_table.sby",
         "Register alias table - rename mapping with checkpoints",
     ),
+    FormalTarget(
+        "rob_rat_wrapper.sby",
+        "ROB-RAT integration wrapper - commit propagation, precedence, flush composition",
+    ),
 ]
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)

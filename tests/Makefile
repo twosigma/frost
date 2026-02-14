@@ -48,6 +48,11 @@ else ifeq ($(TOPLEVEL),register_alias_table)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),rob_rat_wrapper)
+# ROB-RAT integration wrapper block test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/rob_rat_wrapper/rob_rat_wrapper.f
+VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \

@@ -194,6 +194,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="register_alias_table",
         description="Register Alias Table unit tests (rename, lookup, checkpoint, flush)",
     ),
+    "rob_rat_wrapper": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.rob_rat_wrapper.test_rob_rat_wrapper",
+        hdl_toplevel_module="rob_rat_wrapper",
+        description="ROB-RAT integration block tests (commit bus, checkpoint lifecycle, misprediction recovery)",
+    ),
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)
