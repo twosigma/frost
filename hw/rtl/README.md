@@ -639,123 +639,29 @@ Cycle N+1:        +--------------+------------------------+
 
 ## Directory Structure
 
+`hw/rtl/frost.f` is the source of truth for synthesis/simulation file ordering and
+module inclusion. This README keeps only a high-level map to avoid drift.
+
 ```
 rtl/
-├── frost.sv                          # Top-level: clocks, resets, I/O integration
-├── frost.f                           # File list for simulation/synthesis
-│
-├── lib/                              # Generic FPGA library components
-│   ├── ram/
-│   │   ├── sdp_dist_ram.sv           # Simple dual-port distributed RAM (async read)
-│   │   ├── mwp_dist_ram.sv        # Multi-write-port distributed RAM (LVT-based)
-│   │   ├── sdp_block_ram.sv          # Simple dual-port block RAM (sync read)
-│   │   ├── sdp_block_ram_dc.sv       # Dual-clock block RAM (for CDC)
-│   │   ├── tdp_bram_dc.sv            # True dual-port RAM (dual-clock, simple)
-│   │   └── tdp_bram_dc_byte_en.sv    # True dual-port RAM (dual-clock, byte enables)
-│   ├── stall_capture_reg.sv          # Pipeline stall capture register (generic utility)
-│   └── fifo/
-│       ├── sync_dist_ram_fifo.sv     # Synchronous FIFO (distributed RAM)
-│       └── dc_fifo.sv                # Dual-clock FIFO (binary pointers)
-│
-├── peripherals/                      # Peripheral modules
-│   ├── uart_tx.sv                    # UART transmitter
-│   └── uart_rx.sv                    # UART receiver
-│
-└── cpu_and_mem/
-    ├── cpu_and_mem.sv                # CPU + memory integration
-    │
-    └── cpu/
-        ├── cpu.sv                    # 6-stage pipeline top-level
-        ├── data_mem_arbiter.sv       # Data memory interface mux (EX/AMO/FP64 arbitration)
-        ├── riscv_pkg.sv              # Type definitions, opcodes, structs
-        │
-        ├── if_stage/                 # Instruction Fetch stage
-        │   ├── if_stage.sv           # PC management, instruction fetch
-        │   ├── pc_controller.sv      # PC update logic, branch targeting
-        │   ├── pc_increment_calculator.sv # Sequential PC computation (parallel adders)
-        │   ├── control_flow_tracker.sv # Holdoff signal generation
-        │   ├── branch_prediction/    # Branch prediction subsystem
-        │   │   ├── branch_predictor.sv           # 32-entry BTB
-        │   │   ├── branch_prediction_controller.sv # Prediction gating logic (BTB + RAS)
-        │   │   ├── prediction_metadata_tracker.sv  # Stall/spanning handling
-        │   │   ├── ras_detector.sv                # Call/return/coroutine detection
-        │   │   └── return_address_stack.sv        # 8-entry return address stack
-        │   └── c_extension/          # Compressed instruction (C ext) support
-        │       ├── c_ext_state.sv        # C extension state machine
-        │       ├── instruction_aligner.sv # Parcel selection, alignment
-        │       └── rvc_decompressor.sv   # 16-bit to 32-bit expansion
-        │
-        ├── pd_stage/                 # Pre-Decode stage
-        │   └── pd_stage.sv           # C extension decompression, early source register extraction
-        │
-        ├── id_stage/                 # Instruction Decode stage
-        │   ├── id_stage.sv           # ID stage integration, pipeline register
-        │   ├── instr_decoder.sv      # Opcode/funct decoder
-        │   ├── immediate_decoder.sv  # I/S/B/U/J immediate extraction
-        │   ├── instruction_type_decoder.sv  # Direct type detection (timing opt)
-        │   └── branch_target_precompute.sv  # Pre-computed targets/prediction verification
-        │
-        ├── ex_stage/                 # Execute stage
-        │   ├── ex_stage.sv           # EX stage integration, pipeline register
-        │   ├── branch_jump_unit.sv   # Branch condition evaluation, target calc
-        │   ├── branch_redirect_unit.sv  # Misprediction detection, BTB/RAS recovery
-        │   ├── store_unit.sv         # Store address/data preparation
-        │   ├── exception_detector.sv # ECALL, EBREAK, misaligned access detection
-        │   ├── alu/
-        │   │   ├── alu.sv            # Main ALU (all extensions)
-        │   │   ├── multiplier.sv     # 4-cycle DSP-tiled multiplier
-        │   │   └── divider.sv        # 17-cycle radix-2 divider (2x folded)
-        │   ├── dsp_tiled_multiplier_unsigned.sv # Shared 27x35 tiled unsigned multiply core
-        │   └── fpu/                  # Floating-Point Unit (F/D extensions)
-        │       ├── fpu.sv            # FPU top-level, operation routing
-        │       ├── fpu_adder_unit.sv # S+D adder wrapper (tracking FSM, NaN-boxing)
-        │       ├── fpu_mult_unit.sv  # S+D multiplier wrapper
-        │       ├── fpu_fma_unit.sv   # S+D FMA wrapper
-        │       ├── fpu_compare_unit.sv # S+D compare/min/max wrapper
-        │       ├── fpu_sign_inject_unit.sv # S+D sign injection wrapper
-        │       ├── fpu_classify_unit.sv # S+D classify wrapper
-        │       ├── fpu_div_sqrt_unit.sv # S+D divider + sqrt wrapper (shared FSM)
-        │       ├── fpu_convert_unit.sv # S+D+SD conversion wrapper
-        │       ├── fp_adder.sv       # Addition/subtraction (4-cycle)
-        │       ├── fp_multiplier.sv  # Multiplication (multi-cycle, non-pipelined)
-        │       ├── fp_divider.sv     # Division (~32-cycle)
-        │       ├── fp_sqrt.sv        # Square root (~32-cycle)
-        │       ├── fp_fma.sv         # Fused multiply-add (multi-cycle, non-pipelined)
-        │       ├── fp_compare.sv     # Comparisons and min/max (3-cycle)
-        │       ├── fp_convert.sv     # Integer/FP conversions (3-cycle)
-        │       ├── fp_classify.sv    # FCLASS.S (1-cycle)
-        │       ├── fp_sign_inject.sv # Sign injection (1-cycle)
-        │       ├── fp_convert_sd.sv  # Single/double conversion (5-cycle)
-        │       ├── fp_result_assembler.sv # Rounding + overflow/underflow + result formatting (shared)
-        │       ├── fp_lzc.sv         # Leading zero counter (shared)
-        │       ├── fp_classify_operand.sv # Operand classifier (shared)
-        │       ├── fp_operand_unpacker.sv # Field extraction + classification (shared)
-        │       └── fp_subnorm_shift.sv # Subnormal right-shift (shared)
-        │
-        ├── ma_stage/                 # Memory Access stage
-        │   ├── ma_stage.sv           # Load completion, AMO coordination
-        │   ├── load_unit.sv          # Load data extraction/extension
-        │   ├── amo_unit.sv           # Atomic memory operation state machine
-        │   └── fp64_sequencer.sv     # FP64 load/store sequencer (FLD/FSD over 32-bit bus)
-        │
-        ├── wb_stage/                 # Writeback stage
-        │   └── generic_regfile.sv    # Parameterized register file (int 2R/1W, FP 3R/1W)
-        │
-        ├── cache/                    # Cache subsystem
-        │   ├── l0_cache.sv           # Direct-mapped L0 data cache
-        │   ├── cache_hit_detector.sv # Cache hit detection logic
-        │   └── cache_write_controller.sv # Cache write enable and data muxing
-        │
-        ├── csr/                      # CSR subsystem (Zicsr + Zicntr + M-mode)
-        │   └── csr_file.sv           # CSR register file (M-mode + counters)
-        │
-        └── control/                  # Pipeline control
-            ├── forwarding_unit.sv    # Integer data hazard forwarding
-            ├── fp_forwarding_unit.sv # FP data hazard forwarding (F/D extensions)
-            ├── hazard_resolution_unit.sv # Stall/flush control (incl. FPU stalls)
-            ├── hru_fp_hazards.sv    # FP hazard detection (submodule of HRU)
-            ├── trap_unit.sv          # Interrupt/exception handling
-            └── lr_sc_reservation.sv  # A extension: LR/SC address reservation
+├── frost.sv            # Top-level integration
+├── frost.f             # Authoritative file list
+├── lib/                # Reusable RAM/FIFO/util blocks
+├── peripherals/        # UART and MMIO-facing blocks
+└── cpu_and_mem/        # CPU pipeline and memory subsystem
+```
+
+Useful discovery commands (from repo root):
+
+```bash
+# All RTL modules currently in-tree
+find hw/rtl -name '*.sv' | sort
+
+# Files included for build/simulation
+sed -n '1,200p' hw/rtl/frost.f
+
+# Tomasulo-related modules
+find hw/rtl/cpu_and_mem/cpu/tomasulo -name '*.sv' | sort
 ```
 
 ## Module Details

@@ -33,29 +33,14 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 
 Primary test runner for RTL simulations using Cocotb. Supports both standalone execution and pytest integration.
 
-**Available Tests:**
+**Target Discovery (single source of truth):**
 
-| Test                | Description                                                              |
-|---------------------|--------------------------------------------------------------------------|
-| `branch_pred_test`  | Branch prediction test suite (45 tests)                                  |
-| `ras_test`          | Return Address Stack (RAS) comprehensive test suite                       |
-| `ras_stress_test`   | RAS stress test (calls, branches, and function pointers)                  |
-| `cpu`               | CPU verification suite (11 testcases: random regression, atomics, traps, compressed, FP F/D) |
-| `hello_world`       | Simple "Hello, world!" program                                           |
-| `isa_test`          | ISA compliance test suite                                                |
-| `coremark`          | Industry-standard CPU benchmark                                          |
-| `freertos_demo`     | FreeRTOS RTOS demo with timer interrupts                                 |
-| `csr_test`          | CSR and trap handling tests                                              |
-| `memory_test`       | Memory allocator test suite                                              |
-| `strings_test`      | String library test suite                                                |
-| `packet_parser`     | FIX protocol message parser                                              |
-| `c_ext_test`        | C extension (compressed instruction) test                                |
-| `cf_ext_test`       | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) test                  |
-| `fpu_test`          | FPU compliance test suite (F/D extensions)                               |
-| `fpu_assembly_test` | FPU assembly hazard tests                                                |
-| `call_stress`       | Function call stress test                                                |
-| `spanning_test`     | Instruction spanning boundary test                                       |
-| `print_clock_speed` | Clock speed measurement utility                                          |
+The canonical test list lives in `TEST_REGISTRY` inside `test_run_cocotb.py`, not this README.
+
+```bash
+./test_run_cocotb.py --list-tests
+./test_run_cocotb.py --help
+```
 
 **Standalone Usage:**
 

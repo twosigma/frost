@@ -22,17 +22,17 @@ Each `.sby` file defines a verification target with tasks:
 
 ## Targets
 
-| Target | SBY File | Module | Tasks | Properties |
-|--------|----------|--------|-------|------------|
-| **hru** | `hru.sby` | `hazard_resolution_unit` | bmc, cover, prove | Load-use stall contract, branch flush duration, trap override, MMIO termination, CSR bounded, shift register fill, stale flush prevention |
-| **lr_sc** | `lr_sc.sby` | `lr_sc_reservation` | bmc, cover, prove | SC clears reservation, LR sets reservation, SC priority over LR, stall preserves state, reset clears all |
-| **trap_unit** | `trap_unit.sby` | `trap_unit` | bmc, cover | Trap/MRET mutex (RTL-enforced trap priority), trap needs source, interrupt priority, vectored offsets, re-entry prevention, WFI stall |
-| **csr_file** | `csr_file.sby` | `csr_file` | bmc, cover | Trap saves state, MIE/MPIE management, mepc/mtvec alignment, mip reflects inputs, counter increments, fflags sticky |
-| **fwd_unit** | `fwd_unit.sby` | `forwarding_unit` | bmc, cover | MA priority over WB, x0 always zero, no-forward uses raw value, reset clears enables, forward requires write |
-| **fp_fwd_unit** | `fp_fwd_unit.sby` | `fp_forwarding_unit` | bmc, cover | Reset/flush clear enables, pending self-clearing, stall matches pending, capture bypass requires write enable |
-| **cache_hit** | `cache_hit.sby` | `cache_hit_detector` | bmc, cover | MMIO exclusion, non-load exclusion, tag mismatch exclusion, byte/halfword/word valid bit checks |
-| **cache_write** | `cache_write.sby` | `cache_write_controller` | bmc, cover | MMIO stores bypass cache, AMO byte enables, stale load prevention, store valid bit merging |
-| **data_mem_arb** | `data_mem_arb.sby` | `data_mem_arbiter` | bmc, cover | Priority encoding (FP > AMO write > AMO stall > default), stall gates stores, AMO gets all bytes |
+Formal targets are intentionally documented from code, not duplicated in this README.
+The source of truth is `FORMAL_TARGETS` in `tests/test_run_formal.py` plus the `.sby`
+files in this directory.
+
+```bash
+# List all targets and their supported tasks
+./tests/test_run_formal.py --list-targets
+
+# See CLI help (includes --target choices)
+./tests/test_run_formal.py --help
+```
 
 ## Running
 
@@ -42,6 +42,7 @@ pytest tests/test_run_formal.py
 
 # Standalone runner
 ./tests/test_run_formal.py
+./tests/test_run_formal.py --list-targets
 ./tests/test_run_formal.py --target hru
 ./tests/test_run_formal.py --task bmc
 ./tests/test_run_formal.py --verbose
@@ -129,15 +130,7 @@ Yosys supports a subset of SystemVerilog Assertions. Key constraints:
 formal/
 ├── README.md               # This file
 ├── .gitignore              # Ignores sby working directories
-├── hru.sby                 # Hazard resolution unit
-├── lr_sc.sby               # LR/SC reservation register
-├── trap_unit.sby           # Trap unit
-├── csr_file.sby            # CSR file
-├── fwd_unit.sby            # Forwarding unit
-├── fp_fwd_unit.sby         # FP forwarding unit
-├── cache_hit.sby           # Cache hit detector
-├── cache_write.sby         # Cache write controller
-└── data_mem_arb.sby        # Data memory arbiter
+└── *.sby                   # Formal targets (one file per block)
 ```
 
 Assertions live in the RTL files themselves (inside `ifdef FORMAL` blocks), not in separate files.

@@ -706,6 +706,7 @@ Examples:
   %(prog)s isa_test --sim=icarus  # Run ISA compliance tests
   %(prog)s coremark --sim=questa --gui  # Run Coremark with Questa in GUI mode
   %(prog)s cpu --sim=verilator --seed-sweep 10  # Run 10 seeds in parallel, report results
+  %(prog)s --list-tests           # Show available tests from TEST_REGISTRY and exit
 
 Note: GUI mode only works with questa simulator.
       Seed sweep runs simulations in parallel and reports pass/fail for each seed.
@@ -713,13 +714,20 @@ Note: GUI mode only works with questa simulator.
 Available tests:
 """
         + "\n".join(
-            f"  {name:20} - {cfg.description}" for name, cfg in TEST_REGISTRY.items()
+            f"  {name:20} - {cfg.description}"
+            for name, cfg in sorted(TEST_REGISTRY.items())
         ),
     )
     parser.add_argument(
         "test",
+        nargs="?",
         choices=test_choices,
         help="Which test to run",
+    )
+    parser.add_argument(
+        "--list-tests",
+        action="store_true",
+        help="List available tests and exit",
     )
     parser.add_argument(
         "--sim",
@@ -756,6 +764,15 @@ Available tests:
     )
 
     args = parser.parse_args()
+
+    if args.list_tests:
+        print("Available cocotb tests (from TEST_REGISTRY):")
+        for name, cfg in sorted(TEST_REGISTRY.items()):
+            print(f"  {name:20} - {cfg.description}")
+        sys.exit(0)
+
+    if args.test is None:
+        parser.error("the following arguments are required: test")
 
     # Handle seed sweep mode
     if args.seed_sweep:

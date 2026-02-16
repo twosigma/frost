@@ -315,6 +315,7 @@ Examples:
   %(prog)s --target hru              # Run specific target
   %(prog)s --task bmc                # Run only BMC (skip cover)
   %(prog)s --verbose                 # Show full sby output
+  %(prog)s --list-targets            # List available targets/tasks and exit
 
 This script can also be run via pytest:
   pytest test_run_formal.py                              # Run all formal tests
@@ -324,6 +325,11 @@ This script can also be run via pytest:
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show full sby output"
+    )
+    parser.add_argument(
+        "--list-targets",
+        action="store_true",
+        help="List available formal targets and supported tasks, then exit",
     )
     parser.add_argument(
         "--target",
@@ -340,6 +346,17 @@ This script can also be run via pytest:
     )
 
     args = parser.parse_args()
+
+    if args.list_targets:
+        print("Available formal targets (from FORMAL_TARGETS):")
+        for target in FORMAL_TARGETS:
+            print(
+                f"  {target.name:20} tasks={','.join(target.tasks):15} - {target.description}"
+            )
+        print("\nSupported tasks:")
+        for task_name, task_desc in SBY_TASKS:
+            print(f"  {task_name:8} - {task_desc}")
+        return 0
 
     # Check if sby is installed
     try:

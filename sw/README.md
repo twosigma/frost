@@ -20,27 +20,12 @@ sw/
     ├── compile_app.py    # Compile a single application
     ├── build_all_apps.py # Compile all applications
     ├── clean_all_apps.py # Clean all build artifacts
-    ├── hello_world/  # Simple test program
-    ├── isa_test/     # ISA compliance test suite
-    ├── packet_parser/# FIX protocol message parser
-    ├── coremark/     # CPU benchmark
-    ├── freertos_demo/# FreeRTOS demo with multiple tasks
-    ├── csr_test/     # CSR and trap handling tests
-    ├── strings_test/ # String library test suite
-    ├── memory_test/  # Memory allocator test suite
-    ├── c_ext_test/   # C extension (compressed) instruction test
-    ├── cf_ext_test/  # Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) test
-    ├── fpu_test/     # FPU compliance test suite (F/D extensions)
-    ├── fpu_assembly_test/ # FPU assembly hazard tests
-    ├── call_stress/  # Function call stress test
-    ├── spanning_test/# Instruction spanning boundary test
-    ├── uart_echo/    # UART RX echo demo with interactive commands
-    ├── branch_pred_test/ # Branch predictor verification (assembly)
-    ├── ras_test/     # Return Address Stack (RAS) verification (assembly)
-    ├── ras_stress_test/  # Stress test mixing calls, returns, and branches
-    ├── print_clock_speed/ # Clock speed measurement utility
-    └── arch_test/        # riscv-arch-test compliance suite (400+ tests)
+    ├── <app_name>/       # One directory per software app
+    └── ...
 ```
+
+Individual apps are listed in the [Applications](#applications) section below.
+The filesystem is the authoritative inventory: `find sw/apps -maxdepth 1 -type d | sort`
 
 ## Libraries
 
@@ -299,153 +284,32 @@ fix_price_t price = parse_price("94.5000");
 
 ## Applications
 
-### Hello World (`apps/hello_world/`)
+Each app directory contains a source-level doc comment with full details.
+The table below is a quick-reference; see the source for authoritative descriptions.
+Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 
-Minimal test program that prints a message every second. Useful for verifying UART output and timer functionality.
-
-```
-[     0 s] Frost: Hello, world!
-Δticks = 300000000 (expect ≈ 300000000)
-[     1 s] Frost: Hello, world!
-...
-```
-
-### ISA Test (`apps/isa_test/`)
-
-Comprehensive RISC-V ISA compliance test suite. Tests all instructions from every extension supported by Frost with known inputs and expected outputs. Provides clear pass/fail reporting per-instruction and per-extension.
-
-**Tested extensions (RV32GCB (G = IMAFD) + additional):**
-- RV32I (base integer), M (multiply/divide), A (atomics), C (compressed)
-- F/D (single- and double-precision floating-point)
-- B (bit manipulation: B = Zba + Zbb + Zbs)
-- Zicsr, Zicntr (CSR access and counters)
-- Zifencei (instruction fence)
-- Zicond (conditional zero), Zbkb (crypto bit ops), Zihintpause (pause hint)
-- Machine mode (M-mode CSRs, trap handling, ECALL, EBREAK, MRET, WFI)
-
-Note: Output now includes F and D sections for single/double-precision tests; counts may vary as tests evolve.
-
-```
-============================================================
-                    ISA TEST SUMMARY
-============================================================
-
-  RV32I        [PASS]  87/87 tests passed
-  M            [PASS]  49/49 tests passed
-  A            [PASS]  31/31 tests passed
-  C            [PASS]  33/33 tests passed
-  Zicsr        [PASS]  3/3 tests passed
-  Zicntr       [PASS]  7/7 tests passed
-  Zifencei     [PASS]  1/1 tests passed
-  Zba          [PASS]  14/14 tests passed
-  Zbb          [PASS]  65/65 tests passed
-  Zbs          [PASS]  31/31 tests passed
-  Zicond       [PASS]  8/8 tests passed
-  Zbkb         [PASS]  12/12 tests passed
-  Zihintpause  [PASS]  2/2 tests passed
-  MachMode     [PASS]  23/23 tests passed
-
-------------------------------------------------------------
-  EXTENSIONS: 14 PASSED, 0 FAILED
-  TESTS:      366 PASSED, 0 FAILED
-------------------------------------------------------------
-
-  *** ALL TESTS PASSED - PROCESSOR IS COMPLIANT ***
-```
-
-### Packet Parser (`apps/packet_parser/`)
-
-Demonstrates FIX protocol message parsing. Reads tag/value pairs from FIFOs and constructs structured message objects. Measures parsing latency in clock cycles.
-
-### CoreMark (`apps/coremark/`)
-
-Industry-standard CPU benchmark from EEMBC. Measures processor performance in CoreMark/MHz. Configured for bare-metal operation with hardware timer.
-
-### FreeRTOS Demo (`apps/freertos_demo/`)
-
-Demonstrates FreeRTOS running on the FROST processor with multiple tasks using preemptive scheduling. The demo creates three tasks that print messages and demonstrates context switching via timer interrupts.
-
-**Requirements:**
-- Run `git submodule update --init` to fetch the FreeRTOS-Kernel
-
-**Features demonstrated:**
-- Timer interrupt-driven preemptive scheduling
-- Multiple FreeRTOS tasks with different priorities
-- Context save/restore via custom FROST port
-- CLINT-compatible timer for tick generation
-
-### CSR Test (`apps/csr_test/`)
-
-Tests CSR (Control and Status Register) access and M-mode trap handling functionality. Verifies correct behavior of machine-mode CSRs including mstatus, mtvec, mepc, mcause, and timer registers.
-
-### Strings Test (`apps/strings_test/`)
-
-Library test suite that exercises all functions in `string.c`, `ctype.c`, and `stdlib.c`. Tests include:
-
-- **string.c**: memset, memcpy, memmove, memcmp, strlen, strncpy, strcmp, strncmp, strchr, strstr
-- **ctype.c**: isdigit, isalpha, isupper, islower, toupper, tolower, isspace
-- **stdlib.c**: strtol, atoi, atol
-
-Provides pass/fail reporting for each test with comprehensive edge case coverage.
-
-### Memory Test (`apps/memory_test/`)
-
-Test suite for the memory allocation library (`memory.c`). Tests include:
-
-- **Arena allocator**: arena_alloc, arena_push, arena_push_zero, arena_push_align, arena_pop, arena_clear
-- **malloc/free**: Basic allocation, freelist reuse, alignment verification
-
-Provides pass/fail reporting for each test.
-
-### C Extension Test (`apps/c_ext_test/`)
-
-Assembly-level test for RISC-V C extension (compressed 16-bit instructions). Tests function calls (JAL, C.JAL, C.JALR) and returns (C.JR) from various instruction alignments. Written in raw assembly to precisely control instruction encoding and verify correct decompression and PC handling.
-
-### Call Stress (`apps/call_stress/`)
-
-Stress test for nested function calls with C extension enabled. Tests the call stack and return address handling by making many levels of nested calls, verifying that the compressed call/return instructions work correctly under stress.
-
-### Spanning Test (`apps/spanning_test/`)
-
-Tests instruction fetch across word boundaries. Verifies correct handling of 32-bit instructions that span memory word boundaries, which is important for compressed extension support where the instruction stream contains mixed 16-bit and 32-bit instructions.
-
-### UART Echo (`apps/uart_echo/`)
-
-Interactive demo that exercises the UART receive functionality. Provides a command-line interface with the following commands:
-
-- `help` - Show available commands
-- `echo` - Enter character echo mode (Ctrl+C to exit)
-- `hex` - Show hex value of each typed character
-- `count` - Count received characters for ~10 seconds
-- `info` - Show UART status
-
-Any other input is echoed back with a character count. Use a serial terminal at 115200 baud to interact.
-
-### Branch Predictor Test (`apps/branch_pred_test/`)
-
-Assembly-level verification suite for the branch predictor. Contains 45 targeted tests that exercise the Branch Target Buffer (BTB) with various branch patterns, loop structures, and edge cases. Written in raw assembly for precise control over instruction placement and timing.
-
-### Return Address Stack Test (`apps/ras_test/`)
-
-Comprehensive assembly-level verification suite for the Return Address Stack (RAS). Exercises 32-bit and compressed calls/returns, deep nesting (2-level through 8-level), alignment cases, coroutines, and edge cases with pass/fail output.
-
-### RAS Stress Test (`apps/ras_stress_test/`)
-
-C-based stress test that mixes loops, branches, function pointers, and nested calls to stress BTB+RAS interactions (CoreMark-like patterns).
-
-### Print Clock Speed (`apps/print_clock_speed/`)
-
-Simple utility that measures and reports the CPU clock frequency. Useful for verifying the clock configuration on different FPGA boards.
-
-### Arch Test (`apps/arch_test/`)
-
-RISC-V Architecture Compliance Test suite using the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) framework. Each test executes an auto-generated assembly program that exercises a specific instruction covergroup, then compares the output signature against Spike-generated golden references.
-
-**Tested extensions:** I, M, A, F, D, C, B, K (subset: Zbkb), Zicond, Zifencei (400+ tests total)
-
-This app uses its own linker script (`link_arch_test.ld`) with a 2MB memory layout (1MB ROM + 1MB RAM) to accommodate large test data sections. It is intended for Verilator simulation only, where the memory size is overridden via `-GMEM_SIZE_BYTES=2097152`.
-
-The test runner lives in `tests/test_arch_compliance.py` (not in this directory) and handles compilation, simulation, signature extraction, and comparison. See the [tests README](../../tests/README.md) for usage.
+| App | Description |
+|-----|-------------|
+| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 400+ tests, Verilator only) |
+| `branch_pred_test/` | Assembly-level branch predictor verification (45 BTB tests) |
+| `c_ext_test/` | Compressed (C ext) instruction test -- JAL/JALR/JR alignment cases |
+| `call_stress/` | Nested function call stress test for call stack and compressed returns |
+| `cf_ext_test/` | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) instruction test |
+| `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
+| `csr_test/` | CSR access and M-mode trap handling verification |
+| `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
+| `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
+| `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
+| `hello_world/` | Minimal UART/timer sanity check -- prints a greeting every second |
+| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV32GCB + M-mode) |
+| `memory_test/` | Arena allocator and malloc/free test suite |
+| `packet_parser/` | FIX protocol message parser demo with latency measurement |
+| `print_clock_speed/` | Clock frequency measurement utility |
+| `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
+| `ras_test/` | Return Address Stack verification (deep nesting, coroutines, alignment) |
+| `spanning_test/` | 32-bit instruction fetch across word boundary verification |
+| `strings_test/` | String/ctype/stdlib library test suite |
+| `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
 
 ## Building
 
