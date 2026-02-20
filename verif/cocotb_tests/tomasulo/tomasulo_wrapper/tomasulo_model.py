@@ -12,11 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Composed ROB + RAT golden model for integration verification.
+"""Composed ROB + RAT + RS golden model for integration verification.
 
-Imports and composes the individual ReorderBufferModel and RATModel,
-wiring the commit bus internally (mirroring the RTL wrapper).
+Imports and composes the individual models, wiring the commit bus internally
+(mirroring the RTL wrapper). Extends the rob_rat_model with RS support.
 """
+
+from typing import Any
 
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
@@ -28,24 +30,25 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
     LookupResult,
     RATModel,
 )
+from cocotb_tests.tomasulo.reservation_station.rs_model import (
+    RSModel,
+)
 
 
-class RobRatModel:
-    """Composed ROB + RAT model mirroring rob_rat_wrapper RTL.
-
-    The commit bus is internal: when the ROB commits, the commit output
-    is automatically propagated to the RAT's commit interface.
-    """
+class TomasuloModel:
+    """Composed ROB + RAT + RS model mirroring tomasulo_wrapper RTL."""
 
     def __init__(self) -> None:
-        """Initialize composed ROB and RAT models."""
+        """Initialize composed ROB + RAT + RS model."""
         self.rob = ReorderBufferModel()
         self.rat = RATModel()
+        self.rs = RSModel(depth=8)  # INT_RS depth
 
     def reset(self) -> None:
-        """Reset both models."""
+        """Reset all sub-models."""
         self.rob.reset()
         self.rat.reset()
+        self.rs.reset()
 
     def dispatch(
         self,
@@ -54,7 +57,7 @@ class RobRatModel:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
     ) -> int | None:
-        """Dispatch an instruction: ROB allocate + RAT rename + optional checkpoint.
+        """Dispatch: ROB allocate + RAT rename + optional checkpoint.
 
         Returns the allocated ROB tag, or None if ROB is full.
         """
@@ -62,11 +65,9 @@ class RobRatModel:
         if tag is None:
             return None
 
-        # Rename in RAT if instruction has a destination
         if req.dest_valid:
             self.rat.rename(req.dest_rf, req.dest_reg, tag)
 
-        # Checkpoint save if requested (for branches)
         if checkpoint_save:
             avail, cp_id = self.rat.checkpoint_available()
             if avail:
@@ -77,17 +78,12 @@ class RobRatModel:
         return tag
 
     def try_commit(self) -> dict | None:
-        """Try to commit the head entry.
-
-        If the ROB can commit, commits and propagates to the RAT.
-        Returns the commit info dict, or None if nothing to commit.
-        """
+        """Try to commit the head entry, propagating to RAT."""
         if not self.rob.can_commit():
             return None
 
         expected = self.rob.commit()
 
-        # Propagate commit to RAT (the hardwired commit bus)
         if expected.valid and expected.dest_valid:
             self.rat.commit(expected.dest_rf, expected.dest_reg, expected.tag)
 
@@ -104,31 +100,71 @@ class RobRatModel:
         }
 
     def cdb_write(self, write: CDBWrite) -> None:
-        """CDB write to ROB."""
+        """CDB write to ROB (marks entry done)."""
         self.rob.cdb_write(write)
 
+    def cdb_snoop(self, tag: int, value: int) -> None:
+        """CDB broadcast to RS (wakes pending sources)."""
+        self.rs.cdb_snoop(tag, value)
+
+    def cdb_write_and_snoop(
+        self,
+        tag: int,
+        value: int = 0,
+        exception: bool = False,
+        exc_cause: int = 0,
+        fp_flags: int = 0,
+    ) -> None:
+        """Write CDB to ROB and snoop to RS.
+
+        Tolerant of CDB writes to invalid ROB entries (RTL silently ignores).
+        """
+        try:
+            self.cdb_write(
+                CDBWrite(
+                    tag=tag,
+                    value=value,
+                    exception=exception,
+                    exc_cause=exc_cause,
+                    fp_flags=fp_flags,
+                )
+            )
+        except ValueError:
+            pass  # RTL silently ignores CDB to invalid ROB entries
+        self.cdb_snoop(tag, value)
+
+    def rs_dispatch(self, **kwargs: Any) -> int | None:
+        """Dispatch an instruction to the RS."""
+        return self.rs.dispatch(**kwargs)
+
+    def rs_try_issue(self, fu_ready: bool = True) -> dict | None:
+        """Try to issue from RS."""
+        return self.rs.try_issue(fu_ready)
+
     def branch_update(self, update: BranchUpdate) -> None:
-        """Branch resolution update to ROB."""
+        """Forward branch update to ROB."""
         self.rob.branch_update(update)
 
     def misprediction_recovery(self, checkpoint_id: int, flush_tag: int) -> None:
-        """Handle misprediction: partial ROB flush + RAT checkpoint restore."""
+        """Partial flush of ROB + RS, restore RAT checkpoint."""
         self.rob.flush_partial(flush_tag)
+        self.rs.partial_flush(flush_tag, self.rob.head_idx)
         self.rat.checkpoint_restore(checkpoint_id)
 
     def flush_all(self) -> None:
-        """Full flush of both ROB and RAT."""
+        """Full flush of all modules."""
         self.rob.flush_all()
         self.rat.flush_all()
+        self.rs.flush_all()
 
     def lookup_int(self, addr: int, regfile_data: int) -> LookupResult:
-        """INT source lookup via RAT."""
+        """Look up integer register in RAT."""
         return self.rat.lookup_int(addr, regfile_data)
 
     def lookup_fp(self, addr: int, regfile_data: int) -> LookupResult:
-        """FP source lookup via RAT."""
+        """Look up FP register in RAT."""
         return self.rat.lookup_fp(addr, regfile_data)
 
     def checkpoint_available(self) -> tuple[bool, int]:
-        """Check RAT checkpoint availability."""
+        """Return whether a checkpoint slot is available."""
         return self.rat.checkpoint_available()

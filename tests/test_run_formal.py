@@ -76,8 +76,12 @@ FORMAL_TARGETS = [
         "Register alias table - rename mapping with checkpoints",
     ),
     FormalTarget(
-        "rob_rat_wrapper.sby",
-        "ROB-RAT integration wrapper - commit propagation, precedence, flush composition",
+        "reservation_station.sby",
+        "Reservation station - dispatch, wakeup, issue, flush",
+    ),
+    FormalTarget(
+        "tomasulo_wrapper.sby",
+        "Tomasulo integration wrapper (ROB + RAT + RS) - commit propagation, flush composition",
     ),
 ]
 

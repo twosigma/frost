@@ -9,7 +9,7 @@ cover: mode cover
 cover: depth 8
 
 [engines]
-smtbmc z3
+smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
@@ -17,8 +17,9 @@ read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
-read -formal -sv rob_rat_wrapper.sv
-prep -top rob_rat_wrapper
+read -sv reservation_station.sv
+read -formal -sv tomasulo_wrapper.sv
+prep -top tomasulo_wrapper
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -26,4 +27,5 @@ prep -top rob_rat_wrapper
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
-../hw/rtl/cpu_and_mem/cpu/tomasulo/rob_rat_wrapper/rob_rat_wrapper.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

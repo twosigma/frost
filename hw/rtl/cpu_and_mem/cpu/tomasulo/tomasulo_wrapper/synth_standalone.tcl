@@ -12,14 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Standalone Vivado Synthesis Script for ROB-RAT Wrapper
-# Synthesizes the full wrapper including reorder_buffer + register_alias_table
+# Standalone Vivado Synthesis Script for Tomasulo Wrapper
+# Synthesizes the full wrapper including reorder_buffer + register_alias_table + reservation_station
 # Target: 300MHz clock, UltraScale+ part
 # Usage: vivado -mode batch -source synth_standalone.tcl
 
 # Configuration
 set fpga_part "xcux35-vsva1365-3-e"
-set top_module "rob_rat_wrapper"
+set top_module "tomasulo_wrapper"
 set target_freq_mhz 300
 set target_period_ns [expr {1000.0 / $target_freq_mhz}]
 
@@ -27,7 +27,7 @@ set target_period_ns [expr {1000.0 / $target_freq_mhz}]
 set script_dir [file dirname [file normalize [info script]]]
 set project_root [file normalize "$script_dir/../../../../../.."]
 set work_dir "$script_dir/synth_work"
-set rtl_file_list "$script_dir/rob_rat_wrapper.f"
+set rtl_file_list "$script_dir/tomasulo_wrapper.f"
 
 puts "=============================================="
 puts "Standalone Synthesis: $top_module"

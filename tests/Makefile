@@ -48,10 +48,15 @@ else ifeq ($(TOPLEVEL),register_alias_table)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.f
 VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),rob_rat_wrapper)
-# ROB-RAT integration wrapper block test
+else ifeq ($(TOPLEVEL),reservation_station)
+# Reservation Station unit test - minimal dependencies
 COMPILE_ARGS := \
-        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/rob_rat_wrapper/rob_rat_wrapper.f
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),tomasulo_wrapper)
+# Tomasulo integration wrapper block test (ROB + RAT + RS)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f
 VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
@@ -75,6 +80,26 @@ endif
 endif
 
 export VERILOG_SOURCES
+
+# ---------------------------------------------------------------------------
+# Icarus VPI workaround: Use testbench wrappers with flattened ports.
+# Icarus VVP crashes (event.cc assertion) on very wide packed struct
+# VPI-facing ports. Internal signals of any width are fine; only ports
+# that cocotb drives/reads via VPI are affected. Ports up to 187 bits
+# work; 352+ bits crash. The _tb wrappers expose individual scalar ports
+# and connect directly to the modules' individual ICARUS ports.
+# ---------------------------------------------------------------------------
+ifeq ($(SIM),icarus)
+COMPILE_ARGS += -DICARUS
+ifeq ($(TOPLEVEL),reservation_station)
+COMPILE_ARGS += $(ROOT)/hw/sim/reservation_station_tb.sv
+override TOPLEVEL := reservation_station_tb
+endif
+ifeq ($(TOPLEVEL),tomasulo_wrapper)
+COMPILE_ARGS += $(ROOT)/hw/sim/tomasulo_wrapper_tb.sv
+override TOPLEVEL := tomasulo_wrapper_tb
+endif
+endif
 
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
 export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)

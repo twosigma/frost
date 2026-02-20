@@ -13,7 +13,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run standalone Vivado synthesis for rob_rat_wrapper @ 300MHz."""
+"""Run standalone Vivado synthesis for tomasulo_wrapper @ 300MHz."""
 
 import subprocess
 import sys
@@ -26,7 +26,7 @@ def main():
     work_dir = script_dir / "synth_work"
     tcl_script = script_dir / "synth_standalone.tcl"
 
-    print("Running Vivado synthesis for rob_rat_wrapper @ 300MHz...")
+    print("Running Vivado synthesis for tomasulo_wrapper @ 300MHz...")
     print(f"Working directory: {script_dir}")
     print()
 

@@ -194,10 +194,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="register_alias_table",
         description="Register Alias Table unit tests (rename, lookup, checkpoint, flush)",
     ),
-    "rob_rat_wrapper": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.rob_rat_wrapper.test_rob_rat_wrapper",
-        hdl_toplevel_module="rob_rat_wrapper",
-        description="ROB-RAT integration block tests (commit bus, checkpoint lifecycle, misprediction recovery)",
+    "reservation_station": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
+        hdl_toplevel_module="reservation_station",
+        description="Reservation Station unit tests",
+    ),
+    "tomasulo_wrapper": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo integration tests (ROB + RAT + RS)",
     ),
 }
 

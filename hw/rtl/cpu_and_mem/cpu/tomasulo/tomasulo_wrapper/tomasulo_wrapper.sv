@@ -15,22 +15,24 @@
  */
 
 /*
- * ROB-RAT Integration Wrapper
+ * Tomasulo Integration Wrapper
  *
- * Thin verification wrapper that instantiates both the Reorder Buffer and
- * Register Alias Table, hardwires the internal commit bus between them,
- * and exposes all other ports to the testbench.
+ * Verification wrapper that instantiates ROB + RAT + one RS (INT_RS, depth 8)
+ * and hardwires the internal commit bus and shared CDB/flush signals.
+ *
+ * Replaces the previous rob_rat_wrapper as the integration test vehicle.
+ * This wrapper will grow as CDB arbiter, LQ, SQ, ALUs, and FPUs are added.
  *
  * Internal wiring:
  *   ROB.o_commit --> commit_bus --> RAT.i_commit
  *                               --> o_commit (exposed for testbench observation)
- *
- * All other connections (alloc tag -> RAT rename, checkpoint save/restore/free,
- * flush) remain testbench-driven. The testbench plays the role of dispatch,
- * branch unit, CDB, and flush controller.
+ *   i_cdb_write  --> ROB.i_cdb_write
+ *   i_cdb        --> RS.i_cdb (broadcast format for wakeup)
+ *   Flush --> all three modules
+ *   ROB.o_head_tag --> RS.i_rob_head_tag (for age-based partial flush)
  */
 
-module rob_rat_wrapper (
+module tomasulo_wrapper (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -44,6 +46,11 @@ module rob_rat_wrapper (
     // ROB CDB Write Interface (from Functional Units via CDB)
     // =========================================================================
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
+
+    // =========================================================================
+    // CDB Broadcast for RS Wakeup
+    // =========================================================================
+    input riscv_pkg::cdb_broadcast_t i_cdb,
 
     // =========================================================================
     // ROB Branch Update Interface (from Branch Unit)
@@ -158,7 +165,72 @@ module rob_rat_wrapper (
     // RAT Checkpoint Availability
     // =========================================================================
     output logic                                    o_checkpoint_available,
-    output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_alloc_id
+    output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_alloc_id,
+
+    // =========================================================================
+    // RS Dispatch (from Dispatch)
+    // =========================================================================
+`ifdef ICARUS
+    input logic i_rs_dispatch_valid,
+    input logic [2:0] i_rs_dispatch_rs_type,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_rob_tag,
+    input logic [31:0] i_rs_dispatch_op,
+    input logic i_rs_dispatch_src1_ready,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src1_tag,
+    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src1_value,
+    input logic i_rs_dispatch_src2_ready,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src2_tag,
+    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src2_value,
+    input logic i_rs_dispatch_src3_ready,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src3_tag,
+    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src3_value,
+    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_imm,
+    input logic i_rs_dispatch_use_imm,
+    input logic [2:0] i_rs_dispatch_rm,
+    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_branch_target,
+    input logic i_rs_dispatch_predicted_taken,
+    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_predicted_target,
+    input logic i_rs_dispatch_is_fp_mem,
+    input logic [1:0] i_rs_dispatch_mem_size,
+    input logic i_rs_dispatch_mem_signed,
+    input logic [11:0] i_rs_dispatch_csr_addr,
+    input logic [4:0] i_rs_dispatch_csr_imm,
+`else
+    input riscv_pkg::rs_dispatch_t i_rs_dispatch,
+`endif
+    output logic o_rs_full,
+
+    // =========================================================================
+    // RS Issue (to Functional Unit)
+    // =========================================================================
+`ifdef ICARUS
+    output logic                                                        o_rs_issue_valid,
+    output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_rs_issue_rob_tag,
+    output logic                 [                                31:0] o_rs_issue_op,
+    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src1_value,
+    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src2_value,
+    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src3_value,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_imm,
+    output logic                                                        o_rs_issue_use_imm,
+    output logic                 [                                 2:0] o_rs_issue_rm,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_branch_target,
+    output logic                                                        o_rs_issue_predicted_taken,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_predicted_target,
+    output logic                                                        o_rs_issue_is_fp_mem,
+    output logic                 [                                 1:0] o_rs_issue_mem_size,
+    output logic                                                        o_rs_issue_mem_signed,
+    output logic                 [                                11:0] o_rs_issue_csr_addr,
+    output logic                 [                                 4:0] o_rs_issue_csr_imm,
+`else
+    output riscv_pkg::rs_issue_t                                        o_rs_issue,
+`endif
+    input  logic                                                        i_rs_fu_ready,
+
+    // =========================================================================
+    // RS Status
+    // =========================================================================
+    output logic       o_rs_empty,
+    output logic [3:0] o_rs_count
 );
 
   // ===========================================================================
@@ -168,6 +240,10 @@ module rob_rat_wrapper (
 
   // Expose commit bus to testbench
   assign o_commit = commit_bus;
+
+  // Head tag for RS partial flush
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
+  assign head_tag = o_head_tag;
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -287,6 +363,109 @@ module rob_rat_wrapper (
   );
 
   // ===========================================================================
+  // Reservation Station Instance (INT_RS, depth 8)
+  // ===========================================================================
+`ifdef ICARUS
+  // Individual port connections -- avoids wide packed struct VPI-facing ports
+  // (Icarus VPI crashes on 352+ bit struct ports; see reservation_station.sv).
+  reservation_station #(
+      .DEPTH(riscv_pkg::IntRsDepth)
+  ) u_rs (
+      .i_clk  (i_clk),
+      .i_rst_n(i_rst_n),
+
+      // Dispatch (individual ports)
+      .i_dispatch_valid           (i_rs_dispatch_valid),
+      .i_dispatch_rs_type         (i_rs_dispatch_rs_type),
+      .i_dispatch_rob_tag         (i_rs_dispatch_rob_tag),
+      .i_dispatch_op              (i_rs_dispatch_op),
+      .i_dispatch_src1_ready      (i_rs_dispatch_src1_ready),
+      .i_dispatch_src1_tag        (i_rs_dispatch_src1_tag),
+      .i_dispatch_src1_value      (i_rs_dispatch_src1_value),
+      .i_dispatch_src2_ready      (i_rs_dispatch_src2_ready),
+      .i_dispatch_src2_tag        (i_rs_dispatch_src2_tag),
+      .i_dispatch_src2_value      (i_rs_dispatch_src2_value),
+      .i_dispatch_src3_ready      (i_rs_dispatch_src3_ready),
+      .i_dispatch_src3_tag        (i_rs_dispatch_src3_tag),
+      .i_dispatch_src3_value      (i_rs_dispatch_src3_value),
+      .i_dispatch_imm             (i_rs_dispatch_imm),
+      .i_dispatch_use_imm         (i_rs_dispatch_use_imm),
+      .i_dispatch_rm              (i_rs_dispatch_rm),
+      .i_dispatch_branch_target   (i_rs_dispatch_branch_target),
+      .i_dispatch_predicted_taken (i_rs_dispatch_predicted_taken),
+      .i_dispatch_predicted_target(i_rs_dispatch_predicted_target),
+      .i_dispatch_is_fp_mem       (i_rs_dispatch_is_fp_mem),
+      .i_dispatch_mem_size        (i_rs_dispatch_mem_size),
+      .i_dispatch_mem_signed      (i_rs_dispatch_mem_signed),
+      .i_dispatch_csr_addr        (i_rs_dispatch_csr_addr),
+      .i_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
+      .o_full                     (o_rs_full),
+
+      // CDB snoop
+      .i_cdb(i_cdb),
+
+      // Issue (individual ports)
+      .o_issue_valid           (o_rs_issue_valid),
+      .o_issue_rob_tag         (o_rs_issue_rob_tag),
+      .o_issue_op              (o_rs_issue_op),
+      .o_issue_src1_value      (o_rs_issue_src1_value),
+      .o_issue_src2_value      (o_rs_issue_src2_value),
+      .o_issue_src3_value      (o_rs_issue_src3_value),
+      .o_issue_imm             (o_rs_issue_imm),
+      .o_issue_use_imm         (o_rs_issue_use_imm),
+      .o_issue_rm              (o_rs_issue_rm),
+      .o_issue_branch_target   (o_rs_issue_branch_target),
+      .o_issue_predicted_taken (o_rs_issue_predicted_taken),
+      .o_issue_predicted_target(o_rs_issue_predicted_target),
+      .o_issue_is_fp_mem       (o_rs_issue_is_fp_mem),
+      .o_issue_mem_size        (o_rs_issue_mem_size),
+      .o_issue_mem_signed      (o_rs_issue_mem_signed),
+      .o_issue_csr_addr        (o_rs_issue_csr_addr),
+      .o_issue_csr_imm         (o_rs_issue_csr_imm),
+      .i_fu_ready              (i_rs_fu_ready),
+
+      // Flush (shared with ROB)
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+
+      // Status
+      .o_empty(o_rs_empty),
+      .o_count(o_rs_count)
+  );
+`else
+  // Packed struct port connections (Verilator, synthesis, formal).
+  reservation_station #(
+      .DEPTH(riscv_pkg::IntRsDepth)
+  ) u_rs (
+      .i_clk  (i_clk),
+      .i_rst_n(i_rst_n),
+
+      // Dispatch
+      .i_dispatch(i_rs_dispatch),
+      .o_full    (o_rs_full),
+
+      // CDB snoop
+      .i_cdb(i_cdb),
+
+      // Issue
+      .o_issue(o_rs_issue),
+      .i_fu_ready(i_rs_fu_ready),
+
+      // Flush (shared with ROB)
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+
+      // Status
+      .o_empty(o_rs_empty),
+      .o_count(o_rs_count)
+  );
+`endif
+
+  // ===========================================================================
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
@@ -297,36 +476,15 @@ module rob_rat_wrapper (
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
-  // Force reset to deassert after the initial cycle
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
   end
 
   // -------------------------------------------------------------------------
-  // Observation: track an arbitrary INT and FP register via lookups
+  // Structural constraints (from rob_rat_wrapper)
   // -------------------------------------------------------------------------
-  // $anyconst lets the solver pick any register value; the proof then holds
-  // for ALL possible values.  Constraining one lookup address to the tracked
-  // register lets us observe RAT state without hierarchical references.
 
-  (* anyconst *)reg [riscv_pkg::RegAddrWidth-1:0] f_int_track;
-  (* anyconst *)reg [riscv_pkg::RegAddrWidth-1:0] f_fp_track;
-
-  always_comb begin
-    assume (f_int_track != '0);  // Exclude x0 (has its own invariant)
-    assume (i_int_src1_addr == f_int_track);
-    assume (i_fp_src1_addr == f_fp_track);
-  end
-
-  // -------------------------------------------------------------------------
-  // Structural constraints
-  // -------------------------------------------------------------------------
-  // Submodule formal blocks are disabled (read without -formal) to keep
-  // the combined state space tractable.  We replicate their input assumes
-  // here, plus add cross-module coordination constraints.
-
-  // --- ROB input assumes ---
-  // CDB write and branch update cannot target the same tag simultaneously
+  // CDB write and branch update cannot target same tag simultaneously
   always_comb begin
     assume (!(i_cdb_write.valid && i_branch_update.valid &&
               i_cdb_write.tag == i_branch_update.tag));
@@ -337,7 +495,6 @@ module rob_rat_wrapper (
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
-  // --- RAT input assumes ---
   // No rename during full flush
   always_comb assume (!(i_rat_alloc_valid && i_flush_all));
 
@@ -347,9 +504,7 @@ module rob_rat_wrapper (
   // Checkpoint save and restore are mutually exclusive
   always_comb assume (!(i_checkpoint_save && i_checkpoint_restore));
 
-  // Checkpoint restore targets a valid (previously saved) checkpoint.
-  // We shadow-track validity here because the RAT's internal signal is
-  // not accessible via hierarchical reference in Yosys formal.
+  // Shadow-track checkpoint validity
   reg [riscv_pkg::NumCheckpoints-1:0] f_cp_valid;
 
   initial f_cp_valid = '0;
@@ -374,46 +529,56 @@ module rob_rat_wrapper (
     if (i_rat_alloc_valid && !i_rat_alloc_dest_rf) assume (i_rat_alloc_dest_reg != '0);
   end
 
-  // --- Cross-module coordination ---
-  // Dispatch tag coordination: the RAT rename tag must equal the ROB's
-  // combinational alloc_tag so both modules refer to the same entry.
+  // Dispatch tag coordination
   always_comb begin
     if (i_alloc_req.alloc_valid && i_rat_alloc_valid) begin
       assume (i_rat_alloc_rob_tag == o_alloc_resp.alloc_tag);
     end
   end
 
-  // Checkpoint ID coordination: when the ROB records a checkpoint and the
-  // RAT saves one on the same cycle, they must use the same ID.
+  // Checkpoint ID coordination
   always_comb begin
     if (i_rob_checkpoint_valid && i_checkpoint_save) begin
       assume (i_rob_checkpoint_id == i_checkpoint_id);
     end
   end
 
-  // -------------------------------------------------------------------------
-  // Combinational: commit bus stitching
-  // -------------------------------------------------------------------------
+  // No RS dispatch during flush
+  always_comb begin
+    assume (!(i_rs_dispatch.valid && (i_flush_en || i_flush_all)));
+  end
 
+  // No RS dispatch when full
+  always_comb begin
+    if (o_rs_full) assume (!i_rs_dispatch.valid);
+  end
+
+  // -------------------------------------------------------------------------
+  // Observation: track an arbitrary INT register via lookups
+  // -------------------------------------------------------------------------
+  (* anyconst *)reg [riscv_pkg::RegAddrWidth-1:0] f_int_track;
+  (* anyconst *)reg [riscv_pkg::RegAddrWidth-1:0] f_fp_track;
+
+  always_comb begin
+    assume (f_int_track != '0);
+    assume (i_int_src1_addr == f_int_track);
+    assume (i_fp_src1_addr == f_fp_track);
+  end
+
+  // -------------------------------------------------------------------------
+  // Commit bus assertions (from rob_rat_wrapper)
+  // -------------------------------------------------------------------------
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      // Exposed commit output is identical to internal bus
       p_commit_output_identity : assert (o_commit == commit_bus);
-
-      // Commit fires only when ROB head is valid and done
       p_commit_requires_head_ready : assert (!commit_bus.valid || (o_head_valid && o_head_done));
-
-      // Commit tag matches ROB head tag
       p_commit_tag_is_head : assert (!commit_bus.valid || (commit_bus.tag == o_head_tag));
     end
   end
 
   // -------------------------------------------------------------------------
-  // Sequential: commit propagation through internal bus
+  // Sequential: commit propagation and flush
   // -------------------------------------------------------------------------
-  // These verify that the ROB's commit output, hardwired to the RAT's
-  // commit input, correctly clears or preserves RAT rename entries.
-
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
@@ -446,7 +611,7 @@ module rob_rat_wrapper (
         p_commit_clears_int_via_bus : assert (!o_int_src1.renamed);
       end
 
-      // INT WAW: commit does NOT clear when tag mismatches
+      // INT WAW: commit does NOT clear when tag mismatches (newer rename)
       if ($past(
               commit_bus.valid
           ) && $past(
@@ -510,11 +675,8 @@ module rob_rat_wrapper (
   // -------------------------------------------------------------------------
   // Sequential: rename-vs-commit same-cycle precedence
   // -------------------------------------------------------------------------
-
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
-      // When rename and commit target the same INT register on the same
-      // cycle, rename wins — the lookup must show the new rename tag.
       if ($past(
               i_rat_alloc_valid
           ) && !$past(
@@ -543,25 +705,29 @@ module rob_rat_wrapper (
   // -------------------------------------------------------------------------
   // Sequential: flush / recovery composition
   // -------------------------------------------------------------------------
-
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
-      // After flush_all, ROB is empty
+      // flush_all empties ROB
       if ($past(i_flush_all)) begin
         p_flush_all_empties_rob : assert (o_rob_empty);
       end
 
-      // After flush_all, all checkpoints are freed
+      // flush_all empties RS
+      if ($past(i_flush_all)) begin
+        p_flush_all_empties_rs : assert (o_rs_empty);
+      end
+
+      // flush_all frees all checkpoints
       if ($past(i_flush_all)) begin
         p_flush_all_frees_checkpoints : assert (o_checkpoint_available);
       end
 
-      // After flush_all, tracked INT register is not renamed
+      // flush_all clears INT rename
       if ($past(i_flush_all)) begin
         p_flush_all_clears_int_rename : assert (!o_int_src1.renamed);
       end
 
-      // After flush_all, tracked FP register is not renamed
+      // flush_all clears FP rename
       if ($past(i_flush_all)) begin
         p_flush_all_clears_fp_rename : assert (!o_fp_src1.renamed);
       end
@@ -570,6 +736,7 @@ module rob_rat_wrapper (
     // Reset properties
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_rob_empty : assert (o_rob_empty);
+      p_reset_rs_empty : assert (o_rs_empty);
       p_reset_checkpoints_available : assert (o_checkpoint_available);
       p_reset_int_not_renamed : assert (!o_int_src1.renamed);
       p_reset_fp_not_renamed : assert (!o_fp_src1.renamed);
@@ -579,10 +746,24 @@ module rob_rat_wrapper (
   // -------------------------------------------------------------------------
   // Cover properties
   // -------------------------------------------------------------------------
-
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      // Commit fires and tracked INT register has matching tag (about to clear)
+      // RS issue fires
+      cover_rs_issue : cover (o_rs_issue.valid);
+
+      // CDB simultaneously present with RS dispatch
+      cover_cdb_and_rs_dispatch : cover (i_cdb.valid && i_rs_dispatch.valid);
+
+      // flush_all while RS non-empty
+      cover_flush_while_rs_nonempty : cover (i_flush_all && !o_rs_empty);
+
+      // Commit fires
+      cover_commit : cover (commit_bus.valid);
+
+      // RS full: removed -- needs 9+ steps (8 dispatches + reset) but wrapper
+      // cover depth is 8.  Covered by reservation_station.sby at depth 20.
+
+      // Commit clears tracked INT register
       cover_commit_clears_int :
       cover (
         commit_bus.valid && commit_bus.dest_valid && !commit_bus.dest_rf &&
