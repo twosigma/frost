@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Composed ROB + RAT + RS golden model for integration verification.
+"""Composed ROB + RAT + multi-RS golden model for integration verification.
 
 Imports and composes the individual models, wiring the commit bus internally
-(mirroring the RTL wrapper). Extends the rob_rat_model with RS support.
+(mirroring the RTL wrapper). Models six RS instances with dispatch routing
+based on rs_type.
 """
 
 from typing import Any
@@ -34,21 +35,68 @@ from cocotb_tests.tomasulo.reservation_station.rs_model import (
     RSModel,
 )
 
+# RS type constants (mirrors riscv_pkg::rs_type_e)
+RS_INT = 0
+RS_MUL = 1
+RS_MEM = 2
+RS_FP = 3
+RS_FMUL = 4
+RS_FDIV = 5
+RS_NONE = 6
+
+# RS depths (mirrors riscv_pkg parameters)
+RS_DEPTHS = {
+    RS_INT: 8,
+    RS_MUL: 4,
+    RS_MEM: 8,
+    RS_FP: 6,
+    RS_FMUL: 4,
+    RS_FDIV: 2,
+}
+
 
 class TomasuloModel:
-    """Composed ROB + RAT + RS model mirroring tomasulo_wrapper RTL."""
+    """Composed ROB + RAT + multi-RS model mirroring tomasulo_wrapper RTL."""
 
     def __init__(self) -> None:
-        """Initialize composed ROB + RAT + RS model."""
+        """Initialize composed ROB + RAT + 6 RS model."""
         self.rob = ReorderBufferModel()
         self.rat = RATModel()
-        self.rs = RSModel(depth=8)  # INT_RS depth
+
+        # Six RS instances matching RTL parameterization
+        self.int_rs = RSModel(depth=RS_DEPTHS[RS_INT])
+        self.mul_rs = RSModel(depth=RS_DEPTHS[RS_MUL])
+        self.mem_rs = RSModel(depth=RS_DEPTHS[RS_MEM])
+        self.fp_rs = RSModel(depth=RS_DEPTHS[RS_FP])
+        self.fmul_rs = RSModel(depth=RS_DEPTHS[RS_FMUL])
+        self.fdiv_rs = RSModel(depth=RS_DEPTHS[RS_FDIV])
+
+        self._rs_map: dict[int, RSModel] = {
+            RS_INT: self.int_rs,
+            RS_MUL: self.mul_rs,
+            RS_MEM: self.mem_rs,
+            RS_FP: self.fp_rs,
+            RS_FMUL: self.fmul_rs,
+            RS_FDIV: self.fdiv_rs,
+        }
+
+        # Backward compat: self.rs aliases INT_RS
+        self.rs = self.int_rs
+
+    def _all_rs(self) -> list[RSModel]:
+        """Return all RS models."""
+        return list(self._rs_map.values())
+
+    def get_rs(self, rs_type: int) -> RSModel:
+        """Return the RS model for the given type."""
+        return self._rs_map[rs_type]
 
     def reset(self) -> None:
         """Reset all sub-models."""
         self.rob.reset()
         self.rat.reset()
-        self.rs.reset()
+        for rs in self._all_rs():
+            rs.reset()
 
     def dispatch(
         self,
@@ -104,8 +152,9 @@ class TomasuloModel:
         self.rob.cdb_write(write)
 
     def cdb_snoop(self, tag: int, value: int) -> None:
-        """CDB broadcast to RS (wakes pending sources)."""
-        self.rs.cdb_snoop(tag, value)
+        """CDB broadcast to ALL RS instances (wakes pending sources)."""
+        for rs in self._all_rs():
+            rs.cdb_snoop(tag, value)
 
     def cdb_write_and_snoop(
         self,
@@ -115,7 +164,7 @@ class TomasuloModel:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Write CDB to ROB and snoop to RS.
+        """Write CDB to ROB and snoop to all RS.
 
         Tolerant of CDB writes to invalid ROB entries (RTL silently ignores).
         """
@@ -133,29 +182,37 @@ class TomasuloModel:
             pass  # RTL silently ignores CDB to invalid ROB entries
         self.cdb_snoop(tag, value)
 
-    def rs_dispatch(self, **kwargs: Any) -> int | None:
-        """Dispatch an instruction to the RS."""
-        return self.rs.dispatch(**kwargs)
+    def rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> int | None:
+        """Dispatch an instruction to the specified RS type."""
+        rs = self._rs_map.get(rs_type)
+        if rs is None:
+            return None
+        return rs.dispatch(**kwargs)
 
-    def rs_try_issue(self, fu_ready: bool = True) -> dict | None:
-        """Try to issue from RS."""
-        return self.rs.try_issue(fu_ready)
+    def rs_try_issue(self, rs_type: int = RS_INT, fu_ready: bool = True) -> dict | None:
+        """Try to issue from the specified RS type."""
+        rs = self._rs_map.get(rs_type)
+        if rs is None:
+            return None
+        return rs.try_issue(fu_ready)
 
     def branch_update(self, update: BranchUpdate) -> None:
         """Forward branch update to ROB."""
         self.rob.branch_update(update)
 
     def misprediction_recovery(self, checkpoint_id: int, flush_tag: int) -> None:
-        """Partial flush of ROB + RS, restore RAT checkpoint."""
+        """Partial flush of ROB + all RS, restore RAT checkpoint."""
         self.rob.flush_partial(flush_tag)
-        self.rs.partial_flush(flush_tag, self.rob.head_idx)
+        for rs in self._all_rs():
+            rs.partial_flush(flush_tag, self.rob.head_idx)
         self.rat.checkpoint_restore(checkpoint_id)
 
     def flush_all(self) -> None:
         """Full flush of all modules."""
         self.rob.flush_all()
         self.rat.flush_all()
-        self.rs.flush_all()
+        for rs in self._all_rs():
+            rs.flush_all()
 
     def lookup_int(self, addr: int, regfile_data: int) -> LookupResult:
         """Look up integer register in RAT."""

@@ -221,6 +221,7 @@ module tomasulo_wrapper_tb (
     // =========================================================================
     // RS Status -- pass through (small)
     // =========================================================================
+    output logic       o_int_rs_full,
     output logic       o_rs_empty,
     output logic [3:0] o_rs_count
 );
@@ -342,6 +343,7 @@ module tomasulo_wrapper_tb (
       .o_rs_issue_csr_addr           (o_rs_issue_csr_addr),
       .o_rs_issue_csr_imm            (o_rs_issue_csr_imm),
       .i_rs_fu_ready,
+      .o_int_rs_full,
       .o_rs_empty,
       .o_rs_count
   );

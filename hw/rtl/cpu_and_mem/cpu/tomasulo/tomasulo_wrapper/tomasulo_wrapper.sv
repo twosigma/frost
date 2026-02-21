@@ -17,19 +17,25 @@
 /*
  * Tomasulo Integration Wrapper
  *
- * Verification wrapper that instantiates ROB + RAT + one RS (INT_RS, depth 8)
- * and hardwires the internal commit bus and shared CDB/flush signals.
+ * Verification wrapper that instantiates ROB + RAT + six RS instances
+ * (INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS) and hardwires the
+ * internal commit bus, dispatch routing, and shared CDB/flush signals.
  *
  * Replaces the previous rob_rat_wrapper as the integration test vehicle.
  * This wrapper will grow as CDB arbiter, LQ, SQ, ALUs, and FPUs are added.
+ *
+ * Dispatch routing:
+ *   i_rs_dispatch.rs_type is decoded to per-RS dispatch valid signals.
+ *   All RS instances share the same dispatch data bus; only the valid
+ *   signal is gated per RS type.
  *
  * Internal wiring:
  *   ROB.o_commit --> commit_bus --> RAT.i_commit
  *                               --> o_commit (exposed for testbench observation)
  *   i_cdb_write  --> ROB.i_cdb_write
- *   i_cdb        --> RS.i_cdb (broadcast format for wakeup)
- *   Flush --> all three modules
- *   ROB.o_head_tag --> RS.i_rob_head_tag (for age-based partial flush)
+ *   i_cdb        --> all RS .i_cdb (broadcast format for wakeup)
+ *   Flush --> all modules
+ *   ROB.o_head_tag --> all RS .i_rob_head_tag (for age-based partial flush)
  */
 
 module tomasulo_wrapper (
@@ -227,10 +233,56 @@ module tomasulo_wrapper (
     input  logic                                                        i_rs_fu_ready,
 
     // =========================================================================
-    // RS Status
+    // RS Status (INT_RS)
     // =========================================================================
+    output logic       o_int_rs_full,
     output logic       o_rs_empty,
-    output logic [3:0] o_rs_count
+    output logic [3:0] o_rs_count,
+
+    // =========================================================================
+    // MUL_RS (Integer multiply/divide, depth 4)
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                           o_mul_rs_issue,
+    input  logic                                                           i_mul_rs_fu_ready,
+    output logic                                                           o_mul_rs_full,
+    output logic                                                           o_mul_rs_empty,
+    output logic                 [$clog2(riscv_pkg::MulRsDepth + 1) - 1:0] o_mul_rs_count,
+
+    // =========================================================================
+    // MEM_RS (Load/store, depth 8)
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                           o_mem_rs_issue,
+    input  logic                                                           i_mem_rs_fu_ready,
+    output logic                                                           o_mem_rs_full,
+    output logic                                                           o_mem_rs_empty,
+    output logic                 [$clog2(riscv_pkg::MemRsDepth + 1) - 1:0] o_mem_rs_count,
+
+    // =========================================================================
+    // FP_RS (FP add/sub/cmp/cvt/classify/sgnj, depth 6)
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                          o_fp_rs_issue,
+    input  logic                                                          i_fp_rs_fu_ready,
+    output logic                                                          o_fp_rs_full,
+    output logic                                                          o_fp_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FpRsDepth + 1) - 1:0] o_fp_rs_count,
+
+    // =========================================================================
+    // FMUL_RS (FP multiply/FMA, depth 4)
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                            o_fmul_rs_issue,
+    input  logic                                                            i_fmul_rs_fu_ready,
+    output logic                                                            o_fmul_rs_full,
+    output logic                                                            o_fmul_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FmulRsDepth + 1) - 1:0] o_fmul_rs_count,
+
+    // =========================================================================
+    // FDIV_RS (FP divide/sqrt, depth 2)
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                            o_fdiv_rs_issue,
+    input  logic                                                            i_fdiv_rs_fu_ready,
+    output logic                                                            o_fdiv_rs_full,
+    output logic                                                            o_fdiv_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count
 );
 
   // ===========================================================================
@@ -244,6 +296,62 @@ module tomasulo_wrapper (
   // Head tag for RS partial flush
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   assign head_tag = o_head_tag;
+
+  // ===========================================================================
+  // Dispatch Routing: decode rs_type to per-RS dispatch valid signals
+  // ===========================================================================
+  logic int_rs_dispatch_valid;
+  logic mul_rs_dispatch_valid;
+  logic mem_rs_dispatch_valid;
+  logic fp_rs_dispatch_valid;
+  logic fmul_rs_dispatch_valid;
+  logic fdiv_rs_dispatch_valid;
+
+`ifdef ICARUS
+  wire [2:0] dispatch_rs_type = i_rs_dispatch_rs_type;
+  wire       dispatch_valid = i_rs_dispatch_valid;
+`else
+  wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
+  wire       dispatch_valid = i_rs_dispatch.valid;
+`endif
+
+  always_comb begin
+    int_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
+    mul_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MUL);
+    mem_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MEM);
+    fp_rs_dispatch_valid   = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FP);
+    fmul_rs_dispatch_valid = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FMUL);
+    fdiv_rs_dispatch_valid = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FDIV);
+  end
+
+  // Internal full signals for mux
+  logic int_rs_full_w;
+  logic mul_rs_full_w;
+  logic mem_rs_full_w;
+  logic fp_rs_full_w;
+  logic fmul_rs_full_w;
+  logic fdiv_rs_full_w;
+
+  // o_rs_full: dispatch-target mux (NOT dedicated INT_RS full; use o_int_rs_full)
+  always_comb begin
+    case (dispatch_rs_type)
+      riscv_pkg::RS_INT:  o_rs_full = int_rs_full_w;
+      riscv_pkg::RS_MUL:  o_rs_full = mul_rs_full_w;
+      riscv_pkg::RS_MEM:  o_rs_full = mem_rs_full_w;
+      riscv_pkg::RS_FP:   o_rs_full = fp_rs_full_w;
+      riscv_pkg::RS_FMUL: o_rs_full = fmul_rs_full_w;
+      riscv_pkg::RS_FDIV: o_rs_full = fdiv_rs_full_w;
+      default:            o_rs_full = 1'b0;
+    endcase
+  end
+
+  // Per-RS full output ports (dedicated, not muxed)
+  assign o_int_rs_full  = int_rs_full_w;
+  assign o_mul_rs_full  = mul_rs_full_w;
+  assign o_mem_rs_full  = mem_rs_full_w;
+  assign o_fp_rs_full   = fp_rs_full_w;
+  assign o_fmul_rs_full = fmul_rs_full_w;
+  assign o_fdiv_rs_full = fdiv_rs_full_w;
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -363,19 +471,23 @@ module tomasulo_wrapper (
   );
 
   // ===========================================================================
-  // Reservation Station Instance (INT_RS, depth 8)
+  // Reservation Station Instances
   // ===========================================================================
+
+  // ---------------------------------------------------------------------------
+  // INT_RS (depth 8): Integer ALU ops, branches, CSR
+  // ---------------------------------------------------------------------------
 `ifdef ICARUS
   // Individual port connections -- avoids wide packed struct VPI-facing ports
   // (Icarus VPI crashes on 352+ bit struct ports; see reservation_station.sv).
   reservation_station #(
       .DEPTH(riscv_pkg::IntRsDepth)
-  ) u_rs (
+  ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
       // Dispatch (individual ports)
-      .i_dispatch_valid           (i_rs_dispatch_valid),
+      .i_dispatch_valid           (int_rs_dispatch_valid),
       .i_dispatch_rs_type         (i_rs_dispatch_rs_type),
       .i_dispatch_rob_tag         (i_rs_dispatch_rob_tag),
       .i_dispatch_op              (i_rs_dispatch_op),
@@ -399,7 +511,7 @@ module tomasulo_wrapper (
       .i_dispatch_mem_signed      (i_rs_dispatch_mem_signed),
       .i_dispatch_csr_addr        (i_rs_dispatch_csr_addr),
       .i_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
-      .o_full                     (o_rs_full),
+      .o_full                     (int_rs_full_w),
 
       // CDB snoop
       .i_cdb(i_cdb),
@@ -434,17 +546,48 @@ module tomasulo_wrapper (
       .o_empty(o_rs_empty),
       .o_count(o_rs_count)
   );
+
+  // ICARUS: other RS types not instantiated (multi-RS integration tests
+  // use Verilator; the RS module itself has standalone Icarus tests).
+  assign mul_rs_full_w   = 1'b0;
+  assign mem_rs_full_w   = 1'b0;
+  assign fp_rs_full_w    = 1'b0;
+  assign fmul_rs_full_w  = 1'b0;
+  assign fdiv_rs_full_w  = 1'b0;
+  assign o_mul_rs_issue  = '0;
+  assign o_mem_rs_issue  = '0;
+  assign o_fp_rs_issue   = '0;
+  assign o_fmul_rs_issue = '0;
+  assign o_fdiv_rs_issue = '0;
+  assign o_mul_rs_empty  = 1'b1;
+  assign o_mem_rs_empty  = 1'b1;
+  assign o_fp_rs_empty   = 1'b1;
+  assign o_fmul_rs_empty = 1'b1;
+  assign o_fdiv_rs_empty = 1'b1;
+  assign o_mul_rs_count  = '0;
+  assign o_mem_rs_count  = '0;
+  assign o_fp_rs_count   = '0;
+  assign o_fmul_rs_count = '0;
+  assign o_fdiv_rs_count = '0;
 `else
   // Packed struct port connections (Verilator, synthesis, formal).
+
+  // INT_RS dispatch with routed valid
+  riscv_pkg::rs_dispatch_t int_rs_dispatch;
+  always_comb begin
+    int_rs_dispatch       = i_rs_dispatch;
+    int_rs_dispatch.valid = int_rs_dispatch_valid;
+  end
+
   reservation_station #(
       .DEPTH(riscv_pkg::IntRsDepth)
-  ) u_rs (
+  ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
       // Dispatch
-      .i_dispatch(i_rs_dispatch),
-      .o_full    (o_rs_full),
+      .i_dispatch(int_rs_dispatch),
+      .o_full    (int_rs_full_w),
 
       // CDB snoop
       .i_cdb(i_cdb),
@@ -462,6 +605,141 @@ module tomasulo_wrapper (
       // Status
       .o_empty(o_rs_empty),
       .o_count(o_rs_count)
+  );
+
+  // ---------------------------------------------------------------------------
+  // MUL_RS (depth 4): Integer multiply/divide
+  // ---------------------------------------------------------------------------
+  riscv_pkg::rs_dispatch_t mul_rs_dispatch;
+  always_comb begin
+    mul_rs_dispatch       = i_rs_dispatch;
+    mul_rs_dispatch.valid = mul_rs_dispatch_valid;
+  end
+
+  reservation_station #(
+      .DEPTH(riscv_pkg::MulRsDepth)
+  ) u_mul_rs (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_dispatch    (mul_rs_dispatch),
+      .o_full        (mul_rs_full_w),
+      .i_cdb         (i_cdb),
+      .o_issue       (o_mul_rs_issue),
+      .i_fu_ready    (i_mul_rs_fu_ready),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+      .o_empty       (o_mul_rs_empty),
+      .o_count       (o_mul_rs_count)
+  );
+
+  // ---------------------------------------------------------------------------
+  // MEM_RS (depth 8): Loads/stores (both INT and FP)
+  // ---------------------------------------------------------------------------
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch;
+  always_comb begin
+    mem_rs_dispatch       = i_rs_dispatch;
+    mem_rs_dispatch.valid = mem_rs_dispatch_valid;
+  end
+
+  reservation_station #(
+      .DEPTH(riscv_pkg::MemRsDepth)
+  ) u_mem_rs (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_dispatch    (mem_rs_dispatch),
+      .o_full        (mem_rs_full_w),
+      .i_cdb         (i_cdb),
+      .o_issue       (o_mem_rs_issue),
+      .i_fu_ready    (i_mem_rs_fu_ready),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+      .o_empty       (o_mem_rs_empty),
+      .o_count       (o_mem_rs_count)
+  );
+
+  // ---------------------------------------------------------------------------
+  // FP_RS (depth 6): FP add/sub/cmp/cvt/classify/sgnj
+  // ---------------------------------------------------------------------------
+  riscv_pkg::rs_dispatch_t fp_rs_dispatch;
+  always_comb begin
+    fp_rs_dispatch       = i_rs_dispatch;
+    fp_rs_dispatch.valid = fp_rs_dispatch_valid;
+  end
+
+  reservation_station #(
+      .DEPTH(riscv_pkg::FpRsDepth)
+  ) u_fp_rs (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_dispatch    (fp_rs_dispatch),
+      .o_full        (fp_rs_full_w),
+      .i_cdb         (i_cdb),
+      .o_issue       (o_fp_rs_issue),
+      .i_fu_ready    (i_fp_rs_fu_ready),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+      .o_empty       (o_fp_rs_empty),
+      .o_count       (o_fp_rs_count)
+  );
+
+  // ---------------------------------------------------------------------------
+  // FMUL_RS (depth 4): FP multiply/FMA (3 sources)
+  // ---------------------------------------------------------------------------
+  riscv_pkg::rs_dispatch_t fmul_rs_dispatch;
+  always_comb begin
+    fmul_rs_dispatch       = i_rs_dispatch;
+    fmul_rs_dispatch.valid = fmul_rs_dispatch_valid;
+  end
+
+  reservation_station #(
+      .DEPTH(riscv_pkg::FmulRsDepth)
+  ) u_fmul_rs (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_dispatch    (fmul_rs_dispatch),
+      .o_full        (fmul_rs_full_w),
+      .i_cdb         (i_cdb),
+      .o_issue       (o_fmul_rs_issue),
+      .i_fu_ready    (i_fmul_rs_fu_ready),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+      .o_empty       (o_fmul_rs_empty),
+      .o_count       (o_fmul_rs_count)
+  );
+
+  // ---------------------------------------------------------------------------
+  // FDIV_RS (depth 2): FP divide/sqrt (long latency)
+  // ---------------------------------------------------------------------------
+  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch;
+  always_comb begin
+    fdiv_rs_dispatch       = i_rs_dispatch;
+    fdiv_rs_dispatch.valid = fdiv_rs_dispatch_valid;
+  end
+
+  reservation_station #(
+      .DEPTH(riscv_pkg::FdivRsDepth)
+  ) u_fdiv_rs (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_dispatch    (fdiv_rs_dispatch),
+      .o_full        (fdiv_rs_full_w),
+      .i_cdb         (i_cdb),
+      .o_issue       (o_fdiv_rs_issue),
+      .i_fu_ready    (i_fdiv_rs_fu_ready),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all   (i_flush_all),
+      .o_empty       (o_fdiv_rs_empty),
+      .o_count       (o_fdiv_rs_count)
   );
 `endif
 
@@ -548,9 +826,26 @@ module tomasulo_wrapper (
     assume (!(i_rs_dispatch.valid && (i_flush_en || i_flush_all)));
   end
 
-  // No RS dispatch when full
+  // No RS dispatch when targeted RS is full
   always_comb begin
     if (o_rs_full) assume (!i_rs_dispatch.valid);
+  end
+
+  // Dispatch routing mutual exclusion: at most one RS receives valid
+  always_comb begin
+    if (i_rs_dispatch.valid) begin
+      p_dispatch_routes_to_exactly_one :
+      assert ($onehot0(
+          {
+            fdiv_rs_dispatch_valid,
+            fmul_rs_dispatch_valid,
+            fp_rs_dispatch_valid,
+            mem_rs_dispatch_valid,
+            mul_rs_dispatch_valid,
+            int_rs_dispatch_valid
+          }
+      ));
+    end
   end
 
   // -------------------------------------------------------------------------
@@ -712,9 +1007,14 @@ module tomasulo_wrapper (
         p_flush_all_empties_rob : assert (o_rob_empty);
       end
 
-      // flush_all empties RS
+      // flush_all empties all RS
       if ($past(i_flush_all)) begin
-        p_flush_all_empties_rs : assert (o_rs_empty);
+        p_flush_all_empties_int_rs : assert (o_rs_empty);
+        p_flush_all_empties_mul_rs : assert (o_mul_rs_empty);
+        p_flush_all_empties_mem_rs : assert (o_mem_rs_empty);
+        p_flush_all_empties_fp_rs : assert (o_fp_rs_empty);
+        p_flush_all_empties_fmul_rs : assert (o_fmul_rs_empty);
+        p_flush_all_empties_fdiv_rs : assert (o_fdiv_rs_empty);
       end
 
       // flush_all frees all checkpoints
@@ -736,7 +1036,12 @@ module tomasulo_wrapper (
     // Reset properties
     if (f_past_valid && i_rst_n && !$past(i_rst_n)) begin
       p_reset_rob_empty : assert (o_rob_empty);
-      p_reset_rs_empty : assert (o_rs_empty);
+      p_reset_int_rs_empty : assert (o_rs_empty);
+      p_reset_mul_rs_empty : assert (o_mul_rs_empty);
+      p_reset_mem_rs_empty : assert (o_mem_rs_empty);
+      p_reset_fp_rs_empty : assert (o_fp_rs_empty);
+      p_reset_fmul_rs_empty : assert (o_fmul_rs_empty);
+      p_reset_fdiv_rs_empty : assert (o_fdiv_rs_empty);
       p_reset_checkpoints_available : assert (o_checkpoint_available);
       p_reset_int_not_renamed : assert (!o_int_src1.renamed);
       p_reset_fp_not_renamed : assert (!o_fp_src1.renamed);
@@ -800,6 +1105,13 @@ module tomasulo_wrapper (
       // FP commit via internal bus
       cover_fp_commit_via_bus :
       cover (commit_bus.valid && commit_bus.dest_valid && commit_bus.dest_rf);
+
+      // Dispatch routing: dispatch to each RS type
+      cover_dispatch_to_mul_rs : cover (mul_rs_dispatch_valid);
+      cover_dispatch_to_mem_rs : cover (mem_rs_dispatch_valid);
+      cover_dispatch_to_fp_rs : cover (fp_rs_dispatch_valid);
+      cover_dispatch_to_fmul_rs : cover (fmul_rs_dispatch_valid);
+      cover_dispatch_to_fdiv_rs : cover (fdiv_rs_dispatch_valid);
     end
   end
 

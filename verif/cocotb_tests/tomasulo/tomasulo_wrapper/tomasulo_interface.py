@@ -16,6 +16,7 @@
 
 Reuses packing/unpacking functions from ROB, RAT, and RS interfaces.
 Adds compound dispatch method that coordinates ROB alloc + RAT rename + RS dispatch.
+Supports six RS instances with per-RS issue/status/fu_ready access.
 
 When running with the Icarus VPI-safe testbench wrapper
 (tomasulo_wrapper_tb), the RS dispatch and issue ports are individual
@@ -54,6 +55,62 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
     MASK_REG,
 )
 
+# RS type constants (mirrors riscv_pkg::rs_type_e)
+RS_INT = 0
+RS_MUL = 1
+RS_MEM = 2
+RS_FP = 3
+RS_FMUL = 4
+RS_FDIV = 5
+
+# Per-RS DUT signal names for issue, fu_ready, full, empty, count.
+# INT_RS uses the backward-compatible names (o_rs_issue, i_rs_fu_ready, etc.).
+# o_rs_full is a dispatch-target mux; o_int_rs_full is the dedicated INT_RS full.
+_RS_SIGNAL_MAP = {
+    RS_INT: {
+        "issue": "o_rs_issue",
+        "fu_ready": "i_rs_fu_ready",
+        "full": "o_int_rs_full",
+        "empty": "o_rs_empty",
+        "count": "o_rs_count",
+    },
+    RS_MUL: {
+        "issue": "o_mul_rs_issue",
+        "fu_ready": "i_mul_rs_fu_ready",
+        "full": "o_mul_rs_full",
+        "empty": "o_mul_rs_empty",
+        "count": "o_mul_rs_count",
+    },
+    RS_MEM: {
+        "issue": "o_mem_rs_issue",
+        "fu_ready": "i_mem_rs_fu_ready",
+        "full": "o_mem_rs_full",
+        "empty": "o_mem_rs_empty",
+        "count": "o_mem_rs_count",
+    },
+    RS_FP: {
+        "issue": "o_fp_rs_issue",
+        "fu_ready": "i_fp_rs_fu_ready",
+        "full": "o_fp_rs_full",
+        "empty": "o_fp_rs_empty",
+        "count": "o_fp_rs_count",
+    },
+    RS_FMUL: {
+        "issue": "o_fmul_rs_issue",
+        "fu_ready": "i_fmul_rs_fu_ready",
+        "full": "o_fmul_rs_full",
+        "empty": "o_fmul_rs_empty",
+        "count": "o_fmul_rs_count",
+    },
+    RS_FDIV: {
+        "issue": "o_fdiv_rs_issue",
+        "fu_ready": "i_fdiv_rs_fu_ready",
+        "full": "o_fdiv_rs_full",
+        "empty": "o_fdiv_rs_empty",
+        "count": "o_fdiv_rs_count",
+    },
+}
+
 
 class TomasuloInterface:
     """Interface to the Tomasulo integration wrapper DUT.
@@ -65,8 +122,14 @@ class TomasuloInterface:
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
-        # Icarus tb wrapper exposes individual RS dispatch/issue ports
+        # Icarus tb wrapper exposes individual RS dispatch/issue ports.
+        # Only INT_RS is available under ICARUS; multi-RS tests must be skipped.
         self._flat_rs = hasattr(dut, "i_rs_dispatch_valid")
+
+    @property
+    def is_icarus(self) -> bool:
+        """Return True if running with Icarus (flat RS ports, INT_RS only)."""
+        return self._flat_rs
 
     # =========================================================================
     # Clock and Reset
@@ -169,8 +232,14 @@ class TomasuloInterface:
         else:
             self.dut.i_rs_dispatch.value = 0
 
-        # RS FU ready
+        # Per-RS FU ready signals
         self.dut.i_rs_fu_ready.value = 0
+        if not self._flat_rs:
+            self.dut.i_mul_rs_fu_ready.value = 0
+            self.dut.i_mem_rs_fu_ready.value = 0
+            self.dut.i_fp_rs_fu_ready.value = 0
+            self.dut.i_fmul_rs_fu_ready.value = 0
+            self.dut.i_fdiv_rs_fu_ready.value = 0
 
     # =========================================================================
     # ROB Allocation
@@ -460,12 +529,13 @@ class TomasuloInterface:
         return int(self.dut.o_checkpoint_alloc_id.value)
 
     # =========================================================================
-    # RS Dispatch
+    # RS Dispatch (single input, routed by rs_type in the wrapper)
     # =========================================================================
 
-    def drive_rs_dispatch(self, **kwargs: Any) -> None:
-        """Drive RS dispatch signals."""
+    def drive_rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> None:
+        """Drive RS dispatch signals. rs_type selects which RS receives it."""
         kwargs["valid"] = True
+        kwargs["rs_type"] = rs_type
         if self._flat_rs:
             self._drive_rs_dispatch_flat(**kwargs)
         else:
@@ -541,15 +611,47 @@ class TomasuloInterface:
         d.i_rs_dispatch_csr_imm.value = 0
 
     # =========================================================================
-    # RS Issue
+    # RS Issue (per-RS type)
     # =========================================================================
 
+    def set_fu_ready(self, rs_type: int = RS_INT, ready: bool = True) -> None:
+        """Set functional unit ready for the specified RS type.
+
+        Under ICARUS only INT_RS is available; other types raise RuntimeError.
+        """
+        if self._flat_rs and rs_type != RS_INT:
+            raise RuntimeError(
+                f"RS type {rs_type} not available under ICARUS (INT_RS only)"
+            )
+        sig_name = _RS_SIGNAL_MAP[rs_type]["fu_ready"]
+        getattr(self.dut, sig_name).value = 1 if ready else 0
+
     def set_rs_fu_ready(self, ready: bool = True) -> None:
-        """Set RS functional unit ready signal."""
-        self.dut.i_rs_fu_ready.value = 1 if ready else 0
+        """Set INT_RS functional unit ready (backward compat)."""
+        self.set_fu_ready(RS_INT, ready)
+
+    def set_all_fu_ready(self, ready: bool = True) -> None:
+        """Set all RS functional units ready."""
+        for rs_type in _RS_SIGNAL_MAP:
+            if not self._flat_rs or rs_type == RS_INT:
+                self.set_fu_ready(rs_type, ready)
+
+    def read_rs_issue_for(self, rs_type: int) -> dict:
+        """Read and unpack issue output for the specified RS type.
+
+        Only INT_RS is available under ICARUS; other RS types require Verilator.
+        """
+        if self._flat_rs:
+            if rs_type == RS_INT:
+                return self._read_rs_issue_flat()
+            raise RuntimeError(
+                f"RS type {rs_type} not available under ICARUS (INT_RS only)"
+            )
+        sig_name = _RS_SIGNAL_MAP[rs_type]["issue"]
+        return unpack_rs_issue(int(getattr(self.dut, sig_name).value))
 
     def read_rs_issue(self) -> dict:
-        """Read and unpack RS issue output."""
+        """Read and unpack INT_RS issue output (backward compat)."""
         if self._flat_rs:
             return self._read_rs_issue_flat()
         return unpack_rs_issue(int(self.dut.o_rs_issue.value))
@@ -577,31 +679,79 @@ class TomasuloInterface:
             "csr_imm": int(d.o_rs_issue_csr_imm.value),
         }
 
+    def rs_issue_valid_for(self, rs_type: int) -> bool:
+        """Return whether issue output is valid for the specified RS type."""
+        return self.read_rs_issue_for(rs_type)["valid"]
+
     @property
     def rs_issue_valid(self) -> bool:
-        """Return whether RS issue output is valid."""
+        """Return whether INT_RS issue output is valid (backward compat)."""
         if self._flat_rs:
             return bool(self.dut.o_rs_issue_valid.value)
         return self.read_rs_issue()["valid"]
 
     # =========================================================================
-    # RS Status
+    # RS Status (per-RS type)
     # =========================================================================
 
+    def rs_full_for(self, rs_type: int) -> bool:
+        """Return whether the specified RS is full.
+
+        Uses dedicated per-RS full signals (o_int_rs_full, o_mul_rs_full, etc.),
+        NOT the dispatch-target mux o_rs_full.
+        Under ICARUS only INT_RS is available; other types raise RuntimeError.
+        """
+        if self._flat_rs and rs_type != RS_INT:
+            raise RuntimeError(
+                f"RS type {rs_type} not available under ICARUS (INT_RS only)"
+            )
+        sig_name = _RS_SIGNAL_MAP[rs_type]["full"]
+        return bool(getattr(self.dut, sig_name).value)
+
+    def rs_empty_for(self, rs_type: int) -> bool:
+        """Return whether the specified RS is empty.
+
+        Under ICARUS only INT_RS is available; other types raise RuntimeError.
+        """
+        if self._flat_rs and rs_type != RS_INT:
+            raise RuntimeError(
+                f"RS type {rs_type} not available under ICARUS (INT_RS only)"
+            )
+        sig_name = _RS_SIGNAL_MAP[rs_type]["empty"]
+        return bool(getattr(self.dut, sig_name).value)
+
+    def rs_count_for(self, rs_type: int) -> int:
+        """Return number of valid entries in the specified RS.
+
+        Under ICARUS only INT_RS is available; other types raise RuntimeError.
+        """
+        if self._flat_rs and rs_type != RS_INT:
+            raise RuntimeError(
+                f"RS type {rs_type} not available under ICARUS (INT_RS only)"
+            )
+        sig_name = _RS_SIGNAL_MAP[rs_type]["count"]
+        return int(getattr(self.dut, sig_name).value)
+
+    @property
+    def dispatch_target_rs_full(self) -> bool:
+        """Return o_rs_full (dispatch-target mux, NOT dedicated INT_RS full)."""
+        return bool(self.dut.o_rs_full.value)
+
+    # Backward-compat properties (INT_RS)
     @property
     def rs_full(self) -> bool:
-        """Return whether RS is full."""
-        return bool(self.dut.o_rs_full.value)
+        """Return whether INT_RS is full (dedicated o_int_rs_full signal)."""
+        return self.rs_full_for(RS_INT)
 
     @property
     def rs_empty(self) -> bool:
-        """Return whether RS is empty."""
-        return bool(self.dut.o_rs_empty.value)
+        """Return whether INT_RS is empty (backward compat)."""
+        return self.rs_empty_for(RS_INT)
 
     @property
     def rs_count(self) -> int:
-        """Return number of valid RS entries."""
-        return int(self.dut.o_rs_count.value)
+        """Return number of valid INT_RS entries (backward compat)."""
+        return self.rs_count_for(RS_INT)
 
     # =========================================================================
     # Compound Transactions
