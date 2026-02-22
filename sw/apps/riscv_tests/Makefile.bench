@@ -1,0 +1,78 @@
+# Makefile for riscv-tests benchmark compilation on Frost
+#
+# Usage: make -f Makefile.bench BENCH=median
+#        make -f Makefile.bench BENCH=mm
+#
+# Each benchmark is compiled with:
+#   - crt0_bench.S (Frost startup: FPU init, data copy, calls _init)
+#   - syscalls_frost.c (UART-based exit/printf, replaces tohost)
+#   - The benchmark's own .c files
+#   - Linked with -lm -lgcc for math library support
+
+BENCH ?=
+
+# Architecture - matches common.mk
+ARCH = rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI  = ilp32d
+
+# Tools
+RISCV_PREFIX ?= riscv-none-elf-
+CC      = $(RISCV_PREFIX)gcc
+OBJCOPY = $(RISCV_PREFIX)objcopy
+OBJDUMP = $(RISCV_PREFIX)objdump
+
+# Benchmark source directory
+BENCH_DIR = riscv-tests/benchmarks
+
+# Compiler flags (matching upstream benchmark build)
+CFLAGS = -march=$(ARCH) -mabi=$(ABI) \
+         -U_FORTIFY_SOURCE -DPREALLOCATE=1 -mcmodel=medany -static \
+         -std=gnu99 -O2 -ffast-math -fno-common -fno-builtin-printf \
+         -fno-tree-loop-distribute-patterns \
+         -Wno-implicit-int -Wno-implicit-function-declaration
+
+# Include paths
+INCLUDES = -I. -I$(BENCH_DIR)/../env -I$(BENCH_DIR)/common -I$(BENCH_DIR)/$(BENCH)
+
+# Linker script and flags
+LINKER_SCRIPT = link_riscv_tests.ld
+LDFLAGS = -static -nostdlib -nostartfiles -lm -lgcc -T $(LINKER_SCRIPT)
+
+# Output files
+EXECUTABLE_ELF_FILE = sw.elf
+VERILOG_HEX_FILE    = sw.mem
+RAW_BINARY_FILE     = sw.bin
+DISASSEMBLY_FILE    = sw.S
+
+# Startup and syscall shim
+CRT0 = crt0_bench.S
+SYSCALLS = syscalls_frost.c
+
+# Find benchmark source files (all .c and .S in the benchmark directory)
+BENCH_C_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.c)
+BENCH_S_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.S)
+
+# Build targets
+all: $(VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
+
+$(EXECUTABLE_ELF_FILE): $(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) $(LINKER_SCRIPT)
+ifndef BENCH
+	$(error BENCH is not set. Usage: make -f Makefile.bench BENCH=median)
+endif
+	$(CC) $(CFLAGS) $(INCLUDES) \
+		$(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) \
+		$(LDFLAGS) -o $@
+
+$(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
+	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id $< $@
+
+$(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
+	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id $< $@
+
+$(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
+	$(OBJDUMP) -d $< > $@
+
+clean:
+	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
+
+.PHONY: all clean

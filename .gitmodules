@@ -9,3 +9,6 @@
 [submodule "sw/apps/arch_test/riscv-arch-test"]
 	path = sw/apps/arch_test/riscv-arch-test
 	url = https://github.com/riscv-non-isa/riscv-arch-test.git
+[submodule "sw/apps/riscv_tests/riscv-tests"]
+	path = sw/apps/riscv_tests/riscv-tests
+	url = https://github.com/riscv-software-src/riscv-tests.git

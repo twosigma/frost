@@ -71,6 +71,11 @@ async def generate_divided_clock(dut: Any) -> None:
 # Override with COCOTB_MAX_CYCLES env var for tests needing more cycles (e.g. arch tests)
 MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 
+# Number of runs (reset-and-rerun cycles) per test invocation.
+# Default is 2 to verify programs are robust to reset.
+# Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
+NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
+
 # Coremark needs more cycles since it runs the full benchmark even with ITERATIONS=1
 COREMARK_MAX_CYCLES = 5000000
 
@@ -722,70 +727,55 @@ async def test_real_program(dut: Any) -> None:
         debug_monitor = UartMmioDebugMonitor(dut)
         await debug_monitor.start()
 
-    # === First run ===
-    cocotb.log.info("=== Starting first run ===")
+    for run_number in range(1, NUM_RUNS + 1):
+        if run_number > 1:
+            # Reset between runs
+            cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
+            uart_monitor.clear()
+            dut.i_rst_n.value = 0
+            if hasattr(dut, "i_uart_rx"):
+                dut.i_uart_rx.value = 1
+            for _ in range(RESET_CYCLES):
+                await RisingEdge(dut.i_clk)
+            dut.i_rst_n.value = 1
+        else:
+            # Apply initial reset
+            dut.i_instr_mem_en.value = 0
+            dut.i_rst_n.value = 0
+            if hasattr(dut, "i_uart_rx"):
+                dut.i_uart_rx.value = 1
+            await Timer(2 * CLK_PERIOD_NS, unit="ns")
+            await RisingEdge(dut.i_clk)
+            dut.i_rst_n.value = 1
 
-    # Apply initial reset
-    dut.i_instr_mem_en.value = 0
-    dut.i_rst_n.value = 0
-    if hasattr(dut, "i_uart_rx"):
-        dut.i_uart_rx.value = 1
-    await Timer(2 * CLK_PERIOD_NS, unit="ns")
-    await RisingEdge(dut.i_clk)
-    dut.i_rst_n.value = 1
+        cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
 
-    # Run until pass/fail
-    if app_name == "uart_echo":
-        assert uart_driver is not None
-        await run_uart_echo_interaction(
-            dut, uart_monitor, uart_driver, debug_monitor, max_cycles, run_number=1
-        )
-    else:
-        await run_until_complete(
-            dut,
-            uart_monitor,
-            success_marker,
-            initial_text,
-            has_defined_endpoint,
-            max_cycles,
-            run_number=1,
-        )
-    log_ras_stats(1, read_ras_stats(dut))
-
-    # === Reset between runs ===
-    cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
-    uart_monitor.clear()
-    dut.i_rst_n.value = 0
-    if hasattr(dut, "i_uart_rx"):
-        dut.i_uart_rx.value = 1
-    for _ in range(RESET_CYCLES):
-        await RisingEdge(dut.i_clk)
-    dut.i_rst_n.value = 1
-
-    # === Second run ===
-    cocotb.log.info("=== Starting second run ===")
-
-    # Run until pass/fail again
-    if app_name == "uart_echo":
-        assert uart_driver is not None
-        await run_uart_echo_interaction(
-            dut, uart_monitor, uart_driver, debug_monitor, max_cycles, run_number=2
-        )
-    else:
-        await run_until_complete(
-            dut,
-            uart_monitor,
-            success_marker,
-            initial_text,
-            has_defined_endpoint,
-            max_cycles,
-            run_number=2,
-        )
-    log_ras_stats(2, read_ras_stats(dut))
+        # Run until pass/fail
+        if app_name == "uart_echo":
+            assert uart_driver is not None
+            await run_uart_echo_interaction(
+                dut,
+                uart_monitor,
+                uart_driver,
+                debug_monitor,
+                max_cycles,
+                run_number=run_number,
+            )
+        else:
+            await run_until_complete(
+                dut,
+                uart_monitor,
+                success_marker,
+                initial_text,
+                has_defined_endpoint,
+                max_cycles,
+                run_number=run_number,
+            )
+        log_ras_stats(run_number, read_ras_stats(dut))
 
     # Stop UART monitor
     uart_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
 
-    cocotb.log.info("=== Both runs completed successfully ===")
+    cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")

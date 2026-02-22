@@ -76,7 +76,10 @@ jobs:
       - name: Run Cocotb tests with Verilator
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m cocotb --sim verilator -v --ignore=tests/test_arch_compliance.py
+            pytest tests/ -m cocotb --sim verilator -v \
+              --ignore=tests/test_arch_compliance.py \
+              --ignore=tests/test_riscv_tests.py \
+              --ignore=tests/test_riscv_torture.py
 
   # RISC-V Architecture Compliance Tests - parallelized by extension
   test-arch-compliance:
@@ -138,6 +141,64 @@ jobs:
             docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
               python3 tests/test_arch_compliance.py --sim verilator --extensions ${{ matrix.extension }}
           fi
+
+  # riscv-tests ISA Tests - parallelized by suite
+  test-riscv-tests:
+    name: riscv-tests (${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run riscv-tests ISA suite (${{ matrix.suite }})
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_riscv_tests.py --sim verilator --suites ${{ matrix.suite }}
+
+  # riscv-tests Benchmarks
+  test-riscv-benchmarks:
+    name: riscv-tests Benchmarks (${{ matrix.benchmark }})
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        benchmark: [median, multiply, qsort, rsort, towers, vvadd, dhrystone, mm, spmv]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run riscv-tests benchmark (${{ matrix.benchmark }})
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_riscv_tests.py --sim verilator --benchmarks ${{ matrix.benchmark }}
 
   # Run Cocotb tests with Icarus Verilog
   test-icarus:

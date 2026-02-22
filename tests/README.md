@@ -6,23 +6,23 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
-│                                Test Infrastructure                                    │
+│                                Test Infrastructure                                   │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
-│  ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────────┐    │
-│  │  test_run_cocotb.py  │  │ test_arch_compliance │  │   test_run_yosys.py      │    │
-│  │                      │  │         .py          │  │                          │    │
-│  │  RTL Simulation      │  │  Arch Compliance     │  │  Synthesis Check         │    │
-│  │  • CPU unit tests    │  │  • riscv-arch-test   │  │  • Yosys synthesis       │    │
-│  │  • Real C programs   │  │  • 400+ tests        │  │  • No vendor IPs         │    │
-│  │  • Verification      │  │  • 10 extensions     │  │                          │    │
-│  └──────────┬───────────┘  └──────────┬───────────┘  └─────────────┬────────────┘    │
-│             │                         │                            │                 │
-│             v                         v                            v                 │
-│  ┌──────────────────────────────────────────────────┐  ┌────────────────────────┐    │
-│  │                  Simulator                        │  │         Yosys          │    │
-│  │           Icarus/Verilator/Questa                 │  │  (open-source synth)   │    │
-│  └──────────────────────────────────────────────────┘  └────────────────────────┘    │
+│  ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ │
+│  │test_run_cocotb.py│ │test_arch_compli- │ │test_riscv_tests  │ │test_run_yosys.py │ │
+│  │                  │ │  ance.py         │ │         .py      │ │                  │ │
+│  │ RTL Simulation   │ │ Arch Compliance  │ │ ISA Pipeline     │ │ Synthesis Check  │ │
+│  │ • CPU unit tests │ │ • riscv-arch-test│ │ • riscv-tests    │ │ • Yosys synthesis│ │
+│  │ • Real C programs│ │ • 400+ tests     │ │ • 126 tests      │ │ • No vendor IPs  │ │
+│  │ • Verification   │ │ • 10 extensions  │ │ • 11 suites      │ │                  │ │
+│  └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ │
+│           │                    │                    │                    │           │
+│           v                    v                    v                    v           │
+│  ┌────────────────────────────────────────────────────────────┐  ┌────────────────┐  │
+│  │                        Simulator                           │  │     Yosys      │  │
+│  │                 Icarus/Verilator/Questa                    │  │ (open-source)  │  │
+│  └────────────────────────────────────────────────────────────┘  └────────────────┘  │
 │                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -143,6 +143,41 @@ pytest test_arch_compliance.py -v --sim verilator -m slow
 - In CI, runs as 10 parallel jobs (one per extension) via GitHub Actions matrix strategy
 - Simulation uses 2MB memory override (`-GMEM_SIZE_BYTES=2097152`) to fit large test data sections
 
+### `test_riscv_tests.py`
+
+Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise forwarding, bypassing, and pipeline hazards that arch_test's single-instruction focus doesn't cover.
+
+**Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
+
+**Standalone Usage:**
+
+```bash
+# Run all suites
+./test_riscv_tests.py --sim verilator --all
+
+# Run specific suites
+./test_riscv_tests.py --sim verilator --suites rv32ui rv32um rv32uf
+
+# Run a single test
+./test_riscv_tests.py --sim verilator --test rv32ui/add
+
+# Parallel execution
+./test_riscv_tests.py --sim verilator --all --parallel 4
+
+# List available tests
+./test_riscv_tests.py --list
+```
+
+**Pytest Usage:**
+
+```bash
+pytest test_riscv_tests.py -v --sim verilator -m slow
+```
+
+**Notes:**
+- Verilator only (skips automatically for non-Verilator sims)
+- A small number of tests are skipped due to architectural incompatibility (Harvard architecture, M-mode only, misaligned access trapping). See `ISA_SKIP_TESTS` in the script for details.
+
 ### `test_run_yosys.py`
 
 Runs Yosys synthesis to verify the design can be synthesized without errors. Uses open-source tools only (no Xilinx IP cores).
@@ -167,6 +202,7 @@ pytest test_run_yosys.py                           # Run synthesis test
 | `conftest.py`              | Pytest configuration and fixtures         |
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
+| `test_riscv_tests.py`      | riscv-tests ISA pipeline test runner      |
 | `.gitignore`               | Excludes build artifacts                  |
 
 ## Running Tests
