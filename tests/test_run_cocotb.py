@@ -177,6 +177,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ras_stress_test",
         description="RAS stress test (calls, branches, and function pointers)",
     ),
+    "tomasulo_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="tomasulo_test",
+        description="Tomasulo correctness tests (hazards, OOO, register renaming)",
+    ),
+    "tomasulo_perf": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="tomasulo_perf",
+        description="Tomasulo performance measurement (IPC benchmarks)",
+    ),
     "uart_echo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
