@@ -196,10 +196,14 @@ module forwarding_unit #(
       if (i_amo_read_phase) register_write_data_ma_next = i_from_ma_comb.data_memory_read_data;
       else register_write_data_ma_next = i_from_ma_comb.data_loaded_from_memory;
     end else if (~i_pipeline_ctrl.stall) begin
-      // Normal case: use ALU result (cache-hit forwarding uses registered path below)
-      register_write_data_ma_next = i_from_id_to_ex.is_fp_to_int ?
-                                    i_from_ex_comb.fp_result[XLEN-1:0] :
-                                    i_from_ex_comb.alu_result;
+      // Normal case: use result from EX stage (cache-hit forwarding uses registered path below)
+      // SC.W: the success/fail result (0=success, 1=fail per RISC-V spec) is computed
+      // in the store_unit, NOT the ALU. Forward the inverted sc_success flag directly.
+      if (i_from_id_to_ex.is_sc)
+        register_write_data_ma_next = {{(XLEN - 1) {1'b0}}, ~i_from_ex_comb.sc_success};
+      else if (i_from_id_to_ex.is_fp_to_int)
+        register_write_data_ma_next = i_from_ex_comb.fp_result[XLEN-1:0];
+      else register_write_data_ma_next = i_from_ex_comb.alu_result;
     end
   end
 

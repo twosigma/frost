@@ -605,12 +605,23 @@ module cpu #(
       .o_mtvec(csr_mtvec),
       .o_mepc(csr_mepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
-      // F extension: FP exception flags accumulation
+      // F extension: FP exception flags accumulation (gated by o_vld to commit once).
+      // Exclude FP loads: they set fp_regfile_write_enable but carry stale fp_flags
+      // from the FPU output register (not real exception flags from the load).
+      // Include FP-to-int ops (FCVT.W.D, etc.): they have fp_regfile_write_enable=0
+      // (since they write to int regfile) but carry valid fp_flags.
       .i_fp_flags(from_ma_to_wb.fp_flags),
-      .i_fp_flags_valid(from_ma_to_wb.fp_regfile_write_enable && o_vld && ~trap_taken),
+      .i_fp_flags_valid((from_ma_to_wb.fp_regfile_write_enable || from_ma_to_wb.is_fp_to_int) &&
+                        ~from_ma_to_wb.is_fp_load && o_vld && ~trap_taken),
+      // F extension: WB flags forwarding for CSR read (not gated by o_vld).
+      // During stalls, o_vld is 0 but WB data is still valid and must be visible
+      // to the CSR fflags forwarding path. Without this, a stalled CSR fflags read
+      // would capture 0 instead of the pending WB flags.
+      .i_fp_flags_wb_valid((from_ma_to_wb.fp_regfile_write_enable || from_ma_to_wb.is_fp_to_int) &&
+                           ~from_ma_to_wb.is_fp_load),
       // F extension: FP flags from MA stage (for CSR read hazard forwarding)
       .i_fp_flags_ma(from_ex_to_ma.fp_flags),
-      .i_fp_flags_ma_valid(from_ex_to_ma.is_fp_instruction &&
+      .i_fp_flags_ma_valid(from_ex_to_ma.is_fp_instruction && ~from_ex_to_ma.is_fp_load &&
                            (from_ex_to_ma.fp_regfile_write_enable || from_ex_to_ma.is_fp_to_int)),
       // F extension: Rounding mode output for FPU
       .o_frm(frm_csr)

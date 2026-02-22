@@ -182,6 +182,7 @@ module ma_stage #(
       o_from_ma_to_wb.fp_regfile_write_data <= '0;
       o_from_ma_to_wb.fp_flags <= '0;
       o_from_ma_to_wb.fp_dest_reg <= 5'b0;
+      o_from_ma_to_wb.is_fp_to_int <= 1'b0;
     end else if (do_amo_update) begin
       // AMO update: either immediate or deferred from pending
       if (amo_update_pending) begin
@@ -233,6 +234,8 @@ module ma_stage #(
       o_from_ma_to_wb.fp_regfile_write_enable <= i_from_ex_to_ma.fp_regfile_write_enable;
       o_from_ma_to_wb.fp_flags <= i_from_ex_to_ma.fp_flags;
       o_from_ma_to_wb.fp_dest_reg <= i_from_ex_to_ma.fp_dest_reg;
+      o_from_ma_to_wb.is_fp_load <= i_from_ex_to_ma.is_fp_load || i_from_ex_to_ma.is_fp_load_double;
+      o_from_ma_to_wb.is_fp_to_int <= i_from_ex_to_ma.is_fp_to_int;
     end
   end
 

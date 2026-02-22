@@ -88,7 +88,14 @@ module csr_file #(
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
-    input logic                 i_fp_flags_valid, // Valid when FP instruction retires
+    input logic i_fp_flags_valid,  // Valid when FP instruction retires (gated by o_vld)
+
+    // F extension: FP flags from WB stage for forwarding only (not gated by o_vld).
+    // During a pipeline stall, o_vld is 0 so i_fp_flags_valid is 0, but the WB-stage
+    // flags are still valid data that should be visible to CSR read forwarding.
+    // Without this, a CSR fflags read stalled alongside a WB-stage FP instruction
+    // would miss the flags (registered CSR read captures 0 instead of the forwarded value).
+    input logic i_fp_flags_wb_valid,
 
     // F extension: FP flags from MA stage (for forwarding when CSR read is in same cycle)
     input riscv_pkg::fp_flags_t i_fp_flags_ma,
@@ -231,6 +238,30 @@ module csr_file #(
   // ==========================================================================
   // fflags is sticky: new exception flags are ORed with existing flags.
   // CSR writes can clear flags explicitly.
+  //
+  // Pipeline hazard: When fsflags/csrrw writes to fflags (in EX stage), the
+  // FP instruction whose flags were forwarded may still be in MA and advance
+  // to WB on the next cycle. Without suppression, its WB accumulation would
+  // re-set the flags that the CSR write just cleared. The fflags_csr_wrote
+  // flag suppresses WB accumulation for one cycle after a CSR write to fflags.
+
+  logic fflags_csr_wrote;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fflags_csr_wrote <= 1'b0;
+    end else begin
+      fflags_csr_wrote <= i_csr_write_enable && i_csr_read_enable &&
+                          (i_csr_address == riscv_pkg::CsrFflags ||
+                           i_csr_address == riscv_pkg::CsrFcsr);
+    end
+  end
+
+  // Effective FP flags valid: suppress accumulation for one cycle after CSR
+  // write to fflags/fcsr. The flags were already forwarded to the CSR read
+  // via the MA/WB forwarding paths, so re-accumulating would be a double-count.
+  logic fp_flags_valid_eff;
+  assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_csr_wrote;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -248,13 +279,13 @@ module csr_file #(
           end
           default: begin
             // No CSR write to FP CSRs, accumulate flags if valid
-            if (i_fp_flags_valid) begin
+            if (fp_flags_valid_eff) begin
               fflags <= fflags | {i_fp_flags.nv, i_fp_flags.dz,
                                   i_fp_flags.of, i_fp_flags.uf, i_fp_flags.nx};
             end
           end
         endcase
-      end else if (i_fp_flags_valid) begin
+      end else if (fp_flags_valid_eff) begin
         // Accumulate FP exception flags (sticky OR)
         fflags <= fflags | {i_fp_flags.nv, i_fp_flags.dz,
                             i_fp_flags.of, i_fp_flags.uf, i_fp_flags.nx};
@@ -360,6 +391,12 @@ module csr_file #(
   // Compute forwarded fflags value (current OR pending flags from MA and/or WB)
   // Forward from MA stage when FP instruction is in MA (handles CSR read hazard timing)
   // Forward from WB stage when FP instruction is in WB (handles same-cycle accumulation)
+  //
+  // IMPORTANT: WB forwarding uses i_fp_flags_wb_valid (not i_fp_flags_valid).
+  // i_fp_flags_valid is gated by o_vld which is 0 during stalls, but the WB-stage
+  // flags data is still valid and must be visible to the CSR read forwarding path.
+  // i_fp_flags_wb_valid is only gated by fp_regfile_write_enable (not by o_vld),
+  // so it remains asserted even during pipeline stalls.
   logic [4:0] fflags_forwarded;
   logic [4:0] ma_flags_packed;
   logic [4:0] wb_flags_packed;
@@ -371,7 +408,7 @@ module csr_file #(
   };
   assign fflags_forwarded = fflags |
       (i_fp_flags_ma_valid ? ma_flags_packed : 5'b0) |
-      (i_fp_flags_valid ? wb_flags_packed : 5'b0);
+      (i_fp_flags_wb_valid ? wb_flags_packed : 5'b0);
 
   // Combinational CSR read data (before registering)
   logic [XLEN-1:0] csr_read_data_comb;
@@ -477,10 +514,10 @@ module csr_file #(
         p_instret_stable : assert (instret_counter == $past(instret_counter));
       end
 
-      // fflags sticky: when no CSR write to fflags/fcsr and no fp_flags_valid,
+      // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.
       if ($past(
-              !i_fp_flags_valid && !(i_csr_write_enable && i_csr_read_enable &&
+              !fp_flags_valid_eff && !(i_csr_write_enable && i_csr_read_enable &&
           (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFcsr))
           )) begin
         p_fflags_sticky : assert (fflags == $past(fflags));

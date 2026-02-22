@@ -728,14 +728,16 @@ package riscv_pkg;
 
   // Clocked signals passed from Memory Access (MA) stage to Writeback (WB) stage
   typedef struct packed {
-    logic               regfile_write_enable;
-    logic [XLEN-1:0]    regfile_write_data;       // Final result to write back
-    instr_t             instruction;
+    logic regfile_write_enable;
+    logic [XLEN-1:0] regfile_write_data;  // Final result to write back
+    instr_t instruction;
     // F extension fields
-    logic               fp_regfile_write_enable;
-    logic [4:0]         fp_dest_reg;              // FP destination register (for forwarding)
-    logic [FpWidth-1:0] fp_regfile_write_data;    // Final FP result to write back
-    fp_flags_t          fp_flags;                 // FP exception flags (to accumulate in fflags)
+    logic fp_regfile_write_enable;
+    logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
+    logic [FpWidth-1:0] fp_regfile_write_data;  // Final FP result to write back
+    fp_flags_t fp_flags;  // FP exception flags (to accumulate in fflags)
+    logic is_fp_load;  // FLW/FLD — no valid fp_flags (for forwarding filter)
+    logic is_fp_to_int;  // FP-to-int (FCVT.W.D,) has valid fp_flags but fp_regfile_write_enable=0
   } from_ma_to_wb_t;
 
   // Signals from L0 Cache

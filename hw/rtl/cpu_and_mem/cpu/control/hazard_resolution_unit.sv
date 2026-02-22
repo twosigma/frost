@@ -387,8 +387,15 @@ module hazard_resolution_unit #(
       i_from_id_to_ex.instruction.dest_reg != 0 &&
       dest_matches_source;
 
+  // SC.W result (0=success, 1=fail) is computed combinationally in the store_unit
+  // during EX, just like an ALU result. It does NOT require waiting for a memory
+  // read, so it must be excluded from the AMO load-use hazard path. Including SC
+  // here would trigger a spurious stall whose refresh path overwrites the forwarded
+  // SC result with raw memory data, producing incorrect values for dependent
+  // instructions.
   assign amo_potential_hazard =
       i_from_id_to_ex.is_amo_instruction &&
+      ~i_from_id_to_ex.is_sc &&
       i_from_id_to_ex.instruction.dest_reg != 0 &&
       dest_matches_source;
 
