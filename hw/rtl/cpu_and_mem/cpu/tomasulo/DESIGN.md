@@ -1448,8 +1448,8 @@ The existing FROST front-end optimizations are preserved:
     |  |  branch_target  | 32 bits      | LUTRAM | Branch target (2-wr)    |  |
     |  |  predicted_taken| 1 bit        | FF     | BTB prediction          |  |
     |  |  predicted_tgt  | 32 bits      | LUTRAM | Predicted target (1-wr) |  |
-    |  |  is_call        | 1 bit        | FF     | Is call (RAS recovery)  |  |
-    |  |  is_return      | 1 bit        | FF     | Is return (RAS recovery)|  |
+    |  |  is_call        | 1 bit        | FF     | Is call (tracked now; commit-time BPU/RAS hookup in integration)  |  |
+    |  |  is_return      | 1 bit        | FF     | Is return (tracked now; commit-time BPU/RAS hookup in integration) |  |
     |  |  fp_flags       | 5 bits       | LUTRAM | FP exc flags (2-wr)     |  |
     |  |  checkpoint_id  | 2 bits       | LUTRAM | Checkpoint idx (1-wr)   |  |
     |  +-----------------+--------------+--------+-------------------------+  |
@@ -1620,7 +1620,7 @@ The existing FROST front-end optimizations are preserved:
     +------------------------------------------------------------------------+
 ```
 
-### Reservation Station (Generic - used for INT_RS, MUL_RS, FP_RS, etc.)
+### Reservation Station (Generic - shared module for INT_RS/MUL_RS/MEM_RS/FP_RS/FMUL_RS/FDIV_RS)
 
 ```
                          Reservation Station Internal Structure
@@ -1629,7 +1629,7 @@ The existing FROST front-end optimizations are preserved:
     |  PARAMETERS:                                                            |
     |    RS_DEPTH = 8 (entries per RS, configurable)                          |
     |    ROB_TAG_WIDTH = 5 bits                                               |
-    |    VALUE_WIDTH = FLEN (64 bits, to support FP double)                   |
+    |    VALUE_WIDTH = FLEN (64 bits, fixed by package in current RTL)        |
     |                                                                         |
     |  +-------------------------------------------------------------------+  |
     |  |                      RS ENTRY ARRAY                               |  |
@@ -2186,45 +2186,34 @@ existing `cpu_and_mem.sv` interface expectations.
 
 ---
 
-## Directory Structure
+## Directory Structure (Current)
 
 ```
 tomasulo/
-├── DESIGN.md                 # This file - architecture and plan
-├── tomasulo_pkg.sv           # Types, structs, parameters, constants
-│
-├── # Core Tomasulo Components
-├── dispatch.sv               # Dispatch logic (ROB/RAT/RS allocation, frm capture)
-├── rob.sv                    # Reorder Buffer (unified INT/FP, WFI/CSR/FENCE handling)
-├── int_rat.sv                # Integer Register Alias Table (x0-x31)
-├── fp_rat.sv                 # FP Register Alias Table (f0-f31)
-├── rat_checkpoint.sv         # Checkpoint storage and restore logic (INT+FP+RAS)
-│
-├── # Reservation Stations
-├── reservation_station.sv    # Generic RS (parameterized depth, width, num sources)
-├── int_rs.sv                 # Integer RS instance (ALU, branches)
-├── mul_rs.sv                 # Multiply/Divide RS instance
-├── mem_rs.sv                 # Memory RS instance (INT + FP loads/stores)
-├── fp_rs.sv                  # FP add/sub/compare/convert/classify RS instance
-├── fmul_rs.sv                # FP multiply/FMA RS instance (3 sources)
-├── fdiv_rs.sv                # FP divide/sqrt RS instance
-│
-├── # Memory Subsystem
-├── load_queue.sv             # Load queue (disambiguation, L0 cache, MMIO, FP64)
-├── store_queue.sv            # Store queue (forwarding, commit buffer, MMIO, FP64)
-├── mem_disambiguator.sv      # Address comparison and forwarding logic
-│
-├── # Result Broadcast
-├── cdb_arbiter.sv            # CDB arbiter (7 FUs, FLEN-wide, priority-based)
-├── cdb_broadcast.sv          # CDB fanout to RS/ROB/RAT listeners
-│
-└── # Testbenches (cocotb)
-    ├── test_rob.py           # ROB unit tests
-    ├── test_rat.py           # RAT unit tests
-    ├── test_rs.py            # RS unit tests
-    ├── test_lq_sq.py         # LQ/SQ unit tests
-    └── test_cdb.py           # CDB unit tests
+├── DESIGN.md                     # This file - architecture and plan
+├── tomasulo.f
+├── reorder_buffer/
+│   ├── reorder_buffer.sv
+│   ├── reorder_buffer.f
+│   └── README.md
+├── register_alias_table/
+│   ├── register_alias_table.sv
+│   ├── register_alias_table.f
+│   └── README.md
+├── reservation_station/
+│   ├── reservation_station.sv
+│   ├── reservation_station.f
+│   └── README.md
+└── tomasulo_wrapper/
+    ├── tomasulo_wrapper.sv       # ROB + RAT + six RS integration wrapper
+    ├── tomasulo_wrapper.f
+    ├── run_synth.py
+    └── synth_standalone.tcl
 ```
+
+Current integration notes:
+- The same `reservation_station.sv` module is reused for INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, and FDIV_RS with per-instance depth and dispatch routing in `tomasulo_wrapper.sv`.
+- Under `ICARUS`, `tomasulo_wrapper.sv` intentionally instantiates only INT_RS and ties off other RS outputs to avoid known wide packed-struct VPI limitations in Icarus. Full 6-RS integration testing uses Verilator.
 
 ---
 
@@ -2240,7 +2229,7 @@ The schedule incorporates all Tomasulo components plus FROST-specific integratio
 | 3 | 2/3 | **ROB Core Structure** | ROB circular buffer, allocation/deallocation logic, head/tail pointers, unified INT/FP entry fields (dest_rf, fp_flags), basic valid/done tracking |
 | 4 | 2/10 | **ROB Commit + Serialization** | ROB commit logic (INT/FP writeback, FP flag accumulation); exception handling; WFI stall-at-head; CSR execute-at-commit; FENCE/FENCE.I handling |
 | 5 | 2/17 | **RAT + Checkpointing** | INT RAT (x0-x31 mapping), FP RAT (f0-f31 mapping); checkpoint storage (4 checkpoints); checkpoint allocation on branch; restore on misprediction; RAS pointer in checkpoint |
-| 6 | 2/24 | **Integer Reservation Stations** | Generic RS module (parameterized depth/width); INT_RS instance (ALU ops, branches); MUL_RS instance (MUL/DIV); operand ready detection; CDB snoop wakeup |
+| 6 | 2/24 | **Integer Reservation Stations** | Generic RS module (depth-parameterized shared entry format); INT_RS instance (ALU ops, branches); MUL_RS instance (MUL/DIV); operand ready detection; CDB snoop wakeup |
 | 7 | 3/3 | **FP Reservation Stations** | FP_RS (add/sub/cmp/cvt/classify/sgnj); FMUL_RS (fmul/fma with 3 sources); FDIV_RS (fdiv/fsqrt); FLEN operands; rounding mode capture (resolve DYN at dispatch) |
 | 8 | 3/10 | **CDB Arbiter + FU Adaptation** | CDB arbiter (7 FUs, priority-based); FLEN-wide broadcast; FP flag propagation; result holding registers per FU; back-pressure signaling; adapt ALU/MUL/DIV output interfaces |
 | 9 | 3/17 | **Load Queue + L0 Cache** | LQ allocation, address calculation, disambiguation against SQ; L0 cache hit path integration; cache-hit-to-CDB fast path; MMIO load detection (wait for ROB head); FP64 load 2-phase sequencing |
