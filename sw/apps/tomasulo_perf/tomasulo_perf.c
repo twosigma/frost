@@ -28,7 +28,7 @@
  * Uses hardware cycle and instret counters (Zicntr CSRs) for measurement.
  * IPC is reported as IPC*100 (integer, so 150 means IPC = 1.50).
  *
- * Benchmarks:
+ * Benchmarks (integer):
  *   1. Dependent ADD chain      (worst-case ILP: serialized)
  *   2. Independent ADD chains   (best-case ILP: fully parallel)
  *   3. Dependent MUL chain      (long-latency serialized)
@@ -36,6 +36,14 @@
  *   5. Mixed MUL + ADD          (latency hiding)
  *   6. Load-store throughput    (memory subsystem)
  *   7. Branch-heavy loop        (branch prediction + OOO)
+ *
+ * Benchmarks (floating-point, double-precision):
+ *   8. Dependent FADD.D chain   (FP ALU serialized)
+ *   9. Independent FADD.D chains (FP ALU parallel)
+ *  10. Dependent FMUL.D chain   (FP MUL serialized)
+ *  11. Independent FMUL.D chains (FP MUL parallel)
+ *  12. Dependent FMADD.D chain  (fused multiply-add, key for numerics)
+ *  13. Mixed FP + INT           (cross-unit parallelism)
  */
 
 #include "csr.h"
@@ -219,11 +227,148 @@ int main(void)
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
+    /* Floating-Point Benchmarks                                             */
+    /* ===================================================================== */
+    uart_printf("\n--- Floating-Point Benchmarks (double-precision) ---\n\n");
+
+    /* ===================================================================== */
+    /* Benchmark 8: Dependent FADD.D chain (100 instructions)                */
+    /* Each FADD.D reads the result of the previous one - no ILP possible.   */
+    /* FP analogue of Bench 1.                                               */
+    /* ===================================================================== */
+    uart_printf("Bench 8: Dependent FADD.D chain (100 instrs)\n");
+    {
+        double accum = 1.0, incr = 0.5;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile(".rept 100\n"
+                         "fadd.d %[a], %[a], %[i]\n"
+                         ".endr\n"
+                         : [a] "+f"(accum)
+                         : [i] "f"(incr));
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
+    /* Benchmark 9: Independent FADD.D chains (4 x 25 = 100 instructions)    */
+    /* 4 chains with no cross-dependencies - ideal for OOO execution.        */
+    /* FP analogue of Bench 2.                                               */
+    /* ===================================================================== */
+    uart_printf("Bench 9: Independent FADD.D chains (4x25 = 100 instrs)\n");
+    {
+        double a0 = 1.0, a1 = 2.0, a2 = 3.0, a3 = 4.0;
+        double inc = 0.5;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile(".rept 25\n"
+                         "fadd.d %[a0], %[a0], %[inc]\n"
+                         "fadd.d %[a1], %[a1], %[inc]\n"
+                         "fadd.d %[a2], %[a2], %[inc]\n"
+                         "fadd.d %[a3], %[a3], %[inc]\n"
+                         ".endr\n"
+                         : [a0] "+f"(a0), [a1] "+f"(a1), [a2] "+f"(a2), [a3] "+f"(a3)
+                         : [inc] "f"(inc));
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
+    /* Benchmark 10: Dependent FMUL.D chain (50 instructions)                */
+    /* FMUL.D has multi-cycle latency; dependent chain is very slow.         */
+    /* Multiply by 1.0 to keep value stable. FP analogue of Bench 3.        */
+    /* ===================================================================== */
+    uart_printf("Bench 10: Dependent FMUL.D chain (50 instrs)\n");
+    {
+        double accum = 2.0, factor = 1.0;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile(".rept 50\n"
+                         "fmul.d %[a], %[a], %[f]\n"
+                         ".endr\n"
+                         : [a] "+f"(accum)
+                         : [f] "f"(factor));
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
+    /* Benchmark 11: Independent FMUL.D chains (4 x 12 = 48 instructions)   */
+    /* 4 independent FMUL.D chains. FP analogue of Bench 4.                 */
+    /* ===================================================================== */
+    uart_printf("Bench 11: Independent FMUL.D chains (4x12 = 48 instrs)\n");
+    {
+        double m0 = 1.0, m1 = 2.0, m2 = 3.0, m3 = 4.0;
+        double factor = 1.0;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile(".rept 12\n"
+                         "fmul.d %[m0], %[m0], %[f]\n"
+                         "fmul.d %[m1], %[m1], %[f]\n"
+                         "fmul.d %[m2], %[m2], %[f]\n"
+                         "fmul.d %[m3], %[m3], %[f]\n"
+                         ".endr\n"
+                         : [m0] "+f"(m0), [m1] "+f"(m1), [m2] "+f"(m2), [m3] "+f"(m3)
+                         : [f] "f"(factor));
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
+    /* Benchmark 12: Dependent FMADD.D chain (50 instructions)               */
+    /* Fused multiply-add: accum = accum * 1.0 + 0.5, serialized.           */
+    /* Key for numerical workloads (BLAS, FFT, etc.).                        */
+    /* ===================================================================== */
+    uart_printf("Bench 12: Dependent FMADD.D chain (50 instrs)\n");
+    {
+        double accum = 0.0, mul_one = 1.0, add_half = 0.5;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile(".rept 50\n"
+                         "fmadd.d %[a], %[a], %[m], %[c]\n"
+                         ".endr\n"
+                         : [a] "+f"(accum)
+                         : [m] "f"(mul_one), [c] "f"(add_half));
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
+    /* Benchmark 13: Mixed FP + INT (50 pairs = 100 instructions)            */
+    /* Tests cross-unit parallelism: FP and INT units should work in         */
+    /* parallel since there are no data dependencies between them.           */
+    /* ===================================================================== */
+    uart_printf("Bench 13: Mixed FP+INT (50 pairs = 100 instrs)\n");
+    {
+        double fp_acc = 1.0, fp_inc = 0.5;
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile("addi t0, zero, 0\n"
+                         "addi t1, zero, 1\n"
+                         ".rept 50\n"
+                         "fadd.d %[fa], %[fa], %[fi]\n"
+                         "add    t0, t0, t1\n"
+                         ".endr\n"
+                         : [fa] "+f"(fp_acc)
+                         : [fi] "f"(fp_inc)
+                         : "t0", "t1");
+        c1 = rdcycle();
+        i1 = rdinstret();
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
     /* Summary                                                               */
     /* ===================================================================== */
     uart_printf("\n============================================================\n");
     uart_printf("  Performance measurement complete.\n");
-    uart_printf("  Compare Bench 1 vs 2 (ADD) and Bench 3 vs 4 (MUL)\n");
+    uart_printf("  INT: Compare Bench 1 vs 2 (ADD) and Bench 3 vs 4 (MUL)\n");
+    uart_printf("  FP:  Compare Bench 8 vs 9 (FADD) and Bench 10 vs 11 (FMUL)\n");
     uart_printf("  to see the IPC benefit of out-of-order execution.\n");
     uart_printf("============================================================\n\n");
 

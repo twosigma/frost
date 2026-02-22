@@ -34,6 +34,7 @@
  *   8. Complex mixed dependency chains
  *   9. Branch with loop - speculative execution / branch prediction
  *  10. CDB contention - multiple simultaneous completions
+ *  11. FP hazards - RAW/WAR/WAW/crossover with double-precision FP
  */
 
 #include "uart.h"
@@ -56,6 +57,16 @@ static uint32_t tests_failed;
             tests_failed++;                                                                        \
             uart_printf("  [FAIL] %s: got 0x%08X, expected 0x%08X\n", (name), _g, _e);             \
         }                                                                                          \
+    } while (0)
+
+/* Convert double-precision FP result to int32 (truncate toward zero) and     */
+/* compare using the existing TEST macro. Avoids needing FP printf support.   */
+#define TEST_FP(name, fp_result, expected_int)                                                     \
+    do {                                                                                           \
+        int32_t _iv;                                                                               \
+        double _fr = (fp_result);                                                                  \
+        __asm__ volatile("fcvt.w.d %0, %1, rtz" : "=r"(_iv) : "f"(_fr));                           \
+        TEST(name, (uint32_t) _iv, (uint32_t) (expected_int));                                     \
     } while (0)
 
 /* ========================================================================== */
@@ -540,6 +551,91 @@ static void test_cdb_contention(void)
 }
 
 /* ========================================================================== */
+/* Test 11: Floating-Point Hazards (double-precision)                         */
+/* Tests: FP RAW/WAR/WAW, FP-INT crossover, FMADD chain, independent FP ops  */
+/* ========================================================================== */
+
+static void test_fp_hazards(void)
+{
+    uart_printf("Test 11: FP hazards...");
+
+    /* FP RAW chain: each FADD.D reads the previous result */
+    double fa, fb, fc;
+    __asm__ volatile("fadd.d %[fa], %[v1], %[v2]\n" /* fa = 1.0 + 2.0 = 3.0 */
+                     "fadd.d %[fb], %[fa], %[v4]\n" /* fb = 3.0 + 4.0 = 7.0  (RAW) */
+                     "fadd.d %[fc], %[fb], %[v8]\n" /* fc = 7.0 + 8.0 = 15.0 (RAW) */
+                     : [fa] "=&f"(fa), [fb] "=&f"(fb), [fc] "=&f"(fc)
+                     : [v1] "f"(1.0), [v2] "f"(2.0), [v4] "f"(4.0), [v8] "f"(8.0));
+    TEST_FP("FP RAW fa", fa, 3);
+    TEST_FP("FP RAW fb", fb, 7);
+    TEST_FP("FP RAW fc", fc, 15);
+
+    /* FP MUL→ADD RAW: FMUL.D produces, FADD.D consumes */
+    double fp, fs;
+    __asm__ volatile("fmul.d %[p], %[a], %[b]\n" /* fp = 3.0 * 4.0 = 12.0 */
+                     "fadd.d %[s], %[p], %[c]\n" /* fs = 12.0 + 1.0 = 13.0 (RAW) */
+                     : [p] "=&f"(fp), [s] "=&f"(fs)
+                     : [a] "f"(3.0), [b] "f"(4.0), [c] "f"(1.0));
+    TEST_FP("FP MUL-ADD product", fp, 12);
+    TEST_FP("FP MUL-ADD sum", fs, 13);
+
+    /* FP WAR: read src, then overwrite it */
+    double fp_res;
+    double fp_src = 5.0;
+    __asm__ volatile("fadd.d %[res], %[src], %[src]\n" /* res = 5.0 + 5.0 = 10.0 */
+                     "fmul.d %[src], %[z], %[z]\n"     /* WAR: overwrite src = 0*0 = 0 */
+                     : [res] "=&f"(fp_res), [src] "+f"(fp_src)
+                     : [z] "f"(0.0));
+    TEST_FP("FP WAR result", fp_res, 10);
+    TEST_FP("FP WAR src overwritten", fp_src, 0);
+
+    /* FP WAW: multiple writes, only final value survives */
+    double fw;
+    __asm__ volatile("fadd.d %[w], %[v1], %[z]\n" /* 1.0 */
+                     "fadd.d %[w], %[v2], %[z]\n" /* WAW: 2.0 */
+                     "fadd.d %[w], %[v3], %[z]\n" /* WAW: 3.0 (final) */
+                     : [w] "=f"(fw)
+                     : [v1] "f"(1.0), [v2] "f"(2.0), [v3] "f"(3.0), [z] "f"(0.0));
+    TEST_FP("FP WAW final", fw, 3);
+
+    /* FP-INT crossover: INT produces value, FP consumes via convert */
+    uint32_t int_val;
+    double fp_from_int;
+    __asm__ volatile("addi %[iv], zero, 7\n"             /* INT: iv = 7 */
+                     "fcvt.d.w %[fv], %[iv]\n"           /* Convert to FP: 7.0 */
+                     "fadd.d   %[fv], %[fv], %[three]\n" /* FP: 7.0 + 3.0 = 10.0 */
+                     : [iv] "=&r"(int_val), [fv] "=&f"(fp_from_int)
+                     : [three] "f"(3.0));
+    TEST("FP-INT crossover int_val", int_val, 7);
+    TEST_FP("FP-INT crossover fp result", fp_from_int, 10);
+
+    /* FMADD.D dependent chain: accum = accum * 1.0 + addend */
+    double fma_acc;
+    __asm__ volatile("fmul.d  %[a], %[z], %[z]\n"          /* accum = 0.0 */
+                     "fmadd.d %[a], %[a], %[one], %[v2]\n" /* 0*1+2 = 2.0 */
+                     "fmadd.d %[a], %[a], %[one], %[v3]\n" /* 2*1+3 = 5.0 */
+                     "fmadd.d %[a], %[a], %[one], %[v4]\n" /* 5*1+4 = 9.0 */
+                     : [a] "=&f"(fma_acc)
+                     : [z] "f"(0.0), [one] "f"(1.0), [v2] "f"(2.0), [v3] "f"(3.0), [v4] "f"(4.0));
+    TEST_FP("FMADD chain", fma_acc, 9);
+
+    /* 4 independent FADD.D ops - all can execute in parallel */
+    double ia, ib, ic, id;
+    __asm__ volatile("fadd.d %[a], %[v1], %[v2]\n" /* 1+2 = 3 */
+                     "fadd.d %[b], %[v3], %[v4]\n" /* 3+4 = 7 */
+                     "fadd.d %[c], %[v5], %[v1]\n" /* 5+1 = 6 */
+                     "fadd.d %[d], %[v2], %[v3]\n" /* 2+3 = 5 */
+                     : [a] "=&f"(ia), [b] "=&f"(ib), [c] "=&f"(ic), [d] "=&f"(id)
+                     : [v1] "f"(1.0), [v2] "f"(2.0), [v3] "f"(3.0), [v4] "f"(4.0), [v5] "f"(5.0));
+    TEST_FP("FP indep a", ia, 3);
+    TEST_FP("FP indep b", ib, 7);
+    TEST_FP("FP indep c", ic, 6);
+    TEST_FP("FP indep d", id, 5);
+
+    uart_printf(" done\n");
+}
+
+/* ========================================================================== */
 /* Main Entry Point                                                           */
 /* ========================================================================== */
 
@@ -560,6 +656,7 @@ int main(void)
     test_complex_deps();
     test_branch_loop();
     test_cdb_contention();
+    test_fp_hazards();
 
     uart_printf("\n------------------------------------------------------------\n");
     uart_printf(
