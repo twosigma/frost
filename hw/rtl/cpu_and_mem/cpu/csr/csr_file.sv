@@ -26,8 +26,10 @@
 
   Zicntr base counters (read-only):
     - cycle/cycleh (0xC00/0xC80): Clock cycle counter (64-bit)
+    - mcycle/mcycleh (0xB00/0xB80): Machine-mode alias for cycle counter
     - time/timeh (0xC01/0xC81): Wall-clock time (from mtime input)
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
+    - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
 
   Machine-mode CSRs (for trap/interrupt handling):
     - mstatus (0x300): Machine status (MIE, MPIE bits)
@@ -422,13 +424,14 @@ module csr_file #(
         riscv_pkg::CsrFflags: csr_read_data_comb = {27'b0, fflags_forwarded};
         riscv_pkg::CsrFrm: csr_read_data_comb = {29'b0, frm};
         riscv_pkg::CsrFcsr: csr_read_data_comb = {24'b0, frm, fflags_forwarded};
-        // Zicntr counters (read-only)
-        riscv_pkg::CsrCycle: csr_read_data_comb = cycle_counter[31:0];
-        riscv_pkg::CsrCycleH: csr_read_data_comb = cycle_counter[63:32];
+        // Zicntr counters (read-only, user-mode and machine-mode aliases)
+        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle: csr_read_data_comb = cycle_counter[31:0];
+        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH: csr_read_data_comb = cycle_counter[63:32];
         riscv_pkg::CsrTime: csr_read_data_comb = i_mtime[31:0];
         riscv_pkg::CsrTimeH: csr_read_data_comb = i_mtime[63:32];
-        riscv_pkg::CsrInstret: csr_read_data_comb = instret_counter[31:0];
-        riscv_pkg::CsrInstretH: csr_read_data_comb = instret_counter[63:32];
+        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret: csr_read_data_comb = instret_counter[31:0];
+        riscv_pkg::CsrInstretH, riscv_pkg::CsrMinstretH:
+        csr_read_data_comb = instret_counter[63:32];
         // Machine-mode CSRs
         riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;

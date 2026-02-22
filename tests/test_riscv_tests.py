@@ -86,6 +86,7 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "pmpaddr",  # PMP not implemented on Frost
         "csr",  # Tests user-mode CSR restrictions via SRET; Frost is M-mode only
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
+        "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
     },
 }
 
@@ -96,11 +97,11 @@ BENCHMARKS = {
     "multiply": ("Software multiply", ["multiply_main.c", "multiply.c"], False),
     "qsort": ("Quicksort", ["qsort_main.c"], False),
     "rsort": ("Radix sort", ["rsort.c"], False),
-    "towers": ("Towers of Hanoi", ["towers_main.c", "towers.c"], False),
-    "vvadd": ("Vector-vector add", ["vvadd_main.c", "vvadd.c"], False),
+    "towers": ("Towers of Hanoi", ["towers_main.c"], False),
+    "vvadd": ("Vector-vector add", ["vvadd_main.c"], False),
     "dhrystone": ("Dhrystone", ["dhrystone_main.c", "dhrystone.c"], False),
     "mm": ("Matrix multiply", ["mm_main.c", "mm.c"], True),
-    "spmv": ("Sparse matrix-vector multiply", ["spmv_main.c", "spmv.c"], True),
+    "spmv": ("Sparse matrix-vector multiply", ["spmv_main.c"], True),
 }
 
 

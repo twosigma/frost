@@ -302,6 +302,12 @@ package riscv_pkg;
   localparam bit [11:0] CsrTimeH = 12'hC81;  // Timer (high 32 bits)
   localparam bit [11:0] CsrInstretH = 12'hC82;  // Instructions retired (high 32 bits)
 
+  // Machine-mode counter CSRs (aliases for the same physical counters)
+  localparam bit [11:0] CsrMcycle = 12'hB00;  // mcycle (low 32 bits)
+  localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (high 32 bits)
+  localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret (low 32 bits)
+  localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (high 32 bits)
+
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
   localparam bit [11:0] CsrMisa = 12'h301;  // Machine ISA register (read-only)
