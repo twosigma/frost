@@ -133,6 +133,7 @@ module l0_cache #(
       // From MA stage (load path)
       .i_is_load_instruction_ma(i_from_ex_to_ma.is_load_instruction),
       .i_is_memory_mapped_io_ma(is_memory_mapped_io_ma),
+      .i_cache_hit_on_load(cache_hit_on_load_reg),
       .i_data_memory_read_data_ma(i_from_ma_comb.data_memory_read_data),
       .i_cache_index_ma(cache_index_ma),
       .i_tag_ma(tag_ma),

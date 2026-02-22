@@ -27,10 +27,9 @@
  * Load cache writes are pipelined by one cycle to break the critical path:
  *   forwarding -> trap -> stall -> cache_write_enable_from_load -> cache WE
  *
- * This is safe because:
- *   1. Load data is captured in forwarding_unit's register_write_data_ma
- *   2. Load-use hazards cause stalls, so dependent instructions wait
- *   3. The cache update being one cycle late doesn't affect correctness
+ * Load fills are gated by cache hit: only cache MISSES trigger a fill.
+ * On a cache hit the data is already correct; firing the fill would overwrite
+ * the line with stale BRAM data, clobbering any intervening store.
  *
  * Store cache writes remain combinational because:
  *   1. Pipelining causes race conditions in 4-state simulators
@@ -68,6 +67,7 @@ module cache_write_controller #(
     // From MA stage (load path)
     input logic i_is_load_instruction_ma,
     input logic i_is_memory_mapped_io_ma,
+    input logic i_cache_hit_on_load,
     input logic [XLEN-1:0] i_data_memory_read_data_ma,
     input logic [CacheIndexWidth-1:0] i_cache_index_ma,
     input logic [CacheTagWidth-1:0] i_tag_ma,
@@ -144,12 +144,16 @@ module cache_write_controller #(
   logic [CacheIndexWidth-1:0] cache_index_load_registered;
   logic [CacheTagWidth-1:0] tag_load_registered;
 
-  // Load write enable - needs flush gating (uses flush on critical path)
+  // Load write enable - only fill cache on misses.
+  // On a cache hit the data is already correct; firing the fill would overwrite
+  // the cache line with stale BRAM data 1 cycle later, clobbering any store that
+  // wrote to the same line between the load's EX stage and the fill.
   always_ff @(posedge i_clk)
     if (i_rst || i_flush) cache_write_enable_from_load_registered <= 1'b0;
     else if (~i_stall)
       cache_write_enable_from_load_registered <= i_is_load_instruction_ma &
-                                        ~i_is_memory_mapped_io_ma;
+                                        ~i_is_memory_mapped_io_ma &
+                                        ~i_cache_hit_on_load;
 
   // Load data, index, tag - don't need flush gating (enable is cleared)
   always_ff @(posedge i_clk)
