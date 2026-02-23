@@ -144,7 +144,7 @@
 //-----------------------------------------------------------------------
 
 #define RVTEST_CODE_BEGIN                                                                          \
-    .section.text.init;                                                                            \
+    .section .text.init;                                                                           \
     .align 6;                                                                                      \
     .weak stvec_handler;                                                                           \
     .weak mtvec_handler;                                                                           \
@@ -311,7 +311,8 @@
 #define EXTRA_DATA
 
 #define RVTEST_DATA_BEGIN                                                                          \
-    EXTRA_DATA.align 4;                                                                            \
+    EXTRA_DATA                                                                                     \
+    .align 4;                                                                                      \
     .global begin_signature;                                                                       \
     begin_signature:
 

@@ -40,7 +40,8 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            sw/apps/riscv_tests/riscv_test\.h
           )$
 
   # C/C++ - clang-tidy (uses wrapper script to set RISC-V target and include paths)
@@ -54,7 +55,8 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            sw/apps/riscv_tests/riscv_test\.h
           )$
 
   # SystemVerilog/Verilog - Verible formatter and linter
@@ -104,7 +106,8 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            sw/apps/riscv_tests/riscv_test\.h
           )$
         args:
           - --license-filepath=.license-header.txt

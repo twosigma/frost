@@ -5,26 +5,27 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 ## Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│                                Test Infrastructure                                   │
-├──────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                      │
-│  ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ │
-│  │test_run_cocotb.py│ │test_arch_compli- │ │test_riscv_tests  │ │test_run_yosys.py │ │
-│  │                  │ │  ance.py         │ │         .py      │ │                  │ │
-│  │ RTL Simulation   │ │ Arch Compliance  │ │ ISA Pipeline     │ │ Synthesis Check  │ │
-│  │ • CPU unit tests │ │ • riscv-arch-test│ │ • riscv-tests    │ │ • Yosys synthesis│ │
-│  │ • Real C programs│ │ • 400+ tests     │ │ • 126 tests      │ │ • No vendor IPs  │ │
-│  │ • Verification   │ │ • 10 extensions  │ │ • 11 suites      │ │                  │ │
-│  └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ │
-│           │                    │                    │                    │           │
-│           v                    v                    v                    v           │
-│  ┌────────────────────────────────────────────────────────────┐  ┌────────────────┐  │
-│  │                        Simulator                           │  │     Yosys      │  │
-│  │                 Icarus/Verilator/Questa                    │  │ (open-source)  │  │
-│  └────────────────────────────────────────────────────────────┘  └────────────────┘  │
-│                                                                                      │
-└──────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                Test Infrastructure                                              │
+├─────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                 │
+│  ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ │
+│  │test_run_cocotb │ │test_arch_comp- │ │test_riscv_     │ │test_riscv_     │ │test_run_yosys  │ │
+│  │          .py   │ │  liance.py     │ │    tests.py    │ │  torture.py    │ │          .py   │ │
+│  │ RTL Simulation │ │ Arch Compli-   │ │ ISA Pipeline   │ │ Random Instr   │ │ Synthesis      │ │
+│  │ • CPU unit     │ │   ance         │ │ • riscv-tests  │ │ • 20 random    │ │ • Yosys        │ │
+│  │   tests        │ │ • riscv-arch-  │ │ • 126 tests    │ │   tests        │ │   synthesis    │ │
+│  │ • Real C progs │ │   test         │ │ • 11 suites    │ │ • RV32IMAFDC   │ │ • No vendor    │ │
+│  │ • Verification │ │ • 400+ tests   │ │ • Benchmarks   │ │ • Spike refs   │ │   IPs          │ │
+│  └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ │
+│          │                  │                  │                  │                  │          │
+│          v                  v                  v                  v                  v          │
+│  ┌──────────────────────────────────────────────────────────────────────┐  ┌────────────────┐   │
+│  │                            Simulator                                 │  │     Yosys      │   │
+│  │                     Icarus/Verilator/Questa                          │  │ (open-source)  │   │
+│  └──────────────────────────────────────────────────────────────────────┘  └────────────────┘   │
+│                                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Test Files
@@ -178,6 +179,43 @@ pytest test_riscv_tests.py -v --sim verilator -m slow
 - Verilator only (skips automatically for non-Verilator sims)
 - A small number of tests are skipped due to architectural incompatibility (Harvard architecture, M-mode only, misaligned access trapping). See `ISA_SKIP_TESTS` in the script for details.
 
+### `test_riscv_torture.py`
+
+Runs random instruction torture tests on Frost. A Python-based generator creates random RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, and AMO operations), runs them on Spike to generate golden register signatures, then compares Frost simulation output against those references.
+
+**Standalone Usage:**
+
+```bash
+# Run all torture tests
+./test_riscv_torture.py --sim verilator --all
+
+# Run a single test
+./test_riscv_torture.py --sim verilator --test test_001
+
+# List available tests and reference status
+./test_riscv_torture.py --sim verilator --list
+```
+
+**Generating Tests:**
+
+Tests and Spike references are pre-generated and checked in. To regenerate:
+
+```bash
+cd sw/apps/riscv_torture
+./generate_tests.py --generate --count 20 --seed 42
+```
+
+**Pytest Usage:**
+
+```bash
+pytest test_riscv_torture.py -v --sim verilator -m slow
+```
+
+**Notes:**
+- Verilator only (skips automatically for non-Verilator sims)
+- Requires Spike (`riscv-isa-sim`) for reference generation only, not for running tests
+- FP register signatures are compared exactly against Spike references; integer registers are verified for correct word count only (AMO address computation introduces layout-dependent values)
+
 ### `test_run_yosys.py`
 
 Runs Yosys synthesis to verify the design can be synthesized without errors. Uses open-source tools only (no Xilinx IP cores).
@@ -203,6 +241,7 @@ pytest test_run_yosys.py                           # Run synthesis test
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
 | `test_riscv_tests.py`      | riscv-tests ISA pipeline test runner      |
+| `test_riscv_torture.py`    | Random instruction torture test runner    |
 | `.gitignore`               | Excludes build artifacts                  |
 
 ## Running Tests

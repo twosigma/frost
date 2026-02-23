@@ -200,6 +200,31 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --sim verilator --benchmarks ${{ matrix.benchmark }}
 
+  # riscv-torture Random Instruction Tests
+  test-riscv-torture:
+    name: riscv-torture Tests
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run riscv-torture tests
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_riscv_torture.py --sim verilator --all
+
   # Run Cocotb tests with Icarus Verilog
   test-icarus:
     name: Cocotb Tests (Icarus)
