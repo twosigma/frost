@@ -303,16 +303,16 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 30,520 | 1,029,600 | 3.0% |
-|   LUT as Logic | 29,259 | 1,029,600 | 2.8% |
+| CLB LUTs | 30,686 | 1,029,600 | 3.0% |
+|   LUT as Logic | 29,425 | 1,029,600 | 2.9% |
 |   LUT as Distributed RAM | 1,168 | — | — |
 |   LUT as Shift Register | 93 | — | — |
-| CLB Registers | 19,822 | 2,059,200 | 1.0% |
+| CLB Registers | 19,936 | 2,059,200 | 1.0% |
 | Block RAM Tile | 68.5 | 2,112 | 3.2% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 30 | 1,320 | 2.3% |
 | CARRY8 | 765 | 128,700 | 0.6% |
-| F7 Muxes | 367 | 514,800 | 0.1% |
+| F7 Muxes | 384 | 514,800 | 0.1% |
 | F8 Muxes | 2 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
@@ -322,14 +322,14 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 29,906 | 203,800 | 14.7% |
-|   LUT as Logic | 28,509 | 203,800 | 14.0% |
+| Slice LUTs | 29,843 | 203,800 | 14.6% |
+|   LUT as Logic | 28,446 | 203,800 | 14.0% |
 |   LUT as Distributed RAM | 1,308 | — | — |
 |   LUT as Shift Register | 89 | — | — |
-| Slice Registers | 19,481 | 407,600 | 4.8% |
+| Slice Registers | 19,431 | 407,600 | 4.8% |
 | Block RAM Tile | 68.5 | 445 | 15.4% |
 | DSPs | 34 | 840 | 4.0% |
-| F7 Muxes | 300 | 101,900 | 0.3% |
+| F7 Muxes | 316 | 101,900 | 0.3% |
 | F8 Muxes | 2 | 50,950 | 0.0% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
@@ -339,14 +339,14 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 29,781 | 63,400 | 47.0% |
-|   LUT as Logic | 28,384 | 63,400 | 44.8% |
+| Slice LUTs | 29,630 | 63,400 | 46.7% |
+|   LUT as Logic | 28,233 | 63,400 | 44.5% |
 |   LUT as Distributed RAM | 1,308 | — | — |
 |   LUT as Shift Register | 89 | — | — |
 | Slice Registers | 19,463 | 126,800 | 15.3% |
 | Block RAM Tile | 68.5 | 135 | 50.7% |
 | DSPs | 34 | 240 | 14.2% |
-| F7 Muxes | 355 | 31,700 | 1.1% |
+| F7 Muxes | 374 | 31,700 | 1.2% |
 | F8 Muxes | 2 | 15,850 | 0.0% |
 | Bonded IOB | 4 | 210 | 1.9% |
 | MMCM | 1 | 6 | 16.7% |
