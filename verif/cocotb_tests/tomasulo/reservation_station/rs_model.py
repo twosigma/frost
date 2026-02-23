@@ -216,38 +216,55 @@ class RSModel:
                 e.src3_ready = True
                 e.src3_value = value
 
-    def try_issue(self, fu_ready: bool = True) -> dict | None:
-        """Try to issue the lowest-index ready entry.
+    @staticmethod
+    def _build_issue_dict(e: RSEntry) -> dict:
+        """Build issue payload from an entry."""
+        return {
+            "valid": True,
+            "rob_tag": e.rob_tag,
+            "op": e.op,
+            "src1_value": e.src1_value,
+            "src2_value": e.src2_value,
+            "src3_value": e.src3_value,
+            "imm": e.imm,
+            "use_imm": e.use_imm,
+            "rm": e.rm,
+            "branch_target": e.branch_target,
+            "predicted_taken": e.predicted_taken,
+            "predicted_target": e.predicted_target,
+            "is_fp_mem": e.is_fp_mem,
+            "mem_size": e.mem_size,
+            "mem_signed": e.mem_signed,
+            "csr_addr": e.csr_addr,
+            "csr_imm": e.csr_imm,
+        }
 
-        Returns issue info dict or None.
-        """
+    def peek_issue(self, fu_ready: bool = True) -> tuple[int, dict] | None:
+        """Peek the lowest-index ready entry without mutating model state."""
         if not fu_ready:
             return None
 
         for i, e in enumerate(self.entries):
             if e.is_ready():
-                result = {
-                    "valid": True,
-                    "rob_tag": e.rob_tag,
-                    "op": e.op,
-                    "src1_value": e.src1_value,
-                    "src2_value": e.src2_value,
-                    "src3_value": e.src3_value,
-                    "imm": e.imm,
-                    "use_imm": e.use_imm,
-                    "rm": e.rm,
-                    "branch_target": e.branch_target,
-                    "predicted_taken": e.predicted_taken,
-                    "predicted_target": e.predicted_target,
-                    "is_fp_mem": e.is_fp_mem,
-                    "mem_size": e.mem_size,
-                    "mem_signed": e.mem_signed,
-                    "csr_addr": e.csr_addr,
-                    "csr_imm": e.csr_imm,
-                }
-                e.valid = False
-                return result
+                return i, self._build_issue_dict(e)
         return None
+
+    def consume_issue(self, idx: int) -> None:
+        """Consume an issued entry by index."""
+        self.entries[idx].valid = False
+
+    def try_issue(self, fu_ready: bool = True) -> dict | None:
+        """Try to issue the lowest-index ready entry.
+
+        Returns issue info dict or None.
+        """
+        issue = self.peek_issue(fu_ready=fu_ready)
+        if issue is None:
+            return None
+
+        idx, result = issue
+        self.consume_issue(idx)
+        return result
 
     def flush_all(self) -> None:
         """Clear all entries."""

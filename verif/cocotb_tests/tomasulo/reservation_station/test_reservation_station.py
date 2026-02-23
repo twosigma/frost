@@ -1052,12 +1052,14 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
     issued_count = 0
 
     for cycle in range(200):
-        # Read DUT state BEFORE try_issue (matches RTL's registered state)
+        # Read DUT state from settled registered state
         dut_full = dut_if.full
+        dut_count = dut_if.count
 
-        # Check issue from settled post-step state (registered state + fu_ready=1)
+        # Peek model issue without mutating, then compare with DUT combinational issue.
+        model_issue_info = model.peek_issue(fu_ready=True)
         issue = dut_if.read_issue()
-        model_issue = model.try_issue(fu_ready=True)
+        model_issue = model_issue_info[1] if model_issue_info is not None else None
 
         if model_issue is not None:
             assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
@@ -1067,8 +1069,7 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
             assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
 
         # Drive new inputs for this cycle
-        # Gate dispatch on DUT's full signal (not model) since model's try_issue
-        # already freed a slot but the DUT's dispatch_fire uses OLD registered full.
+        # Gate dispatch on DUT full/count from the old registered state.
         action = random.choice(["dispatch", "cdb", "idle"])
 
         if action == "dispatch" and not dut_full:
@@ -1117,11 +1118,17 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
                 imm=imm,
             )
 
-        elif action == "cdb" and dut_if.count > 0:
+        elif action == "cdb" and dut_count > 0:
             cdb_tag = random.randint(0, 31)
             cdb_value = random.getrandbits(64)
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
             model.cdb_snoop(tag=cdb_tag, value=cdb_value)
+
+        # Consume issue after same-cycle action modeling.
+        # This matches RTL behavior where dispatch/free-index selection uses the
+        # old registered state before issue invalidation takes effect.
+        if model_issue_info is not None:
+            model.consume_issue(model_issue_info[0])
 
         # Step: DUT registers inputs, issue invalidation, CDB wakeup
         await dut_if.step()
@@ -1145,25 +1152,21 @@ async def test_random_with_flush(dut: Any) -> None:
 
     dut_if.set_fu_ready(True)
     await Timer(1, unit="ps")  # Let fu_ready propagate
-    prev_was_flush = False
 
     for cycle in range(200):
-        # Read DUT state BEFORE try_issue (matches RTL's registered state)
+        # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
 
-        # Check issue from settled post-step state (skip if previous cycle was flush,
-        # since flush takes priority over issue in the sequential block)
-        if not prev_was_flush:
-            issue = dut_if.read_issue()
-            model_issue = model.try_issue(fu_ready=True)
+        # Peek model issue without mutating, then compare with DUT combinational issue.
+        model_issue_info = model.peek_issue(fu_ready=True)
+        issue = dut_if.read_issue()
+        model_issue = model_issue_info[1] if model_issue_info is not None else None
 
-            if model_issue is not None:
-                assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
-            else:
-                assert not issue[
-                    "valid"
-                ], f"Cycle {cycle}: DUT issued but model did not"
+        if model_issue is not None:
+            assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
+        else:
+            assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
 
         # Drive new inputs for this cycle
         # Gate dispatch on DUT's full signal (matches RTL dispatch_fire gate)
@@ -1172,7 +1175,7 @@ async def test_random_with_flush(dut: Any) -> None:
             weights=[40, 30, 5, 10, 15],
         )[0]
 
-        prev_was_flush = action in ("flush_all", "partial_flush")
+        flush_applied = False
 
         if action == "dispatch" and not dut_full:
             rob_tag = random.randint(0, 31)
@@ -1223,12 +1226,18 @@ async def test_random_with_flush(dut: Any) -> None:
         elif action == "flush_all":
             dut_if.drive_flush_all()
             model.flush_all()
+            flush_applied = True
 
         elif action == "partial_flush" and dut_count > 0:
             flush_tag = random.randint(0, 31)
             head_tag = random.randint(0, 31)
             dut_if.drive_partial_flush(flush_tag=flush_tag, head_tag=head_tag)
             model.partial_flush(flush_tag=flush_tag, head_tag=head_tag)
+            flush_applied = True
+
+        # Flush has priority over issue invalidation in RTL.
+        if not flush_applied and model_issue_info is not None:
+            model.consume_issue(model_issue_info[0])
 
         # Step: DUT registers inputs, processes issue/flush/CDB
         await dut_if.step()
