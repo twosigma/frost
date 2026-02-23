@@ -22,7 +22,7 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 │          v                  v                  v                  v                  v          │
 │  ┌──────────────────────────────────────────────────────────────────────┐  ┌────────────────┐   │
 │  │                            Simulator                                 │  │     Yosys      │   │
-│  │                     Icarus/Verilator/Questa                          │  │ (open-source)  │   │
+│  │                       Icarus/Verilator                               │  │ (open-source)  │   │
 │  └──────────────────────────────────────────────────────────────────────┘  └────────────────┘   │
 │                                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -57,10 +57,7 @@ Applications are compiled automatically before simulation—no manual build step
 # Specify simulator
 ./test_run_cocotb.py cpu --sim=verilator           # Use Verilator
 ./test_run_cocotb.py cpu --sim=icarus              # Use Icarus Verilog
-./test_run_cocotb.py cpu --sim=questa              # Use Questa
-
-# GUI mode (Questa only)
-./test_run_cocotb.py cpu --sim=questa --gui        # Open waveform viewer
+./test_run_cocotb.py cpu --sim=verilator           # Use Verilator
 
 # Reproducibility options
 ./test_run_cocotb.py cpu --random-seed=12345       # Use specific seed
@@ -290,7 +287,7 @@ For standalone execution, use `--sim` directly:
 ```bash
 ./test_run_cocotb.py cpu --sim=verilator           # Verilator
 ./test_run_cocotb.py cpu --sim=icarus              # Icarus Verilog
-./test_run_cocotb.py cpu --sim=questa --gui        # Questa with waveforms
+./test_run_cocotb.py cpu --sim=verilator           # Verilator
 ```
 
 ### Environment Variables
@@ -298,7 +295,6 @@ For standalone execution, use `--sim` directly:
 | Variable      | Description                      | Default    |
 |---------------|----------------------------------|------------|
 | `SIM`         | Simulator to use                 | `icarus`   |
-| `GUI`         | Enable GUI mode (1/0)            | `0`        |
 | `TESTCASE`    | Specific test function to run    | (all)      |
 | `RANDOM_SEED` | Random seed for reproducibility  | (random)   |
 | `WAVES`       | Generate waveform file (1/0)     | `0`        |
@@ -332,7 +328,6 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 |----------------|-----------------------------|
 | Icarus Verilog | Default, widely available   |
 | Verilator      | Fastest, incremental builds |
-| Questa         | Commercial, GUI support     |
 
 ### Other Tools
 
@@ -372,10 +367,6 @@ The test runner tracks the toplevel module in `sim_build/.last_toplevel`. If you
 ```bash
 make clean
 ```
-
-### Questa license errors
-
-Ensure your Questa license is configured. The `--gui` flag requires a GUI-capable license.
 
 ### Tests timing out
 

@@ -16,7 +16,7 @@
 # Configures Verilator/Icarus simulation with Cocotb Python testbench
 
 # Simulation configuration:
-# Simulator choice (verilator or icarus or questa)
+# Simulator choice (verilator or icarus)
 SIM             ?= verilator
 # HDL language (verilog or vhdl)
 TOPLEVEL_LANG   ?= verilog
@@ -68,14 +68,8 @@ ifeq ($(TOPLEVEL),cpu_tb)
 VERILOG_SOURCES := \
         $(ROOT)/hw/sim/cpu_tb.sv  # Include testbench wrapper
 else
-# For frost toplevel with Questa, need to set top-level file (Questa skips vlog if empty)
 # For Verilator/Icarus, frost.sv is already in frost.f so we don't add it again
-ifeq ($(SIM),questa)
-VERILOG_SOURCES := \
-        $(ROOT)/hw/rtl/frost.sv
-else
 VERILOG_SOURCES :=
-endif
 endif
 endif
 

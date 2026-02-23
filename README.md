@@ -99,7 +99,6 @@ Validated with these tool versions:
 | **Testbench** | Cocotb            | 2.0.1   |
 | **Simulator** | Verilator         | 5.044   |
 |               | Icarus Verilog    | 12.0    |
-|               | Questa (optional) | 2023.1  |
 | **Synthesis** | Yosys             | 0.60    |
 | **Formal**    | SymbiYosys        | 0.62    |
 |               | Z3                | 4.15.0  |
@@ -243,7 +242,7 @@ pytest tests/ --sim=verilator              # Use Verilator
 
 # With specific simulator
 ./tests/test_run_cocotb.py cpu --sim=verilator
-./tests/test_run_cocotb.py cpu --sim=questa --gui
+./tests/test_run_cocotb.py cpu --sim=verilator
 ```
 
 ### Running Synthesis

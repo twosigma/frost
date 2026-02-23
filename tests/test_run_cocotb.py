@@ -30,7 +30,7 @@ from collections.abc import Mapping
 
 import pytest
 
-# Simulators to test in CI (excluding questa which requires license)
+# Simulators to test in CI
 CI_SIMULATORS = ["icarus", "verilator"]
 
 
@@ -300,13 +300,7 @@ class CocotbRunner:
         if simulator_name == "":
             simulator_name = "icarus"
 
-        # GUI mode flag (0 = batch, 1 = interactive waveform viewer)
-        gui_mode = environment_variables.get("GUI", "0")
-        if gui_mode == "":
-            gui_mode = "0"
-
         environment_variables["SIM"] = simulator_name
-        environment_variables["GUI"] = gui_mode
         environment_variables["ROOT"] = str(self.repository_root_directory)
 
         # Add verification infrastructure to Python path so cocotb_tests modules are importable
@@ -500,7 +494,7 @@ def run_test_with_simulator(
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
-        simulator: Simulator to use ("icarus", "verilator", "questa")
+        simulator: Simulator to use ("icarus", "verilator")
         capsys: Optional pytest capsys fixture for output control
 
     Raises:
@@ -589,7 +583,6 @@ def _run_single_seed(
     """
     # Set up environment for this specific run
     os.environ["SIM"] = simulator
-    os.environ["GUI"] = "0"
     os.environ["COCOTB_RANDOM_SEED"] = str(seed)
     os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
 
@@ -721,12 +714,10 @@ Examples:
   %(prog)s cpu                    # Run CPU test with default simulator (icarus)
   %(prog)s hello_world --sim=verilator  # Run Hello World with Verilator
   %(prog)s isa_test --sim=icarus  # Run ISA compliance tests
-  %(prog)s coremark --sim=questa --gui  # Run Coremark with Questa in GUI mode
   %(prog)s cpu --sim=verilator --seed-sweep 10  # Run 10 seeds in parallel, report results
   %(prog)s --list-tests           # Show available tests from TEST_REGISTRY and exit
 
-Note: GUI mode only works with questa simulator.
-      Seed sweep runs simulations in parallel and reports pass/fail for each seed.
+Note: Seed sweep runs simulations in parallel and reports pass/fail for each seed.
 
 Available tests:
 """
@@ -749,11 +740,8 @@ Available tests:
     parser.add_argument(
         "--sim",
         default="icarus",
-        choices=["icarus", "verilator", "questa"],
+        choices=["icarus", "verilator"],
         help="Simulator to use (default: icarus)",
-    )
-    parser.add_argument(
-        "--gui", action="store_true", help="Enable GUI mode (questa only)"
     )
     parser.add_argument(
         "--testcase",
@@ -799,10 +787,6 @@ Available tests:
         if args.random_seed:
             print("Error: --seed-sweep and --random-seed are mutually exclusive")
             sys.exit(1)
-        if args.gui:
-            print("Error: --seed-sweep does not support GUI mode")
-            sys.exit(1)
-
         results = run_seed_sweep(
             test_name=args.test,
             simulator=args.sim,
@@ -817,7 +801,6 @@ Available tests:
 
     # Set environment based on args
     os.environ["SIM"] = args.sim
-    os.environ["GUI"] = "1" if args.gui else "0"
     if args.testcase:
         # Anchor at end for exact match (COCOTB_TEST_FILTER uses regex).
         # We only anchor at end because cocotb may prefix with module path.

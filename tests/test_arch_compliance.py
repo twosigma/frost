@@ -478,7 +478,7 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     parser.add_argument(
         "--sim",
         required=True,
-        choices=["icarus", "verilator", "questa"],
+        choices=["icarus", "verilator"],
         help="Simulator to use",
     )
     group = parser.add_mutually_exclusive_group(required=True)

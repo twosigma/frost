@@ -2,7 +2,7 @@
 
 ## Overview
 
-FROST is a 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with full machine-mode privilege support for RTOS operation. The design is fully portable (no vendor-specific primitives), synthesizable with standard tools including Yosys and Vivado, and simulatable with Verilator, Icarus Verilog, and Questa.
+FROST is a 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with full machine-mode privilege support for RTOS operation. The design is fully portable (no vendor-specific primitives), synthesizable with standard tools including Yosys and Vivado, and simulatable with Verilator and Icarus Verilog.
 
 ### Supported RISC-V Extensions
 

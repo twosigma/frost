@@ -39,7 +39,7 @@ IF → PD → ID → EX → MA → WB
 - **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
 - **Timing optimization**: Critical paths carefully managed with registered outputs
 - **Comprehensive verification**: Cocotb-based testing with 16,000+ random instructions
-- **Multi-simulator support**: Tested on Verilator, Icarus Verilog, and Siemens Questa
+- **Multi-simulator support**: Tested on Verilator and Icarus Verilog
 
 ### Memory Map
 
@@ -57,7 +57,7 @@ Before contributing, ensure you have the required tools installed. See the [main
 Required tools:
 - **RISC-V GCC** (`riscv-none-elf-gcc`) - for compiling bare-metal software
 - **Cocotb** - Python-based verification framework
-- **Simulator** (one or more): Verilator, Icarus Verilog, or Siemens Questa
+- **Simulator** (one or more): Verilator or Icarus Verilog
 - **Yosys** - for synthesis verification
 
 ### Setting Up Your Development Environment

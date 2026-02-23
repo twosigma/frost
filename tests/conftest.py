@@ -37,26 +37,14 @@ def pytest_addoption(parser: Any) -> None:
         "--sim",
         action="store",
         default=None,
-        help="Simulator to use (verilator, questa, or icarus). "
+        help="Simulator to use (verilator or icarus). "
         "When set, only parametrized tests for this simulator are run.",
-    )
-    parser.addoption(
-        "--gui",
-        action="store_true",
-        default=False,
-        help="Enable GUI mode for simulator",
     )
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_cocotb_env(request: Any) -> None:
     """Set up environment variables for cocotb from command line options."""
-    # Get options
-    gui_mode = request.config.getoption("--gui")
-
-    # Set GUI environment variable
-    os.environ["GUI"] = "1" if gui_mode else "0"
-
     # Set SIM if explicitly provided via command line.
     # Parametrized tests override this in run_test_with_simulator().
     sim = request.config.getoption("--sim")
