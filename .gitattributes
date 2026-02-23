@@ -14,3 +14,12 @@
 
 # Mark .f files as vendored (file lists for synthesis tools)
 *.f linguist-vendored
+
+# Vendored third-party test suites and kernels — exclude from language stats
+sw/apps/arch_test/**/*.S linguist-vendored
+sw/apps/riscv_tests/**/*.S linguist-vendored
+sw/FreeRTOS-Kernel/**/*.S linguist-vendored
+sw/FreeRTOS-Kernel/**/*.s linguist-vendored
+
+# Generated torture test assembly — exclude from language stats
+sw/apps/riscv_torture/**/*.S linguist-generated
