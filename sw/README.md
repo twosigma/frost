@@ -433,49 +433,7 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-### Supported RISC-V Extensions
-
-**ISA: RV32GCB** (G = IMAFD) plus additional extensions
-
-| Extension       | Description                                                                        |
-|-----------------|------------------------------------------------------------------------------------|
-| **RV32I**       | Base integer instruction set                                                       |
-| **M**           | Integer multiply/divide                                                            |
-| **A**           | Atomic memory operations (LR.W, SC.W, AMO instructions)                            |
-| **F**           | Single-precision floating-point (32-bit IEEE 754)                                  |
-| **D**           | Double-precision floating-point (64-bit IEEE 754)                                  |
-| **C**           | Compressed instructions (16-bit encodings for reduced code size)                   |
-| **B**           | Bit manipulation (B = Zba + Zbb + Zbs)                                             |
-| **Zba**         | Address generation (sh1add, sh2add, sh3add) - part of B                            |
-| **Zbb**         | Basic bit manipulation (clz, ctz, cpop, min/max, sext, zext, rotations, orc.b, rev8) - part of B |
-| **Zbs**         | Single-bit operations (bset, bclr, binv, bext + immediate variants) - part of B    |
-| **Zicsr**       | CSR access instructions                                                            |
-| **Zicntr**      | Base counters (cycle, time, instret)                                               |
-| **Zifencei**    | Instruction fence (fence.i)                                                        |
-| **Zicond**      | Conditional zero (czero.eqz, czero.nez) - not part of B                            |
-| **Zbkb**        | Bit manipulation for crypto (pack, packh, brev8, zip, unzip) - part of Zk, not B   |
-| **Zihintpause** | Pause hint for spin-wait loops                                                     |
-
-### Machine Mode (M-mode) Support
-
-Frost implements machine-mode only (no S-mode or U-mode), providing full privilege for all code. This is suitable for bare-metal or RTOS operation.
-
-**Trap handling:**
-- `mtvec`: Trap vector in direct mode (all traps jump to single handler address)
-- `mepc`: Saved PC on trap, restored by MRET
-- `mcause`: Interrupt bit + cause code (ECALL=11, EBREAK=3, timer=7, software=3, external=11)
-- `mtval`: Faulting address or instruction
-
-**Privileged instructions:**
-- `WFI`: Wait for interrupt (low-power idle)
-- `ECALL`: Environment call (generates exception with mcause=11)
-- `EBREAK`: Breakpoint (generates exception with mcause=3)
-- `MRET`: Return from trap handler
-
-**CLINT-compatible timer:**
-- Memory-mapped mtime/mtimecmp at 0x40000010-0x4000001C
-- Software interrupt pending (msip) at 0x40000020
-- Timer interrupt when mtime >= mtimecmp
+Frost implements **RV32GCB** with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table and architecture details.
 
 ### Test Result Markers
 

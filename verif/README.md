@@ -37,27 +37,7 @@ This directory contains a comprehensive Python-based verification framework for 
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) plus additional extensions:
-
-| Extension        | Description                                                                        |
-|------------------|------------------------------------------------------------------------------------|
-| **RV32I**        | 32-bit base integer instruction set                                                |
-| **M**            | Integer multiply/divide (mul, div, rem variants)                                   |
-| **A**            | Atomic memory operations (lr.w, sc.w, amoswap/add/xor/and/or/min/max.w)            |
-| **F**            | Single-precision floating-point (32-bit IEEE 754)                                 |
-| **D**            | Double-precision floating-point (64-bit IEEE 754)                                 |
-| **B**            | Bit manipulation (B = Zba + Zbb + Zbs)                                             |
-| **C**            | Compressed instructions (16-bit encodings for reduced code size)                   |
-| **Zba**          | Address generation (sh1add, sh2add, sh3add) - part of B                            |
-| **Zbb**          | Basic bit manipulation (clz, ctz, cpop, min/max, sext, zext, rotations, orc.b, rev8) - part of B |
-| **Zbs**          | Single-bit operations (bset, bclr, binv, bext + immediate variants) - part of B    |
-| **Zicsr**        | CSR access instructions                                                            |
-| **Zicntr**       | Base counters (cycle, time, instret)                                               |
-| **Zifencei**     | Instruction fence (fence.i)                                                        |
-| **Zicond**       | Conditional zero (czero.eqz, czero.nez) - not part of B                            |
-| **Zbkb**         | Bit manipulation for crypto (pack, packh, brev8, zip, unzip) - part of Zk, not B   |
-| **Zihintpause**  | Pause hint for spin-wait loops                                                     |
-| **Machine Mode** | M-mode privilege (RTOS support): mret, wfi, ecall, ebreak                          |
+The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table.
 
 Additional features:
 - 32 general-purpose registers
