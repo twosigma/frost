@@ -30,7 +30,6 @@ from cocotb.triggers import RisingEdge, FallingEdge
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
     pack_alloc_request,
     unpack_alloc_response,
-    pack_cdb_write,
     pack_branch_update,
     unpack_commit,
 )
@@ -39,7 +38,6 @@ from cocotb_tests.tomasulo.register_alias_table.rat_interface import (
 )
 from cocotb_tests.tomasulo.reservation_station.rs_interface import (
     pack_rs_dispatch,
-    pack_cdb_broadcast,
     unpack_rs_issue,
     MASK_TAG,
     MASK32,
@@ -53,6 +51,16 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
 from cocotb_tests.tomasulo.register_alias_table.rat_model import (
     LookupResult,
     MASK_REG,
+)
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_interface import (
+    pack_fu_complete,
+    unpack_cdb_broadcast,
+)
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
+    FuComplete,
+    CdbBroadcast,
+    NUM_FUS,
+    FU_ALU,
 )
 
 # RS type constants (mirrors riscv_pkg::rs_type_e)
@@ -162,11 +170,8 @@ class TomasuloInterface:
         # ROB allocation
         self.dut.i_alloc_req.value = 0
 
-        # ROB CDB
-        self.dut.i_cdb_write.value = 0
-
-        # CDB broadcast for RS
-        self.dut.i_cdb.value = 0
+        # FU completion requests (to CDB arbiter)
+        self.clear_all_fu_completes()
 
         # ROB branch
         self.dut.i_branch_update.value = 0
@@ -259,35 +264,63 @@ class TomasuloInterface:
         return unpack_alloc_response(val)
 
     # =========================================================================
-    # ROB CDB Write
+    # FU Completion (drives CDB arbiter, which feeds ROB + all RS)
     # =========================================================================
 
-    def drive_cdb_write(self, write: CDBWrite) -> None:
-        """Drive CDB write to ROB."""
-        self.dut.i_cdb_write.value = pack_cdb_write(write)
+    def drive_fu_complete(
+        self,
+        fu_index: int = FU_ALU,
+        tag: int = 0,
+        value: int = 0,
+        exception: bool = False,
+        exc_cause: int = 0,
+        fp_flags: int = 0,
+    ) -> None:
+        """Drive a single FU completion request to the CDB arbiter.
 
-    def clear_cdb_write(self) -> None:
-        """Clear CDB write signals."""
-        self.dut.i_cdb_write.value = 0
-
-    # =========================================================================
-    # CDB Broadcast (for RS wakeup)
-    # =========================================================================
-
-    def drive_cdb_broadcast(self, tag: int, value: int = 0, **kwargs: Any) -> None:
-        """Drive CDB broadcast for RS wakeup."""
-        self.dut.i_cdb.value = pack_cdb_broadcast(
-            valid=True, tag=tag, value=value, **kwargs
+        The arbiter internally broadcasts to both ROB (cdb_write) and all RS
+        (cdb broadcast for wakeup).
+        """
+        req = FuComplete(
+            valid=True,
+            tag=tag,
+            value=value,
+            exception=exception,
+            exc_cause=exc_cause,
+            fp_flags=fp_flags,
         )
+        self._get_fu_signal(fu_index).value = pack_fu_complete(req)
 
-    def clear_cdb_broadcast(self) -> None:
-        """Clear CDB broadcast signals."""
-        self.dut.i_cdb.value = 0
+    def _get_fu_signal(self, fu_index: int) -> Any:
+        """Get DUT signal for a specific FU complete slot.
 
-    # =========================================================================
-    # Combined CDB: drive both ROB cdb_write and RS cdb broadcast
-    # =========================================================================
+        Verilator: dut.i_fu_complete[index]
+        Icarus TB: dut.i_fu_complete_0 .. dut.i_fu_complete_6
+        """
+        if hasattr(self.dut, "i_fu_complete_0"):
+            return getattr(self.dut, f"i_fu_complete_{fu_index}")
+        return self.dut.i_fu_complete[fu_index]
 
+    def clear_fu_complete(self, fu_index: int = FU_ALU) -> None:
+        """Clear a single FU completion slot."""
+        self._get_fu_signal(fu_index).value = 0
+
+    def clear_all_fu_completes(self) -> None:
+        """Clear all FU completion slots."""
+        for i in range(NUM_FUS):
+            self._get_fu_signal(i).value = 0
+
+    def read_cdb_output(self) -> CdbBroadcast:
+        """Read the CDB broadcast output for observation."""
+        raw = int(self.dut.o_cdb.value)
+        return unpack_cdb_broadcast(raw)
+
+    def read_cdb_grant(self) -> int:
+        """Read the CDB grant vector."""
+        return int(self.dut.o_cdb_grant.value)
+
+    # Backward-compat aliases for tests that used the old CDB interface.
+    # These all route through a single FU_ALU completion.
     def drive_cdb(
         self,
         tag: int,
@@ -296,22 +329,49 @@ class TomasuloInterface:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Drive CDB to both ROB (cdb_write) and RS (cdb broadcast)."""
-        self.drive_cdb_write(
-            CDBWrite(
-                tag=tag,
-                value=value,
-                exception=exception,
-                exc_cause=exc_cause,
-                fp_flags=fp_flags,
-            )
+        """Drive CDB via FU_ALU completion (backward compat)."""
+        self.drive_fu_complete(
+            FU_ALU,
+            tag=tag,
+            value=value,
+            exception=exception,
+            exc_cause=exc_cause,
+            fp_flags=fp_flags,
         )
-        self.drive_cdb_broadcast(tag=tag, value=value)
 
     def clear_cdb(self) -> None:
-        """Clear both CDB paths."""
-        self.clear_cdb_write()
-        self.clear_cdb_broadcast()
+        """Clear CDB by clearing all FU completions (backward compat)."""
+        self.clear_all_fu_completes()
+
+    def drive_cdb_write(self, write: CDBWrite) -> None:
+        """Drive CDB write via FU_ALU completion (backward compat)."""
+        self.drive_fu_complete(
+            FU_ALU,
+            tag=write.tag,
+            value=write.value,
+            exception=write.exception,
+            exc_cause=write.exc_cause,
+            fp_flags=write.fp_flags,
+        )
+
+    def clear_cdb_write(self) -> None:
+        """Clear CDB write by clearing FU_ALU (backward compat)."""
+        self.clear_fu_complete(FU_ALU)
+
+    def drive_cdb_broadcast(self, tag: int, value: int = 0, **kwargs: Any) -> None:
+        """Drive CDB broadcast via FU_ALU completion (backward compat)."""
+        self.drive_fu_complete(
+            FU_ALU,
+            tag=tag,
+            value=value,
+            exception=kwargs.get("exception", False),
+            exc_cause=kwargs.get("exc_cause", 0),
+            fp_flags=kwargs.get("fp_flags", 0),
+        )
+
+    def clear_cdb_broadcast(self) -> None:
+        """Clear CDB broadcast by clearing FU_ALU (backward compat)."""
+        self.clear_fu_complete(FU_ALU)
 
     # =========================================================================
     # ROB Branch Update

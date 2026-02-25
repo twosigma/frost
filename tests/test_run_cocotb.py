@@ -211,10 +211,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="reservation_station",
         description="Reservation Station unit tests",
     ),
+    "cdb_arbiter": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.cdb_arbiter.test_cdb_arbiter",
+        hdl_toplevel_module="cdb_arbiter",
+        description="CDB arbiter unit tests (priority, grant, propagation)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo integration tests (ROB + RAT + RS)",
+        description="Tomasulo integration tests (ROB + RAT + RS + CDB arbiter)",
     ),
 }
 

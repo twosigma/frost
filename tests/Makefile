@@ -53,8 +53,13 @@ else ifeq ($(TOPLEVEL),reservation_station)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cdb_arbiter)
+# CDB arbiter unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
-# Tomasulo integration wrapper block test (ROB + RAT + RS)
+# Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f
 VERILOG_SOURCES :=
@@ -88,6 +93,10 @@ COMPILE_ARGS += -DICARUS
 ifeq ($(TOPLEVEL),reservation_station)
 COMPILE_ARGS += $(ROOT)/hw/sim/reservation_station_tb.sv
 override TOPLEVEL := reservation_station_tb
+endif
+ifeq ($(TOPLEVEL),cdb_arbiter)
+COMPILE_ARGS += $(ROOT)/hw/sim/cdb_arbiter_tb.sv
+override TOPLEVEL := cdb_arbiter_tb
 endif
 ifeq ($(TOPLEVEL),tomasulo_wrapper)
 COMPILE_ARGS += $(ROOT)/hw/sim/tomasulo_wrapper_tb.sv

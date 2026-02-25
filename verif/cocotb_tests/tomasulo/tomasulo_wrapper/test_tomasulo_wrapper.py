@@ -36,6 +36,11 @@ from .tomasulo_interface import (
 )
 from .tomasulo_model import TomasuloModel
 
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
+    FU_ALU,
+    FU_MUL,
+    FU_FP_DIV,
+)
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
     CDBWrite,
@@ -627,17 +632,22 @@ async def test_full_pipeline_cycle(dut: Any) -> None:
     cocotb.log.info("=== Test: Full Pipeline Cycle ===")
     dut_if, model = await setup_test(dut)
 
-    # 1. Dispatch instruction to ROB + RAT + RS
+    # 0. Allocate producer entry whose result the consumer will wait on
+    producer_req = make_store_req(pc=0x0F00)
+    producer_tag = await dut_if.dispatch(producer_req)
+    model.dispatch(producer_req)
+
+    # 1. Dispatch consumer instruction to ROB + RAT + RS
     req = make_int_req(pc=0x1000, rd=7)
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
 
-    # RS dispatch: src1 not ready (waiting on some producer tag 20)
+    # RS dispatch: src1 not ready (waiting on producer)
     dut_if.drive_rs_dispatch(
         rob_tag=tag,
         op=0,
         src1_ready=False,
-        src1_tag=20,
+        src1_tag=producer_tag,
         src2_ready=True,
         src2_value=0x42,
         src3_ready=True,
@@ -646,7 +656,7 @@ async def test_full_pipeline_cycle(dut: Any) -> None:
         rob_tag=tag,
         op=0,
         src1_ready=False,
-        src1_tag=20,
+        src1_tag=producer_tag,
         src2_ready=True,
         src2_value=0x42,
         src3_ready=True,
@@ -654,11 +664,16 @@ async def test_full_pipeline_cycle(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # 2. CDB from producer (tag 20) wakes RS src1
-    dut_if.drive_cdb_broadcast(tag=20, value=0xAAAA)
-    model.rs.cdb_snoop(tag=20, value=0xAAAA)
+    # 2. CDB from producer wakes RS src1 (also marks producer done in ROB)
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=0xAAAA)
+    model.cdb_snoop(tag=producer_tag, value=0xAAAA)
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
+
+    # 2.5 Commit producer (ROB head, in-order commit)
+    commit_prod = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_prod["valid"] and commit_prod["tag"] == producer_tag
 
     # 3. RS issues
     dut_if.set_rs_fu_ready(True)
@@ -1342,6 +1357,11 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     cocotb.log.info("=== Test: FMUL_RS Three-Source FMA ===")
     dut_if, model = await setup_test(dut)
 
+    # Allocate producer entry whose result the FMA will wait on (src3)
+    producer_req = make_store_req(pc=0x1F00)
+    producer_tag = await dut_if.dispatch(producer_req)
+    model.dispatch(producer_req)
+
     # Dispatch FP instruction to ROB
     req = make_fp_req(pc=0x2000, fd=4)
     tag = await dut_if.dispatch(req)
@@ -1358,7 +1378,7 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
         src2_ready=True,
         src2_value=0x4000000000000000,  # 2.0 double
         src3_ready=False,
-        src3_tag=15,  # Waiting on producer tag 15
+        src3_tag=producer_tag,  # Waiting on producer
         rm=fma_rm,
     )
     model.rs_dispatch(
@@ -1370,7 +1390,7 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
         src2_ready=True,
         src2_value=0x4000000000000000,
         src3_ready=False,
-        src3_tag=15,
+        src3_tag=producer_tag,
         rm=fma_rm,
     )
     await dut_if.step()
@@ -1383,9 +1403,9 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     await Timer(1, unit="ps")
     assert not dut_if.rs_issue_valid_for(RS_FMUL), "Should not issue without src3"
 
-    # CDB wakes src3
-    dut_if.drive_cdb_broadcast(tag=15, value=0x4008000000000000)  # 3.0 double
-    model.cdb_snoop(tag=15, value=0x4008000000000000)
+    # CDB wakes src3 (also marks producer done in ROB)
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=0x4008000000000000)  # 3.0 double
+    model.cdb_snoop(tag=producer_tag, value=0x4008000000000000)
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
@@ -1656,3 +1676,86 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     cocotb.log.info(
         f"=== Test Passed ({num_dispatches} dispatches across 6 RS, seed={seed}) ==="
     )
+
+
+@cocotb.test()
+async def test_multi_fu_arbitration_contention(dut: Any) -> None:
+    """Multiple FU completions contend; highest-priority FU wins CDB grant."""
+    if is_icarus(dut):
+        cocotb.log.info(
+            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
+        )
+        return
+    cocotb.log.info("=== Test: Multi-FU Arbitration Contention ===")
+    dut_if, model = await setup_test(dut)
+
+    # Allocate 3 instructions: one for ALU, one for MUL, one for FP_DIV
+    req_a = make_int_req(pc=0x1000, rd=1)
+    tag_a = await dut_if.dispatch(req_a)
+    model.dispatch(req_a)
+
+    req_b = make_int_req(pc=0x1004, rd=2)
+    tag_b = await dut_if.dispatch(req_b)
+    model.dispatch(req_b)
+
+    req_c = make_int_req(pc=0x1008, rd=3)
+    tag_c = await dut_if.dispatch(req_c)
+    model.dispatch(req_c)
+
+    # Drive 3 FU completions simultaneously (ALU, MUL, FP_DIV)
+    dut_if.drive_fu_complete(FU_ALU, tag=tag_a, value=0xAAAA)
+    dut_if.drive_fu_complete(FU_MUL, tag=tag_b, value=0xBBBB)
+    dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
+    await Timer(1, unit="ps")
+
+    # FP_DIV should win (highest priority)
+    cdb = dut_if.read_cdb_output()
+    grant = dut_if.read_cdb_grant()
+    assert cdb.valid, "CDB should be valid with 3 FUs completing"
+    assert cdb.tag == tag_c, f"FP_DIV should win, got tag={cdb.tag} expected={tag_c}"
+    assert cdb.value == 0xCCCC
+    assert (grant >> FU_FP_DIV) & 1, "FP_DIV grant should be set"
+    assert not ((grant >> FU_ALU) & 1), "ALU should not be granted"
+    assert not ((grant >> FU_MUL) & 1), "MUL should not be granted"
+
+    # Model: only the FP_DIV completion goes through this cycle
+    model.fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
+
+    # Clock: arbiter result latched by ROB
+    await dut_if.step()
+
+    # Clear FP_DIV (it was granted), keep ALU and MUL presenting
+    dut_if.clear_fu_complete(FU_FP_DIV)
+    await Timer(1, unit="ps")
+
+    # Now MUL should win (higher priority than ALU)
+    cdb = dut_if.read_cdb_output()
+    assert cdb.valid
+    assert cdb.tag == tag_b, f"MUL should win now, got tag={cdb.tag} expected={tag_b}"
+    assert cdb.value == 0xBBBB
+
+    model.fu_complete(FU_MUL, tag=tag_b, value=0xBBBB)
+    await dut_if.step()
+
+    # Clear MUL, only ALU remains
+    dut_if.clear_fu_complete(FU_MUL)
+    await Timer(1, unit="ps")
+
+    cdb = dut_if.read_cdb_output()
+    assert cdb.valid
+    assert cdb.tag == tag_a, f"ALU should win now, got tag={cdb.tag} expected={tag_a}"
+    assert cdb.value == 0xAAAA
+
+    model.fu_complete(FU_ALU, tag=tag_a, value=0xAAAA)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_ALU)
+
+    # All 3 entries now done — commit in order
+    for expected_tag in [tag_a, tag_b, tag_c]:
+        commit = await wait_for_commit(dut_if)
+        model.try_commit()
+        assert (
+            commit["valid"] and commit["tag"] == expected_tag
+        ), f"Expected commit tag={expected_tag}, got {commit['tag']}"
+
+    cocotb.log.info("=== Test Passed ===")

@@ -32,8 +32,9 @@
  * Internal wiring:
  *   ROB.o_commit --> commit_bus --> RAT.i_commit
  *                               --> o_commit (exposed for testbench observation)
- *   i_cdb_write  --> ROB.i_cdb_write
- *   i_cdb        --> all RS .i_cdb (broadcast format for wakeup)
+ *   i_fu_complete --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
+ *                                            --> all RS .i_cdb (broadcast for wakeup)
+ *   cdb_arbiter.o_grant --> o_cdb_grant (back-pressure to FUs)
  *   Flush --> all modules
  *   ROB.o_head_tag --> all RS .i_rob_head_tag (for age-based partial flush)
  */
@@ -49,14 +50,29 @@ module tomasulo_wrapper (
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
     // =========================================================================
-    // ROB CDB Write Interface (from Functional Units via CDB)
+    // FU Completion Requests (to CDB Arbiter)
     // =========================================================================
-    input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
+`ifdef VERILATOR
+    input riscv_pkg::fu_complete_t i_fu_complete  [riscv_pkg::NumFus],
+`else
+    input riscv_pkg::fu_complete_t i_fu_complete_0,
+    input riscv_pkg::fu_complete_t i_fu_complete_1,
+    input riscv_pkg::fu_complete_t i_fu_complete_2,
+    input riscv_pkg::fu_complete_t i_fu_complete_3,
+    input riscv_pkg::fu_complete_t i_fu_complete_4,
+    input riscv_pkg::fu_complete_t i_fu_complete_5,
+    input riscv_pkg::fu_complete_t i_fu_complete_6,
+`endif
 
     // =========================================================================
-    // CDB Broadcast for RS Wakeup
+    // CDB Grant (back-pressure to FUs)
     // =========================================================================
-    input riscv_pkg::cdb_broadcast_t i_cdb,
+    output logic [riscv_pkg::NumFus-1:0] o_cdb_grant,
+
+    // =========================================================================
+    // CDB Broadcast Output (for testbench observation)
+    // =========================================================================
+    output riscv_pkg::cdb_broadcast_t o_cdb,
 
     // =========================================================================
     // ROB Branch Update Interface (from Branch Unit)
@@ -298,6 +314,50 @@ module tomasulo_wrapper (
   assign head_tag = o_head_tag;
 
   // ===========================================================================
+  // CDB Arbiter: FU completions → single CDB broadcast
+  // ===========================================================================
+  riscv_pkg::cdb_broadcast_t cdb_bus;
+
+`ifdef VERILATOR
+  cdb_arbiter u_cdb_arbiter (
+      .i_clk        (i_clk),
+      .i_rst_n      (i_rst_n),
+      .i_fu_complete(i_fu_complete),
+      .o_cdb        (cdb_bus),
+      .o_grant      (o_cdb_grant)
+  );
+`else
+  // Icarus / Yosys: connect individual flattened ports
+  cdb_arbiter u_cdb_arbiter (
+      .i_clk          (i_clk),
+      .i_rst_n        (i_rst_n),
+      .i_fu_complete_0(i_fu_complete_0),
+      .i_fu_complete_1(i_fu_complete_1),
+      .i_fu_complete_2(i_fu_complete_2),
+      .i_fu_complete_3(i_fu_complete_3),
+      .i_fu_complete_4(i_fu_complete_4),
+      .i_fu_complete_5(i_fu_complete_5),
+      .i_fu_complete_6(i_fu_complete_6),
+      .o_cdb          (cdb_bus),
+      .o_grant        (o_cdb_grant)
+  );
+`endif
+
+  // Expose CDB broadcast for testbench observation
+  assign o_cdb = cdb_bus;
+
+  // Derive ROB CDB write from CDB broadcast
+  riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter;
+  always_comb begin
+    cdb_write_from_arbiter.valid     = cdb_bus.valid;
+    cdb_write_from_arbiter.tag       = cdb_bus.tag;
+    cdb_write_from_arbiter.value     = cdb_bus.value;
+    cdb_write_from_arbiter.exception = cdb_bus.exception;
+    cdb_write_from_arbiter.exc_cause = cdb_bus.exc_cause;
+    cdb_write_from_arbiter.fp_flags  = cdb_bus.fp_flags;
+  end
+
+  // ===========================================================================
   // Dispatch Routing: decode rs_type to per-RS dispatch valid signals
   // ===========================================================================
   logic int_rs_dispatch_valid;
@@ -364,8 +424,8 @@ module tomasulo_wrapper (
       .i_alloc_req (i_alloc_req),
       .o_alloc_resp(o_alloc_resp),
 
-      // CDB
-      .i_cdb_write(i_cdb_write),
+      // CDB (from arbiter)
+      .i_cdb_write(cdb_write_from_arbiter),
 
       // Branch
       .i_branch_update(i_branch_update),
@@ -513,8 +573,8 @@ module tomasulo_wrapper (
       .i_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
       .o_full                     (int_rs_full_w),
 
-      // CDB snoop
-      .i_cdb(i_cdb),
+      // CDB snoop (from arbiter)
+      .i_cdb(cdb_bus),
 
       // Issue (individual ports)
       .o_issue_valid           (o_rs_issue_valid),
@@ -589,8 +649,8 @@ module tomasulo_wrapper (
       .i_dispatch(int_rs_dispatch),
       .o_full    (int_rs_full_w),
 
-      // CDB snoop
-      .i_cdb(i_cdb),
+      // CDB snoop (from arbiter)
+      .i_cdb(cdb_bus),
 
       // Issue
       .o_issue(o_rs_issue),
@@ -623,7 +683,7 @@ module tomasulo_wrapper (
       .i_rst_n       (i_rst_n),
       .i_dispatch    (mul_rs_dispatch),
       .o_full        (mul_rs_full_w),
-      .i_cdb         (i_cdb),
+      .i_cdb         (cdb_bus),
       .o_issue       (o_mul_rs_issue),
       .i_fu_ready    (i_mul_rs_fu_ready),
       .i_flush_en    (i_flush_en),
@@ -650,7 +710,7 @@ module tomasulo_wrapper (
       .i_rst_n       (i_rst_n),
       .i_dispatch    (mem_rs_dispatch),
       .o_full        (mem_rs_full_w),
-      .i_cdb         (i_cdb),
+      .i_cdb         (cdb_bus),
       .o_issue       (o_mem_rs_issue),
       .i_fu_ready    (i_mem_rs_fu_ready),
       .i_flush_en    (i_flush_en),
@@ -677,7 +737,7 @@ module tomasulo_wrapper (
       .i_rst_n       (i_rst_n),
       .i_dispatch    (fp_rs_dispatch),
       .o_full        (fp_rs_full_w),
-      .i_cdb         (i_cdb),
+      .i_cdb         (cdb_bus),
       .o_issue       (o_fp_rs_issue),
       .i_fu_ready    (i_fp_rs_fu_ready),
       .i_flush_en    (i_flush_en),
@@ -704,7 +764,7 @@ module tomasulo_wrapper (
       .i_rst_n       (i_rst_n),
       .i_dispatch    (fmul_rs_dispatch),
       .o_full        (fmul_rs_full_w),
-      .i_cdb         (i_cdb),
+      .i_cdb         (cdb_bus),
       .o_issue       (o_fmul_rs_issue),
       .i_fu_ready    (i_fmul_rs_fu_ready),
       .i_flush_en    (i_flush_en),
@@ -731,7 +791,7 @@ module tomasulo_wrapper (
       .i_rst_n       (i_rst_n),
       .i_dispatch    (fdiv_rs_dispatch),
       .o_full        (fdiv_rs_full_w),
-      .i_cdb         (i_cdb),
+      .i_cdb         (cdb_bus),
       .o_issue       (o_fdiv_rs_issue),
       .i_fu_ready    (i_fdiv_rs_fu_ready),
       .i_flush_en    (i_flush_en),
@@ -764,8 +824,8 @@ module tomasulo_wrapper (
 
   // CDB write and branch update cannot target same tag simultaneously
   always_comb begin
-    assume (!(i_cdb_write.valid && i_branch_update.valid &&
-              i_cdb_write.tag == i_branch_update.tag));
+    assume (!(cdb_write_from_arbiter.valid && i_branch_update.valid &&
+              cdb_write_from_arbiter.tag == i_branch_update.tag));
   end
 
   // No allocation during flush
@@ -1057,7 +1117,7 @@ module tomasulo_wrapper (
       cover_rs_issue : cover (o_rs_issue.valid);
 
       // CDB simultaneously present with RS dispatch
-      cover_cdb_and_rs_dispatch : cover (i_cdb.valid && i_rs_dispatch.valid);
+      cover_cdb_and_rs_dispatch : cover (cdb_bus.valid && i_rs_dispatch.valid);
 
       // flush_all while RS non-empty
       cover_flush_while_rs_nonempty : cover (i_flush_all && !o_rs_empty);

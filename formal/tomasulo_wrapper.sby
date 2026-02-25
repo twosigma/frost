@@ -18,6 +18,7 @@ read -formal -sv mwp_dist_ram.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -sv reservation_station.sv
+read -sv cdb_arbiter.sv
 read -formal -sv tomasulo_wrapper.sv
 prep -top tomasulo_wrapper
 
@@ -28,4 +29,5 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

@@ -80,8 +80,12 @@ FORMAL_TARGETS = [
         "Reservation station - dispatch, wakeup, issue, flush",
     ),
     FormalTarget(
+        "cdb_arbiter.sby",
+        "CDB arbiter - priority arbitration, grant exclusivity, data forwarding",
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
-        "Tomasulo integration wrapper (ROB + RAT + RS) - commit propagation, flush composition",
+        "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, flush composition",
     ),
 ]
 

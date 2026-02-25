@@ -34,6 +34,9 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
 from cocotb_tests.tomasulo.reservation_station.rs_model import (
     RSModel,
 )
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
+    FU_ALU,
+)
 
 # RS type constants (mirrors riscv_pkg::rs_type_e)
 RS_INT = 0
@@ -147,29 +150,25 @@ class TomasuloModel:
             "misprediction": expected.misprediction,
         }
 
-    def cdb_write(self, write: CDBWrite) -> None:
-        """CDB write to ROB (marks entry done)."""
-        self.rob.cdb_write(write)
-
-    def cdb_snoop(self, tag: int, value: int) -> None:
-        """CDB broadcast to ALL RS instances (wakes pending sources)."""
-        for rs in self._all_rs():
-            rs.cdb_snoop(tag, value)
-
-    def cdb_write_and_snoop(
+    def fu_complete(
         self,
-        tag: int,
+        fu_index: int = FU_ALU,
+        tag: int = 0,
         value: int = 0,
         exception: bool = False,
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Write CDB to ROB and snoop to all RS.
+        """Simulate FU completion through CDB arbiter → ROB + all RS.
 
-        Tolerant of CDB writes to invalid ROB entries (RTL silently ignores).
+        With the CDB arbiter inside the wrapper, any FU completion broadcasts
+        to both ROB (cdb_write) and all RS (cdb_snoop). Tests drive one FU at
+        a time, so the arbiter always grants immediately.
+
+        Tolerant of writes to invalid ROB entries (RTL silently ignores).
         """
         try:
-            self.cdb_write(
+            self.rob.cdb_write(
                 CDBWrite(
                     tag=tag,
                     value=value,
@@ -180,7 +179,42 @@ class TomasuloModel:
             )
         except ValueError:
             pass  # RTL silently ignores CDB to invalid ROB entries
-        self.cdb_snoop(tag, value)
+        for rs in self._all_rs():
+            rs.cdb_snoop(tag, value)
+
+    # Backward-compat: old methods now route through fu_complete
+    def cdb_write(self, write: CDBWrite) -> None:
+        """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
+        self.fu_complete(
+            FU_ALU,
+            tag=write.tag,
+            value=write.value,
+            exception=write.exception,
+            exc_cause=write.exc_cause,
+            fp_flags=write.fp_flags,
+        )
+
+    def cdb_snoop(self, tag: int, value: int) -> None:
+        """CDB snoop + ROB write (arbiter always broadcasts both)."""
+        self.fu_complete(FU_ALU, tag=tag, value=value)
+
+    def cdb_write_and_snoop(
+        self,
+        tag: int,
+        value: int = 0,
+        exception: bool = False,
+        exc_cause: int = 0,
+        fp_flags: int = 0,
+    ) -> None:
+        """Write CDB to ROB and snoop to all RS (backward compat)."""
+        self.fu_complete(
+            FU_ALU,
+            tag=tag,
+            value=value,
+            exception=exception,
+            exc_cause=exc_cause,
+            fp_flags=fp_flags,
+        )
 
     def rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> int | None:
         """Dispatch an instruction to the specified RS type."""

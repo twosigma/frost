@@ -42,14 +42,21 @@ module tomasulo_wrapper_tb (
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
     // =========================================================================
-    // ROB CDB Write Interface -- pass through (84 bits)
+    // FU Completion Requests -- flattened from i_fu_complete[7] (7×81 bits)
     // =========================================================================
-    input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
+    input riscv_pkg::fu_complete_t i_fu_complete_0,
+    input riscv_pkg::fu_complete_t i_fu_complete_1,
+    input riscv_pkg::fu_complete_t i_fu_complete_2,
+    input riscv_pkg::fu_complete_t i_fu_complete_3,
+    input riscv_pkg::fu_complete_t i_fu_complete_4,
+    input riscv_pkg::fu_complete_t i_fu_complete_5,
+    input riscv_pkg::fu_complete_t i_fu_complete_6,
 
     // =========================================================================
-    // CDB Broadcast for RS Wakeup -- pass through (84 bits)
+    // CDB Grant + Broadcast -- pass through (small)
     // =========================================================================
-    input riscv_pkg::cdb_broadcast_t i_cdb,
+    output logic [riscv_pkg::NumFus-1:0] o_cdb_grant,
+    output riscv_pkg::cdb_broadcast_t    o_cdb,
 
     // =========================================================================
     // ROB Branch Update Interface -- pass through (73 bits)
@@ -236,8 +243,15 @@ module tomasulo_wrapper_tb (
       // ROB
       .i_alloc_req,
       .o_alloc_resp,
-      .i_cdb_write,
-      .i_cdb,
+      .i_fu_complete_0,
+      .i_fu_complete_1,
+      .i_fu_complete_2,
+      .i_fu_complete_3,
+      .i_fu_complete_4,
+      .i_fu_complete_5,
+      .i_fu_complete_6,
+      .o_cdb_grant,
+      .o_cdb,
       .i_branch_update,
       .i_rob_checkpoint_valid,
       .i_rob_checkpoint_id,
