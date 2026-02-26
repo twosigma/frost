@@ -217,6 +217,7 @@ module tomasulo_wrapper (
     input logic i_rs_dispatch_mem_signed,
     input logic [11:0] i_rs_dispatch_csr_addr,
     input logic [4:0] i_rs_dispatch_csr_imm,
+    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_pc,
 `else
     input riscv_pkg::rs_dispatch_t i_rs_dispatch,
 `endif
@@ -243,6 +244,7 @@ module tomasulo_wrapper (
     output logic                                                        o_rs_issue_mem_signed,
     output logic                 [                                11:0] o_rs_issue_csr_addr,
     output logic                 [                                 4:0] o_rs_issue_csr_imm,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_pc,
 `else
     output riscv_pkg::rs_issue_t                                        o_rs_issue,
 `endif
@@ -298,7 +300,12 @@ module tomasulo_wrapper (
     input  logic                                                            i_fdiv_rs_fu_ready,
     output logic                                                            o_fdiv_rs_full,
     output logic                                                            o_fdiv_rs_empty,
-    output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count
+    output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count,
+
+    // =========================================================================
+    // CSR Read Data (for ALU shim — CSR operations return old CSR value)
+    // =========================================================================
+    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data
 );
 
   // ===========================================================================
@@ -319,21 +326,34 @@ module tomasulo_wrapper (
   riscv_pkg::cdb_broadcast_t cdb_bus;
 
 `ifdef VERILATOR
+  // Override slots 0-2: internal FU pipelines replace external i_fu_complete[0:2]
+  riscv_pkg::fu_complete_t cdb_arb_in[riscv_pkg::NumFus];
+  always_comb begin
+    cdb_arb_in[0] = alu_adapter_to_arbiter;
+    cdb_arb_in[1] = mul_adapter_to_arbiter;
+    cdb_arb_in[2] = div_adapter_to_arbiter;
+    cdb_arb_in[3] = i_fu_complete[3];
+    cdb_arb_in[4] = i_fu_complete[4];
+    cdb_arb_in[5] = i_fu_complete[5];
+    cdb_arb_in[6] = i_fu_complete[6];
+  end
+
   cdb_arbiter u_cdb_arbiter (
       .i_clk        (i_clk),
       .i_rst_n      (i_rst_n),
-      .i_fu_complete(i_fu_complete),
+      .i_fu_complete(cdb_arb_in),
       .o_cdb        (cdb_bus),
       .o_grant      (o_cdb_grant)
   );
 `else
   // Icarus / Yosys: connect individual flattened ports
+  // Slots 0-2 come from internal FU pipelines; slots 3-6 from external ports
   cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
       .i_rst_n        (i_rst_n),
-      .i_fu_complete_0(i_fu_complete_0),
-      .i_fu_complete_1(i_fu_complete_1),
-      .i_fu_complete_2(i_fu_complete_2),
+      .i_fu_complete_0(alu_adapter_to_arbiter),
+      .i_fu_complete_1(mul_adapter_to_arbiter),
+      .i_fu_complete_2(div_adapter_to_arbiter),
       .i_fu_complete_3(i_fu_complete_3),
       .i_fu_complete_4(i_fu_complete_4),
       .i_fu_complete_5(i_fu_complete_5),
@@ -412,6 +432,34 @@ module tomasulo_wrapper (
   assign o_fp_rs_full   = fp_rs_full_w;
   assign o_fmul_rs_full = fmul_rs_full_w;
   assign o_fdiv_rs_full = fdiv_rs_full_w;
+
+  // ===========================================================================
+  // ALU Pipeline: INT_RS issue → shim → adapter → CDB arbiter slot 0
+  // ===========================================================================
+  riscv_pkg::rs_issue_t    int_rs_issue_w;  // INT_RS issue output
+  riscv_pkg::fu_complete_t alu_shim_out;  // ALU shim → adapter
+  riscv_pkg::fu_complete_t alu_adapter_to_arbiter;  // adapter → arbiter
+  logic                    alu_adapter_result_pending;
+  logic                    alu_fu_busy;  // always 0 for single-cycle ALU
+  logic                    int_rs_fu_ready;
+
+  assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending;
+
+  // ===========================================================================
+  // MUL/DIV Pipeline: MUL_RS issue → shim → adapters → CDB arbiter slots 1,2
+  // ===========================================================================
+  riscv_pkg::rs_issue_t    mul_rs_issue_w;  // MUL_RS issue output (internal)
+  riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL → adapter
+  riscv_pkg::fu_complete_t div_shim_out;  // shim DIV → adapter
+  riscv_pkg::fu_complete_t mul_adapter_to_arbiter;  // adapter → arbiter slot 1
+  riscv_pkg::fu_complete_t div_adapter_to_arbiter;  // adapter → arbiter slot 2
+  logic                    mul_adapter_result_pending;
+  logic                    div_adapter_result_pending;
+  logic                    muldiv_busy;
+  logic                    mul_rs_fu_ready;
+
+  assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy
+                           & ~mul_adapter_result_pending & ~div_adapter_result_pending;
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -571,12 +619,13 @@ module tomasulo_wrapper (
       .i_dispatch_mem_signed      (i_rs_dispatch_mem_signed),
       .i_dispatch_csr_addr        (i_rs_dispatch_csr_addr),
       .i_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
+      .i_dispatch_pc              (i_rs_dispatch_pc),
       .o_full                     (int_rs_full_w),
 
       // CDB snoop (from arbiter)
       .i_cdb(cdb_bus),
 
-      // Issue (individual ports)
+      // Issue (individual ports → internal wires for shim)
       .o_issue_valid           (o_rs_issue_valid),
       .o_issue_rob_tag         (o_rs_issue_rob_tag),
       .o_issue_op              (o_rs_issue_op),
@@ -594,7 +643,8 @@ module tomasulo_wrapper (
       .o_issue_mem_signed      (o_rs_issue_mem_signed),
       .o_issue_csr_addr        (o_rs_issue_csr_addr),
       .o_issue_csr_imm         (o_rs_issue_csr_imm),
-      .i_fu_ready              (i_rs_fu_ready),
+      .o_issue_pc              (o_rs_issue_pc),
+      .i_fu_ready              (int_rs_fu_ready),
 
       // Flush (shared with ROB)
       .i_flush_en    (i_flush_en),
@@ -606,6 +656,30 @@ module tomasulo_wrapper (
       .o_empty(o_rs_empty),
       .o_count(o_rs_count)
   );
+
+  // ICARUS: Pack individual RS issue outputs into struct for ALU shim.
+  // Internal packed struct wires are fine for Icarus — only VPI-facing ports
+  // of >352 bits cause crashes.
+  always_comb begin
+    int_rs_issue_w.valid            = o_rs_issue_valid;
+    int_rs_issue_w.rob_tag          = o_rs_issue_rob_tag;
+    int_rs_issue_w.op               = riscv_pkg::instr_op_e'(o_rs_issue_op);
+    int_rs_issue_w.src1_value       = o_rs_issue_src1_value;
+    int_rs_issue_w.src2_value       = o_rs_issue_src2_value;
+    int_rs_issue_w.src3_value       = o_rs_issue_src3_value;
+    int_rs_issue_w.imm              = o_rs_issue_imm;
+    int_rs_issue_w.use_imm          = o_rs_issue_use_imm;
+    int_rs_issue_w.rm               = o_rs_issue_rm;
+    int_rs_issue_w.branch_target    = o_rs_issue_branch_target;
+    int_rs_issue_w.predicted_taken  = o_rs_issue_predicted_taken;
+    int_rs_issue_w.predicted_target = o_rs_issue_predicted_target;
+    int_rs_issue_w.is_fp_mem        = o_rs_issue_is_fp_mem;
+    int_rs_issue_w.mem_size         = riscv_pkg::mem_size_e'(o_rs_issue_mem_size);
+    int_rs_issue_w.mem_signed       = o_rs_issue_mem_signed;
+    int_rs_issue_w.csr_addr         = o_rs_issue_csr_addr;
+    int_rs_issue_w.csr_imm          = o_rs_issue_csr_imm;
+    int_rs_issue_w.pc               = o_rs_issue_pc;
+  end
 
   // ICARUS: other RS types not instantiated (multi-RS integration tests
   // use Verilator; the RS module itself has standalone Icarus tests).
@@ -652,9 +726,9 @@ module tomasulo_wrapper (
       // CDB snoop (from arbiter)
       .i_cdb(cdb_bus),
 
-      // Issue
-      .o_issue(o_rs_issue),
-      .i_fu_ready(i_rs_fu_ready),
+      // Issue (to internal wire for ALU shim)
+      .o_issue(int_rs_issue_w),
+      .i_fu_ready(int_rs_fu_ready),
 
       // Flush (shared with ROB)
       .i_flush_en    (i_flush_en),
@@ -666,6 +740,9 @@ module tomasulo_wrapper (
       .o_empty(o_rs_empty),
       .o_count(o_rs_count)
   );
+
+  // Observation port: expose INT_RS issue for testbench
+  assign o_rs_issue = int_rs_issue_w;
 
   // ---------------------------------------------------------------------------
   // MUL_RS (depth 4): Integer multiply/divide
@@ -684,8 +761,8 @@ module tomasulo_wrapper (
       .i_dispatch    (mul_rs_dispatch),
       .o_full        (mul_rs_full_w),
       .i_cdb         (cdb_bus),
-      .o_issue       (o_mul_rs_issue),
-      .i_fu_ready    (i_mul_rs_fu_ready),
+      .o_issue       (mul_rs_issue_w),
+      .i_fu_ready    (mul_rs_fu_ready),
       .i_flush_en    (i_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
@@ -693,6 +770,9 @@ module tomasulo_wrapper (
       .o_empty       (o_mul_rs_empty),
       .o_count       (o_mul_rs_count)
   );
+
+  // Observation port: expose MUL_RS issue for testbench
+  assign o_mul_rs_issue = mul_rs_issue_w;
 
   // ---------------------------------------------------------------------------
   // MEM_RS (depth 8): Loads/stores (both INT and FP)
@@ -802,6 +882,82 @@ module tomasulo_wrapper (
       .o_count       (o_fdiv_rs_count)
   );
 `endif
+
+  // ===========================================================================
+  // ALU Shim: translate rs_issue_t → ALU → fu_complete_t
+  // ===========================================================================
+  int_alu_shim u_alu_shim (
+      .i_clk          (i_clk),
+      .i_rst_n        (i_rst_n),
+      .i_rs_issue     (int_rs_issue_w),
+      .i_csr_read_data(i_csr_read_data),
+      .o_fu_complete  (alu_shim_out),
+      .o_fu_busy      (alu_fu_busy)
+  );
+
+  // ===========================================================================
+  // ALU CDB Adapter: result holding register between ALU and CDB arbiter
+  // ===========================================================================
+  fu_cdb_adapter u_alu_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (alu_shim_out),
+      .o_fu_complete   (alu_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[0]),
+      .o_result_pending(alu_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // MUL/DIV Shim: translate rs_issue_t → multiplier/divider → fu_complete_t
+  // ===========================================================================
+  int_muldiv_shim u_muldiv_shim (
+      .i_clk            (i_clk),
+      .i_rst_n          (i_rst_n),
+      .i_rs_issue       (mul_rs_issue_w),
+      .o_mul_fu_complete(mul_shim_out),
+      .o_div_fu_complete(div_shim_out),
+      .o_fu_busy        (muldiv_busy),
+      .i_flush          (i_flush_all),
+      .i_flush_en       (i_flush_en),
+      .i_flush_tag      (i_flush_tag),
+      .i_rob_head_tag   (head_tag)
+  );
+
+  // ===========================================================================
+  // MUL CDB Adapter: result holding register → CDB arbiter slot 1
+  // ===========================================================================
+  fu_cdb_adapter u_mul_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (mul_shim_out),
+      .o_fu_complete   (mul_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[1]),
+      .o_result_pending(mul_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // DIV CDB Adapter: result holding register → CDB arbiter slot 2
+  // ===========================================================================
+  fu_cdb_adapter u_div_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (div_shim_out),
+      .o_fu_complete   (div_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[2]),
+      .o_result_pending(div_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
 
   // ===========================================================================
   // Formal Verification

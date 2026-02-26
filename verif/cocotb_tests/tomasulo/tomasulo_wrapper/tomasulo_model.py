@@ -35,7 +35,7 @@ from cocotb_tests.tomasulo.reservation_station.rs_model import (
     RSModel,
 )
 from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
-    FU_ALU,
+    FU_MEM,
 )
 
 # RS type constants (mirrors riscv_pkg::rs_type_e)
@@ -152,7 +152,7 @@ class TomasuloModel:
 
     def fu_complete(
         self,
-        fu_index: int = FU_ALU,
+        fu_index: int = FU_MEM,
         tag: int = 0,
         value: int = 0,
         exception: bool = False,
@@ -182,11 +182,12 @@ class TomasuloModel:
         for rs in self._all_rs():
             rs.cdb_snoop(tag, value)
 
-    # Backward-compat: old methods now route through fu_complete
+    # Backward-compat: old methods now route through fu_complete.
+    # Use FU_MEM since FU_ALU/FU_MUL/FU_DIV (slots 0-2) are driven internally.
     def cdb_write(self, write: CDBWrite) -> None:
         """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
         self.fu_complete(
-            FU_ALU,
+            FU_MEM,
             tag=write.tag,
             value=write.value,
             exception=write.exception,
@@ -196,7 +197,7 @@ class TomasuloModel:
 
     def cdb_snoop(self, tag: int, value: int) -> None:
         """CDB snoop + ROB write (arbiter always broadcasts both)."""
-        self.fu_complete(FU_ALU, tag=tag, value=value)
+        self.fu_complete(FU_MEM, tag=tag, value=value)
 
     def cdb_write_and_snoop(
         self,
@@ -208,7 +209,7 @@ class TomasuloModel:
     ) -> None:
         """Write CDB to ROB and snoop to all RS (backward compat)."""
         self.fu_complete(
-            FU_ALU,
+            FU_MEM,
             tag=tag,
             value=value,
             exception=exception,

@@ -63,6 +63,7 @@ module reservation_station_tb #(
     input  logic        i_dispatch_mem_signed,
     input  logic [11:0] i_dispatch_csr_addr,
     input  logic [ 4:0] i_dispatch_csr_imm,
+    input  logic [31:0] i_dispatch_pc,
     output logic        o_full,
 
     // =========================================================================
@@ -90,6 +91,7 @@ module reservation_station_tb #(
     output logic        o_issue_mem_signed,
     output logic [11:0] o_issue_csr_addr,
     output logic [ 4:0] o_issue_csr_imm,
+    output logic [31:0] o_issue_pc,
 
     input logic i_fu_ready,
 
@@ -142,6 +144,7 @@ module reservation_station_tb #(
       .i_dispatch_mem_signed      (i_dispatch_mem_signed),
       .i_dispatch_csr_addr        (i_dispatch_csr_addr),
       .i_dispatch_csr_imm         (i_dispatch_csr_imm),
+      .i_dispatch_pc              (i_dispatch_pc),
       .o_full,
       // CDB
       .i_cdb,
@@ -163,6 +166,7 @@ module reservation_station_tb #(
       .o_issue_mem_signed         (o_issue_mem_signed),
       .o_issue_csr_addr           (o_issue_csr_addr),
       .o_issue_csr_imm            (o_issue_csr_imm),
+      .o_issue_pc                 (o_issue_pc),
       .i_fu_ready,
       // Flush
       .i_flush_en,

@@ -19,6 +19,8 @@ exercising the full dispatch -> wakeup -> issue -> commit pipeline.
 """
 
 import random
+import re
+from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -37,8 +39,12 @@ from .tomasulo_interface import (
 from .tomasulo_model import TomasuloModel
 
 from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
+    CdbBroadcast,
     FU_ALU,
     FU_MUL,
+    FU_DIV,
+    FU_MEM,
+    FU_FP_ADD,
     FU_FP_DIV,
 )
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
@@ -52,6 +58,82 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
 
 NUM_CHECKPOINTS = 4
 
+
+# ---------------------------------------------------------------------------
+# Parse instr_op_e from riscv_pkg.sv so op values track the RTL source.
+# ---------------------------------------------------------------------------
+def _parse_instr_op_enum() -> dict[str, int]:
+    """Parse the instr_op_e enum from riscv_pkg.sv and return name->value map.
+
+    Handles both implicit sequential values and explicit assignments
+    (e.g. ``FOO = 5``, ``BAR = 32'HDEAD_BEEF``).  Raises RuntimeError
+    on parse failures so silent mis-numbering cannot occur.
+    """
+    pkg_path = (
+        Path(__file__).resolve().parents[4]
+        / "hw"
+        / "rtl"
+        / "cpu_and_mem"
+        / "cpu"
+        / "riscv_pkg.sv"
+    )
+    text = pkg_path.read_text()
+    # Extract the enum body between 'typedef enum {' and '} instr_op_e;'
+    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    if not m:
+        raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
+    body = m.group(1)
+    result: dict[str, int] = {}
+    next_val = 0
+    for line in body.splitlines():
+        line = re.sub(r"//.*", "", line)  # strip comments
+        line = re.sub(r"/\*.*?\*/", "", line)  # strip inline /* */
+        line = line.strip().rstrip(",")
+        if not line:
+            continue
+        # NAME = VALUE  (explicit assignment)
+        # Supports: plain decimal (5), sized (8'd5, 32'hFF), unsized ('hFF),
+        # octal (8'o17), binary (4'b1010), with optional _ separators.
+        em = re.fullmatch(
+            r"([A-Z_][A-Z0-9_]*)\s*=\s*(?:\d*'[bBdDhHoO])?([0-9a-fA-F_]+)",
+            line,
+        )
+        if em:
+            digits = em.group(2).replace("_", "")
+            base = 10
+            # Detect base from the format specifier preceding the digits
+            bm = re.search(r"'([bBdDhHoO])", line)
+            if bm:
+                base = {"b": 2, "d": 10, "h": 16, "o": 8}[bm.group(1).lower()]
+            try:
+                next_val = int(digits, base)
+            except ValueError as exc:
+                raise RuntimeError(f"Cannot parse instr_op_e value: {line!r}") from exc
+            result[em.group(1)] = next_val
+            next_val += 1
+            continue
+        # NAME  (implicit sequential)
+        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", line):
+            result[line] = next_val
+            next_val += 1
+            continue
+        # Unrecognised non-blank line inside the enum — fail loudly
+        raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
+    if not result:
+        raise RuntimeError("instr_op_e enum body is empty")
+    return result
+
+
+_INSTR_OPS = _parse_instr_op_enum()
+
+OP_ADD = _INSTR_OPS["ADD"]
+OP_SUB = _INSTR_OPS["SUB"]
+OP_MUL = _INSTR_OPS["MUL"]
+OP_MULH = _INSTR_OPS["MULH"]
+OP_DIV = _INSTR_OPS["DIV"]
+OP_DIVU = _INSTR_OPS["DIVU"]
+OP_REM = _INSTR_OPS["REM"]
+
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
     RS_INT: 8,
@@ -64,6 +146,8 @@ RS_DEPTHS = {
 
 # All RS types for iteration
 ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
+# RS types without integrated FU pipeline (safe for manual CDB completion)
+MANUAL_CDB_RS_TYPES = [RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
 RS_NAMES = {
     RS_INT: "INT_RS",
     RS_MUL: "MUL_RS",
@@ -174,6 +258,17 @@ async def wait_for_commit(dut_if: TomasuloInterface, max_cycles: int = 20) -> di
             await FallingEdge(dut_if.clock)
             return commit
     raise TimeoutError("No commit observed within timeout")
+
+
+async def wait_for_cdb(dut_if: TomasuloInterface, max_cycles: int = 30) -> CdbBroadcast:
+    """Wait for a valid CDB broadcast, raising TimeoutError if not seen."""
+    for _ in range(max_cycles):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        cdb = dut_if.read_cdb_output()
+        if cdb.valid:
+            return cdb
+    raise TimeoutError("No CDB broadcast observed within timeout")
 
 
 # =============================================================================
@@ -687,11 +782,9 @@ async def test_full_pipeline_cycle(dut: Any) -> None:
     await dut_if.step()
     assert dut_if.rs_empty, "RS should be empty after issue"
 
-    # 4. FU produces result -> CDB -> ROB done
-    dut_if.drive_cdb(tag=tag, value=0xBEEF)
-    model.cdb_write(CDBWrite(tag=tag, value=0xBEEF))
-    await dut_if.step()
-    dut_if.clear_cdb()
+    # 4. ALU pipeline auto-completed: ADD(0xAAAA, 0x42) -> CDB -> ROB done
+    alu_result = (0xAAAA + 0x42) & 0xFFFFFFFF
+    model.cdb_write(CDBWrite(tag=tag, value=alu_result))
 
     # 5. ROB commits -> RAT clears
     commit = await wait_for_commit(dut_if)
@@ -865,17 +958,16 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     await dut_if.step()
     assert dut_if.rs_empty
 
-    # Complete via CDB -> ROB done
-    dut_if.drive_cdb(tag=tag, value=0xDEAD)
-    model.cdb_write(CDBWrite(tag=tag, value=0xDEAD))
-    await dut_if.step()
-    dut_if.clear_cdb()
+    # ALU pipeline auto-completed the entry: ADD(0x100, 0x200) = 0x300.
+    # CDB write latched on this step's rising edge — entry is done.
+    # Check bypass at falling edge (before commit fires on next rising edge).
+    alu_result = (0x100 + 0x200) & 0xFFFFFFFF
+    model.cdb_write(CDBWrite(tag=tag, value=alu_result))
 
-    # Now ROB bypass read should show done
     dut_if.set_read_tag(tag)
-    await RisingEdge(dut_if.clock)
+    await Timer(1, unit="ps")  # Combinational settle
     assert dut_if.read_entry_done(), "ROB entry should be done now"
-    assert dut_if.read_entry_value() == 0xDEAD
+    assert dut_if.read_entry_value() == alu_result
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -883,11 +975,18 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
 @cocotb.test()
 async def test_random_dispatch_execute_commit(dut: Any) -> None:
     """Constrained random: dispatch, RS dispatch, CDB, issue, commit, flush."""
+    if is_icarus(dut):
+        cocotb.log.info(
+            "SKIP: Random MEM_RS test requires Verilator (ICARUS has INT_RS only)"
+        )
+        return
     cocotb.log.info("=== Test: Random Dispatch/Execute/Commit ===")
     seed = log_random_seed()
     dut_if, model = await setup_test(dut)
 
-    dut_if.set_rs_fu_ready(True)
+    # Use MEM_RS for random testing — INT_RS and MUL_RS have integrated FU
+    # pipelines that auto-complete entries, conflicting with manual CDB drives.
+    dut_if.set_fu_ready(RS_MEM, True)
     await Timer(1, unit="ps")  # Let fu_ready propagate
     num_dispatches = 0
     prev_was_flush = False
@@ -896,12 +995,12 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     for cycle in range(200):
         # Read DUT state BEFORE try_issue (matches RTL's registered state)
         dut_rob_full = dut_if.rob_full
-        dut_rs_full = dut_if.rs_full
+        dut_rs_full = dut_if.rs_full_for(RS_MEM)
 
         # Check RS issue from settled state (skip after flush cycles)
         if not prev_was_flush:
-            issue = dut_if.read_rs_issue()
-            model_issue = model.rs_try_issue(fu_ready=True)
+            issue = dut_if.read_rs_issue_for(RS_MEM)
+            model_issue = model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)
             if model_issue is not None:
                 assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
 
@@ -930,7 +1029,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                 model.dispatch(req)
                 pending_tags.add(tag)
 
-                # Drive RS dispatch in the same cycle
+                # Drive RS dispatch to MEM_RS in the same cycle
                 src1_ready = random.choice([True, False])
                 src2_ready = random.choice([True, False])
                 src1_tag = random.randint(0, 31)
@@ -939,6 +1038,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                 src2_value = random.getrandbits(64) if src2_ready else 0
 
                 dut_if.drive_rs_dispatch(
+                    rs_type=RS_MEM,
                     rob_tag=tag,
                     op=0,
                     src1_ready=src1_ready,
@@ -950,6 +1050,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                     src3_ready=True,
                 )
                 model.rs_dispatch(
+                    rs_type=RS_MEM,
                     rob_tag=tag,
                     op=0,
                     src1_ready=src1_ready,
@@ -998,7 +1099,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     dut_if.clear_flush_all()
 
     assert dut_if.rob_empty
-    assert dut_if.rs_empty
+    assert dut_if.rs_empty_for(RS_MEM)
 
     cocotb.log.info(f"=== Test Passed ({num_dispatches} dispatches, seed={seed}) ===")
 
@@ -1556,8 +1657,10 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         dut_rob_full = dut_if.rob_full
 
         # Check RS issue from each type (skip after flush)
+        # Only check RS types without integrated FU pipeline (INT_RS and
+        # MUL_RS auto-complete via ALU/MUL/DIV and aren't manually driven).
         if not prev_was_flush:
-            for rs_type in ALL_RS_TYPES:
+            for rs_type in MANUAL_CDB_RS_TYPES:
                 issue = dut_if.read_rs_issue_for(rs_type)
                 model_issue = model.rs_try_issue(rs_type=rs_type, fu_ready=True)
                 if model_issue is not None:
@@ -1573,10 +1676,11 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         r = random.random()
         prev_was_flush = False
 
-        # Dispatch to random RS type (~35%)
+        # Dispatch to random RS type (~35%) — skip INT_RS and MUL_RS since
+        # their FU pipelines auto-complete, conflicting with manual CDB drives.
         if r < 0.35 and not dut_rob_full:
             # Pick a random RS type and check if it's full
-            rs_type = random.choice(ALL_RS_TYPES)
+            rs_type = random.choice(MANUAL_CDB_RS_TYPES)
             if dut_if.rs_full_for(rs_type):
                 await dut_if.step()
                 continue
@@ -1674,7 +1778,7 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         ), f"{RS_NAMES[rs_type]}: not empty after final flush"
 
     cocotb.log.info(
-        f"=== Test Passed ({num_dispatches} dispatches across 6 RS, seed={seed}) ==="
+        f"=== Test Passed ({num_dispatches} dispatches across 4 RS, seed={seed}) ==="
     )
 
 
@@ -1689,7 +1793,7 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     cocotb.log.info("=== Test: Multi-FU Arbitration Contention ===")
     dut_if, model = await setup_test(dut)
 
-    # Allocate 3 instructions: one for ALU, one for MUL, one for FP_DIV
+    # Allocate 3 instructions for contention test
     req_a = make_int_req(pc=0x1000, rd=1)
     tag_a = await dut_if.dispatch(req_a)
     model.dispatch(req_a)
@@ -1702,21 +1806,22 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     tag_c = await dut_if.dispatch(req_c)
     model.dispatch(req_c)
 
-    # Drive 3 FU completions simultaneously (ALU, MUL, FP_DIV)
-    dut_if.drive_fu_complete(FU_ALU, tag=tag_a, value=0xAAAA)
-    dut_if.drive_fu_complete(FU_MUL, tag=tag_b, value=0xBBBB)
+    # Drive 3 FU completions simultaneously (MEM, FP_ADD, FP_DIV)
+    # Arbiter latency-based priority: FP_DIV(6) > FP_ADD(4) > MEM(3)
+    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
     await Timer(1, unit="ps")
 
-    # FP_DIV should win (highest priority)
+    # Round 1: FP_DIV should win (highest priority)
     cdb = dut_if.read_cdb_output()
     grant = dut_if.read_cdb_grant()
     assert cdb.valid, "CDB should be valid with 3 FUs completing"
     assert cdb.tag == tag_c, f"FP_DIV should win, got tag={cdb.tag} expected={tag_c}"
     assert cdb.value == 0xCCCC
     assert (grant >> FU_FP_DIV) & 1, "FP_DIV grant should be set"
-    assert not ((grant >> FU_ALU) & 1), "ALU should not be granted"
-    assert not ((grant >> FU_MUL) & 1), "MUL should not be granted"
+    assert not ((grant >> FU_FP_ADD) & 1), "FP_ADD should not be granted"
+    assert not ((grant >> FU_MEM) & 1), "MEM should not be granted"
 
     # Model: only the FP_DIV completion goes through this cycle
     model.fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
@@ -1724,31 +1829,37 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     # Clock: arbiter result latched by ROB
     await dut_if.step()
 
-    # Clear FP_DIV (it was granted), keep ALU and MUL presenting
+    # Clear FP_DIV (granted), re-drive MEM and FP_ADD
     dut_if.clear_fu_complete(FU_FP_DIV)
+    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
     await Timer(1, unit="ps")
 
-    # Now MUL should win (higher priority than ALU)
+    # Round 2: FP_ADD should win (higher priority than MEM)
     cdb = dut_if.read_cdb_output()
     assert cdb.valid
-    assert cdb.tag == tag_b, f"MUL should win now, got tag={cdb.tag} expected={tag_b}"
+    assert (
+        cdb.tag == tag_b
+    ), f"FP_ADD should win now, got tag={cdb.tag} expected={tag_b}"
     assert cdb.value == 0xBBBB
 
-    model.fu_complete(FU_MUL, tag=tag_b, value=0xBBBB)
+    model.fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
     await dut_if.step()
 
-    # Clear MUL, only ALU remains
-    dut_if.clear_fu_complete(FU_MUL)
+    # Clear FP_ADD (granted), re-drive only MEM
+    dut_if.clear_fu_complete(FU_FP_ADD)
+    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
     await Timer(1, unit="ps")
 
+    # Round 3: MEM is the only remaining contender
     cdb = dut_if.read_cdb_output()
     assert cdb.valid
-    assert cdb.tag == tag_a, f"ALU should win now, got tag={cdb.tag} expected={tag_a}"
+    assert cdb.tag == tag_a, f"MEM should win now, got tag={cdb.tag} expected={tag_a}"
     assert cdb.value == 0xAAAA
 
-    model.fu_complete(FU_ALU, tag=tag_a, value=0xAAAA)
+    model.fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
     await dut_if.step()
-    dut_if.clear_fu_complete(FU_ALU)
+    dut_if.clear_fu_complete(FU_MEM)
 
     # All 3 entries now done — commit in order
     for expected_tag in [tag_a, tag_b, tag_c]:
@@ -1757,5 +1868,442 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
         assert (
             commit["valid"] and commit["tag"] == expected_tag
         ), f"Expected commit tag={expected_tag}, got {commit['tag']}"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Integrated FU Pipeline Tests (ALU shim, MUL/DIV shim end-to-end)
+# =============================================================================
+
+
+@cocotb.test()
+async def test_alu_shim_end_to_end(dut: Any) -> None:
+    """ADD dispatched to INT_RS completes through ALU shim -> CDB -> ROB commit."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: ALU Shim End-to-End ===")
+    dut_if, model = await setup_test(dut)
+
+    # Dispatch ROB entry
+    req = make_int_req(pc=0x1000, rd=5)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    # Dispatch to INT_RS: ADD with src1=100, src2=42, both ready
+    src1_val = 100
+    src2_val = 42
+    expected_result = (src1_val + src2_val) & 0xFFFFFFFF
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_INT,
+        rob_tag=tag,
+        op=OP_ADD,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_INT,
+        rob_tag=tag,
+        op=OP_ADD,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    # Enable INT_RS FU ready so RS issues on the same cycle
+    dut_if.set_fu_ready(RS_INT, True)
+    await dut_if.step()
+
+    # ALU is single-cycle: result appears on CDB combinationally at this
+    # falling edge (same cycle as RS issue). Read before next rising edge
+    # consumes it.
+    cdb = dut_if.read_cdb_output()
+    assert cdb.valid, "ALU result should be on CDB same cycle as issue"
+    assert cdb.tag == tag, f"CDB tag mismatch: got {cdb.tag}, expected {tag}"
+    assert (
+        cdb.value == expected_result
+    ), f"ALU ADD result mismatch: got {cdb.value:#x}, expected {expected_result:#x}"
+    dut_if.clear_rs_dispatch()
+
+    # Keep model in sync
+    model.fu_complete(FU_ALU, tag=tag, value=expected_result)
+
+    # Wait for commit (ROB latches CDB on next rising edge, then commits)
+    commit = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit["tag"] == tag
+    assert commit["value"] == expected_result
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_mul_shim_end_to_end(dut: Any) -> None:
+    """MUL dispatched to MUL_RS completes through multiplier -> CDB -> ROB commit."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: MUL Shim End-to-End ===")
+    dut_if, model = await setup_test(dut)
+
+    # Dispatch ROB entry
+    req = make_int_req(pc=0x2000, rd=7)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    # Dispatch to MUL_RS: MUL with src1=7, src2=13
+    # MUL result = low 32 bits of (7 * 13) = 91
+    src1_val = 7
+    src2_val = 13
+    expected_result = (src1_val * src2_val) & 0xFFFFFFFF
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    dut_if.set_fu_ready(RS_MUL, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Multiplier takes 4 cycles; wait for CDB broadcast
+    cdb = await wait_for_cdb(dut_if, max_cycles=10)
+    assert cdb.tag == tag, f"CDB tag mismatch: got {cdb.tag}, expected {tag}"
+    assert (
+        cdb.value == expected_result
+    ), f"MUL result mismatch: got {cdb.value:#x}, expected {expected_result:#x}"
+
+    model.fu_complete(FU_MUL, tag=tag, value=expected_result)
+
+    commit = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit["tag"] == tag
+    assert commit["value"] == expected_result
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_div_shim_end_to_end(dut: Any) -> None:
+    """DIV dispatched to MUL_RS completes through divider -> CDB -> ROB commit."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: DIV Shim End-to-End ===")
+    dut_if, model = await setup_test(dut)
+
+    # Dispatch ROB entry
+    req = make_int_req(pc=0x3000, rd=10)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    # Dispatch to MUL_RS: DIVU with src1=100, src2=7
+    # DIVU result = 100 / 7 = 14 (unsigned integer division)
+    src1_val = 100
+    src2_val = 7
+    expected_quotient = src1_val // src2_val  # 14
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=src1_val,
+        src2_ready=True,
+        src2_value=src2_val,
+        src3_ready=True,
+    )
+    dut_if.set_fu_ready(RS_MUL, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Divider takes 17 cycles; wait for CDB broadcast
+    cdb = await wait_for_cdb(dut_if, max_cycles=25)
+    assert cdb.tag == tag, f"CDB tag mismatch: got {cdb.tag}, expected {tag}"
+    assert (
+        cdb.value == expected_quotient
+    ), f"DIVU result mismatch: got {cdb.value:#x}, expected {expected_quotient:#x}"
+
+    model.fu_complete(FU_DIV, tag=tag, value=expected_quotient)
+
+    commit = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit["tag"] == tag
+    assert commit["value"] == expected_quotient
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_integrated_fu_back_to_back(dut: Any) -> None:
+    """Back-to-back ALU + MUL operations with CDB contention."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: Integrated FU Back-to-Back ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_INT, True)
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    # Dispatch instruction A: MUL (4-cycle latency, fires first)
+    req_a = make_int_req(pc=0x4000, rd=1)
+    tag_a = await dut_if.dispatch(req_a)
+    model.dispatch(req_a)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_a,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=6,
+        src2_ready=True,
+        src2_value=9,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_a,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=6,
+        src2_ready=True,
+        src2_value=9,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    expected_mul = (6 * 9) & 0xFFFFFFFF  # 54
+
+    # Dispatch instruction B: ADD (1-cycle latency)
+    req_b = make_int_req(pc=0x4004, rd=2)
+    tag_b = await dut_if.dispatch(req_b)
+    model.dispatch(req_b)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_INT,
+        rob_tag=tag_b,
+        op=OP_ADD,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src2_value=0x2000,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_INT,
+        rob_tag=tag_b,
+        op=OP_ADD,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src2_value=0x2000,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    expected_add = 0x3000
+
+    # ALU result is combinational — read CDB at current falling edge
+    cdb = dut_if.read_cdb_output()
+    assert cdb.valid, "ADD result should be on CDB same cycle as issue"
+    assert cdb.tag == tag_b, f"Expected ADD tag={tag_b}, got {cdb.tag}"
+    assert (
+        cdb.value == expected_add
+    ), f"ADD result: got {cdb.value:#x}, expected {expected_add:#x}"
+    dut_if.clear_rs_dispatch()
+    model.fu_complete(FU_ALU, tag=tag_b, value=expected_add)
+
+    # Wait for MUL result on CDB (multiplier ~4 cycles)
+    cdb = await wait_for_cdb(dut_if, max_cycles=10)
+    assert cdb.tag == tag_a, f"Expected MUL tag={tag_a}, got {cdb.tag}"
+    assert (
+        cdb.value == expected_mul
+    ), f"MUL result: got {cdb.value:#x}, expected {expected_mul:#x}"
+    model.fu_complete(FU_MUL, tag=tag_a, value=expected_mul)
+
+    # Commit both in ROB order (MUL first since it was dispatched first)
+    commit_a = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_a["tag"] == tag_a, f"Expected tag_a={tag_a}, got {commit_a['tag']}"
+
+    commit_b = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_b["tag"] == tag_b, f"Expected tag_b={tag_b}, got {commit_b['tag']}"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_integrated_fu_flush_inflight(dut: Any) -> None:
+    """Flush while MUL operation is in-flight suppresses stale results."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: Integrated FU Flush In-Flight ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    # Dispatch a MUL operation (4-cycle latency)
+    req = make_int_req(pc=0x5000, rd=3)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=10,
+        src2_ready=True,
+        src2_value=20,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=10,
+        src2_ready=True,
+        src2_value=20,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait 2 cycles (multiplier is mid-pipeline), then flush
+    await dut_if.step()
+    await dut_if.step()
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+
+    # Wait enough cycles for the multiplier to finish (it runs to completion
+    # internally, but the shim should suppress the result)
+    for _ in range(10):
+        await dut_if.step()
+        cdb = dut_if.read_cdb_output()
+        assert (
+            not cdb.valid
+        ), f"Stale MUL result leaked to CDB after flush: tag={cdb.tag}"
+
+    # Verify clean state
+    assert dut_if.rob_empty, "ROB should be empty after flush"
+    assert dut_if.rs_empty_for(RS_MUL), "MUL_RS should be empty after flush"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
+    """Partial flush (i_flush_en) suppresses in-flight MUL while older entry survives."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: Integrated FU Partial Flush In-Flight ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    # Dispatch instruction A (tag 0) — older, survives partial flush.
+    # Dispatch to MEM_RS as a dummy (no integrated FU, will complete via CDB).
+    req_a = make_int_req(pc=0x6000, rd=1)
+    tag_a = await dut_if.dispatch(req_a)
+    model.dispatch(req_a)
+
+    # Dispatch instruction B (tag 1) — younger, will be flushed.
+    # Dispatch to MUL_RS with MUL op (4-cycle multiplier).
+    req_b = make_int_req(pc=0x6004, rd=2)
+    tag_b = await dut_if.dispatch(req_b)
+    model.dispatch(req_b)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=11,
+        src2_ready=True,
+        src2_value=13,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_MUL,
+        src1_ready=True,
+        src1_value=11,
+        src2_ready=True,
+        src2_value=13,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Multiplier is now in-flight for tag_b. Wait 2 cycles (mid-pipeline).
+    await dut_if.step()
+    await dut_if.step()
+
+    # Partial flush: flush_tag = tag_a (0). Everything younger than tag_a
+    # (i.e., tag_b = 1) should be flushed. Tag_a itself survives.
+    # head_tag is 0 (tag_a), so is_younger(1, 0, 0) = (1-0) > (0-0) = true.
+    dut_if.drive_flush_en(flush_tag=tag_a)
+    # Update model: partial flush of ROB and all RS (no RAT checkpoint needed)
+    model.rob.flush_partial(tag_a)
+    for rs in model._all_rs():
+        rs.partial_flush(tag_a, model.rob.head_idx)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+
+    # Wait for multiplier to finish (it runs to completion internally,
+    # but the shim should suppress the result via partial flush tracking).
+    for _ in range(10):
+        await dut_if.step()
+        cdb = dut_if.read_cdb_output()
+        assert (
+            not cdb.valid
+        ), f"Stale MUL result leaked to CDB after partial flush: tag={cdb.tag}"
+
+    # Tag_a (older) should still be in ROB and valid
+    assert not dut_if.rob_empty, "ROB should still have tag_a"
+    assert dut_if.rob_count == 1, f"Expected 1 ROB entry, got {dut_if.rob_count}"
+
+    # Complete tag_a via external CDB (FU_MEM) and commit
+    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xBEEF)
+    model.fu_complete(FU_MEM, tag=tag_a, value=0xBEEF)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_MEM)
+
+    commit = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit["tag"] == tag_a, f"Expected commit tag={tag_a}, got {commit['tag']}"
+    assert commit["value"] == 0xBEEF
+    assert bool(dut_if.rob_empty), "ROB should be empty after committing tag_a"
 
     cocotb.log.info("=== Test Passed ===")

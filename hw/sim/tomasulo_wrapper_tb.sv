@@ -200,6 +200,7 @@ module tomasulo_wrapper_tb (
     input  logic        i_rs_dispatch_mem_signed,
     input  logic [11:0] i_rs_dispatch_csr_addr,
     input  logic [ 4:0] i_rs_dispatch_csr_imm,
+    input  logic [31:0] i_rs_dispatch_pc,
     output logic        o_rs_full,
 
     // =========================================================================
@@ -222,6 +223,7 @@ module tomasulo_wrapper_tb (
     output logic        o_rs_issue_mem_signed,
     output logic [11:0] o_rs_issue_csr_addr,
     output logic [ 4:0] o_rs_issue_csr_imm,
+    output logic [31:0] o_rs_issue_pc,
 
     input logic i_rs_fu_ready,
 
@@ -230,7 +232,12 @@ module tomasulo_wrapper_tb (
     // =========================================================================
     output logic       o_int_rs_full,
     output logic       o_rs_empty,
-    output logic [3:0] o_rs_count
+    output logic [3:0] o_rs_count,
+
+    // =========================================================================
+    // CSR Read Data -- pass through (32 bits)
+    // =========================================================================
+    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data
 );
 
   // ---------------------------------------------------------------------------
@@ -338,6 +345,7 @@ module tomasulo_wrapper_tb (
       .i_rs_dispatch_mem_signed      (i_rs_dispatch_mem_signed),
       .i_rs_dispatch_csr_addr        (i_rs_dispatch_csr_addr),
       .i_rs_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
+      .i_rs_dispatch_pc              (i_rs_dispatch_pc),
       .o_rs_full,
       .o_rs_issue_valid              (o_rs_issue_valid),
       .o_rs_issue_rob_tag            (o_rs_issue_rob_tag),
@@ -356,10 +364,12 @@ module tomasulo_wrapper_tb (
       .o_rs_issue_mem_signed         (o_rs_issue_mem_signed),
       .o_rs_issue_csr_addr           (o_rs_issue_csr_addr),
       .o_rs_issue_csr_imm            (o_rs_issue_csr_imm),
+      .o_rs_issue_pc                 (o_rs_issue_pc),
       .i_rs_fu_ready,
       .o_int_rs_full,
       .o_rs_empty,
-      .o_rs_count
+      .o_rs_count,
+      .i_csr_read_data
   );
 
 endmodule

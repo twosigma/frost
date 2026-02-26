@@ -1420,6 +1420,8 @@ package riscv_pkg;
     // CSR info
     logic [11:0]                      csr_addr;
     logic [4:0]                       csr_imm;
+    // Program counter (for ALU: AUIPC, JAL/JALR link address)
+    logic [XLEN-1:0]                  pc;
   } rs_dispatch_t;
 
   // RS issue signals (from RS to functional unit)
@@ -1443,6 +1445,8 @@ package riscv_pkg;
     // CSR info
     logic [11:0]                      csr_addr;
     logic [4:0]                       csr_imm;
+    // Program counter (for ALU: AUIPC, JAL/JALR link address)
+    logic [XLEN-1:0]                  pc;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------

@@ -216,6 +216,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cdb_arbiter",
         description="CDB arbiter unit tests (priority, grant, propagation)",
     ),
+    "fu_cdb_adapter": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_cdb_adapter.test_fu_cdb_adapter",
+        hdl_toplevel_module="fu_cdb_adapter",
+        description="FU CDB adapter unit tests (holding register, pass-through, flush)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",

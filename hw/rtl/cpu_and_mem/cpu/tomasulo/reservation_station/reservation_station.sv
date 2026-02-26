@@ -80,6 +80,7 @@ module reservation_station #(
     input logic i_dispatch_mem_signed,
     input logic [11:0] i_dispatch_csr_addr,
     input logic [4:0] i_dispatch_csr_imm,
+    input logic [riscv_pkg::XLEN-1:0] i_dispatch_pc,
 `else
     input riscv_pkg::rs_dispatch_t i_dispatch,
 `endif
@@ -111,6 +112,7 @@ module reservation_station #(
     output logic                                                        o_issue_mem_signed,
     output logic                 [                                11:0] o_issue_csr_addr,
     output logic                 [                                 4:0] o_issue_csr_imm,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_pc,
 `else
     output riscv_pkg::rs_issue_t                                        o_issue,
 `endif
@@ -185,9 +187,10 @@ module reservation_station #(
   wire dispatch_is_fp_mem = i_dispatch_is_fp_mem;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = riscv_pkg::mem_size_e'(i_dispatch_mem_size);
-  wire        dispatch_mem_signed = i_dispatch_mem_signed;
-  wire [11:0] dispatch_csr_addr = i_dispatch_csr_addr;
-  wire [ 4:0] dispatch_csr_imm = i_dispatch_csr_imm;
+  wire            dispatch_mem_signed = i_dispatch_mem_signed;
+  wire [    11:0] dispatch_csr_addr = i_dispatch_csr_addr;
+  wire [     4:0] dispatch_csr_imm = i_dispatch_csr_imm;
+  wire [XLEN-1:0] dispatch_pc = i_dispatch_pc;
 `else
   wire                                              dispatch_valid = i_dispatch.valid;
   wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch.rob_tag;
@@ -211,9 +214,10 @@ module reservation_station #(
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = i_dispatch.mem_size;
-  wire        dispatch_mem_signed = i_dispatch.mem_signed;
-  wire [11:0] dispatch_csr_addr = i_dispatch.csr_addr;
-  wire [ 4:0] dispatch_csr_imm = i_dispatch.csr_imm;
+  wire            dispatch_mem_signed = i_dispatch.mem_signed;
+  wire [    11:0] dispatch_csr_addr = i_dispatch.csr_addr;
+  wire [     4:0] dispatch_csr_imm = i_dispatch.csr_imm;
+  wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
 `endif
 
   // ===========================================================================
@@ -244,9 +248,10 @@ module reservation_station #(
 `else
   riscv_pkg::mem_size_e issue_out_mem_size;
 `endif
-  logic        issue_out_mem_signed;
-  logic [11:0] issue_out_csr_addr;
-  logic [ 4:0] issue_out_csr_imm;
+  logic            issue_out_mem_signed;
+  logic [    11:0] issue_out_csr_addr;
+  logic [     4:0] issue_out_csr_imm;
+  logic [XLEN-1:0] issue_out_pc;
 
   // ===========================================================================
   // Debug Signals (for verification -- Verilator only)
@@ -310,6 +315,9 @@ module reservation_station #(
   // CSR fields
   logic [             11:0] rs_csr_addr   [DEPTH];
   logic [              4:0] rs_csr_imm    [DEPTH];
+
+  // Program counter
+  logic [         XLEN-1:0] rs_pc         [DEPTH];
 
   // ===========================================================================
   // Internal Signals
@@ -405,6 +413,7 @@ module reservation_station #(
     issue_out_mem_signed       = 1'b0;
     issue_out_csr_addr         = '0;
     issue_out_csr_imm          = '0;
+    issue_out_pc               = '0;
     if (issue_fire) begin
       issue_out_valid            = 1'b1;
       issue_out_rob_tag          = rs_rob_tag[issue_idx];
@@ -423,6 +432,7 @@ module reservation_station #(
       issue_out_mem_signed       = rs_mem_signed[issue_idx];
       issue_out_csr_addr         = rs_csr_addr[issue_idx];
       issue_out_csr_imm          = rs_csr_imm[issue_idx];
+      issue_out_pc               = rs_pc[issue_idx];
     end
   end
 
@@ -445,6 +455,7 @@ module reservation_station #(
   assign o_issue_mem_signed       = issue_out_mem_signed;
   assign o_issue_csr_addr         = issue_out_csr_addr;
   assign o_issue_csr_imm          = issue_out_csr_imm;
+  assign o_issue_pc               = issue_out_pc;
 `else
   always_comb begin
     o_issue.valid            = issue_out_valid;
@@ -464,6 +475,7 @@ module reservation_station #(
     o_issue.mem_signed       = issue_out_mem_signed;
     o_issue.csr_addr         = issue_out_csr_addr;
     o_issue.csr_imm          = issue_out_csr_imm;
+    o_issue.pc               = issue_out_pc;
   end
 `endif
 
@@ -561,6 +573,7 @@ module reservation_station #(
           rs_mem_signed[free_idx]       <= dispatch_mem_signed;
           rs_csr_addr[free_idx]         <= dispatch_csr_addr;
           rs_csr_imm[free_idx]          <= dispatch_csr_imm;
+          rs_pc[free_idx]               <= dispatch_pc;
         end
 
       end  // !flush

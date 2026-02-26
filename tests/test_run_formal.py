@@ -84,6 +84,10 @@ FORMAL_TARGETS = [
         "CDB arbiter - priority arbitration, grant exclusivity, data forwarding",
     ),
     FormalTarget(
+        "fu_cdb_adapter.sby",
+        "FU CDB adapter - holding register, pass-through, back-pressure, flush",
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, flush composition",
     ),

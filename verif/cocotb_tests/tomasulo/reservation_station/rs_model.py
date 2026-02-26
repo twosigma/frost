@@ -59,6 +59,7 @@ class RSEntry:
 
     csr_addr: int = 0
     csr_imm: int = 0
+    pc: int = 0
 
     def is_ready(self) -> bool:
         """Check if entry is ready to issue."""
@@ -125,6 +126,7 @@ class RSModel:
         mem_signed: bool = False,
         csr_addr: int = 0,
         csr_imm: int = 0,
+        pc: int = 0,
         cdb_valid: bool = False,
         cdb_tag: int = 0,
         cdb_value: int = 0,
@@ -196,6 +198,7 @@ class RSModel:
         e.mem_signed = mem_signed
         e.csr_addr = csr_addr & 0xFFF
         e.csr_imm = csr_imm & 0x1F
+        e.pc = pc & MASK32
 
         return idx
 
@@ -237,6 +240,7 @@ class RSModel:
             "mem_signed": e.mem_signed,
             "csr_addr": e.csr_addr,
             "csr_imm": e.csr_imm,
+            "pc": e.pc,
         }
 
     def peek_issue(self, fu_ready: bool = True) -> tuple[int, dict] | None:

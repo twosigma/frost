@@ -60,7 +60,7 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     FuComplete,
     CdbBroadcast,
     NUM_FUS,
-    FU_ALU,
+    FU_MEM,
 )
 
 # RS type constants (mirrors riscv_pkg::rs_type_e)
@@ -231,6 +231,9 @@ class TomasuloInterface:
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
 
+        # CSR read data (for ALU shim CSR operations)
+        self.dut.i_csr_read_data.value = 0
+
         # RS dispatch
         if self._flat_rs:
             self._clear_rs_dispatch_flat()
@@ -269,7 +272,7 @@ class TomasuloInterface:
 
     def drive_fu_complete(
         self,
-        fu_index: int = FU_ALU,
+        fu_index: int = FU_MEM,
         tag: int = 0,
         value: int = 0,
         exception: bool = False,
@@ -280,6 +283,9 @@ class TomasuloInterface:
 
         The arbiter internally broadcasts to both ROB (cdb_write) and all RS
         (cdb broadcast for wakeup).
+
+        Note: FU_ALU/FU_MUL/FU_DIV (slots 0-2) are driven by internal
+        FU pipelines. External tests should use FU_MEM (slot 3) or higher.
         """
         req = FuComplete(
             valid=True,
@@ -301,7 +307,7 @@ class TomasuloInterface:
             return getattr(self.dut, f"i_fu_complete_{fu_index}")
         return self.dut.i_fu_complete[fu_index]
 
-    def clear_fu_complete(self, fu_index: int = FU_ALU) -> None:
+    def clear_fu_complete(self, fu_index: int = FU_MEM) -> None:
         """Clear a single FU completion slot."""
         self._get_fu_signal(fu_index).value = 0
 
@@ -320,7 +326,8 @@ class TomasuloInterface:
         return int(self.dut.o_cdb_grant.value)
 
     # Backward-compat aliases for tests that used the old CDB interface.
-    # These all route through a single FU_ALU completion.
+    # These route through FU_MEM (slot 3) since FU_ALU/FU_MUL/FU_DIV
+    # (slots 0-2) are now driven internally by FU pipelines.
     def drive_cdb(
         self,
         tag: int,
@@ -329,9 +336,9 @@ class TomasuloInterface:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Drive CDB via FU_ALU completion (backward compat)."""
+        """Drive CDB via FU_MEM completion (backward compat)."""
         self.drive_fu_complete(
-            FU_ALU,
+            FU_MEM,
             tag=tag,
             value=value,
             exception=exception,
@@ -344,9 +351,9 @@ class TomasuloInterface:
         self.clear_all_fu_completes()
 
     def drive_cdb_write(self, write: CDBWrite) -> None:
-        """Drive CDB write via FU_ALU completion (backward compat)."""
+        """Drive CDB write via FU_MEM completion (backward compat)."""
         self.drive_fu_complete(
-            FU_ALU,
+            FU_MEM,
             tag=write.tag,
             value=write.value,
             exception=write.exception,
@@ -355,13 +362,13 @@ class TomasuloInterface:
         )
 
     def clear_cdb_write(self) -> None:
-        """Clear CDB write by clearing FU_ALU (backward compat)."""
-        self.clear_fu_complete(FU_ALU)
+        """Clear CDB write by clearing FU_MEM (backward compat)."""
+        self.clear_fu_complete(FU_MEM)
 
     def drive_cdb_broadcast(self, tag: int, value: int = 0, **kwargs: Any) -> None:
-        """Drive CDB broadcast via FU_ALU completion (backward compat)."""
+        """Drive CDB broadcast via FU_MEM completion (backward compat)."""
         self.drive_fu_complete(
-            FU_ALU,
+            FU_MEM,
             tag=tag,
             value=value,
             exception=kwargs.get("exception", False),
@@ -370,8 +377,8 @@ class TomasuloInterface:
         )
 
     def clear_cdb_broadcast(self) -> None:
-        """Clear CDB broadcast by clearing FU_ALU (backward compat)."""
-        self.clear_fu_complete(FU_ALU)
+        """Clear CDB broadcast by clearing FU_MEM (backward compat)."""
+        self.clear_fu_complete(FU_MEM)
 
     # =========================================================================
     # ROB Branch Update
@@ -641,6 +648,7 @@ class TomasuloInterface:
         d.i_rs_dispatch_mem_signed.value = 1 if kwargs.get("mem_signed") else 0
         d.i_rs_dispatch_csr_addr.value = int(kwargs.get("csr_addr", 0)) & 0xFFF
         d.i_rs_dispatch_csr_imm.value = int(kwargs.get("csr_imm", 0)) & 0x1F
+        d.i_rs_dispatch_pc.value = int(kwargs.get("pc", 0)) & MASK32
 
     def _clear_rs_dispatch_flat(self) -> None:
         """Clear all individual RS dispatch ports to zero."""
@@ -669,6 +677,7 @@ class TomasuloInterface:
         d.i_rs_dispatch_mem_signed.value = 0
         d.i_rs_dispatch_csr_addr.value = 0
         d.i_rs_dispatch_csr_imm.value = 0
+        d.i_rs_dispatch_pc.value = 0
 
     # =========================================================================
     # RS Issue (per-RS type)
@@ -737,6 +746,7 @@ class TomasuloInterface:
             "mem_signed": bool(d.o_rs_issue_mem_signed.value),
             "csr_addr": int(d.o_rs_issue_csr_addr.value),
             "csr_imm": int(d.o_rs_issue_csr_imm.value),
+            "pc": int(d.o_rs_issue_pc.value),
         }
 
     def rs_issue_valid_for(self, rs_type: int) -> bool:

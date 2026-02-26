@@ -90,12 +90,15 @@ def pack_rs_dispatch(
     mem_signed: bool = False,
     csr_addr: int = 0,
     csr_imm: int = 0,
+    pc: int = 0,
 ) -> int:
     """Pack dispatch fields into a bit vector for driving i_dispatch."""
     val = 0
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (pc & MASK32) << bit
+    bit += XLEN
     val |= (csr_imm & 0x1F) << bit
     bit += 5
     val |= (csr_addr & 0xFFF) << bit
@@ -184,6 +187,8 @@ def unpack_rs_issue(raw: int) -> dict:
     bit = 0
     result = {}
 
+    result["pc"] = (raw >> bit) & MASK32
+    bit += XLEN
     result["csr_imm"] = (raw >> bit) & 0x1F
     bit += 5
     result["csr_addr"] = (raw >> bit) & 0xFFF
@@ -323,6 +328,7 @@ class RSInterface:
         d.i_dispatch_mem_signed.value = 1 if kwargs.get("mem_signed") else 0
         d.i_dispatch_csr_addr.value = int(kwargs.get("csr_addr", 0)) & 0xFFF
         d.i_dispatch_csr_imm.value = int(kwargs.get("csr_imm", 0)) & 0x1F
+        d.i_dispatch_pc.value = int(kwargs.get("pc", 0)) & MASK32
 
     def _clear_dispatch_flat(self) -> None:
         """Clear all individual dispatch ports to zero."""
@@ -351,6 +357,7 @@ class RSInterface:
         d.i_dispatch_mem_signed.value = 0
         d.i_dispatch_csr_addr.value = 0
         d.i_dispatch_csr_imm.value = 0
+        d.i_dispatch_pc.value = 0
 
     # =========================================================================
     # CDB (84 bits — always packed, small enough for Icarus VPI)
@@ -401,6 +408,7 @@ class RSInterface:
             "mem_signed": bool(d.o_issue_mem_signed.value),
             "csr_addr": int(d.o_issue_csr_addr.value),
             "csr_imm": int(d.o_issue_csr_imm.value),
+            "pc": int(d.o_issue_pc.value),
         }
 
     @property
