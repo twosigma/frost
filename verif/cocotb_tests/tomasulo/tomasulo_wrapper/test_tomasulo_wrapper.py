@@ -43,8 +43,8 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     FU_ALU,
     FU_MUL,
     FU_DIV,
-    FU_MEM,
     FU_FP_ADD,
+    FU_FP_MUL,
     FU_FP_DIV,
 )
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
@@ -133,6 +133,10 @@ OP_MULH = _INSTR_OPS["MULH"]
 OP_DIV = _INSTR_OPS["DIV"]
 OP_DIVU = _INSTR_OPS["DIVU"]
 OP_REM = _INSTR_OPS["REM"]
+OP_LW = _INSTR_OPS["LW"]
+OP_LB = _INSTR_OPS["LB"]
+OP_SW = _INSTR_OPS["SW"]
+OP_FLW = _INSTR_OPS["FLW"]
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
@@ -1806,10 +1810,13 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     tag_c = await dut_if.dispatch(req_c)
     model.dispatch(req_c)
 
-    # Drive 3 FU completions simultaneously (MEM, FP_ADD, FP_DIV)
-    # Arbiter latency-based priority: FP_DIV(6) > FP_ADD(4) > MEM(3)
-    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
-    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
+    # Drive 3 FU completions simultaneously (FP_ADD, FP_MUL, FP_DIV)
+    # Arbiter latency-based priority: FP_DIV(6) > FP_MUL(5) > FP_ADD(4)
+    # Note: FU_MEM (slot 3) is now internally driven by LQ adapter.
+    # Assign tag_a (head) to lowest priority (FP_ADD) so it completes last,
+    # preventing premature ROB commit during the arbitration test.
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
+    dut_if.drive_fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
     await Timer(1, unit="ps")
 
@@ -1820,8 +1827,8 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     assert cdb.tag == tag_c, f"FP_DIV should win, got tag={cdb.tag} expected={tag_c}"
     assert cdb.value == 0xCCCC
     assert (grant >> FU_FP_DIV) & 1, "FP_DIV grant should be set"
+    assert not ((grant >> FU_FP_MUL) & 1), "FP_MUL should not be granted"
     assert not ((grant >> FU_FP_ADD) & 1), "FP_ADD should not be granted"
-    assert not ((grant >> FU_MEM) & 1), "MEM should not be granted"
 
     # Model: only the FP_DIV completion goes through this cycle
     model.fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
@@ -1829,37 +1836,39 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     # Clock: arbiter result latched by ROB
     await dut_if.step()
 
-    # Clear FP_DIV (granted), re-drive MEM and FP_ADD
+    # Clear FP_DIV (granted), re-drive FP_ADD and FP_MUL
     dut_if.clear_fu_complete(FU_FP_DIV)
-    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
-    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
+    dut_if.drive_fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
     await Timer(1, unit="ps")
 
-    # Round 2: FP_ADD should win (higher priority than MEM)
+    # Round 2: FP_MUL should win (higher priority than FP_ADD)
     cdb = dut_if.read_cdb_output()
     assert cdb.valid
     assert (
         cdb.tag == tag_b
-    ), f"FP_ADD should win now, got tag={cdb.tag} expected={tag_b}"
+    ), f"FP_MUL should win now, got tag={cdb.tag} expected={tag_b}"
     assert cdb.value == 0xBBBB
 
-    model.fu_complete(FU_FP_ADD, tag=tag_b, value=0xBBBB)
+    model.fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
     await dut_if.step()
 
-    # Clear FP_ADD (granted), re-drive only MEM
-    dut_if.clear_fu_complete(FU_FP_ADD)
-    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
+    # Clear FP_MUL (granted), re-drive only FP_ADD
+    dut_if.clear_fu_complete(FU_FP_MUL)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
     await Timer(1, unit="ps")
 
-    # Round 3: MEM is the only remaining contender
+    # Round 3: FP_ADD is the only remaining contender
     cdb = dut_if.read_cdb_output()
     assert cdb.valid
-    assert cdb.tag == tag_a, f"MEM should win now, got tag={cdb.tag} expected={tag_a}"
+    assert (
+        cdb.tag == tag_a
+    ), f"FP_ADD should win now, got tag={cdb.tag} expected={tag_a}"
     assert cdb.value == 0xAAAA
 
-    model.fu_complete(FU_MEM, tag=tag_a, value=0xAAAA)
+    model.fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
     await dut_if.step()
-    dut_if.clear_fu_complete(FU_MEM)
+    dut_if.clear_fu_complete(FU_FP_ADD)
 
     # All 3 entries now done — commit in order
     for expected_tag in [tag_a, tag_b, tag_c]:
@@ -2294,11 +2303,11 @@ async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
     assert not dut_if.rob_empty, "ROB should still have tag_a"
     assert dut_if.rob_count == 1, f"Expected 1 ROB entry, got {dut_if.rob_count}"
 
-    # Complete tag_a via external CDB (FU_MEM) and commit
-    dut_if.drive_fu_complete(FU_MEM, tag=tag_a, value=0xBEEF)
-    model.fu_complete(FU_MEM, tag=tag_a, value=0xBEEF)
+    # Complete tag_a via external CDB (FU_FP_ADD — slot 3 is now internal LQ)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xBEEF)
+    model.fu_complete(FU_FP_ADD, tag=tag_a, value=0xBEEF)
     await dut_if.step()
-    dut_if.clear_fu_complete(FU_MEM)
+    dut_if.clear_fu_complete(FU_FP_ADD)
 
     commit = await wait_for_commit(dut_if)
     model.try_commit()
@@ -2306,4 +2315,385 @@ async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
     assert commit["value"] == 0xBEEF
     assert bool(dut_if.rob_empty), "ROB should be empty after committing tag_a"
 
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Group F: Load Queue Integration Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_lq_end_to_end_lw(dut: Any) -> None:
+    """Full LW flow: ROB alloc -> MEM_RS dispatch -> RS issue -> LQ addr -> mem -> CDB -> commit."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: LQ tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LQ End-to-End LW ===")
+    dut_if, model = await setup_test(dut)
+
+    # Enable MEM_RS fu_ready so it can issue
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    # Dispatch LW to ROB (rd=5, dest_valid=True)
+    req = make_int_req(pc=0x2000, rd=5)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    # Dispatch to MEM_RS as LW with src1 ready (base address) and immediate
+    base_addr = 0x1000
+    imm = 0x10
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=base_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=imm,
+        use_imm=True,
+        mem_size=2,  # MEM_SIZE_WORD
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=base_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=imm,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # MEM_RS should issue after operands ready
+    for _ in range(3):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should have issued"
+    assert issue["rob_tag"] == tag
+
+    # After RS issue, the LQ should have received the address update
+    # Wait for the LQ to present the SQ check
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)  # Only needed one issue
+
+    # LQ should present sq_check for disambiguation
+    for _ in range(3):
+        sq_check = dut_if.read_sq_check()
+        if sq_check["valid"]:
+            break
+        await dut_if.step()
+
+    assert sq_check["valid"], "LQ should present SQ check"
+    expected_addr = (base_addr + imm) & 0xFFFFFFFF
+    assert (
+        sq_check["addr"] == expected_addr
+    ), f"SQ check addr={sq_check['addr']:#x} expected={expected_addr:#x}"
+    assert sq_check["rob_tag"] == tag
+
+    # Drive SQ disambiguation: no match, all older known -> issue to memory
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+
+    # Check memory request
+    mem_req = dut_if.read_lq_mem_request()
+    assert mem_req["en"], "LQ should issue memory read"
+    assert mem_req["addr"] == expected_addr
+
+    await dut_if.step()
+    dut_if.clear_sq_forward()
+    dut_if.drive_sq_all_older_known(False)
+
+    # Provide memory response — don't step() before wait_for_cdb because
+    # the CDB broadcast is combinationally valid for exactly one cycle after
+    # data_valid is set, and step() would consume that window.
+    mem_data = 0xDEAD_BEEF
+    dut_if.drive_lq_mem_response(mem_data)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag, f"CDB tag={cdb.tag} expected={tag}"
+    assert cdb.value == mem_data, f"CDB value={cdb.value:#x} expected={mem_data:#x}"
+
+    # Wait for commit
+    commit = await wait_for_commit(dut_if)
+    assert commit["tag"] == tag
+    assert commit["value"] == mem_data
+    assert dut_if.rob_empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
+    """SQ forwards data to LQ, skipping memory, CDB broadcasts forwarded value."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: LQ tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LQ SQ Forward Through Wrapper ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    # Dispatch LW
+    req = make_int_req(pc=0x3000, rd=7)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    base_addr = 0x2000
+    imm = 0x4
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=base_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=imm,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=base_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=imm,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(3):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"]
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # Wait for SQ check
+    for _ in range(3):
+        sq_check = dut_if.read_sq_check()
+        if sq_check["valid"]:
+            break
+        await dut_if.step()
+    assert sq_check["valid"], "LQ should present SQ check"
+
+    # Drive SQ forward: match + can_forward with data
+    forward_data = 0xCAFE_BABE
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=True, can_forward=True, data=forward_data)
+    await Timer(1, unit="ns")
+
+    # Memory read should NOT have been issued (combinational: match prevents issue)
+    mem_req = dut_if.read_lq_mem_request()
+    assert not mem_req["en"], "LQ should not issue mem read when SQ forwards"
+
+    # CDB broadcast appears same cycle as data_valid is set (next posedge).
+    # Let wait_for_cdb catch it directly.
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_sq_forward()
+    dut_if.drive_sq_all_older_known(False)
+    assert cdb.tag == tag
+    assert (
+        cdb.value == forward_data
+    ), f"CDB value={cdb.value:#x} expected={forward_data:#x}"
+
+    # Wait for commit
+    commit = await wait_for_commit(dut_if)
+    assert commit["tag"] == tag
+    assert dut_if.rob_empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_lq_flush_all_clears_lq(dut: Any) -> None:
+    """flush_all empties LQ alongside ROB+RS."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: LQ tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LQ Flush All Clears LQ ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    # Dispatch a LW so LQ has an entry
+    req = make_int_req(pc=0x4000, rd=3)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # LQ should have an entry
+    assert dut_if.lq_count > 0, "LQ should not be empty after LW dispatch"
+
+    # Flush all
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+
+    # Everything should be empty
+    assert dut_if.lq_empty, "LQ should be empty after flush_all"
+    assert dut_if.rob_empty, "ROB should be empty after flush_all"
+    assert dut_if.rs_empty_for(RS_MEM), "MEM_RS should be empty after flush_all"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_lq_cdb_arbitration(dut: Any) -> None:
+    """LQ CDB result contends with external FP_ADD completion, arbiter resolves."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: LQ tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LQ CDB Arbitration ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    # Dispatch two instructions: LW (tag 0) and dummy INT (tag 1)
+    req_lw = make_int_req(pc=0x5000, rd=4)
+    tag_lw = await dut_if.dispatch(req_lw)
+    model.dispatch(req_lw)
+
+    req_int = make_int_req(pc=0x5004, rd=5)
+    tag_int = await dut_if.dispatch(req_int)
+    model.dispatch(req_int)
+
+    # Dispatch LW to MEM_RS
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lw,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lw,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(3):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"]
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # Complete the LQ load via disambig + memory
+    for _ in range(3):
+        sq_check = dut_if.read_sq_check()
+        if sq_check["valid"]:
+            break
+        await dut_if.step()
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+    dut_if.clear_sq_forward()
+    dut_if.drive_sq_all_older_known(False)
+
+    # Drive mem response AND FP_ADD completion simultaneously so both
+    # are presented to the CDB arbiter on the same posedge.
+    dut_if.drive_lq_mem_response(0x1111)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_int, value=0x2222)
+
+    # wait_for_cdb catches the first winner on the posedge that
+    # captures data_valid=1 (LQ) while FP_ADD is also valid.
+    cdb1 = await wait_for_cdb(dut_if)
+    assert cdb1.valid, "CDB should be valid"
+    # FP_ADD (slot 4) has higher priority than MEM (slot 3)
+    assert cdb1.tag == tag_int, f"FP_ADD should win CDB arbitration, got tag={cdb1.tag}"
+
+    # Clear FP_ADD so MEM (adapter-held) can win on the next grant.
+    # The MEM adapter latched the LQ result (wasn't granted on first cycle).
+    # After clearing FP_ADD, the adapter's held result wins immediately.
+    # Read CDB between posedges to observe it before the grant clears the adapter.
+    dut_if.clear_fu_complete(FU_FP_ADD)
+    dut_if.clear_lq_mem_response()
+    await Timer(1, unit="ns")
+    cdb2 = dut_if.read_cdb_output()
+    assert cdb2.valid, "MEM adapter should present held result after FP_ADD cleared"
+    assert cdb2.tag == tag_lw, f"Expected LQ tag={tag_lw}, got {cdb2.tag}"
+    assert cdb2.value == 0x1111, f"Expected 0x1111, got {cdb2.value:#x}"
+
+    # Advance to let the grant process and both results reach ROB
+    await dut_if.step()
+
+    # Both should commit in order
+    commit1 = await wait_for_commit(dut_if)
+    assert commit1["tag"] == tag_lw
+
+    commit2 = await wait_for_commit(dut_if)
+    assert commit2["tag"] == tag_int
+
+    assert dut_if.rob_empty
     cocotb.log.info("=== Test Passed ===")

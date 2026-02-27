@@ -60,7 +60,7 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     FuComplete,
     CdbBroadcast,
     NUM_FUS,
-    FU_MEM,
+    FU_FP_ADD,
 )
 
 # RS type constants (mirrors riscv_pkg::rs_type_e)
@@ -234,6 +234,14 @@ class TomasuloInterface:
         # CSR read data (for ALU shim CSR operations)
         self.dut.i_csr_read_data.value = 0
 
+        # LQ: SQ disambiguation
+        self.dut.i_sq_all_older_addrs_known.value = 0
+        self.dut.i_sq_forward.value = 0
+
+        # LQ: memory interface
+        self.dut.i_lq_mem_read_data.value = 0
+        self.dut.i_lq_mem_read_valid.value = 0
+
         # RS dispatch
         if self._flat_rs:
             self._clear_rs_dispatch_flat()
@@ -272,7 +280,7 @@ class TomasuloInterface:
 
     def drive_fu_complete(
         self,
-        fu_index: int = FU_MEM,
+        fu_index: int = FU_FP_ADD,
         tag: int = 0,
         value: int = 0,
         exception: bool = False,
@@ -285,7 +293,8 @@ class TomasuloInterface:
         (cdb broadcast for wakeup).
 
         Note: FU_ALU/FU_MUL/FU_DIV (slots 0-2) are driven by internal
-        FU pipelines. External tests should use FU_MEM (slot 3) or higher.
+        FU pipelines. FU_MEM (slot 3) is driven internally by the LQ adapter.
+        External tests should use FU_FP_ADD (slot 4) or higher.
         """
         req = FuComplete(
             valid=True,
@@ -307,7 +316,7 @@ class TomasuloInterface:
             return getattr(self.dut, f"i_fu_complete_{fu_index}")
         return self.dut.i_fu_complete[fu_index]
 
-    def clear_fu_complete(self, fu_index: int = FU_MEM) -> None:
+    def clear_fu_complete(self, fu_index: int = FU_FP_ADD) -> None:
         """Clear a single FU completion slot."""
         self._get_fu_signal(fu_index).value = 0
 
@@ -326,8 +335,8 @@ class TomasuloInterface:
         return int(self.dut.o_cdb_grant.value)
 
     # Backward-compat aliases for tests that used the old CDB interface.
-    # These route through FU_MEM (slot 3) since FU_ALU/FU_MUL/FU_DIV
-    # (slots 0-2) are now driven internally by FU pipelines.
+    # These route through FU_FP_ADD (slot 4) since FU_ALU/FU_MUL/FU_DIV
+    # (slots 0-2) and FU_MEM (slot 3) are now driven internally.
     def drive_cdb(
         self,
         tag: int,
@@ -336,9 +345,9 @@ class TomasuloInterface:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Drive CDB via FU_MEM completion (backward compat)."""
+        """Drive CDB via FU_FP_ADD completion (backward compat)."""
         self.drive_fu_complete(
-            FU_MEM,
+            FU_FP_ADD,
             tag=tag,
             value=value,
             exception=exception,
@@ -351,9 +360,9 @@ class TomasuloInterface:
         self.clear_all_fu_completes()
 
     def drive_cdb_write(self, write: CDBWrite) -> None:
-        """Drive CDB write via FU_MEM completion (backward compat)."""
+        """Drive CDB write via FU_FP_ADD completion (backward compat)."""
         self.drive_fu_complete(
-            FU_MEM,
+            FU_FP_ADD,
             tag=write.tag,
             value=write.value,
             exception=write.exception,
@@ -362,13 +371,13 @@ class TomasuloInterface:
         )
 
     def clear_cdb_write(self) -> None:
-        """Clear CDB write by clearing FU_MEM (backward compat)."""
-        self.clear_fu_complete(FU_MEM)
+        """Clear CDB write by clearing FU_FP_ADD (backward compat)."""
+        self.clear_fu_complete(FU_FP_ADD)
 
     def drive_cdb_broadcast(self, tag: int, value: int = 0, **kwargs: Any) -> None:
-        """Drive CDB broadcast via FU_MEM completion (backward compat)."""
+        """Drive CDB broadcast via FU_FP_ADD completion (backward compat)."""
         self.drive_fu_complete(
-            FU_MEM,
+            FU_FP_ADD,
             tag=tag,
             value=value,
             exception=kwargs.get("exception", False),
@@ -377,8 +386,8 @@ class TomasuloInterface:
         )
 
     def clear_cdb_broadcast(self) -> None:
-        """Clear CDB broadcast by clearing FU_MEM (backward compat)."""
-        self.clear_fu_complete(FU_MEM)
+        """Clear CDB broadcast by clearing FU_FP_ADD (backward compat)."""
+        self.clear_fu_complete(FU_FP_ADD)
 
     # =========================================================================
     # ROB Branch Update
@@ -867,3 +876,76 @@ class TomasuloInterface:
             self.clear_rob_checkpoint()
 
         return tag
+
+    # =========================================================================
+    # Load Queue: SQ Disambiguation
+    # =========================================================================
+
+    def drive_sq_all_older_known(self, val: bool) -> None:
+        """Drive i_sq_all_older_addrs_known."""
+        self.dut.i_sq_all_older_addrs_known.value = 1 if val else 0
+
+    def drive_sq_forward(
+        self,
+        match: bool = False,
+        can_forward: bool = False,
+        data: int = 0,
+    ) -> None:
+        """Drive i_sq_forward packed struct."""
+        packed = (int(match) << (1 + 64)) | (int(can_forward) << 64) | (data & MASK64)
+        self.dut.i_sq_forward.value = packed
+
+    def clear_sq_forward(self) -> None:
+        """Clear SQ forward signals."""
+        self.dut.i_sq_forward.value = 0
+        self.dut.i_sq_all_older_addrs_known.value = 0
+
+    def read_sq_check(self) -> dict:
+        """Read SQ disambiguation check outputs."""
+        return {
+            "valid": bool(self.dut.o_sq_check_valid.value),
+            "addr": int(self.dut.o_sq_check_addr.value),
+            "rob_tag": int(self.dut.o_sq_check_rob_tag.value),
+            "size": int(self.dut.o_sq_check_size.value),
+        }
+
+    # =========================================================================
+    # Load Queue: Memory Interface
+    # =========================================================================
+
+    def drive_lq_mem_response(self, data: int) -> None:
+        """Drive LQ memory response (data + valid)."""
+        self.dut.i_lq_mem_read_data.value = data & MASK32
+        self.dut.i_lq_mem_read_valid.value = 1
+
+    def clear_lq_mem_response(self) -> None:
+        """Clear LQ memory response."""
+        self.dut.i_lq_mem_read_data.value = 0
+        self.dut.i_lq_mem_read_valid.value = 0
+
+    def read_lq_mem_request(self) -> dict:
+        """Read LQ memory read request outputs."""
+        return {
+            "en": bool(self.dut.o_lq_mem_read_en.value),
+            "addr": int(self.dut.o_lq_mem_read_addr.value),
+            "size": int(self.dut.o_lq_mem_read_size.value),
+        }
+
+    # =========================================================================
+    # Load Queue: Status
+    # =========================================================================
+
+    @property
+    def lq_full(self) -> bool:
+        """Return whether LQ is full."""
+        return bool(self.dut.o_lq_full.value)
+
+    @property
+    def lq_empty(self) -> bool:
+        """Return whether LQ is empty."""
+        return bool(self.dut.o_lq_empty.value)
+
+    @property
+    def lq_count(self) -> int:
+        """Return number of valid LQ entries."""
+        return int(self.dut.o_lq_count.value)

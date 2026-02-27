@@ -305,7 +305,33 @@ module tomasulo_wrapper (
     // =========================================================================
     // CSR Read Data (for ALU shim — CSR operations return old CSR value)
     // =========================================================================
-    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data
+    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
+
+    // =========================================================================
+    // Load Queue: SQ Disambiguation (driven by testbench until SQ added)
+    // =========================================================================
+    input logic i_sq_all_older_addrs_known,
+    input riscv_pkg::sq_forward_result_t i_sq_forward,
+    output logic o_sq_check_valid,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
+    output riscv_pkg::mem_size_e o_sq_check_size,
+
+    // =========================================================================
+    // Load Queue: Memory Interface
+    // =========================================================================
+    output logic                                       o_lq_mem_read_en,
+    output logic                 [riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
+    output riscv_pkg::mem_size_e                       o_lq_mem_read_size,
+    input  logic                 [riscv_pkg::XLEN-1:0] i_lq_mem_read_data,
+    input  logic                                       i_lq_mem_read_valid,
+
+    // =========================================================================
+    // Load Queue: Status
+    // =========================================================================
+    output logic                                    o_lq_full,
+    output logic                                    o_lq_empty,
+    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count
 );
 
   // ===========================================================================
@@ -332,7 +358,7 @@ module tomasulo_wrapper (
     cdb_arb_in[0] = alu_adapter_to_arbiter;
     cdb_arb_in[1] = mul_adapter_to_arbiter;
     cdb_arb_in[2] = div_adapter_to_arbiter;
-    cdb_arb_in[3] = i_fu_complete[3];
+    cdb_arb_in[3] = mem_adapter_to_arbiter;
     cdb_arb_in[4] = i_fu_complete[4];
     cdb_arb_in[5] = i_fu_complete[5];
     cdb_arb_in[6] = i_fu_complete[6];
@@ -354,7 +380,7 @@ module tomasulo_wrapper (
       .i_fu_complete_0(alu_adapter_to_arbiter),
       .i_fu_complete_1(mul_adapter_to_arbiter),
       .i_fu_complete_2(div_adapter_to_arbiter),
-      .i_fu_complete_3(i_fu_complete_3),
+      .i_fu_complete_3(mem_adapter_to_arbiter),
       .i_fu_complete_4(i_fu_complete_4),
       .i_fu_complete_5(i_fu_complete_5),
       .i_fu_complete_6(i_fu_complete_6),
@@ -460,6 +486,13 @@ module tomasulo_wrapper (
 
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy
                            & ~mul_adapter_result_pending & ~div_adapter_result_pending;
+
+  // ===========================================================================
+  // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
+  // ===========================================================================
+  riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
+  riscv_pkg::fu_complete_t mem_adapter_to_arbiter;  // adapter → arbiter slot 3
+  logic                    mem_adapter_result_pending;
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -959,6 +992,142 @@ module tomasulo_wrapper (
       .i_rob_head_tag  (head_tag)
   );
 
+`ifdef ICARUS
+  // Under Icarus, MEM_RS is stubbed and LQ is not instantiated.
+  // Slot 3 reverts to external i_fu_complete_3 (handled by CDB arbiter wiring).
+  assign mem_adapter_to_arbiter     = i_fu_complete_3;
+  assign mem_adapter_result_pending = 1'b0;
+  assign lq_fu_complete             = '0;
+  assign o_lq_full                  = 1'b0;
+  assign o_lq_empty                 = 1'b1;
+  assign o_lq_count                 = '0;
+  assign o_sq_check_valid           = 1'b0;
+  assign o_sq_check_addr            = '0;
+  assign o_sq_check_rob_tag         = '0;
+  assign o_sq_check_size            = riscv_pkg::MEM_SIZE_WORD;
+  assign o_lq_mem_read_en           = 1'b0;
+  assign o_lq_mem_read_addr         = '0;
+  assign o_lq_mem_read_size         = riscv_pkg::MEM_SIZE_WORD;
+`else
+  // ===========================================================================
+  // Load Queue: Allocation from Dispatch
+  // ===========================================================================
+  // Determine if the dispatched MEM_RS instruction is a load
+  logic lq_alloc_is_load;
+  always_comb begin
+    case (i_rs_dispatch.op)
+      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
+      riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LR_W:
+      lq_alloc_is_load = 1'b1;
+      default: lq_alloc_is_load = 1'b0;
+    endcase
+  end
+
+  riscv_pkg::lq_alloc_req_t lq_alloc_req;
+  always_comb begin
+    lq_alloc_req.valid    = mem_rs_dispatch_valid && lq_alloc_is_load;
+    lq_alloc_req.rob_tag  = i_rs_dispatch.rob_tag;
+    lq_alloc_req.is_fp    = i_rs_dispatch.is_fp_mem;
+    lq_alloc_req.size     = i_rs_dispatch.mem_size;
+    lq_alloc_req.sign_ext = i_rs_dispatch.mem_signed;
+  end
+
+  // ===========================================================================
+  // Load Queue: Address Update from MEM_RS Issue
+  // ===========================================================================
+  logic lq_issue_is_load;
+  always_comb begin
+    case (o_mem_rs_issue.op)
+      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
+      riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LR_W:
+      lq_issue_is_load = 1'b1;
+      default: lq_issue_is_load = 1'b0;
+    endcase
+  end
+
+  logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
+  assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+
+  // MMIO detection: address >= MMIO base
+  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 32'h4000_0000;
+  logic lq_addr_is_mmio;
+  assign lq_addr_is_mmio = (lq_effective_addr >= MmioBase);
+
+  riscv_pkg::lq_addr_update_t lq_addr_update;
+  always_comb begin
+    lq_addr_update.valid   = o_mem_rs_issue.valid && lq_issue_is_load;
+    lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
+    lq_addr_update.address = lq_effective_addr;
+    lq_addr_update.is_mmio = lq_addr_is_mmio;
+  end
+
+  // ===========================================================================
+  // Load Queue Instance
+  // ===========================================================================
+  load_queue u_lq (
+      .i_clk  (i_clk),
+      .i_rst_n(i_rst_n),
+
+      // Allocation (from dispatch)
+      .i_alloc(lq_alloc_req),
+      .o_full (o_lq_full),
+
+      // Address update (from MEM_RS issue)
+      .i_addr_update(lq_addr_update),
+
+      // SQ disambiguation (external until SQ added)
+      .o_sq_check_valid          (o_sq_check_valid),
+      .o_sq_check_addr           (o_sq_check_addr),
+      .o_sq_check_rob_tag        (o_sq_check_rob_tag),
+      .o_sq_check_size           (o_sq_check_size),
+      .i_sq_all_older_addrs_known(i_sq_all_older_addrs_known),
+      .i_sq_forward              (i_sq_forward),
+
+      // Memory interface (external)
+      .o_mem_read_en   (o_lq_mem_read_en),
+      .o_mem_read_addr (o_lq_mem_read_addr),
+      .o_mem_read_size (o_lq_mem_read_size),
+      .i_mem_read_data (i_lq_mem_read_data),
+      .i_mem_read_valid(i_lq_mem_read_valid),
+
+      // CDB result (to MEM adapter)
+      .o_fu_complete           (lq_fu_complete),
+      .i_adapter_result_pending(mem_adapter_result_pending),
+
+      // ROB head tag (for MMIO ordering)
+      .i_rob_head_tag(head_tag),
+
+      // Flush
+      .i_flush_en (i_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_flush_all(i_flush_all),
+
+      // Status
+      .o_empty(o_lq_empty),
+      .o_count(o_lq_count)
+  );
+
+  // ===========================================================================
+  // MEM CDB Adapter: result holding register → CDB arbiter slot 3
+  // ===========================================================================
+  fu_cdb_adapter u_mem_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (lq_fu_complete),
+      .o_fu_complete   (mem_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[3]),
+      .o_result_pending(mem_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+`endif
+
   // ===========================================================================
   // Formal Verification
   // ===========================================================================
@@ -1045,6 +1214,16 @@ module tomasulo_wrapper (
   // No RS dispatch when targeted RS is full
   always_comb begin
     if (o_rs_full) assume (!i_rs_dispatch.valid);
+  end
+
+  // No MEM_RS load dispatch when LQ is full
+  always_comb begin
+    if (o_lq_full && lq_alloc_is_load) assume (!mem_rs_dispatch_valid);
+  end
+
+  // LQ memory response only after read was issued
+  always_comb begin
+    assume (!(i_lq_mem_read_valid && (i_flush_en || i_flush_all)));
   end
 
   // Dispatch routing mutual exclusion: at most one RS receives valid
@@ -1247,6 +1426,11 @@ module tomasulo_wrapper (
       if ($past(i_flush_all)) begin
         p_flush_all_clears_fp_rename : assert (!o_fp_src1.renamed);
       end
+
+      // flush_all empties LQ
+      if ($past(i_flush_all)) begin
+        p_flush_all_empties_lq : assert (o_lq_empty);
+      end
     end
 
     // Reset properties
@@ -1261,6 +1445,7 @@ module tomasulo_wrapper (
       p_reset_checkpoints_available : assert (o_checkpoint_available);
       p_reset_int_not_renamed : assert (!o_int_src1.renamed);
       p_reset_fp_not_renamed : assert (!o_fp_src1.renamed);
+      p_reset_lq_empty : assert (o_lq_empty);
     end
   end
 
@@ -1328,6 +1513,12 @@ module tomasulo_wrapper (
       cover_dispatch_to_fp_rs : cover (fp_rs_dispatch_valid);
       cover_dispatch_to_fmul_rs : cover (fmul_rs_dispatch_valid);
       cover_dispatch_to_fdiv_rs : cover (fdiv_rs_dispatch_valid);
+
+      // LQ allocation
+      cover_lq_alloc : cover (lq_alloc_req.valid);
+
+      // LQ memory read issued
+      cover_lq_mem_issue : cover (o_lq_mem_read_en);
     end
   end
 

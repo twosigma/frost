@@ -237,7 +237,33 @@ module tomasulo_wrapper_tb (
     // =========================================================================
     // CSR Read Data -- pass through (32 bits)
     // =========================================================================
-    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data
+    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
+
+    // =========================================================================
+    // LQ: SQ Disambiguation -- pass through (small)
+    // =========================================================================
+    input logic i_sq_all_older_addrs_known,
+    input riscv_pkg::sq_forward_result_t i_sq_forward,
+    output logic o_sq_check_valid,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
+    output riscv_pkg::mem_size_e o_sq_check_size,
+
+    // =========================================================================
+    // LQ: Memory Interface -- pass through (small)
+    // =========================================================================
+    output logic                                       o_lq_mem_read_en,
+    output logic                 [riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
+    output riscv_pkg::mem_size_e                       o_lq_mem_read_size,
+    input  logic                 [riscv_pkg::XLEN-1:0] i_lq_mem_read_data,
+    input  logic                                       i_lq_mem_read_valid,
+
+    // =========================================================================
+    // LQ: Status -- pass through (small)
+    // =========================================================================
+    output logic                                    o_lq_full,
+    output logic                                    o_lq_empty,
+    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count
 );
 
   // ---------------------------------------------------------------------------
@@ -369,7 +395,22 @@ module tomasulo_wrapper_tb (
       .o_int_rs_full,
       .o_rs_empty,
       .o_rs_count,
-      .i_csr_read_data
+      .i_csr_read_data,
+      // LQ
+      .i_sq_all_older_addrs_known,
+      .i_sq_forward,
+      .o_sq_check_valid,
+      .o_sq_check_addr,
+      .o_sq_check_rob_tag,
+      .o_sq_check_size,
+      .o_lq_mem_read_en,
+      .o_lq_mem_read_addr,
+      .o_lq_mem_read_size,
+      .i_lq_mem_read_data,
+      .i_lq_mem_read_valid,
+      .o_lq_full,
+      .o_lq_empty,
+      .o_lq_count
   );
 
 endmodule

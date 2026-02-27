@@ -221,6 +221,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="fu_cdb_adapter",
         description="FU CDB adapter unit tests (holding register, pass-through, flush)",
     ),
+    "load_queue": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
+        hdl_toplevel_module="load_queue",
+        description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",

@@ -22,6 +22,8 @@ read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv
 read -sv int_alu_shim.sv
 read -sv int_muldiv_shim.sv
+read -sv load_unit.sv
+read -sv load_queue.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
@@ -40,6 +42,8 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
+../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv

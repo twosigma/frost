@@ -63,6 +63,11 @@ else ifeq ($(TOPLEVEL),fu_cdb_adapter)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),load_queue)
+# Load Queue unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \

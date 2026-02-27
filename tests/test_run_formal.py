@@ -88,6 +88,10 @@ FORMAL_TARGETS = [
         "FU CDB adapter - holding register, pass-through, back-pressure, flush",
     ),
     FormalTarget(
+        "load_queue.sby",
+        "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, flush composition",
     ),

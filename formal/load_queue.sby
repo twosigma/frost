@@ -1,0 +1,23 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 12
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv load_unit.sv
+read -formal -sv load_queue.sv
+prep -top load_queue
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
