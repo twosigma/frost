@@ -50,7 +50,7 @@ total). Rationale:
 | is_fp       | 1 bit   | FP load (FLW/FLD)                        |
 | addr_valid  | 1 bit   | Address has been calculated              |
 | address     | 32 bits | Load address                             |
-| size        | 2 bits  | 00=B, 01=H, 10=W, 11=D (for FLD)        |
+| size        | 2 bits  | 00=B, 01=H, 10=W, 11=D (for FLD)         |
 | sign_ext    | 1 bit   | Sign extend result (INT only)            |
 | is_mmio     | 1 bit   | MMIO address (non-speculative only)      |
 | fp64_phase  | 1 bit   | FLD phase: 0=low word, 1=high word       |
@@ -58,7 +58,7 @@ total). Rationale:
 | data_valid  | 1 bit   | Data received from memory/forward        |
 | data        | 64 bits | Loaded data (FLEN for FLD)               |
 | forwarded   | 1 bit   | Data from store queue forward            |
-| **Total**   | **~116 bits** |                                     |
+| **Total**   | **~116 bits** |                                    |
 
 ## Ports
 

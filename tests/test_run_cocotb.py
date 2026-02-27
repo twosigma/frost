@@ -226,6 +226,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="load_queue",
         description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
     ),
+    "fp_add_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
+        hdl_toplevel_module="fp_add_shim",
+        description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
+    ),
+    "fp_mul_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
+        hdl_toplevel_module="fp_mul_shim",
+        description="FP mul shim unit tests (FMUL, FMADD, FMSUB, FNMADD, FNMSUB)",
+    ),
+    "fp_div_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",
+        hdl_toplevel_module="fp_div_shim",
+        description="FP div shim unit tests (FDIV, FSQRT, flush)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",

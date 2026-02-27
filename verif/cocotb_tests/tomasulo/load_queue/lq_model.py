@@ -328,15 +328,41 @@ class LQModel:
         """Full flush: clear all state."""
         self.reset()
 
+    def mem_response_drain(self, data: int) -> None:
+        """Handle memory response with drain logic.
+
+        If the issued entry was flushed, discard the response and clear
+        mem_outstanding.  Otherwise process normally.
+        """
+        if not self.mem_outstanding:
+            return
+        idx = self.issued_idx
+        e = self.entries[idx]
+        if not e.valid:
+            # Stale response drain: entry was flushed
+            self.mem_outstanding = False
+            return
+        # Entry still valid — process normally
+        self.mem_response(data)
+
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
-        """Partial flush: invalidate entries younger than flush_tag."""
+        """Partial flush: invalidate entries younger than flush_tag.
+
+        Drain approach: do NOT clear mem_outstanding when the in-flight
+        entry is flushed.  The mem_response_drain handler checks validity
+        and discards stale responses.
+
+        After invalidating, retract tail_ptr backwards past consecutive
+        invalid entries at the tail end.
+        """
         for e in self.entries:
             if e.valid and is_younger(
                 e.rob_tag, flush_tag & MASK_TAG, rob_head_tag & MASK_TAG
             ):
                 e.valid = False
-        # Cancel outstanding if flushed
-        if self.mem_outstanding:
-            e = self.entries[self.issued_idx]
-            if not e.valid:
-                self.mem_outstanding = False
+        # Retract tail past consecutive invalid entries at tail end
+        while (
+            self.tail_ptr != self.head_ptr
+            and not self.entries[(self.tail_ptr - 1) % self.depth].valid
+        ):
+            self.tail_ptr = (self.tail_ptr - 1) % self._ptr_wrap

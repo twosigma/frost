@@ -259,6 +259,12 @@ module tomasulo_wrapper_tb (
     input  logic                                       i_lq_mem_read_valid,
 
     // =========================================================================
+    // LQ: L0 Cache Invalidation
+    // =========================================================================
+    input logic                       i_cache_invalidate_valid,
+    input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+
+    // =========================================================================
     // LQ: Status -- pass through (small)
     // =========================================================================
     output logic                                    o_lq_full,
@@ -408,6 +414,8 @@ module tomasulo_wrapper_tb (
       .o_lq_mem_read_size,
       .i_lq_mem_read_data,
       .i_lq_mem_read_valid,
+      .i_cache_invalidate_valid,
+      .i_cache_invalidate_addr,
       .o_lq_full,
       .o_lq_empty,
       .o_lq_count

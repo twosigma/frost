@@ -23,11 +23,38 @@ read -sv fu_cdb_adapter.sv
 read -sv int_alu_shim.sv
 read -sv int_muldiv_shim.sv
 read -sv load_unit.sv
+read -sv lq_l0_cache.sv
 read -sv load_queue.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
 read -sv alu.sv
+read -sv fp_lzc.sv
+read -sv fp_classify_operand.sv
+read -sv fp_operand_unpacker.sv
+read -sv fp_subnorm_shift.sv
+read -sv fp_result_assembler.sv
+read -sv fp_sign_inject.sv
+read -sv fp_classify.sv
+read -sv fp_compare.sv
+read -sv fp_convert.sv
+read -sv fp_convert_sd.sv
+read -sv fp_adder.sv
+read -sv fp_multiplier.sv
+read -sv fp_divider.sv
+read -sv fp_sqrt.sv
+read -sv fp_fma.sv
+read -sv fpu_adder_unit.sv
+read -sv fpu_mult_unit.sv
+read -sv fpu_fma_unit.sv
+read -sv fpu_compare_unit.sv
+read -sv fpu_sign_inject_unit.sv
+read -sv fpu_classify_unit.sv
+read -sv fpu_div_sqrt_unit.sv
+read -sv fpu_convert_unit.sv
+read -sv fp_add_shim.sv
+read -sv fp_mul_shim.sv
+read -sv fp_div_shim.sv
 read -formal -sv tomasulo_wrapper.sv
 prep -top tomasulo_wrapper
 
@@ -43,9 +70,36 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sign_inject.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_compare.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_divider.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sqrt.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_adder_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_mult_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_compare_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_sign_inject_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_classify_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_div_sqrt_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_convert_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_add_shim.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

@@ -1,0 +1,55 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 16
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv fp_lzc.sv
+read -sv fp_classify_operand.sv
+read -sv fp_operand_unpacker.sv
+read -sv fp_subnorm_shift.sv
+read -sv fp_result_assembler.sv
+read -sv fp_sign_inject.sv
+read -sv fp_classify.sv
+read -sv fp_compare.sv
+read -sv fp_convert.sv
+read -sv fp_convert_sd.sv
+read -sv fp_adder.sv
+read -sv fp_multiplier.sv
+read -sv fpu_adder_unit.sv
+read -sv fpu_compare_unit.sv
+read -sv fpu_classify_unit.sv
+read -sv fpu_sign_inject_unit.sv
+read -sv fpu_convert_unit.sv
+read -formal -sv fp_add_shim.sv
+prep -top fp_add_shim
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sign_inject.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_compare.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_multiplier.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_adder_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_compare_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_classify_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_sign_inject_unit.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_convert_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_add_shim.sv

@@ -697,3 +697,245 @@ async def test_constrained_random(dut: Any) -> None:
         ), f"cycle {cycle}: count mismatch DUT={dut_if.count} model={model.count}"
 
     cocotb.log.info(f"=== Constrained random test passed ({num_cycles} cycles) ===")
+
+
+# ============================================================================
+# Test 22: Stale response after partial flush (drain approach)
+# ============================================================================
+@cocotb.test()
+async def test_stale_response_after_partial_flush(dut: Any) -> None:
+    """Partial flush of in-flight load, late mem response is discarded."""
+    dut_if, model = await setup(dut)
+
+    # ROB head at tag 0
+    dut_if.drive_rob_head_tag(0)
+
+    # Allocate tag 5, give it an address
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=0x1000)
+
+    # Issue to memory
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "Should issue to memory"
+    model.issue_to_memory(True, SQForwardResult())
+    await dut_if.step()
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    # Partial flush: tag 5 is younger than tag 2 (relative to head 0)
+    dut_if.drive_partial_flush(flush_tag=2)
+    model.partial_flush(2, 0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == 0, f"Tag 5 should be flushed, count={dut_if.count}"
+    assert model.mem_outstanding, "Model should keep mem_outstanding (drain)"
+
+    # Late memory response arrives — should be discarded (drain)
+    dut_if.drive_mem_response(0xDEAD_BEEF)
+    model.mem_response_drain(0xDEAD_BEEF)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    assert not model.mem_outstanding, "mem_outstanding should be cleared after drain"
+    assert dut_if.count == 0, "No valid entries after drain"  # type: ignore[unreachable]
+
+    # Verify we can allocate again (no stale state)
+    dut_if.drive_alloc(rob_tag=10, size=MEM_SIZE_WORD)
+    model.alloc(10, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 1, "Should be able to allocate after drain"
+
+
+# ============================================================================
+# Test 23: Tail reclamation after partial flush
+# ============================================================================
+@cocotb.test()
+async def test_tail_reclamation_after_partial_flush(dut: Any) -> None:
+    """After partial flush, LQ not falsely full, can allocate."""
+    dut_if, model = await setup(dut)
+
+    # ROB head at tag 0
+    dut_if.drive_rob_head_tag(0)
+
+    # Fill all 8 entries with tags 0-7
+    for i in range(LQ_DEPTH):
+        dut_if.drive_alloc(rob_tag=i, size=MEM_SIZE_WORD)
+        model.alloc(i, False, MEM_SIZE_WORD, False)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.full, "LQ should be full"
+
+    # Partial flush: invalidate tags 4-7 (younger than tag 3)
+    dut_if.drive_partial_flush(flush_tag=3)
+    model.partial_flush(3, 0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == 4, f"Expected 4 valid entries, got {dut_if.count}"
+    assert (
+        not dut_if.full
+    ), "LQ should NOT be full after partial flush with tail reclamation"
+
+    # Should be able to allocate new entries
+    dut_if.drive_alloc(rob_tag=20, size=MEM_SIZE_WORD)  # type: ignore[unreachable]
+    model.alloc(20, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 5, f"Expected 5 after allocation, got {dut_if.count}"
+
+
+# ============================================================================
+# Test 24: Non-contiguous tail hole — retraction must stop at valid entry
+# ============================================================================
+@cocotb.test()
+async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
+    """Tail retraction stops at first valid entry, not skipping past holes.
+
+    Allocate out-of-ROB-order so that a partial flush creates the pattern:
+      idx 0(V) 1(V) 2(INVALID) 3(V) 4(INVALID) 5(INVALID)
+    Tail must retract from 6 to 4, not past the valid entry at idx 3.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(0)
+
+    # Allocate 6 entries with tags that create a hole after flush.
+    # Tags 5, 6, 7 are younger than flush_tag=4, tags 0, 1, 2 are not.
+    for tag in [0, 1, 5, 2, 6, 7]:
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        model.alloc(tag, False, MEM_SIZE_WORD, False)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.count == 6, f"Expected 6 entries, got {dut_if.count}"
+
+    # Partial flush: tags 5, 6, 7 are younger than 4 (relative to head 0)
+    # Post-flush: idx 0(V:tag0) 1(V:tag1) 2(I:tag5) 3(V:tag2) 4(I:tag6) 5(I:tag7)
+    dut_if.drive_partial_flush(flush_tag=4)
+    model.partial_flush(4, 0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    # Tail should retract from 6→5→4 (skipping idx 5,4) then STOP at idx 3 (valid)
+    assert dut_if.count == 3, f"Expected 3 valid entries, got {dut_if.count}"
+    assert not dut_if.full, "LQ should not be full after partial flush"
+
+    # The key check: we can allocate exactly DEPTH - (tail-head) new entries.
+    # tail=4, head=0 → 4 slots used → 4 free.  Allocate 4 to fill.
+    for i in range(4):
+        dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
+        model.alloc(10 + i, False, MEM_SIZE_WORD, False)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.full, "LQ should be full after allocating remaining slots"
+    # Valid count: 3 original + 4 new = 7 (idx 2 is a hole, still invalid)
+    count = dut_if.count  # type: ignore[unreachable]
+    assert count == 7, f"Expected 7 valid entries (with hole), got {count}"
+
+
+# ============================================================================
+# Test 25: L0 cache hit delivers data after SQ disambiguation
+# ============================================================================
+@cocotb.test()
+async def test_cache_hit_bypasses_memory(dut: Any) -> None:
+    """L0 cache hit delivers data without memory issue.
+
+    Flow: first load -> memory -> fills cache -> second load same addr -> cache hit.
+    """
+    dut_if, model = await setup(dut)
+
+    # First load: fill the cache via memory
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=0x2000)
+    result = await complete_load_no_forward(dut_if, model, mem_data=0xAAAA_BBBB)
+    assert result.valid and result.tag == 1
+    assert result.value == 0xAAAA_BBBB
+
+    # Free entry (step to consume CDB broadcast)
+    await dut_if.step()
+
+    # Second load at same address — should hit L0 cache after SQ disambig
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=0x2000)
+
+    # Drive SQ disambiguation: no older conflicting store
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    # Cache hit processed on this edge (SQ confirms + cache hits → data_valid)
+    await dut_if.step()
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    # Now CDB should have the result without any memory issue
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "CDB should be valid from cache hit"
+    assert result.tag == 2
+    assert result.value == 0xAAAA_BBBB, f"Expected 0xAAAABBBB, got 0x{result.value:x}"
+
+
+# ============================================================================
+# Test 26: Cache miss fills cache, subsequent hit
+# ============================================================================
+@cocotb.test()
+async def test_cache_miss_fills_cache(dut: Any) -> None:
+    """Cache miss -> memory -> fill -> subsequent load hits cache."""
+    dut_if, model = await setup(dut)
+
+    # First load at 0x3000 — cache miss (cold cache), goes to memory
+    await alloc_and_addr(dut_if, model, rob_tag=3, address=0x3000)
+    result = await complete_load_no_forward(dut_if, model, mem_data=0x1234_5678)
+    assert result.valid and result.value == 0x1234_5678
+    await dut_if.step()
+
+    # Second load at 0x3000 — should hit cache after SQ disambig
+    await alloc_and_addr(dut_if, model, rob_tag=4, address=0x3000)
+
+    # Drive SQ disambiguation: no older conflicting store
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    await dut_if.step()  # cache hit + SQ confirmed
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "Second load should hit cache"
+    assert result.tag == 4
+    assert result.value == 0x1234_5678
+
+
+# ============================================================================
+# Test 27: MMIO address always misses cache
+# ============================================================================
+@cocotb.test()
+async def test_cache_mmio_bypass(dut: Any) -> None:
+    """MMIO address always misses cache, even if data is present."""
+    dut_if, model = await setup(dut)
+
+    # MMIO address: >= 0x40000000
+    mmio_addr = 0x4000_0000
+
+    # Load from MMIO address — must go through memory
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+
+    # Set ROB head to tag 5 (MMIO loads must be at head)
+    dut_if.drive_rob_head_tag(5)
+
+    # Enable disambiguation
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+
+    # Memory should be issued (cache always misses MMIO)
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "MMIO load should issue to memory, not cache"

@@ -1,0 +1,37 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 40
+cover: mode cover
+cover: depth 50
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv fp_lzc.sv
+read -sv fp_classify_operand.sv
+read -sv fp_operand_unpacker.sv
+read -sv fp_subnorm_shift.sv
+read -sv fp_result_assembler.sv
+read -sv fp_divider.sv
+read -sv fp_sqrt.sv
+read -sv fpu_div_sqrt_unit.sv
+read -formal -sv fp_div_shim.sv
+prep -top fp_div_shim
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_divider.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sqrt.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_div_sqrt_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv

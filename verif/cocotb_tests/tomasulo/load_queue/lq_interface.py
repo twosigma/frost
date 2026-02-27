@@ -174,6 +174,8 @@ class LQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_cache_invalidate_valid.value = 0
+        self.dut.i_cache_invalidate_addr.value = 0
 
     # =========================================================================
     # Allocation

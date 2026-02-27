@@ -92,6 +92,22 @@ FORMAL_TARGETS = [
         "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
     ),
     FormalTarget(
+        "lq_l0_cache.sby",
+        "L0 data cache - direct-mapped word cache for load queue",
+    ),
+    FormalTarget(
+        "fp_add_shim.sby",
+        "FP add shim - FP add/compare/classify/sgnj/convert CDB pipeline",
+    ),
+    FormalTarget(
+        "fp_mul_shim.sby",
+        "FP mul shim - FP multiply/FMA CDB pipeline",
+    ),
+    FormalTarget(
+        "fp_div_shim.sby",
+        "FP div shim - FP divide/sqrt CDB pipeline",
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, flush composition",
     ),

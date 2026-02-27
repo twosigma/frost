@@ -327,6 +327,12 @@ module tomasulo_wrapper (
     input  logic                                       i_lq_mem_read_valid,
 
     // =========================================================================
+    // Load Queue: L0 Cache Invalidation (from SQ, future)
+    // =========================================================================
+    input logic                       i_cache_invalidate_valid,
+    input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+
+    // =========================================================================
     // Load Queue: Status
     // =========================================================================
     output logic                                    o_lq_full,
@@ -352,16 +358,18 @@ module tomasulo_wrapper (
   riscv_pkg::cdb_broadcast_t cdb_bus;
 
 `ifdef VERILATOR
-  // Override slots 0-2: internal FU pipelines replace external i_fu_complete[0:2]
+  // Override slots 0-6: internal FU pipelines replace external i_fu_complete.
+  // Slots 4-6 use a priority mux: internal FP adapter takes precedence,
+  // external i_fu_complete falls through when idle (test injection path).
   riscv_pkg::fu_complete_t cdb_arb_in[riscv_pkg::NumFus];
   always_comb begin
     cdb_arb_in[0] = alu_adapter_to_arbiter;
     cdb_arb_in[1] = mul_adapter_to_arbiter;
     cdb_arb_in[2] = div_adapter_to_arbiter;
     cdb_arb_in[3] = mem_adapter_to_arbiter;
-    cdb_arb_in[4] = i_fu_complete[4];
-    cdb_arb_in[5] = i_fu_complete[5];
-    cdb_arb_in[6] = i_fu_complete[6];
+    cdb_arb_in[4] = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete[4];
+    cdb_arb_in[5] = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete[5];
+    cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete[6];
   end
 
   cdb_arbiter u_cdb_arbiter (
@@ -381,9 +389,9 @@ module tomasulo_wrapper (
       .i_fu_complete_1(mul_adapter_to_arbiter),
       .i_fu_complete_2(div_adapter_to_arbiter),
       .i_fu_complete_3(mem_adapter_to_arbiter),
-      .i_fu_complete_4(i_fu_complete_4),
-      .i_fu_complete_5(i_fu_complete_5),
-      .i_fu_complete_6(i_fu_complete_6),
+      .i_fu_complete_4(fp_add_adapter_to_arbiter),
+      .i_fu_complete_5(fp_mul_adapter_to_arbiter),
+      .i_fu_complete_6(fp_div_adapter_to_arbiter),
       .o_cdb          (cdb_bus),
       .o_grant        (o_cdb_grant)
   );
@@ -493,6 +501,42 @@ module tomasulo_wrapper (
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;  // adapter → arbiter slot 3
   logic                    mem_adapter_result_pending;
+
+  // ===========================================================================
+  // FP_ADD Pipeline: FP_RS issue → fp_add_shim → adapter → CDB arbiter slot 4
+  // ===========================================================================
+  riscv_pkg::rs_issue_t    fp_rs_issue_w;  // FP_RS issue output (internal)
+  riscv_pkg::fu_complete_t fp_add_shim_out;  // shim → adapter
+  riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;  // adapter → arbiter
+  logic                    fp_add_adapter_result_pending;
+  logic                    fp_add_busy;
+  logic                    fp_rs_fu_ready;
+
+  assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_add_busy & ~fp_add_adapter_result_pending;
+
+  // ===========================================================================
+  // FP_MUL Pipeline: FMUL_RS issue → fp_mul_shim → adapter → CDB arbiter slot 5
+  // ===========================================================================
+  riscv_pkg::rs_issue_t    fmul_rs_issue_w;  // FMUL_RS issue output (internal)
+  riscv_pkg::fu_complete_t fp_mul_shim_out;
+  riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
+  logic                    fp_mul_adapter_result_pending;
+  logic                    fp_mul_busy;
+  logic                    fmul_rs_fu_ready;
+
+  assign fmul_rs_fu_ready = i_fmul_rs_fu_ready & ~fp_mul_busy & ~fp_mul_adapter_result_pending;
+
+  // ===========================================================================
+  // FP_DIV Pipeline: FDIV_RS issue → fp_div_shim → adapter → CDB arbiter slot 6
+  // ===========================================================================
+  riscv_pkg::rs_issue_t    fdiv_rs_issue_w;  // FDIV_RS issue output (internal)
+  riscv_pkg::fu_complete_t fp_div_shim_out;
+  riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
+  logic                    fp_div_adapter_result_pending;
+  logic                    fp_div_busy;
+  logic                    fdiv_rs_fu_ready;
+
+  assign fdiv_rs_fu_ready = i_fdiv_rs_fu_ready & ~fp_div_busy & ~fp_div_adapter_result_pending;
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -851,8 +895,8 @@ module tomasulo_wrapper (
       .i_dispatch    (fp_rs_dispatch),
       .o_full        (fp_rs_full_w),
       .i_cdb         (cdb_bus),
-      .o_issue       (o_fp_rs_issue),
-      .i_fu_ready    (i_fp_rs_fu_ready),
+      .o_issue       (fp_rs_issue_w),
+      .i_fu_ready    (fp_rs_fu_ready),
       .i_flush_en    (i_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
@@ -878,8 +922,8 @@ module tomasulo_wrapper (
       .i_dispatch    (fmul_rs_dispatch),
       .o_full        (fmul_rs_full_w),
       .i_cdb         (cdb_bus),
-      .o_issue       (o_fmul_rs_issue),
-      .i_fu_ready    (i_fmul_rs_fu_ready),
+      .o_issue       (fmul_rs_issue_w),
+      .i_fu_ready    (fmul_rs_fu_ready),
       .i_flush_en    (i_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
@@ -905,8 +949,8 @@ module tomasulo_wrapper (
       .i_dispatch    (fdiv_rs_dispatch),
       .o_full        (fdiv_rs_full_w),
       .i_cdb         (cdb_bus),
-      .o_issue       (o_fdiv_rs_issue),
-      .i_fu_ready    (i_fdiv_rs_fu_ready),
+      .o_issue       (fdiv_rs_issue_w),
+      .i_fu_ready    (fdiv_rs_fu_ready),
       .i_flush_en    (i_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
@@ -914,6 +958,11 @@ module tomasulo_wrapper (
       .o_empty       (o_fdiv_rs_empty),
       .o_count       (o_fdiv_rs_count)
   );
+
+  // Observation ports: expose FP RS issue for testbench
+  assign o_fp_rs_issue   = fp_rs_issue_w;
+  assign o_fmul_rs_issue = fmul_rs_issue_w;
+  assign o_fdiv_rs_issue = fdiv_rs_issue_w;
 `endif
 
   // ===========================================================================
@@ -995,19 +1044,37 @@ module tomasulo_wrapper (
 `ifdef ICARUS
   // Under Icarus, MEM_RS is stubbed and LQ is not instantiated.
   // Slot 3 reverts to external i_fu_complete_3 (handled by CDB arbiter wiring).
-  assign mem_adapter_to_arbiter     = i_fu_complete_3;
+  assign mem_adapter_to_arbiter = i_fu_complete_3;
   assign mem_adapter_result_pending = 1'b0;
-  assign lq_fu_complete             = '0;
-  assign o_lq_full                  = 1'b0;
-  assign o_lq_empty                 = 1'b1;
-  assign o_lq_count                 = '0;
-  assign o_sq_check_valid           = 1'b0;
-  assign o_sq_check_addr            = '0;
-  assign o_sq_check_rob_tag         = '0;
-  assign o_sq_check_size            = riscv_pkg::MEM_SIZE_WORD;
-  assign o_lq_mem_read_en           = 1'b0;
-  assign o_lq_mem_read_addr         = '0;
-  assign o_lq_mem_read_size         = riscv_pkg::MEM_SIZE_WORD;
+  assign lq_fu_complete = '0;
+  assign o_lq_full = 1'b0;
+  assign o_lq_empty = 1'b1;
+  assign o_lq_count = '0;
+  assign o_sq_check_valid = 1'b0;
+  assign o_sq_check_addr = '0;
+  assign o_sq_check_rob_tag = '0;
+  assign o_sq_check_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
+  assign o_lq_mem_read_en = 1'b0;
+  assign o_lq_mem_read_addr = '0;
+  assign o_lq_mem_read_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
+
+  // Under Icarus, FP_RS/FMUL_RS/FDIV_RS are stubbed (no FP shims).
+  // Slots 4-6 revert to external i_fu_complete_4/5/6.
+  assign fp_add_adapter_to_arbiter = i_fu_complete_4;
+  assign fp_add_adapter_result_pending = 1'b0;
+  assign fp_add_shim_out = '0;
+  assign fp_add_busy = 1'b0;
+  assign fp_mul_adapter_to_arbiter = i_fu_complete_5;
+  assign fp_mul_adapter_result_pending = 1'b0;
+  assign fp_mul_shim_out = '0;
+  assign fp_mul_busy = 1'b0;
+  assign fp_div_adapter_to_arbiter = i_fu_complete_6;
+  assign fp_div_adapter_result_pending = 1'b0;
+  assign fp_div_shim_out = '0;
+  assign fp_div_busy = 1'b0;
+  assign fp_rs_issue_w = '0;
+  assign fmul_rs_issue_w = '0;
+  assign fdiv_rs_issue_w = '0;
 `else
   // ===========================================================================
   // Load Queue: Allocation from Dispatch
@@ -1101,6 +1168,10 @@ module tomasulo_wrapper (
       // ROB head tag (for MMIO ordering)
       .i_rob_head_tag(head_tag),
 
+      // L0 cache invalidation
+      .i_cache_invalidate_valid(i_cache_invalidate_valid),
+      .i_cache_invalidate_addr (i_cache_invalidate_addr),
+
       // Flush
       .i_flush_en (i_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -1121,6 +1192,99 @@ module tomasulo_wrapper (
       .o_fu_complete   (mem_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[3]),
       .o_result_pending(mem_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // FP Add Shim: translate rs_issue_t → FPU subunits → fu_complete_t
+  // ===========================================================================
+  fp_add_shim u_fp_add_shim (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_rs_issue    (fp_rs_issue_w),
+      .o_fu_complete (fp_add_shim_out),
+      .o_fu_busy     (fp_add_busy),
+      .i_flush       (i_flush_all),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag)
+  );
+
+  // ===========================================================================
+  // FP Add CDB Adapter: result holding register → CDB arbiter slot 4
+  // ===========================================================================
+  fu_cdb_adapter u_fp_add_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (fp_add_shim_out),
+      .o_fu_complete   (fp_add_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[4]),
+      .o_result_pending(fp_add_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // FP Multiply Shim: translate rs_issue_t → FPU mult/FMA → fu_complete_t
+  // ===========================================================================
+  fp_mul_shim u_fp_mul_shim (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_rs_issue    (fmul_rs_issue_w),
+      .o_fu_complete (fp_mul_shim_out),
+      .o_fu_busy     (fp_mul_busy),
+      .i_flush       (i_flush_all),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag)
+  );
+
+  // ===========================================================================
+  // FP Multiply CDB Adapter: result holding register → CDB arbiter slot 5
+  // ===========================================================================
+  fu_cdb_adapter u_fp_mul_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (fp_mul_shim_out),
+      .o_fu_complete   (fp_mul_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[5]),
+      .o_result_pending(fp_mul_adapter_result_pending),
+      .i_flush         (i_flush_all),
+      .i_flush_en      (i_flush_en),
+      .i_flush_tag     (i_flush_tag),
+      .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // FP Divide/Sqrt Shim: translate rs_issue_t → FPU div/sqrt → fu_complete_t
+  // ===========================================================================
+  fp_div_shim u_fp_div_shim (
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .i_rs_issue    (fdiv_rs_issue_w),
+      .o_fu_complete (fp_div_shim_out),
+      .o_fu_busy     (fp_div_busy),
+      .i_flush       (i_flush_all),
+      .i_flush_en    (i_flush_en),
+      .i_flush_tag   (i_flush_tag),
+      .i_rob_head_tag(head_tag)
+  );
+
+  // ===========================================================================
+  // FP Divide CDB Adapter: result holding register → CDB arbiter slot 6
+  // ===========================================================================
+  fu_cdb_adapter u_fp_div_adapter (
+      .i_clk           (i_clk),
+      .i_rst_n         (i_rst_n),
+      .i_fu_result     (fp_div_shim_out),
+      .o_fu_complete   (fp_div_adapter_to_arbiter),
+      .i_grant         (o_cdb_grant[6]),
+      .o_result_pending(fp_div_adapter_result_pending),
       .i_flush         (i_flush_all),
       .i_flush_en      (i_flush_en),
       .i_flush_tag     (i_flush_tag),

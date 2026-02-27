@@ -18,8 +18,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 # FU shims (includes ALU sources)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 
-# Load queue (includes load_unit)
+# Load queue (includes load_unit and L0 cache)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 
 # Wrapper

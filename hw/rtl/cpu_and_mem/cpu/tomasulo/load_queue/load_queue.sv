@@ -97,6 +97,12 @@ module load_queue #(
     input logic                                        i_flush_all,
 
     // =========================================================================
+    // L0 Cache Invalidation (from SQ, future)
+    // =========================================================================
+    input logic                       i_cache_invalidate_valid,
+    input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+
+    // =========================================================================
     // Status
     // =========================================================================
     output logic                       o_empty,
@@ -290,7 +296,7 @@ module load_queue #(
     o_mem_read_addr = '0;
     o_mem_read_size = riscv_pkg::MEM_SIZE_WORD;
 
-    if (sq_can_issue) begin
+    if (sq_can_issue && !cache_hit_fast_path) begin
       o_mem_read_en = 1'b1;
       // FLD phase 1: read address+4 for upper word
       if (lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE
@@ -323,7 +329,80 @@ module load_queue #(
       .o_data_loaded_from_memory(lu_data_out)
   );
 
-  // Drive load unit inputs from the entry awaiting response
+  // ===========================================================================
+  // L0 Cache Instance
+  // ===========================================================================
+  logic            cache_lookup_hit;
+  logic [XLEN-1:0] cache_lookup_data;
+  logic            cache_fill_valid;
+  logic [XLEN-1:0] cache_fill_addr;
+  logic [XLEN-1:0] cache_fill_data;
+
+  lq_l0_cache #(
+      .DEPTH    (128),
+      .XLEN     (XLEN),
+      .MMIO_ADDR(32'h4000_0000)
+  ) u_l0_cache (
+      .i_clk  (i_clk),
+      .i_rst_n(i_rst_n),
+
+      // Lookup: candidate address from Phase B
+      .i_lookup_addr(issue_mem_found ? lq_address[issue_mem_idx] : '0),
+      .o_lookup_hit (cache_lookup_hit),
+      .o_lookup_data(cache_lookup_data),
+
+      // Fill: on memory response
+      .i_fill_valid(cache_fill_valid),
+      .i_fill_addr (cache_fill_addr),
+      .i_fill_data (cache_fill_data),
+
+      // Invalidation (from SQ, external)
+      .i_invalidate_valid(i_cache_invalidate_valid),
+      .i_invalidate_addr (i_cache_invalidate_addr),
+
+      // Flush
+      .i_flush_all(i_flush_all)
+  );
+
+  // Cache-hit fast path signal: Phase B candidate hits L0 cache
+  // AND SQ disambiguation confirms no conflicting store (sq_can_issue)
+  // AND it's a word-sized or byte/half non-FP load (not FLD — FLD needs
+  // two reads, skip cache for simplicity).
+  // This avoids issuing to memory while still respecting SQ ordering.
+  logic cache_hit_fast_path;
+  assign cache_hit_fast_path = sq_can_issue
+      && cache_lookup_hit
+      && !(lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE)
+      && !lq_is_mmio[issue_mem_idx];
+
+  // Load unit for cache hit path: feed cache data through load unit
+  // for byte/half extraction.
+  logic [XLEN-1:0] lu_cache_out;
+  logic lu_cache_is_byte;
+  logic lu_cache_is_half;
+  logic lu_cache_is_unsigned;
+
+  load_unit u_cache_load_unit (
+      .i_is_load_byte           (lu_cache_is_byte),
+      .i_is_load_halfword       (lu_cache_is_half),
+      .i_is_load_unsigned       (lu_cache_is_unsigned),
+      .i_data_memory_address    (lq_address[issue_mem_idx]),
+      .i_data_memory_read_data  (cache_lookup_data),
+      .o_data_loaded_from_memory(lu_cache_out)
+  );
+
+  always_comb begin
+    lu_cache_is_byte     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_BYTE);
+    lu_cache_is_half     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_HALF);
+    lu_cache_is_unsigned = !lq_sign_ext[issue_mem_idx];
+  end
+
+  // Cache fill: fill L0 cache on valid memory response (not for drained/flushed)
+  assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx];
+  assign cache_fill_addr  = lq_address[issued_idx];
+  assign cache_fill_data  = i_mem_read_data;
+
+  // Drive load unit inputs from the entry awaiting response (memory path)
   always_comb begin
     lu_is_byte     = 1'b0;
     lu_is_half     = 1'b0;
@@ -374,6 +453,40 @@ module load_queue #(
   // Entry freeing: when CDB is presenting a valid result (will be captured by adapter)
   assign free_entry_en  = o_fu_complete.valid;
   assign free_entry_idx = issue_cdb_idx;
+
+  // ===========================================================================
+  // Tail Retraction (combinational scan for partial flush)
+  // ===========================================================================
+  // After partial flush, retract tail backwards past consecutive invalid
+  // entries at the tail end so that pointer-based full is accurate.
+  // Uses the *current* (pre-flush) lq_valid together with the partial flush
+  // invalidation predicate to see the post-flush validity.
+
+  // Pre-compute post-flush validity per entry (combinational):
+  // An entry will be invalid after flush if it is currently invalid
+  // OR it is being flushed (younger than flush_tag).
+  logic [DEPTH-1:0] post_flush_valid;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      post_flush_valid[i] = lq_valid[i] &&
+          !(i_flush_en && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag));
+    end
+  end
+
+  logic [PtrWidth-1:0] flush_tail_target;
+
+  // Retract tail past contiguous invalid entries at the tail end.
+  // Mirrors head_advance_target: recompute check index from the current
+  // flush_tail_target each iteration so we stop at the first valid entry
+  // and never skip over non-contiguous gaps.
+  always_comb begin
+    flush_tail_target = tail_ptr;
+    for (int s = 0; s < DEPTH; s++) begin
+      if (flush_tail_target != head_ptr
+          && !post_flush_valid[flush_tail_target[IdxWidth-1:0] - IdxWidth'(1)])
+        flush_tail_target = flush_tail_target - PtrWidth'(1);
+    end
+  end
 
   // ===========================================================================
   // Head Advancement (combinational scan past contiguous invalid entries)
@@ -437,14 +550,12 @@ module load_queue #(
             lq_valid[i] <= 1'b0;
           end
         end
-        // If outstanding memory read belongs to a flushed entry, cancel it
-        if (mem_outstanding && lq_valid[issued_idx] && is_younger(
-                lq_rob_tag[issued_idx], i_flush_tag, i_rob_head_tag
-            )) begin
-          mem_outstanding <= 1'b0;
-        end
-        // Retract tail to remove flushed tail entries
-        // (simplified: just invalidate, head advancement handles gaps)
+        // Drain approach: do NOT clear mem_outstanding for flushed in-flight
+        // loads.  When the late memory response arrives, the response handler
+        // checks lq_valid[issued_idx] and discards the data if the entry was
+        // flushed (see "stale response drain" below).
+        // Retract tail: computed combinationally (see flush_tail_target)
+        tail_ptr <= flush_tail_target;
       end
 
       // -----------------------------------------------------------------
@@ -481,6 +592,22 @@ module load_queue #(
       end
 
       // -----------------------------------------------------------------
+      // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
+      // -----------------------------------------------------------------
+      if (cache_hit_fast_path) begin
+        // Feed cached data through load unit for byte/half extraction
+        if (lq_is_fp[issue_mem_idx]) begin
+          // FLW: raw 32-bit (NaN-boxing done at CDB broadcast)
+          lq_data[issue_mem_idx][XLEN-1:0] <= cache_lookup_data;
+          if (FLEN > XLEN) lq_data[issue_mem_idx][FLEN-1:XLEN] <= '0;
+        end else begin
+          lq_data[issue_mem_idx][XLEN-1:0] <= lu_cache_out;
+          if (FLEN > XLEN) lq_data[issue_mem_idx][FLEN-1:XLEN] <= '0;
+        end
+        lq_data_valid[issue_mem_idx] <= 1'b1;
+      end
+
+      // -----------------------------------------------------------------
       // Store forwarding: write data directly, skip memory
       // -----------------------------------------------------------------
       if (sq_do_forward) begin
@@ -502,7 +629,13 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
       // -----------------------------------------------------------------
-      if (i_mem_read_valid && mem_outstanding) begin
+      // Stale response drain: if the entry was flushed (partial flush)
+      // while a memory read was in-flight, discard the response and
+      // just clear mem_outstanding.
+      if (i_mem_read_valid && mem_outstanding && !lq_valid[issued_idx]) begin
+        // Flushed entry — drain stale response
+        mem_outstanding <= 1'b0;
+      end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]) begin
         if (lq_is_fp[issued_idx] &&
             lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
             !lq_fp64_phase[issued_idx]) begin
@@ -591,7 +724,9 @@ module load_queue #(
     if (full) assume (!i_alloc.valid);
   end
 
-  // i_mem_read_valid only asserts when we have an outstanding read
+  // i_mem_read_valid only asserts when we have an outstanding read.
+  // The drain approach keeps mem_outstanding set after partial flush of
+  // the issued entry, so a late response is allowed (and discarded).
   always_comb begin
     assume (!i_mem_read_valid || mem_outstanding);
   end
@@ -687,6 +822,14 @@ module load_queue #(
     end
   end
 
+  // Cache-hit fast path must always have SQ disambiguation confirmed
+  always_comb begin
+    if (i_rst_n && cache_hit_fast_path) begin
+      p_cache_hit_needs_sq :
+      assert (o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match);
+    end
+  end
+
   // -------------------------------------------------------------------------
   // Sequential assertions
   // -------------------------------------------------------------------------
@@ -694,8 +837,17 @@ module load_queue #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // Allocation advances tail (count increments)
-      if ($past(i_alloc.valid) && !$past(full) && !$past(i_flush_all) && !$past(i_flush_en)) begin
+      // Allocation writes a valid entry at the pre-alloc tail index.
+      // Guard: no concurrent flush (which resets pointers / invalidates).
+      if ($past(
+              i_alloc.valid
+          ) && !$past(
+              full
+          ) && !$past(
+              i_flush_all
+          ) && !$past(
+              i_flush_en
+          ) && !i_flush_all && !i_flush_en) begin
         p_alloc_advances_tail : assert (lq_valid[$past(tail_idx)]);
       end
 
@@ -724,6 +876,18 @@ module load_queue #(
       cover_sq_forward : cover (sq_do_forward);
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |lq_valid);
+
+      // Stale response drain: mem response arrives for a flushed entry
+      cover_stale_drain : cover (i_mem_read_valid && mem_outstanding && !lq_valid[issued_idx]);
+
+      // Partial flush followed by successful allocation (tail reclamation)
+      cover_partial_flush_reclaims : cover ($past(i_flush_en) && i_alloc.valid && !full);
+
+      // L0 cache hit fast path delivers data without memory issue
+      cover_cache_hit : cover (cache_hit_fast_path);
+
+      // L0 cache fill on memory response
+      cover_cache_fill : cover (cache_fill_valid);
     end
   end
 
