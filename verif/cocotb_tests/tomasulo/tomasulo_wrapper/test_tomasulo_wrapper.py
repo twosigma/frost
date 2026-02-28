@@ -2697,3 +2697,279 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
 
     assert dut_if.rob_empty
     cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Group G: Pipelined DIV Adapter Contention Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
+    """Two back-to-back DIVs both complete and commit through the wrapper."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: DIV Pipeline Back-to-Back Commit ===")
+    dut_if, model = await setup_test(dut)
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    # Dispatch two entries
+    req_a = make_int_req(pc=0xA000, rd=1)
+    tag_a = await dut_if.dispatch(req_a)
+    model.dispatch(req_a)
+
+    req_b = make_int_req(pc=0xA004, rd=2)
+    tag_b = await dut_if.dispatch(req_b)
+    model.dispatch(req_b)
+
+    # Issue tag_a: DIVU 100/10 = 10
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_a,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=100,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_a,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=100,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Issue tag_b: DIVU 200/10 = 20
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=200,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=200,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Both complete via CDB in order
+    cdb_a = await wait_for_cdb(dut_if, max_cycles=25)
+    assert cdb_a.tag == tag_a, f"Expected tag_a={tag_a}, got {cdb_a.tag}"
+    assert cdb_a.value == 10, f"Expected 10, got {cdb_a.value}"
+    model.fu_complete(FU_DIV, tag=tag_a, value=10)
+
+    cdb_b = await wait_for_cdb(dut_if, max_cycles=10)
+    assert cdb_b.tag == tag_b, f"Expected tag_b={tag_b}, got {cdb_b.tag}"
+    assert cdb_b.value == 20, f"Expected 20, got {cdb_b.value}"
+    model.fu_complete(FU_DIV, tag=tag_b, value=20)
+
+    # Both commit in ROB order
+    commit_a = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_a["tag"] == tag_a
+    assert commit_a["value"] == 10
+
+    commit_b = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_b["tag"] == tag_b
+    assert commit_b["value"] == 20
+
+    assert dut_if.rob_empty, "ROB should be empty after both commits"
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
+    """CDB contention forces DIV adapter pending; partial flush suppresses younger.
+
+    Exercises the fu_cdb_adapter pending+grant path under partial flush
+    with the pipelined divider FIFO. FP_DIV (highest CDB priority) blocks
+    DIV grants, forcing the adapter into pending state. Releasing contention
+    with simultaneous partial flush verifies the younger result is suppressed
+    even in the back-to-back adapter capture window.
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
+        return
+    cocotb.log.info("=== Test: DIV Pipeline Adapter Contention + Partial Flush ===")
+    dut_if, model = await setup_test(dut)
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    # Dispatch 4 entries:
+    #   tag_a (0): anchor, completed later via FP_ADD
+    #   tag_b (1): DIVU older — survives partial flush
+    #   tag_c (2): DIVU younger — flushed
+    #   tag_d (3): blocker — FP_DIV contention tag, flushed
+    req_a = make_int_req(pc=0xB000, rd=1)
+    tag_a = await dut_if.dispatch(req_a)
+    model.dispatch(req_a)
+
+    req_b = make_int_req(pc=0xB004, rd=2)
+    tag_b = await dut_if.dispatch(req_b)
+    model.dispatch(req_b)
+
+    req_c = make_int_req(pc=0xB008, rd=3)
+    tag_c = await dut_if.dispatch(req_c)
+    model.dispatch(req_c)
+
+    req_d = make_int_req(pc=0xB00C, rd=4)
+    tag_d = await dut_if.dispatch(req_d)
+    model.dispatch(req_d)
+
+    # Issue tag_b: DIVU 100/10 = 10
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=100,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_b,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=100,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Issue tag_c: DIVU 200/10 = 20
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_c,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=200,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MUL,
+        rob_tag=tag_c,
+        op=OP_DIVU,
+        src1_ready=True,
+        src1_value=200,
+        src2_ready=True,
+        src2_value=10,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Drive FP_DIV externally with tag_d to create CDB contention.
+    # FP_DIV (slot 6, priority 0) beats DIV (slot 2, priority 1).
+    # tag_d is allocated in ROB but can't commit (tag_a is at head, incomplete).
+    # The external input bypasses the idle FP_DIV adapter via the arbiter mux.
+    dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_d, value=0)
+    model.fu_complete(FU_FP_DIV, tag=tag_d, value=0)
+
+    # Hold contention for 22 cycles: covers divider pipeline (17) +
+    # FIFO registration (1) + RS issue latency + margin.
+    # During this window:
+    #   - Both DIV results complete and enter the FIFO
+    #   - FIFO presents tag_b to adapter; adapter can't get grant -> goes pending
+    #   - tag_c enters FIFO behind tag_b
+    for _ in range(22):
+        await dut_if.step()
+
+    # Verify contention is active: DIV should be denied CDB grant
+    grant = dut_if.read_cdb_grant()
+    assert not (
+        grant & (1 << FU_DIV)
+    ), "DIV should be denied grant while FP_DIV contends"
+
+    # Release contention + partial flush simultaneously.
+    # flush_tag = tag_b: tag_c and tag_d (younger) are flushed.
+    # Adapter is pending with tag_b (not younger, survives).
+    # FIFO output for tag_c is gated by fifo_head_partial_flushing.
+    dut_if.clear_fu_complete(FU_FP_DIV)
+    dut_if.drive_flush_en(flush_tag=tag_b)
+    model.rob.flush_partial(tag_b)
+    for rs in model._all_rs():
+        rs.partial_flush(tag_b, model.rob.head_idx)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+
+    # tag_b's CDB broadcast is a one-shot combinational grant: the adapter was
+    # pending, the arbiter grants DIV on the release cycle, and the ROB captures
+    # tag_b at the posedge.  After the posedge the adapter clears (pending->idle)
+    # and o_cdb goes invalid, so FallingEdge observation cannot see it.  We
+    # verify tag_b reached the ROB through the commit path below.
+    model.fu_complete(FU_DIV, tag=tag_b, value=10)
+
+    # Verify tag_c cannot leak: probe the SOURCE of any potential DIV CDB
+    # broadcast rather than trying to observe the CDB output (which has a
+    # one-shot combinational blind spot at FallingEdge, as described above).
+    #
+    # The DIV adapter output is unconditionally invalid when BOTH:
+    #   (a) result_pending == 0   -- no held result to present
+    #   (b) div_shim_out.valid == 0 -- no FIFO data to pass through
+    # Both are registered signals, stable at FallingEdge.  If both are 0,
+    # the arbiter cannot grant DIV and no CDB broadcast is possible.
+    # (The ROB-count approach is insufficient because the ROB silently drops
+    # CDB writes to flushed/invalid tags -- reorder_buffer.sv cdb_wr_en gate.)
+    raw = dut_if.dut
+    assert (
+        int(raw.div_adapter_result_pending.value) == 0
+    ), "DIV adapter still pending after flush+release"
+    assert int(raw.u_muldiv_shim.fifo_count.value) == 0, (
+        f"DIV FIFO not empty after flush: "
+        f"count={int(raw.u_muldiv_shim.fifo_count.value)}"
+    )
+
+    # Confirm quiescence persists -- no stale pipeline activity can re-arm
+    # the adapter or refill the FIFO.
+    for _ in range(5):
+        await dut_if.step()
+        assert (
+            int(raw.div_adapter_result_pending.value) == 0
+        ), "DIV adapter became pending unexpectedly"
+        assert int(raw.u_muldiv_shim.fifo_count.value) == 0, (
+            f"DIV FIFO count rose to " f"{int(raw.u_muldiv_shim.fifo_count.value)}"
+        )
+
+    # Complete tag_a via FP_ADD and verify both commit in ROB order.
+    # If the adapter failed to deliver tag_b, commit_b will time out.
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
+    model.fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    commit_a = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_a["tag"] == tag_a
+
+    commit_b = await wait_for_commit(dut_if)
+    model.try_commit()
+    assert commit_b["tag"] == tag_b
+    assert commit_b["value"] == 10
+
+    assert dut_if.rob_empty, "ROB should be empty after both commits"
+    cocotb.log.info("=== Test Passed ===")

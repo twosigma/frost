@@ -26,12 +26,12 @@
  *
  * Op decode:
  *   MUL, MULH, MULHSU, MULHU -> multiplier path (4-cycle latency)
- *   DIV, DIVU, REM, REMU     -> divider path    (17-cycle latency)
+ *   DIV, DIVU, REM, REMU     -> divider path    (17-cycle latency, pipelined)
  *
- * Each path supports one in-flight operation. Flush tracking suppresses
- * results from operations that were in-flight when a flush occurred.
- * The FUs have no flush input, so they run to completion; the shim gates
- * the output valid.
+ * MUL path supports one in-flight operation with flush tracking.
+ * DIV path is fully pipelined: a 17-entry shift register tracks in-flight
+ * divides, and a 4-entry result FIFO buffers completed results waiting for
+ * the CDB adapter. Credit-based back-pressure prevents FIFO overflow.
  */
 module int_muldiv_shim (
     input logic i_clk,
@@ -44,7 +44,7 @@ module int_muldiv_shim (
     output riscv_pkg::fu_complete_t o_mul_fu_complete,  // -> adapter -> arbiter slot 1
     output riscv_pkg::fu_complete_t o_div_fu_complete,  // -> adapter -> arbiter slot 2
 
-    // Back-pressure: either FU in-flight prevents new issue
+    // Back-pressure: MUL in-flight or DIV pipeline full prevents new issue
     output logic o_fu_busy,
 
     // Pipeline flush (full)
@@ -53,7 +53,10 @@ module int_muldiv_shim (
     // Pipeline flush (partial) — suppress in-flight results younger than tag
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
+
+    // DIV result consumed by downstream adapter
+    input logic i_div_accepted
 );
 
   // ---------------------------------------------------------------------------
@@ -97,12 +100,10 @@ module int_muldiv_shim (
   endfunction
 
   // ---------------------------------------------------------------------------
-  // In-flight + flush tracking
+  // MUL in-flight + flush tracking (single in-flight, unchanged)
   // ---------------------------------------------------------------------------
   logic mul_in_flight;
   logic mul_flushed;
-  logic div_in_flight;
-  logic div_flushed;
 
   // Forward declarations for valid signals from FUs
   logic multiplier_valid_input;
@@ -110,24 +111,13 @@ module int_muldiv_shim (
   logic divider_valid_input;
   logic divider_valid_output;
 
-  // Flush conditions: full flush or partial flush hitting the in-flight/launching tag.
-  // "inflight" checks the latched tag; "launching" checks the RS issue tag for
-  // the same-cycle launch+flush race (in_flight is still 0 on launch cycle).
   logic mul_flush_inflight;
   logic mul_flush_launching;
-  logic div_flush_inflight;
-  logic div_flush_launching;
 
   assign mul_flush_inflight = mul_in_flight & (i_flush | (i_flush_en & is_younger(
       mul_tag_reg, i_flush_tag, i_rob_head_tag
   )));
   assign mul_flush_launching = multiplier_valid_input & (i_flush | (i_flush_en & is_younger(
-      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
-  )));
-  assign div_flush_inflight = div_in_flight & (i_flush | (i_flush_en & is_younger(
-      div_tag_reg, i_flush_tag, i_rob_head_tag
-  )));
-  assign div_flush_launching = divider_valid_input & (i_flush | (i_flush_en & is_younger(
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
@@ -144,42 +134,23 @@ module int_muldiv_shim (
     end
   end
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
-    if (!i_rst_n) begin
-      div_in_flight <= 1'b0;
-      div_flushed   <= 1'b0;
-    end else if (divider_valid_output) begin
-      div_in_flight <= 1'b0;
-      div_flushed   <= 1'b0;
-    end else begin
-      if (divider_valid_input) div_in_flight <= 1'b1;
-      if (div_flush_inflight || div_flush_launching) div_flushed <= 1'b1;
-    end
-  end
-
-  assign o_fu_busy = mul_in_flight | div_in_flight;
-
   // ---------------------------------------------------------------------------
-  // Multiplier path
+  // Multiplier path (unchanged)
   // ---------------------------------------------------------------------------
-  // Sign-extend operands to 33 bits based on op
   logic signed [32:0] mul_operand_a;
   logic signed [32:0] mul_operand_b;
 
   always_comb begin
     case (i_rs_issue.op)
       riscv_pkg::MULH: begin
-        // Sign-extend both
         mul_operand_a = {i_rs_issue.src1_value[31], i_rs_issue.src1_value[31:0]};
         mul_operand_b = {i_rs_issue.src2_value[31], i_rs_issue.src2_value[31:0]};
       end
       riscv_pkg::MULHSU: begin
-        // Sign-extend rs1, zero-extend rs2
         mul_operand_a = {i_rs_issue.src1_value[31], i_rs_issue.src1_value[31:0]};
         mul_operand_b = {1'b0, i_rs_issue.src2_value[31:0]};
       end
       default: begin
-        // MUL, MULHU: zero-extend both
         mul_operand_a = {1'b0, i_rs_issue.src1_value[31:0]};
         mul_operand_b = {1'b0, i_rs_issue.src2_value[31:0]};
       end
@@ -193,7 +164,7 @@ module int_muldiv_shim (
 
   multiplier u_multiplier (
       .i_clk                  (i_clk),
-      .i_rst                  (~i_rst_n),                  // active-high reset
+      .i_rst                  (~i_rst_n),
       .i_operand_a            (mul_operand_a),
       .i_operand_b            (mul_operand_b),
       .i_valid_input          (multiplier_valid_input),
@@ -202,7 +173,6 @@ module int_muldiv_shim (
       .o_completing_next_cycle(mul_completing_next_cycle)
   );
 
-  // Latch ROB tag + op on fire
   logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] mul_tag_reg;
   riscv_pkg::instr_op_e                                        mul_op_reg;
 
@@ -216,7 +186,6 @@ module int_muldiv_shim (
     end
   end
 
-  // Result selection: MUL -> low 32, MULH/MULHSU/MULHU -> high 32
   logic [31:0] mul_result_32;
   always_comb begin
     case (mul_op_reg)
@@ -225,7 +194,6 @@ module int_muldiv_shim (
     endcase
   end
 
-  // Pack MUL output
   always_comb begin
     o_mul_fu_complete.valid     = multiplier_valid_output & ~mul_flushed;
     o_mul_fu_complete.tag       = mul_tag_reg;
@@ -236,12 +204,14 @@ module int_muldiv_shim (
   end
 
   // ---------------------------------------------------------------------------
-  // Divider path
+  // Divider path — pipelined with shift register + result FIFO
   // ---------------------------------------------------------------------------
   logic div_is_signed;
   assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM);
 
-  assign divider_valid_input = is_div & i_rs_issue.valid & ~div_in_flight;
+  // Credit-based busy prevents FIFO overflow (defined later, used here)
+  logic div_busy;
+  assign divider_valid_input = is_div & i_rs_issue.valid & ~div_busy;
 
   logic [31:0] div_quotient;
   logic [31:0] div_remainder;
@@ -250,7 +220,7 @@ module int_muldiv_shim (
       .WIDTH(riscv_pkg::XLEN)
   ) u_divider (
       .i_clk                (i_clk),
-      .i_rst                (~i_rst_n),                                    // active-high reset
+      .i_rst                (~i_rst_n),
       .i_valid_input        (divider_valid_input),
       .i_is_signed_operation(div_is_signed),
       .i_dividend           (i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
@@ -260,37 +230,217 @@ module int_muldiv_shim (
       .o_remainder          (div_remainder)
   );
 
-  // Latch ROB tag + op on fire
-  logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] div_tag_reg;
-  riscv_pkg::instr_op_e                                        div_op_reg;
+  // ---------------------------------------------------------------------------
+  // DIV inflight shift register (17 entries, matching divider pipeline depth)
+  // ---------------------------------------------------------------------------
+  localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17
+
+  // Individual flat arrays (avoid unpacked-array-of-packed-struct for Icarus).
+  logic            div_trk_valid  [DivPipeDepth];
+  logic [TagW-1:0] div_trk_tag    [DivPipeDepth];
+  logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM/REMU, 0 = DIV/DIVU
+  logic            div_trk_flushed[DivPipeDepth];
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-      div_tag_reg <= '0;
-      div_op_reg  <= riscv_pkg::instr_op_e'('0);
-    end else if (divider_valid_input) begin
-      div_tag_reg <= i_rs_issue.rob_tag;
-      div_op_reg  <= i_rs_issue.op;
+      for (int i = 0; i < DivPipeDepth; i++) begin
+        div_trk_valid[i]   <= 1'b0;
+        div_trk_tag[i]     <= '0;
+        div_trk_is_rem[i]  <= 1'b0;
+        div_trk_flushed[i] <= 1'b0;
+      end
+    end else if (i_flush) begin
+      for (int i = 0; i < DivPipeDepth; i++) begin
+        div_trk_valid[i] <= 1'b0;
+      end
+    end else begin
+      // Shift stages [0..DivPipeDepth-2] -> [1..DivPipeDepth-1]
+      for (int i = DivPipeDepth - 1; i >= 1; i--) begin
+        div_trk_valid[i]  <= div_trk_valid[i-1];
+        div_trk_tag[i]    <= div_trk_tag[i-1];
+        div_trk_is_rem[i] <= div_trk_is_rem[i-1];
+        // Propagate flushed, or mark flushed via partial flush
+        if (div_trk_valid[i-1] && i_flush_en && is_younger(
+                div_trk_tag[i-1], i_flush_tag, i_rob_head_tag
+            )) begin
+          div_trk_flushed[i] <= 1'b1;
+        end else begin
+          div_trk_flushed[i] <= div_trk_flushed[i-1];
+        end
+      end
+      // Stage 0: load from issue or invalidate
+      if (divider_valid_input) begin
+        div_trk_valid[0] <= 1'b1;
+        div_trk_tag[0] <= i_rs_issue.rob_tag;
+        div_trk_is_rem[0] <= (i_rs_issue.op == riscv_pkg::REM) ||
+                             (i_rs_issue.op == riscv_pkg::REMU);
+        // Check same-cycle launch+flush race
+        if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag)) begin
+          div_trk_flushed[0] <= 1'b1;
+        end else begin
+          div_trk_flushed[0] <= 1'b0;
+        end
+      end else begin
+        div_trk_valid[0]   <= 1'b0;
+        div_trk_tag[0]     <= '0;
+        div_trk_is_rem[0]  <= 1'b0;
+        div_trk_flushed[0] <= 1'b0;
+      end
+      // Partial flush sweep on entries already in the register (not shifting)
+      // The shift above already handles partial flush for shifted entries.
+      // But we also need to mark entries that are currently valid and younger.
+      // Since we shift first and then check, the partial flush on the shifted
+      // value is handled inline above. For the tail entry (DivPipeDepth-1),
+      // it was already shifted from DivPipeDepth-2, so it's covered.
     end
   end
 
-  // Result selection: DIV/DIVU -> quotient, REM/REMU -> remainder
-  logic [31:0] div_result_32;
+  // Count valid && !flushed entries in shift register
+  logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count;
   always_comb begin
-    case (div_op_reg)
-      riscv_pkg::REM, riscv_pkg::REMU: div_result_32 = div_remainder;
-      default:                         div_result_32 = div_quotient;
-    endcase
+    div_inflight_count = '0;
+    for (int i = 0; i < DivPipeDepth; i++) begin
+      if (div_trk_valid[i] && !div_trk_flushed[i]) div_inflight_count = div_inflight_count + 1;
+    end
   end
 
-  // Pack DIV output
-  always_comb begin
-    o_div_fu_complete.valid     = divider_valid_output & ~div_flushed;
-    o_div_fu_complete.tag       = div_tag_reg;
-    o_div_fu_complete.value     = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, div_result_32};
-    o_div_fu_complete.exception = 1'b0;
-    o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-    o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+  // ---------------------------------------------------------------------------
+  // DIV result FIFO (4 entries, register-based)
+  // ---------------------------------------------------------------------------
+  localparam int unsigned FifoDepth = 4;
+
+  // Individual flat arrays for FIFO data (Icarus compat — no struct arrays).
+  logic [               TagW-1:0] div_fifo_tag              [FifoDepth];
+  logic [    riscv_pkg::FLEN-1:0] div_fifo_value            [FifoDepth];
+  logic [          FifoDepth-1:0] div_fifo_valid;
+  logic [          FifoDepth-1:0] div_fifo_flushed;
+  logic [$clog2(FifoDepth+1)-1:0] fifo_count;
+
+  // Write pointer and read pointer
+  logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
+  logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
+
+  // Divider completion: build fu_complete_t from tracker tail + divider outputs.
+  // Gate on same-cycle partial flush of the tail to prevent a younger entry
+  // from leaking into the FIFO before the always_ff marks it flushed.
+  logic                           div_tail_partial_flushing;
+  assign div_tail_partial_flushing = div_trk_valid[DivPipeDepth-1] && i_flush_en && is_younger(
+      div_trk_tag[DivPipeDepth-1], i_flush_tag, i_rob_head_tag
+  );
+
+  logic div_completing;
+  assign div_completing = div_trk_valid[DivPipeDepth-1] &&
+                          !div_trk_flushed[DivPipeDepth-1] &&
+                          !div_tail_partial_flushing;
+
+  // Result selection from tracker tail
+  logic [31:0] div_result_32;
+  assign div_result_32 = div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient;
+
+  // Same-cycle partial flush of FIFO head: suppress output and trigger
+  // auto-drain before the always_ff marks it flushed, preventing the adapter
+  // from latching a younger result that should be squashed.
+  logic fifo_head_partial_flushing;
+  assign fifo_head_partial_flushing = (fifo_count != '0) &&
+      !div_fifo_flushed[fifo_rd_ptr] && i_flush_en &&
+      is_younger(
+      div_fifo_tag[fifo_rd_ptr], i_flush_tag, i_rob_head_tag
+  );
+
+  // FIFO pop: adapter consumed, or head is flushed (auto-drain)
+  logic fifo_pop;
+  logic fifo_head_flushed;
+  assign fifo_head_flushed = div_fifo_valid[fifo_rd_ptr] &&
+      (div_fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
+  assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
+
+  // FIFO push: divider completes with non-flushed entry
+  logic fifo_push;
+  assign fifo_push = div_completing;
+
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+      for (int i = 0; i < FifoDepth; i++) begin
+        div_fifo_valid[i]   <= 1'b0;
+        div_fifo_flushed[i] <= 1'b0;
+      end
+      fifo_wr_ptr <= '0;
+      fifo_rd_ptr <= '0;
+      fifo_count  <= '0;
+    end else if (i_flush) begin
+      for (int i = 0; i < FifoDepth; i++) begin
+        div_fifo_valid[i]   <= 1'b0;
+        div_fifo_flushed[i] <= 1'b0;
+      end
+      fifo_wr_ptr <= '0;
+      fifo_rd_ptr <= '0;
+      fifo_count  <= '0;
+    end else begin
+      // Partial flush: mark younger FIFO entries as flushed
+      if (i_flush_en) begin
+        for (int i = 0; i < FifoDepth; i++) begin
+          if (div_fifo_valid[i] && !div_fifo_flushed[i] && is_younger(
+                  div_fifo_tag[i], i_flush_tag, i_rob_head_tag
+              )) begin
+            div_fifo_flushed[i] <= 1'b1;
+          end
+        end
+      end
+
+      // Push
+      if (fifo_push) begin
+        div_fifo_tag[fifo_wr_ptr] <= div_trk_tag[DivPipeDepth-1];
+        div_fifo_value[fifo_wr_ptr] <= {
+          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, div_result_32
+        };
+        div_fifo_valid[fifo_wr_ptr] <= 1'b1;
+        div_fifo_flushed[fifo_wr_ptr] <= 1'b0;
+        fifo_wr_ptr <= fifo_wr_ptr + 1;
+      end
+
+      // Pop
+      if (fifo_pop) begin
+        div_fifo_valid[fifo_rd_ptr] <= 1'b0;
+        div_fifo_flushed[fifo_rd_ptr] <= 1'b0;
+        fifo_rd_ptr <= fifo_rd_ptr + 1;
+      end
+
+      // Update count
+      case ({
+        fifo_push, fifo_pop
+      })
+        2'b10:   fifo_count <= fifo_count + 1;
+        2'b01:   fifo_count <= fifo_count - 1;
+        default: fifo_count <= fifo_count;  // 2'b00 or 2'b11
+      endcase
+    end
   end
+
+  // FIFO head output drives o_div_fu_complete
+  always_comb begin
+    if (fifo_count != '0 && !div_fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
+      o_div_fu_complete.valid     = 1'b1;
+      o_div_fu_complete.tag       = div_fifo_tag[fifo_rd_ptr];
+      o_div_fu_complete.value     = div_fifo_value[fifo_rd_ptr];
+      o_div_fu_complete.exception = 1'b0;
+      o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+      o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+    end else begin
+      o_div_fu_complete.valid     = 1'b0;
+      o_div_fu_complete.tag       = '0;
+      o_div_fu_complete.value     = '0;
+      o_div_fu_complete.exception = 1'b0;
+      o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+      o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Busy signal: credit-based to prevent FIFO overflow
+  // ---------------------------------------------------------------------------
+  logic [5:0] div_total_occupancy;
+  assign div_total_occupancy = 6'(fifo_count) + 6'(div_inflight_count);
+  assign div_busy = div_total_occupancy >= 6'(FifoDepth);
+  assign o_fu_busy = mul_in_flight | div_busy;
 
 endmodule : int_muldiv_shim

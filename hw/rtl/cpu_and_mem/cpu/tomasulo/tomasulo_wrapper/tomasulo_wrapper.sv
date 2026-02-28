@@ -495,6 +495,14 @@ module tomasulo_wrapper (
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy
                            & ~mul_adapter_result_pending & ~div_adapter_result_pending;
 
+  // DIV result accepted: the adapter consumes the shim's output this cycle.
+  // Either the adapter is idle and the shim presents a valid result (pass-through),
+  // or the adapter is pending, gets granted, and the shim presents a new valid result.
+  logic div_result_accepted;
+  assign div_result_accepted =
+      (!div_adapter_result_pending && div_shim_out.valid) ||
+      (div_adapter_result_pending && o_cdb_grant[2] && div_shim_out.valid);
+
   // ===========================================================================
   // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
   // ===========================================================================
@@ -1006,7 +1014,8 @@ module tomasulo_wrapper (
       .i_flush          (i_flush_all),
       .i_flush_en       (i_flush_en),
       .i_flush_tag      (i_flush_tag),
-      .i_rob_head_tag   (head_tag)
+      .i_rob_head_tag   (head_tag),
+      .i_div_accepted   (div_result_accepted)
   );
 
   // ===========================================================================
