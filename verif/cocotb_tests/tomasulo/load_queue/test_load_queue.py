@@ -685,7 +685,9 @@ async def test_constrained_random(dut: Any) -> None:
             await Timer(1, unit="ns")
 
             mem_req = dut_if.read_mem_request()
-            if mem_req["en"]:
+            if bool(dut.cache_hit_fast_path.value):
+                model.cache_hit_complete()
+            elif mem_req["en"]:
                 model.issue_to_memory(True, SQForwardResult())
             await dut_if.step()
             dut_if.drive_sq_all_older_known(False)

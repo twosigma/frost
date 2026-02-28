@@ -242,6 +242,26 @@ class LQModel:
             e.forwarded = True
             e.data = sq_forward.data & MASK64
 
+    def cache_hit_complete(self) -> None:
+        """Model DUT cache-hit fast path for the current Phase B candidate.
+
+        On an L0 cache hit, the DUT marks the candidate's data as valid without
+        issuing a memory request.
+        """
+        _, mem_idx = self._issue_scan()
+        if mem_idx is None:
+            return
+
+        e = self.entries[mem_idx]
+
+        # Mirror load_queue.sv cache_hit_fast_path gating.
+        if e.is_mmio:
+            return
+        if e.is_fp and e.size == MEM_SIZE_DOUBLE:
+            return
+
+        e.data_valid = True
+
     def issue_to_memory(
         self, all_older_known: bool, sq_forward: SQForwardResult
     ) -> dict | None:
