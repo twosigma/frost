@@ -68,6 +68,16 @@ else ifeq ($(TOPLEVEL),load_queue)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),int_alu_shim)
+# Integer ALU shim unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
+VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+else ifeq ($(TOPLEVEL),int_muldiv_shim)
+# Integer MUL/DIV shim unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
+VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 else ifeq ($(TOPLEVEL),fp_add_shim)
 # FP add shim unit test
 COMPILE_ARGS := \

@@ -47,6 +47,7 @@ class CocotbRunConfig:
     hdl_toplevel_module: str
     app_name: str | None = None  # Application name (compiled on demand)
     description: str = ""
+    supported_simulators: tuple[str, ...] | None = None  # None means all simulators
 
 
 # CPU testbench tests (multiple modules combined)
@@ -226,20 +227,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="load_queue",
         description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
     ),
+    "int_alu_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
+        hdl_toplevel_module="int_alu_shim",
+        description="Integer ALU shim unit tests (ADD, SUB, shifts, LUI, AUIPC, JAL, CSR)",
+        supported_simulators=("verilator",),
+    ),
+    "int_muldiv_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
+        hdl_toplevel_module="int_muldiv_shim",
+        description="Integer MUL/DIV shim unit tests (MUL, MULH, DIV, REM, flush)",
+        supported_simulators=("verilator",),
+    ),
     "fp_add_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
         hdl_toplevel_module="fp_add_shim",
         description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
+        supported_simulators=("verilator",),
     ),
     "fp_mul_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
         hdl_toplevel_module="fp_mul_shim",
         description="FP mul shim unit tests (FMUL, FMADD, FMSUB, FNMADD, FNMSUB)",
+        supported_simulators=("verilator",),
     ),
     "fp_div_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",
         hdl_toplevel_module="fp_div_shim",
         description="FP div shim unit tests (FDIV, FSQRT, flush)",
+        supported_simulators=("verilator",),
     ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
@@ -533,6 +549,17 @@ def run_test_with_simulator(
     """
     os.environ["SIM"] = simulator
     config = TEST_REGISTRY[test_name]
+
+    # Skip tests that don't support this simulator (e.g. FP shims need Verilator)
+    if (
+        config.supported_simulators is not None
+        and simulator not in config.supported_simulators
+    ):
+        pytest.skip(
+            f"{test_name} not supported on {simulator} "
+            f"(requires {', '.join(config.supported_simulators)})"
+        )
+
     runner = CocotbRunner.from_config(config)
 
     if capsys is not None:
@@ -808,6 +835,18 @@ Available tests:
 
     if args.test is None:
         parser.error("the following arguments are required: test")
+
+    # Early check for simulator compatibility (covers both normal and seed-sweep)
+    early_config = TEST_REGISTRY[args.test]
+    if (
+        early_config.supported_simulators is not None
+        and args.sim not in early_config.supported_simulators
+    ):
+        print(
+            f"Error: {args.test} is not supported on {args.sim}. "
+            f"Supported simulators: {', '.join(early_config.supported_simulators)}"
+        )
+        sys.exit(1)
 
     # Handle seed sweep mode
     if args.seed_sweep:
