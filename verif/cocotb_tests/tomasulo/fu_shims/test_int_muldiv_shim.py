@@ -14,9 +14,10 @@
 
 """Unit tests for the int_muldiv_shim module.
 
-Tests MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM operations, busy
-signalling, and flush behavior.  MUL has ~4-cycle latency, DIV has
-~17-cycle latency, so tests poll for completion.
+Tests MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU operations,
+divide-by-zero, signed overflow, busy signalling, and full/partial
+flush behavior.  MUL has ~4-cycle latency, DIV has ~17-cycle latency,
+so tests poll for completion.
 """
 
 from typing import Any
@@ -452,3 +453,245 @@ async def test_flush_clears_div(dut: Any) -> None:
         await FallingEdge(iface.clock)
         result = iface.read_div_fu_complete()
         assert result["valid"] is False, "DIV result should be suppressed after flush"
+
+
+# ============================================================================
+# Test 13: REMU basic (unsigned remainder)
+# ============================================================================
+@cocotb.test()
+async def test_remu_basic(dut: Any) -> None:
+    """REMU: 43 % 7 = 1 (unsigned remainder)."""
+    iface = await setup(dut)
+
+    rob_tag = 12
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("REMU"),
+        src1_value=43,
+        src2_value=7,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 1, f"Expected 1, got {result['value']}"
+
+
+# ============================================================================
+# Test 14: DIV by zero -> quotient = 0xFFFFFFFF
+# ============================================================================
+@cocotb.test()
+async def test_div_by_zero(dut: Any) -> None:
+    """DIV: x / 0 = -1 (0xFFFFFFFF) per RISC-V spec."""
+    iface = await setup(dut)
+
+    rob_tag = 13
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("DIV"),
+        src1_value=42,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == MASK32
+    ), f"DIV by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
+
+
+# ============================================================================
+# Test 15: DIVU by zero -> quotient = 0xFFFFFFFF
+# ============================================================================
+@cocotb.test()
+async def test_divu_by_zero(dut: Any) -> None:
+    """DIVU: x / 0 = 0xFFFFFFFF per RISC-V spec."""
+    iface = await setup(dut)
+
+    rob_tag = 14
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("DIVU"),
+        src1_value=100,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == MASK32
+    ), f"DIVU by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
+
+
+# ============================================================================
+# Test 16: REM by zero -> remainder = dividend
+# ============================================================================
+@cocotb.test()
+async def test_rem_by_zero(dut: Any) -> None:
+    """REM: x % 0 = x per RISC-V spec."""
+    iface = await setup(dut)
+
+    rob_tag = 15
+    dividend = 123
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("REM"),
+        src1_value=dividend,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == dividend
+    ), f"REM by zero should return dividend ({dividend}), got {result['value']}"
+
+
+# ============================================================================
+# Test 17: DIV signed overflow (-2^31 / -1 = -2^31)
+# ============================================================================
+@cocotb.test()
+async def test_div_signed_overflow(dut: Any) -> None:
+    """DIV: 0x80000000 / 0xFFFFFFFF = 0x80000000 (signed overflow)."""
+    iface = await setup(dut)
+
+    rob_tag = 16
+    min_int = 0x8000_0000  # -2^31 in signed 32-bit
+    neg_one = 0xFFFF_FFFF  # -1 in signed 32-bit
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("DIV"),
+        src1_value=min_int,
+        src2_value=neg_one,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == min_int
+    ), f"DIV overflow should return 0x80000000, got 0x{result['value']:08X}"
+
+
+# ============================================================================
+# Test 18: REM signed overflow (-2^31 % -1 = 0)
+# ============================================================================
+@cocotb.test()
+async def test_rem_signed_overflow(dut: Any) -> None:
+    """REM: 0x80000000 % 0xFFFFFFFF = 0 (signed overflow)."""
+    iface = await setup(dut)
+
+    rob_tag = 17
+    min_int = 0x8000_0000
+    neg_one = 0xFFFF_FFFF
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("REM"),
+        src1_value=min_int,
+        src2_value=neg_one,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0
+    ), f"REM overflow should return 0, got 0x{result['value']:08X}"
+
+
+# ============================================================================
+# Test 19: Partial flush suppresses younger in-flight MUL
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_suppresses_younger(dut: Any) -> None:
+    """Partial flush with flush_tag younger than in-flight op suppresses result."""
+    iface = await setup(dut)
+
+    # Issue MUL with rob_tag=10
+    iface.drive_issue(
+        valid=True,
+        rob_tag=10,
+        op=_op("MUL"),
+        src1_value=7,
+        src2_value=6,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    # Partial flush: flush_tag=5, head=0 -> tag 10 is younger than 5, gets flushed
+    iface.drive_partial_flush(flush_tag=5, head_tag=0)
+    await RisingEdge(iface.clock)
+    iface.clear_partial_flush()
+    await FallingEdge(iface.clock)
+
+    # Wait for multiplier to finish; result should be suppressed
+    for _ in range(MAX_LATENCY):
+        await RisingEdge(iface.clock)
+        await FallingEdge(iface.clock)
+        result = iface.read_mul_fu_complete()
+        assert (
+            result["valid"] is False
+        ), "MUL result should be suppressed after partial flush of younger tag"
+
+
+# ============================================================================
+# Test 20: Partial flush keeps older in-flight MUL
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_keeps_older(dut: Any) -> None:
+    """Partial flush with flush_tag older than in-flight op keeps result."""
+    iface = await setup(dut)
+
+    # Issue MUL with rob_tag=3
+    rob_tag = 3
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("MUL"),
+        src1_value=7,
+        src2_value=6,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    # Partial flush: flush_tag=10, head=0 -> tag 3 is older than 10, not flushed
+    iface.drive_partial_flush(flush_tag=10, head_tag=0)
+    await RisingEdge(iface.clock)
+    iface.clear_partial_flush()
+
+    # Result should still appear
+    result = await wait_for_mul_complete(iface)
+    assert result["valid"], "MUL result should NOT be suppressed (tag is older)"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 42, f"Expected 42, got {result['value']}"
