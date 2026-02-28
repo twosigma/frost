@@ -695,3 +695,72 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert result["value"] == 42, f"Expected 42, got {result['value']}"
+
+
+# ============================================================================
+# Test 21: Partial flush suppresses younger in-flight DIV
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
+    """Partial flush with flush_tag younger than in-flight DIV suppresses result."""
+    iface = await setup(dut)
+
+    # Issue DIV with rob_tag=10
+    iface.drive_issue(
+        valid=True,
+        rob_tag=10,
+        op=_op("DIV"),
+        src1_value=42,
+        src2_value=7,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    # Partial flush: flush_tag=5, head=0 -> tag 10 is younger than 5, gets flushed
+    iface.drive_partial_flush(flush_tag=5, head_tag=0)
+    await RisingEdge(iface.clock)
+    iface.clear_partial_flush()
+    await FallingEdge(iface.clock)
+
+    # Wait for divider to finish; result should be suppressed
+    for _ in range(MAX_LATENCY):
+        await RisingEdge(iface.clock)
+        await FallingEdge(iface.clock)
+        result = iface.read_div_fu_complete()
+        assert (
+            result["valid"] is False
+        ), "DIV result should be suppressed after partial flush of younger tag"
+
+
+# ============================================================================
+# Test 22: Partial flush keeps older in-flight DIV
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_keeps_older_div(dut: Any) -> None:
+    """Partial flush with flush_tag older than in-flight DIV keeps result."""
+    iface = await setup(dut)
+
+    # Issue DIV with rob_tag=3
+    rob_tag = 3
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("DIV"),
+        src1_value=42,
+        src2_value=7,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    # Partial flush: flush_tag=10, head=0 -> tag 3 is older than 10, not flushed
+    iface.drive_partial_flush(flush_tag=10, head_tag=0)
+    await RisingEdge(iface.clock)
+    iface.clear_partial_flush()
+
+    # Result should still appear
+    result = await wait_for_div_complete(iface)
+    assert result["valid"], "DIV result should NOT be suppressed (tag is older)"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 6, f"Expected 6, got {result['value']}"
