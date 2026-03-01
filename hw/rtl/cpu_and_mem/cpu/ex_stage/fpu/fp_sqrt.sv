@@ -15,33 +15,27 @@
  */
 
 /*
-  IEEE 754 single-precision floating-point square root.
+  IEEE 754 floating-point square root — fully pipelined.
 
-  Implements FSQRT.S operation using a digit-by-digit algorithm.
+  Accepts a new operation every cycle. Pipeline depth:
+    SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages (padded +1 to match divider)
+    DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages (padded +1 to match divider)
 
-  Latency: RootBits + 9 cycles (not pipelined, stalls pipeline during operation)
-    where RootBits = MantBits + 3 = FracBits + 4 (27 for SP, 56 for DP)
-    - 1 cycle:  Input capture (IDLE -> SETUP)
-    - 1 cycle:  Special case detection and setup (SETUP -> PREP)
-    - 1 cycle:  Prep register capture (PREP -> COMPUTE)
-    - RootBits cycles: Square root computation (COMPUTE, one digit per cycle)
-    - 1 cycle:  Normalization (NORMALIZE)
-    - 1 cycle:  Subnormal handling and shift prep (ROUND_SHIFT)
-    - 1 cycle:  Compute round-up decision (ROUND_PREP)
-    - 1 cycle:  Apply rounding increment, format result (ROUND_APPLY)
-    - 1 cycle:  Capture result (OUTPUT)
-    - 1 cycle:  Output registered result (DONE)
+  Pipeline structure:
+    Stage 0:  Input capture
+    Stage 1:  SETUP — unpack, classify, LZC, special case detect, exp/mantissa adjustment
+    Stage 2:  PREP — initialize sqrt state (root=0, remainder=0, radicand shifted)
+    Stages 3..3+RootBits-1:  COMPUTE — one digit-recurrence step per stage
+    Stage 3+RootBits:    PAD — extra register stage (aligns depth with divider)
+    Stage 3+RootBits+1:  NORMALIZE
+    Stage 3+RootBits+2:  ROUND_SHIFT
+    Stage 3+RootBits+3:  ROUND_PREP
+    Stage 3+RootBits+4:  ROUND_APPLY
+    Stage 3+RootBits+5:  OUTPUT
 
-  Algorithm: Non-restoring digit recurrence
-    sqrt(x) where x = 2^(2k) * m, m in [1, 4)
-    Result = 2^k * sqrt(m)
-
-  Special case handling:
-    - sqrt(NaN) = NaN
-    - sqrt(-x) = NaN (invalid, for x > 0)
-    - sqrt(+inf) = +inf
-    - sqrt(-0) = -0
-    - sqrt(+0) = +0
+  Special cases (NaN, negative, inf, zero) detected at SETUP. The COMPUTE
+  stages still execute on don't-care data; the OUTPUT stage selects the
+  special result when is_special is set.
 */
 module fp_sqrt #(
     parameter int unsigned FP_WIDTH = 32
@@ -57,29 +51,12 @@ module fp_sqrt #(
     output riscv_pkg::fp_flags_t                o_flags
 );
 
-  // State machine
-  typedef enum logic [3:0] {
-    IDLE,
-    SETUP,
-    PREP,
-    COMPUTE,
-    NORMALIZE,
-    ROUND_SHIFT,
-    ROUND_PREP,
-    ROUND_APPLY,
-    OUTPUT,
-    DONE
-  } state_t;
-
-  state_t state, next_state;
-
   localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
   localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
   localparam int unsigned MantBits = FracBits + 1;
   localparam int unsigned RootBits = MantBits + 3;
   localparam int unsigned RadicandBits = 2 * RootBits;
   localparam int unsigned RemBits = (2 * RootBits) + 2;
-  localparam int unsigned CycleCountBits = $clog2(RootBits + 1);
   localparam int unsigned ExpExtBits = ExpBits + 2;
   localparam int signed ExpBias = (1 << (ExpBits - 1)) - 1;
   localparam int unsigned LzcMantBits = $clog2(FracBits + 1);
@@ -88,485 +65,541 @@ module fp_sqrt #(
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
   localparam logic signed [ExpExtBits-1:0] ExpBiasMinus1Ext = ExpExtBits'(ExpBias - 1);
-  localparam logic [CycleCountBits-1:0] RootBitsMinus1 = CycleCountBits'(RootBits - 1);
 
-  logic [CycleCountBits-1:0] cycle_count;
+  // Total stages: 3 (input+setup+prep) + RootBits (compute) + 1 (pad) + 5 (norm..output) = RootBits + 9
+  localparam int unsigned TotalStages = RootBits + 9;
 
-  // Registered input
-  logic [      FP_WIDTH-1:0] operand_reg;
+  // Valid pipeline
+  logic pipe_valid[TotalStages+1];
 
-  // Operand fields
-  logic                      sign;
-  logic [       ExpBits-1:0] exp;
-  logic [      FracBits-1:0] mant;
-  logic is_zero, is_inf, is_nan, is_snan;
-  logic                           is_subnormal;
-  logic signed [  ExpExtBits-1:0] exp_adj;
-  logic        [    MantBits-1:0] mant_norm;
-  logic        [ LzcMantBits-1:0] mant_lzc;
-  logic        [   LzcMantBits:0] sub_shift;
-  // Special case handling
-  logic                           is_special;
-  logic        [    FP_WIDTH-1:0] special_result;
-  logic                           special_invalid;
-
-  // Square root state
-  // TIMING: Limit fanout to force register replication and improve timing
-  (* max_fanout = 30 *)logic signed [  ExpExtBits-1:0] result_exp;
-  logic        [    RootBits-1:0] root;  // Result accumulator
-  logic        [     RemBits-1:0] remainder;  // For digit computation
-  logic        [RadicandBits-1:0] radicand;  // Mantissa bits consumed 2 at a time
-
-  // Rounding mode storage
-  logic        [             2:0] rm;
-  logic                           result_sign;
-  logic signed [  ExpExtBits-1:0] sqrt_unbiased_exp;
-  logic                           sqrt_exp_is_even;
-  logic signed [    ExpExtBits:0] sqrt_adjusted_exp;
-  logic        [      MantBits:0] sqrt_mantissa_int;
-  logic        [   ShiftBits-1:0] sqrt_shift_amount;
-
-  // Prep registers to break long operand->radicand path
-  logic                           prep_is_special;
-  logic        [    FP_WIDTH-1:0] prep_special_result;
-  logic                           prep_special_invalid;
-  logic signed [    ExpExtBits:0] prep_sqrt_adjusted_exp;
-  logic        [      MantBits:0] prep_sqrt_mantissa_int;
-
-  // Rounding inputs
-  logic        [      MantBits:0] sqrt_pre_round_mant;
-  logic                           sqrt_guard_bit;
-  logic                           sqrt_round_bit;
-  logic                           sqrt_sticky_bit;
-  logic                           sqrt_is_zero;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i <= TotalStages; i++) begin
+        pipe_valid[i] <= 1'b0;
+      end
+    end else begin
+      pipe_valid[0] <= i_valid;
+      for (int i = 1; i <= TotalStages; i++) begin
+        pipe_valid[i] <= pipe_valid[i-1];
+      end
+    end
+  end
 
   // =========================================================================
-  // Operand Unpacking
+  // Stage 0: Input Capture
   // =========================================================================
+  logic [FP_WIDTH-1:0] s0_operand;
+  logic [2:0] s0_rm;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s0_operand <= '0;
+      s0_rm <= 3'b0;
+    end else if (i_valid) begin
+      s0_operand <= i_operand;
+      s0_rm <= i_rounding_mode;
+    end
+  end
+
+  // =========================================================================
+  // Stage 1: SETUP — unpack, classify, LZC, special case detect, exp adjustment
+  // (combinational from s0, registered into s1)
+  // =========================================================================
+  logic                setup_sign;
+  logic [ ExpBits-1:0] setup_exp;
+  logic [FracBits-1:0] setup_mant;
+  logic setup_is_zero, setup_is_inf, setup_is_nan, setup_is_snan;
+  logic setup_is_subnormal;
 
   fp_operand_unpacker #(
       .FP_WIDTH(FP_WIDTH)
   ) u_unpack (
-      .i_operand(operand_reg),
-      .o_sign(sign),
-      .o_exp(exp),
+      .i_operand(s0_operand),
+      .o_sign(setup_sign),
+      .o_exp(setup_exp),
       .o_exp_adj(),
-      .o_frac(mant),
+      .o_frac(setup_mant),
       .o_mant(),
-      .o_is_zero(is_zero),
-      .o_is_subnormal(is_subnormal),
-      .o_is_inf(is_inf),
-      .o_is_nan(is_nan),
-      .o_is_snan(is_snan)
+      .o_is_zero(setup_is_zero),
+      .o_is_subnormal(setup_is_subnormal),
+      .o_is_inf(setup_is_inf),
+      .o_is_nan(setup_is_nan),
+      .o_is_snan(setup_is_snan)
   );
 
-  logic mant_lzc_zero;
+  logic [LzcMantBits-1:0] setup_mant_lzc;
+  logic                   setup_mant_lzc_zero;
   fp_lzc #(
       .WIDTH(FracBits)
   ) u_mant_lzc (
-      .i_value (mant),
-      .o_lzc   (mant_lzc),
-      .o_is_zero(mant_lzc_zero)
+      .i_value(setup_mant),
+      .o_lzc(setup_mant_lzc),
+      .o_is_zero(setup_mant_lzc_zero)
   );
 
-  always_comb begin
-    sub_shift = '0;
-    exp_adj = '0;
-    mant_norm = '0;
-    sqrt_unbiased_exp = '0;
-    sqrt_exp_is_even = 1'b0;
-    sqrt_adjusted_exp = '0;
-    sqrt_mantissa_int = '0;
-    sqrt_shift_amount = '0;
+  // Combinational setup logic
+  logic [LzcMantBits:0] setup_sub_shift;
+  logic signed [ExpExtBits-1:0] setup_exp_adj;
+  logic [MantBits-1:0] setup_mant_norm;
+  logic setup_is_special;
+  logic [FP_WIDTH-1:0] setup_special_result;
+  logic setup_special_invalid;
+  logic signed [ExpExtBits-1:0] setup_unbiased_exp;
+  logic setup_exp_is_even;
+  logic signed [ExpExtBits:0] setup_adjusted_exp;
+  logic [MantBits:0] setup_mantissa_int;
 
-    if (is_subnormal) begin
-      sub_shift = {1'b0, mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
-      exp_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
-          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift});
-      mant_norm = {1'b0, mant} << sub_shift;
+  always_comb begin
+    setup_sub_shift = '0;
+    setup_exp_adj = '0;
+    setup_mant_norm = '0;
+    setup_unbiased_exp = '0;
+    setup_exp_is_even = 1'b0;
+    setup_adjusted_exp = '0;
+    setup_mantissa_int = '0;
+
+    if (setup_is_subnormal) begin
+      setup_sub_shift = {1'b0, setup_mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
+      setup_exp_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, setup_sub_shift});
+      setup_mant_norm = {1'b0, setup_mant} << setup_sub_shift;
     end else begin
-      exp_adj   = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp});
-      mant_norm = {1'b1, mant};
+      setup_exp_adj   = $signed({{(ExpExtBits - ExpBits) {1'b0}}, setup_exp});
+      setup_mant_norm = {1'b1, setup_mant};
     end
 
     // Special case detection
-    is_special = 1'b0;
-    special_result = '0;
-    special_invalid = 1'b0;
+    setup_is_special = 1'b0;
+    setup_special_result = '0;
+    setup_special_invalid = 1'b0;
 
-    if (is_nan) begin
-      // sqrt(NaN) = NaN
-      is_special = 1'b1;
-      special_result = CanonicalNan;
-      special_invalid = is_snan;
-    end else if (sign && !is_zero) begin
-      // sqrt(negative) = NaN (invalid)
-      is_special = 1'b1;
-      special_result = CanonicalNan;
-      special_invalid = 1'b1;
-    end else if (is_inf) begin
-      // sqrt(+inf) = +inf
-      is_special = 1'b1;
-      special_result = {1'b0, ExpMax, {FracBits{1'b0}}};
-    end else if (is_zero) begin
-      // sqrt(+/-0) = +/-0
-      is_special = 1'b1;
-      special_result = {sign, {(FP_WIDTH - 1) {1'b0}}};
+    if (setup_is_nan) begin
+      setup_is_special = 1'b1;
+      setup_special_result = CanonicalNan;
+      setup_special_invalid = setup_is_snan;
+    end else if (setup_sign && !setup_is_zero) begin
+      setup_is_special = 1'b1;
+      setup_special_result = CanonicalNan;
+      setup_special_invalid = 1'b1;
+    end else if (setup_is_inf) begin
+      setup_is_special = 1'b1;
+      setup_special_result = {1'b0, ExpMax, {FracBits{1'b0}}};
+    end else if (setup_is_zero) begin
+      setup_is_special = 1'b1;
+      setup_special_result = {setup_sign, {(FP_WIDTH - 1) {1'b0}}};
     end
 
-    sqrt_unbiased_exp = exp_adj - ExpBiasExt;
-    sqrt_exp_is_even  = ~sqrt_unbiased_exp[0];
+    setup_unbiased_exp = setup_exp_adj - ExpBiasExt;
+    setup_exp_is_even  = ~setup_unbiased_exp[0];
 
-    if (sqrt_exp_is_even) begin
-      // Unbiased exponent is even
-      sqrt_adjusted_exp = exp_adj + ExpBiasExt;
-      sqrt_mantissa_int = {1'b0, mant_norm};
-      sqrt_shift_amount = ShiftBits'(MantBits + 5);
+    if (setup_exp_is_even) begin
+      setup_adjusted_exp = setup_exp_adj + ExpBiasExt;
+      setup_mantissa_int = {1'b0, setup_mant_norm};
     end else begin
-      // Unbiased exponent is odd: scale mantissa by 2
-      sqrt_adjusted_exp = exp_adj + ExpBiasMinus1Ext;
-      sqrt_mantissa_int = {mant_norm, 1'b0};
-      sqrt_shift_amount = ShiftBits'(MantBits + 5);
+      setup_adjusted_exp = setup_exp_adj + ExpBiasMinus1Ext;
+      setup_mantissa_int = {setup_mant_norm, 1'b0};
     end
   end
 
-  assign sqrt_pre_round_mant = root[RootBits-1-:(MantBits+1)];
-  assign sqrt_guard_bit = root[1];
-  assign sqrt_round_bit = root[0];
-  assign sqrt_sticky_bit = |remainder;
-  assign sqrt_is_zero = (root == '0) && (remainder == '0);
-
-  // =========================================================================
-  // ROUND_SHIFT prep: Subnormal handling and rounding bit extraction
-  // =========================================================================
-
-  // Extract mantissa and rounding bits
-  logic [MantBits-1:0] mantissa_retained_prep;
-  assign mantissa_retained_prep = sqrt_pre_round_mant[MantBits:1];
-
-  // Subnormal handling: compute shift and apply
-  logic [MantBits-1:0] mantissa_work_prep;
-  logic guard_work_prep, round_work_prep, sticky_work_prep;
-  logic signed [ExpExtBits-1:0] exp_work_prep;
-
-  fp_subnorm_shift #(
-      .MANT_BITS   (MantBits),
-      .EXP_EXT_BITS(ExpExtBits)
-  ) u_subnorm_shift (
-      .i_mantissa(mantissa_retained_prep),
-      .i_guard   (sqrt_pre_round_mant[0]),
-      .i_round   (sqrt_guard_bit),
-      .i_sticky  (sqrt_round_bit | sqrt_sticky_bit),
-      .i_exponent(result_exp),
-      .o_mantissa(mantissa_work_prep),
-      .o_guard   (guard_work_prep),
-      .o_round   (round_work_prep),
-      .o_sticky  (sticky_work_prep),
-      .o_exponent(exp_work_prep)
-  );
-
-  // =========================================================================
-  // ROUND_SHIFT -> ROUND_PREP Pipeline Registers
-  // =========================================================================
-
-  logic signed [ExpExtBits-1:0] exp_work_shift;
-  logic        [  MantBits-1:0] mantissa_work_shift;
-  logic                         guard_work_shift;
-  logic                         round_work_shift;
-  logic                         sticky_work_shift;
-  logic                         sqrt_is_zero_shift;
-  logic        [           2:0] rm_shift;
-
-  // Compute round-up decision (sqrt result is always positive)
-  logic                         round_up_prep;
-  logic                         lsb_prep;
-
-  assign lsb_prep = mantissa_work_shift[0];
-
-  // sqrt result is always positive (sign=0), so RDN->0, RUP->guard|round|sticky
-  assign round_up_prep = riscv_pkg::fp_compute_round_up(
-      rm_shift, guard_work_shift, round_work_shift, sticky_work_shift, lsb_prep, 1'b0
-  );
-
-  // Compute is_inexact for flags
-  logic is_inexact_prep;
-  assign is_inexact_prep = guard_work_shift | round_work_shift | sticky_work_shift;
-
-  // =========================================================================
-  // ROUND_PREP -> ROUND_APPLY Pipeline Registers
-  // =========================================================================
-
-  logic signed          [ExpExtBits-1:0] exp_work_apply;
-  logic                 [  MantBits-1:0] mantissa_work_apply;
-  logic                                  round_up_apply;
-  logic                                  is_inexact_apply;
-  logic                                  sqrt_is_zero_apply;
-  logic                 [           2:0] rm_apply;
-
-  // =========================================================================
-  // ROUND_APPLY: Apply rounding and format result
-  // =========================================================================
-
-  // Compute final result using shared result assembler
-  // sqrt result is always positive (sign=0), so the general overflow formula
-  // (RTZ || (RDN && !sign) || (RUP && sign)) correctly simplifies to (RTZ || RDN).
-  logic                 [  FP_WIDTH-1:0] final_result_apply_comb;
-  riscv_pkg::fp_flags_t                  final_flags_apply_comb;
-
-  fp_result_assembler #(
-      .FP_WIDTH  (FP_WIDTH),
-      .ExpBits   (ExpBits),
-      .FracBits  (FracBits),
-      .MantBits  (MantBits),
-      .ExpExtBits(ExpExtBits)
-  ) u_result_asm (
-      .i_exp_work        (exp_work_apply),
-      .i_mantissa_work   (mantissa_work_apply),
-      .i_round_up        (round_up_apply),
-      .i_is_inexact      (is_inexact_apply),
-      .i_result_sign     (1'b0),
-      .i_rm              (rm_apply),
-      .i_is_special      (1'b0),
-      .i_special_result  ({FP_WIDTH{1'b0}}),
-      .i_special_invalid (1'b0),
-      .i_special_div_zero(1'b0),
-      .i_is_zero_result  (sqrt_is_zero_apply),
-      .i_zero_sign       (1'b0),
-      .o_result          (final_result_apply_comb),
-      .o_flags           (final_flags_apply_comb)
-  );
-
-  // =========================================================================
-  // ROUND_APPLY -> OUTPUT Pipeline Registers
-  // =========================================================================
-
-  logic [FP_WIDTH-1:0] result_output;
-  riscv_pkg::fp_flags_t flags_output;
-
-  // =========================================================================
-  // State Machine
-  // =========================================================================
+  // Stage 1 output registers
+  logic s1_is_special;
+  logic [FP_WIDTH-1:0] s1_special_result;
+  logic s1_special_invalid;
+  logic signed [ExpExtBits:0] s1_adjusted_exp;
+  logic [MantBits:0] s1_mantissa_int;
+  logic [2:0] s1_rm;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state <= IDLE;
+      s1_is_special <= 1'b0;
+      s1_special_result <= '0;
+      s1_special_invalid <= 1'b0;
+      s1_adjusted_exp <= '0;
+      s1_mantissa_int <= '0;
+      s1_rm <= 3'b0;
     end else begin
-      state <= next_state;
+      s1_is_special <= setup_is_special;
+      s1_special_result <= setup_special_result;
+      s1_special_invalid <= setup_special_invalid;
+      s1_adjusted_exp <= setup_adjusted_exp;
+      s1_mantissa_int <= setup_mantissa_int;
+      s1_rm <= s0_rm;
     end
   end
+
+  // =========================================================================
+  // Stage 2: PREP — initialize sqrt state
+  // (combinational from s1, registered into s2)
+  // =========================================================================
+  logic signed [ExpExtBits-1:0] prep_result_exp;
+  logic [RadicandBits-1:0] prep_radicand;
 
   always_comb begin
-    next_state = state;
-    case (state)
-      IDLE: begin
-        if (i_valid) begin
-          next_state = SETUP;
-        end
-      end
-      SETUP: begin
-        next_state = PREP;
-      end
-      PREP: begin
-        if (prep_is_special) begin
-          next_state = DONE;
-        end else begin
-          next_state = COMPUTE;
-        end
-      end
-      COMPUTE: begin
-        if (cycle_count == RootBitsMinus1) begin
-          next_state = NORMALIZE;
-        end
-      end
-      NORMALIZE: begin
-        next_state = ROUND_SHIFT;
-      end
-      ROUND_SHIFT: begin
-        next_state = ROUND_PREP;
-      end
-      ROUND_PREP: begin
-        next_state = ROUND_APPLY;
-      end
-      ROUND_APPLY: begin
-        next_state = OUTPUT;
-      end
-      OUTPUT: begin
-        next_state = DONE;
-      end
-      DONE: begin
-        next_state = IDLE;
-      end
-      default: next_state = IDLE;
-    endcase
+    prep_result_exp = ExpExtBits'($signed(s1_adjusted_exp >>> 1));
+    prep_radicand = {{(RadicandBits-(MantBits+1)){1'b0}}, s1_mantissa_int} <<
+                    ShiftBits'(MantBits + 5);
   end
 
-  // =========================================================================
-  // Main Datapath
-  // =========================================================================
-
-  logic                 [FP_WIDTH-1:0] result_reg;
-  riscv_pkg::fp_flags_t                flags_reg;
-  // TIMING: Limit fanout to force register replication and improve timing
-  (* max_fanout = 30 *)logic                                valid_reg;
-
-  // Digit-by-digit sqrt helpers
-  logic                 [ RemBits-1:0] rem_candidate;
-  logic                 [ RemBits-1:0] trial_divisor;
-  logic                                rem_ge;
-
-  assign rem_candidate = {remainder[RemBits-3:0], radicand[RadicandBits-1-:2]};
-  assign trial_divisor = {{RootBits{1'b0}}, root, 2'b01};
-  assign rem_ge = rem_candidate >= trial_divisor;
+  // Stage 2 output registers
+  logic signed [ExpExtBits-1:0] s2_result_exp;
+  logic [RootBits-1:0] s2_root;
+  logic [RemBits-1:0] s2_remainder;
+  logic [RadicandBits-1:0] s2_radicand;
+  logic s2_is_special;
+  logic [FP_WIDTH-1:0] s2_special_result;
+  logic s2_special_invalid;
+  logic [2:0] s2_rm;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      cycle_count <= '0;
-      root <= '0;
-      remainder <= '0;
-      radicand <= '0;
-      result_exp <= '0;
-      rm <= 3'b0;
-      result_sign <= 1'b0;
-      operand_reg <= '0;
-      prep_is_special <= 1'b0;
-      prep_special_result <= '0;
-      prep_special_invalid <= 1'b0;
-      prep_sqrt_adjusted_exp <= '0;
-      prep_sqrt_mantissa_int <= '0;
-      // ROUND_SHIFT -> ROUND_PREP registers
-      exp_work_shift <= '0;
-      mantissa_work_shift <= '0;
-      guard_work_shift <= 1'b0;
-      round_work_shift <= 1'b0;
-      sticky_work_shift <= 1'b0;
-      sqrt_is_zero_shift <= 1'b0;
-      rm_shift <= 3'b0;
-      // ROUND_PREP -> ROUND_APPLY registers
-      exp_work_apply <= '0;
-      mantissa_work_apply <= '0;
-      round_up_apply <= 1'b0;
-      is_inexact_apply <= 1'b0;
-      sqrt_is_zero_apply <= 1'b0;
-      rm_apply <= 3'b0;
-      // ROUND_APPLY -> OUTPUT registers
-      result_output <= '0;
-      flags_output <= '0;
-      // Final output
-      result_reg <= '0;
-      flags_reg <= '0;
-      valid_reg <= 1'b0;
+      s2_result_exp <= '0;
+      s2_root <= '0;
+      s2_remainder <= '0;
+      s2_radicand <= '0;
+      s2_is_special <= 1'b0;
+      s2_special_result <= '0;
+      s2_special_invalid <= 1'b0;
+      s2_rm <= 3'b0;
     end else begin
-      valid_reg <= 1'b0;
+      s2_result_exp <= prep_result_exp;
+      s2_root <= '0;
+      s2_remainder <= '0;
+      s2_radicand <= prep_radicand;
+      s2_is_special <= s1_is_special;
+      s2_special_result <= s1_special_result;
+      s2_special_invalid <= s1_special_invalid;
+      s2_rm <= s1_rm;
+    end
+  end
 
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            operand_reg <= i_operand;
-            rm <= i_rounding_mode;
-            cycle_count <= '0;
-          end
+  // =========================================================================
+  // Stages 3..3+RootBits-1: COMPUTE — one digit-recurrence step per stage
+  // =========================================================================
+
+  // Pipeline arrays (RootBits+1 entries: index 0 = input, index RootBits = output)
+  logic        [    RootBits-1:0] comp_root           [RootBits+1];
+  logic        [     RemBits-1:0] comp_remainder      [RootBits+1];
+  logic        [RadicandBits-1:0] comp_radicand       [RootBits+1];
+  // Metadata arrays
+  logic signed [  ExpExtBits-1:0] comp_result_exp     [RootBits+1];
+  logic                           comp_is_special     [RootBits+1];
+  logic        [    FP_WIDTH-1:0] comp_special_result [RootBits+1];
+  logic                           comp_special_invalid[RootBits+1];
+  logic        [             2:0] comp_rm             [RootBits+1];
+
+  // Connect stage 2 output to compute pipeline input
+  assign comp_root[0]            = s2_root;
+  assign comp_remainder[0]       = s2_remainder;
+  assign comp_radicand[0]        = s2_radicand;
+  assign comp_result_exp[0]      = s2_result_exp;
+  assign comp_is_special[0]      = s2_is_special;
+  assign comp_special_result[0]  = s2_special_result;
+  assign comp_special_invalid[0] = s2_special_invalid;
+  assign comp_rm[0]              = s2_rm;
+
+  // Generate block: one digit-recurrence step per stage
+  for (genvar g = 0; g < RootBits; g++) begin : gen_sqrt
+    // Combinational: bring down 2 radicand bits, trial subtract, set root bit
+    logic [RemBits-1:0] rem_candidate;
+    logic [RemBits-1:0] trial_divisor;
+    logic               rem_ge;
+
+    assign rem_candidate = {comp_remainder[g][RemBits-3:0], comp_radicand[g][RadicandBits-1-:2]};
+    assign trial_divisor = {{RootBits{1'b0}}, comp_root[g], 2'b01};
+    assign rem_ge = rem_candidate >= trial_divisor;
+
+    // Registered output
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        comp_root[g+1]            <= '0;
+        comp_remainder[g+1]       <= '0;
+        comp_radicand[g+1]        <= '0;
+        comp_result_exp[g+1]      <= '0;
+        comp_is_special[g+1]      <= 1'b0;
+        comp_special_result[g+1]  <= '0;
+        comp_special_invalid[g+1] <= 1'b0;
+        comp_rm[g+1]              <= 3'b0;
+      end else begin
+        comp_radicand[g+1] <= {comp_radicand[g][RadicandBits-3:0], 2'b00};
+        if (rem_ge) begin
+          comp_remainder[g+1] <= rem_candidate - trial_divisor;
+          comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b1};
+        end else begin
+          comp_remainder[g+1] <= rem_candidate;
+          comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b0};
         end
+        comp_result_exp[g+1]      <= comp_result_exp[g];
+        comp_is_special[g+1]      <= comp_is_special[g];
+        comp_special_result[g+1]  <= comp_special_result[g];
+        comp_special_invalid[g+1] <= comp_special_invalid[g];
+        comp_rm[g+1]              <= comp_rm[g];
+      end
+    end
+  end
 
-        SETUP: begin
-          prep_is_special <= is_special;
-          prep_special_result <= special_result;
-          prep_special_invalid <= special_invalid;
-          prep_sqrt_adjusted_exp <= sqrt_adjusted_exp;
-          prep_sqrt_mantissa_int <= sqrt_mantissa_int;
-        end
+  // =========================================================================
+  // Stage 3+RootBits: PAD — extra register stage to align with divider depth
+  // =========================================================================
+  logic [RootBits-1:0] s_pad_root;
+  logic [RemBits-1:0] s_pad_remainder;
+  logic signed [ExpExtBits-1:0] s_pad_result_exp;
+  logic s_pad_is_special;
+  logic [FP_WIDTH-1:0] s_pad_special_result;
+  logic s_pad_special_invalid;
+  logic [2:0] s_pad_rm;
 
-        PREP: begin
-          result_sign <= 1'b0;  // sqrt result is always positive (or zero)
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_pad_root <= '0;
+      s_pad_remainder <= '0;
+      s_pad_result_exp <= '0;
+      s_pad_is_special <= 1'b0;
+      s_pad_special_result <= '0;
+      s_pad_special_invalid <= 1'b0;
+      s_pad_rm <= 3'b0;
+    end else begin
+      s_pad_root <= comp_root[RootBits];
+      s_pad_remainder <= comp_remainder[RootBits];
+      s_pad_result_exp <= comp_result_exp[RootBits];
+      s_pad_is_special <= comp_is_special[RootBits];
+      s_pad_special_result <= comp_special_result[RootBits];
+      s_pad_special_invalid <= comp_special_invalid[RootBits];
+      s_pad_rm <= comp_rm[RootBits];
+    end
+  end
 
-          // Initialize sqrt computation (special cases override output and skip compute)
-          // For sqrt: result_exp = (exp - bias) / 2 + bias
-          result_exp <= ExpExtBits'($signed(prep_sqrt_adjusted_exp >>> 1));
-          root <= '0;
-          remainder <= '0;
-          radicand <= {{(RadicandBits-(MantBits+1)){1'b0}}, prep_sqrt_mantissa_int} <<
-                      ShiftBits'(MantBits + 5);
+  // =========================================================================
+  // Stage 3+RootBits+1: NORMALIZE
+  // =========================================================================
+  logic [RootBits-1:0] norm_root;
+  logic signed [ExpExtBits-1:0] norm_result_exp;
 
-          if (prep_is_special) begin
-            result_reg <= prep_special_result;
-            flags_reg  <= {prep_special_invalid, 1'b0, 1'b0, 1'b0, 1'b0};
-          end
-        end
+  always_comb begin
+    norm_root = s_pad_root;
+    norm_result_exp = s_pad_result_exp;
+    if (!s_pad_root[RootBits-1]) begin
+      norm_root = s_pad_root << 1;
+      norm_result_exp = s_pad_result_exp - 1;
+    end
+  end
 
-        COMPUTE: begin
-          cycle_count <= cycle_count + 1;
-          // Digit-by-digit square root: bring down 2 bits per iteration
-          radicand <= {radicand[RadicandBits-3:0], 2'b00};
-          if (rem_ge) begin
-            remainder <= rem_candidate - trial_divisor;
-            root <= {root[RootBits-2:0], 1'b1};
-          end else begin
-            remainder <= rem_candidate;
-            root <= {root[RootBits-2:0], 1'b0};
-          end
-        end
+  // Stage registers
+  logic [RootBits-1:0] s_norm_root;
+  logic [RemBits-1:0] s_norm_remainder;
+  logic signed [ExpExtBits-1:0] s_norm_result_exp;
+  logic s_norm_is_special;
+  logic [FP_WIDTH-1:0] s_norm_special_result;
+  logic s_norm_special_invalid;
+  logic [2:0] s_norm_rm;
 
-        NORMALIZE: begin
-          // The root should already be normalized
-          // root[RootBits-1] should be the implicit 1
-          if (!root[RootBits-1]) begin
-            root <= root << 1;
-            result_exp <= result_exp - 1;
-          end
-        end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_norm_root <= '0;
+      s_norm_remainder <= '0;
+      s_norm_result_exp <= '0;
+      s_norm_is_special <= 1'b0;
+      s_norm_special_result <= '0;
+      s_norm_special_invalid <= 1'b0;
+      s_norm_rm <= 3'b0;
+    end else begin
+      s_norm_root <= norm_root;
+      s_norm_remainder <= s_pad_remainder;
+      s_norm_result_exp <= norm_result_exp;
+      s_norm_is_special <= s_pad_is_special;
+      s_norm_special_result <= s_pad_special_result;
+      s_norm_special_invalid <= s_pad_special_invalid;
+      s_norm_rm <= s_pad_rm;
+    end
+  end
 
-        ROUND_SHIFT: begin
-          exp_work_shift <= exp_work_prep;
-          mantissa_work_shift <= mantissa_work_prep;
-          guard_work_shift <= guard_work_prep;
-          round_work_shift <= round_work_prep;
-          sticky_work_shift <= sticky_work_prep;
-          sqrt_is_zero_shift <= sqrt_is_zero;
-          rm_shift <= rm;
-        end
+  // =========================================================================
+  // Stage 3+RootBits+2: ROUND_SHIFT — fp_subnorm_shift
+  // =========================================================================
+  logic [MantBits:0] rsh_pre_round_mant;
+  logic              rsh_guard_bit;
+  logic              rsh_round_bit;
+  logic              rsh_sticky_bit;
+  logic              rsh_is_zero;
 
-        ROUND_PREP: begin
-          // Capture round-up decision into apply registers
-          exp_work_apply <= exp_work_shift;
-          mantissa_work_apply <= mantissa_work_shift;
-          round_up_apply <= round_up_prep;
-          is_inexact_apply <= is_inexact_prep;
-          sqrt_is_zero_apply <= sqrt_is_zero_shift;
-          rm_apply <= rm_shift;
-        end
+  assign rsh_pre_round_mant = s_norm_root[RootBits-1-:(MantBits+1)];
+  assign rsh_guard_bit      = s_norm_root[1];
+  assign rsh_round_bit      = s_norm_root[0];
+  assign rsh_sticky_bit     = |s_norm_remainder;
+  assign rsh_is_zero        = (s_norm_root == '0) && (s_norm_remainder == '0);
 
-        ROUND_APPLY: begin
-          // Capture final result into output registers
-          result_output <= final_result_apply_comb;
-          flags_output  <= final_flags_apply_comb;
-        end
+  logic [MantBits-1:0] rsh_mantissa_retained;
+  assign rsh_mantissa_retained = rsh_pre_round_mant[MantBits:1];
 
-        OUTPUT: begin
-          // Capture into final result registers
-          result_reg <= result_output;
-          flags_reg  <= flags_output;
-        end
+  logic [MantBits-1:0] rsh_mantissa_out;
+  logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
+  logic signed [ExpExtBits-1:0] rsh_exp_out;
 
-        DONE: begin
-          valid_reg <= 1'b1;
-        end
+  fp_subnorm_shift #(
+      .MANT_BITS(MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(rsh_mantissa_retained),
+      .i_guard(rsh_pre_round_mant[0]),
+      .i_round(rsh_guard_bit),
+      .i_sticky(rsh_round_bit | rsh_sticky_bit),
+      .i_exponent(s_norm_result_exp),
+      .o_mantissa(rsh_mantissa_out),
+      .o_guard(rsh_guard_out),
+      .o_round(rsh_round_out),
+      .o_sticky(rsh_sticky_out),
+      .o_exponent(rsh_exp_out)
+  );
 
-        default: ;
-      endcase
+  // Stage registers
+  logic signed [ExpExtBits-1:0] s_rsh_exp;
+  logic [MantBits-1:0] s_rsh_mantissa;
+  logic s_rsh_guard, s_rsh_round, s_rsh_sticky;
+  logic s_rsh_is_zero;
+  logic [2:0] s_rsh_rm;
+  logic s_rsh_is_special;
+  logic [FP_WIDTH-1:0] s_rsh_special_result;
+  logic s_rsh_special_invalid;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rsh_exp <= '0;
+      s_rsh_mantissa <= '0;
+      s_rsh_guard <= 1'b0;
+      s_rsh_round <= 1'b0;
+      s_rsh_sticky <= 1'b0;
+      s_rsh_is_zero <= 1'b0;
+      s_rsh_rm <= 3'b0;
+      s_rsh_is_special <= 1'b0;
+      s_rsh_special_result <= '0;
+      s_rsh_special_invalid <= 1'b0;
+    end else begin
+      s_rsh_exp <= rsh_exp_out;
+      s_rsh_mantissa <= rsh_mantissa_out;
+      s_rsh_guard <= rsh_guard_out;
+      s_rsh_round <= rsh_round_out;
+      s_rsh_sticky <= rsh_sticky_out;
+      s_rsh_is_zero <= rsh_is_zero;
+      s_rsh_rm <= s_norm_rm;
+      s_rsh_is_special <= s_norm_is_special;
+      s_rsh_special_result <= s_norm_special_result;
+      s_rsh_special_invalid <= s_norm_special_invalid;
+    end
+  end
+
+  // =========================================================================
+  // Stage 3+RootBits+3: ROUND_PREP — compute round-up decision
+  // =========================================================================
+  logic rprep_round_up;
+  logic rprep_lsb;
+  logic rprep_is_inexact;
+
+  assign rprep_lsb = s_rsh_mantissa[0];
+  // sqrt result is always positive (sign=0)
+  assign rprep_round_up = riscv_pkg::fp_compute_round_up(
+      s_rsh_rm, s_rsh_guard, s_rsh_round, s_rsh_sticky, rprep_lsb, 1'b0
+  );
+  assign rprep_is_inexact = s_rsh_guard | s_rsh_round | s_rsh_sticky;
+
+  // Stage registers
+  logic signed [ExpExtBits-1:0] s_rprep_exp;
+  logic [MantBits-1:0] s_rprep_mantissa;
+  logic s_rprep_round_up;
+  logic s_rprep_is_inexact;
+  logic s_rprep_is_zero;
+  logic [2:0] s_rprep_rm;
+  logic s_rprep_is_special;
+  logic [FP_WIDTH-1:0] s_rprep_special_result;
+  logic s_rprep_special_invalid;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rprep_exp <= '0;
+      s_rprep_mantissa <= '0;
+      s_rprep_round_up <= 1'b0;
+      s_rprep_is_inexact <= 1'b0;
+      s_rprep_is_zero <= 1'b0;
+      s_rprep_rm <= 3'b0;
+      s_rprep_is_special <= 1'b0;
+      s_rprep_special_result <= '0;
+      s_rprep_special_invalid <= 1'b0;
+    end else begin
+      s_rprep_exp <= s_rsh_exp;
+      s_rprep_mantissa <= s_rsh_mantissa;
+      s_rprep_round_up <= rprep_round_up;
+      s_rprep_is_inexact <= rprep_is_inexact;
+      s_rprep_is_zero <= s_rsh_is_zero;
+      s_rprep_rm <= s_rsh_rm;
+      s_rprep_is_special <= s_rsh_is_special;
+      s_rprep_special_result <= s_rsh_special_result;
+      s_rprep_special_invalid <= s_rsh_special_invalid;
+    end
+  end
+
+  // =========================================================================
+  // Stage 3+RootBits+4: ROUND_APPLY — fp_result_assembler
+  // =========================================================================
+  logic [FP_WIDTH-1:0] rapply_result;
+  riscv_pkg::fp_flags_t rapply_flags;
+
+  fp_result_assembler #(
+      .FP_WIDTH(FP_WIDTH),
+      .ExpBits(ExpBits),
+      .FracBits(FracBits),
+      .MantBits(MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work(s_rprep_exp),
+      .i_mantissa_work(s_rprep_mantissa),
+      .i_round_up(s_rprep_round_up),
+      .i_is_inexact(s_rprep_is_inexact),
+      .i_result_sign(1'b0),  // sqrt result is always positive
+      .i_rm(s_rprep_rm),
+      .i_is_special(s_rprep_is_special),
+      .i_special_result(s_rprep_special_result),
+      .i_special_invalid(s_rprep_special_invalid),
+      .i_special_div_zero(1'b0),
+      .i_is_zero_result(s_rprep_is_zero & ~s_rprep_is_special),
+      .i_zero_sign(1'b0),
+      .o_result(rapply_result),
+      .o_flags(rapply_flags)
+  );
+
+  // Stage registers
+  logic [FP_WIDTH-1:0] s_rapply_result;
+  riscv_pkg::fp_flags_t s_rapply_flags;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rapply_result <= '0;
+      s_rapply_flags  <= '0;
+    end else begin
+      s_rapply_result <= rapply_result;
+      s_rapply_flags  <= rapply_flags;
+    end
+  end
+
+  // =========================================================================
+  // Stage 3+RootBits+5: OUTPUT — register final result
+  // =========================================================================
+  logic [FP_WIDTH-1:0] s_output_result;
+  riscv_pkg::fp_flags_t s_output_flags;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_output_result <= '0;
+      s_output_flags  <= '0;
+    end else begin
+      s_output_result <= s_rapply_result;
+      s_output_flags  <= s_rapply_flags;
     end
   end
 
   // =========================================================================
   // Outputs
   // =========================================================================
-
-  assign o_result = result_reg;
-  assign o_flags  = flags_reg;
-  assign o_valid  = valid_reg;
-  // Stall immediately when i_valid is asserted (FSQRT enters EX), matching integer
-  // divider pattern where stall = (is_divide & ~divider_valid_output). The integer
-  // stall is true from the first cycle because valid_output starts at 0. We achieve
-  // the same by OR'ing i_valid with the state check, so stall is asserted on the
-  // same cycle the instruction enters EX. Stall drops when valid_reg goes high.
-  assign o_stall  = ((state != IDLE) || i_valid) && ~valid_reg;
+  assign o_result = s_output_result;
+  assign o_flags  = s_output_flags;
+  assign o_valid  = pipe_valid[TotalStages];
+  assign o_stall  = 1'b0;  // Fully pipelined — never stalls
 
 endmodule : fp_sqrt

@@ -953,8 +953,8 @@ functional unit required. This table provides the complete mapping:
 | FADD.S/D, FSUB.S/D | FP_RS | FP Adder | 10 cycles | 4-cycle internal pipeline |
 | FMUL.S/D | FMUL_RS | FP Multiplier | 9 cycles | 3-cycle internal pipeline |
 | FMADD, FMSUB, FNMADD, FNMSUB | FMUL_RS | FP FMA | 14 cycles | 4-cycle internal pipeline |
-| FDIV.S/D | FDIV_RS | FP Divider | ~32 cycles | Sequential |
-| FSQRT.S/D | FDIV_RS | FP Sqrt | ~32 cycles | Sequential |
+| FDIV.S/D | FDIV_RS | FP Divider | 36/65 cycles (SP/DP) | Pipelined divide |
+| FSQRT.S/D | FDIV_RS | FP Sqrt | 36/65 cycles (SP/DP) | Pipelined sqrt |
 | FMIN.S/D, FMAX.S/D | FP_RS | FP Compare | 3 cycles | |
 | FEQ.S/D, FLT.S/D, FLE.S/D | FP_RS | FP Compare | 3 cycles | Result to INT rd |
 | FCVT.W.S, FCVT.WU.S | FP_RS | FP Convert | 5 cycles | FP→INT, result to INT rd |
@@ -1249,20 +1249,15 @@ The existing FROST front-end optimizations are preserved:
     |                                                                        |
     |  +------------------------------------------------------------------+  |
     |  |                                                                  |  |
-    |  |  Option A: Multiple in-flight divisions (utilize pipelining)     |  |
+    |  |  Multiple in-flight divisions (pipelined):              [CHOSEN]  |  |
     |  |    - MUL_RS can issue DIV every cycle                            |  |
-    |  |    - Track up to 16 in-flight divisions                          |  |
+    |  |    - Shift-register tag queue tracks up to 17 in-flight DIVs    |  |
     |  |    - Each has ROB tag for CDB broadcast                          |  |
-    |  |    - Complex: need to track completion order                     |  |
+    |  |    - Result FIFO (depth 4) buffers completions                   |  |
+    |  |    - Credit-based back-pressure: busy when FIFO near full        |  |
     |  |                                                                  |  |
-    |  |  Option B: Single division at a time (simpler)         [CHOSEN]  |  |
-    |  |    - MUL_RS issues DIV only when divider idle                    |  |
-    |  |    - Subsequent DIVs wait in MUL_RS until completion             |  |
-    |  |    - Simpler tracking, matches existing hazard behavior          |  |
-    |  |    - Performance cost: division serialization                    |  |
-    |  |                                                                  |  |
-    |  |  IMPLEMENTATION (Option B):                                      |  |
-    |  |    div_busy: 1-bit flag, set on DIV issue, clear on completion   |  |
+    |  |  IMPLEMENTATION:                                                 |  |
+    |  |    div_busy: credit-based, asserts when inflight+fifo >= depth   |  |
     |  |    MUL_RS issue condition for DIV: entry_ready && !div_busy      |  |
     |  |                                                                  |  |
     |  +------------------------------------------------------------------+  |
@@ -1280,8 +1275,8 @@ The existing FROST front-end optimizations are preserved:
     |    - FP Add/Sub: 10 cycles (4-cycle internal pipeline)                 |
     |    - FP Multiply: 9 cycles (3-cycle internal pipeline)                 |
     |    - FP FMA: 14 cycles (4-cycle internal pipeline)                     |
-    |    - FP Divide: ~32 cycles (sequential)                                |
-    |    - FP Sqrt: ~32 cycles (sequential)                                  |
+    |    - FP Divide: 36/65 cycles SP/DP (pipelined)                         |
+    |    - FP Sqrt: 36/65 cycles SP/DP (pipelined)                          |
     |    - FP Compare: 3 cycles                                              |
     |    - FP Convert: 5 cycles                                              |
     |    - FP Classify: 1 cycle                                              |
@@ -1302,8 +1297,8 @@ The existing FROST front-end optimizations are preserved:
     |  |    - Internal pipelining allows overlapped FMULs                 |  |
     |  |                                                                  |  |
     |  |  FDIV_RS (FP Divide, FP Sqrt):                                   |  |
-    |  |    - Long latency, sequential (not pipelined internally)         |  |
-    |  |    - Only one FDIV/FSQRT in flight at a time                     |  |
+    |  |    - Pipelined: 4 sub-units (div_s, div_d, sqrt_s, sqrt_d)      |  |
+    |  |    - Multiple FDIV/FSQRT in flight (credit-based back-pressure)  |  |
     |  |    - Separate RS prevents blocking shorter FP operations         |  |
     |  |                                                                  |  |
     |  +------------------------------------------------------------------+  |
@@ -1344,10 +1339,10 @@ The existing FROST front-end optimizations are preserved:
     |  |    - Stall propagates: stage 1 stalls, MUL_RS stalls             |  |
     |  |    - 1-entry buffer (output register) absorbs 1 stall cycle      |  |
     |  |                                                                  |  |
-    |  |  Divider (16-cycle, sequential):                                 |  |
-    |  |    - Single in-flight division, result held on completion        |  |
+    |  |  Divider (16-cycle, pipelined):                                   |  |
+    |  |    - Multiple in-flight, result FIFO buffers completions        |  |
     |  |    - If loses arbitration: div_result_pending = 1                |  |
-    |  |    - New divisions blocked until result accepted                 |  |
+    |  |    - Credit-based back-pressure when FIFO near full              |  |
     |  |                                                                  |  |
     |  |  Memory (Load Queue):                                            |  |
     |  |    - LQ entry holds result when data returns                     |  |
@@ -1391,11 +1386,11 @@ The existing FROST front-end optimizations are preserved:
 | **INT_RAT** | Integer register renaming (x0-x31), speculation recovery | ID read, Dispatch write, Checkpoint | Early src reg timing path from PD |
 | **FP_RAT** | FP register renaming (f0-f31), speculation recovery | ID read, Dispatch write, Checkpoint | RAS pointer in checkpoint |
 | **INT_RS** | Integer ALU reservation station | Dispatch in, CDB snoop, Issue to ALU | Pre-computed branch targets from ID |
-| **MUL_RS** | Integer multiply/divide reservation station | Dispatch in, CDB snoop, Issue to MUL | DIV serialization (single in-flight) |
+| **MUL_RS** | Integer multiply/divide reservation station | Dispatch in, CDB snoop, Issue to MUL | Pipelined DIV (credit-based back-pressure) |
 | **MEM_RS** | Memory ops reservation station (INT + FP loads/stores) | Dispatch in, CDB snoop, Issue to LQ/SQ | MMIO flag, FP64 size encoding |
 | **FP_RS** | FP add/sub/compare/convert/classify/sgnj reservation station | Dispatch in, CDB snoop, Issue to FPU | Resolved rounding mode (DYN → frm) |
 | **FMUL_RS** | FP multiply/FMA reservation station (3 sources) | Dispatch in, CDB snoop, Issue to FPU | src3 for FMA operand |
-| **FDIV_RS** | FP divide/sqrt reservation station (long latency) | Dispatch in, CDB snoop, Issue to FPU | Single in-flight (sequential unit) |
+| **FDIV_RS** | FP divide/sqrt reservation station (long latency) | Dispatch in, CDB snoop, Issue to FPU | Pipelined (credit-based back-pressure) |
 | **LQ** | Load queue, address disambiguation (INT + FP) | MEM_RS issue, Store forward, Memory | L0 cache integration, MMIO non-spec, FP64 2-phase |
 | **SQ** | Store queue, commit buffer (INT + FP) | MEM_RS issue, Load forward, Commit | FLEN data, FP64 2-phase commit, MMIO bypass |
 | **CDB** | Result broadcast, arbiter (FLEN width); lane-parameterized | FU results in, RS/ROB/RAT broadcast | FP flag propagation, per-FU result hold |

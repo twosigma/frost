@@ -15,66 +15,44 @@
  */
 
 /*
-  IEEE 754 single-precision floating-point divider.
+  IEEE 754 floating-point divider — fully pipelined.
 
-  Implements FDIV.S operation using a sequential radix-2 restoring division algorithm.
+  Accepts a new operation every cycle. Pipeline depth:
+    SP (FP_WIDTH=32): DivCycles + 10 = 26 + 10 = 36 stages
+    DP (FP_WIDTH=64): DivCycles + 10 = 55 + 10 = 65 stages
 
-  Latency: 36 cycles (not pipelined, stalls pipeline during operation)
-    - 1 cycle: Input capture (IDLE)
-    - 1 cycle: Operand unpacking and LZC (UNPACK)
-    - 1 cycle: Mantissa normalization and special case detection (INIT)
-    - 1 cycle: Division initialization (SETUP)
-    - 26 cycles: Mantissa division (1 integer bit + 26 fractional/guard bits)
-    - 1 cycle: Normalization prep (capture LZC)
-    - 1 cycle: Normalization apply
-    - 1 cycle: Subnormal handling and shift prep
-    - 1 cycle: Compute round-up decision
-    - 1 cycle: Apply rounding increment, format result
-    - 1 cycle: Output registered result
+  Pipeline structure:
+    Stage 0:  Input capture (operand regs, rounding mode)
+    Stage 1:  UNPACK — fp_operand_unpacker + fp_lzc (combinational, outputs registered)
+    Stage 2:  INIT — mantissa normalization, special case detection (registered)
+    Stage 3:  SETUP — compute result_exp, initial quotient/remainder/divisor
+    Stages 4..4+DivCycles-1:  DIVIDE — one radix-2 step per stage (generate block)
+    Stage 4+DivCycles:    NORMALIZE_PREP — fp_lzc on quotient
+    Stage 4+DivCycles+1:  NORMALIZE — shift quotient, adjust exponent
+    Stage 4+DivCycles+2:  ROUND_SHIFT — fp_subnorm_shift
+    Stage 4+DivCycles+3:  ROUND_PREP — fp_compute_round_up
+    Stage 4+DivCycles+4:  ROUND_APPLY — fp_result_assembler
+    Stage 4+DivCycles+5:  OUTPUT — register final result
 
-  The UNPACK/INIT/SETUP pipeline stages split the operand processing to reduce
-  combinational depth and improve timing (reduces net delay from wide datapath).
-
-  Special case handling:
-    - NaN propagation
-    - Divide by zero (returns infinity, raises DZ flag)
-    - 0/0 = NaN (invalid)
-    - inf/inf = NaN (invalid)
-    - x/0 = infinity (for finite non-zero x)
-    - 0/x = 0 (for finite non-zero x)
+  Special cases (NaN, inf, zero, div-by-zero) detected at INIT. The DIVIDE
+  stages still execute on don't-care data; the OUTPUT stage selects the
+  special result when is_special is set.
 */
 module fp_divider #(
     parameter int unsigned FP_WIDTH = 32
 ) (
-    input  logic                                i_clk,
-    input  logic                                i_rst,
-    input  logic                                i_valid,
-    input  logic                 [FP_WIDTH-1:0] i_operand_a,      // Dividend
-    input  logic                 [FP_WIDTH-1:0] i_operand_b,      // Divisor
-    input  logic                 [         2:0] i_rounding_mode,
-    output logic                 [FP_WIDTH-1:0] o_result,
-    output logic                                o_valid,
-    output logic                                o_stall,          // Stall pipeline during division
-    output riscv_pkg::fp_flags_t                o_flags
+    input logic i_clk,
+    input logic i_rst,
+    input logic i_valid,
+    input logic [FP_WIDTH-1:0] i_operand_a,  // Dividend
+    input logic [FP_WIDTH-1:0] i_operand_b,  // Divisor
+    input logic [2:0] i_rounding_mode,
+    output logic [FP_WIDTH-1:0] o_result,
+    output logic o_valid,
+    output logic o_stall,  // Always 0 (pipelined, never stalls)
+    output riscv_pkg::fp_flags_t o_flags
 );
 
-  // State machine - expanded for pipelined SETUP
-  typedef enum logic [3:0] {
-    IDLE,
-    UNPACK,
-    INIT,
-    SETUP,
-    DIVIDE,
-    NORMALIZE_PREP,
-    NORMALIZE,
-    ROUND_SHIFT,
-    ROUND_PREP,
-    ROUND_APPLY,
-    OUTPUT,
-    DONE
-  } state_t;
-
-  state_t state, next_state;
   localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
   localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
   localparam int unsigned MantBits = FracBits + 1;
@@ -86,20 +64,48 @@ module fp_divider #(
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
   localparam int unsigned DivCycles = MantBits + 2;
-  localparam int unsigned CycleCountBits = $clog2(DivCycles + 1);
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
-  localparam logic [CycleCountBits-1:0] DivCyclesMinus1 = CycleCountBits'(DivCycles - 1);
 
-  logic [CycleCountBits-1:0] cycle_count;
+  localparam int unsigned TotalStages = DivCycles + 10;
 
-  // Registered inputs
-  logic [FP_WIDTH-1:0] operand_a_reg;
-  logic [FP_WIDTH-1:0] operand_b_reg;
+  // Valid pipeline
+  logic pipe_valid[TotalStages+1];
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i <= TotalStages; i++) begin
+        pipe_valid[i] <= 1'b0;
+      end
+    end else begin
+      pipe_valid[0] <= i_valid;
+      for (int i = 1; i <= TotalStages; i++) begin
+        pipe_valid[i] <= pipe_valid[i-1];
+      end
+    end
+  end
 
   // =========================================================================
-  // UNPACK Stage: Classification and LZC (combinational from operand_*_reg)
+  // Stage 0: Input Capture
   // =========================================================================
+  logic [FP_WIDTH-1:0] s0_operand_a;
+  logic [FP_WIDTH-1:0] s0_operand_b;
+  logic [2:0] s0_rm;
 
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s0_operand_a <= '0;
+      s0_operand_b <= '0;
+      s0_rm <= 3'b0;
+    end else if (i_valid) begin
+      s0_operand_a <= i_operand_a;
+      s0_operand_b <= i_operand_b;
+      s0_rm <= i_rounding_mode;
+    end
+  end
+
+  // =========================================================================
+  // Stage 1: UNPACK — fp_operand_unpacker + fp_lzc (combinational from s0)
+  // =========================================================================
   logic sign_a, sign_b;
   logic [ExpBits-1:0] exp_a, exp_b;
   logic [LzcMantBits-1:0] mant_lzc_a, mant_lzc_b;
@@ -109,11 +115,10 @@ module fp_divider #(
   logic is_nan_a, is_nan_b;
   logic is_snan_a, is_snan_b;
 
-  // Unpack and classify operands
   fp_operand_unpacker #(
       .FP_WIDTH(FP_WIDTH)
   ) u_unpack_a (
-      .i_operand(operand_a_reg),
+      .i_operand(s0_operand_a),
       .o_sign(sign_a),
       .o_exp(exp_a),
       .o_exp_adj(),
@@ -128,7 +133,7 @@ module fp_divider #(
   fp_operand_unpacker #(
       .FP_WIDTH(FP_WIDTH)
   ) u_unpack_b (
-      .i_operand(operand_b_reg),
+      .i_operand(s0_operand_b),
       .o_sign(sign_b),
       .o_exp(exp_b),
       .o_exp_adj(),
@@ -141,604 +146,633 @@ module fp_divider #(
       .o_is_snan(is_snan_b)
   );
 
-  // Leading zero count for subnormal normalization
   logic mant_lzc_zero_a, mant_lzc_zero_b;
-
   fp_lzc #(
       .WIDTH(FracBits)
   ) u_mant_lzc_a (
-      .i_value (operand_a_reg[FracBits-1:0]),
-      .o_lzc   (mant_lzc_a),
+      .i_value(s0_operand_a[FracBits-1:0]),
+      .o_lzc(mant_lzc_a),
       .o_is_zero(mant_lzc_zero_a)
   );
   fp_lzc #(
       .WIDTH(FracBits)
   ) u_mant_lzc_b (
-      .i_value (operand_b_reg[FracBits-1:0]),
-      .o_lzc   (mant_lzc_b),
+      .i_value(s0_operand_b[FracBits-1:0]),
+      .o_lzc(mant_lzc_b),
       .o_is_zero(mant_lzc_zero_b)
   );
 
-  // =========================================================================
-  // UNPACK -> INIT Pipeline Registers
-  // =========================================================================
-
-  logic sign_a_r, sign_b_r;
-  logic [ExpBits-1:0] exp_a_r, exp_b_r;
-  logic [LzcMantBits-1:0] mant_lzc_a_r, mant_lzc_b_r;
-  logic is_subnormal_a_r, is_subnormal_b_r;
-  logic is_zero_a_r, is_zero_b_r;
-  logic is_inf_a_r, is_inf_b_r;
-  logic is_nan_a_r, is_nan_b_r;
-  logic is_snan_a_r, is_snan_b_r;
-  logic [FracBits-1:0] raw_mant_a_r, raw_mant_b_r;
-
-  // =========================================================================
-  // INIT Stage: Mantissa Normalization and Special Case Detection
-  // Uses registered values from UNPACK stage
-  // =========================================================================
-
-  logic [LzcMantBits:0] sub_shift_a, sub_shift_b;
-  logic signed [ExpExtBits-1:0] exp_a_adj, exp_b_adj;
-  logic [MantBits-1:0] mant_a, mant_b;
-  logic is_special_init;
-  logic [FP_WIDTH-1:0] special_result_init;
-  logic special_invalid_init;
-  logic special_div_zero_init;
-
-  always_comb begin
-    sub_shift_a = '0;
-    sub_shift_b = '0;
-    exp_a_adj = '0;
-    exp_b_adj = '0;
-    mant_a = '0;
-    mant_b = '0;
-
-    // Operand A normalization using registered LZC
-    if (is_subnormal_a_r) begin
-      sub_shift_a = {1'b0, mant_lzc_a_r} + {{LzcMantBits{1'b0}}, 1'b1};
-      exp_a_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
-          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift_a});
-      mant_a = {1'b0, raw_mant_a_r} << sub_shift_a;
-    end else if (exp_a_r == '0) begin
-      // Zero
-      exp_a_adj = '0;
-      mant_a = '0;
-    end else begin
-      // Normal
-      exp_a_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_a_r});
-      mant_a = {1'b1, raw_mant_a_r};
-    end
-
-    // Operand B normalization using registered LZC
-    if (is_subnormal_b_r) begin
-      sub_shift_b = {1'b0, mant_lzc_b_r} + {{LzcMantBits{1'b0}}, 1'b1};
-      exp_b_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
-          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, sub_shift_b});
-      mant_b = {1'b0, raw_mant_b_r} << sub_shift_b;
-    end else if (exp_b_r == '0) begin
-      // Zero
-      exp_b_adj = '0;
-      mant_b = '0;
-    end else begin
-      // Normal
-      exp_b_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_b_r});
-      mant_b = {1'b1, raw_mant_b_r};
-    end
-
-    // Special case detection using registered classification flags
-    is_special_init = 1'b0;
-    special_result_init = '0;
-    special_invalid_init = 1'b0;
-    special_div_zero_init = 1'b0;
-
-    if (is_nan_a_r || is_nan_b_r) begin
-      is_special_init = 1'b1;
-      special_result_init = CanonicalNan;
-      special_invalid_init = is_snan_a_r | is_snan_b_r;
-    end else if (is_inf_a_r && is_inf_b_r) begin
-      // inf / inf = NaN
-      is_special_init = 1'b1;
-      special_result_init = CanonicalNan;
-      special_invalid_init = 1'b1;
-    end else if (is_zero_a_r && is_zero_b_r) begin
-      // 0 / 0 = NaN
-      is_special_init = 1'b1;
-      special_result_init = CanonicalNan;
-      special_invalid_init = 1'b1;
-    end else if (is_inf_a_r) begin
-      // inf / x = inf
-      is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, ExpMax, {FracBits{1'b0}}};
-    end else if (is_inf_b_r) begin
-      // x / inf = 0
-      is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, {(FP_WIDTH - 1) {1'b0}}};
-    end else if (is_zero_b_r) begin
-      // x / 0 = inf (divide by zero)
-      is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, ExpMax, {FracBits{1'b0}}};
-      special_div_zero_init = ~is_zero_a_r;
-    end else if (is_zero_a_r) begin
-      // 0 / x = 0
-      is_special_init = 1'b1;
-      special_result_init = {sign_a_r ^ sign_b_r, {(FP_WIDTH - 1) {1'b0}}};
-    end
-  end
-
-  // =========================================================================
-  // INIT -> SETUP Pipeline Registers
-  // =========================================================================
-
-  logic result_sign_r;
-  logic signed [ExpExtBits-1:0] exp_a_adj_r, exp_b_adj_r;
-  logic [MantBits-1:0] mant_a_r, mant_b_r;
-  logic                         is_special_r;
-  logic        [  FP_WIDTH-1:0] special_result_r;
-  logic                         special_invalid_r;
-  logic                         special_div_zero_r;
-
-  // =========================================================================
-  // Division state
-  // =========================================================================
-
-  // TIMING: Limit fanout to force register replication and improve timing
-  (* max_fanout = 30 *)logic signed [ExpExtBits-1:0] result_exp;
-  logic        [   DivBits-1:0] quotient;  // mantissa + guard bits
-  logic        [   DivBits-1:0] remainder;
-  logic        [   DivBits-1:0] divisor;
-
-  // Rounding mode storage
-  logic        [           2:0] rm;
-
-  // Rounding inputs
-  logic        [    MantBits:0] div_pre_round_mant;
-  logic                         div_guard_bit;
-  logic                         div_round_bit;
-  logic                         div_sticky_bit;
-  logic                         div_is_zero;
-
-  assign div_pre_round_mant = quotient[DivBits-1-:(MantBits+1)];
-  assign div_guard_bit = quotient[1];
-  assign div_round_bit = quotient[0];
-  assign div_sticky_bit = |remainder;
-  assign div_is_zero = (quotient == '0) && (remainder == '0);
-
-  // =========================================================================
-  // ROUND_SHIFT prep: Subnormal handling and rounding bit extraction
-  // =========================================================================
-
-  // Extract mantissa and rounding bits
-  logic [MantBits-1:0] mantissa_retained_prep;
-  assign mantissa_retained_prep = div_pre_round_mant[MantBits:1];
-
-  // Subnormal handling: compute shift and apply
-  logic [MantBits-1:0] mantissa_work_prep;
-  logic guard_work_prep, round_work_prep, sticky_work_prep;
-  logic signed [ExpExtBits-1:0] exp_work_prep;
-
-  fp_subnorm_shift #(
-      .MANT_BITS   (MantBits),
-      .EXP_EXT_BITS(ExpExtBits)
-  ) u_subnorm_shift (
-      .i_mantissa(mantissa_retained_prep),
-      .i_guard   (div_pre_round_mant[0]),
-      .i_round   (div_guard_bit),
-      .i_sticky  (div_round_bit | div_sticky_bit),
-      .i_exponent(result_exp),
-      .o_mantissa(mantissa_work_prep),
-      .o_guard   (guard_work_prep),
-      .o_round   (round_work_prep),
-      .o_sticky  (sticky_work_prep),
-      .o_exponent(exp_work_prep)
-  );
-
-  // =========================================================================
-  // ROUND_SHIFT -> ROUND_PREP Pipeline Registers
-  // =========================================================================
-
-  logic signed [ExpExtBits-1:0] exp_work_shift;
-  logic        [  MantBits-1:0] mantissa_work_shift;
-  logic                         guard_work_shift;
-  logic                         round_work_shift;
-  logic                         sticky_work_shift;
-  logic                         div_is_zero_shift;
-  logic        [           2:0] rm_shift;
-
-  // Compute round-up decision
-  logic                         round_up_prep;
-  logic                         lsb_prep;
-
-  assign lsb_prep = mantissa_work_shift[0];
-
-  assign round_up_prep = riscv_pkg::fp_compute_round_up(
-      rm_shift, guard_work_shift, round_work_shift, sticky_work_shift, lsb_prep, result_sign_r
-  );
-
-  // Compute is_inexact for flags
-  logic is_inexact_prep;
-  assign is_inexact_prep = guard_work_shift | round_work_shift | sticky_work_shift;
-
-  // =========================================================================
-  // ROUND_PREP -> ROUND_APPLY Pipeline Registers
-  // =========================================================================
-
-  logic                                  result_sign_apply;
-  logic signed          [ExpExtBits-1:0] exp_work_apply;
-  logic                 [  MantBits-1:0] mantissa_work_apply;
-  logic                                  round_up_apply;
-  logic                                  is_inexact_apply;
-  logic                                  div_is_zero_apply;
-  logic                 [           2:0] rm_apply;
-
-  // =========================================================================
-  // ROUND_APPLY: Apply rounding and format result
-  // =========================================================================
-
-  // Compute final result using shared result assembler
-  logic                 [  FP_WIDTH-1:0] final_result_apply_comb;
-  riscv_pkg::fp_flags_t                  final_flags_apply_comb;
-
-  fp_result_assembler #(
-      .FP_WIDTH  (FP_WIDTH),
-      .ExpBits   (ExpBits),
-      .FracBits  (FracBits),
-      .MantBits  (MantBits),
-      .ExpExtBits(ExpExtBits)
-  ) u_result_asm (
-      .i_exp_work        (exp_work_apply),
-      .i_mantissa_work   (mantissa_work_apply),
-      .i_round_up        (round_up_apply),
-      .i_is_inexact      (is_inexact_apply),
-      .i_result_sign     (result_sign_apply),
-      .i_rm              (rm_apply),
-      .i_is_special      (1'b0),
-      .i_special_result  ({FP_WIDTH{1'b0}}),
-      .i_special_invalid (1'b0),
-      .i_special_div_zero(1'b0),
-      .i_is_zero_result  (div_is_zero_apply),
-      .i_zero_sign       (result_sign_apply),
-      .o_result          (final_result_apply_comb),
-      .o_flags           (final_flags_apply_comb)
-  );
-
-  // =========================================================================
-  // ROUND_APPLY -> OUTPUT Pipeline Registers
-  // =========================================================================
-
-  logic [FP_WIDTH-1:0] result_output;
-  riscv_pkg::fp_flags_t flags_output;
-
-  // =========================================================================
-  // State Machine
-  // =========================================================================
+  // Register UNPACK outputs -> Stage 1 output registers
+  logic s1_sign_a, s1_sign_b;
+  logic [ExpBits-1:0] s1_exp_a, s1_exp_b;
+  logic [LzcMantBits-1:0] s1_mant_lzc_a, s1_mant_lzc_b;
+  logic s1_is_subnormal_a, s1_is_subnormal_b;
+  logic s1_is_zero_a, s1_is_zero_b;
+  logic s1_is_inf_a, s1_is_inf_b;
+  logic s1_is_nan_a, s1_is_nan_b;
+  logic s1_is_snan_a, s1_is_snan_b;
+  logic [FracBits-1:0] s1_raw_mant_a, s1_raw_mant_b;
+  logic [2:0] s1_rm;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state <= IDLE;
+      s1_sign_a <= 1'b0;
+      s1_sign_b <= 1'b0;
+      s1_exp_a <= '0;
+      s1_exp_b <= '0;
+      s1_mant_lzc_a <= '0;
+      s1_mant_lzc_b <= '0;
+      s1_is_subnormal_a <= 1'b0;
+      s1_is_subnormal_b <= 1'b0;
+      s1_is_zero_a <= 1'b0;
+      s1_is_zero_b <= 1'b0;
+      s1_is_inf_a <= 1'b0;
+      s1_is_inf_b <= 1'b0;
+      s1_is_nan_a <= 1'b0;
+      s1_is_nan_b <= 1'b0;
+      s1_is_snan_a <= 1'b0;
+      s1_is_snan_b <= 1'b0;
+      s1_raw_mant_a <= '0;
+      s1_raw_mant_b <= '0;
+      s1_rm <= 3'b0;
     end else begin
-      state <= next_state;
+      s1_sign_a <= sign_a;
+      s1_sign_b <= sign_b;
+      s1_exp_a <= exp_a;
+      s1_exp_b <= exp_b;
+      s1_mant_lzc_a <= mant_lzc_a;
+      s1_mant_lzc_b <= mant_lzc_b;
+      s1_is_subnormal_a <= is_subnormal_a;
+      s1_is_subnormal_b <= is_subnormal_b;
+      s1_is_zero_a <= is_zero_a;
+      s1_is_zero_b <= is_zero_b;
+      s1_is_inf_a <= is_inf_a;
+      s1_is_inf_b <= is_inf_b;
+      s1_is_nan_a <= is_nan_a;
+      s1_is_nan_b <= is_nan_b;
+      s1_is_snan_a <= is_snan_a;
+      s1_is_snan_b <= is_snan_b;
+      s1_raw_mant_a <= s0_operand_a[FracBits-1:0];
+      s1_raw_mant_b <= s0_operand_b[FracBits-1:0];
+      s1_rm <= s0_rm;
     end
   end
 
+  // =========================================================================
+  // Stage 2: INIT — Mantissa Normalization and Special Case Detection
+  // (combinational from s1, registered into s2)
+  // =========================================================================
+  logic [LzcMantBits:0] init_sub_shift_a, init_sub_shift_b;
+  logic signed [ExpExtBits-1:0] init_exp_a_adj, init_exp_b_adj;
+  logic [MantBits-1:0] init_mant_a, init_mant_b;
+  logic init_is_special;
+  logic [FP_WIDTH-1:0] init_special_result;
+  logic init_special_invalid;
+  logic init_special_div_zero;
+
   always_comb begin
-    next_state = state;
-    case (state)
-      IDLE: begin
-        if (i_valid) begin
-          next_state = UNPACK;
-        end
-      end
-      UNPACK: begin
-        next_state = INIT;
-      end
-      INIT: begin
-        // Always go to SETUP - is_special_r will be valid there
-        next_state = SETUP;
-      end
-      SETUP: begin
-        // is_special_r is now valid (registered in INIT)
-        if (is_special_r) begin
-          next_state = DONE;
+    init_sub_shift_a = '0;
+    init_sub_shift_b = '0;
+    init_exp_a_adj = '0;
+    init_exp_b_adj = '0;
+    init_mant_a = '0;
+    init_mant_b = '0;
+
+    if (s1_is_subnormal_a) begin
+      init_sub_shift_a = {1'b0, s1_mant_lzc_a} + {{LzcMantBits{1'b0}}, 1'b1};
+      init_exp_a_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, init_sub_shift_a});
+      init_mant_a = {1'b0, s1_raw_mant_a} << init_sub_shift_a;
+    end else if (s1_exp_a == '0) begin
+      init_exp_a_adj = '0;
+      init_mant_a = '0;
+    end else begin
+      init_exp_a_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, s1_exp_a});
+      init_mant_a = {1'b1, s1_raw_mant_a};
+    end
+
+    if (s1_is_subnormal_b) begin
+      init_sub_shift_b = {1'b0, s1_mant_lzc_b} + {{LzcMantBits{1'b0}}, 1'b1};
+      init_exp_b_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
+          $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, init_sub_shift_b});
+      init_mant_b = {1'b0, s1_raw_mant_b} << init_sub_shift_b;
+    end else if (s1_exp_b == '0) begin
+      init_exp_b_adj = '0;
+      init_mant_b = '0;
+    end else begin
+      init_exp_b_adj = $signed({{(ExpExtBits - ExpBits) {1'b0}}, s1_exp_b});
+      init_mant_b = {1'b1, s1_raw_mant_b};
+    end
+
+    init_is_special = 1'b0;
+    init_special_result = '0;
+    init_special_invalid = 1'b0;
+    init_special_div_zero = 1'b0;
+
+    if (s1_is_nan_a || s1_is_nan_b) begin
+      init_is_special = 1'b1;
+      init_special_result = CanonicalNan;
+      init_special_invalid = s1_is_snan_a | s1_is_snan_b;
+    end else if (s1_is_inf_a && s1_is_inf_b) begin
+      init_is_special = 1'b1;
+      init_special_result = CanonicalNan;
+      init_special_invalid = 1'b1;
+    end else if (s1_is_zero_a && s1_is_zero_b) begin
+      init_is_special = 1'b1;
+      init_special_result = CanonicalNan;
+      init_special_invalid = 1'b1;
+    end else if (s1_is_inf_a) begin
+      init_is_special = 1'b1;
+      init_special_result = {s1_sign_a ^ s1_sign_b, ExpMax, {FracBits{1'b0}}};
+    end else if (s1_is_inf_b) begin
+      init_is_special = 1'b1;
+      init_special_result = {s1_sign_a ^ s1_sign_b, {(FP_WIDTH - 1) {1'b0}}};
+    end else if (s1_is_zero_b) begin
+      init_is_special = 1'b1;
+      init_special_result = {s1_sign_a ^ s1_sign_b, ExpMax, {FracBits{1'b0}}};
+      init_special_div_zero = ~s1_is_zero_a;
+    end else if (s1_is_zero_a) begin
+      init_is_special = 1'b1;
+      init_special_result = {s1_sign_a ^ s1_sign_b, {(FP_WIDTH - 1) {1'b0}}};
+    end
+  end
+
+  // Stage 2 output registers
+  logic s2_result_sign;
+  logic signed [ExpExtBits-1:0] s2_exp_a_adj, s2_exp_b_adj;
+  logic [MantBits-1:0] s2_mant_a, s2_mant_b;
+  logic s2_is_special;
+  logic [FP_WIDTH-1:0] s2_special_result;
+  logic s2_special_invalid;
+  logic s2_special_div_zero;
+  logic [2:0] s2_rm;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s2_result_sign <= 1'b0;
+      s2_exp_a_adj <= '0;
+      s2_exp_b_adj <= '0;
+      s2_mant_a <= '0;
+      s2_mant_b <= '0;
+      s2_is_special <= 1'b0;
+      s2_special_result <= '0;
+      s2_special_invalid <= 1'b0;
+      s2_special_div_zero <= 1'b0;
+      s2_rm <= 3'b0;
+    end else begin
+      s2_result_sign <= s1_sign_a ^ s1_sign_b;
+      s2_exp_a_adj <= init_exp_a_adj;
+      s2_exp_b_adj <= init_exp_b_adj;
+      s2_mant_a <= init_mant_a;
+      s2_mant_b <= init_mant_b;
+      s2_is_special <= init_is_special;
+      s2_special_result <= init_special_result;
+      s2_special_invalid <= init_special_invalid;
+      s2_special_div_zero <= init_special_div_zero;
+      s2_rm <= s1_rm;
+    end
+  end
+
+  // =========================================================================
+  // Stage 3: SETUP — compute result_exp, initial quotient/remainder/divisor
+  // (combinational from s2, registered into s3)
+  // =========================================================================
+  logic signed [ExpExtBits-1:0] setup_result_exp;
+  logic [DivBits-1:0] setup_quotient;
+  logic [DivBits-1:0] setup_remainder;
+  logic [DivBits-1:0] setup_divisor;
+
+  always_comb begin
+    setup_result_exp = s2_exp_a_adj - s2_exp_b_adj + ExpBiasExt;
+    setup_divisor = {{(DivBits - MantBits) {1'b0}}, s2_mant_b};
+    if (s2_mant_a >= s2_mant_b) begin
+      setup_quotient  = {{(DivBits - 1) {1'b0}}, 1'b1};
+      setup_remainder = {{(DivBits - MantBits) {1'b0}}, s2_mant_a - s2_mant_b};
+    end else begin
+      setup_quotient  = '0;
+      setup_remainder = {{(DivBits - MantBits) {1'b0}}, s2_mant_a};
+    end
+  end
+
+  // Stage 3 output registers
+  logic signed [ExpExtBits-1:0] s3_result_exp;
+  logic [DivBits-1:0] s3_quotient;
+  logic [DivBits-1:0] s3_remainder;
+  logic [DivBits-1:0] s3_divisor;
+  // Metadata pass-through
+  logic s3_result_sign;
+  logic s3_is_special;
+  logic [FP_WIDTH-1:0] s3_special_result;
+  logic s3_special_invalid;
+  logic s3_special_div_zero;
+  logic [2:0] s3_rm;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s3_result_exp <= '0;
+      s3_quotient <= '0;
+      s3_remainder <= '0;
+      s3_divisor <= '0;
+      s3_result_sign <= 1'b0;
+      s3_is_special <= 1'b0;
+      s3_special_result <= '0;
+      s3_special_invalid <= 1'b0;
+      s3_special_div_zero <= 1'b0;
+      s3_rm <= 3'b0;
+    end else begin
+      s3_result_exp <= setup_result_exp;
+      s3_quotient <= setup_quotient;
+      s3_remainder <= setup_remainder;
+      s3_divisor <= setup_divisor;
+      s3_result_sign <= s2_result_sign;
+      s3_is_special <= s2_is_special;
+      s3_special_result <= s2_special_result;
+      s3_special_invalid <= s2_special_invalid;
+      s3_special_div_zero <= s2_special_div_zero;
+      s3_rm <= s2_rm;
+    end
+  end
+
+  // =========================================================================
+  // Stages 4..4+DivCycles-1: DIVIDE — one radix-2 step per stage
+  // =========================================================================
+
+  // Pipeline arrays for divide stages (DivCycles+1 entries: index 0 = input, index DivCycles = output)
+  logic        [   DivBits-1:0] div_quotient        [DivCycles+1];
+  logic        [   DivBits-1:0] div_remainder       [DivCycles+1];
+  logic        [   DivBits-1:0] div_divisor         [DivCycles+1];
+  // Metadata arrays
+  logic signed [ExpExtBits-1:0] div_result_exp      [DivCycles+1];
+  logic                         div_result_sign     [DivCycles+1];
+  logic                         div_is_special      [DivCycles+1];
+  logic        [  FP_WIDTH-1:0] div_special_result  [DivCycles+1];
+  logic                         div_special_invalid [DivCycles+1];
+  logic                         div_special_div_zero[DivCycles+1];
+  logic        [           2:0] div_rm              [DivCycles+1];
+
+  // Connect stage 3 output to divide pipeline input
+  assign div_quotient[0]         = s3_quotient;
+  assign div_remainder[0]        = s3_remainder;
+  assign div_divisor[0]          = s3_divisor;
+  assign div_result_exp[0]       = s3_result_exp;
+  assign div_result_sign[0]      = s3_result_sign;
+  assign div_is_special[0]       = s3_is_special;
+  assign div_special_result[0]   = s3_special_result;
+  assign div_special_invalid[0]  = s3_special_invalid;
+  assign div_special_div_zero[0] = s3_special_div_zero;
+  assign div_rm[0]               = s3_rm;
+
+  // Generate block: one radix-2 division step per stage
+  for (genvar g = 0; g < DivCycles; g++) begin : gen_div
+    // Combinational: trial subtract
+    logic [DivBits-1:0] shifted_rem;
+    logic [DivBits-1:0] diff;
+    logic               diff_neg;
+
+    assign shifted_rem = {div_remainder[g][DivBits-2:0], 1'b0};
+    assign diff = shifted_rem - div_divisor[g];
+    assign diff_neg = diff[DivBits-1];
+
+    // Registered output
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        div_quotient[g+1]         <= '0;
+        div_remainder[g+1]        <= '0;
+        div_divisor[g+1]          <= '0;
+        div_result_exp[g+1]       <= '0;
+        div_result_sign[g+1]      <= 1'b0;
+        div_is_special[g+1]       <= 1'b0;
+        div_special_result[g+1]   <= '0;
+        div_special_invalid[g+1]  <= 1'b0;
+        div_special_div_zero[g+1] <= 1'b0;
+        div_rm[g+1]               <= 3'b0;
+      end else begin
+        if (diff_neg) begin
+          div_remainder[g+1] <= shifted_rem;
+          div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b0};
         end else begin
-          next_state = DIVIDE;
+          div_remainder[g+1] <= diff;
+          div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b1};
         end
+        div_divisor[g+1]          <= div_divisor[g];
+        div_result_exp[g+1]       <= div_result_exp[g];
+        div_result_sign[g+1]      <= div_result_sign[g];
+        div_is_special[g+1]       <= div_is_special[g];
+        div_special_result[g+1]   <= div_special_result[g];
+        div_special_invalid[g+1]  <= div_special_invalid[g];
+        div_special_div_zero[g+1] <= div_special_div_zero[g];
+        div_rm[g+1]               <= div_rm[g];
       end
-      DIVIDE: begin
-        if (cycle_count == DivCyclesMinus1) begin
-          next_state = NORMALIZE_PREP;
-        end
-      end
-      NORMALIZE_PREP: begin
-        next_state = NORMALIZE;
-      end
-      NORMALIZE: begin
-        next_state = ROUND_SHIFT;
-      end
-      ROUND_SHIFT: begin
-        next_state = ROUND_PREP;
-      end
-      ROUND_PREP: begin
-        next_state = ROUND_APPLY;
-      end
-      ROUND_APPLY: begin
-        next_state = OUTPUT;
-      end
-      OUTPUT: begin
-        next_state = DONE;
-      end
-      DONE: begin
-        next_state = IDLE;
-      end
-      default: next_state = IDLE;
-    endcase
-  end
-
-  // =========================================================================
-  // Division Logic
-  // =========================================================================
-
-  logic [    DivBits-1:0] next_quotient;
-  logic [    DivBits-1:0] next_remainder;
-  logic [    DivBits-1:0] shifted_remainder;
-  logic [    DivBits-1:0] diff;
-  logic                   diff_neg;
-  logic [QuotLzcBits-1:0] quotient_lzc;
-  logic                   quotient_is_zero;
-
-  always_comb begin
-    shifted_remainder = {remainder[DivBits-2:0], 1'b0};
-    diff = shifted_remainder - divisor;
-    diff_neg = diff[DivBits-1];
-
-    if (diff_neg) begin
-      // Remainder < divisor: quotient bit is 0
-      next_remainder = shifted_remainder;
-      next_quotient  = {quotient[DivBits-2:0], 1'b0};
-    end else begin
-      // Remainder >= divisor: quotient bit is 1
-      next_remainder = diff;
-      next_quotient  = {quotient[DivBits-2:0], 1'b1};
     end
   end
 
-  // Leading-zero count for quotient normalization
+  // =========================================================================
+  // Stage 4+DivCycles: NORMALIZE_PREP — LZC on quotient
+  // =========================================================================
+  logic [QuotLzcBits-1:0] norm_prep_lzc;
+  logic                   norm_prep_is_zero;
+
   fp_lzc #(
       .WIDTH(DivBits)
   ) u_quot_lzc (
-      .i_value (quotient),
-      .o_lzc   (quotient_lzc),
-      .o_is_zero(quotient_is_zero)
+      .i_value(div_quotient[DivCycles]),
+      .o_lzc(norm_prep_lzc),
+      .o_is_zero(norm_prep_is_zero)
   );
 
-  // Pre-compute normalization results to avoid quotient-driven clock-enables
-  logic        [    DivBits-1:0] quotient_norm;
-  logic signed [ ExpExtBits-1:0] result_exp_norm;
-  logic        [QuotLzcBits-1:0] quotient_lzc_r;
-  logic                          quotient_is_zero_r;
+  // Stage registers
+  logic [DivBits-1:0] s_nprep_quotient;
+  logic [DivBits-1:0] s_nprep_remainder;
+  logic signed [ExpExtBits-1:0] s_nprep_result_exp;
+  logic [QuotLzcBits-1:0] s_nprep_lzc;
+  logic s_nprep_is_zero;
+  logic s_nprep_result_sign;
+  logic s_nprep_is_special;
+  logic [FP_WIDTH-1:0] s_nprep_special_result;
+  logic s_nprep_special_invalid;
+  logic s_nprep_special_div_zero;
+  logic [2:0] s_nprep_rm;
 
-  always_comb begin
-    quotient_norm   = quotient;
-    result_exp_norm = result_exp;
-    if (!quotient_is_zero_r && quotient_lzc_r != 0) begin
-      quotient_norm = quotient << quotient_lzc_r;
-      result_exp_norm = result_exp - $signed({{(ExpExtBits - QuotLzcBits) {1'b0}}, quotient_lzc_r});
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_nprep_quotient <= '0;
+      s_nprep_remainder <= '0;
+      s_nprep_result_exp <= '0;
+      s_nprep_lzc <= '0;
+      s_nprep_is_zero <= 1'b0;
+      s_nprep_result_sign <= 1'b0;
+      s_nprep_is_special <= 1'b0;
+      s_nprep_special_result <= '0;
+      s_nprep_special_invalid <= 1'b0;
+      s_nprep_special_div_zero <= 1'b0;
+      s_nprep_rm <= 3'b0;
+    end else begin
+      s_nprep_quotient <= div_quotient[DivCycles];
+      s_nprep_remainder <= div_remainder[DivCycles];
+      s_nprep_result_exp <= div_result_exp[DivCycles];
+      s_nprep_lzc <= norm_prep_lzc;
+      s_nprep_is_zero <= norm_prep_is_zero;
+      s_nprep_result_sign <= div_result_sign[DivCycles];
+      s_nprep_is_special <= div_is_special[DivCycles];
+      s_nprep_special_result <= div_special_result[DivCycles];
+      s_nprep_special_invalid <= div_special_invalid[DivCycles];
+      s_nprep_special_div_zero <= div_special_div_zero[DivCycles];
+      s_nprep_rm <= div_rm[DivCycles];
     end
   end
 
   // =========================================================================
-  // Main Datapath
+  // Stage 4+DivCycles+1: NORMALIZE — shift quotient, adjust exponent
   // =========================================================================
+  logic [DivBits-1:0] norm_quotient;
+  logic signed [ExpExtBits-1:0] norm_result_exp;
 
-  logic [FP_WIDTH-1:0] result_reg;
-  riscv_pkg::fp_flags_t flags_reg;
-  // TIMING: Limit fanout to force register replication and improve timing
-  (* max_fanout = 30 *) logic valid_reg;
+  always_comb begin
+    norm_quotient   = s_nprep_quotient;
+    norm_result_exp = s_nprep_result_exp;
+    if (!s_nprep_is_zero && s_nprep_lzc != 0) begin
+      norm_quotient = s_nprep_quotient << s_nprep_lzc;
+      norm_result_exp = s_nprep_result_exp -
+          $signed({{(ExpExtBits - QuotLzcBits) {1'b0}}, s_nprep_lzc});
+    end
+  end
+
+  // Stage registers
+  logic [DivBits-1:0] s_norm_quotient;
+  logic [DivBits-1:0] s_norm_remainder;
+  logic signed [ExpExtBits-1:0] s_norm_result_exp;
+  logic s_norm_result_sign;
+  logic s_norm_is_special;
+  logic [FP_WIDTH-1:0] s_norm_special_result;
+  logic s_norm_special_invalid;
+  logic s_norm_special_div_zero;
+  logic [2:0] s_norm_rm;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      cycle_count <= '0;
-      quotient <= '0;
-      remainder <= '0;
-      divisor <= '0;
-      result_exp <= '0;
-      rm <= 3'b0;
-      operand_a_reg <= '0;
-      operand_b_reg <= '0;
-      // UNPACK -> INIT registers
-      sign_a_r <= 1'b0;
-      sign_b_r <= 1'b0;
-      exp_a_r <= '0;
-      exp_b_r <= '0;
-      mant_lzc_a_r <= '0;
-      mant_lzc_b_r <= '0;
-      is_subnormal_a_r <= 1'b0;
-      is_subnormal_b_r <= 1'b0;
-      is_zero_a_r <= 1'b0;
-      is_zero_b_r <= 1'b0;
-      is_inf_a_r <= 1'b0;
-      is_inf_b_r <= 1'b0;
-      is_nan_a_r <= 1'b0;
-      is_nan_b_r <= 1'b0;
-      is_snan_a_r <= 1'b0;
-      is_snan_b_r <= 1'b0;
-      raw_mant_a_r <= '0;
-      raw_mant_b_r <= '0;
-      // INIT -> SETUP registers
-      result_sign_r <= 1'b0;
-      exp_a_adj_r <= '0;
-      exp_b_adj_r <= '0;
-      mant_a_r <= '0;
-      mant_b_r <= '0;
-      is_special_r <= 1'b0;
-      special_result_r <= '0;
-      special_invalid_r <= 1'b0;
-      special_div_zero_r <= 1'b0;
-      // ROUND_SHIFT -> ROUND_PREP registers
-      exp_work_shift <= '0;
-      mantissa_work_shift <= '0;
-      guard_work_shift <= 1'b0;
-      round_work_shift <= 1'b0;
-      sticky_work_shift <= 1'b0;
-      div_is_zero_shift <= 1'b0;
-      rm_shift <= 3'b0;
-      // NORMALIZE prep registers
-      quotient_lzc_r <= '0;
-      quotient_is_zero_r <= 1'b0;
-      // ROUND_PREP -> ROUND_APPLY registers
-      result_sign_apply <= 1'b0;
-      exp_work_apply <= '0;
-      mantissa_work_apply <= '0;
-      round_up_apply <= 1'b0;
-      is_inexact_apply <= 1'b0;
-      div_is_zero_apply <= 1'b0;
-      rm_apply <= 3'b0;
-      // ROUND_APPLY -> OUTPUT registers
-      result_output <= '0;
-      flags_output <= '0;
-      // Final output
-      result_reg <= '0;
-      flags_reg <= '0;
-      valid_reg <= 1'b0;
+      s_norm_quotient <= '0;
+      s_norm_remainder <= '0;
+      s_norm_result_exp <= '0;
+      s_norm_result_sign <= 1'b0;
+      s_norm_is_special <= 1'b0;
+      s_norm_special_result <= '0;
+      s_norm_special_invalid <= 1'b0;
+      s_norm_special_div_zero <= 1'b0;
+      s_norm_rm <= 3'b0;
     end else begin
-      valid_reg <= 1'b0;
+      s_norm_quotient <= norm_quotient;
+      s_norm_remainder <= s_nprep_remainder;
+      s_norm_result_exp <= norm_result_exp;
+      s_norm_result_sign <= s_nprep_result_sign;
+      s_norm_is_special <= s_nprep_is_special;
+      s_norm_special_result <= s_nprep_special_result;
+      s_norm_special_invalid <= s_nprep_special_invalid;
+      s_norm_special_div_zero <= s_nprep_special_div_zero;
+      s_norm_rm <= s_nprep_rm;
+    end
+  end
 
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            operand_a_reg <= i_operand_a;
-            operand_b_reg <= i_operand_b;
-            rm <= i_rounding_mode;
-            cycle_count <= '0;
-          end
-        end
+  // =========================================================================
+  // Stage 4+DivCycles+2: ROUND_SHIFT — fp_subnorm_shift
+  // =========================================================================
 
-        UNPACK: begin
-          // Register operand classification and LZC results
-          sign_a_r <= sign_a;
-          sign_b_r <= sign_b;
-          exp_a_r <= exp_a;
-          exp_b_r <= exp_b;
-          mant_lzc_a_r <= mant_lzc_a;
-          mant_lzc_b_r <= mant_lzc_b;
-          is_subnormal_a_r <= is_subnormal_a;
-          is_subnormal_b_r <= is_subnormal_b;
-          is_zero_a_r <= is_zero_a;
-          is_zero_b_r <= is_zero_b;
-          is_inf_a_r <= is_inf_a;
-          is_inf_b_r <= is_inf_b;
-          is_nan_a_r <= is_nan_a;
-          is_nan_b_r <= is_nan_b;
-          is_snan_a_r <= is_snan_a;
-          is_snan_b_r <= is_snan_b;
-          raw_mant_a_r <= operand_a_reg[FracBits-1:0];
-          raw_mant_b_r <= operand_b_reg[FracBits-1:0];
-        end
+  // Extract rounding bits from normalized quotient
+  logic [MantBits:0] rsh_pre_round_mant;
+  logic              rsh_guard_bit;
+  logic              rsh_round_bit;
+  logic              rsh_sticky_bit;
+  logic              rsh_is_zero;
 
-        INIT: begin
-          // Register normalized mantissas and special case detection
-          result_sign_r <= sign_a_r ^ sign_b_r;
-          exp_a_adj_r <= exp_a_adj;
-          exp_b_adj_r <= exp_b_adj;
-          mant_a_r <= mant_a;
-          mant_b_r <= mant_b;
-          is_special_r <= is_special_init;
-          special_result_r <= special_result_init;
-          special_invalid_r <= special_invalid_init;
-          special_div_zero_r <= special_div_zero_init;
-        end
+  assign rsh_pre_round_mant = s_norm_quotient[DivBits-1-:(MantBits+1)];
+  assign rsh_guard_bit      = s_norm_quotient[1];
+  assign rsh_round_bit      = s_norm_quotient[0];
+  assign rsh_sticky_bit     = |s_norm_remainder;
+  assign rsh_is_zero        = (s_norm_quotient == '0) && (s_norm_remainder == '0);
 
-        SETUP: begin
-          // Use registered values from INIT stage
-          if (is_special_r) begin
-            result_reg <= special_result_r;
-            flags_reg  <= {special_invalid_r, special_div_zero_r, 1'b0, 1'b0, 1'b0};
-          end else begin
-            // Initialize division using registered mantissas
-            // exp_result = exp_a - exp_b + 127
-            result_exp <= exp_a_adj_r - exp_b_adj_r + ExpBiasExt;
-            divisor <= {{(DivBits - MantBits) {1'b0}}, mant_b_r};
-            if (mant_a_r >= mant_b_r) begin
-              quotient  <= {{(DivBits - 1) {1'b0}}, 1'b1};
-              remainder <= {{(DivBits - MantBits) {1'b0}}, mant_a_r - mant_b_r};
-            end else begin
-              quotient  <= '0;
-              remainder <= {{(DivBits - MantBits) {1'b0}}, mant_a_r};
-            end
-          end
-        end
+  logic [MantBits-1:0] rsh_mantissa_retained;
+  assign rsh_mantissa_retained = rsh_pre_round_mant[MantBits:1];
 
-        DIVIDE: begin
-          cycle_count <= cycle_count + 1'b1;
-          quotient <= next_quotient;
-          remainder <= next_remainder;
-        end
+  logic [MantBits-1:0] rsh_mantissa_out;
+  logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
+  logic signed [ExpExtBits-1:0] rsh_exp_out;
 
-        NORMALIZE_PREP: begin
-          quotient_lzc_r <= quotient_lzc;
-          quotient_is_zero_r <= quotient_is_zero;
-        end
+  fp_subnorm_shift #(
+      .MANT_BITS(MantBits),
+      .EXP_EXT_BITS(ExpExtBits)
+  ) u_subnorm_shift (
+      .i_mantissa(rsh_mantissa_retained),
+      .i_guard(rsh_pre_round_mant[0]),
+      .i_round(rsh_guard_bit),
+      .i_sticky(rsh_round_bit | rsh_sticky_bit),
+      .i_exponent(s_norm_result_exp),
+      .o_mantissa(rsh_mantissa_out),
+      .o_guard(rsh_guard_out),
+      .o_round(rsh_round_out),
+      .o_sticky(rsh_sticky_out),
+      .o_exponent(rsh_exp_out)
+  );
 
-        NORMALIZE: begin
-          quotient   <= quotient_norm;
-          result_exp <= result_exp_norm;
-          // quotient[DivBits-1] is now the implicit 1 (unless result is zero)
-        end
+  // Stage registers
+  logic signed [ExpExtBits-1:0] s_rsh_exp;
+  logic [MantBits-1:0] s_rsh_mantissa;
+  logic s_rsh_guard, s_rsh_round, s_rsh_sticky;
+  logic s_rsh_is_zero;
+  logic [2:0] s_rsh_rm;
+  logic s_rsh_result_sign;
+  logic s_rsh_is_special;
+  logic [FP_WIDTH-1:0] s_rsh_special_result;
+  logic s_rsh_special_invalid;
+  logic s_rsh_special_div_zero;
 
-        ROUND_SHIFT: begin
-          exp_work_shift <= exp_work_prep;
-          mantissa_work_shift <= mantissa_work_prep;
-          guard_work_shift <= guard_work_prep;
-          round_work_shift <= round_work_prep;
-          sticky_work_shift <= sticky_work_prep;
-          div_is_zero_shift <= div_is_zero;
-          rm_shift <= rm;
-        end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rsh_exp <= '0;
+      s_rsh_mantissa <= '0;
+      s_rsh_guard <= 1'b0;
+      s_rsh_round <= 1'b0;
+      s_rsh_sticky <= 1'b0;
+      s_rsh_is_zero <= 1'b0;
+      s_rsh_rm <= 3'b0;
+      s_rsh_result_sign <= 1'b0;
+      s_rsh_is_special <= 1'b0;
+      s_rsh_special_result <= '0;
+      s_rsh_special_invalid <= 1'b0;
+      s_rsh_special_div_zero <= 1'b0;
+    end else begin
+      s_rsh_exp <= rsh_exp_out;
+      s_rsh_mantissa <= rsh_mantissa_out;
+      s_rsh_guard <= rsh_guard_out;
+      s_rsh_round <= rsh_round_out;
+      s_rsh_sticky <= rsh_sticky_out;
+      s_rsh_is_zero <= rsh_is_zero;
+      s_rsh_rm <= s_norm_rm;
+      s_rsh_result_sign <= s_norm_result_sign;
+      s_rsh_is_special <= s_norm_is_special;
+      s_rsh_special_result <= s_norm_special_result;
+      s_rsh_special_invalid <= s_norm_special_invalid;
+      s_rsh_special_div_zero <= s_norm_special_div_zero;
+    end
+  end
 
-        ROUND_PREP: begin
-          // Capture round-up decision into apply registers
-          result_sign_apply <= result_sign_r;
-          exp_work_apply <= exp_work_shift;
-          mantissa_work_apply <= mantissa_work_shift;
-          round_up_apply <= round_up_prep;
-          is_inexact_apply <= is_inexact_prep;
-          div_is_zero_apply <= div_is_zero_shift;
-          rm_apply <= rm_shift;
-        end
+  // =========================================================================
+  // Stage 4+DivCycles+3: ROUND_PREP — compute round-up decision
+  // =========================================================================
+  logic rprep_round_up;
+  logic rprep_lsb;
+  logic rprep_is_inexact;
 
-        ROUND_APPLY: begin
-          // Capture final result into output registers
-          result_output <= final_result_apply_comb;
-          flags_output  <= final_flags_apply_comb;
-        end
+  assign rprep_lsb = s_rsh_mantissa[0];
+  assign rprep_round_up = riscv_pkg::fp_compute_round_up(
+      s_rsh_rm, s_rsh_guard, s_rsh_round, s_rsh_sticky, rprep_lsb, s_rsh_result_sign
+  );
+  assign rprep_is_inexact = s_rsh_guard | s_rsh_round | s_rsh_sticky;
 
-        OUTPUT: begin
-          // Capture into final result registers
-          result_reg <= result_output;
-          flags_reg  <= flags_output;
-        end
+  // Stage registers
+  logic s_rprep_result_sign;
+  logic signed [ExpExtBits-1:0] s_rprep_exp;
+  logic [MantBits-1:0] s_rprep_mantissa;
+  logic s_rprep_round_up;
+  logic s_rprep_is_inexact;
+  logic s_rprep_is_zero;
+  logic [2:0] s_rprep_rm;
+  logic s_rprep_is_special;
+  logic [FP_WIDTH-1:0] s_rprep_special_result;
+  logic s_rprep_special_invalid;
+  logic s_rprep_special_div_zero;
 
-        DONE: begin
-          valid_reg <= 1'b1;
-        end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rprep_result_sign <= 1'b0;
+      s_rprep_exp <= '0;
+      s_rprep_mantissa <= '0;
+      s_rprep_round_up <= 1'b0;
+      s_rprep_is_inexact <= 1'b0;
+      s_rprep_is_zero <= 1'b0;
+      s_rprep_rm <= 3'b0;
+      s_rprep_is_special <= 1'b0;
+      s_rprep_special_result <= '0;
+      s_rprep_special_invalid <= 1'b0;
+      s_rprep_special_div_zero <= 1'b0;
+    end else begin
+      s_rprep_result_sign <= s_rsh_result_sign;
+      s_rprep_exp <= s_rsh_exp;
+      s_rprep_mantissa <= s_rsh_mantissa;
+      s_rprep_round_up <= rprep_round_up;
+      s_rprep_is_inexact <= rprep_is_inexact;
+      s_rprep_is_zero <= s_rsh_is_zero;
+      s_rprep_rm <= s_rsh_rm;
+      s_rprep_is_special <= s_rsh_is_special;
+      s_rprep_special_result <= s_rsh_special_result;
+      s_rprep_special_invalid <= s_rsh_special_invalid;
+      s_rprep_special_div_zero <= s_rsh_special_div_zero;
+    end
+  end
 
-        default: ;
-      endcase
+  // =========================================================================
+  // Stage 4+DivCycles+4: ROUND_APPLY — fp_result_assembler
+  // =========================================================================
+  logic [FP_WIDTH-1:0] rapply_result;
+  riscv_pkg::fp_flags_t rapply_flags;
+
+  fp_result_assembler #(
+      .FP_WIDTH(FP_WIDTH),
+      .ExpBits(ExpBits),
+      .FracBits(FracBits),
+      .MantBits(MantBits),
+      .ExpExtBits(ExpExtBits)
+  ) u_result_asm (
+      .i_exp_work(s_rprep_exp),
+      .i_mantissa_work(s_rprep_mantissa),
+      .i_round_up(s_rprep_round_up),
+      .i_is_inexact(s_rprep_is_inexact),
+      .i_result_sign(s_rprep_result_sign),
+      .i_rm(s_rprep_rm),
+      .i_is_special(s_rprep_is_special),
+      .i_special_result(s_rprep_special_result),
+      .i_special_invalid(s_rprep_special_invalid),
+      .i_special_div_zero(s_rprep_special_div_zero),
+      .i_is_zero_result(s_rprep_is_zero & ~s_rprep_is_special),
+      .i_zero_sign(s_rprep_result_sign),
+      .o_result(rapply_result),
+      .o_flags(rapply_flags)
+  );
+
+  // Stage registers
+  logic [FP_WIDTH-1:0] s_rapply_result;
+  riscv_pkg::fp_flags_t s_rapply_flags;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_rapply_result <= '0;
+      s_rapply_flags  <= '0;
+    end else begin
+      s_rapply_result <= rapply_result;
+      s_rapply_flags  <= rapply_flags;
+    end
+  end
+
+  // =========================================================================
+  // Stage 4+DivCycles+5: OUTPUT — register final result
+  // =========================================================================
+  logic [FP_WIDTH-1:0] s_output_result;
+  riscv_pkg::fp_flags_t s_output_flags;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      s_output_result <= '0;
+      s_output_flags  <= '0;
+    end else begin
+      s_output_result <= s_rapply_result;
+      s_output_flags  <= s_rapply_flags;
     end
   end
 
   // =========================================================================
   // Outputs
   // =========================================================================
-
-  assign o_result = result_reg;
-  assign o_flags  = flags_reg;
-  assign o_valid  = valid_reg;
-  // Stall immediately when i_valid is asserted (FDIV enters EX), matching integer
-  // divider pattern where stall = (is_divide & ~divider_valid_output). The integer
-  // stall is true from the first cycle because valid_output starts at 0. We achieve
-  // the same by OR'ing i_valid with the state check, so stall is asserted on the
-  // same cycle the instruction enters EX. Stall drops when valid_reg goes high.
-  assign o_stall  = ((state != IDLE) || i_valid) && ~valid_reg;
+  assign o_result = s_output_result;
+  assign o_flags  = s_output_flags;
+  assign o_valid  = pipe_valid[TotalStages];
+  assign o_stall  = 1'b0;  // Fully pipelined — never stalls
 
 endmodule : fp_divider

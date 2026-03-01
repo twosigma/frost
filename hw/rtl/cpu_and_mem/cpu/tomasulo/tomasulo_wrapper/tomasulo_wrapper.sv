@@ -546,6 +546,14 @@ module tomasulo_wrapper (
 
   assign fdiv_rs_fu_ready = i_fdiv_rs_fu_ready & ~fp_div_busy & ~fp_div_adapter_result_pending;
 
+  // FP DIV result accepted: the adapter consumes the shim's output this cycle.
+  // Either the adapter is idle and the shim presents a valid result (pass-through),
+  // or the adapter is pending, gets granted, and the shim presents a new valid result.
+  logic fp_div_result_accepted;
+  assign fp_div_result_accepted =
+      (!fp_div_adapter_result_pending && fp_div_shim_out.valid) ||
+      (fp_div_adapter_result_pending && o_cdb_grant[6] && fp_div_shim_out.valid);
+
   // ===========================================================================
   // Reorder Buffer Instance
   // ===========================================================================
@@ -1281,7 +1289,8 @@ module tomasulo_wrapper (
       .i_flush       (i_flush_all),
       .i_flush_en    (i_flush_en),
       .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag)
+      .i_rob_head_tag(head_tag),
+      .i_div_accepted(fp_div_result_accepted)
   );
 
   // ===========================================================================
