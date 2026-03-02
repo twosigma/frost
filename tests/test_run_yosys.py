@@ -20,6 +20,7 @@ Tests synthesis across all Yosys-supported targets to verify RTL portability.
 This ensures FROST can be synthesized for any FPGA vendor or ASIC flow.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +47,45 @@ def _compile_hello_world(root_dir: Path) -> bool:
         return compile_app("hello_world", verbose=True)
     finally:
         sys.path.pop(0)
+
+
+def _get_timeout_seconds(synth_command: str) -> int:
+    """Get synthesis timeout in seconds, with target-aware defaults.
+
+    Defaults:
+      - Non-Xilinx targets: 600s
+      - Xilinx targets (synth_xilinx*): 900s
+
+    Environment overrides:
+      - FROST_YOSYS_TIMEOUT_SEC
+      - FROST_YOSYS_XILINX_TIMEOUT_SEC
+    """
+    default_timeout = 600
+    default_xilinx_timeout = 900
+
+    env_name = (
+        "FROST_YOSYS_XILINX_TIMEOUT_SEC"
+        if synth_command.startswith("synth_xilinx")
+        else "FROST_YOSYS_TIMEOUT_SEC"
+    )
+    fallback = (
+        default_xilinx_timeout
+        if synth_command.startswith("synth_xilinx")
+        else default_timeout
+    )
+
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return fallback
+
+    try:
+        timeout = int(raw)
+        if timeout <= 0:
+            raise ValueError
+        return timeout
+    except ValueError:
+        print(f"Warning: invalid {env_name}={raw!r}; using {fallback}s")
+        return fallback
 
 
 # Synthesis targets for pytest runs
@@ -174,6 +214,8 @@ class YosysRunner:
         print(f"Parsing filelist: {self.filelist}")
         print(f"Using ROOT: {self.root_dir}")
         print(f"Found {len(verilog_files)} Verilog files")
+        timeout_sec = _get_timeout_seconds(synth_command)
+        print(f"Using timeout: {timeout_sec}s")
 
         shell_cmd = ["yosys", "-p", script_content]
 
@@ -183,14 +225,14 @@ class YosysRunner:
                 capture_output=True,
                 text=True,
                 cwd=self.test_dir,
-                timeout=300,  # 5 minute timeout
+                timeout=timeout_sec,
             )
         else:
             # Let output stream to console
             result = subprocess.run(
                 shell_cmd,
                 cwd=self.test_dir,
-                timeout=300,  # 5 minute timeout
+                timeout=timeout_sec,
                 text=True,
             )
 
