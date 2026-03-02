@@ -410,17 +410,19 @@ module fp_divider #(
   logic                         div_special_div_zero[DivCycles+1];
   logic        [           2:0] div_rm              [DivCycles+1];
 
-  // Connect stage 3 output to divide pipeline input
-  assign div_quotient[0]         = s3_quotient;
-  assign div_remainder[0]        = s3_remainder;
-  assign div_divisor[0]          = s3_divisor;
-  assign div_result_exp[0]       = s3_result_exp;
-  assign div_result_sign[0]      = s3_result_sign;
-  assign div_is_special[0]       = s3_is_special;
-  assign div_special_result[0]   = s3_special_result;
-  assign div_special_invalid[0]  = s3_special_invalid;
-  assign div_special_div_zero[0] = s3_special_div_zero;
-  assign div_rm[0]               = s3_rm;
+  // Connect stage 3 output to divide pipeline input (always_comb for Icarus compat)
+  always_comb begin
+    div_quotient[0]         = s3_quotient;
+    div_remainder[0]        = s3_remainder;
+    div_divisor[0]          = s3_divisor;
+    div_result_exp[0]       = s3_result_exp;
+    div_result_sign[0]      = s3_result_sign;
+    div_is_special[0]       = s3_is_special;
+    div_special_result[0]   = s3_special_result;
+    div_special_invalid[0]  = s3_special_invalid;
+    div_special_div_zero[0] = s3_special_div_zero;
+    div_rm[0]               = s3_rm;
+  end
 
   // Generate block: one radix-2 division step per stage
   for (genvar g = 0; g < DivCycles; g++) begin : gen_div

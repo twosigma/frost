@@ -287,15 +287,17 @@ module fp_sqrt #(
   logic                           comp_special_invalid[RootBits+1];
   logic        [             2:0] comp_rm             [RootBits+1];
 
-  // Connect stage 2 output to compute pipeline input
-  assign comp_root[0]            = s2_root;
-  assign comp_remainder[0]       = s2_remainder;
-  assign comp_radicand[0]        = s2_radicand;
-  assign comp_result_exp[0]      = s2_result_exp;
-  assign comp_is_special[0]      = s2_is_special;
-  assign comp_special_result[0]  = s2_special_result;
-  assign comp_special_invalid[0] = s2_special_invalid;
-  assign comp_rm[0]              = s2_rm;
+  // Connect stage 2 output to compute pipeline input (always_comb for Icarus compat)
+  always_comb begin
+    comp_root[0]            = s2_root;
+    comp_remainder[0]       = s2_remainder;
+    comp_radicand[0]        = s2_radicand;
+    comp_result_exp[0]      = s2_result_exp;
+    comp_is_special[0]      = s2_is_special;
+    comp_special_result[0]  = s2_special_result;
+    comp_special_invalid[0] = s2_special_invalid;
+    comp_rm[0]              = s2_rm;
+  end
 
   // Generate block: one digit-recurrence step per stage
   for (genvar g = 0; g < RootBits; g++) begin : gen_sqrt
