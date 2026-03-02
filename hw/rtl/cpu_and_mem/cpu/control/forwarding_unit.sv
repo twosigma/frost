@@ -134,16 +134,30 @@ module forwarding_unit #(
 
   // Int -> FP capture bypass: when a load-use hazard is detected and the
   // current EX instruction is int->fp, feed MA load data directly so the
-  // FPU captures the correct operand at the stall edge.
+  // FPU captures the correct operand at the EX-entry edge.
+  // For cache-hit paths, use MA load data (same value that WB sees) rather
+  // than the cache-forward register to avoid stale-cache forwarding.
   logic int_capture_bypass_valid;
+  logic int_capture_bypass_from_cache;
+  logic int_capture_dep_match;
   logic [XLEN-1:0] int_capture_bypass_data;
+  assign int_capture_dep_match =
+      (i_from_ex_to_ma.instruction.dest_reg != 0) &&
+      (i_from_ex_to_ma.instruction.dest_reg ==
+       i_from_id_to_ex.instruction.source_reg_1);
+
+  assign int_capture_bypass_from_cache =
+      i_from_cache.cache_hit_on_load_reg &&
+      i_from_ex_to_ma.is_load_instruction &&
+      i_from_id_to_ex.is_int_to_fp &&
+      int_capture_dep_match;
+
   assign int_capture_bypass_valid =
       i_pipeline_ctrl.load_use_hazard_detected &&
       i_from_ex_to_ma.is_load_instruction &&
       i_from_id_to_ex.is_int_to_fp &&
-      (i_from_ex_to_ma.instruction.dest_reg != 0) &&
-      (i_from_ex_to_ma.instruction.dest_reg ==
-       i_from_id_to_ex.instruction.source_reg_1);
+      int_capture_dep_match ||
+      int_capture_bypass_from_cache;
 
   assign int_capture_bypass_data = i_from_ma_comb.data_loaded_from_memory;
 
