@@ -227,6 +227,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="load_queue",
         description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
     ),
+    "store_queue": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
+        hdl_toplevel_module="store_queue",
+        description="Store queue unit tests (allocation, forwarding, memory writes, flush)",
+    ),
     "int_alu_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
         hdl_toplevel_module="int_alu_shim",

@@ -18,11 +18,9 @@
  * Tomasulo Integration Wrapper
  *
  * Verification wrapper that instantiates ROB + RAT + six RS instances
- * (INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS) and hardwires the
- * internal commit bus, dispatch routing, and shared CDB/flush signals.
- *
- * Replaces the previous rob_rat_wrapper as the integration test vehicle.
- * This wrapper will grow as CDB arbiter, LQ, SQ, ALUs, and FPUs are added.
+ * (INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS), LQ, SQ, CDB arbiter,
+ * FU shims, and hardwires the internal commit bus, dispatch routing,
+ * SQ↔LQ forwarding, and shared CDB/flush signals.
  *
  * Dispatch routing:
  *   i_rs_dispatch.rs_type is decoded to per-RS dispatch valid signals.
@@ -35,8 +33,12 @@
  *   i_fu_complete --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
  *                                            --> all RS .i_cdb (broadcast for wakeup)
  *   cdb_arbiter.o_grant --> o_cdb_grant (back-pressure to FUs)
+ *   LQ.o_sq_check --> SQ.i_sq_check (store-to-load forwarding)
+ *   SQ.o_sq_forward --> LQ.i_sq_forward
+ *   SQ.o_cache_invalidate --> LQ.i_cache_invalidate
+ *   ROB.commit (is_store) --> SQ.i_commit
  *   Flush --> all modules
- *   ROB.o_head_tag --> all RS .i_rob_head_tag (for age-based partial flush)
+ *   ROB.o_head_tag --> all RS/LQ/SQ .i_rob_head_tag
  */
 
 module tomasulo_wrapper (
@@ -93,7 +95,6 @@ module tomasulo_wrapper (
     // =========================================================================
     // ROB External Coordination
     // =========================================================================
-    input  logic                                        i_sq_empty,
     output logic                                        o_csr_start,
     input  logic                                        i_csr_done,
     output logic                                        o_trap_pending,
@@ -308,14 +309,13 @@ module tomasulo_wrapper (
     input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
 
     // =========================================================================
-    // Load Queue: SQ Disambiguation (driven by testbench until SQ added)
+    // Store Queue: Memory Write Interface
     // =========================================================================
-    input logic i_sq_all_older_addrs_known,
-    input riscv_pkg::sq_forward_result_t i_sq_forward,
-    output logic o_sq_check_valid,
-    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
-    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
-    output riscv_pkg::mem_size_e o_sq_check_size,
+    output logic                       o_sq_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_data,
+    output logic [                3:0] o_sq_mem_write_byte_en,
+    input  logic                       i_sq_mem_write_done,
 
     // =========================================================================
     // Load Queue: Memory Interface
@@ -327,17 +327,18 @@ module tomasulo_wrapper (
     input  logic                                       i_lq_mem_read_valid,
 
     // =========================================================================
-    // Load Queue: L0 Cache Invalidation (from SQ, future)
-    // =========================================================================
-    input logic                       i_cache_invalidate_valid,
-    input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
-
-    // =========================================================================
     // Load Queue: Status
     // =========================================================================
     output logic                                    o_lq_full,
     output logic                                    o_lq_empty,
-    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count
+    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count,
+
+    // =========================================================================
+    // Store Queue: Status
+    // =========================================================================
+    output logic                                    o_sq_full,
+    output logic                                    o_sq_empty,
+    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count
 );
 
   // ===========================================================================
@@ -508,17 +509,29 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
   riscv_pkg::fu_complete_t mem_adapter_to_arbiter;  // adapter → arbiter slot 3
-  logic                    mem_adapter_result_pending;
+  logic mem_adapter_result_pending;
+
+  // ===========================================================================
+  // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
+  // ===========================================================================
+  logic sq_check_valid;
+  logic [riscv_pkg::XLEN-1:0] sq_check_addr;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_check_rob_tag;
+  riscv_pkg::mem_size_e sq_check_size;
+  logic sq_all_older_addrs_known;
+  riscv_pkg::sq_forward_result_t sq_forward;
+  logic sq_cache_invalidate_valid;
+  logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
   // ===========================================================================
   // FP_ADD Pipeline: FP_RS issue → fp_add_shim → adapter → CDB arbiter slot 4
   // ===========================================================================
-  riscv_pkg::rs_issue_t    fp_rs_issue_w;  // FP_RS issue output (internal)
+  riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_add_shim_out;  // shim → adapter
   riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;  // adapter → arbiter
-  logic                    fp_add_adapter_result_pending;
-  logic                    fp_add_busy;
-  logic                    fp_rs_fu_ready;
+  logic fp_add_adapter_result_pending;
+  logic fp_add_busy;
+  logic fp_rs_fu_ready;
 
   assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_add_busy & ~fp_add_adapter_result_pending;
 
@@ -579,7 +592,7 @@ module tomasulo_wrapper (
       .o_commit(commit_bus),
 
       // External coordination
-      .i_sq_empty         (i_sq_empty),
+      .i_sq_empty         (o_sq_empty),
       .o_csr_start        (o_csr_start),
       .i_csr_done         (i_csr_done),
       .o_trap_pending     (o_trap_pending),
@@ -1067,13 +1080,26 @@ module tomasulo_wrapper (
   assign o_lq_full = 1'b0;
   assign o_lq_empty = 1'b1;
   assign o_lq_count = '0;
-  assign o_sq_check_valid = 1'b0;
-  assign o_sq_check_addr = '0;
-  assign o_sq_check_rob_tag = '0;
-  assign o_sq_check_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
   assign o_lq_mem_read_en = 1'b0;
   assign o_lq_mem_read_addr = '0;
   assign o_lq_mem_read_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
+  assign o_sq_full = 1'b0;
+  assign o_sq_empty = 1'b1;
+  assign o_sq_count = '0;
+  assign o_sq_mem_write_en = 1'b0;
+  assign o_sq_mem_write_addr = '0;
+  assign o_sq_mem_write_data = '0;
+  assign o_sq_mem_write_byte_en = '0;
+
+  // Internal SQ<->LQ wires: stub to defaults under Icarus
+  assign sq_check_valid = 1'b0;
+  assign sq_check_addr = '0;
+  assign sq_check_rob_tag = '0;
+  assign sq_check_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
+  assign sq_all_older_addrs_known = 1'b1;
+  assign sq_forward = '0;
+  assign sq_cache_invalidate_valid = 1'b0;
+  assign sq_cache_invalidate_addr = '0;
 
   // Under Icarus, FP_RS/FMUL_RS/FDIV_RS are stubbed (no FP shims).
   // Slots 4-6 revert to external i_fu_complete_4/5/6.
@@ -1163,13 +1189,13 @@ module tomasulo_wrapper (
       // Address update (from MEM_RS issue)
       .i_addr_update(lq_addr_update),
 
-      // SQ disambiguation (external until SQ added)
-      .o_sq_check_valid          (o_sq_check_valid),
-      .o_sq_check_addr           (o_sq_check_addr),
-      .o_sq_check_rob_tag        (o_sq_check_rob_tag),
-      .o_sq_check_size           (o_sq_check_size),
-      .i_sq_all_older_addrs_known(i_sq_all_older_addrs_known),
-      .i_sq_forward              (i_sq_forward),
+      // SQ disambiguation (internal wiring to store_queue)
+      .o_sq_check_valid          (sq_check_valid),
+      .o_sq_check_addr           (sq_check_addr),
+      .o_sq_check_rob_tag        (sq_check_rob_tag),
+      .o_sq_check_size           (sq_check_size),
+      .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
+      .i_sq_forward              (sq_forward),
 
       // Memory interface (external)
       .o_mem_read_en   (o_lq_mem_read_en),
@@ -1185,9 +1211,9 @@ module tomasulo_wrapper (
       // ROB head tag (for MMIO ordering)
       .i_rob_head_tag(head_tag),
 
-      // L0 cache invalidation
-      .i_cache_invalidate_valid(i_cache_invalidate_valid),
-      .i_cache_invalidate_addr (i_cache_invalidate_addr),
+      // L0 cache invalidation (from SQ)
+      .i_cache_invalidate_valid(sq_cache_invalidate_valid),
+      .i_cache_invalidate_addr (sq_cache_invalidate_addr),
 
       // Flush
       .i_flush_en (i_flush_en),
@@ -1213,6 +1239,122 @@ module tomasulo_wrapper (
       .i_flush_en      (i_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
+  );
+
+  // ===========================================================================
+  // Store Queue: Allocation from Dispatch
+  // ===========================================================================
+  // Determine if the dispatched MEM_RS instruction is a store
+  logic sq_alloc_is_store;
+  always_comb begin
+    case (i_rs_dispatch.op)
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W:
+      sq_alloc_is_store = 1'b1;
+      default: sq_alloc_is_store = 1'b0;
+    endcase
+  end
+
+  riscv_pkg::sq_alloc_req_t sq_alloc_req;
+  always_comb begin
+    sq_alloc_req.valid   = mem_rs_dispatch_valid && sq_alloc_is_store;
+    sq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
+    sq_alloc_req.is_fp   = i_rs_dispatch.is_fp_mem;
+    sq_alloc_req.size    = i_rs_dispatch.mem_size;
+  end
+
+  // ===========================================================================
+  // Store Queue: Address + Data Update from MEM_RS Issue
+  // ===========================================================================
+  logic sq_issue_is_store;
+  always_comb begin
+    case (o_mem_rs_issue.op)
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W:
+      sq_issue_is_store = 1'b1;
+      default: sq_issue_is_store = 1'b0;
+    endcase
+  end
+
+  // Effective address: base (src1) + immediate
+  logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
+  assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+
+  // MMIO detection: address >= MMIO base
+  logic sq_addr_is_mmio;
+  assign sq_addr_is_mmio = (sq_effective_addr >= MmioBase);
+
+  riscv_pkg::sq_addr_update_t sq_addr_update;
+  always_comb begin
+    sq_addr_update.valid   = o_mem_rs_issue.valid && sq_issue_is_store;
+    sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
+    sq_addr_update.address = sq_effective_addr;
+    sq_addr_update.is_mmio = sq_addr_is_mmio;
+  end
+
+  // Data update: store data from src2_value
+  riscv_pkg::sq_data_update_t sq_data_update;
+  always_comb begin
+    sq_data_update.valid   = o_mem_rs_issue.valid && sq_issue_is_store;
+    sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
+    sq_data_update.data    = o_mem_rs_issue.src2_value;
+  end
+
+  // ===========================================================================
+  // Store Queue: Commit from ROB
+  // ===========================================================================
+  logic sq_commit_valid;
+  assign sq_commit_valid = commit_bus.valid && commit_bus.is_store;
+
+  // ===========================================================================
+  // Store Queue Instance
+  // ===========================================================================
+  store_queue u_sq (
+      .i_clk  (i_clk),
+      .i_rst_n(i_rst_n),
+
+      // Allocation (from dispatch)
+      .i_alloc(sq_alloc_req),
+      .o_full (o_sq_full),
+
+      // Address update (from MEM_RS issue)
+      .i_addr_update(sq_addr_update),
+
+      // Data update (from MEM_RS issue)
+      .i_data_update(sq_data_update),
+
+      // Commit (from ROB commit bus)
+      .i_commit_valid  (sq_commit_valid),
+      .i_commit_rob_tag(commit_bus.tag),
+
+      // Store-to-load forwarding (from LQ)
+      .i_sq_check_valid          (sq_check_valid),
+      .i_sq_check_addr           (sq_check_addr),
+      .i_sq_check_rob_tag        (sq_check_rob_tag),
+      .i_sq_check_size           (sq_check_size),
+      .o_sq_all_older_addrs_known(sq_all_older_addrs_known),
+      .o_sq_forward              (sq_forward),
+
+      // Memory write interface (external)
+      .o_mem_write_en     (o_sq_mem_write_en),
+      .o_mem_write_addr   (o_sq_mem_write_addr),
+      .o_mem_write_data   (o_sq_mem_write_data),
+      .o_mem_write_byte_en(o_sq_mem_write_byte_en),
+      .i_mem_write_done   (i_sq_mem_write_done),
+
+      // L0 cache invalidation (to LQ)
+      .o_cache_invalidate_valid(sq_cache_invalidate_valid),
+      .o_cache_invalidate_addr (sq_cache_invalidate_addr),
+
+      // ROB head tag
+      .i_rob_head_tag(head_tag),
+
+      // Flush
+      .i_flush_en (i_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_flush_all(i_flush_all),
+
+      // Status
+      .o_empty(o_sq_empty),
+      .o_count(o_sq_count)
   );
 
   // ===========================================================================
@@ -1403,9 +1545,19 @@ module tomasulo_wrapper (
     if (o_lq_full && lq_alloc_is_load) assume (!mem_rs_dispatch_valid);
   end
 
+  // No MEM_RS store dispatch when SQ is full
+  always_comb begin
+    if (o_sq_full && sq_alloc_is_store) assume (!mem_rs_dispatch_valid);
+  end
+
   // LQ memory response only after read was issued
   always_comb begin
     assume (!(i_lq_mem_read_valid && (i_flush_en || i_flush_all)));
+  end
+
+  // SQ memory write done not during flush
+  always_comb begin
+    assume (!(i_sq_mem_write_done && i_flush_all));
   end
 
   // Dispatch routing mutual exclusion: at most one RS receives valid
@@ -1613,6 +1765,11 @@ module tomasulo_wrapper (
       if ($past(i_flush_all)) begin
         p_flush_all_empties_lq : assert (o_lq_empty);
       end
+
+      // flush_all empties SQ
+      if ($past(i_flush_all)) begin
+        p_flush_all_empties_sq : assert (o_sq_empty);
+      end
     end
 
     // Reset properties
@@ -1628,6 +1785,7 @@ module tomasulo_wrapper (
       p_reset_int_not_renamed : assert (!o_int_src1.renamed);
       p_reset_fp_not_renamed : assert (!o_fp_src1.renamed);
       p_reset_lq_empty : assert (o_lq_empty);
+      p_reset_sq_empty : assert (o_sq_empty);
     end
   end
 
@@ -1701,6 +1859,15 @@ module tomasulo_wrapper (
 
       // LQ memory read issued
       cover_lq_mem_issue : cover (o_lq_mem_read_en);
+
+      // SQ allocation
+      cover_sq_alloc : cover (sq_alloc_req.valid);
+
+      // SQ memory write issued
+      cover_sq_mem_write : cover (o_sq_mem_write_en);
+
+      // SQ commit
+      cover_sq_commit : cover (sq_commit_valid);
     end
   end
 

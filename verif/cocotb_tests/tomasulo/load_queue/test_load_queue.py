@@ -1040,3 +1040,52 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     assert (
         result.value == high_word
     ), f"LW at base_addr+4: expected 0x{high_word:08x}, got 0x{result.value:08x}"
+
+
+# ============================================================================
+# Test 29: MMIO load blocks SQ forwarding even when SQ says can_forward
+# ============================================================================
+@cocotb.test()
+async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
+    """MMIO load must go to device even if SQ reports can_forward=True.
+
+    Exercises the LQ-side guard: sq_do_forward requires !lq_is_mmio.
+    """
+    dut_if, model = await setup(dut)
+
+    mmio_addr = 0x4000_0000
+
+    # Allocate MMIO load entry
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+
+    # MMIO loads require rob_tag == head_tag to issue
+    dut_if.drive_rob_head_tag(5)
+
+    # SQ says: all older known, can_forward=True (would forward for non-MMIO)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=True, can_forward=True, data=0xBADD_A7A0)
+    await Timer(1, unit="ns")
+
+    # SQ check should be valid (MMIO at head can disambiguate)
+    sq_check = dut_if.read_sq_check()
+    assert sq_check["valid"], "MMIO load at head should check SQ"
+
+    # Despite can_forward=True, MMIO guard should block forwarding.
+    # The load should NOT get forwarded data; instead it should issue to memory
+    # (sq_can_issue is False because match=True, so it stalls — which is correct:
+    # MMIO loads with a matching store must wait for the store to commit first).
+    mem_req = dut_if.read_mem_request()
+    assert not mem_req[
+        "en"
+    ], "MMIO load with SQ match should stall, not issue to memory"
+
+    # Step to ensure no forwarding occurred (entry should not become data_valid)
+    await dut_if.step()
+
+    # Verify no CDB broadcast happened (load is still waiting)
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert not result.valid, "MMIO load should not have been forwarded"
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()

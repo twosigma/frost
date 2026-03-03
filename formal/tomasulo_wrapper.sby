@@ -25,6 +25,7 @@ read -sv int_muldiv_shim.sv
 read -sv load_unit.sv
 read -sv lq_l0_cache.sv
 read -sv load_queue.sv
+read -sv store_queue.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
@@ -72,6 +73,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv

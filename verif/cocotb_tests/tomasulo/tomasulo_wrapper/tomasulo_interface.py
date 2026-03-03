@@ -181,7 +181,6 @@ class TomasuloInterface:
         self.dut.i_rob_checkpoint_id.value = 0
 
         # ROB external coordination
-        self.dut.i_sq_empty.value = 1
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0
@@ -234,9 +233,8 @@ class TomasuloInterface:
         # CSR read data (for ALU shim CSR operations)
         self.dut.i_csr_read_data.value = 0
 
-        # LQ: SQ disambiguation
-        self.dut.i_sq_all_older_addrs_known.value = 0
-        self.dut.i_sq_forward.value = 0
+        # SQ: memory write done
+        self.dut.i_sq_mem_write_done.value = 0
 
         # LQ: memory interface
         self.dut.i_lq_mem_read_data.value = 0
@@ -878,36 +876,44 @@ class TomasuloInterface:
         return tag
 
     # =========================================================================
-    # Load Queue: SQ Disambiguation
+    # Store Queue: Memory Write Interface
     # =========================================================================
 
-    def drive_sq_all_older_known(self, val: bool) -> None:
-        """Drive i_sq_all_older_addrs_known."""
-        self.dut.i_sq_all_older_addrs_known.value = 1 if val else 0
-
-    def drive_sq_forward(
-        self,
-        match: bool = False,
-        can_forward: bool = False,
-        data: int = 0,
-    ) -> None:
-        """Drive i_sq_forward packed struct."""
-        packed = (int(match) << (1 + 64)) | (int(can_forward) << 64) | (data & MASK64)
-        self.dut.i_sq_forward.value = packed
-
-    def clear_sq_forward(self) -> None:
-        """Clear SQ forward signals."""
-        self.dut.i_sq_forward.value = 0
-        self.dut.i_sq_all_older_addrs_known.value = 0
-
-    def read_sq_check(self) -> dict:
-        """Read SQ disambiguation check outputs."""
+    def read_sq_mem_write(self) -> dict:
+        """Read SQ memory write request outputs."""
         return {
-            "valid": bool(self.dut.o_sq_check_valid.value),
-            "addr": int(self.dut.o_sq_check_addr.value),
-            "rob_tag": int(self.dut.o_sq_check_rob_tag.value),
-            "size": int(self.dut.o_sq_check_size.value),
+            "en": bool(self.dut.o_sq_mem_write_en.value),
+            "addr": int(self.dut.o_sq_mem_write_addr.value),
+            "data": int(self.dut.o_sq_mem_write_data.value),
+            "byte_en": int(self.dut.o_sq_mem_write_byte_en.value),
         }
+
+    def drive_sq_mem_write_done(self) -> None:
+        """Assert SQ memory write done."""
+        self.dut.i_sq_mem_write_done.value = 1
+
+    def clear_sq_mem_write_done(self) -> None:
+        """Deassert SQ memory write done."""
+        self.dut.i_sq_mem_write_done.value = 0
+
+    # =========================================================================
+    # Store Queue: Status
+    # =========================================================================
+
+    @property
+    def sq_full(self) -> bool:
+        """Return whether SQ is full."""
+        return bool(self.dut.o_sq_full.value)
+
+    @property
+    def sq_empty(self) -> bool:
+        """Return whether SQ is empty."""
+        return bool(self.dut.o_sq_empty.value)
+
+    @property
+    def sq_count(self) -> int:
+        """Return number of valid SQ entries."""
+        return int(self.dut.o_sq_count.value)
 
     # =========================================================================
     # Load Queue: Memory Interface

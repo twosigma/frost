@@ -77,7 +77,6 @@ module tomasulo_wrapper_tb (
     // =========================================================================
     // ROB External Coordination -- pass through (all small)
     // =========================================================================
-    input  logic                                        i_sq_empty,
     output logic                                        o_csr_start,
     input  logic                                        i_csr_done,
     output logic                                        o_trap_pending,
@@ -235,19 +234,63 @@ module tomasulo_wrapper_tb (
     output logic [3:0] o_rs_count,
 
     // =========================================================================
+    // MUL_RS -- pass through
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                           o_mul_rs_issue,
+    input  logic                                                           i_mul_rs_fu_ready,
+    output logic                                                           o_mul_rs_full,
+    output logic                                                           o_mul_rs_empty,
+    output logic                 [$clog2(riscv_pkg::MulRsDepth + 1) - 1:0] o_mul_rs_count,
+
+    // =========================================================================
+    // MEM_RS -- pass through
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                           o_mem_rs_issue,
+    input  logic                                                           i_mem_rs_fu_ready,
+    output logic                                                           o_mem_rs_full,
+    output logic                                                           o_mem_rs_empty,
+    output logic                 [$clog2(riscv_pkg::MemRsDepth + 1) - 1:0] o_mem_rs_count,
+
+    // =========================================================================
+    // FP_RS -- pass through
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                          o_fp_rs_issue,
+    input  logic                                                          i_fp_rs_fu_ready,
+    output logic                                                          o_fp_rs_full,
+    output logic                                                          o_fp_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FpRsDepth + 1) - 1:0] o_fp_rs_count,
+
+    // =========================================================================
+    // FMUL_RS -- pass through
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                            o_fmul_rs_issue,
+    input  logic                                                            i_fmul_rs_fu_ready,
+    output logic                                                            o_fmul_rs_full,
+    output logic                                                            o_fmul_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FmulRsDepth + 1) - 1:0] o_fmul_rs_count,
+
+    // =========================================================================
+    // FDIV_RS -- pass through
+    // =========================================================================
+    output riscv_pkg::rs_issue_t                                            o_fdiv_rs_issue,
+    input  logic                                                            i_fdiv_rs_fu_ready,
+    output logic                                                            o_fdiv_rs_full,
+    output logic                                                            o_fdiv_rs_empty,
+    output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count,
+
+    // =========================================================================
     // CSR Read Data -- pass through (32 bits)
     // =========================================================================
     input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
 
     // =========================================================================
-    // LQ: SQ Disambiguation -- pass through (small)
+    // SQ: Memory Write Interface -- pass through
     // =========================================================================
-    input logic i_sq_all_older_addrs_known,
-    input riscv_pkg::sq_forward_result_t i_sq_forward,
-    output logic o_sq_check_valid,
-    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
-    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
-    output riscv_pkg::mem_size_e o_sq_check_size,
+    output logic                       o_sq_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_data,
+    output logic [                3:0] o_sq_mem_write_byte_en,
+    input  logic                       i_sq_mem_write_done,
 
     // =========================================================================
     // LQ: Memory Interface -- pass through (small)
@@ -259,17 +302,18 @@ module tomasulo_wrapper_tb (
     input  logic                                       i_lq_mem_read_valid,
 
     // =========================================================================
-    // LQ: L0 Cache Invalidation
-    // =========================================================================
-    input logic                       i_cache_invalidate_valid,
-    input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
-
-    // =========================================================================
     // LQ: Status -- pass through (small)
     // =========================================================================
     output logic                                    o_lq_full,
     output logic                                    o_lq_empty,
-    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count
+    output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count,
+
+    // =========================================================================
+    // SQ: Status -- pass through (small)
+    // =========================================================================
+    output logic                                    o_sq_full,
+    output logic                                    o_sq_empty,
+    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count
 );
 
   // ---------------------------------------------------------------------------
@@ -295,7 +339,6 @@ module tomasulo_wrapper_tb (
       .i_rob_checkpoint_valid,
       .i_rob_checkpoint_id,
       .o_commit,
-      .i_sq_empty,
       .o_csr_start,
       .i_csr_done,
       .o_trap_pending,
@@ -401,24 +444,58 @@ module tomasulo_wrapper_tb (
       .o_int_rs_full,
       .o_rs_empty,
       .o_rs_count,
+      // MUL_RS
+      .o_mul_rs_issue,
+      .i_mul_rs_fu_ready,
+      .o_mul_rs_full,
+      .o_mul_rs_empty,
+      .o_mul_rs_count,
+      // MEM_RS
+      .o_mem_rs_issue,
+      .i_mem_rs_fu_ready,
+      .o_mem_rs_full,
+      .o_mem_rs_empty,
+      .o_mem_rs_count,
+      // FP_RS
+      .o_fp_rs_issue,
+      .i_fp_rs_fu_ready,
+      .o_fp_rs_full,
+      .o_fp_rs_empty,
+      .o_fp_rs_count,
+      // FMUL_RS
+      .o_fmul_rs_issue,
+      .i_fmul_rs_fu_ready,
+      .o_fmul_rs_full,
+      .o_fmul_rs_empty,
+      .o_fmul_rs_count,
+      // FDIV_RS
+      .o_fdiv_rs_issue,
+      .i_fdiv_rs_fu_ready,
+      .o_fdiv_rs_full,
+      .o_fdiv_rs_empty,
+      .o_fdiv_rs_count,
+      // CSR
       .i_csr_read_data,
-      // LQ
-      .i_sq_all_older_addrs_known,
-      .i_sq_forward,
-      .o_sq_check_valid,
-      .o_sq_check_addr,
-      .o_sq_check_rob_tag,
-      .o_sq_check_size,
+      // SQ memory write
+      .o_sq_mem_write_en,
+      .o_sq_mem_write_addr,
+      .o_sq_mem_write_data,
+      .o_sq_mem_write_byte_en,
+      .i_sq_mem_write_done,
+      // LQ memory read
       .o_lq_mem_read_en,
       .o_lq_mem_read_addr,
       .o_lq_mem_read_size,
       .i_lq_mem_read_data,
       .i_lq_mem_read_valid,
-      .i_cache_invalidate_valid,
-      .i_cache_invalidate_addr,
+      // LQ status
       .o_lq_full,
       .o_lq_empty,
-      .o_lq_count
+      .o_lq_count,
+      // SQ status
+      .o_sq_full,
+      .o_sq_empty,
+      .o_sq_count
   );
 
 endmodule

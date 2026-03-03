@@ -23,5 +23,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 
+# Store queue
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+
 # Wrapper
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv

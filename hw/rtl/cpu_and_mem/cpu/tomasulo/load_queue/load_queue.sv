@@ -288,8 +288,8 @@ module load_queue #(
   logic sq_can_issue;
   logic sq_do_forward;
 
-  assign sq_can_issue  = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
-  assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward;
+  assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
+  assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward && !lq_is_mmio[issue_mem_idx];
 
   always_comb begin
     o_mem_read_en   = 1'b0;

@@ -92,6 +92,10 @@ FORMAL_TARGETS = [
         "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
     ),
     FormalTarget(
+        "store_queue.sby",
+        "Store queue - commit-ordered store buffer, forwarding, MMIO, FSD two-phase",
+    ),
+    FormalTarget(
         "lq_l0_cache.sby",
         "L0 data cache - direct-mapped word cache for load queue",
     ),

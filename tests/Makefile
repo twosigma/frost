@@ -68,6 +68,11 @@ else ifeq ($(TOPLEVEL),load_queue)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),store_queue)
+# Store Queue unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),int_alu_shim)
 # Integer ALU shim unit test
 COMPILE_ARGS := \
