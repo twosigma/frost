@@ -941,3 +941,102 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
     # Memory should be issued (cache always misses MMIO)
     mem_req = dut_if.read_mem_request()
     assert mem_req["en"], "MMIO load should issue to memory, not cache"
+
+
+# ============================================================================
+# Test 28: FLD fills both cache words, subsequent LW hits correct addresses
+# ============================================================================
+@cocotb.test()
+async def test_fld_cache_fill_both_words(dut: Any) -> None:
+    """FLD two-phase fills L0 cache at addr and addr+4; later LW loads hit correctly.
+
+    Regression test: before the fix, FLD phase 1 filled the cache at the base
+    address instead of addr+4, poisoning the entry for the base address.
+    """
+    dut_if, model = await setup(dut)
+
+    base_addr = 0x2000
+    low_word = 0xAAAA_BBBB
+    high_word = 0xCCCC_DDDD
+
+    # -- FLD at base_addr: two-phase memory completion --
+    await alloc_and_addr(
+        dut_if, model, rob_tag=1, address=base_addr, is_fp=True, size=MEM_SIZE_DOUBLE
+    )
+
+    # Phase 0: memory read at base_addr
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "FLD phase 0 should issue"
+    assert mem_req["addr"] == base_addr
+    await dut_if.step()
+
+    dut_if.drive_mem_response(low_word)
+    model.mem_response(low_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # Phase 1: memory read at base_addr + 4
+    await Timer(1, unit="ns")
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "FLD phase 1 should issue"
+    assert mem_req["addr"] == base_addr + 4
+    await dut_if.step()
+
+    dut_if.drive_mem_response(high_word)
+    model.mem_response(high_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # CDB broadcast for FLD
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "FLD CDB should be valid"
+    assert result.tag == 1
+
+    # Free the FLD entry
+    await dut_if.step()
+
+    # -- LW at base_addr: should hit L0 cache with low_word --
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=base_addr)
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()  # cache hit path fires
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "LW at base_addr should hit cache"
+    assert result.tag == 2
+    assert result.value == low_word, (
+        f"LW at base_addr: expected 0x{low_word:08x}, got 0x{result.value:08x} "
+        "(cache poisoned by FLD phase 1?)"
+    )
+
+    # Free the LW entry
+    await dut_if.step()
+
+    # -- LW at base_addr + 4: should hit L0 cache with high_word --
+    await alloc_and_addr(dut_if, model, rob_tag=3, address=base_addr + 4)
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()  # cache hit path fires
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "LW at base_addr+4 should hit cache"
+    assert result.tag == 3
+    assert (
+        result.value == high_word
+    ), f"LW at base_addr+4: expected 0x{high_word:08x}, got 0x{result.value:08x}"

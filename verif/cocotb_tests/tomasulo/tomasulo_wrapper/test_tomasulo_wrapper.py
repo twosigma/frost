@@ -2973,3 +2973,55 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
 
     assert dut_if.rob_empty, "ROB should be empty after both commits"
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_dynamic_rounding_rm7_passthrough(dut: Any) -> None:
+    """rm=7 (FRM_DYN) is correctly stored in RS and issued to the FU."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: FP RS tests require Verilator (ICARUS has INT_RS only)")
+        return
+    cocotb.log.info("=== Test: FP Dynamic Rounding (rm=7) Passthrough ===")
+    dut_if, model = await setup_test(dut)
+
+    req = make_fp_req(pc=0x3000, fd=5)
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    # Dispatch to FP_RS with rm=7 (dynamic rounding) and all sources ready
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FP,
+        rob_tag=tag,
+        op=0x01,  # FADD-like opcode
+        src1_ready=True,
+        src1_value=0x3FF0000000000000,  # 1.0 double
+        src2_ready=True,
+        src2_value=0x4000000000000000,  # 2.0 double
+        src3_ready=True,
+        rm=0b111,  # FRM_DYN
+    )
+    model.rs_dispatch(
+        rs_type=RS_FP,
+        rob_tag=tag,
+        op=0x01,
+        src1_ready=True,
+        src1_value=0x3FF0000000000000,
+        src2_ready=True,
+        src2_value=0x4000000000000000,
+        src3_ready=True,
+        rm=0b111,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    assert dut_if.rs_count_for(RS_FP) == 1
+
+    # Issue: all sources ready, FU ready
+    dut_if.set_fu_ready(RS_FP, True)
+    await Timer(1, unit="ps")
+    issue = dut_if.read_rs_issue_for(RS_FP)
+    assert issue["valid"], "FP_RS should issue with rm=7"
+    assert issue["rob_tag"] == tag
+    assert issue["rm"] == 0b111, f"rm should be 7 (FRM_DYN), got {issue['rm']}"
+
+    cocotb.log.info("=== Test Passed ===")

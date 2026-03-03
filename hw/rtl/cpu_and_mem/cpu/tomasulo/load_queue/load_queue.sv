@@ -397,9 +397,22 @@ module load_queue #(
     lu_cache_is_unsigned = !lq_sign_ext[issue_mem_idx];
   end
 
-  // Cache fill: fill L0 cache on valid memory response (not for drained/flushed)
+  // Cache fill: fill L0 cache on valid memory response (not for drained/flushed).
+  // For FLD phase 1 the actual read address is base+4, so fill at that address
+  // to avoid poisoning the cache entry for the base address.
+  logic [XLEN-1:0] cache_fill_actual_addr;
+  always_comb begin
+    if (lq_is_fp[issued_idx] &&
+        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        lq_fp64_phase[issued_idx]) begin
+      cache_fill_actual_addr = lq_address[issued_idx] + 32'd4;
+    end else begin
+      cache_fill_actual_addr = lq_address[issued_idx];
+    end
+  end
+
   assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx];
-  assign cache_fill_addr  = lq_address[issued_idx];
+  assign cache_fill_addr  = cache_fill_actual_addr;
   assign cache_fill_data  = i_mem_read_data;
 
   // Drive load unit inputs from the entry awaiting response (memory path)
