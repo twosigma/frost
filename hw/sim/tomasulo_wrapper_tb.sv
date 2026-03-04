@@ -36,6 +36,11 @@ module tomasulo_wrapper_tb (
     input logic i_rst_n,
 
     // =========================================================================
+    // FRM CSR -- pass through (3 bits)
+    // =========================================================================
+    input logic [2:0] i_frm_csr,
+
+    // =========================================================================
     // ROB Allocation Interface -- pass through (<130 bits)
     // =========================================================================
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
@@ -323,6 +328,7 @@ module tomasulo_wrapper_tb (
   tomasulo_wrapper u_dut (
       .i_clk,
       .i_rst_n,
+      .i_frm_csr,
       // ROB
       .i_alloc_req,
       .o_alloc_resp,

@@ -46,6 +46,11 @@ module tomasulo_wrapper (
     input logic i_rst_n,
 
     // =========================================================================
+    // FRM CSR (dynamic rounding-mode resolution at dispatch)
+    // =========================================================================
+    input logic [2:0] i_frm_csr,
+
+    // =========================================================================
     // ROB Allocation Interface (from Dispatch)
     // =========================================================================
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
@@ -908,12 +913,20 @@ module tomasulo_wrapper (
   );
 
   // ---------------------------------------------------------------------------
+  // Resolve FRM_DYN at dispatch time (shared by all FP RS)
+  // Clamp reserved frm CSR values (5–7) to RNE for safety.
+  // ---------------------------------------------------------------------------
+  wire [2:0] frm_safe = (i_frm_csr > riscv_pkg::FRM_RMM) ? riscv_pkg::FRM_RNE : i_frm_csr;
+  wire [2:0] rm_resolved = (i_rs_dispatch.rm == riscv_pkg::FRM_DYN) ? frm_safe : i_rs_dispatch.rm;
+
+  // ---------------------------------------------------------------------------
   // FP_RS (depth 6): FP add/sub/cmp/cvt/classify/sgnj
   // ---------------------------------------------------------------------------
   riscv_pkg::rs_dispatch_t fp_rs_dispatch;
   always_comb begin
     fp_rs_dispatch       = i_rs_dispatch;
     fp_rs_dispatch.valid = fp_rs_dispatch_valid;
+    fp_rs_dispatch.rm    = rm_resolved;
   end
 
   reservation_station #(
@@ -941,6 +954,7 @@ module tomasulo_wrapper (
   always_comb begin
     fmul_rs_dispatch       = i_rs_dispatch;
     fmul_rs_dispatch.valid = fmul_rs_dispatch_valid;
+    fmul_rs_dispatch.rm    = rm_resolved;
   end
 
   reservation_station #(
@@ -968,6 +982,7 @@ module tomasulo_wrapper (
   always_comb begin
     fdiv_rs_dispatch       = i_rs_dispatch;
     fdiv_rs_dispatch.valid = fdiv_rs_dispatch_valid;
+    fdiv_rs_dispatch.rm    = rm_resolved;
   end
 
   reservation_station #(
@@ -1872,5 +1887,18 @@ module tomasulo_wrapper (
   end
 
 `endif  // FORMAL
+
+  // ===========================================================================
+  // Simulation-only: assert FRM_DYN is resolved before entering FP RS
+  // (FP RS dispatch signals only exist under VERILATOR)
+  // ===========================================================================
+`ifdef VERILATOR
+  always @(posedge i_clk)
+    if (i_rst_n) begin
+      if (fp_rs_dispatch.valid) assert (fp_rs_dispatch.rm != riscv_pkg::FRM_DYN);
+      if (fmul_rs_dispatch.valid) assert (fmul_rs_dispatch.rm != riscv_pkg::FRM_DYN);
+      if (fdiv_rs_dispatch.valid) assert (fdiv_rs_dispatch.rm != riscv_pkg::FRM_DYN);
+    end
+`endif
 
 endmodule

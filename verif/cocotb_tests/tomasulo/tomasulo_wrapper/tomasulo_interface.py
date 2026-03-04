@@ -233,6 +233,9 @@ class TomasuloInterface:
         # CSR read data (for ALU shim CSR operations)
         self.dut.i_csr_read_data.value = 0
 
+        # FRM CSR (dynamic rounding-mode resolution)
+        self.dut.i_frm_csr.value = 0  # Default: RNE
+
         # SQ: memory write done
         self.dut.i_sq_mem_write_done.value = 0
 
