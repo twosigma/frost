@@ -95,6 +95,9 @@ module reservation_station_tb #(
 
     input logic i_fu_ready,
 
+    // SC Issue Peek
+    output logic o_next_issue_is_sc,
+
     // =========================================================================
     // Flush Control
     // =========================================================================
@@ -168,6 +171,7 @@ module reservation_station_tb #(
       .o_issue_csr_imm            (o_issue_csr_imm),
       .o_issue_pc                 (o_issue_pc),
       .i_fu_ready,
+      .o_next_issue_is_sc,
       // Flush
       .i_flush_en,
       .i_flush_tag,

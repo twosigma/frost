@@ -318,7 +318,15 @@ module tomasulo_wrapper_tb (
     // =========================================================================
     output logic                                    o_sq_full,
     output logic                                    o_sq_empty,
-    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count
+    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count,
+
+    // =========================================================================
+    // AMO Memory Write Interface -- pass through
+    // =========================================================================
+    output logic                       o_amo_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
+    input  logic                       i_amo_mem_write_done
 );
 
   // ---------------------------------------------------------------------------
@@ -501,7 +509,12 @@ module tomasulo_wrapper_tb (
       // SQ status
       .o_sq_full,
       .o_sq_empty,
-      .o_sq_count
+      .o_sq_count,
+      // AMO memory write
+      .o_amo_mem_write_en,
+      .o_amo_mem_write_addr,
+      .o_amo_mem_write_data,
+      .i_amo_mem_write_done
   );
 
 endmodule

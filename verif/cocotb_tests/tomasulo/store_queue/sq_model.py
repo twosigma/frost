@@ -53,6 +53,7 @@ class SQEntry:
     fp64_phase: int = 0
     committed: bool = False
     sent: bool = False
+    is_sc: bool = False
 
 
 @dataclass
@@ -168,7 +169,7 @@ class SQModel:
         """Return whether the store queue is empty."""
         return self.count == 0
 
-    def alloc(self, rob_tag: int, is_fp: bool, size: int) -> bool:
+    def alloc(self, rob_tag: int, is_fp: bool, size: int, is_sc: bool = False) -> bool:
         """Allocate a new entry at tail. Returns True if successful."""
         if self.full:
             return False
@@ -186,8 +187,21 @@ class SQModel:
         e.fp64_phase = 0
         e.committed = False
         e.sent = False
+        e.is_sc = is_sc
         self.tail_ptr = (self.tail_ptr + 1) % self._ptr_wrap
         return True
+
+    @property
+    def committed_empty(self) -> bool:
+        """Return whether there are no committed entries pending write."""
+        return not any(e.valid and e.committed for e in self.entries)
+
+    def sc_discard(self, rob_tag: int) -> None:
+        """Discard a failed SC entry."""
+        tag = rob_tag & MASK_TAG
+        for e in self.entries:
+            if e.valid and e.is_sc and e.rob_tag == tag:
+                e.valid = False
 
     def addr_update(self, rob_tag: int, address: int, is_mmio: bool = False) -> None:
         """Update address for matching entry."""

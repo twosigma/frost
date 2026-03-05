@@ -243,6 +243,9 @@ class TomasuloInterface:
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
 
+        # AMO memory write interface
+        self.dut.i_amo_mem_write_done.value = 0
+
         # RS dispatch
         if self._flat_rs:
             self._clear_rs_dispatch_flat()
@@ -939,6 +942,26 @@ class TomasuloInterface:
             "addr": int(self.dut.o_lq_mem_read_addr.value),
             "size": int(self.dut.o_lq_mem_read_size.value),
         }
+
+    # =========================================================================
+    # AMO Memory Write Interface
+    # =========================================================================
+
+    def read_amo_mem_write(self) -> dict:
+        """Read AMO memory write request outputs."""
+        return {
+            "en": bool(self.dut.o_amo_mem_write_en.value),
+            "addr": int(self.dut.o_amo_mem_write_addr.value),
+            "data": int(self.dut.o_amo_mem_write_data.value),
+        }
+
+    def drive_amo_mem_write_done(self) -> None:
+        """Assert AMO memory write done."""
+        self.dut.i_amo_mem_write_done.value = 1
+
+    def clear_amo_mem_write_done(self) -> None:
+        """Deassert AMO memory write done."""
+        self.dut.i_amo_mem_write_done.value = 0
 
     # =========================================================================
     # Load Queue: Status

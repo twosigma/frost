@@ -112,9 +112,16 @@ module store_queue #(
     input logic                                        i_flush_all,
 
     // =========================================================================
+    // SC Discard (from ROB commit: failed SC invalidates its SQ entry)
+    // =========================================================================
+    input logic                                        i_sc_discard,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sc_discard_rob_tag,
+
+    // =========================================================================
     // Status
     // =========================================================================
     output logic                       o_empty,
+    output logic                       o_committed_empty,  // No committed entries pending write
     output logic [$clog2(DEPTH+1)-1:0] o_count
 );
 
@@ -208,6 +215,7 @@ module store_queue #(
   logic [DEPTH-1:0] sq_fp64_phase;
   logic [DEPTH-1:0] sq_committed;
   logic [DEPTH-1:0] sq_sent;
+  logic [DEPTH-1:0] sq_is_sc;
 
   // Per-entry multi-bit fields
   logic [ReorderBufferTagWidth-1:0] sq_rob_tag[DEPTH];
@@ -249,6 +257,14 @@ module store_queue #(
   assign o_full = full;
   assign o_empty = empty;
   assign o_count = count;
+
+  // Committed-empty: no committed-but-unwritten entries
+  logic any_committed;
+  always_comb begin
+    any_committed = 1'b0;
+    for (int i = 0; i < DEPTH; i++) if (sq_valid[i] && sq_committed[i]) any_committed = 1'b1;
+  end
+  assign o_committed_empty = ~any_committed;
 
   // ===========================================================================
   // Store-to-Load Forwarding (combinational scan)
@@ -457,6 +473,7 @@ module store_queue #(
       sq_fp64_phase     <= '0;
       sq_committed      <= '0;
       sq_sent           <= '0;
+      sq_is_sc          <= '0;
       write_outstanding <= 1'b0;
     end else if (i_flush_all) begin
       // Full flush: reset everything
@@ -470,6 +487,7 @@ module store_queue #(
       sq_fp64_phase     <= '0;
       sq_committed      <= '0;
       sq_sent           <= '0;
+      sq_is_sc          <= '0;
       write_outstanding <= 1'b0;
     end else begin
 
@@ -505,6 +523,7 @@ module store_queue #(
         sq_fp64_phase[tail_idx] <= 1'b0;
         sq_committed[tail_idx]  <= 1'b0;
         sq_sent[tail_idx]       <= 1'b0;
+        sq_is_sc[tail_idx]      <= i_alloc.is_sc;
         tail_ptr                <= tail_ptr + PtrWidth'(1);
       end
 
@@ -540,6 +559,18 @@ module store_queue #(
         for (int i = 0; i < DEPTH; i++) begin
           if (sq_valid[i] && !sq_committed[i] && sq_rob_tag[i] == i_commit_rob_tag) begin
             sq_committed[i] <= 1'b1;
+          end
+        end
+      end
+
+      // -----------------------------------------------------------------
+      // SC Discard: failed SC invalidates its uncommitted SQ entry
+      // -----------------------------------------------------------------
+      if (i_sc_discard) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
+              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
+            sq_valid[i] <= 1'b0;
           end
         end
       end

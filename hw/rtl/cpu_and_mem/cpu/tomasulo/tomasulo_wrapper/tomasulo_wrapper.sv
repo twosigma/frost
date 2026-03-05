@@ -343,7 +343,15 @@ module tomasulo_wrapper (
     // =========================================================================
     output logic                                    o_sq_full,
     output logic                                    o_sq_empty,
-    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count
+    output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count,
+
+    // =========================================================================
+    // AMO Memory Write Interface (from LQ)
+    // =========================================================================
+    output logic                       o_amo_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
+    input  logic                       i_amo_mem_write_done
 );
 
   // ===========================================================================
@@ -529,6 +537,99 @@ module tomasulo_wrapper (
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
   // ===========================================================================
+  // Atomics Wiring (LR/SC/AMO support)
+  // ===========================================================================
+  // Reservation register (LQ → ROB)
+  logic lq_reservation_valid;
+  logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
+
+  // SQ committed-empty (SQ → LQ, ROB)
+  logic sq_committed_empty;
+
+  // SC clear reservation: on any SC commit (success or failure clears reservation)
+  logic sc_clear_reservation;
+  assign sc_clear_reservation = commit_bus.valid && commit_bus.is_sc;
+
+  // Reservation snoop invalidation: SQ write to reservation address
+  logic reservation_snoop_invalidate;
+  assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
+      lq_reservation_valid &&
+      (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:2] == lq_reservation_addr[riscv_pkg::XLEN-1:2]);
+
+  // SC discard: failed SC invalidates its SQ entry
+  logic sc_discard;
+  assign sc_discard = commit_bus.valid && commit_bus.is_sc && commit_bus.value[0];
+
+  // ===========================================================================
+  // SC Pending Register: SC waits for ROB head + SQ committed-empty
+  // ===========================================================================
+  logic sc_pending;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_pending_rob_tag;
+  logic [riscv_pkg::XLEN-1:0] sc_pending_addr;
+  logic mem_rs_next_is_sc;
+  // Forward declaration for ICARUS (assigned in SQ address section below)
+  logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
+
+  // Age comparison for SC flush guard (identical to load_queue/reservation_station)
+  function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
+                                      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
+    logic [riscv_pkg::ReorderBufferTagWidth:0] entry_age;
+    logic [riscv_pkg::ReorderBufferTagWidth:0] flush_age;
+    begin
+      entry_age  = {1'b0, entry_tag} - {1'b0, head};
+      flush_age  = {1'b0, flush_tag} - {1'b0, head};
+      is_younger = entry_age > flush_age;
+    end
+  endfunction
+
+  // SC result computation (combinational)
+  logic sc_can_fire;
+  logic sc_success;
+  logic sc_fu_complete_valid;
+
+  assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
+  assign sc_success = lq_reservation_valid
+      && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
+  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending;
+
+  // SC fu_complete generation
+  riscv_pkg::fu_complete_t sc_fu_complete;
+  always_comb begin
+    sc_fu_complete       = '0;
+    sc_fu_complete.valid = sc_fu_complete_valid;
+    sc_fu_complete.tag   = sc_pending_rob_tag;
+    sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
+  end
+
+  // MUX: SC takes priority over LQ for MEM adapter input
+  riscv_pkg::fu_complete_t mem_fu_to_adapter;
+  assign mem_fu_to_adapter = sc_fu_complete.valid ? sc_fu_complete : lq_fu_complete;
+
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+      sc_pending <= 1'b0;
+    end else if (i_flush_all) begin
+      sc_pending <= 1'b0;
+    end else begin
+      // Set when MEM_RS issues SC
+      if (o_mem_rs_issue.valid && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
+        sc_pending         <= 1'b1;
+        sc_pending_rob_tag <= o_mem_rs_issue.rob_tag;
+        sc_pending_addr    <= sq_effective_addr;
+      end
+      // Clear when SC fu_complete fires (accepted by adapter)
+      if (sc_fu_complete_valid) begin
+        sc_pending <= 1'b0;
+      end
+      // Clear on partial flush only if SC is younger than flush tag
+      if (i_flush_en && sc_pending && is_younger(sc_pending_rob_tag, i_flush_tag, head_tag)) begin
+        sc_pending <= 1'b0;
+      end
+    end
+  end
+
+  // ===========================================================================
   // FP_ADD Pipeline: FP_RS issue → fp_add_shim → adapter → CDB arbiter slot 4
   // ===========================================================================
   riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
@@ -597,17 +698,18 @@ module tomasulo_wrapper (
       .o_commit(commit_bus),
 
       // External coordination
-      .i_sq_empty         (o_sq_empty),
-      .o_csr_start        (o_csr_start),
-      .i_csr_done         (i_csr_done),
-      .o_trap_pending     (o_trap_pending),
-      .o_trap_pc          (o_trap_pc),
-      .o_trap_cause       (o_trap_cause),
-      .i_trap_taken       (i_trap_taken),
-      .o_mret_start       (o_mret_start),
-      .i_mret_done        (i_mret_done),
-      .i_mepc             (i_mepc),
-      .i_interrupt_pending(i_interrupt_pending),
+      .i_sq_empty          (o_sq_empty),
+      .i_sq_committed_empty(sq_committed_empty),
+      .o_csr_start         (o_csr_start),
+      .i_csr_done          (i_csr_done),
+      .o_trap_pending      (o_trap_pending),
+      .o_trap_pc           (o_trap_pc),
+      .o_trap_cause        (o_trap_cause),
+      .i_trap_taken        (i_trap_taken),
+      .o_mret_start        (o_mret_start),
+      .i_mret_done         (i_mret_done),
+      .i_mepc              (i_mepc),
+      .i_interrupt_pending (i_interrupt_pending),
 
       // Flush
       .i_flush_en (i_flush_en),
@@ -756,6 +858,7 @@ module tomasulo_wrapper (
       .o_issue_csr_imm         (o_rs_issue_csr_imm),
       .o_issue_pc              (o_rs_issue_pc),
       .i_fu_ready              (int_rs_fu_ready),
+      .o_next_issue_is_sc      (),                             // unused — no SC ops in INT_RS
 
       // Flush (shared with ROB)
       .i_flush_en    (i_flush_en),
@@ -814,6 +917,7 @@ module tomasulo_wrapper (
   assign o_fp_rs_count   = '0;
   assign o_fmul_rs_count = '0;
   assign o_fdiv_rs_count = '0;
+  assign mem_rs_next_is_sc = 1'b0;  // MEM_RS not instantiated under ICARUS
 `else
   // Packed struct port connections (Verilator, synthesis, formal).
 
@@ -840,6 +944,7 @@ module tomasulo_wrapper (
       // Issue (to internal wire for ALU shim)
       .o_issue(int_rs_issue_w),
       .i_fu_ready(int_rs_fu_ready),
+      .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
 
       // Flush (shared with ROB)
       .i_flush_en    (i_flush_en),
@@ -867,19 +972,20 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth)
   ) u_mul_rs (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_dispatch    (mul_rs_dispatch),
-      .o_full        (mul_rs_full_w),
-      .i_cdb         (cdb_bus),
-      .o_issue       (mul_rs_issue_w),
-      .i_fu_ready    (mul_rs_fu_ready),
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-      .o_empty       (o_mul_rs_empty),
-      .o_count       (o_mul_rs_count)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_dispatch        (mul_rs_dispatch),
+      .o_full            (mul_rs_full_w),
+      .i_cdb             (cdb_bus),
+      .o_issue           (mul_rs_issue_w),
+      .i_fu_ready        (mul_rs_fu_ready),
+      .o_next_issue_is_sc(),                 // unused — no SC ops in MUL_RS
+      .i_flush_en        (i_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_flush_all       (i_flush_all),
+      .o_empty           (o_mul_rs_empty),
+      .o_count           (o_mul_rs_count)
   );
 
   // Observation port: expose MUL_RS issue for testbench
@@ -897,19 +1003,20 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MemRsDepth)
   ) u_mem_rs (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_dispatch    (mem_rs_dispatch),
-      .o_full        (mem_rs_full_w),
-      .i_cdb         (cdb_bus),
-      .o_issue       (o_mem_rs_issue),
-      .i_fu_ready    (i_mem_rs_fu_ready),
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-      .o_empty       (o_mem_rs_empty),
-      .o_count       (o_mem_rs_count)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_dispatch        (mem_rs_dispatch),
+      .o_full            (mem_rs_full_w),
+      .i_cdb             (cdb_bus),
+      .o_issue           (o_mem_rs_issue),
+      .i_fu_ready        (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
+      .o_next_issue_is_sc(mem_rs_next_is_sc),
+      .i_flush_en        (i_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_flush_all       (i_flush_all),
+      .o_empty           (o_mem_rs_empty),
+      .o_count           (o_mem_rs_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -932,19 +1039,20 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth)
   ) u_fp_rs (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_dispatch    (fp_rs_dispatch),
-      .o_full        (fp_rs_full_w),
-      .i_cdb         (cdb_bus),
-      .o_issue       (fp_rs_issue_w),
-      .i_fu_ready    (fp_rs_fu_ready),
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-      .o_empty       (o_fp_rs_empty),
-      .o_count       (o_fp_rs_count)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_dispatch        (fp_rs_dispatch),
+      .o_full            (fp_rs_full_w),
+      .i_cdb             (cdb_bus),
+      .o_issue           (fp_rs_issue_w),
+      .i_fu_ready        (fp_rs_fu_ready),
+      .o_next_issue_is_sc(),                // unused — no SC ops in FP_RS
+      .i_flush_en        (i_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_flush_all       (i_flush_all),
+      .o_empty           (o_fp_rs_empty),
+      .o_count           (o_fp_rs_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -960,19 +1068,20 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth)
   ) u_fmul_rs (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_dispatch    (fmul_rs_dispatch),
-      .o_full        (fmul_rs_full_w),
-      .i_cdb         (cdb_bus),
-      .o_issue       (fmul_rs_issue_w),
-      .i_fu_ready    (fmul_rs_fu_ready),
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-      .o_empty       (o_fmul_rs_empty),
-      .o_count       (o_fmul_rs_count)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_dispatch        (fmul_rs_dispatch),
+      .o_full            (fmul_rs_full_w),
+      .i_cdb             (cdb_bus),
+      .o_issue           (fmul_rs_issue_w),
+      .i_fu_ready        (fmul_rs_fu_ready),
+      .o_next_issue_is_sc(),                  // unused — no SC ops in FMUL_RS
+      .i_flush_en        (i_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_flush_all       (i_flush_all),
+      .o_empty           (o_fmul_rs_empty),
+      .o_count           (o_fmul_rs_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -988,19 +1097,20 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth)
   ) u_fdiv_rs (
-      .i_clk         (i_clk),
-      .i_rst_n       (i_rst_n),
-      .i_dispatch    (fdiv_rs_dispatch),
-      .o_full        (fdiv_rs_full_w),
-      .i_cdb         (cdb_bus),
-      .o_issue       (fdiv_rs_issue_w),
-      .i_fu_ready    (fdiv_rs_fu_ready),
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-      .o_empty       (o_fdiv_rs_empty),
-      .o_count       (o_fdiv_rs_count)
+      .i_clk             (i_clk),
+      .i_rst_n           (i_rst_n),
+      .i_dispatch        (fdiv_rs_dispatch),
+      .o_full            (fdiv_rs_full_w),
+      .i_cdb             (cdb_bus),
+      .o_issue           (fdiv_rs_issue_w),
+      .i_fu_ready        (fdiv_rs_fu_ready),
+      .o_next_issue_is_sc(),                  // unused — no SC ops in FDIV_RS
+      .i_flush_en        (i_flush_en),
+      .i_flush_tag       (i_flush_tag),
+      .i_rob_head_tag    (head_tag),
+      .i_flush_all       (i_flush_all),
+      .o_empty           (o_fdiv_rs_empty),
+      .o_count           (o_fdiv_rs_count)
   );
 
   // Observation ports: expose FP RS issue for testbench
@@ -1115,6 +1225,12 @@ module tomasulo_wrapper (
   assign sq_forward = '0;
   assign sq_cache_invalidate_valid = 1'b0;
   assign sq_cache_invalidate_addr = '0;
+  assign lq_reservation_valid = 1'b0;
+  assign lq_reservation_addr = '0;
+  assign sq_committed_empty = 1'b1;
+  assign o_amo_mem_write_en = 1'b0;
+  assign o_amo_mem_write_addr = '0;
+  assign o_amo_mem_write_data = '0;
 
   // Under Icarus, FP_RS/FMUL_RS/FDIV_RS are stubbed (no FP shims).
   // Slots 4-6 revert to external i_fu_complete_4/5/6.
@@ -1144,7 +1260,11 @@ module tomasulo_wrapper (
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
       riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LR_W:
+      riscv_pkg::LR_W,
+      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
+      riscv_pkg::AMOAND_W,  riscv_pkg::AMOOR_W,
+      riscv_pkg::AMOMIN_W,  riscv_pkg::AMOMAX_W,
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       lq_alloc_is_load = 1'b1;
       default: lq_alloc_is_load = 1'b0;
     endcase
@@ -1152,11 +1272,22 @@ module tomasulo_wrapper (
 
   riscv_pkg::lq_alloc_req_t lq_alloc_req;
   always_comb begin
-    lq_alloc_req.valid    = mem_rs_dispatch_valid && lq_alloc_is_load;
-    lq_alloc_req.rob_tag  = i_rs_dispatch.rob_tag;
-    lq_alloc_req.is_fp    = i_rs_dispatch.is_fp_mem;
-    lq_alloc_req.size     = i_rs_dispatch.mem_size;
+    lq_alloc_req.valid = mem_rs_dispatch_valid && lq_alloc_is_load;
+    lq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
+    lq_alloc_req.is_fp = i_rs_dispatch.is_fp_mem;
+    lq_alloc_req.size = i_rs_dispatch.mem_size;
     lq_alloc_req.sign_ext = i_rs_dispatch.mem_signed;
+    lq_alloc_req.is_lr = (i_rs_dispatch.op == riscv_pkg::LR_W);
+    lq_alloc_req.is_amo   = (i_rs_dispatch.op == riscv_pkg::AMOSWAP_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOADD_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOXOR_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOAND_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOOR_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOMIN_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOMAX_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOMINU_W)
+                           || (i_rs_dispatch.op == riscv_pkg::AMOMAXU_W);
+    lq_alloc_req.amo_op = i_rs_dispatch.op;
   end
 
   // ===========================================================================
@@ -1168,7 +1299,11 @@ module tomasulo_wrapper (
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
       riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LR_W:
+      riscv_pkg::LR_W,
+      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
+      riscv_pkg::AMOAND_W,  riscv_pkg::AMOOR_W,
+      riscv_pkg::AMOMIN_W,  riscv_pkg::AMOMAX_W,
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       lq_issue_is_load = 1'b1;
       default: lq_issue_is_load = 1'b0;
     endcase
@@ -1188,6 +1323,7 @@ module tomasulo_wrapper (
     lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     lq_addr_update.address = lq_effective_addr;
     lq_addr_update.is_mmio = lq_addr_is_mmio;
+    lq_addr_update.amo_rs2 = o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0];
   end
 
   // ===========================================================================
@@ -1219,12 +1355,27 @@ module tomasulo_wrapper (
       .i_mem_read_data (i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
 
-      // CDB result (to MEM adapter)
+      // CDB result (to MEM adapter; back-pressured when SC uses the slot)
       .o_fu_complete           (lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid),
 
       // ROB head tag (for MMIO ordering)
       .i_rob_head_tag(head_tag),
+
+      // Reservation register (LR/SC)
+      .o_reservation_valid           (lq_reservation_valid),
+      .o_reservation_addr            (lq_reservation_addr),
+      .i_sc_clear_reservation        (sc_clear_reservation),
+      .i_reservation_snoop_invalidate(reservation_snoop_invalidate),
+
+      // SQ committed-empty (for LR/AMO issue gating)
+      .i_sq_committed_empty(sq_committed_empty),
+
+      // AMO memory write interface
+      .o_amo_mem_write_en  (o_amo_mem_write_en),
+      .o_amo_mem_write_addr(o_amo_mem_write_addr),
+      .o_amo_mem_write_data(o_amo_mem_write_data),
+      .i_amo_mem_write_done(i_amo_mem_write_done),
 
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
@@ -1246,7 +1397,7 @@ module tomasulo_wrapper (
   fu_cdb_adapter u_mem_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
-      .i_fu_result     (lq_fu_complete),
+      .i_fu_result     (mem_fu_to_adapter),
       .o_fu_complete   (mem_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[3]),
       .o_result_pending(mem_adapter_result_pending),
@@ -1275,6 +1426,7 @@ module tomasulo_wrapper (
     sq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
     sq_alloc_req.is_fp   = i_rs_dispatch.is_fp_mem;
     sq_alloc_req.size    = i_rs_dispatch.mem_size;
+    sq_alloc_req.is_sc   = (i_rs_dispatch.op == riscv_pkg::SC_W);
   end
 
   // ===========================================================================
@@ -1289,8 +1441,7 @@ module tomasulo_wrapper (
     endcase
   end
 
-  // Effective address: base (src1) + immediate
-  logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
+  // Effective address: base (src1) + immediate (declared above near SC pending)
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
   // MMIO detection: address >= MMIO base
@@ -1317,7 +1468,7 @@ module tomasulo_wrapper (
   // Store Queue: Commit from ROB
   // ===========================================================================
   logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus.valid && commit_bus.is_store;
+  assign sq_commit_valid = commit_bus.valid && commit_bus.is_store && !sc_discard;
 
   // ===========================================================================
   // Store Queue Instance
@@ -1359,6 +1510,10 @@ module tomasulo_wrapper (
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr (sq_cache_invalidate_addr),
 
+      // SC discard (failed SC invalidates SQ entry)
+      .i_sc_discard        (sc_discard),
+      .i_sc_discard_rob_tag(commit_bus.tag),
+
       // ROB head tag
       .i_rob_head_tag(head_tag),
 
@@ -1368,8 +1523,9 @@ module tomasulo_wrapper (
       .i_flush_all(i_flush_all),
 
       // Status
-      .o_empty(o_sq_empty),
-      .o_count(o_sq_count)
+      .o_empty          (o_sq_empty),
+      .o_committed_empty(sq_committed_empty),
+      .o_count          (o_sq_count)
   );
 
   // ===========================================================================

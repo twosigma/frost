@@ -1134,3 +1134,162 @@ async def test_constrained_random(dut: Any) -> None:
     assert (
         dut_if.count == model.count
     ), f"Final count mismatch DUT={dut_if.count} model={model.count}"
+
+
+# ============================================================================
+# Test 34: SC discard on failure
+# ============================================================================
+@cocotb.test()
+async def test_sc_discard_on_failure(dut: Any) -> None:
+    """SC entry invalidated when i_sc_discard is asserted."""
+    dut_if, model = await setup(dut)
+
+    # Allocate an SC entry
+    dut_if.drive_alloc(rob_tag=5, size=MEM_SIZE_WORD, is_sc=True)
+    model.alloc(5, False, MEM_SIZE_WORD, is_sc=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 1, f"Expected count=1, got {dut_if.count}"
+
+    # Discard the SC entry (failed SC)
+    dut_if.drive_sc_discard(rob_tag=5)
+    model.sc_discard(5)
+    await dut_if.step()
+    dut_if.clear_sc_discard()
+
+    assert dut_if.count == 0, f"SC should be discarded, count={dut_if.count}"
+
+    # Head pointer advances past invalidated entry on next cycle
+    await dut_if.step()
+    assert dut_if.empty, "SQ should be empty after SC discard + head advance"
+
+
+# ============================================================================
+# Test 35: committed_empty signal
+# ============================================================================
+@cocotb.test()
+async def test_committed_empty_signal(dut: Any) -> None:
+    """o_committed_empty reflects only committed entries."""
+    dut_if, model = await setup(dut)
+    await Timer(1, unit="ns")
+
+    # Initially committed_empty should be true (no entries)
+    assert dut_if.committed_empty, "committed_empty should be true when SQ empty"
+
+    # Allocate an uncommitted entry
+    dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
+    model.alloc(3, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Give it addr and data
+    dut_if.drive_addr_update(rob_tag=3, address=0x1000)
+    model.addr_update(3, 0x1000)
+    dut_if.drive_data_update(rob_tag=3, data=0xAA)
+    model.data_update(3, 0xAA)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+    await Timer(1, unit="ns")
+    # Entry exists but is uncommitted → committed_empty stays true
+    assert (
+        dut_if.committed_empty
+    ), "committed_empty should be true with only uncommitted entries"
+
+    # Commit the entry
+    dut_if.drive_commit(3)
+    model.commit(3)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    await Timer(1, unit="ns")
+    # Now there is a committed entry → committed_empty should be false
+    assert (
+        not dut_if.committed_empty
+    ), "committed_empty should be false with committed entry"
+
+    # Complete the write
+    model.mem_write_initiate()  # type: ignore[unreachable]
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
+    model.mem_write_done()
+    model.advance_head()
+    await dut_if.step()
+    dut_if.clear_mem_write_done()
+    await dut_if.step()
+
+    await Timer(1, unit="ns")
+    assert (
+        dut_if.committed_empty
+    ), "committed_empty should be true after write completes"
+
+
+# ============================================================================
+# FP64 Forwarding Edge-Case Tests (Fix #4)
+# ============================================================================
+
+
+@cocotb.test()
+async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
+    """FSW at addr, FLD at same addr → match=1, can_forward=0 (size mismatch).
+
+    The store is WORD (FSW), but the load is DOUBLE (FLD). The SQ cannot
+    forward a 32-bit store to satisfy a 64-bit load, so it stalls.
+    """
+    dut_if, model = await setup(dut)
+
+    # FSW: single-precision FP store (MEM_SIZE_WORD, is_fp=True)
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=1,
+        address=0x5000,
+        data=0x3F800000,  # 1.0f
+        is_fp=True,
+        size=MEM_SIZE_WORD,
+    )
+
+    dut_if.drive_rob_head_tag(0)
+    # FLD check: 64-bit load at the same address
+    dut_if.drive_sq_check(addr=0x5000, rob_tag=5, size=MEM_SIZE_DOUBLE)
+    await Timer(1, unit="ns")
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "FLD at FSW address should match"
+    assert (
+        not fwd.can_forward
+    ), "WORD store cannot forward to DOUBLE load (size mismatch)"
+    dut_if.clear_sq_check()
+
+
+@cocotb.test()
+async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
+    """FSD at addr, LH at same addr → match=1, can_forward=0.
+
+    Store is DOUBLE (FSD), load is HALF (LH). Sub-word loads from a 64-bit
+    FP store cannot be forwarded (no partial forwarding from FP64).
+    """
+    dut_if, model = await setup(dut)
+
+    fp64_data = 0xDEADBEEF_CAFEBABE
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=3,
+        address=0x7000,
+        data=fp64_data,
+        is_fp=True,
+        size=MEM_SIZE_DOUBLE,
+    )
+
+    dut_if.drive_rob_head_tag(0)
+    # LH at FSD base: sub-word load from DOUBLE store
+    dut_if.drive_sq_check(addr=0x7000, rob_tag=5, size=MEM_SIZE_HALF)
+    await Timer(1, unit="ns")
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "LH at FSD base should match"
+    assert not fwd.can_forward, "Sub-word load from DOUBLE store cannot forward"
+    dut_if.clear_sq_check()

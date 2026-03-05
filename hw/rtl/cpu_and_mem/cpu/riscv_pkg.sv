@@ -1478,6 +1478,9 @@ package riscv_pkg;
     logic                             is_fp;
     mem_size_e                        size;
     logic                             sign_ext;
+    logic                             is_lr;     // Load-reserved
+    logic                             is_amo;    // AMO instruction
+    instr_op_e                        amo_op;    // AMO operation type
   } lq_alloc_req_t;
 
   // LQ address update (from address calculation)
@@ -1486,6 +1489,7 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     logic [XLEN-1:0]                  address;
     logic                             is_mmio;
+    logic [XLEN-1:0]                  amo_rs2;  // AMO rs2 operand value
   } lq_addr_update_t;
 
   // ---------------------------------------------------------------------------
@@ -1515,6 +1519,7 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     logic                             is_fp;
     mem_size_e                        size;
+    logic                             is_sc;    // Store-conditional
   } sq_alloc_req_t;
 
   // SQ address update (from address calculation)

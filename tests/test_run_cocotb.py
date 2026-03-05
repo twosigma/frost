@@ -226,6 +226,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
         description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
+        supported_simulators=("verilator",),
     ),
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",

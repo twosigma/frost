@@ -35,8 +35,8 @@ MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # sq_alloc_req_t packed layout (MSB-first in SV):
-# size(2) | is_fp(1) | rob_tag(5) | valid(1) = 9 bits
-SQ_ALLOC_WIDTH = 9
+# valid(1) | rob_tag(5) | is_fp(1) | size(2) | is_sc(1) = 10 bits
+SQ_ALLOC_WIDTH = 10
 
 # sq_addr_update_t packed layout:
 # is_mmio(1) | address(32) | rob_tag(5) | valid(1) = 39 bits
@@ -56,10 +56,13 @@ def pack_sq_alloc(
     rob_tag: int = 0,
     is_fp: bool = False,
     size: int = 2,
+    is_sc: bool = False,
 ) -> int:
-    """Pack sq_alloc_req_t into bit vector."""
+    """Pack sq_alloc_req_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
+    val |= (1 if is_sc else 0) << bit
+    bit += 1
     val |= (size & 0x3) << bit
     bit += 2
     val |= (1 if is_fp else 0) << bit
@@ -161,6 +164,8 @@ class SQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_sc_discard.value = 0
+        self.dut.i_sc_discard_rob_tag.value = 0
 
     # =========================================================================
     # Allocation
@@ -171,10 +176,15 @@ class SQInterface:
         rob_tag: int,
         is_fp: bool = False,
         size: int = 2,
+        is_sc: bool = False,
     ) -> None:
         """Drive allocation request."""
         self.dut.i_alloc.value = pack_sq_alloc(
-            valid=True, rob_tag=rob_tag, is_fp=is_fp, size=size
+            valid=True,
+            rob_tag=rob_tag,
+            is_fp=is_fp,
+            size=size,
+            is_sc=is_sc,
         )
 
     def clear_alloc(self) -> None:
@@ -327,3 +337,21 @@ class SQInterface:
     def count(self) -> int:
         """Return the number of valid store queue entries."""
         return int(self.dut.o_count.value)
+
+    @property
+    def committed_empty(self) -> bool:
+        """Return whether there are no committed entries pending write."""
+        return bool(self.dut.o_committed_empty.value)
+
+    # =========================================================================
+    # SC Discard
+    # =========================================================================
+
+    def drive_sc_discard(self, rob_tag: int) -> None:
+        """Drive SC discard signal for a failed SC."""
+        self.dut.i_sc_discard.value = 1
+        self.dut.i_sc_discard_rob_tag.value = rob_tag & MASK_TAG
+
+    def clear_sc_discard(self) -> None:
+        """Clear SC discard signal."""
+        self.dut.i_sc_discard.value = 0

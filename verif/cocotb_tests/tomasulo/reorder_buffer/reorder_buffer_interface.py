@@ -338,6 +338,7 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_empty.value = 1
+        self.dut.i_sq_committed_empty.value = 1
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0
@@ -457,6 +458,10 @@ class ReorderBufferInterface:
     def set_sq_empty(self, empty: bool) -> None:
         """Set store queue empty signal."""
         self.dut.i_sq_empty.value = 1 if empty else 0
+
+    def set_sq_committed_empty(self, empty: bool) -> None:
+        """Set store queue committed-empty signal."""
+        self.dut.i_sq_committed_empty.value = 1 if empty else 0
 
     def set_csr_done(self, done: bool) -> None:
         """Set CSR operation done signal."""

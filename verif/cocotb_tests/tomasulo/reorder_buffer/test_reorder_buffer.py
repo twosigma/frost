@@ -1112,7 +1112,7 @@ async def test_wfi_stall(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_wait_sq(dut: Any) -> None:
-    """Test FENCE waits for store queue to drain."""
+    """Test FENCE waits for SQ committed_empty (not sq_empty)."""
     cocotb.log.info("=== Test: FENCE Wait SQ ===")
 
     dut_if, model = await setup_test(dut)
@@ -1126,19 +1126,19 @@ async def test_fence_wait_sq(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Set SQ not empty
-    dut_if.set_sq_empty(False)
-    model.sq_empty = False
+    # Set SQ committed_empty=false (committed stores pending)
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
-    # SQ not empty - should stall
+    # Should stall
     await ClockCycles(dut_if.clock, 3)
     await RisingEdge(dut_if.clock)
-    assert not dut_if.empty, "FENCE should stall waiting for SQ"
+    assert not dut_if.empty, "FENCE should stall waiting for committed_empty"
 
-    # SQ now empty - drive on falling edge
+    # Set committed_empty=true - drive on falling edge
     await FallingEdge(dut_if.clock)
-    dut_if.set_sq_empty(True)
-    model.sq_empty = True
+    dut_if.set_sq_committed_empty(True)
+    model.sq_committed_empty = True
 
     await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
@@ -1850,13 +1850,13 @@ async def test_jalr_end_to_end(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_amo_waits_for_sq(dut: Any) -> None:
-    """Test AMO waits for store queue to drain before commit.
+async def test_amo_commits_normally(dut: Any) -> None:
+    """Test AMO commits normally once done=1 (no SQ stall at ROB level).
 
-    Allocate AMO, mark done via CDB, set SQ not empty, verify stall,
-    set SQ empty, verify commit with is_amo=True.
+    AMO ordering is enforced at LQ issue time (waits for ROB head +
+    SQ committed-empty). Once CDB arrives (done=1), ROB commits normally.
     """
-    cocotb.log.info("=== Test: AMO Waits for SQ ===")
+    cocotb.log.info("=== Test: AMO Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
 
@@ -1865,7 +1865,7 @@ async def test_amo_waits_for_sq(dut: Any) -> None:
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Set SQ not empty BEFORE allocation so AMO stalls when it reaches head
+    # SQ not empty — AMO should still commit (no SQ dependency at ROB)
     dut_if.set_sq_empty(False)
     model.sq_empty = False
 
@@ -1877,19 +1877,9 @@ async def test_amo_waits_for_sq(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done via CDB
-    cdb = CDBWrite(tag=0, value=0xAABBCCDD)
-    dut_if.drive_cdb_write(cdb)
-    model.cdb_write(cdb)
-    await RisingEdge(dut_if.clock)
-    await FallingEdge(dut_if.clock)
-    dut_if.clear_cdb_write()
-
-    await ClockCycles(dut_if.clock, 3)
-    await RisingEdge(dut_if.clock)
-    assert not dut_if.empty, "AMO should stall waiting for SQ"
-
-    # Queue expected commit BEFORE setting SQ empty
+    # Queue expected commit BEFORE CDB write — commit fires on the same
+    # rising edge that registers done=1, so the CommitMonitor must already
+    # have the expectation queued.
     expected = ExpectedCommit(
         valid=True,
         tag=0,
@@ -1901,18 +1891,19 @@ async def test_amo_waits_for_sq(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Drive SQ empty at the RisingEdge (we're already here after the assert).
-    # This ensures the posedge sequential eval already fired with commit_en=0,
-    # so commit becomes visible via combinational re-eval but head_ptr doesn't
-    # increment until the NEXT rising edge — giving CommitMonitor a full cycle.
-    dut_if.set_sq_empty(True)
-    model.sq_empty = True
+    # Mark done via CDB
+    cdb = CDBWrite(tag=0, value=0xAABBCCDD)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
 
-    # Wait for commit
+    # AMO should commit without waiting for SQ
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
-    assert dut_if.empty, "AMO should have committed"
-    monitor.check_complete()  # type: ignore[unreachable]
+    assert dut_if.empty, "AMO should have committed (no SQ stall at ROB)"
+    monitor.check_complete()
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1936,19 +1927,19 @@ async def test_fence_i_waits_for_sq(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Set SQ not empty — FENCE.I should stall
-    dut_if.set_sq_empty(False)
-    model.sq_empty = False
+    # Set SQ committed_empty=false — FENCE.I should stall
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     await ClockCycles(dut_if.clock, 3)
     await RisingEdge(dut_if.clock)
-    assert not dut_if.empty, "FENCE.I should stall waiting for SQ"
+    assert not dut_if.empty, "FENCE.I should stall waiting for committed_empty"
     assert not dut_if.fence_i_flush, "fence_i_flush should not pulse while stalled"
 
-    # Set SQ empty — FENCE.I should commit
+    # Set committed_empty=true — FENCE.I should commit
     await FallingEdge(dut_if.clock)
-    dut_if.set_sq_empty(True)
-    model.sq_empty = True
+    dut_if.set_sq_committed_empty(True)
+    model.sq_committed_empty = True
 
     # Wait for commit to happen and buffer to drain
     for _ in range(10):
@@ -2251,10 +2242,10 @@ async def test_fp_flags_commit_verification(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_sc_commit_behavior(dut: Any) -> None:
-    """Test LR and SC instructions stall until SQ is empty, and flags appear in commit.
+    """Test LR commits normally once done, SC resolves via CDB write.
 
-    Allocate LR and SC instructions, verify they stall when SQ is not empty,
-    and verify is_lr/is_sc flags appear correctly in the commit struct.
+    LR: no SQ stall at ROB level (ordering enforced at LQ issue time).
+    SC: CDB-driven — wrapper resolves SC and writes result via CDB.
     """
     cocotb.log.info("=== Test: LR/SC Commit Behavior ===")
 
@@ -2265,9 +2256,6 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Set SQ not empty
-    dut_if.set_sq_empty(False)
-
     # Allocate LR instruction
     req = AllocationRequest(pc=0x3000, dest_reg=5, dest_valid=True, is_lr=True)
     dut_if.drive_alloc_request(req)
@@ -2276,7 +2264,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Allocate SC instruction
+    # Allocate SC instruction (NOT done-at-dispatch; needs CDB write)
     req = AllocationRequest(pc=0x3004, dest_reg=6, dest_valid=True, is_sc=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -2284,27 +2272,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark both done via CDB
-    cdb = CDBWrite(tag=0, value=0x1234)
-    dut_if.drive_cdb_write(cdb)
-    model.cdb_write(cdb)
-    await RisingEdge(dut_if.clock)
-    await FallingEdge(dut_if.clock)
-    dut_if.clear_cdb_write()
-
-    cdb = CDBWrite(tag=1, value=0x0)  # SC result (success=0)
-    dut_if.drive_cdb_write(cdb)
-    model.cdb_write(cdb)
-    await RisingEdge(dut_if.clock)
-    await FallingEdge(dut_if.clock)
-    dut_if.clear_cdb_write()
-
-    # LR should stall because SQ is not empty
-    await ClockCycles(dut_if.clock, 3)
-    await RisingEdge(dut_if.clock)
-    assert not dut_if.empty, "LR should stall waiting for SQ"
-
-    # Queue expected commits BEFORE setting SQ empty
+    # Queue expected commits
     expected_lr = ExpectedCommit(
         valid=True,
         tag=0,
@@ -2316,6 +2284,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     )
     expected_commits.append(expected_lr)
 
+    # SC success: value=0 arrives via CDB
     expected_sc = ExpectedCommit(
         valid=True,
         tag=1,
@@ -2327,15 +2296,28 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     )
     expected_commits.append(expected_sc)
 
-    # Set SQ empty - LR (and then SC) should commit
-    dut_if.set_sq_empty(True)
+    # Mark LR done via CDB
+    cdb = CDBWrite(tag=0, value=0x1234)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
 
-    # Wait for both commits
+    # Mark SC done via CDB (value=0 means success)
+    cdb = CDBWrite(tag=1, value=0x0)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    # Both should commit
     await ClockCycles(dut_if.clock, 10)
     await FallingEdge(dut_if.clock)
 
     assert dut_if.empty, "Buffer should be empty after LR/SC commits"
-    monitor.check_complete()  # type: ignore[unreachable]
+    monitor.check_complete()
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -2577,5 +2559,209 @@ async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     ready, _, _ = dut_if.read_alloc_response()
     assert ready, "alloc_ready should reassert after flush_all clears"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Week 11: Atomics / committed_empty Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_sc_resolves_success(dut: Any) -> None:
+    """SC with CDB value=0 → commit value=0 (success)."""
+    cocotb.log.info("=== Test: SC Resolves Success ===")
+
+    dut_if, model = await setup_test(dut)
+
+    expected_commits: deque[ExpectedCommit] = deque()
+    monitor = CommitMonitor(dut_if.dut, expected_commits)
+    cocotb.start_soon(monitor.run())
+
+    # Allocate SC (needs CDB write to become done)
+    req = AllocationRequest(pc=0x4000, dest_reg=10, dest_valid=True, is_sc=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # Queue expected commit BEFORE CDB write
+    expected_commits.append(
+        ExpectedCommit(
+            valid=True,
+            tag=0,
+            dest_reg=10,
+            dest_valid=True,
+            value=0,
+            pc=0x4000,
+            is_sc=True,
+        )
+    )
+
+    # SC result arrives via CDB: value=0 (success)
+    cdb = CDBWrite(tag=0, value=0)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty, "SC should have committed"
+    monitor.check_complete()
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_sc_resolves_failure(dut: Any) -> None:
+    """SC with CDB value=1 → commit value=1 (failure)."""
+    cocotb.log.info("=== Test: SC Resolves Failure ===")
+
+    dut_if, model = await setup_test(dut)
+
+    expected_commits: deque[ExpectedCommit] = deque()
+    monitor = CommitMonitor(dut_if.dut, expected_commits)
+    cocotb.start_soon(monitor.run())
+
+    # Allocate SC (needs CDB write to become done)
+    req = AllocationRequest(pc=0x4000, dest_reg=10, dest_valid=True, is_sc=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # Queue expected commit BEFORE CDB write
+    expected_commits.append(
+        ExpectedCommit(
+            valid=True,
+            tag=0,
+            dest_reg=10,
+            dest_valid=True,
+            value=1,
+            pc=0x4000,
+            is_sc=True,
+        )
+    )
+
+    # SC result arrives via CDB: value=1 (failure)
+    cdb = CDBWrite(tag=0, value=1)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty, "SC should have committed"
+    monitor.check_complete()
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_sc_commits_via_cdb(dut: Any) -> None:
+    """SC waits for CDB write before committing (not done-at-dispatch)."""
+    cocotb.log.info("=== Test: SC Commits Via CDB ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # Allocate SC — should NOT be done at dispatch
+    req = AllocationRequest(pc=0x5000, dest_reg=7, dest_valid=True, is_sc=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # SC should NOT commit yet (no CDB write)
+    await ClockCycles(dut_if.clock, 3)
+    await FallingEdge(dut_if.clock)
+    assert not dut_if.empty, "SC should not commit without CDB write"
+
+    # Now write SC result via CDB
+    cdb = CDBWrite(tag=0, value=0)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    await ClockCycles(dut_if.clock, 3)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty, "SC should commit after CDB write"
+
+
+@cocotb.test()
+async def test_lr_commits_normally(dut: Any) -> None:
+    """LR at head with done=1 commits without SQ stall."""
+    cocotb.log.info("=== Test: LR Commits Normally ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # SQ not empty — LR must NOT stall at ROB
+    dut_if.set_sq_empty(False)
+    model.sq_empty = False
+
+    # Allocate LR
+    req = AllocationRequest(pc=0x6000, dest_reg=8, dest_valid=True, is_lr=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # Mark done via CDB
+    cdb = CDBWrite(tag=0, value=0xFEEDFACE)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    # LR should commit without SQ dependency
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty, "LR should commit even with SQ not empty"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fence_uses_committed_empty(dut: Any) -> None:
+    """FENCE waits for committed_empty, not sq_empty.
+
+    SQ can have uncommitted entries (younger stores) while FENCE is at head.
+    FENCE only needs committed stores to drain.
+    """
+    cocotb.log.info("=== Test: FENCE Uses committed_empty ===")
+
+    dut_if, model = await setup_test(dut)
+
+    # Allocate FENCE
+    await FallingEdge(dut_if.clock)
+    req = AllocationRequest(pc=0x7000, is_fence=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # SQ has uncommitted entries (sq_empty=false) but no committed ones
+    # (committed_empty=true). FENCE should NOT stall.
+    dut_if.set_sq_empty(False)
+    model.sq_empty = False
+    dut_if.set_sq_committed_empty(True)
+    model.sq_committed_empty = True
+
+    # FENCE should commit
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+    assert (
+        dut_if.empty
+    ), "FENCE should commit when committed_empty=true (even if sq_empty=false)"
 
     cocotb.log.info("=== Test Passed ===")

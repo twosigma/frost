@@ -18,6 +18,8 @@ Covers dispatch, CDB wakeup, issue logic, flush, and constrained random.
 """
 
 import random
+import re
+from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -35,6 +37,46 @@ OP_SUB = 1
 OP_AND = 2
 OP_OR = 3
 OP_MUL = 38  # approximate
+
+
+def _parse_op_value(name: str) -> int:
+    """Parse a named enum value from instr_op_e in riscv_pkg.sv."""
+    pkg_path = (
+        Path(__file__).resolve().parents[4]
+        / "hw"
+        / "rtl"
+        / "cpu_and_mem"
+        / "cpu"
+        / "riscv_pkg.sv"
+    )
+    text = pkg_path.read_text()
+    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    if not m:
+        raise RuntimeError("Could not find instr_op_e")
+    val = 0
+    for line in m.group(1).splitlines():
+        line = re.sub(r"//.*", "", line).strip().rstrip(",")
+        if not line:
+            continue
+        em = re.fullmatch(
+            r"([A-Z_][A-Z0-9_]*)\s*=\s*(?:\d*'[bBdDhHoO])?([0-9a-fA-F_]+)", line
+        )
+        if em:
+            bm = re.search(r"'([bBdDhHoO])", line)
+            base = {"b": 2, "d": 10, "h": 16, "o": 8}[bm.group(1).lower()] if bm else 10
+            val = int(em.group(2).replace("_", ""), base)
+            if em.group(1) == name:
+                return val
+            val += 1
+            continue
+        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", line):
+            if line == name:
+                return val
+            val += 1
+    raise RuntimeError(f"{name} not found in instr_op_e")
+
+
+OP_SC_W = _parse_op_value("SC_W")
 
 
 # =============================================================================
@@ -1250,5 +1292,52 @@ async def test_random_with_flush(dut: Any) -> None:
     assert (
         dut_if.count == model.count()
     ), f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# SC Issue Peek Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_next_issue_is_sc_output(dut: Any) -> None:
+    """o_next_issue_is_sc goes high when next-to-issue entry is SC_W."""
+    cocotb.log.info("=== Test: Next Issue Is SC Output ===")
+    dut_if, _ = await setup_test(dut)
+
+    # Initially no entries → should be low
+    sc_sig = dut.o_next_issue_is_sc
+    assert not int(sc_sig.value), "o_next_issue_is_sc should be low when RS empty"
+
+    # Dispatch an SC_W entry with all operands ready
+    dut_if.drive_dispatch(
+        rob_tag=1,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src2_value=0xAABB,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+
+    # Entry is ready (all sources ready) → o_next_issue_is_sc should be high
+    await Timer(1, unit="ps")
+    assert int(sc_sig.value), "o_next_issue_is_sc should be high for ready SC_W entry"
+
+    # Issue the entry by setting fu_ready
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    dut_if.set_fu_ready(False)
+
+    # RS is now empty → o_next_issue_is_sc should be low
+    await Timer(1, unit="ps")
+    assert not int(sc_sig.value), "o_next_issue_is_sc should be low after SC issued"
+    assert dut_if.empty, "RS should be empty after issue"
 
     cocotb.log.info("=== Test Passed ===")

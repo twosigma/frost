@@ -89,7 +89,8 @@ module reorder_buffer (
     // =========================================================================
     // Store Queue Coordination
     // =========================================================================
-    input logic i_sq_empty,  // Store queue is empty (for FENCE, AMO ordering)
+    input logic i_sq_empty,           // Store queue has no entries at all
+    input logic i_sq_committed_empty, // No committed entries pending write (for FENCE)
 
     // =========================================================================
     // CSR Unit Coordination
@@ -655,7 +656,7 @@ module reorder_buffer (
         end else if (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
                      i_alloc_req.is_fence_i || i_alloc_req.is_mret) begin
           // These instructions are "done" from execution perspective at dispatch
-          // but commit is gated by serialization logic
+          // but commit is gated by serialization logic.
           rob_done[tail_idx] <= 1'b1;
         end else begin
           rob_done[tail_idx] <= 1'b0;
@@ -771,9 +772,9 @@ module reorder_buffer (
             serial_state_next = SERIAL_CSR_EXEC;
             commit_stall = 1'b1;
           end else if (head_is_fence || head_is_fence_i) begin
-            // FENCE/FENCE.I: wait for SQ to drain
-            if (i_sq_empty) begin
-              // SQ already empty, can commit
+            // FENCE/FENCE.I: wait for committed SQ entries to drain
+            if (i_sq_committed_empty) begin
+              // No committed entries pending write, can commit
               serial_state_next = SERIAL_IDLE;
               commit_stall = 1'b0;
             end else begin
@@ -784,14 +785,10 @@ module reorder_buffer (
             // MRET: signal trap unit
             serial_state_next = SERIAL_MRET_EXEC;
             commit_stall = 1'b1;
-          end else if (head_is_amo || head_is_lr || head_is_sc) begin
-            // AMO/LR/SC: need SQ empty before commit
-            // Note: actual AMO execution happens in memory unit
-            if (!i_sq_empty) begin
-              serial_state_next = SERIAL_WAIT_SQ;
-              commit_stall = 1'b1;
-            end
-            // If SQ empty, commit proceeds normally
+          end else if (head_is_amo || head_is_lr) begin
+            // AMO/LR: ordering enforced at LQ issue time (waits for ROB head +
+            // SQ committed-empty). Once CDB arrives (head_done=1), commit normally.
+            // No SQ check here (would deadlock with younger uncommitted SQ entries).
           end
           // Non-serializing instructions: no stall
         end
@@ -799,8 +796,8 @@ module reorder_buffer (
 
       SERIAL_WAIT_SQ: begin
         commit_stall = 1'b1;
-        if (i_sq_empty) begin
-          // SQ drained, can commit
+        if (i_sq_committed_empty) begin
+          // Committed SQ entries drained, can commit
           serial_state_next = SERIAL_IDLE;
           commit_stall = 1'b0;
         end
@@ -901,23 +898,23 @@ module reorder_buffer (
     o_commit = '0;
 
     if (commit_en) begin
-      o_commit.valid          = 1'b1;
-      o_commit.tag            = head_idx;
-      o_commit.dest_rf        = head_dest_rf;
-      o_commit.dest_reg       = head_dest_reg;
-      o_commit.dest_valid     = head_dest_valid;
-      o_commit.value          = head_value;
-      o_commit.is_store       = head_is_store;
-      o_commit.is_fp_store    = head_is_fp_store;
-      o_commit.exception      = head_exception;
-      o_commit.pc             = head_pc;
-      o_commit.exc_cause      = head_exc_cause;
-      o_commit.fp_flags       = head_fp_flags;
+      o_commit.valid = 1'b1;
+      o_commit.tag = head_idx;
+      o_commit.dest_rf = head_dest_rf;
+      o_commit.dest_reg = head_dest_reg;
+      o_commit.dest_valid = head_dest_valid;
+      o_commit.value = head_value;
+      o_commit.is_store = head_is_store;
+      o_commit.is_fp_store = head_is_fp_store;
+      o_commit.exception = head_exception;
+      o_commit.pc = head_pc;
+      o_commit.exc_cause = head_exc_cause;
+      o_commit.fp_flags = head_fp_flags;
 
       // Branch misprediction recovery
-      o_commit.misprediction  = commit_misprediction;
+      o_commit.misprediction = commit_misprediction;
       o_commit.has_checkpoint = head_has_checkpoint;
-      o_commit.checkpoint_id  = head_checkpoint_id;
+      o_commit.checkpoint_id = head_checkpoint_id;
       // Redirect PC:
       // - MRET: redirect to mepc
       // - Mispredicted taken: redirect to branch_target (actual taken target)

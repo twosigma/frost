@@ -34,13 +34,27 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
+# instr_op_e enum values for atomics
+OP_WIDTH = 32
+LR_W = 93
+SC_W = 94
+AMOSWAP_W = 95
+AMOADD_W = 96
+AMOXOR_W = 97
+AMOAND_W = 98
+AMOOR_W = 99
+AMOMIN_W = 100
+AMOMAX_W = 101
+AMOMINU_W = 102
+AMOMAXU_W = 103
+
 # lq_alloc_req_t packed layout (MSB-first in SV):
-# sign_ext(1) | size(2) | is_fp(1) | rob_tag(5) | valid(1) = 10 bits
-LQ_ALLOC_WIDTH = 10
+# valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(32) = 44 bits
+LQ_ALLOC_WIDTH = 44
 
 # lq_addr_update_t packed layout:
-# is_mmio(1) | address(32) | rob_tag(5) | valid(1) = 39 bits
-LQ_ADDR_UPDATE_WIDTH = 39
+# valid(1) | rob_tag(5) | address(32) | is_mmio(1) | amo_rs2(32) = 71 bits
+LQ_ADDR_UPDATE_WIDTH = 71
 
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
@@ -57,10 +71,20 @@ def pack_lq_alloc(
     is_fp: bool = False,
     size: int = 2,
     sign_ext: bool = False,
+    is_lr: bool = False,
+    is_amo: bool = False,
+    amo_op: int = 0,
 ) -> int:
-    """Pack lq_alloc_req_t into bit vector."""
+    """Pack lq_alloc_req_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
+    # Fields packed from LSB (last declared in SV) to MSB (first declared)
+    val |= (amo_op & ((1 << OP_WIDTH) - 1)) << bit
+    bit += OP_WIDTH
+    val |= (1 if is_amo else 0) << bit
+    bit += 1
+    val |= (1 if is_lr else 0) << bit
+    bit += 1
     val |= (1 if sign_ext else 0) << bit
     bit += 1
     val |= (size & 0x3) << bit
@@ -78,10 +102,13 @@ def pack_lq_addr_update(
     rob_tag: int = 0,
     address: int = 0,
     is_mmio: bool = False,
+    amo_rs2: int = 0,
 ) -> int:
-    """Pack lq_addr_update_t into bit vector."""
+    """Pack lq_addr_update_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
+    val |= (amo_rs2 & MASK32) << bit
+    bit += XLEN
     val |= (1 if is_mmio else 0) << bit
     bit += 1
     val |= (address & MASK32) << bit
@@ -176,6 +203,10 @@ class LQInterface:
         self.dut.i_flush_all.value = 0
         self.dut.i_cache_invalidate_valid.value = 0
         self.dut.i_cache_invalidate_addr.value = 0
+        self.dut.i_sc_clear_reservation.value = 0
+        self.dut.i_reservation_snoop_invalidate.value = 0
+        self.dut.i_sq_committed_empty.value = 1
+        self.dut.i_amo_mem_write_done.value = 0
 
     # =========================================================================
     # Allocation
@@ -187,10 +218,20 @@ class LQInterface:
         is_fp: bool = False,
         size: int = 2,
         sign_ext: bool = False,
+        is_lr: bool = False,
+        is_amo: bool = False,
+        amo_op: int = 0,
     ) -> None:
         """Drive allocation request."""
         self.dut.i_alloc.value = pack_lq_alloc(
-            valid=True, rob_tag=rob_tag, is_fp=is_fp, size=size, sign_ext=sign_ext
+            valid=True,
+            rob_tag=rob_tag,
+            is_fp=is_fp,
+            size=size,
+            sign_ext=sign_ext,
+            is_lr=is_lr,
+            is_amo=is_amo,
+            amo_op=amo_op,
         )
 
     def clear_alloc(self) -> None:
@@ -202,11 +243,19 @@ class LQInterface:
     # =========================================================================
 
     def drive_addr_update(
-        self, rob_tag: int, address: int, is_mmio: bool = False
+        self,
+        rob_tag: int,
+        address: int,
+        is_mmio: bool = False,
+        amo_rs2: int = 0,
     ) -> None:
         """Drive address update."""
         self.dut.i_addr_update.value = pack_lq_addr_update(
-            valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
+            valid=True,
+            rob_tag=rob_tag,
+            address=address,
+            is_mmio=is_mmio,
+            amo_rs2=amo_rs2,
         )
 
     def clear_addr_update(self) -> None:
@@ -324,3 +373,47 @@ class LQInterface:
     def count(self) -> int:
         """Return the number of valid load queue entries."""
         return int(self.dut.o_count.value)
+
+    # =========================================================================
+    # Reservation Register (LR/SC)
+    # =========================================================================
+
+    def read_reservation_valid(self) -> bool:
+        """Read reservation valid output."""
+        return bool(self.dut.o_reservation_valid.value)
+
+    def read_reservation_addr(self) -> int:
+        """Read reservation address output."""
+        return int(self.dut.o_reservation_addr.value)
+
+    def drive_sc_clear_reservation(self, val: bool = True) -> None:
+        """Drive SC clear reservation signal."""
+        self.dut.i_sc_clear_reservation.value = 1 if val else 0
+
+    def drive_reservation_snoop_invalidate(self, val: bool = True) -> None:
+        """Drive reservation snoop invalidation signal."""
+        self.dut.i_reservation_snoop_invalidate.value = 1 if val else 0
+
+    # =========================================================================
+    # SQ Committed-Empty
+    # =========================================================================
+
+    def drive_sq_committed_empty(self, val: bool = True) -> None:
+        """Drive SQ committed-empty signal."""
+        self.dut.i_sq_committed_empty.value = 1 if val else 0
+
+    # =========================================================================
+    # AMO Memory Write Interface
+    # =========================================================================
+
+    def read_amo_mem_write(self) -> dict:
+        """Read AMO memory write request outputs."""
+        return {
+            "en": bool(self.dut.o_amo_mem_write_en.value),
+            "addr": int(self.dut.o_amo_mem_write_addr.value),
+            "data": int(self.dut.o_amo_mem_write_data.value),
+        }
+
+    def drive_amo_mem_write_done(self, val: bool = True) -> None:
+        """Drive AMO memory write done signal."""
+        self.dut.i_amo_mem_write_done.value = 1 if val else 0

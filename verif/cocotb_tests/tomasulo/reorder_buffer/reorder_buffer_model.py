@@ -238,6 +238,7 @@ class ReorderBufferModel:
 
         # External coordination (inputs to model)
         self.sq_empty: bool = True
+        self.sq_committed_empty: bool = True
         self.csr_done: bool = False
         self.mret_done: bool = False
         self.trap_taken: bool = False
@@ -447,23 +448,22 @@ class ReorderBufferModel:
             elif entry.is_csr:
                 self.serial_state = SerialState.CSR_EXEC
                 return True
-            elif (
-                entry.is_fence
-                or entry.is_fence_i
-                or entry.is_amo
-                or entry.is_lr
-                or entry.is_sc
-            ):
-                # FENCE, FENCE.I, AMO, LR, SC all require SQ to be empty
-                if not self.sq_empty:
+            elif entry.is_fence or entry.is_fence_i:
+                # FENCE/FENCE.I: wait for committed stores to drain
+                if not self.sq_committed_empty:
                     self.serial_state = SerialState.WAIT_SQ
                     return True
+            elif entry.is_amo or entry.is_lr:
+                # AMO/LR: ordering enforced at LQ issue time (waits for ROB
+                # head + SQ committed-empty). Once CDB arrives (done=1),
+                # commit normally. No stall here.
+                pass
             elif entry.is_mret:
                 self.serial_state = SerialState.MRET_EXEC
                 return True
 
         elif self.serial_state == SerialState.WAIT_SQ:
-            if not self.sq_empty:
+            if not self.sq_committed_empty:
                 return True
             self.serial_state = SerialState.IDLE
 
@@ -524,6 +524,8 @@ class ReorderBufferModel:
                 # Mispredicted as taken but actually not-taken -> go to fall-through.
                 redirect_pc = (entry.pc + (2 if entry.is_compressed else 4)) & MASK32
 
+        commit_value = entry.value
+
         # Build expected commit
         expected = ExpectedCommit(
             valid=True,
@@ -531,7 +533,7 @@ class ReorderBufferModel:
             dest_rf=entry.dest_rf,
             dest_reg=entry.dest_reg,
             dest_valid=entry.dest_valid,
-            value=entry.value,
+            value=commit_value,
             is_store=entry.is_store,
             is_fp_store=entry.is_fp_store,
             exception=entry.exception,

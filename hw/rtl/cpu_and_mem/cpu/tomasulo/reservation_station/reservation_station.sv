@@ -119,6 +119,11 @@ module reservation_station #(
     input  logic                                                        i_fu_ready,
 
     // =========================================================================
+    // SC Issue Peek (combinational, independent of i_fu_ready)
+    // =========================================================================
+    output logic o_next_issue_is_sc,
+
+    // =========================================================================
     // Flush Control
     // =========================================================================
     input logic                                        i_flush_en,
@@ -393,6 +398,9 @@ module reservation_station #(
   end
 
   assign issue_fire = any_ready && i_fu_ready;
+
+  // --- SC issue peek: reports whether the next-to-issue entry is an SC ---
+  assign o_next_issue_is_sc = any_ready && (rs_op[issue_idx] == riscv_pkg::SC_W);
 
   // --- Issue output ---
   always_comb begin

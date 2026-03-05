@@ -137,6 +137,9 @@ OP_LW = _INSTR_OPS["LW"]
 OP_LB = _INSTR_OPS["LB"]
 OP_SW = _INSTR_OPS["SW"]
 OP_FLW = _INSTR_OPS["FLW"]
+OP_LR_W = _INSTR_OPS["LR_W"]
+OP_SC_W = _INSTR_OPS["SC_W"]
+OP_AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
@@ -3103,5 +3106,1097 @@ async def test_fp_explicit_rm_unchanged(dut: Any) -> None:
     assert (
         issue["rm"] == 0b001
     ), f"rm should be 0b001 (RTZ, unchanged), got {issue['rm']}"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Group I: Atomics Integration Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_lr_sc_success_flow(dut: Any) -> None:
+    """Full LR→SC flow: LR sets reservation, SC succeeds with value=0.
+
+    SC is CDB-driven: after MEM_RS issues SC, the wrapper latches it as
+    pending and fires the result on CDB when SC is at ROB head and SQ
+    committed-empty.
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LR/SC Success Flow ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    addr = 0x1000
+
+    # --- Phase 1: Dispatch and complete LR.W ---
+    req_lr = AllocationRequest(
+        pc=0x8000,
+        dest_reg=5,
+        dest_valid=True,
+        is_lr=True,
+    )
+    tag_lr = await dut_if.dispatch(req_lr)
+    model.dispatch(req_lr)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue LR"
+    assert issue["rob_tag"] == tag_lr
+
+    # After RS issue, LQ gets addr update. Step to register it.
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # LR is at head (tag=0) → LQ should issue memory request immediately
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "LQ should issue LR memory read"
+    assert mem_req["addr"] == addr
+
+    # Provide memory response → sets reservation + CDB broadcasts
+    lr_data = 0xDEAD_BEEF
+    dut_if.drive_lq_mem_response(lr_data)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag_lr
+    assert cdb.value == lr_data
+
+    # LR commits (CDB wrote done; capture before dispatching SC)
+    commit_lr = await wait_for_commit(dut_if)
+    assert commit_lr["tag"] == tag_lr
+    assert commit_lr["value"] == lr_data
+
+    # --- Phase 2: Dispatch SC.W (after LR committed, reservation is set) ---
+    # SC is CDB-driven: it pends until ROB head + SQ committed-empty.
+    store_data = 0xAABBCCDD
+    req_sc = AllocationRequest(
+        pc=0x8004,
+        dest_reg=6,
+        dest_valid=True,
+        is_sc=True,
+        is_store=True,
+    )
+    # Drive ROB alloc + RS dispatch on the SAME cycle
+    dut_if.drive_alloc_request(req_sc)
+    _, tag_sc, _ = dut_if.read_alloc_response()
+    dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=store_data,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rs_dispatch()
+    model.dispatch(req_sc)
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=store_data,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+
+    # Enable fu_ready so MEM_RS issues SC → wrapper latches sc_pending.
+    # SC fires on CDB when at ROB head + SQ committed-empty.
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    cdb = await wait_for_cdb(dut_if)
+    assert cdb.tag == tag_sc
+    assert cdb.value == 0, f"SC should succeed (value=0), got {cdb.value}"
+
+    # SC commits
+    commit_sc = await wait_for_commit(dut_if)
+    assert commit_sc["tag"] == tag_sc
+    assert commit_sc["value"] == 0
+
+    # Now wait for SQ to write SC data
+    dut_if.set_fu_ready(RS_MEM, False)
+    sq_write_captured = False
+    for _ in range(10):
+        sq_write = dut_if.read_sq_mem_write()
+        if sq_write["en"]:
+            sq_write_captured = True
+            break
+        if bool(dut.u_sq.write_outstanding.value):
+            sq_write_captured = True
+            break
+        await dut_if.step()
+    assert sq_write_captured, "SQ should write SC data"
+
+    # Ensure write_outstanding is set, then drive done
+    if not bool(dut.u_sq.write_outstanding.value):
+        await dut_if.step()
+    dut_if.drive_sq_mem_write_done()
+    await dut_if.step()
+    dut_if.clear_sq_mem_write_done()
+    await dut_if.step()
+
+    assert dut_if.rob_empty, "ROB should be empty after LR/SC"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_lr_sc_failure_flow(dut: Any) -> None:
+    """LR then store to same address invalidates reservation, SC fails (value=1).
+
+    SC is CDB-driven: after MEM_RS issues SC, the wrapper checks the
+    reservation and address match. Since the reservation was snoop-invalidated
+    by the SW write, SC fires with value=1 (failure).
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: LR/SC Failure Flow ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    addr = 0x1000
+
+    # --- Phase 1: Dispatch and complete LR.W (sets reservation) ---
+    req_lr = AllocationRequest(
+        pc=0x9000,
+        dest_reg=5,
+        dest_valid=True,
+        is_lr=True,
+    )
+    tag_lr = await dut_if.dispatch(req_lr)
+    model.dispatch(req_lr)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue LR"
+
+    # Step to register addr update, then immediately serve memory request
+    await dut_if.step()
+
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "LQ should issue LR memory read"
+
+    lr_data = 0xDEAD_BEEF
+    dut_if.drive_lq_mem_response(lr_data)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag_lr
+
+    # LR commits
+    commit_lr = await wait_for_commit(dut_if)
+    assert commit_lr["tag"] == tag_lr
+
+    # --- Phase 2: Dispatch SW to same address, commit, drain SQ ---
+    req_sw = make_store_req(pc=0x9004)
+    tag_sw = await dut_if.dispatch(req_sw)
+    model.dispatch(req_sw)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sw,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0x1111_2222,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sw,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0x1111_2222,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for SW issue (SQ gets address)
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+
+    # Mark SW done in ROB via external CDB
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_sw, value=0)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    # SW commits
+    commit_sw = await wait_for_commit(dut_if)
+    assert commit_sw["tag"] == tag_sw
+
+    # SQ writes SW data → snoop-invalidates reservation at same address
+    for _ in range(10):
+        sq_write = dut_if.read_sq_mem_write()
+        if sq_write["en"]:
+            break
+        await dut_if.step()
+    assert sq_write["en"], "SQ should write SW data"
+
+    # Step to let write_outstanding get set, THEN drive done.
+    await dut_if.step()
+    dut_if.drive_sq_mem_write_done()
+    await dut_if.step()
+    dut_if.clear_sq_mem_write_done()
+    await dut_if.step()
+
+    # --- Phase 3: Dispatch SC.W (reservation now invalid → should fail) ---
+    # SC is CDB-driven: pends until ROB head + SQ committed-empty.
+    req_sc = AllocationRequest(
+        pc=0x9008,
+        dest_reg=7,
+        dest_valid=True,
+        is_sc=True,
+        is_store=True,
+    )
+    dut_if.drive_alloc_request(req_sc)
+    _, tag_sc, _ = dut_if.read_alloc_response()
+    dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rs_dispatch()
+    model.dispatch(req_sc)
+
+    # Enable fu_ready so MEM_RS issues SC → wrapper latches sc_pending
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    # Wait for MEM_RS to issue SC
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue SC"
+
+    # SC fires on CDB with value=1 (failure: reservation was invalidated)
+    cdb = await wait_for_cdb(dut_if)
+    assert cdb.tag == tag_sc
+    assert cdb.value == 1, f"SC should fail (value=1), got {cdb.value}"
+
+    # SC commits with value=1
+    commit_sc = await wait_for_commit(dut_if)
+    assert commit_sc["tag"] == tag_sc
+    assert commit_sc["value"] == 1
+
+    # SC's SQ entry discarded (sc_discard fires on failed SC commit), ROB drains
+    dut_if.set_fu_ready(RS_MEM, False)
+    for _ in range(10):
+        await dut_if.step()
+        if dut_if.rob_empty:
+            break
+    assert dut_if.rob_empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_amo_swap_integration(dut: Any) -> None:
+    """Full AMOSWAP: read old value, write rs2, CDB gets old value."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOSWAP Integration ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    addr = 0x2000
+    rs2_val = 0xCAFE_1234
+    old_val = 0xDEAD_BEEF
+
+    # --- Dispatch AMOSWAP.W ---
+    req = AllocationRequest(
+        pc=0xA000,
+        dest_reg=8,
+        dest_valid=True,
+        is_amo=True,
+    )
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_AMOSWAP_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=rs2_val,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_AMOSWAP_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=rs2_val,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue AMOSWAP"
+
+    # Step to register addr update, then immediately serve memory request
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # AMO is at head (tag=0), SQ committed-empty → issues to memory
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "LQ should issue AMO memory read"
+    assert mem_req["addr"] == addr
+
+    # Provide memory response — keep driven across multiple cycles so
+    # mem_outstanding gets set (cycle 1) before response is captured (cycle 2).
+    dut_if.drive_lq_mem_response(old_val)
+    await dut_if.step()  # Cycle 1: mem_outstanding set via NB
+    await dut_if.step()  # Cycle 2: response captured, amo_state → AMO_WRITE_ACTIVE
+    dut_if.clear_lq_mem_response()
+
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], "AMO should request memory write"
+    assert amo_write["addr"] == addr
+    assert (
+        amo_write["data"] == rs2_val
+    ), f"AMOSWAP should write rs2={rs2_val:#x}, got {amo_write['data']:#x}"
+
+    # Acknowledge AMO write → old value goes to CDB
+    dut_if.drive_amo_mem_write_done()
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_amo_mem_write_done()
+    assert cdb.tag == tag
+    assert (
+        cdb.value == old_val
+    ), f"CDB should carry old value {old_val:#x}, got {cdb.value:#x}"
+
+    # Commit
+    commit = await wait_for_commit(dut_if)
+    assert commit["tag"] == tag
+    assert commit["value"] == old_val
+    assert dut_if.rob_empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_mmio_load_integration(dut: Any) -> None:
+    """MMIO load end-to-end: waits for ROB head, bypasses cache, reads memory."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: MMIO tests require Verilator")
+        return
+    cocotb.log.info("=== Test: MMIO Load Integration ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    mmio_addr = 0x4000_0000
+
+    # --- Dispatch a dummy older instruction first (tag 0) ---
+    req_older = make_int_req(pc=0xB000, rd=1)
+    tag_older = await dut_if.dispatch(req_older)
+    model.dispatch(req_older)
+
+    # --- Dispatch MMIO LW (tag 1) ---
+    req_mmio = make_int_req(pc=0xB004, rd=9)
+    tag_mmio = await dut_if.dispatch(req_mmio)
+    model.dispatch(req_mmio)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_mmio,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_mmio,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS to issue the MMIO load
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue MMIO LW"
+
+    # Step to register addr update, THEN disable fu_ready
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # MMIO should NOT issue yet (not at head, tag_mmio=1 vs head=0)
+    mem_req = dut_if.read_lq_mem_request()
+    assert not mem_req["en"], "MMIO load should wait for ROB head"
+
+    # Complete older instruction via external CDB → it commits → MMIO becomes head
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_older, value=0x42)
+    model.fu_complete(FU_FP_ADD, tag=tag_older, value=0x42)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    commit_older = await wait_for_commit(dut_if)
+    assert commit_older["tag"] == tag_older
+
+    # Now MMIO load is at head → should issue memory request
+    for _ in range(10):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "MMIO load should issue when at ROB head"
+    assert mem_req["addr"] == mmio_addr
+
+    # Provide memory response
+    mmio_data = 0xFEED_FACE
+    dut_if.drive_lq_mem_response(mmio_data)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag_mmio
+    assert cdb.value == mmio_data
+
+    commit_mmio = await wait_for_commit(dut_if)
+    assert commit_mmio["tag"] == tag_mmio
+    assert commit_mmio["value"] == mmio_data
+    assert dut_if.rob_empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# SC Deadlock / Flush Hazard Tests (Findings #1 and #2)
+# =============================================================================
+
+
+@cocotb.test()
+async def test_sc_pending_does_not_block_older_load(dut: Any) -> None:
+    """sc_pending must not block non-SC MEM_RS issues (Finding #1 fix).
+
+    Scenario: dispatch a load (src1 not ready), then an SC (all ready).
+    SC issues first (lower RS index not guaranteed — SC is ready first).
+    After sc_pending is set, deliver the load's operand via CDB snoop.
+    The load must still issue from MEM_RS despite sc_pending being high.
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: SC Pending Does Not Block Older Load ===")
+    dut_if, model = await setup_test(dut)
+
+    addr = 0x1000
+
+    # --- Phase 1: Dispatch LR.W and complete it (sets reservation) ---
+    req_lr = AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_lr=True)
+    tag_lr = await dut_if.dispatch(req_lr)
+    model.dispatch(req_lr)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    dut_if.set_fu_ready(RS_MEM, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for LR to issue and complete through LQ
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue LR"
+
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "LQ should issue LR memory read"
+
+    dut_if.drive_lq_mem_response(0xDEAD_BEEF)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag_lr
+
+    commit_lr = await wait_for_commit(dut_if)
+    assert commit_lr["tag"] == tag_lr
+
+    # --- Phase 2: Dispatch load (src1 NOT ready) then SC (all ready) ---
+    # Allocate a "producer" instruction whose result will provide the load's
+    # address.  We need a real ROB entry so the CDB write doesn't hit an
+    # invalid tag.
+    req_producer = make_int_req(pc=0x8800, rd=10)
+    tag_producer = await dut_if.dispatch(req_producer)
+    model.dispatch(req_producer)
+
+    # Load: src1 pending on the producer's tag (address not known yet)
+    req_load = make_int_req(pc=0x9000, rd=7)
+    tag_load = await dut_if.dispatch(req_load)
+    model.dispatch(req_load)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_load,
+        op=OP_LW,
+        src1_ready=False,
+        src1_tag=tag_producer,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_load,
+        op=OP_LW,
+        src1_ready=False,
+        src1_tag=tag_producer,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # SC: all sources ready
+    req_sc = AllocationRequest(
+        pc=0x9004,
+        dest_reg=8,
+        dest_valid=True,
+        is_sc=True,
+        is_store=True,
+    )
+    dut_if.drive_alloc_request(req_sc)
+    _, tag_sc, _ = dut_if.read_alloc_response()
+    dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0xCAFE,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rs_dispatch()
+
+    # Enable fu_ready: SC issues first (it's ready), setting sc_pending
+    dut_if.set_fu_ready(RS_MEM, True)
+    await Timer(1, unit="ps")  # Let combinational logic settle
+    sc_issued = False
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"] and issue["op"] == OP_SC_W:
+            sc_issued = True
+            break
+        await dut_if.step()
+    assert sc_issued, "SC should issue"
+    await dut_if.step()
+
+    # Verify sc_pending is high
+    assert int(dut.sc_pending.value), "sc_pending should be set after SC issues"
+
+    # --- Phase 3: Wake load's src1 via CDB, verify it still issues ---
+    # Deliver address operand via external FU complete (FP_ADD slot)
+    load_addr_value = 0x2000
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_producer, value=load_addr_value)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    # Now the load should issue from MEM_RS despite sc_pending being high
+    load_issued = False
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"] and issue["op"] == OP_LW:
+            load_issued = True
+            break
+        await dut_if.step()
+    assert load_issued, (
+        "Load should issue from MEM_RS despite sc_pending being high "
+        "(selective SC gating should only block SC re-issue)"
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
+    """Partial flush must NOT clear sc_pending if SC is older than flush tag.
+
+    Scenario: SC (tag 1) issues → sc_pending set. Branch (tag 2) mispredicts →
+    partial flush with flush_tag=2. SC is older → sc_pending survives.
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: Partial Flush Preserves Older SC Pending ===")
+    dut_if, model = await setup_test(dut)
+
+    addr = 0x1000
+
+    # --- Phase 1: LR to set reservation ---
+    req_lr = AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_lr=True)
+    tag_lr = await dut_if.dispatch(req_lr)
+    model.dispatch(req_lr)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    dut_if.set_fu_ready(RS_MEM, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"]
+
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"]
+
+    dut_if.drive_lq_mem_response(0xBEEF)
+    await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    commit_lr = await wait_for_commit(dut_if)
+    assert commit_lr["tag"] == tag_lr
+
+    # --- Phase 2: Dispatch a "blocker" at ROB head (keeps SC off head) ---
+    # Without this, SC would be at head with SQ empty, causing sc_can_fire
+    # to immediately clear sc_pending before we can test the flush guard.
+    req_blocker = make_int_req(pc=0x8004, rd=9)
+    await dut_if.dispatch(req_blocker)
+    model.dispatch(req_blocker)
+
+    # --- Phase 3: Dispatch SC (behind blocker) ---
+    req_sc = AllocationRequest(
+        pc=0x8008,
+        dest_reg=6,
+        dest_valid=True,
+        is_sc=True,
+        is_store=True,
+    )
+    dut_if.drive_alloc_request(req_sc)
+    _, tag_sc, _ = dut_if.read_alloc_response()
+    dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0xAAAA,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rs_dispatch()
+
+    # --- Phase 4: Dispatch a branch (younger than SC) ---
+    req_branch = make_branch_req(
+        pc=0x800C, predicted_taken=True, predicted_target=0x9000
+    )
+    tag_branch = await dut_if.dispatch(req_branch, checkpoint_save=True)
+
+    # --- Phase 5: Issue SC from MEM_RS ---
+    dut_if.set_fu_ready(RS_MEM, True)
+    await Timer(1, unit="ps")  # Let combinational logic settle
+    sc_issued = False
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"] and issue["op"] == OP_SC_W:
+            sc_issued = True
+            break
+        await dut_if.step()
+    assert sc_issued, "SC should issue from MEM_RS"
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    assert int(dut.sc_pending.value), "sc_pending should be set"
+    assert int(dut.sc_pending_rob_tag.value) == tag_sc
+
+    # --- Phase 6: Partial flush with tag=branch (younger than SC) ---
+    # SC (tag_sc) is OLDER than flush tag (tag_branch) → should survive
+    dut_if.drive_flush_en(tag_branch)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+
+    assert int(dut.sc_pending.value), (
+        f"sc_pending should survive partial flush: SC tag={tag_sc} is older "
+        f"than flush tag={tag_branch}"
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
+    """Partial flush MUST clear sc_pending if SC is younger than flush tag.
+
+    Scenario: Branch (tag 1) dispatched, SC (tag 2) issues → sc_pending set.
+    Branch mispredicts → partial flush with flush_tag=1. SC is younger → cleared.
+    """
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: Partial Flush Clears Younger SC Pending ===")
+    dut_if, model = await setup_test(dut)
+
+    addr = 0x1000
+
+    # --- Phase 1: LR to set reservation ---
+    req_lr = AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_lr=True)
+    tag_lr = await dut_if.dispatch(req_lr)
+    model.dispatch(req_lr)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_lr,
+        op=OP_LR_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    dut_if.set_fu_ready(RS_MEM, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"]
+
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"]
+
+    dut_if.drive_lq_mem_response(0xBEEF)
+    await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    commit_lr = await wait_for_commit(dut_if)
+    assert commit_lr["tag"] == tag_lr
+
+    # --- Phase 2: Dispatch branch (tag 1), then SC (tag 2) ---
+    req_branch = make_branch_req(
+        pc=0x8004, predicted_taken=True, predicted_target=0x9000
+    )
+    tag_branch = await dut_if.dispatch(req_branch, checkpoint_save=True)
+
+    req_sc = AllocationRequest(
+        pc=0x8008,
+        dest_reg=6,
+        dest_valid=True,
+        is_sc=True,
+        is_store=True,
+    )
+    dut_if.drive_alloc_request(req_sc)
+    _, tag_sc, _ = dut_if.read_alloc_response()
+    dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sc,
+        op=OP_SC_W,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=0xBBBB,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rs_dispatch()
+
+    # --- Phase 3: Issue SC ---
+    dut_if.set_fu_ready(RS_MEM, True)
+    await Timer(1, unit="ps")  # Let combinational logic settle
+    sc_issued = False
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"] and issue["op"] == OP_SC_W:
+            sc_issued = True
+            break
+        await dut_if.step()
+    assert sc_issued, "SC should issue from MEM_RS"
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    assert int(dut.sc_pending.value), "sc_pending should be set"
+
+    # --- Phase 4: Partial flush with flush_tag=branch (older than SC) ---
+    # SC (tag_sc) is YOUNGER than flush (tag_branch) → should be cleared
+    dut_if.drive_flush_en(tag_branch)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+
+    assert not int(dut.sc_pending.value), (
+        f"sc_pending should be cleared by partial flush: SC tag={tag_sc} is "
+        f"younger than flush tag={tag_branch}"
+    )
 
     cocotb.log.info("=== Test Passed ===")

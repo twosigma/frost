@@ -1089,3 +1089,510 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
 
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
+
+
+# ============================================================================
+# Test 30: LR waits for ROB head
+# ============================================================================
+@cocotb.test()
+async def test_lr_waits_for_rob_head(dut: Any) -> None:
+    """LR entry doesn't issue until rob_tag matches ROB head tag."""
+    dut_if, model = await setup(dut)
+
+    # Allocate LR with rob_tag=5
+    dut_if.drive_alloc(rob_tag=5, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(5, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Address update
+    dut_if.drive_addr_update(rob_tag=5, address=0x1000)
+    model.addr_update(5, 0x1000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # ROB head is at tag 3 (not our tag) - LR should NOT issue
+    dut_if.drive_rob_head_tag(3)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert not mem_req["en"], "LR should not issue when not at ROB head"
+
+    # Set head to our tag - LR should issue
+    dut_if.drive_rob_head_tag(5)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "LR should issue when at ROB head"
+
+
+# ============================================================================
+# Test 31: LR sets reservation
+# ============================================================================
+@cocotb.test()
+async def test_lr_sets_reservation(dut: Any) -> None:
+    """After LR memory response, o_reservation_valid=1."""
+    dut_if, model = await setup(dut)
+
+    # Verify reservation invalid after reset
+    assert (
+        not dut_if.read_reservation_valid()
+    ), "Reservation should be invalid after reset"
+
+    # Allocate LR
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Address update
+    dut_if.drive_addr_update(rob_tag=0, address=0x2000)
+    model.addr_update(0, 0x2000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Issue LR (at ROB head)
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "LR should issue"
+    await dut_if.step()
+
+    # Memory response
+    dut_if.drive_mem_response(0xDEADBEEF)
+    model.mem_response(0xDEADBEEF)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # Reservation should now be valid
+    await Timer(1, unit="ns")
+    assert dut_if.read_reservation_valid(), "Reservation should be valid after LR"
+    assert dut_if.read_reservation_addr() == 0x2000, "Reservation addr should match"
+
+
+# ============================================================================
+# Test 32: LR reservation cleared by flush_all
+# ============================================================================
+@cocotb.test()
+async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
+    """flush_all clears reservation."""
+    dut_if, model = await setup(dut)
+
+    # Set up LR and get reservation
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x3000)
+    model.addr_update(0, 0x3000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+
+    dut_if.drive_mem_response(0x1234)
+    model.mem_response(0x1234)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    await Timer(1, unit="ns")
+    assert dut_if.read_reservation_valid(), "Reservation should be set"
+
+    # Flush all
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+
+    assert not dut_if.read_reservation_valid(), "Reservation cleared after flush_all"
+
+
+# ============================================================================
+# Test 33: LR reservation cleared by SC
+# ============================================================================
+@cocotb.test()
+async def test_lr_reservation_cleared_by_sc(dut: Any) -> None:
+    """i_sc_clear_reservation clears reservation."""
+    dut_if, model = await setup(dut)
+
+    # Set up LR and get reservation
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x4000)
+    model.addr_update(0, 0x4000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+
+    dut_if.drive_mem_response(0x5678)
+    model.mem_response(0x5678)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    await Timer(1, unit="ns")
+    assert dut_if.read_reservation_valid(), "Reservation should be set"
+
+    # SC clear reservation
+    dut_if.drive_sc_clear_reservation(True)
+    model.sc_clear_reservation()
+    await dut_if.step()
+    dut_if.drive_sc_clear_reservation(False)
+
+    assert not dut_if.read_reservation_valid(), "Reservation cleared by SC"
+
+
+# ============================================================================
+# Test 34: LR reservation cleared by snoop
+# ============================================================================
+@cocotb.test()
+async def test_lr_reservation_cleared_by_snoop(dut: Any) -> None:
+    """i_reservation_snoop_invalidate clears reservation."""
+    dut_if, model = await setup(dut)
+
+    # Set up LR and get reservation
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_lr=True)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_lr=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x5000)
+    model.addr_update(0, 0x5000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+
+    dut_if.drive_mem_response(0x9ABC)
+    model.mem_response(0x9ABC)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    await Timer(1, unit="ns")
+    assert dut_if.read_reservation_valid(), "Reservation should be set"
+
+    # Snoop invalidate
+    dut_if.drive_reservation_snoop_invalidate(True)
+    model.reservation_snoop_invalidate()
+    await dut_if.step()
+    dut_if.drive_reservation_snoop_invalidate(False)
+
+    assert not dut_if.read_reservation_valid(), "Reservation cleared by snoop"
+
+
+# ============================================================================
+# Test 35: AMO waits for ROB head and SQ committed empty
+# ============================================================================
+@cocotb.test()
+async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
+    """AMO entry doesn't issue until rob_tag == head AND sq_committed_empty."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # Allocate AMO with rob_tag=3
+    dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(3, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=3, address=0x6000, amo_rs2=0xAA)
+    model.addr_update(3, 0x6000, amo_rs2=0xAA)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Case 1: head=3 but sq_committed_empty=false → should NOT issue
+    dut_if.drive_rob_head_tag(3)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(False)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert not mem_req["en"], "AMO should not issue when sq_committed_empty=false"
+
+    # Case 2: head=0 but sq_committed_empty=true → should NOT issue
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert not mem_req["en"], "AMO should not issue when not at ROB head"
+
+    # Case 3: head=3 AND sq_committed_empty=true → should issue
+    dut_if.drive_rob_head_tag(3)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "AMO should issue when at ROB head and sq_committed_empty"
+
+
+# ============================================================================
+# Test 36: AMO SWAP
+# ============================================================================
+@cocotb.test()
+async def test_amo_swap(dut: Any) -> None:
+    """AMOSWAP: read old value, write rs2, CDB gets old value."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    rs2_val = 0xCAFEBABE
+    old_val = 0xDEADBEEF
+
+    # Allocate AMO
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Address update with rs2
+    dut_if.drive_addr_update(rob_tag=0, address=0x7000, amo_rs2=rs2_val)
+    model.addr_update(0, 0x7000, amo_rs2=rs2_val)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Issue AMO (at head, sq committed empty)
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "AMO should issue memory read"
+    await dut_if.step()
+
+    # Memory response: old value
+    dut_if.drive_mem_response(old_val)
+    model.mem_response(old_val)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # AMO write should fire (write rs2 to memory)
+    await Timer(1, unit="ns")
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], "AMO write should be active"
+    assert amo_write["addr"] == 0x7000, f"AMO write addr: {amo_write['addr']:#x}"
+    assert amo_write["data"] == rs2_val, f"AMOSWAP write: {amo_write['data']:#x}"
+
+    # Acknowledge AMO write
+    dut_if.drive_amo_mem_write_done(True)
+    model.amo_write_done()
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+
+    # CDB should have old value
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "CDB should be valid after AMO"
+    assert result.tag == 0
+    assert result.value == old_val, f"Expected 0x{old_val:x}, got 0x{result.value:x}"
+
+
+# ============================================================================
+# Test 37: AMO ADD
+# ============================================================================
+@cocotb.test()
+async def test_amo_add(dut: Any) -> None:
+    """AMOADD: write old+rs2 to memory, CDB gets old value."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOADD_W
+
+    rs2_val = 100
+    old_val = 200
+
+    # Allocate AMO ADD
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOADD_W)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOADD_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x8000, amo_rs2=rs2_val)
+    model.addr_update(0, 0x8000, amo_rs2=rs2_val)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Issue
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+
+    # Memory response
+    dut_if.drive_mem_response(old_val)
+    model.mem_response(old_val)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # AMO write: old + rs2
+    await Timer(1, unit="ns")
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], "AMO write should be active"
+    expected_write = (old_val + rs2_val) & MASK32
+    assert (
+        amo_write["data"] == expected_write
+    ), f"AMOADD should write {expected_write}, got {amo_write['data']}"
+
+    # Acknowledge
+    dut_if.drive_amo_mem_write_done(True)
+    model.amo_write_done()
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+
+    # CDB gets old value
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "CDB should be valid"
+    assert result.value == old_val, f"Expected {old_val}, got {result.value}"
+
+
+# ============================================================================
+# Test 38: AMO write completion invalidates L0 cache
+# ============================================================================
+@cocotb.test()
+async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
+    """After AMO write completes, L0 cache at that address is invalidated.
+
+    Flow:
+      1. Regular LW at addr fills L0 cache.
+      2. Free that entry via CDB.
+      3. AMOSWAP at same addr: read, write, complete.
+      4. New LW at same addr should miss L0 (go to memory), proving invalidation.
+    """
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    addr = 0x2000
+    orig_data = 0xAAAA_BBBB
+    amo_rs2 = 0x1111_2222
+
+    # --- Step 1: regular LW to fill L0 cache ---
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD)
+    model.alloc(0, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=addr)
+    model.addr_update(0, addr)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Issue to memory (SQ says no match)
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "LW should issue to memory"
+    await dut_if.step()
+
+    # Memory response fills L0 cache
+    dut_if.drive_mem_response(orig_data)
+    model.mem_response(orig_data)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # Free entry via CDB broadcast
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "CDB should broadcast LW result"
+    await dut_if.step()
+
+    # --- Step 2: AMOSWAP at same address ---
+    dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=1, address=addr, amo_rs2=amo_rs2)
+    model.addr_update(1, addr, amo_rs2=amo_rs2)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Issue AMO
+    dut_if.drive_rob_head_tag(1)
+    await Timer(1, unit="ns")
+
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "AMO should issue memory read"
+    await dut_if.step()
+
+    # Memory response for AMO read
+    dut_if.drive_mem_response(orig_data)
+    model.mem_response(orig_data)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # AMO write phase
+    await Timer(1, unit="ns")
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], "AMO write should be active"
+
+    # Acknowledge AMO write → should invalidate L0 cache at addr
+    dut_if.drive_amo_mem_write_done(True)
+    model.amo_write_done()
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+
+    # Free AMO entry via CDB
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    assert result.valid, "CDB should broadcast AMO result"
+    await dut_if.step()
+
+    # --- Step 3: New LW at same address should MISS L0 cache ---
+    dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
+    model.alloc(2, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=2, address=addr)
+    model.addr_update(2, addr)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(2)
+    await Timer(1, unit="ns")
+
+    # If L0 cache was properly invalidated, this should issue to memory
+    # (not fast-path from cache)
+    mem_req = dut_if.read_mem_request()
+    assert mem_req["en"], "LW after AMO should miss L0 cache and issue to memory"

@@ -90,6 +90,27 @@ module load_queue #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
 
     // =========================================================================
+    // Reservation Register (LR/SC support)
+    // =========================================================================
+    output logic                       o_reservation_valid,
+    output logic [riscv_pkg::XLEN-1:0] o_reservation_addr,
+    input  logic                       i_sc_clear_reservation,
+    input  logic                       i_reservation_snoop_invalidate,
+
+    // =========================================================================
+    // SQ Committed-Empty (for LR/AMO issue gating)
+    // =========================================================================
+    input logic i_sq_committed_empty,
+
+    // =========================================================================
+    // AMO Memory Write Interface
+    // =========================================================================
+    output logic                       o_amo_mem_write_en,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
+    input  logic                       i_amo_mem_write_done,
+
+    // =========================================================================
     // Flush
     // =========================================================================
     input logic                                        i_flush_en,
@@ -158,12 +179,31 @@ module load_queue #(
   logic [DEPTH-1:0] lq_issued;
   logic [DEPTH-1:0] lq_data_valid;
   logic [DEPTH-1:0] lq_forwarded;
+  logic [DEPTH-1:0] lq_is_lr;
+  logic [DEPTH-1:0] lq_is_amo;
 
   // Per-entry multi-bit fields
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
   logic [XLEN-1:0] lq_address[DEPTH];
   riscv_pkg::mem_size_e lq_size[DEPTH];
   logic [FLEN-1:0] lq_data[DEPTH];
+  riscv_pkg::instr_op_e lq_amo_op[DEPTH];
+  logic [XLEN-1:0] lq_amo_rs2[DEPTH];
+
+  // Reservation register (LR/SC)
+  logic reservation_valid;
+  logic [XLEN-1:0] reservation_addr;
+  assign o_reservation_valid = reservation_valid;
+  assign o_reservation_addr  = reservation_addr;
+
+  // AMO FSM
+  typedef enum logic {
+    AMO_IDLE,
+    AMO_WRITE_ACTIVE
+  } amo_state_e;
+  amo_state_e amo_state;
+  logic [XLEN-1:0] amo_old_value;
+  logic [IdxWidth-1:0] amo_entry_idx;
 
   // ===========================================================================
   // Internal Signals
@@ -192,6 +232,33 @@ module load_queue #(
 
   // Head advancement target (scans past all contiguous invalid entries)
   logic [PtrWidth-1:0] head_advance_target;
+
+  // ===========================================================================
+  // AMO ALU (combinational)
+  // ===========================================================================
+  function automatic logic [XLEN-1:0] amo_compute(
+      input riscv_pkg::instr_op_e op, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
+    case (op)
+      riscv_pkg::AMOSWAP_W: amo_compute = rs2;
+      riscv_pkg::AMOADD_W:  amo_compute = old_val + rs2;
+      riscv_pkg::AMOXOR_W:  amo_compute = old_val ^ rs2;
+      riscv_pkg::AMOAND_W:  amo_compute = old_val & rs2;
+      riscv_pkg::AMOOR_W:   amo_compute = old_val | rs2;
+      riscv_pkg::AMOMIN_W:  amo_compute = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
+      riscv_pkg::AMOMAX_W:  amo_compute = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
+      riscv_pkg::AMOMINU_W: amo_compute = (old_val < rs2) ? old_val : rs2;
+      riscv_pkg::AMOMAXU_W: amo_compute = (old_val > rs2) ? old_val : rs2;
+      default:              amo_compute = old_val;
+    endcase
+  endfunction
+
+  // AMO write interface signals
+  logic amo_write_pending;
+  logic [XLEN-1:0] amo_new_value;
+
+  // AMO cache invalidation: invalidate L0 cache when AMO write completes
+  logic amo_cache_inv;
+  assign amo_cache_inv = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
 
   // ===========================================================================
   // Count, Full, Empty
@@ -244,9 +311,14 @@ module load_queue #(
           issue_cdb_idx   = scan_idx[i];
         end
         // Phase B: Memory issue candidate
+        // LR/AMO require ROB head (like MMIO); AMO also needs SQ committed-empty
         if (!issue_mem_found && lq_addr_valid[scan_idx[i]]
             && !lq_issued[scan_idx[i]]
-            && !lq_data_valid[scan_idx[i]]) begin
+            && !lq_data_valid[scan_idx[i]]
+            && (!lq_is_lr[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag))
+            && (!lq_is_amo[scan_idx[i]]
+                || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag && i_sq_committed_empty))
+        ) begin
           issue_mem_found = 1'b1;
           issue_mem_idx   = scan_idx[i];
         end
@@ -289,7 +361,8 @@ module load_queue #(
   logic sq_do_forward;
 
   assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
-  assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward && !lq_is_mmio[issue_mem_idx];
+  assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward
+      && !lq_is_mmio[issue_mem_idx] && !lq_is_lr[issue_mem_idx] && !lq_is_amo[issue_mem_idx];
 
   always_comb begin
     o_mem_read_en   = 1'b0;
@@ -356,13 +429,23 @@ module load_queue #(
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
-      // Invalidation (from SQ, external)
-      .i_invalidate_valid(i_cache_invalidate_valid),
-      .i_invalidate_addr (i_cache_invalidate_addr),
+      // Invalidation (from SQ or AMO write completion)
+      .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
+      .i_invalidate_addr (amo_cache_inv ? lq_address[amo_entry_idx] : i_cache_invalidate_addr),
 
       // Flush
       .i_flush_all(i_flush_all)
   );
+
+  // AMO serialization (ROB head + SQ committed-empty) guarantees these
+  // two invalidation sources are mutually exclusive.
+`ifndef ICARUS
+  // synopsys translate_off
+  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+      !(i_cache_invalidate_valid && amo_cache_inv))
+  else $error("BUG: SQ and AMO cache invalidation fired simultaneously");
+  // synopsys translate_on
+`endif
 
   // Cache-hit fast path signal: Phase B candidate hits L0 cache
   // AND SQ disambiguation confirms no conflicting store (sq_can_issue)
@@ -373,7 +456,9 @@ module load_queue #(
   assign cache_hit_fast_path = sq_can_issue
       && cache_lookup_hit
       && !(lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE)
-      && !lq_is_mmio[issue_mem_idx];
+      && !lq_is_mmio[issue_mem_idx]
+      && !lq_is_lr[issue_mem_idx]
+      && !lq_is_amo[issue_mem_idx];
 
   // Load unit for cache hit path: feed cache data through load unit
   // for byte/half extraction.
@@ -411,9 +496,35 @@ module load_queue #(
     end
   end
 
-  assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx];
-  assign cache_fill_addr  = cache_fill_actual_addr;
-  assign cache_fill_data  = i_mem_read_data;
+  assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]
+      && !lq_is_lr[issued_idx] && !lq_is_amo[issued_idx];
+  assign cache_fill_addr = cache_fill_actual_addr;
+  assign cache_fill_data = i_mem_read_data;
+
+  // AMO write interface: compute new value combinationally from outstanding AMO read
+  always_comb begin
+    amo_write_pending = 1'b0;
+    amo_new_value = '0;
+    o_amo_mem_write_en = 1'b0;
+    o_amo_mem_write_addr = '0;
+    o_amo_mem_write_data = '0;
+
+    if (amo_state == AMO_WRITE_ACTIVE) begin
+      // Maintain write request until done
+      o_amo_mem_write_en = 1'b1;
+      o_amo_mem_write_addr = lq_address[amo_entry_idx];
+      o_amo_mem_write_data =
+          amo_compute(lq_amo_op[amo_entry_idx], amo_old_value, lq_amo_rs2[amo_entry_idx]);
+    end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]
+                 && lq_is_amo[issued_idx]) begin
+      // AMO read just arrived: start write in the same cycle
+      amo_write_pending = 1'b1;
+      amo_new_value = amo_compute(lq_amo_op[issued_idx], i_mem_read_data, lq_amo_rs2[issued_idx]);
+      o_amo_mem_write_en = 1'b1;
+      o_amo_mem_write_addr = lq_address[issued_idx];
+      o_amo_mem_write_data = amo_new_value;
+    end
+  end
 
   // Drive load unit inputs from the entry awaiting response (memory path)
   always_comb begin
@@ -524,34 +635,48 @@ module load_queue #(
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-      head_ptr        <= '0;
-      tail_ptr        <= '0;
-      lq_valid        <= '0;
-      lq_is_fp        <= '0;
-      lq_addr_valid   <= '0;
-      lq_sign_ext     <= '0;
-      lq_is_mmio      <= '0;
-      lq_fp64_phase   <= '0;
-      lq_issued       <= '0;
-      lq_data_valid   <= '0;
-      lq_forwarded    <= '0;
-      mem_outstanding <= 1'b0;
-      issued_idx      <= '0;
+      head_ptr          <= '0;
+      tail_ptr          <= '0;
+      lq_valid          <= '0;
+      lq_is_fp          <= '0;
+      lq_addr_valid     <= '0;
+      lq_sign_ext       <= '0;
+      lq_is_mmio        <= '0;
+      lq_fp64_phase     <= '0;
+      lq_issued         <= '0;
+      lq_data_valid     <= '0;
+      lq_forwarded      <= '0;
+      lq_is_lr          <= '0;
+      lq_is_amo         <= '0;
+      mem_outstanding   <= 1'b0;
+      issued_idx        <= '0;
+      reservation_valid <= 1'b0;
+      reservation_addr  <= '0;
+      amo_state         <= AMO_IDLE;
+      amo_old_value     <= '0;
+      amo_entry_idx     <= '0;
     end else if (i_flush_all) begin
       // Full flush: reset everything
-      head_ptr        <= '0;
-      tail_ptr        <= '0;
-      lq_valid        <= '0;
-      lq_is_fp        <= '0;
-      lq_addr_valid   <= '0;
-      lq_sign_ext     <= '0;
-      lq_is_mmio      <= '0;
-      lq_fp64_phase   <= '0;
-      lq_issued       <= '0;
-      lq_data_valid   <= '0;
-      lq_forwarded    <= '0;
-      mem_outstanding <= 1'b0;
-      issued_idx      <= '0;
+      head_ptr          <= '0;
+      tail_ptr          <= '0;
+      lq_valid          <= '0;
+      lq_is_fp          <= '0;
+      lq_addr_valid     <= '0;
+      lq_sign_ext       <= '0;
+      lq_is_mmio        <= '0;
+      lq_fp64_phase     <= '0;
+      lq_issued         <= '0;
+      lq_data_valid     <= '0;
+      lq_forwarded      <= '0;
+      lq_is_lr          <= '0;
+      lq_is_amo         <= '0;
+      mem_outstanding   <= 1'b0;
+      issued_idx        <= '0;
+      reservation_valid <= 1'b0;
+      reservation_addr  <= '0;
+      amo_state         <= AMO_IDLE;
+      amo_old_value     <= '0;
+      amo_entry_idx     <= '0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -588,6 +713,10 @@ module load_queue #(
         lq_data_valid[tail_idx] <= 1'b0;
         lq_data[tail_idx]       <= '0;
         lq_forwarded[tail_idx]  <= 1'b0;
+        lq_is_lr[tail_idx]      <= i_alloc.is_lr;
+        lq_is_amo[tail_idx]     <= i_alloc.is_amo;
+        lq_amo_op[tail_idx]     <= i_alloc.amo_op;
+        lq_amo_rs2[tail_idx]    <= '0;
         tail_ptr                <= tail_ptr + PtrWidth'(1);
       end
 
@@ -600,6 +729,7 @@ module load_queue #(
             lq_addr_valid[i] <= 1'b1;
             lq_address[i]    <= i_addr_update.address;
             lq_is_mmio[i]    <= i_addr_update.is_mmio;
+            lq_amo_rs2[i]    <= i_addr_update.amo_rs2;
           end
         end
       end
@@ -649,7 +779,23 @@ module load_queue #(
         // Flushed entry — drain stale response
         mem_outstanding <= 1'b0;
       end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]) begin
-        if (lq_is_fp[issued_idx] &&
+        if (lq_is_amo[issued_idx]) begin
+          // AMO: latch old value, start write phase (don't set data_valid yet)
+          amo_old_value   <= i_mem_read_data;
+          amo_entry_idx   <= issued_idx;
+          amo_state       <= AMO_WRITE_ACTIVE;
+          mem_outstanding <= 1'b0;
+        end else if (lq_is_lr[issued_idx]) begin
+          // LR: normal data capture + set reservation
+          lq_data[issued_idx][XLEN-1:0] <= lu_data_out;
+          if (FLEN > XLEN) begin
+            lq_data[issued_idx][FLEN-1:XLEN] <= '0;
+          end
+          lq_data_valid[issued_idx] <= 1'b1;
+          mem_outstanding           <= 1'b0;
+          reservation_valid         <= 1'b1;
+          reservation_addr          <= lq_address[issued_idx];
+        end else if (lq_is_fp[issued_idx] &&
             lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
             !lq_fp64_phase[issued_idx]) begin
           // FLD phase 0: store low word, reset issued, advance to phase 1
@@ -673,6 +819,22 @@ module load_queue #(
           lq_data_valid[issued_idx] <= 1'b1;
           mem_outstanding           <= 1'b0;
         end
+      end
+
+      // -----------------------------------------------------------------
+      // AMO Write Completion: latch old value as result, invalidate cache
+      // -----------------------------------------------------------------
+      if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
+        lq_data[amo_entry_idx]       <= {{(FLEN - XLEN) {1'b0}}, amo_old_value};
+        lq_data_valid[amo_entry_idx] <= 1'b1;
+        amo_state                    <= AMO_IDLE;
+      end
+
+      // -----------------------------------------------------------------
+      // Reservation clear (priority: clear wins over set)
+      // -----------------------------------------------------------------
+      if (i_sc_clear_reservation || i_reservation_snoop_invalidate) begin
+        reservation_valid <= 1'b0;
       end
 
       // -----------------------------------------------------------------
