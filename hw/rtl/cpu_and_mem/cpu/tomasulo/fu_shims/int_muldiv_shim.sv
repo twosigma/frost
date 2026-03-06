@@ -102,17 +102,21 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   // MUL in-flight + flush tracking (single in-flight, unchanged)
   // ---------------------------------------------------------------------------
-  logic mul_in_flight;
-  logic mul_flushed;
+  logic                                                        mul_in_flight;
+  logic                                                        mul_flushed;
 
   // Forward declarations for valid signals from FUs
-  logic multiplier_valid_input;
-  logic multiplier_valid_output;
-  logic divider_valid_input;
-  logic divider_valid_output;
+  logic                                                        multiplier_valid_input;
+  logic                                                        multiplier_valid_output;
+  logic                                                        divider_valid_input;
+  logic                                                        divider_valid_output;
 
-  logic mul_flush_inflight;
-  logic mul_flush_launching;
+  // Forward declarations for signals used before their primary declaration
+  logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] mul_tag_reg;
+  riscv_pkg::instr_op_e                                        mul_op_reg;
+
+  logic                                                        mul_flush_inflight;
+  logic                                                        mul_flush_launching;
 
   assign mul_flush_inflight = mul_in_flight & (i_flush | (i_flush_en & is_younger(
       mul_tag_reg, i_flush_tag, i_rob_head_tag
@@ -173,8 +177,7 @@ module int_muldiv_shim (
       .o_completing_next_cycle(mul_completing_next_cycle)
   );
 
-  logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] mul_tag_reg;
-  riscv_pkg::instr_op_e                                        mul_op_reg;
+  // mul_tag_reg and mul_op_reg declared above (forward declaration for ICARUS)
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin

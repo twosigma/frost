@@ -1366,12 +1366,12 @@ The existing FROST front-end optimizations are preserved:
     |    6. MEM (load results)                                               |
     |    7. ALU (shortest latency, can tolerate delay)                       |
     |                                                                        |
-    |  DESIGN PARAMETER: NUM_CDB_LANES                                       |
+    |  DESIGN NOTE: SINGLE CDB LANE                                          |
     |                                                                        |
-    |    - Initially NUM_CDB_LANES = 1 (single CDB)                          |
-    |    - Parameterized for future expansion                                |
-    |    - 2 lanes (INT + FP) would reduce contention significantly          |
-    |    - Trade-off: 2x wakeup comparators in RS, 2x ROB write ports        |
+    |    - Single CDB lane (one broadcast per cycle)                         |
+    |    - Multi-lane would require duplicating snoop comparators in every   |
+    |      RS entry and ROB slot, plus multi-port RAT — not justified for   |
+    |      this design's 7-FU configuration with fixed-priority arbitration  |
     |                                                                        |
     +------------------------------------------------------------------------+
 ```
@@ -1970,7 +1970,7 @@ existing `cpu_and_mem.sv` interface expectations.
     |                                                                        |
     |  PARAMETERS:                                                           |
     |    NUM_FUS = 7 (ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV)            |
-    |    NUM_CDB_LANES = 1 (parameterized for future multi-bus expansion)    |
+    |    NUM_CDB_LANES = 1 (single lane; see design note above)             |
     |    ROB_TAG_WIDTH = 5 bits                                              |
     |    VALUE_WIDTH = max(XLEN, FLEN) = 64 bits                             |
     |                                                                        |
@@ -2220,7 +2220,7 @@ The schedule incorporates all Tomasulo components plus FROST-specific integratio
 | Week | Dates | Deliverable | Key Tasks |
 |------|-------|-------------|-----------|
 | 1 | 1/20 | **F/D Extensions + Architecture** | FPU integration, F/D instruction support, cocotb tests passing; high-level Tomasulo block diagrams; review existing FROST pipeline for integration points |
-| 2 | 1/27 | **Package Definition + D Timing** | Define tomasulo_pkg.sv (all types, structs, parameters); instruction routing table; ROB/RS entry structures; finish D extension timing closure (~300ps slack) |
+| 2 | 1/27 | **Package Definition + D Timing** | Define Tomasulo types/structs/parameters in riscv_pkg.sv; instruction routing table; ROB/RS entry structures; finish D extension timing closure (~300ps slack) |
 | 3 | 2/3 | **ROB Core Structure** | ROB circular buffer, allocation/deallocation logic, head/tail pointers, unified INT/FP entry fields (dest_rf, fp_flags), basic valid/done tracking |
 | 4 | 2/10 | **ROB Commit + Serialization** | ROB commit logic (INT/FP writeback, FP flag accumulation); exception handling; WFI stall-at-head; CSR execute-at-commit; FENCE/FENCE.I handling |
 | 5 | 2/17 | **RAT + Checkpointing** | INT RAT (x0-x31 mapping), FP RAT (f0-f31 mapping); checkpoint storage (4 checkpoints); checkpoint allocation on branch; restore on misprediction; RAS pointer in checkpoint |
@@ -2326,8 +2326,8 @@ The schedule incorporates all Tomasulo components plus FROST-specific integratio
 - **Core Tomasulo**: ROB, INT RAT, FP RAT, Dispatch unit
 - **Reservation Stations**: INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS (generic + instances)
 - **Memory Subsystem**: Load Queue (with L0 cache integration, MMIO, FP64), Store Queue (with forwarding, MMIO, FP64)
-- **Result Broadcast**: CDB arbiter (7 FUs, FLEN-wide, lane-parameterized)
-- **Package**: tomasulo_pkg.sv with all types, structs, parameters
+- **Result Broadcast**: CDB arbiter (7 FUs, FLEN-wide, single-lane)
+- **Package**: All Tomasulo types, structs, and parameters live in riscv_pkg.sv
 
 ### Integration
 - Integrated FROST-Tomasulo CPU with out-of-order execution for integer, memory, and floating-point operations

@@ -140,6 +140,14 @@ OP_FLW = _INSTR_OPS["FLW"]
 OP_LR_W = _INSTR_OPS["LR_W"]
 OP_SC_W = _INSTR_OPS["SC_W"]
 OP_AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
+OP_AMOADD_W = _INSTR_OPS["AMOADD_W"]
+OP_AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
+OP_AMOAND_W = _INSTR_OPS["AMOAND_W"]
+OP_AMOOR_W = _INSTR_OPS["AMOOR_W"]
+OP_AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
+OP_AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
+OP_AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
+OP_AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
@@ -4200,3 +4208,362 @@ async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
     )
 
     cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# MMIO Store Integration Test (Finding #4)
+# =============================================================================
+
+
+@cocotb.test()
+async def test_mmio_store_integration(dut: Any) -> None:
+    """MMIO store end-to-end: dispatches SW to MMIO address, commits, SQ drains."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: MMIO tests require Verilator")
+        return
+    cocotb.log.info("=== Test: MMIO Store Integration ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    mmio_addr = 0x4000_0010
+    store_data = 0xBAAD_F00D
+
+    # --- Dispatch SW to MMIO address ---
+    req_sw = make_store_req(pc=0xC000)
+    tag_sw = await dut_if.dispatch(req_sw)
+    model.dispatch(req_sw)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sw,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src2_value=store_data,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_sw,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src2_value=store_data,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue (SQ gets address)
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], "MEM_RS should issue SW"
+
+    # Mark SW done in ROB via external CDB
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_sw, value=0)
+    model.fu_complete(FU_FP_ADD, tag=tag_sw, value=0)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    # SW commits
+    commit_sw = await wait_for_commit(dut_if)
+    assert commit_sw["tag"] == tag_sw
+
+    # SQ should drain the store to memory
+    sq_write_captured = False
+    for _ in range(10):
+        sq_write = dut_if.read_sq_mem_write()
+        if sq_write["en"]:
+            sq_write_captured = True
+            break
+        if bool(dut.u_sq.write_outstanding.value):
+            sq_write_captured = True
+            break
+        await dut_if.step()
+    assert sq_write_captured, "SQ should write MMIO store data"
+
+    # Verify the write address is the MMIO address
+    sq_write = dut_if.read_sq_mem_write()
+    if sq_write["en"]:
+        assert (
+            sq_write["addr"] == mmio_addr
+        ), f"SQ write addr={sq_write['addr']:#x}, expected {mmio_addr:#x}"
+
+    # Ensure write_outstanding is set, then drive done
+    if not bool(dut.u_sq.write_outstanding.value):
+        await dut_if.step()
+    dut_if.drive_sq_mem_write_done()
+    await dut_if.step()
+    dut_if.clear_sq_mem_write_done()
+    await dut_if.step()
+
+    assert dut_if.rob_empty, "ROB should be empty after MMIO store"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# AMO Opcode Integration Tests (Finding #4)
+# =============================================================================
+
+
+async def _run_amo_test(
+    dut: Any,
+    op: int,
+    op_name: str,
+    old_val: int,
+    rs2_val: int,
+    expected_write: int,
+) -> None:
+    """Shared helper for AMO opcode integration tests.
+
+    Dispatches an AMO, serves the memory read (old_val), checks that the
+    memory write carries expected_write and CDB carries old_val.
+    """
+    dut_if, model = await setup_test(dut)
+
+    dut_if.set_fu_ready(RS_MEM, True)
+    addr = 0x2000
+
+    # Dispatch AMO
+    req = AllocationRequest(
+        pc=0xA100,
+        dest_reg=8,
+        dest_valid=True,
+        is_amo=True,
+    )
+    tag = await dut_if.dispatch(req)
+    model.dispatch(req)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=op,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=rs2_val,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    model.rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=op,
+        src1_ready=True,
+        src1_value=addr,
+        src2_ready=True,
+        src2_value=rs2_val,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Wait for MEM_RS issue
+    for _ in range(5):
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"]:
+            break
+        await dut_if.step()
+    assert issue["valid"], f"MEM_RS should issue {op_name}"
+
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MEM, False)
+
+    # AMO at head, SQ committed-empty → issues to memory
+    for _ in range(5):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], f"LQ should issue {op_name} memory read"
+    assert mem_req["addr"] == addr
+
+    # Provide memory response
+    dut_if.drive_lq_mem_response(old_val)
+    await dut_if.step()  # mem_outstanding set
+    await dut_if.step()  # response captured → AMO_WRITE_ACTIVE
+    dut_if.clear_lq_mem_response()
+
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], f"{op_name} should request memory write"
+    assert amo_write["addr"] == addr
+    assert amo_write["data"] == (expected_write & 0xFFFF_FFFF), (
+        f"{op_name} write: expected {expected_write:#x}, " f"got {amo_write['data']:#x}"
+    )
+
+    # Acknowledge AMO write → old value goes to CDB
+    dut_if.drive_amo_mem_write_done()
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_amo_mem_write_done()
+    assert cdb.tag == tag
+    assert (
+        cdb.value == old_val
+    ), f"{op_name} CDB: expected old_val={old_val:#x}, got {cdb.value:#x}"
+
+    # Commit
+    commit = await wait_for_commit(dut_if)
+    assert commit["tag"] == tag
+    assert dut_if.rob_empty
+
+    cocotb.log.info(f"=== {op_name} Passed ===")
+
+
+@cocotb.test()
+async def test_amo_add_integration(dut: Any) -> None:
+    """AMOADD: mem[addr] = old + rs2, CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOADD Integration ===")
+    await _run_amo_test(
+        dut,
+        OP_AMOADD_W,
+        "AMOADD",
+        old_val=0x0000_1000,
+        rs2_val=0x0000_0234,
+        expected_write=0x0000_1234,
+    )
+
+
+@cocotb.test()
+async def test_amo_xor_integration(dut: Any) -> None:
+    """AMOXOR: mem[addr] = old ^ rs2, CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOXOR Integration ===")
+    await _run_amo_test(
+        dut,
+        OP_AMOXOR_W,
+        "AMOXOR",
+        old_val=0xFF00_FF00,
+        rs2_val=0x0F0F_0F0F,
+        expected_write=0xF00F_F00F,
+    )
+
+
+@cocotb.test()
+async def test_amo_and_integration(dut: Any) -> None:
+    """AMOAND: mem[addr] = old & rs2, CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOAND Integration ===")
+    await _run_amo_test(
+        dut,
+        OP_AMOAND_W,
+        "AMOAND",
+        old_val=0xFF00_FF00,
+        rs2_val=0x0F0F_0F0F,
+        expected_write=0x0F00_0F00,
+    )
+
+
+@cocotb.test()
+async def test_amo_or_integration(dut: Any) -> None:
+    """AMOOR: mem[addr] = old | rs2, CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOOR Integration ===")
+    await _run_amo_test(
+        dut,
+        OP_AMOOR_W,
+        "AMOOR",
+        old_val=0xFF00_FF00,
+        rs2_val=0x0F0F_0F0F,
+        expected_write=0xFF0F_FF0F,
+    )
+
+
+@cocotb.test()
+async def test_amo_min_integration(dut: Any) -> None:
+    """AMOMIN (signed): mem[addr] = min(old, rs2), CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOMIN Integration ===")
+    # -1 (0xFFFFFFFF) < 5 in signed comparison
+    await _run_amo_test(
+        dut,
+        OP_AMOMIN_W,
+        "AMOMIN",
+        old_val=0xFFFF_FFFF,
+        rs2_val=0x0000_0005,
+        expected_write=0xFFFF_FFFF,
+    )
+
+
+@cocotb.test()
+async def test_amo_max_integration(dut: Any) -> None:
+    """AMOMAX (signed): mem[addr] = max(old, rs2), CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOMAX Integration ===")
+    # max(-1, 5) = 5 in signed comparison
+    await _run_amo_test(
+        dut,
+        OP_AMOMAX_W,
+        "AMOMAX",
+        old_val=0xFFFF_FFFF,
+        rs2_val=0x0000_0005,
+        expected_write=0x0000_0005,
+    )
+
+
+@cocotb.test()
+async def test_amo_minu_integration(dut: Any) -> None:
+    """AMOMINU (unsigned): mem[addr] = min(old, rs2), CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOMINU Integration ===")
+    # 0xFFFFFFFF > 5 unsigned, so min = 5
+    await _run_amo_test(
+        dut,
+        OP_AMOMINU_W,
+        "AMOMINU",
+        old_val=0xFFFF_FFFF,
+        rs2_val=0x0000_0005,
+        expected_write=0x0000_0005,
+    )
+
+
+@cocotb.test()
+async def test_amo_maxu_integration(dut: Any) -> None:
+    """AMOMAXU (unsigned): mem[addr] = max(old, rs2), CDB = old."""
+    if is_icarus(dut):
+        cocotb.log.info("SKIP: Atomics tests require Verilator")
+        return
+    cocotb.log.info("=== Test: AMOMAXU Integration ===")
+    # 0xFFFFFFFF > 5 unsigned, so max = 0xFFFFFFFF
+    await _run_amo_test(
+        dut,
+        OP_AMOMAXU_W,
+        "AMOMAXU",
+        old_val=0xFFFF_FFFF,
+        rs2_val=0x0000_0005,
+        expected_write=0xFFFF_FFFF,
+    )

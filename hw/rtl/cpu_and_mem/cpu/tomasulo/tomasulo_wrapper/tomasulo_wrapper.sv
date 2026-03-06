@@ -371,6 +371,15 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus;
 
+  // Forward declarations: adapter→arbiter signals (used here, defined below)
+  riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   mem_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_add_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_div_adapter_to_arbiter;
+
 `ifdef VERILATOR
   // Override slots 0-6: internal FU pipelines replace external i_fu_complete.
   // Slots 4-6 use a priority mux: internal FP adapter takes precedence,
@@ -486,7 +495,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::rs_issue_t    int_rs_issue_w;  // INT_RS issue output
   riscv_pkg::fu_complete_t alu_shim_out;  // ALU shim → adapter
-  riscv_pkg::fu_complete_t alu_adapter_to_arbiter;  // adapter → arbiter
+  // alu_adapter_to_arbiter declared above (forward declaration)
   logic                    alu_adapter_result_pending;
   logic                    alu_fu_busy;  // always 0 for single-cycle ALU
   logic                    int_rs_fu_ready;
@@ -499,8 +508,7 @@ module tomasulo_wrapper (
   riscv_pkg::rs_issue_t    mul_rs_issue_w;  // MUL_RS issue output (internal)
   riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL → adapter
   riscv_pkg::fu_complete_t div_shim_out;  // shim DIV → adapter
-  riscv_pkg::fu_complete_t mul_adapter_to_arbiter;  // adapter → arbiter slot 1
-  riscv_pkg::fu_complete_t div_adapter_to_arbiter;  // adapter → arbiter slot 2
+  // mul/div_adapter_to_arbiter declared above (forward declaration)
   logic                    mul_adapter_result_pending;
   logic                    div_adapter_result_pending;
   logic                    muldiv_busy;
@@ -521,7 +529,7 @@ module tomasulo_wrapper (
   // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
   // ===========================================================================
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
-  riscv_pkg::fu_complete_t mem_adapter_to_arbiter;  // adapter → arbiter slot 3
+  // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
 
   // ===========================================================================
@@ -634,7 +642,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_add_shim_out;  // shim → adapter
-  riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;  // adapter → arbiter
+  // fp_add_adapter_to_arbiter declared above (forward declaration)
   logic fp_add_adapter_result_pending;
   logic fp_add_busy;
   logic fp_rs_fu_ready;
@@ -646,7 +654,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::rs_issue_t    fmul_rs_issue_w;  // FMUL_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_mul_shim_out;
-  riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
+  // fp_mul_adapter_to_arbiter declared above (forward declaration)
   logic                    fp_mul_adapter_result_pending;
   logic                    fp_mul_busy;
   logic                    fmul_rs_fu_ready;
@@ -658,7 +666,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   riscv_pkg::rs_issue_t    fdiv_rs_issue_w;  // FDIV_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_div_shim_out;
-  riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
+  // fp_div_adapter_to_arbiter declared above (forward declaration)
   logic                    fp_div_adapter_result_pending;
   logic                    fp_div_busy;
   logic                    fdiv_rs_fu_ready;

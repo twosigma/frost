@@ -497,7 +497,7 @@ module load_queue #(
   end
 
   assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]
-      && !lq_is_lr[issued_idx] && !lq_is_amo[issued_idx];
+      && !lq_is_mmio[issued_idx] && !lq_is_lr[issued_idx] && !lq_is_amo[issued_idx];
   assign cache_fill_addr = cache_fill_actual_addr;
   assign cache_fill_data = i_mem_read_data;
 

@@ -127,9 +127,10 @@ total). Rationale:
 - **Formal**: `ifdef FORMAL` block with BMC (depth 12) and cover (depth 20).
   Assertions check pointer/count consistency, issue prerequisites, MMIO
   ordering, CDB back-pressure, and flush behavior.
-- **Cocotb**: 21 unit tests covering reset, allocation, address update,
+- **Cocotb**: 38 unit tests covering reset, allocation, address update,
   LW/LB/LBU/LH/LHU, SQ forwarding, MMIO, FLD two-phase, FLW NaN-boxing,
-  flush, ordering, back-pressure, and constrained random.
+  flush, ordering, back-pressure, constrained random, LR/SC reservation,
+  and AMO read-modify-write operations.
 
 ## Files
 
