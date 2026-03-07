@@ -97,6 +97,7 @@ class ReorderBufferEntry:
 
     # FP flags
     fp_flags: int = 0
+    has_fp_flags: bool = False
 
     # Serializing instruction flags
     is_csr: bool = False
@@ -108,6 +109,9 @@ class ReorderBufferEntry:
     is_lr: bool = False
     is_sc: bool = False
     is_compressed: bool = False
+    csr_addr: int = 0
+    csr_op: int = 0
+    csr_write_data: int = 0
 
 
 @dataclass
@@ -137,6 +141,10 @@ class AllocationRequest:
     is_lr: bool = False
     is_sc: bool = False
     is_compressed: bool = False
+    csr_addr: int = 0
+    csr_op: int = 0
+    csr_write_data: int = 0
+    has_fp_flags: bool = False
 
 
 @dataclass
@@ -176,10 +184,18 @@ class ExpectedCommit:
     pc: int = 0
     exc_cause: int = 0
     fp_flags: int = 0
+    has_fp_flags: bool = False
     misprediction: bool = False
     has_checkpoint: bool = False
     checkpoint_id: int = 0
     redirect_pc: int = 0
+    branch_taken: bool = False
+    branch_target: int = 0
+    is_call: bool = False
+    is_return: bool = False
+    csr_addr: int = 0
+    csr_op: int = 0
+    csr_write_data: int = 0
     is_csr: bool = False
     is_fence: bool = False
     is_fence_i: bool = False
@@ -343,6 +359,10 @@ class ReorderBufferModel:
         entry.is_lr = req.is_lr
         entry.is_sc = req.is_sc
         entry.is_compressed = req.is_compressed
+        entry.csr_addr = req.csr_addr
+        entry.csr_op = req.csr_op
+        entry.csr_write_data = req.csr_write_data
+        entry.has_fp_flags = req.has_fp_flags
 
         # Handle JAL: done immediately, value is link address
         if req.is_jal:
@@ -540,10 +560,18 @@ class ReorderBufferModel:
             pc=entry.pc,
             exc_cause=entry.exc_cause,
             fp_flags=entry.fp_flags,
+            has_fp_flags=entry.has_fp_flags,
             misprediction=misprediction,
             has_checkpoint=entry.has_checkpoint,
             checkpoint_id=entry.checkpoint_id,
             redirect_pc=redirect_pc,
+            branch_taken=entry.branch_taken,
+            branch_target=entry.branch_target,
+            is_call=entry.is_call,
+            is_return=entry.is_return,
+            csr_addr=entry.csr_addr,
+            csr_op=entry.csr_op,
+            csr_write_data=entry.csr_write_data,
             is_csr=entry.is_csr,
             is_fence=entry.is_fence,
             is_fence_i=entry.is_fence_i,

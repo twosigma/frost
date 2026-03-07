@@ -98,6 +98,11 @@ else ifeq ($(TOPLEVEL),fp_div_shim)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+else ifeq ($(TOPLEVEL),dispatch)
+# Dispatch unit test
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
