@@ -74,7 +74,10 @@ from encoders.op_tables import (
     FP_LOADS,
     FP_STORES,
 )
-from cocotb_tests.instruction_generator import ALL_FP_OPS
+from cocotb_tests.instruction_generator import (
+    ALL_FP_OPS,
+    assert_random_memory_access_in_ram,
+)
 from models.memory_model import MemoryModel
 from cocotb_tests.test_helpers import DUTInterface, TestStatistics
 from cocotb_tests.instruction_generator import InstructionGenerator
@@ -246,6 +249,17 @@ async def run_random_regression(
         csr_address = None
         if not state.is_in_flush:
             csr_address = instr_params.csr_address
+            try:
+                assert_random_memory_access_in_ram(
+                    operation,
+                    state.register_file_previous[rs1],
+                    imm,
+                )
+            except AssertionError as exc:
+                raise AssertionError(
+                    "Random regression generated reserved-region memory access "
+                    f"at cycle {cycle}: {exc}"
+                ) from exc
 
         # Record instruction execution for coverage tracking
         stats.record_instruction(

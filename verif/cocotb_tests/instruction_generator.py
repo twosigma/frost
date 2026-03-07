@@ -57,7 +57,6 @@ from config import (
     WORD_ALIGNMENT,
     DOUBLEWORD_ALIGNMENT,
     MMIO_BASE_ADDR,
-    MMIO_SIZE_BYTES,
 )
 from encoders.op_tables import (
     R_ALU,
@@ -159,6 +158,9 @@ FP_OPS_NO_WRITE = set(FP_STORES.keys())
 ALL_FP_OPS = FP_OPS_TO_FP_REG | FP_OPS_TO_INT_REG | FP_OPS_NO_WRITE
 """All floating-point operations."""
 
+_RANDOM_MEMORY_OPS = LOADS | STORES | FP_LOADS | FP_STORES | AMO | AMO_LR_SC
+"""Randomly generated operations that issue a data-memory access."""
+
 
 # Grouped FP op tables by encoder signature for encode_instruction()
 _FP_ENCODE_RD_RS1_RS2 = {**FP_ARITH_2OP, **FP_SGNJ, **FP_MINMAX, **FP_CMP}
@@ -201,22 +203,41 @@ def _is_single_precision_fp_op(operation: str) -> bool:
 
 
 def _is_mmio_address(address: int) -> bool:
-    """Return True if the address falls in the MMIO peripheral window."""
+    """Return True if the address falls in the CPU's reserved high-address region."""
     masked_address = address & MASK32
-    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
-    return MMIO_BASE_ADDR <= masked_address < mmio_end
+    return masked_address >= MMIO_BASE_ADDR
+
+
+def _effective_address(rs1_value: int, immediate: int) -> int:
+    """Return the 32-bit effective address for a base+offset memory access."""
+    return (rs1_value + immediate) & MASK32
+
+
+def assert_random_memory_access_in_ram(
+    operation: str, rs1_value: int, immediate: int
+) -> None:
+    """Raise if a random memory op targets the CPU's reserved high-address region."""
+    if operation not in _RANDOM_MEMORY_OPS:
+        return
+
+    effective_address = _effective_address(rs1_value, immediate)
+    if _is_mmio_address(effective_address):
+        raise AssertionError(
+            "Random generator produced reserved-region memory access: "
+            f"op={operation} rs1=0x{rs1_value & MASK32:08x} imm={immediate} "
+            f"addr=0x{effective_address:08x} "
+            f"MMIO_BASE_ADDR=0x{MMIO_BASE_ADDR:08x}"
+        )
 
 
 def _adjust_imm_to_avoid_mmio(
     rs1_value: int, immediate: int, alignment: int = 1
 ) -> int:
-    """Adjust immediate if the effective address would land in the MMIO range.
+    """Adjust immediate if the effective address would land in reserved high space.
 
-    The MMIO range (0x40000000-0x40000027) contains hardware peripherals
-    (mtime, UART, etc.) that the software memory model doesn't simulate.
-    Random loads/stores hitting these addresses cause model-vs-DUT mismatches
-    because the model reads from a masked RAM address while the DUT reads from
-    the actual MMIO hardware register.
+    The in-order CPU treats all addresses at or above 0x40000000 as non-cacheable
+    MMIO/reserved space. Keep random RAM accesses below that boundary so the DUT
+    and software memory model exercise the same backing store.
 
     Args:
         rs1_value: Base register value
@@ -224,23 +245,13 @@ def _adjust_imm_to_avoid_mmio(
         alignment: Address alignment requirement (1, 2, 4, or 8)
 
     Returns:
-        Adjusted immediate that avoids MMIO addresses, or original if not needed.
+        Adjusted immediate that avoids reserved high addresses, or original if not needed.
     """
-    effective_address = (rs1_value + immediate) & MASK32
+    effective_address = _effective_address(rs1_value, immediate)
 
     if not _is_mmio_address(effective_address):
         return immediate
 
-    # Try moving address just past the end of the MMIO range
-    mmio_end = MMIO_BASE_ADDR + MMIO_SIZE_BYTES
-    distance_to_end = mmio_end - effective_address
-    if alignment > 1:
-        distance_to_end = ((distance_to_end + alignment - 1) // alignment) * alignment
-    new_imm = immediate + distance_to_end
-    if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
-        return new_imm
-
-    # Try moving address just before the start of the MMIO range
     distance_to_start = effective_address - MMIO_BASE_ADDR + alignment
     if alignment > 1:
         distance_to_start = (
@@ -250,8 +261,20 @@ def _adjust_imm_to_avoid_mmio(
     if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
         return new_imm
 
-    # Fallback: use 0 (extremely rare - only if rs1 is right at MMIO boundary
-    # and both directions overflow the 12-bit immediate range)
+    # Fallback: the caller can re-pick rs1 for the rare case where this base value
+    # cannot reach normal RAM within the 12-bit immediate range.
+    return immediate
+
+
+def _choose_non_mmio_rs1(register_file_state: list[int]) -> int:
+    """Choose rs1 whose value is outside the CPU's reserved/MMIO high region."""
+    candidates = [
+        reg
+        for reg, value in enumerate(register_file_state)
+        if not _is_mmio_address(value)
+    ]
+    if candidates:
+        return random.choice(candidates)
     return 0
 
 
@@ -448,8 +471,8 @@ class InstructionGenerator:
             immediate_value = 0
             source_register_1 = _choose_non_mmio_word_aligned_rs1(register_file_state)
 
-        # Avoid MMIO addresses for loads and stores (the software memory model
-        # doesn't simulate MMIO peripherals, so these cause model-vs-DUT mismatches)
+        # Keep random memory ops in normal RAM space. Only re-pick rs1 when the
+        # originally selected base cannot be adjusted away from the reserved region.
         if operation in LOADS or operation in STORES:
             if operation in ("lh", "lhu", "sh"):
                 mem_alignment = HALFWORD_ALIGNMENT
@@ -462,6 +485,40 @@ class InstructionGenerator:
                 immediate_value,
                 mem_alignment,
             )
+            effective_address = (
+                register_file_state[source_register_1] + immediate_value
+            ) & MASK32
+            if _is_mmio_address(effective_address):
+                source_register_1 = _choose_non_mmio_rs1(register_file_state)
+                if operation in ("lh", "lhu", "sh"):
+                    immediate_value = generate_aligned_immediate(
+                        register_file_state[source_register_1],
+                        HALFWORD_ALIGNMENT,
+                        IMM_12BIT_MIN,
+                        IMM_12BIT_MAX,
+                        constrain_to_memory_size,
+                    )
+                elif operation in ("lw", "sw", "lwu"):
+                    immediate_value = generate_aligned_immediate(
+                        register_file_state[source_register_1],
+                        WORD_ALIGNMENT,
+                        IMM_12BIT_MIN,
+                        IMM_12BIT_MAX,
+                        constrain_to_memory_size,
+                    )
+                immediate_value = _adjust_imm_to_avoid_mmio(
+                    register_file_state[source_register_1],
+                    immediate_value,
+                    mem_alignment,
+                )
+                effective_address = _effective_address(
+                    register_file_state[source_register_1],
+                    immediate_value,
+                )
+                if _is_mmio_address(effective_address):
+                    # Last-resort escape hatch for wrapped negative offsets.
+                    source_register_1 = 0
+                    immediate_value = 0
 
         # Generate branch/jump offsets
         # With C extension IF stage, PC can be at halfword boundaries. To keep
@@ -484,6 +541,12 @@ class InstructionGenerator:
             # This reads the CSR without modifying it
             source_register_1 = 0  # rs1=x0 means no write to CSR
             immediate_value = 0  # zimm=0 for immediate variants
+
+        assert_random_memory_access_in_ram(
+            operation,
+            register_file_state[source_register_1],
+            immediate_value,
+        )
 
         return InstructionParams(
             operation=operation,
@@ -563,7 +626,8 @@ class InstructionGenerator:
             )
         # Other FP ops don't use immediates
 
-        # Avoid MMIO addresses for FP loads and stores
+        # Keep FP memory ops in normal RAM space. Only re-pick rs1 when the
+        # original base cannot be adjusted away from the reserved region.
         if operation in FP_LOADS or operation in FP_STORES:
             fp_alignment = (
                 DOUBLEWORD_ALIGNMENT if operation in ("fld", "fsd") else WORD_ALIGNMENT
@@ -573,6 +637,37 @@ class InstructionGenerator:
                 immediate_value,
                 fp_alignment,
             )
+            effective_address = (
+                int_register_file_state[source_register_1] + immediate_value
+            ) & MASK32
+            if _is_mmio_address(effective_address):
+                source_register_1 = _choose_non_mmio_rs1(int_register_file_state)
+                immediate_value = generate_aligned_immediate(
+                    int_register_file_state[source_register_1],
+                    fp_alignment,
+                    IMM_12BIT_MIN,
+                    IMM_12BIT_MAX,
+                    constrain_to_memory_size,
+                )
+                immediate_value = _adjust_imm_to_avoid_mmio(
+                    int_register_file_state[source_register_1],
+                    immediate_value,
+                    fp_alignment,
+                )
+                effective_address = _effective_address(
+                    int_register_file_state[source_register_1],
+                    immediate_value,
+                )
+                if _is_mmio_address(effective_address):
+                    # Last-resort escape hatch for wrapped negative offsets.
+                    source_register_1 = 0
+                    immediate_value = 0
+
+        assert_random_memory_access_in_ram(
+            operation,
+            int_register_file_state[source_register_1],
+            immediate_value,
+        )
 
         return InstructionParams(
             operation=operation,
