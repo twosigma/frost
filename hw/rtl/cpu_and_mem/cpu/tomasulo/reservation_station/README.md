@@ -19,7 +19,7 @@ The same module is instantiated 6 times with different depths:
 
 ### Key Features
 
-- **Parameterized depth** (2-8 entries, all FF-based storage)
+- **Parameterized depth** (2-8 entries, hybrid FF + LUTRAM storage)
 - **Up to 3 source operands** for FMA instructions
 - **CDB snoop** for broadcast wakeup with same-cycle dispatch bypass
 - **Priority-encoder issue** selection (lowest index approximates FIFO)
@@ -43,15 +43,16 @@ The same module is instantiated 6 times with different depths:
 ┌─────────────────────────────────────────────────────────────┐
 │                    DEPTH-Entry RS Array                     │
 │                                                             │
-│  Per-Entry FFs:                                             │
-│    valid, rob_tag, op                                       │
+│  Per-Entry FFs (control / CDB-scanned):                     │
+│    valid, rob_tag, use_imm                                  │
 │    src1: ready, tag, value    ← CDB snoop / dispatch bypass │
 │    src2: ready, tag, value    ← CDB snoop / dispatch bypass │
 │    src3: ready, tag, value    ← CDB snoop / dispatch bypass │
-│    imm, use_imm, rm                                         │
-│    branch_target, predicted_taken, predicted_target         │
-│    is_fp_mem, mem_size, mem_signed                          │
-│    csr_addr, csr_imm                                        │
+│                                                             │
+│  LUTRAM Payload (sdp_dist_ram, write@dispatch, read@issue): │
+│    op, imm, rm, branch_target, predicted_taken,             │
+│    predicted_target, is_fp_mem, mem_size, mem_signed,        │
+│    csr_addr, csr_imm, pc                                    │
 │                                                             │
 │  Priority Encoder ──── lowest-index free  ──→ dispatch      │
 │  Priority Encoder ──── lowest-index ready ──→ issue         │
@@ -75,13 +76,20 @@ The same module is instantiated 6 times with different depths:
 
 ## Storage Strategy
 
-**All fields in FFs** (not LUTRAM). Rationale: RS entries are small (depth 2-8)
-and require parallel content-addressable access for CDB tag comparison across all
-entries simultaneously. LUTRAM only provides single-address reads, which doesn't
-suit the RS broadcast-match access pattern.
+**Hybrid FF + LUTRAM.** Control and CDB-scanned fields remain in FFs; the
+read-once payload (op, imm, rm, branch_target, predicted_taken,
+predicted_target, is_fp_mem, mem_size, mem_signed, csr_addr, csr_imm, pc) is
+stored in a single `sdp_dist_ram` instance (185-bit, write at dispatch, async
+read at issue).
+
+- **FFs**: `valid`, `rob_tag`, `use_imm`, and all source operand fields
+  (`ready`, `tag`, `value` × 3 sources). These require parallel
+  content-addressable access for CDB tag comparison across all entries.
+- **LUTRAM**: Payload fields written once at dispatch and read once at issue.
+  Single write port (dispatch) and single read port (issue) map directly to
+  simple dual-port distributed RAM.
 
 1-bit flags use packed vectors (`logic [DEPTH-1:0]`) for bulk clear on flush.
-Multi-bit fields use arrays of logic vectors.
 
 ## Interface
 
@@ -153,3 +161,4 @@ BMC and cover properties in the RTL (`ifdef FORMAL`):
 | Module | Purpose |
 |--------|---------|
 | `riscv_pkg` | Type definitions (`rs_dispatch_t`, `rs_issue_t`, `cdb_broadcast_t`) |
+| `sdp_dist_ram` | Simple dual-port distributed RAM for payload LUTRAM |

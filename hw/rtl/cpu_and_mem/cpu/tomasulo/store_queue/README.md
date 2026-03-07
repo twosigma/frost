@@ -39,15 +39,21 @@ and freed when their memory write completes.
 
 ## Storage Strategy
 
-All fields in FFs (not LUTRAM/BRAM). 8 entries at ~115 bits each (~920 bits
-total). Rationale:
+**Hybrid FF + LUTRAM.** Control and CAM-scanned fields remain in FFs; the
+64-bit `data` field is stored in duplicated `sdp_dist_ram` instances (one per
+read port).
 
-- **CAM-style tag search**: Address/data update and commit must find matching
-  `rob_tag` across all entries in parallel.
-- **Per-entry invalidation**: Partial flush must clear individual uncommitted
-  entries by age comparison in a single cycle.
-- **Parallel scan**: Forwarding reads all entries to find matching stores.
-- **8 entries**: Too small for BRAM, marginal for LUTRAM.
+- **FFs**: `valid`, `rob_tag`, `is_fp`, `addr_valid`, `address`, `data_valid`,
+  `size`, `is_mmio`, `fp64_phase`, `committed`, `sent`. These require parallel
+  CAM-style tag search (address/data update, commit), per-entry invalidation on
+  flush, and parallel forwarding scan.
+- **LUTRAM** (2× `sdp_dist_ram`, same write, different read addresses):
+  - Write: CAM-resolved index on data update (1 write port).
+  - Read port 1: forwarding scan match index (combinational from FF-based
+    address/tag comparison).
+  - Read port 2: head index for memory writeback.
+  - Duplicated instances allow two independent async reads with a single
+    shared write.
 
 ## Entry Structure
 
@@ -59,7 +65,7 @@ total). Rationale:
 | addr_valid  | 1 bit   | Address has been calculated              |
 | address     | 32 bits | Store address                            |
 | data_valid  | 1 bit   | Data is available                        |
-| data        | 64 bits | Store data (FLEN for FSD)                |
+| data        | 64 bits | Store data (FLEN for FSD) — in LUTRAM    |
 | size        | 2 bits  | 00=B, 01=H, 10=W, 11=D (for FSD)         |
 | is_mmio     | 1 bit   | MMIO address (bypass cache on commit)    |
 | fp64_phase  | 1 bit   | FSD phase: 0=low word, 1=high word       |
@@ -140,6 +146,13 @@ total). Rationale:
 - **Cocotb**: Unit tests covering reset, allocation, address/data update,
   commit + memory write (SW/SH/SB), FSD two-phase, FSW, store-to-load
   forwarding, MMIO, flush, and constrained random.
+
+## Dependencies
+
+| Module | Purpose |
+|--------|---------|
+| `riscv_pkg` | Type definitions |
+| `sdp_dist_ram` | Simple dual-port distributed RAM for sq_data LUTRAM (2 instances) |
 
 ## Files
 

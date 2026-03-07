@@ -33,10 +33,14 @@
  *   - L0 cache invalidation output on memory writes
  *
  * Storage Strategy:
- *   All fields in FFs (not LUTRAM/BRAM). 8 entries at ~115 bits each
- *   (~920 bits total). The SQ requires CAM-style parallel tag search
- *   for address/data update, per-entry invalidation for partial flush,
- *   and parallel read for forwarding scan. Same rationale as Load Queue.
+ *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
+ *   data_valid, committed, rob_tag, address, size, etc.) remain in FFs
+ *   for CAM-style parallel tag search, per-entry invalidation, and
+ *   forwarding address scan.  sq_data (store payload) lives in
+ *   distributed RAM (duplicated sdp_dist_ram for 2 read ports:
+ *   forwarding result + head writeback).  The forwarding scan uses
+ *   FF-based fields to find the match index, then reads sq_data from
+ *   LUTRAM at that single address.  Valid bits gate all reads.
  *
  * Key Principle: Stores commit IN-ORDER
  *   1. Store dispatches → allocate SQ entry at tail
@@ -199,29 +203,85 @@ module store_queue #(
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
-  logic [PtrWidth-1:0] head_ptr;
-  logic [PtrWidth-1:0] tail_ptr;
+  logic                 [             PtrWidth-1:0] head_ptr;
+  logic                 [             PtrWidth-1:0] tail_ptr;
 
   // Index extraction (lower bits)
-  wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
-  wire [IdxWidth-1:0] tail_idx = tail_ptr[IdxWidth-1:0];
+  wire                  [             IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
+  wire                  [             IdxWidth-1:0] tail_idx = tail_ptr[IdxWidth-1:0];
 
   // Per-entry 1-bit flags (packed vectors for bulk operations)
-  logic [DEPTH-1:0] sq_valid;
-  logic [DEPTH-1:0] sq_is_fp;
-  logic [DEPTH-1:0] sq_addr_valid;
-  logic [DEPTH-1:0] sq_data_valid;
-  logic [DEPTH-1:0] sq_is_mmio;
-  logic [DEPTH-1:0] sq_fp64_phase;
-  logic [DEPTH-1:0] sq_committed;
-  logic [DEPTH-1:0] sq_sent;
-  logic [DEPTH-1:0] sq_is_sc;
+  logic                 [                DEPTH-1:0] sq_valid;
+  logic                 [                DEPTH-1:0] sq_is_fp;
+  logic                 [                DEPTH-1:0] sq_addr_valid;
+  logic                 [                DEPTH-1:0] sq_data_valid;
+  logic                 [                DEPTH-1:0] sq_is_mmio;
+  logic                 [                DEPTH-1:0] sq_fp64_phase;
+  logic                 [                DEPTH-1:0] sq_committed;
+  logic                 [                DEPTH-1:0] sq_sent;
+  logic                 [                DEPTH-1:0] sq_is_sc;
 
   // Per-entry multi-bit fields
-  logic [ReorderBufferTagWidth-1:0] sq_rob_tag[DEPTH];
-  logic [XLEN-1:0] sq_address[DEPTH];
-  logic [FLEN-1:0] sq_data[DEPTH];
-  riscv_pkg::mem_size_e sq_size[DEPTH];
+  logic                 [ReorderBufferTagWidth-1:0] sq_rob_tag                        [DEPTH];
+  logic                 [                 XLEN-1:0] sq_address                        [DEPTH];
+  riscv_pkg::mem_size_e                             sq_size                           [DEPTH];
+
+  // ===========================================================================
+  // sq_data LUTRAM — duplicated for 2 read ports
+  // ===========================================================================
+  // sq_data is written once (data_update CAM match) and read at two
+  // independent addresses: fwd_match_idx (forwarding scan result) and
+  // head_idx (memory write).  Duplicate sdp_dist_ram instances receive
+  // identical writes; each provides one async read port.
+  // Valid bits in FFs gate all reads; alloc-time zeroing is unnecessary.
+
+  // Write port: resolved CAM match index from data_update
+  logic                                             sq_data_we;
+  logic                 [             IdxWidth-1:0] sq_data_wr_idx;
+
+  always_comb begin
+    sq_data_we     = 1'b0;
+    sq_data_wr_idx = '0;
+    if (i_data_update.valid && i_rst_n && !i_flush_all) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (sq_valid[i] && !sq_data_valid[i] && sq_rob_tag[i] == i_data_update.rob_tag) begin
+          sq_data_we     = 1'b1;
+          sq_data_wr_idx = IdxWidth'(i);
+        end
+      end
+    end
+  end
+
+  // Forwarding scan result index (set by forwarding always_comb below)
+  logic [IdxWidth-1:0] fwd_match_idx;
+
+  // Read outputs
+  logic [FLEN-1:0] sq_data_fwd_rd;  // at fwd_match_idx
+  logic [FLEN-1:0] sq_data_head_rd;  // at head_idx
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(FLEN)
+  ) u_sq_data_fwd (
+      .i_clk,
+      .i_write_enable (sq_data_we),
+      .i_write_address(sq_data_wr_idx),
+      .i_write_data   (i_data_update.data),
+      .i_read_address (fwd_match_idx),
+      .o_read_data    (sq_data_fwd_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(FLEN)
+  ) u_sq_data_head (
+      .i_clk,
+      .i_write_enable (sq_data_we),
+      .i_write_address(sq_data_wr_idx),
+      .i_write_data   (i_data_update.data),
+      .i_read_address (head_idx),
+      .o_read_data    (sq_data_head_rd)
+  );
 
   // ===========================================================================
   // Internal Signals
@@ -286,20 +346,29 @@ module store_queue #(
     scan_idx[j] = IdxWidth'(({{(32 - IdxWidth) {1'b0}}, head_idx} + j) % DEPTH);
   end
 
+  // Forwarding extract type: which slice of sq_data to forward
+  logic [1:0] fwd_extract_type;  // 0=EXACT, 1=LO_WORD, 2=HI_WORD
+
+  // Forwarding scan results — promoted to module scope so a separate
+  // always_comb can consume sq_data_fwd_rd without creating UNOPTFLAT
+  // circular combinational logic through the LUTRAM.
+  logic fwd_all_older_known;
+  logic fwd_found_match;
+  logic fwd_can_fwd;
+
+  // Block 1: CAM scan — computes fwd_match_idx, fwd_extract_type, and
+  // forwarding status from FF-based fields only (no LUTRAM read).
   always_comb begin
-    logic all_older_known;
-    logic found_match;
-    logic can_fwd;
-    logic [FLEN-1:0] fwd_data;
     logic [IdxWidth-1:0] idx;
     logic base_match;
     logic double_hi_match;
     logic load_double_hi;
 
-    all_older_known = 1'b1;
-    found_match     = 1'b0;
-    can_fwd         = 1'b0;
-    fwd_data        = '0;
+    fwd_all_older_known = 1'b1;
+    fwd_found_match     = 1'b0;
+    fwd_can_fwd         = 1'b0;
+    fwd_match_idx       = '0;
+    fwd_extract_type    = 2'd0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       idx             = scan_idx[i];
@@ -313,7 +382,7 @@ module store_queue #(
 
         // Check if this older store has its address resolved
         if (!sq_addr_valid[idx]) begin
-          all_older_known = 1'b0;
+          fwd_all_older_known = 1'b0;
         end
 
         // Check for address overlap
@@ -333,7 +402,8 @@ module store_queue #(
 
           if (base_match || double_hi_match || load_double_hi) begin
             // Address conflict detected (newest match overwrites older)
-            found_match = 1'b1;
+            fwd_found_match = 1'b1;
+            fwd_match_idx   = idx;
 
             // Forwarding: only non-MMIO stores with valid data
             if (sq_data_valid[idx] && !sq_is_mmio[idx]) begin
@@ -342,36 +412,44 @@ module store_queue #(
                   (sq_address[idx] == i_sq_check_addr) &&
                   (sq_size[idx] == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
                   (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
-                can_fwd  = 1'b1;
-                fwd_data = sq_data[idx];
+                fwd_can_fwd      = 1'b1;
+                fwd_extract_type = 2'd0;  // EXACT
                 // Case 2: FLW at FSD base address → forward low word
               end else if (base_match &&
                   (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD) &&
                   (sq_size[idx] == riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                can_fwd  = 1'b1;
-                fwd_data = {{(FLEN - XLEN) {1'b0}}, sq_data[idx][31:0]};
+                fwd_can_fwd      = 1'b1;
+                fwd_extract_type = 2'd1;  // LO_WORD
                 // Case 3: FLW at FSD addr+4 → forward high word
               end else if (double_hi_match && (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD)) begin
-                can_fwd  = 1'b1;
-                fwd_data = {{(FLEN - XLEN) {1'b0}}, sq_data[idx][63:32]};
+                fwd_can_fwd      = 1'b1;
+                fwd_extract_type = 2'd2;  // HI_WORD
               end else begin
                 // Match but can't forward — load must wait
-                can_fwd = 1'b0;
+                fwd_can_fwd = 1'b0;
               end
             end else begin
               // MMIO or no data — load must wait
-              can_fwd = 1'b0;
+              fwd_can_fwd = 1'b0;
             end
           end
         end
       end
     end
+  end
 
-    // Drive outputs (only meaningful when check is valid)
-    o_sq_all_older_addrs_known = i_sq_check_valid ? all_older_known : 1'b1;
-    o_sq_forward.match         = i_sq_check_valid ? found_match : 1'b0;
-    o_sq_forward.can_forward   = i_sq_check_valid ? (found_match && can_fwd) : 1'b0;
-    o_sq_forward.data          = fwd_data;
+  // Block 2: Drive forwarding outputs using LUTRAM data at fwd_match_idx.
+  // Separated so Verilator does not see a circular dependency through the
+  // async LUTRAM read (fwd_match_idx → sq_data_fwd_rd → output).
+  always_comb begin
+    o_sq_all_older_addrs_known = i_sq_check_valid ? fwd_all_older_known : 1'b1;
+    o_sq_forward.match         = i_sq_check_valid ? fwd_found_match : 1'b0;
+    o_sq_forward.can_forward   = i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
+    case (fwd_extract_type)
+      2'd1:    o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
+      2'd2:    o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
+      default: o_sq_forward.data = sq_data_fwd_rd;
+    endcase
   end
 
   // ===========================================================================
@@ -400,8 +478,8 @@ module store_queue #(
         o_mem_write_addr = sq_address[head_idx];
       end
 
-      o_mem_write_data = gen_write_data(
-          sq_data[head_idx], riscv_pkg::mem_size_e'(sq_size[head_idx]), sq_fp64_phase[head_idx]);
+      o_mem_write_data = gen_write_data(sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[head_idx]),
+                                        sq_fp64_phase[head_idx]);
       o_mem_write_byte_en =
           gen_byte_en(o_mem_write_addr[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
     end
@@ -517,7 +595,6 @@ module store_queue #(
         sq_addr_valid[tail_idx] <= 1'b0;
         sq_address[tail_idx]    <= '0;
         sq_data_valid[tail_idx] <= 1'b0;
-        sq_data[tail_idx]       <= '0;
         sq_size[tail_idx]       <= i_alloc.size;
         sq_is_mmio[tail_idx]    <= 1'b0;
         sq_fp64_phase[tail_idx] <= 1'b0;
@@ -547,7 +624,6 @@ module store_queue #(
         for (int i = 0; i < DEPTH; i++) begin
           if (sq_valid[i] && !sq_data_valid[i] && sq_rob_tag[i] == i_data_update.rob_tag) begin
             sq_data_valid[i] <= 1'b1;
-            sq_data[i]       <= i_data_update.data;
           end
         end
       end

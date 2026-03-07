@@ -29,17 +29,20 @@ freed when their result is accepted by the CDB arbiter (via `fu_cdb_adapter`).
 
 ## Storage Strategy
 
-All fields in FFs (not LUTRAM/BRAM). 8 entries at ~116 bits each (~928 bits
-total). Rationale:
+**Hybrid FF + LUTRAM.** Control and CAM-scanned fields remain in FFs; the
+64-bit `data` field is stored in split lo/hi `mwp_dist_ram` instances (32 bits
+each, 2 write ports).
 
-- **CAM-style tag search**: Address update must find matching `rob_tag` across
-  all entries in parallel. RAM primitives only provide single-address reads.
-- **Per-entry invalidation**: Partial flush (branch misprediction) must clear
-  individual entries by age comparison in a single cycle.
-- **Parallel priority scan**: Issue selection reads all entries to find the
-  oldest ready candidate. RAM would require sequential iteration.
-- **8 entries**: Too small for BRAM (minimum 18 Kbit), marginal for LUTRAM.
-- Same rationale as reservation stations, which use FF arrays at depths 2-8.
+- **FFs**: `valid`, `rob_tag`, `is_fp`, `addr_valid`, `address`, `size`,
+  `sign_ext`, `is_mmio`, `fp64_phase`, `issued`, `data_valid`, `forwarded`.
+  These require parallel CAM-style tag search, per-entry invalidation on flush,
+  and parallel priority scan for issue selection.
+- **LUTRAM** (`mwp_dist_ram`, 2 write ports each, lo/hi split):
+  - Port 0: cache-hit fast path, SQ forwarding, or memory response (mutually
+    exclusive sources).
+  - Port 1: AMO completion (can overlap with port 0).
+  - Split into lo (bits 31:0) and hi (bits 63:32) for FLD two-phase partial
+    writes (phase 0 writes lo only, phase 1 writes hi only).
 
 ## Entry Structure
 
@@ -56,7 +59,7 @@ total). Rationale:
 | fp64_phase  | 1 bit   | FLD phase: 0=low word, 1=high word       |
 | issued      | 1 bit   | Sent to memory                           |
 | data_valid  | 1 bit   | Data received from memory/forward        |
-| data        | 64 bits | Loaded data (FLEN for FLD)               |
+| data        | 64 bits | Loaded data (FLEN for FLD) — in LUTRAM   |
 | forwarded   | 1 bit   | Data from store queue forward            |
 | **Total**   | **~116 bits** |                                    |
 
@@ -131,6 +134,16 @@ total). Rationale:
   LW/LB/LBU/LH/LHU, SQ forwarding, MMIO, FLD two-phase, FLW NaN-boxing,
   flush, ordering, back-pressure, constrained random, LR/SC reservation,
   and AMO read-modify-write operations.
+
+## Dependencies
+
+| Module | Purpose |
+|--------|---------|
+| `riscv_pkg` | Type definitions |
+| `sdp_dist_ram` | Simple dual-port distributed RAM (used by `lq_l0_cache`) |
+| `mwp_dist_ram` | Multi-write-port distributed RAM for lq_data lo/hi LUTRAM |
+| `load_unit` | Byte/halfword extraction and sign extension |
+| `lq_l0_cache` | L0 data cache for OoO load hits |
 
 ## Files
 

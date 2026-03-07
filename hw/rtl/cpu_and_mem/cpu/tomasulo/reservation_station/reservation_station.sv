@@ -31,10 +31,13 @@
  *   - Partial flush (age-based) and full flush support
  *
  * Storage Strategy:
- *   All fields in FFs (not LUTRAM). RS entries are small (depth 2-8) and
- *   require parallel content-addressable access for CDB tag comparison
- *   across all entries. LUTRAM only provides single-address reads, which
- *   doesn't suit the RS broadcast-match access pattern.
+ *   Hybrid FF + LUTRAM.  Control fields (valid, src_ready, src_tag,
+ *   src_value, use_imm, rob_tag) remain in FFs because they need
+ *   parallel CDB tag comparison, broadcast-write, and flush scan.
+ *   Payload fields (op, imm, rm, branch/prediction/mem/csr/pc) live
+ *   in a single-port distributed RAM (sdp_dist_ram): written once at
+ *   dispatch, read once at issue.  Valid bits in FFs gate all reads,
+ *   so stale LUTRAM data behind flushed entries is harmless.
  *
  * Icarus VPI Workaround:
  *   Icarus Verilog 12.0 crashes (vvp event.cc assertion) on very wide
@@ -273,8 +276,13 @@ module reservation_station #(
 `endif
 
   // ===========================================================================
-  // Storage -- Per-entry FF arrays
+  // Storage -- FF-based control + LUTRAM-based payload
   // ===========================================================================
+  //
+  // Control fields (FFs): rs_valid, rs_src*_ready/tag/value, rs_use_imm,
+  //   rs_rob_tag — need parallel CDB tag compare/write and flush scan.
+  // Payload fields (LUTRAM): op, imm, rm, branch/prediction/mem/csr/pc —
+  //   written once at dispatch, read once at issue (single port each).
 
   // 1-bit packed vectors (for bulk operations)
   logic [                DEPTH-1:0] rs_valid;
@@ -283,67 +291,97 @@ module reservation_station #(
   logic [                DEPTH-1:0] rs_src3_ready;
   logic [                DEPTH-1:0] rs_use_imm;
 
-  // Multi-bit field arrays
+  // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag    [DEPTH];
-`ifdef ICARUS
-  logic [31:0] rs_op[DEPTH];
-`else
-  riscv_pkg::instr_op_e rs_op[DEPTH];
-`endif
 
-  logic [ReorderBufferTagWidth-1:0] rs_src1_tag        [DEPTH];
-  logic [                 FLEN-1:0] rs_src1_value      [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src1_tag   [DEPTH];
+  logic [                 FLEN-1:0] rs_src1_value [DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src2_tag        [DEPTH];
-  logic [                 FLEN-1:0] rs_src2_value      [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src2_tag   [DEPTH];
+  logic [                 FLEN-1:0] rs_src2_value [DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src3_tag        [DEPTH];
-  logic [                 FLEN-1:0] rs_src3_value      [DEPTH];
-
-  logic [                 XLEN-1:0] rs_imm             [DEPTH];
-  logic [                      2:0] rs_rm              [DEPTH];
-
-  // Branch fields
-  logic [                 XLEN-1:0] rs_branch_target   [DEPTH];
-  logic [                DEPTH-1:0] rs_predicted_taken;
-  logic [                 XLEN-1:0] rs_predicted_target[DEPTH];
-
-  // Memory fields
-  logic [                DEPTH-1:0] rs_is_fp_mem;
-`ifdef ICARUS
-  logic [1:0] rs_mem_size[DEPTH];
-`else
-  riscv_pkg::mem_size_e rs_mem_size[DEPTH];
-`endif
-  logic [        DEPTH-1:0] rs_mem_signed;
-
-  // CSR fields
-  logic [             11:0] rs_csr_addr   [DEPTH];
-  logic [              4:0] rs_csr_imm    [DEPTH];
-
-  // Program counter
-  logic [         XLEN-1:0] rs_pc         [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src3_tag   [DEPTH];
+  logic [                 FLEN-1:0] rs_src3_value [DEPTH];
 
   // ===========================================================================
   // Internal Signals
   // ===========================================================================
 
-  logic                     full;
-  logic                     empty;
-  logic [   CountWidth-1:0] count;
+  logic                             full;
+  logic                             empty;
+  logic [           CountWidth-1:0] count;
 
   // Free entry selection
-  logic [$clog2(DEPTH)-1:0] free_idx;
-  logic                     free_found;
+  logic [        $clog2(DEPTH)-1:0] free_idx;
+  logic                             free_found;
 
   // Issue selection
-  logic [        DEPTH-1:0] entry_ready;
-  logic [$clog2(DEPTH)-1:0] issue_idx;
-  logic                     any_ready;
-  logic                     issue_fire;
+  logic [                DEPTH-1:0] entry_ready;
+  logic [        $clog2(DEPTH)-1:0] issue_idx;
+  logic                             any_ready;
+  logic                             issue_fire;
 
   // Dispatch condition
-  logic                     dispatch_fire;
+  logic                             dispatch_fire;
+
+  // ===========================================================================
+  // Payload LUTRAM — dispatch-only fields, read at issue
+  // ===========================================================================
+  // Written exactly once (at dispatch into free_idx) and read exactly once
+  // (at issue from issue_idx).  No parallel access needed, so they live in
+  // distributed RAM rather than flip-flops.  Valid bits in FFs gate all reads;
+  // stale payload data behind an invalid entry is harmless.
+
+  localparam int unsigned PayloadWidth =
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN;  // 185
+
+  logic [PayloadWidth-1:0] payload_wr_data;
+  logic [PayloadWidth-1:0] payload_rd_data;
+
+  assign payload_wr_data = {
+    32'(dispatch_op),  // 32  op
+    dispatch_imm,  // 32  imm
+    dispatch_rm,  //  3  rm
+    dispatch_branch_target,  // 32  branch_target
+    dispatch_predicted_taken,  //  1  predicted_taken
+    dispatch_predicted_target,  // 32  predicted_target
+    dispatch_is_fp_mem,  //  1  is_fp_mem
+    2'(dispatch_mem_size),  //  2  mem_size
+    dispatch_mem_signed,  //  1  mem_signed
+    dispatch_csr_addr,  // 12  csr_addr
+    dispatch_csr_imm,  //  5  csr_imm
+    dispatch_pc  // 32  pc
+  };
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(DEPTH)),
+      .DATA_WIDTH(PayloadWidth)
+  ) u_payload_ram (
+      .i_clk,
+      .i_write_enable (dispatch_fire),
+      .i_write_address(free_idx),
+      .i_read_address (issue_idx),
+      .i_write_data   (payload_wr_data),
+      .o_read_data    (payload_rd_data)
+  );
+
+  // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
+  logic [    31:0] pl_op_bits;
+  logic [XLEN-1:0] pl_imm;
+  logic [     2:0] pl_rm;
+  logic [XLEN-1:0] pl_branch_target;
+  logic            pl_predicted_taken;
+  logic [XLEN-1:0] pl_predicted_target;
+  logic            pl_is_fp_mem;
+  logic [     1:0] pl_mem_size_bits;
+  logic            pl_mem_signed;
+  logic [    11:0] pl_csr_addr;
+  logic [     4:0] pl_csr_imm;
+  logic [XLEN-1:0] pl_pc;
+
+  assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
+          pl_predicted_target, pl_is_fp_mem, pl_mem_size_bits, pl_mem_signed,
+          pl_csr_addr, pl_csr_imm, pl_pc} = payload_rd_data;
 
   // ===========================================================================
   // Combinational Logic
@@ -400,7 +438,7 @@ module reservation_station #(
   assign issue_fire = any_ready && i_fu_ready;
 
   // --- SC issue peek: reports whether the next-to-issue entry is an SC ---
-  assign o_next_issue_is_sc = any_ready && (rs_op[issue_idx] == riscv_pkg::SC_W);
+  assign o_next_issue_is_sc = any_ready && (pl_op_bits == 32'(riscv_pkg::SC_W));
 
   // --- Issue output ---
   always_comb begin
@@ -425,22 +463,22 @@ module reservation_station #(
     if (issue_fire) begin
       issue_out_valid            = 1'b1;
       issue_out_rob_tag          = rs_rob_tag[issue_idx];
-      issue_out_op               = rs_op[issue_idx];
+      issue_out_op               = riscv_pkg::instr_op_e'(pl_op_bits);
       issue_out_src1_value       = rs_src1_value[issue_idx];
       issue_out_src2_value       = rs_src2_value[issue_idx];
       issue_out_src3_value       = rs_src3_value[issue_idx];
-      issue_out_imm              = rs_imm[issue_idx];
+      issue_out_imm              = pl_imm;
       issue_out_use_imm          = rs_use_imm[issue_idx];
-      issue_out_rm               = rs_rm[issue_idx];
-      issue_out_branch_target    = rs_branch_target[issue_idx];
-      issue_out_predicted_taken  = rs_predicted_taken[issue_idx];
-      issue_out_predicted_target = rs_predicted_target[issue_idx];
-      issue_out_is_fp_mem        = rs_is_fp_mem[issue_idx];
-      issue_out_mem_size         = rs_mem_size[issue_idx];
-      issue_out_mem_signed       = rs_mem_signed[issue_idx];
-      issue_out_csr_addr         = rs_csr_addr[issue_idx];
-      issue_out_csr_imm          = rs_csr_imm[issue_idx];
-      issue_out_pc               = rs_pc[issue_idx];
+      issue_out_rm               = pl_rm;
+      issue_out_branch_target    = pl_branch_target;
+      issue_out_predicted_taken  = pl_predicted_taken;
+      issue_out_predicted_target = pl_predicted_target;
+      issue_out_is_fp_mem        = pl_is_fp_mem;
+      issue_out_mem_size         = riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      issue_out_mem_signed       = pl_mem_signed;
+      issue_out_csr_addr         = pl_csr_addr;
+      issue_out_csr_imm          = pl_csr_imm;
+      issue_out_pc               = pl_pc;
     end
   end
 
@@ -499,14 +537,11 @@ module reservation_station #(
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
       // Reset: clear all valid bits
-      rs_valid           <= '0;
-      rs_src1_ready      <= '0;
-      rs_src2_ready      <= '0;
-      rs_src3_ready      <= '0;
-      rs_use_imm         <= '0;
-      rs_predicted_taken <= '0;
-      rs_is_fp_mem       <= '0;
-      rs_mem_signed      <= '0;
+      rs_valid      <= '0;
+      rs_src1_ready <= '0;
+      rs_src2_ready <= '0;
+      rs_src3_ready <= '0;
+      rs_use_imm    <= '0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -535,7 +570,6 @@ module reservation_station #(
         if (dispatch_fire) begin
           rs_valid[free_idx]   <= 1'b1;
           rs_rob_tag[free_idx] <= dispatch_rob_tag;
-          rs_op[free_idx]      <= dispatch_op;
 
           // Source 1 -- CDB bypass: if CDB matches src1 tag, capture value
           if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) begin
@@ -570,18 +604,7 @@ module reservation_station #(
             rs_src3_value[free_idx] <= dispatch_src3_value;
           end
 
-          rs_imm[free_idx]              <= dispatch_imm;
-          rs_use_imm[free_idx]          <= dispatch_use_imm;
-          rs_rm[free_idx]               <= dispatch_rm;
-          rs_branch_target[free_idx]    <= dispatch_branch_target;
-          rs_predicted_taken[free_idx]  <= dispatch_predicted_taken;
-          rs_predicted_target[free_idx] <= dispatch_predicted_target;
-          rs_is_fp_mem[free_idx]        <= dispatch_is_fp_mem;
-          rs_mem_size[free_idx]         <= dispatch_mem_size;
-          rs_mem_signed[free_idx]       <= dispatch_mem_signed;
-          rs_csr_addr[free_idx]         <= dispatch_csr_addr;
-          rs_csr_imm[free_idx]          <= dispatch_csr_imm;
-          rs_pc[free_idx]               <= dispatch_pc;
+          rs_use_imm[free_idx] <= dispatch_use_imm;
         end
 
       end  // !flush

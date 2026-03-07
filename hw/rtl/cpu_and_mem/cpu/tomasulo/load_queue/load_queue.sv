@@ -31,11 +31,14 @@
  *   - CDB back-pressure via i_adapter_result_pending
  *
  * Storage Strategy:
- *   All fields in FFs (not LUTRAM/BRAM). 8 entries at 116 bits each
- *   (~928 bits total) is trivial for FFs. The LQ requires CAM-style
- *   parallel tag search for address update, per-entry invalidation for
- *   partial flush, and parallel read for oldest-first priority scan --
- *   none of which are supported by RAM primitives.
+ *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
+ *   data_valid, issued, is_lr, is_amo, rob_tag, address, size, etc.)
+ *   remain in FFs for CAM-style parallel tag search, per-entry
+ *   invalidation, and oldest-first priority scan.
+ *   lq_data (load result payload) lives in distributed RAM
+ *   (mwp_dist_ram, split lo/hi for FLD partial writes, 2 write ports
+ *   for primary + AMO overlap).  Valid bits in FFs gate all reads;
+ *   stale LUTRAM data behind flushed entries is harmless.
  *
  * Internal load_unit instance:
  *   Byte/halfword extraction and sign extension for LB/LBU/LH/LHU.
@@ -186,7 +189,6 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
   logic [XLEN-1:0] lq_address[DEPTH];
   riscv_pkg::mem_size_e lq_size[DEPTH];
-  logic [FLEN-1:0] lq_data[DEPTH];
   riscv_pkg::instr_op_e lq_amo_op[DEPTH];
   logic [XLEN-1:0] lq_amo_rs2[DEPTH];
 
@@ -201,9 +203,58 @@ module load_queue #(
     AMO_IDLE,
     AMO_WRITE_ACTIVE
   } amo_state_e;
-  amo_state_e amo_state;
-  logic [XLEN-1:0] amo_old_value;
-  logic [IdxWidth-1:0] amo_entry_idx;
+  amo_state_e                              amo_state;
+  logic       [    XLEN-1:0]               amo_old_value;
+  logic       [IdxWidth-1:0]               amo_entry_idx;
+
+  // ===========================================================================
+  // lq_data LUTRAM — split lo/hi for FLD partial-word writes
+  // ===========================================================================
+  // lq_data payload is only read at issue_cdb_idx (CDB broadcast).
+  // Writes come from two independent sources that can overlap:
+  //   Port 0 (primary): cache hit / store forward / memory response
+  //   Port 1 (AMO):     AMO write completion
+  // Split into 32-bit lo and hi halves so FLD can write each phase
+  // independently without read-modify-write.
+
+  // Forward declaration (used as LUTRAM read address)
+  logic       [IdxWidth-1:0]               issue_cdb_idx;
+
+  logic       [    XLEN-1:0]               lq_data_lo_rd;  // LUTRAM async read at issue_cdb_idx
+  logic       [    XLEN-1:0]               lq_data_hi_rd;
+
+  // Write port signals (2 ports each for lo and hi)
+  logic       [         1:0]               lq_data_lo_we;
+  logic       [         1:0]               lq_data_hi_we;
+  logic       [         1:0][IdxWidth-1:0] lq_data_wr_addr;
+  logic       [         1:0][    XLEN-1:0] lq_data_lo_wd;
+  logic       [         1:0][    XLEN-1:0] lq_data_hi_wd;
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_lq_data_lo (
+      .i_clk,
+      .i_write_enable (lq_data_lo_we),
+      .i_write_address(lq_data_wr_addr),
+      .i_write_data   (lq_data_lo_wd),
+      .i_read_address (issue_cdb_idx),
+      .o_read_data    (lq_data_lo_rd)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_lq_data_hi (
+      .i_clk,
+      .i_write_enable (lq_data_hi_we),
+      .i_write_address(lq_data_wr_addr),
+      .i_write_data   (lq_data_hi_wd),
+      .i_read_address (issue_cdb_idx),
+      .o_read_data    (lq_data_hi_rd)
+  );
 
   // ===========================================================================
   // Internal Signals
@@ -215,7 +266,7 @@ module load_queue #(
 
   // Issue selection
   logic issue_cdb_found;  // Phase A: entry with data_valid
-  logic [IdxWidth-1:0] issue_cdb_idx;
+  // issue_cdb_idx declared above (before LUTRAM instances)
   logic issue_mem_found;  // Phase B: entry ready for memory
   logic [IdxWidth-1:0] issue_mem_idx;
 
@@ -364,24 +415,6 @@ module load_queue #(
   assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward
       && !lq_is_mmio[issue_mem_idx] && !lq_is_lr[issue_mem_idx] && !lq_is_amo[issue_mem_idx];
 
-  always_comb begin
-    o_mem_read_en   = 1'b0;
-    o_mem_read_addr = '0;
-    o_mem_read_size = riscv_pkg::MEM_SIZE_WORD;
-
-    if (sq_can_issue && !cache_hit_fast_path) begin
-      o_mem_read_en = 1'b1;
-      // FLD phase 1: read address+4 for upper word
-      if (lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE
-          && lq_fp64_phase[issue_mem_idx]) begin
-        o_mem_read_addr = lq_address[issue_mem_idx] + 32'd4;
-      end else begin
-        o_mem_read_addr = lq_address[issue_mem_idx];
-      end
-      o_mem_read_size = riscv_pkg::mem_size_e'(lq_size[issue_mem_idx]);
-    end
-  end
-
   // ===========================================================================
   // Load Unit Instance (byte/halfword extraction + sign extension)
   // ===========================================================================
@@ -460,6 +493,25 @@ module load_queue #(
       && !lq_is_lr[issue_mem_idx]
       && !lq_is_amo[issue_mem_idx];
 
+  // Memory issue (placed after cache_hit_fast_path for Icarus compatibility)
+  always_comb begin
+    o_mem_read_en   = 1'b0;
+    o_mem_read_addr = '0;
+    o_mem_read_size = riscv_pkg::MEM_SIZE_WORD;
+
+    if (sq_can_issue && !cache_hit_fast_path) begin
+      o_mem_read_en = 1'b1;
+      // FLD phase 1: read address+4 for upper word
+      if (lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE
+          && lq_fp64_phase[issue_mem_idx]) begin
+        o_mem_read_addr = lq_address[issue_mem_idx] + 32'd4;
+      end else begin
+        o_mem_read_addr = lq_address[issue_mem_idx];
+      end
+      o_mem_read_size = riscv_pkg::mem_size_e'(lq_size[issue_mem_idx]);
+    end
+  end
+
   // Load unit for cache hit path: feed cache data through load unit
   // for byte/half extraction.
   logic [XLEN-1:0] lu_cache_out;
@@ -480,6 +532,76 @@ module load_queue #(
     lu_cache_is_byte     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_BYTE);
     lu_cache_is_half     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_HALF);
     lu_cache_is_unsigned = !lq_sign_ext[issue_mem_idx];
+  end
+
+  // ===========================================================================
+  // lq_data LUTRAM Write Logic (combinational)
+  // ===========================================================================
+  // Placed after all signal declarations it references (cache_hit_fast_path,
+  // sq_do_forward, lu_cache_out, lu_data_out, etc.) for Icarus compatibility.
+
+  always_comb begin
+    lq_data_lo_we   = '0;
+    lq_data_hi_we   = '0;
+    lq_data_wr_addr = '0;
+    lq_data_lo_wd   = '0;
+    lq_data_hi_wd   = '0;
+
+    // ---------------------------------------------------------------
+    // Port 0: primary (cache hit / forward / mem response)
+    //         These sources are mutually exclusive (cache hit and
+    //         forward require !mem_outstanding; mem response requires
+    //         mem_outstanding).
+    // ---------------------------------------------------------------
+    if (i_rst_n && !i_flush_all) begin
+      if (cache_hit_fast_path) begin
+        lq_data_lo_we[0]   = 1'b1;
+        lq_data_hi_we[0]   = 1'b1;
+        lq_data_wr_addr[0] = issue_mem_idx;
+        lq_data_lo_wd[0]   = lq_is_fp[issue_mem_idx] ? cache_lookup_data : lu_cache_out;
+        lq_data_hi_wd[0]   = '0;
+      end else if (sq_do_forward) begin
+        lq_data_lo_we[0]   = 1'b1;
+        lq_data_hi_we[0]   = 1'b1;
+        lq_data_wr_addr[0] = issue_mem_idx;
+        lq_data_lo_wd[0]   = i_sq_forward.data[XLEN-1:0];
+        lq_data_hi_wd[0]   = i_sq_forward.data[FLEN-1:XLEN];
+      end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]) begin
+        lq_data_wr_addr[0] = issued_idx;
+        if (lq_is_amo[issued_idx]) begin
+          // AMO read: don't write data yet (port 1 handles after AMO write)
+        end else if (lq_is_fp[issued_idx]
+                     && lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE
+                     && !lq_fp64_phase[issued_idx]) begin
+          // FLD phase 0: write lo only
+          lq_data_lo_we[0] = 1'b1;
+          lq_data_lo_wd[0] = lu_data_out;
+        end else if (lq_is_fp[issued_idx]
+                     && lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE
+                     && lq_fp64_phase[issued_idx]) begin
+          // FLD phase 1: write hi only
+          lq_data_hi_we[0] = 1'b1;
+          lq_data_hi_wd[0] = i_mem_read_data;
+        end else begin
+          // LR / Non-FLD: write lo, clear hi
+          lq_data_lo_we[0] = 1'b1;
+          lq_data_hi_we[0] = 1'b1;
+          lq_data_lo_wd[0] = lu_data_out;
+          lq_data_hi_wd[0] = '0;
+        end
+      end
+    end
+
+    // ---------------------------------------------------------------
+    // Port 1: AMO write completion (can overlap with port 0)
+    // ---------------------------------------------------------------
+    if (i_rst_n && !i_flush_all && amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
+      lq_data_lo_we[1]   = 1'b1;
+      lq_data_hi_we[1]   = 1'b1;
+      lq_data_wr_addr[1] = amo_entry_idx;
+      lq_data_lo_wd[1]   = amo_old_value;
+      lq_data_hi_wd[1]   = '0;
+    end
   end
 
   // Cache fill: fill L0 cache on valid memory response (not for drained/flushed).
@@ -561,15 +683,15 @@ module load_queue #(
 
       if (lq_is_fp[issue_cdb_idx]) begin
         if (lq_size[issue_cdb_idx] == riscv_pkg::MEM_SIZE_DOUBLE) begin
-          // FLD: raw 64-bit data
-          o_fu_complete.value = lq_data[issue_cdb_idx];
+          // FLD: raw 64-bit data (lo + hi from LUTRAM)
+          o_fu_complete.value = {lq_data_hi_rd, lq_data_lo_rd};
         end else begin
           // FLW: NaN-box 32-bit to 64-bit
-          o_fu_complete.value = {32'hFFFF_FFFF, lq_data[issue_cdb_idx][31:0]};
+          o_fu_complete.value = {32'hFFFF_FFFF, lq_data_lo_rd};
         end
       end else begin
         // INT load: zero-extend XLEN to FLEN
-        o_fu_complete.value = {{(FLEN - XLEN) {1'b0}}, lq_data[issue_cdb_idx][XLEN-1:0]};
+        o_fu_complete.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
       end
     end
   end
@@ -711,7 +833,6 @@ module load_queue #(
         lq_fp64_phase[tail_idx] <= 1'b0;
         lq_issued[tail_idx]     <= 1'b0;
         lq_data_valid[tail_idx] <= 1'b0;
-        lq_data[tail_idx]       <= '0;
         lq_forwarded[tail_idx]  <= 1'b0;
         lq_is_lr[tail_idx]      <= i_alloc.is_lr;
         lq_is_amo[tail_idx]     <= i_alloc.is_amo;
@@ -738,15 +859,6 @@ module load_queue #(
       // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
       // -----------------------------------------------------------------
       if (cache_hit_fast_path) begin
-        // Feed cached data through load unit for byte/half extraction
-        if (lq_is_fp[issue_mem_idx]) begin
-          // FLW: raw 32-bit (NaN-boxing done at CDB broadcast)
-          lq_data[issue_mem_idx][XLEN-1:0] <= cache_lookup_data;
-          if (FLEN > XLEN) lq_data[issue_mem_idx][FLEN-1:XLEN] <= '0;
-        end else begin
-          lq_data[issue_mem_idx][XLEN-1:0] <= lu_cache_out;
-          if (FLEN > XLEN) lq_data[issue_mem_idx][FLEN-1:XLEN] <= '0;
-        end
         lq_data_valid[issue_mem_idx] <= 1'b1;
       end
 
@@ -756,8 +868,6 @@ module load_queue #(
       if (sq_do_forward) begin
         lq_data_valid[issue_mem_idx] <= 1'b1;
         lq_forwarded[issue_mem_idx]  <= 1'b1;
-        // Store forwarded data (already extracted by SQ)
-        lq_data[issue_mem_idx]       <= i_sq_forward.data;
       end
 
       // -----------------------------------------------------------------
@@ -786,11 +896,7 @@ module load_queue #(
           amo_state       <= AMO_WRITE_ACTIVE;
           mem_outstanding <= 1'b0;
         end else if (lq_is_lr[issued_idx]) begin
-          // LR: normal data capture + set reservation
-          lq_data[issued_idx][XLEN-1:0] <= lu_data_out;
-          if (FLEN > XLEN) begin
-            lq_data[issued_idx][FLEN-1:XLEN] <= '0;
-          end
+          // LR: data captured by LUTRAM write logic
           lq_data_valid[issued_idx] <= 1'b1;
           mem_outstanding           <= 1'b0;
           reservation_valid         <= 1'b1;
@@ -798,24 +904,18 @@ module load_queue #(
         end else if (lq_is_fp[issued_idx] &&
             lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
             !lq_fp64_phase[issued_idx]) begin
-          // FLD phase 0: store low word, reset issued, advance to phase 1
-          lq_data[issued_idx][31:0] <= lu_data_out;
+          // FLD phase 0: advance to phase 1, data captured by LUTRAM
           lq_fp64_phase[issued_idx] <= 1'b1;
           lq_issued[issued_idx]     <= 1'b0;  // Re-issue for phase 1
           mem_outstanding           <= 1'b0;
         end else if (lq_is_fp[issued_idx] &&
                      lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
                      lq_fp64_phase[issued_idx]) begin
-          // FLD phase 1: store high word, mark data valid
-          lq_data[issued_idx][63:32] <= i_mem_read_data;
-          lq_data_valid[issued_idx]  <= 1'b1;
-          mem_outstanding            <= 1'b0;
+          // FLD phase 1: data captured by LUTRAM
+          lq_data_valid[issued_idx] <= 1'b1;
+          mem_outstanding           <= 1'b0;
         end else begin
-          // Non-FLD: single-phase, run through load unit
-          lq_data[issued_idx][XLEN-1:0] <= lu_data_out;
-          if (FLEN > XLEN) begin
-            lq_data[issued_idx][FLEN-1:XLEN] <= '0;
-          end
+          // Non-FLD: data captured by LUTRAM
           lq_data_valid[issued_idx] <= 1'b1;
           mem_outstanding           <= 1'b0;
         end
@@ -825,7 +925,6 @@ module load_queue #(
       // AMO Write Completion: latch old value as result, invalidate cache
       // -----------------------------------------------------------------
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_data[amo_entry_idx]       <= {{(FLEN - XLEN) {1'b0}}, amo_old_value};
         lq_data_valid[amo_entry_idx] <= 1'b1;
         amo_state                    <= AMO_IDLE;
       end

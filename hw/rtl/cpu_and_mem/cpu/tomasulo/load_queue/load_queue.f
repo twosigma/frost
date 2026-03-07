@@ -1,8 +1,12 @@
 # Load Queue file list
-# Circular buffer tracking in-flight load instructions
+# Circular buffer tracking in-flight load instructions (hybrid FF + LUTRAM)
 
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+
+# RAM primitives (lq_data LUTRAM)
+$(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
+$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 
 # Load unit (byte/halfword extraction and sign extension)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
