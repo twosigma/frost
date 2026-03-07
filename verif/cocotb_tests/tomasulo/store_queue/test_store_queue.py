@@ -1293,3 +1293,57 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
     assert fwd.match, "LH at FSD base should match"
     assert not fwd.can_forward, "Sub-word load from DOUBLE store cannot forward"
     dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Test 38: Non-contiguous hole — pointer-full with fewer than DEPTH valid
+# ============================================================================
+@cocotb.test()
+async def test_pointer_full_with_hole(dut: Any) -> None:
+    """Partial flush creates a hole; pointer-full fires with < DEPTH valid entries.
+
+    Allocate out-of-ROB-order so partial flush creates:
+      idx 0(V:tag0) 1(V:tag1) 2(I:tag5) 3(V:tag2) 4(I:tag6) 5(I:tag7)
+    Tail retracts from 6→4 (stops at valid idx 3).  Then allocate 4 more
+    to exhaust pointer space: pointer-full with only 7 valid entries.
+    Pointer-based full in the model must agree with the DUT.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(0)
+
+    # Allocate 6 entries with tags that create a hole after flush.
+    # Tags 5, 6, 7 are younger than flush_tag=4; tags 0, 1, 2 are not.
+    for tag in [0, 1, 5, 2, 6, 7]:
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        model.alloc(tag, False, MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.count == 6, f"Expected 6 entries, got {dut_if.count}"
+    assert model.count == 6
+
+    # Partial flush: tags 5, 6, 7 flushed (younger than 4 relative to head 0)
+    dut_if.drive_partial_flush(flush_tag=4)
+    model.partial_flush(4, 0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == 3, f"Expected 3 valid entries, got {dut_if.count}"
+    assert model.count == 3
+    assert not dut_if.full, "SQ should not be full after partial flush"
+    assert not model.full, "Model should not be full after partial flush"
+
+    # Allocate 4 more entries to exhaust pointer space (tail wraps to head)
+    for i in range(4):
+        dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
+        model.alloc(10 + i, False, MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    # Pointer-full with 7 valid entries (idx 2 is a hole)
+    assert dut_if.full, "SQ should be pointer-full after filling remaining slots"
+    assert model.full, "Model pointer-full must agree with DUT"  # type: ignore[unreachable]
+    assert (
+        dut_if.count == 7
+    ), f"Expected 7 valid entries (with hole), got {dut_if.count}"
+    assert model.count == 7, f"Model count must match DUT (got {model.count})"

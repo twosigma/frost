@@ -837,9 +837,13 @@ async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
         dut_if.clear_alloc()
 
     assert dut_if.full, "LQ should be full after allocating remaining slots"
-    # Valid count: 3 original + 4 new = 7 (idx 2 is a hole, still invalid)
-    count = dut_if.count  # type: ignore[unreachable]
+    assert model.full, "Model pointer-full must agree with DUT"  # type: ignore[unreachable]
+    # Valid count: 3 original + 4 new = 7 (idx 2 is a hole, still invalid).
+    # Pointer-based full fires with fewer than DEPTH valid entries — this is
+    # accepted capacity loss from tail-only allocation with out-of-order frees.
+    count = dut_if.count
     assert count == 7, f"Expected 7 valid entries (with hole), got {count}"
+    assert model.count == 7, f"Model count must match DUT (got {model.count})"
 
 
 # ============================================================================

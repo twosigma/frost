@@ -219,8 +219,16 @@ class LQModel:
 
     @property
     def full(self) -> bool:
-        """Return whether the load queue model is full."""
-        return self.count == self.depth
+        """Pointer-based full (matches RTL).
+
+        With out-of-order frees and partial flush, holes can exist between
+        head and tail.  The RTL reports full when the pointer space is
+        exhausted even if some entries are invalid, so the model must too.
+        """
+        return (
+            self.head_ptr % self.depth == self.tail_ptr % self.depth
+            and self.head_ptr != self.tail_ptr
+        )
 
     @property
     def empty(self) -> bool:
