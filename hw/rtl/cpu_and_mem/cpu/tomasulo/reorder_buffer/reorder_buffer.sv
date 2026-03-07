@@ -206,7 +206,9 @@ module reorder_buffer (
   assign dbg_alloc_condition = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
 
   // Raw packed struct debug
-  logic [120:0] dbg_raw_alloc_req  /* verilator public_flat_rd */;
+  logic [$bits(
+riscv_pkg::reorder_buffer_alloc_req_t
+)-1:0] dbg_raw_alloc_req  /* verilator public_flat_rd */;
   assign dbg_raw_alloc_req = i_alloc_req;
 
   logic dbg_full_signal  /* verilator public_flat_rd */;
@@ -255,6 +257,7 @@ module reorder_buffer (
   logic [ReorderBufferDepth-1:0] rob_is_lr;
   logic [ReorderBufferDepth-1:0] rob_is_sc;
   logic [ReorderBufferDepth-1:0] rob_is_compressed;
+  logic [ReorderBufferDepth-1:0] rob_has_fp_flags;
 
   // Head and tail pointers (declared above for ICARUS forward ref)
 
@@ -300,6 +303,11 @@ module reorder_buffer (
   logic head_is_lr;
   logic head_is_sc;
   logic head_is_compressed;
+  logic head_has_fp_flags;
+  // CSR fields (from RAM)
+  logic [11:0] head_csr_addr;
+  logic [2:0] head_csr_op;
+  logic [XLEN-1:0] head_csr_write_data;
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
@@ -367,6 +375,7 @@ module reorder_buffer (
   assign head_is_lr = rob_is_lr[head_idx];
   assign head_is_sc = rob_is_sc[head_idx];
   assign head_is_compressed = rob_is_compressed[head_idx];
+  assign head_has_fp_flags = rob_has_fp_flags[head_idx];
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done;
@@ -530,6 +539,45 @@ module reorder_buffer (
       .o_read_data    (head_branch_target)
   );
 
+  // CSR address RAM (12-bit, written at allocation)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(12)
+  ) u_rob_csr_addr (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.csr_addr),
+      .i_read_address (head_idx),
+      .o_read_data    (head_csr_addr)
+  );
+
+  // CSR op RAM (3-bit funct3, written at allocation)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(3)
+  ) u_rob_csr_op (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.csr_op),
+      .i_read_address (head_idx),
+      .o_read_data    (head_csr_op)
+  );
+
+  // CSR write data RAM (32-bit, written at allocation)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_rob_csr_write_data (
+      .i_clk,
+      .i_write_enable (alloc_en),
+      .i_write_address(tail_idx),
+      .i_write_data   (i_alloc_req.csr_write_data),
+      .i_read_address (head_idx),
+      .o_read_data    (head_csr_write_data)
+  );
+
   // ===========================================================================
   // Allocation Logic
   // ===========================================================================
@@ -596,6 +644,7 @@ module reorder_buffer (
       rob_is_lr           <= '0;
       rob_is_sc           <= '0;
       rob_is_compressed   <= '0;
+      rob_has_fp_flags    <= '0;
     end else begin
       // ---------------------------------------------------------------------
       // Flush Logic
@@ -639,6 +688,7 @@ module reorder_buffer (
         rob_is_lr[tail_idx]           <= i_alloc_req.is_lr;
         rob_is_sc[tail_idx]           <= i_alloc_req.is_sc;
         rob_is_compressed[tail_idx]   <= i_alloc_req.is_compressed;
+        rob_has_fp_flags[tail_idx]    <= i_alloc_req.has_fp_flags;
 
         // Initialize done/exception/checkpoint/misprediction fields
         rob_exception[tail_idx]       <= 1'b0;
@@ -912,6 +962,7 @@ module reorder_buffer (
       o_commit.pc = head_pc;
       o_commit.exc_cause = head_exc_cause;
       o_commit.fp_flags = head_fp_flags;
+      o_commit.has_fp_flags = head_has_fp_flags;
 
       // Branch misprediction recovery
       o_commit.misprediction = commit_misprediction;
@@ -934,15 +985,26 @@ module reorder_buffer (
         o_commit.redirect_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
       end
 
+      // Branch info (for BTB update and RAS restore at commit)
+      o_commit.branch_taken   = head_branch_taken;
+      o_commit.branch_target  = head_branch_target;
+      o_commit.is_call        = head_is_call;
+      o_commit.is_return      = head_is_return;
+
+      // CSR info (for commit-time serialized CSR execution)
+      o_commit.csr_addr       = head_csr_addr;
+      o_commit.csr_op         = head_csr_op;
+      o_commit.csr_write_data = head_csr_write_data;
+
       // Serializing instruction flags (for external units)
-      o_commit.is_csr     = head_is_csr;
-      o_commit.is_fence   = head_is_fence;
-      o_commit.is_fence_i = head_is_fence_i;
-      o_commit.is_wfi     = head_is_wfi;
-      o_commit.is_mret    = head_is_mret;
-      o_commit.is_amo     = head_is_amo;
-      o_commit.is_lr      = head_is_lr;
-      o_commit.is_sc      = head_is_sc;
+      o_commit.is_csr         = head_is_csr;
+      o_commit.is_fence       = head_is_fence;
+      o_commit.is_fence_i     = head_is_fence_i;
+      o_commit.is_wfi         = head_is_wfi;
+      o_commit.is_mret        = head_is_mret;
+      o_commit.is_amo         = head_is_amo;
+      o_commit.is_lr          = head_is_lr;
+      o_commit.is_sc          = head_is_sc;
     end
   end
 

@@ -39,32 +39,36 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (121 bits total, MSB to LSB):
-# [120]     alloc_valid
-# [119:88]  pc (32 bits)
-# [87]      dest_rf
-# [86:82]   dest_reg (5 bits)
-# [81]      dest_valid
-# [80]      is_store
-# [79]      is_fp_store
-# [78]      is_branch
-# [77]      predicted_taken
-# [76:45]   predicted_target (32 bits)
-# [44]      is_call
-# [43]      is_return
-# [42:11]   link_addr (32 bits)
-# [10]      is_jal
-# [9]       is_jalr
-# [8]       is_csr
-# [7]       is_fence
-# [6]       is_fence_i
-# [5]       is_wfi
-# [4]       is_mret
-# [3]       is_amo
-# [2]       is_lr
-# [1]       is_sc
-# [0]       is_compressed
-ALLOC_REQ_WIDTH = 121
+# reorder_buffer_alloc_req_t field positions (169 bits total, MSB to LSB):
+# [168]      alloc_valid
+# [167:136]  pc (32 bits)
+# [135]      dest_rf
+# [134:130]  dest_reg (5 bits)
+# [129]      dest_valid
+# [128]      is_store
+# [127]      is_fp_store
+# [126]      is_branch
+# [125]      predicted_taken
+# [124:93]   predicted_target (32 bits)
+# [92]       is_call
+# [91]       is_return
+# [90:59]    link_addr (32 bits)
+# [58]       is_jal
+# [57]       is_jalr
+# [56]       is_csr
+# [55]       is_fence
+# [54]       is_fence_i
+# [53]       is_wfi
+# [52]       is_mret
+# [51]       is_amo
+# [50]       is_lr
+# [49]       is_sc
+# [48]       is_compressed
+# [47:36]    csr_addr (12 bits)
+# [35:33]    csr_op (3 bits)
+# [32:1]     csr_write_data (32 bits)
+# [0]        has_fp_flags
+ALLOC_REQ_WIDTH = 169
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -76,6 +80,14 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit = 0  # Start from LSB
 
     # Pack from LSB to MSB (reverse order of struct declaration)
+    val |= (1 if req.has_fp_flags else 0) << bit
+    bit += 1
+    val |= (req.csr_write_data & MASK32) << bit
+    bit += 32
+    val |= (req.csr_op & 0x7) << bit
+    bit += 3
+    val |= (req.csr_addr & 0xFFF) << bit
+    bit += 12
     val |= (1 if req.is_compressed else 0) << bit
     bit += 1
     val |= (1 if req.is_sc else 0) << bit
@@ -232,6 +244,20 @@ def unpack_commit(val: int) -> dict[str, Any]:
     bit += 1
     result["is_csr"] = bool((val >> bit) & 1)
     bit += 1
+    result["csr_write_data"] = (val >> bit) & MASK32
+    bit += 32
+    result["csr_op"] = (val >> bit) & 0x7
+    bit += 3
+    result["csr_addr"] = (val >> bit) & 0xFFF
+    bit += 12
+    result["is_return"] = bool((val >> bit) & 1)
+    bit += 1
+    result["is_call"] = bool((val >> bit) & 1)
+    bit += 1
+    result["branch_target"] = (val >> bit) & MASK32
+    bit += 32
+    result["branch_taken"] = bool((val >> bit) & 1)
+    bit += 1
     result["redirect_pc"] = (val >> bit) & MASK32
     bit += 32
     result["checkpoint_id"] = (val >> bit) & 0x3
@@ -239,6 +265,8 @@ def unpack_commit(val: int) -> dict[str, Any]:
     result["has_checkpoint"] = bool((val >> bit) & 1)
     bit += 1
     result["misprediction"] = bool((val >> bit) & 1)
+    bit += 1
+    result["has_fp_flags"] = bool((val >> bit) & 1)
     bit += 1
     result["fp_flags"] = (val >> bit) & 0x1F
     bit += 5
