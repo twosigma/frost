@@ -1187,6 +1187,14 @@ package riscv_pkg;
     logic is_amo;      // AMO (execute at head with SQ empty)
     logic is_lr;       // LR (sets reservation)
     logic is_sc;       // SC (checks reservation at head)
+
+    // CSR info (stored at dispatch, used at commit for serialized CSR execution)
+    logic [11:0]     csr_addr;
+    logic [2:0]      csr_op;          // funct3 for CSR operation
+    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
+
+    // FP flags validity
+    logic has_fp_flags;  // This instruction produces FP flags (FP compute, not FP load)
   } reorder_buffer_entry_t;
 
   // Reorder Buffer interface signals (for module ports)
@@ -1219,6 +1227,12 @@ package riscv_pkg;
     logic                    is_lr;
     logic                    is_sc;
     logic                    is_compressed;     // Compressed (16-bit) instruction
+    // CSR info (stored in ROB entry for commit-time serialized execution)
+    logic [11:0]             csr_addr;
+    logic [2:0]              csr_op;            // funct3 for CSR operation
+    logic [XLEN-1:0]         csr_write_data;    // rs1 value or zero-ext immediate
+    // FP flags validity
+    logic                    has_fp_flags;      // Instruction produces FP flags
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -1273,11 +1287,21 @@ package riscv_pkg;
     logic [XLEN-1:0] pc;  // For mepc
     exc_cause_t exc_cause;
     fp_flags_t fp_flags;  // FP flags to accumulate
+    logic has_fp_flags;  // FP flags are valid (FP compute op, not FP load)
     // Branch misprediction recovery
     logic misprediction;  // Branch mispredicted
     logic has_checkpoint;
     logic [CheckpointIdWidth-1:0] checkpoint_id;
     logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
+    // Branch info (for BTB update and RAS restore at commit)
+    logic branch_taken;  // Actual branch outcome
+    logic [XLEN-1:0] branch_target;  // Actual branch target
+    logic is_call;  // Call instruction (for RAS update)
+    logic is_return;  // Return instruction (for RAS restore)
+    // CSR info (for commit-time CSR execution)
+    logic [11:0] csr_addr;  // CSR address
+    logic [2:0] csr_op;  // CSR operation funct3
+    logic [XLEN-1:0] csr_write_data;  // CSR write data (rs1 or zero-ext imm)
     // Serializing instruction flags (for outer control logic)
     logic is_csr;  // CSR instruction (Reorder Buffer executes at commit)
     logic is_fence;  // FENCE (SQ must be drained)

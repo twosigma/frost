@@ -44,7 +44,7 @@ def unpack_rat_lookup(val: int) -> LookupResult:
     return LookupResult(renamed=renamed, tag=tag, value=value)
 
 
-# reorder_buffer_commit_t packing (166 bits, MSB-first):
+# reorder_buffer_commit_t packing (249 bits, MSB-first):
 # We only need to set the fields the RAT uses: valid, tag, dest_rf, dest_reg, dest_valid.
 # All other fields are packed as 0.
 #
@@ -57,23 +57,31 @@ def unpack_rat_lookup(val: int) -> LookupResult:
 #   [5]       is_fence_i
 #   [6]       is_fence
 #   [7]       is_csr
-#   [39:8]    redirect_pc (32 bits)
-#   [41:40]   checkpoint_id (2 bits)
-#   [42]      has_checkpoint
-#   [43]      misprediction
-#   [48:44]   fp_flags (5 bits)
-#   [53:49]   exc_cause (5 bits)
-#   [85:54]   pc (32 bits)
-#   [86]      exception
-#   [87]      is_fp_store
-#   [88]      is_store
-#   [152:89]  value (64 bits)
-#   [153]     dest_valid
-#   [158:154] dest_reg (5 bits)
-#   [159]     dest_rf
-#   [164:160] tag (5 bits)
-#   [165]     valid
-COMMIT_WIDTH = 166
+#   [39:8]    csr_write_data (32 bits)
+#   [42:40]   csr_op (3 bits)
+#   [54:43]   csr_addr (12 bits)
+#   [55]      is_return
+#   [56]      is_call
+#   [88:57]   branch_target (32 bits)
+#   [89]      branch_taken
+#   [121:90]  redirect_pc (32 bits)
+#   [123:122] checkpoint_id (2 bits)
+#   [124]     has_checkpoint
+#   [125]     misprediction
+#   [126]     has_fp_flags
+#   [131:127] fp_flags (5 bits)
+#   [136:132] exc_cause (5 bits)
+#   [168:137] pc (32 bits)
+#   [169]     exception
+#   [170]     is_fp_store
+#   [171]     is_store
+#   [235:172] value (64 bits)
+#   [236]     dest_valid
+#   [241:237] dest_reg (5 bits)
+#   [242]     dest_rf
+#   [247:243] tag (5 bits)
+#   [248]     valid
+COMMIT_WIDTH = 249
 
 
 def pack_commit(
@@ -88,19 +96,18 @@ def pack_commit(
     Only sets the fields the RAT cares about; all others are 0.
     """
     val = 0
-    # Pack from MSB down (but we build from LSB up)
-    # bit 165: valid
+    # bit 248: valid
     if valid:
-        val |= 1 << 165
-    # bits 164:160: tag
-    val |= (tag & MASK_TAG) << 160
-    # bit 159: dest_rf
-    val |= (dest_rf & 1) << 159
-    # bits 158:154: dest_reg
-    val |= (dest_reg & MASK_REG) << 154
-    # bit 153: dest_valid
+        val |= 1 << 248
+    # bits 247:243: tag
+    val |= (tag & MASK_TAG) << 243
+    # bit 242: dest_rf
+    val |= (dest_rf & 1) << 242
+    # bits 241:237: dest_reg
+    val |= (dest_reg & MASK_REG) << 237
+    # bit 236: dest_valid
     if dest_valid:
-        val |= 1 << 153
+        val |= 1 << 236
     return val
 
 

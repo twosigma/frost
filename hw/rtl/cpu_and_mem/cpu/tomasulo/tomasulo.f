@@ -19,3 +19,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.
 
 # CDB Arbiter
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
+
+# Dispatch
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv

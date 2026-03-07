@@ -263,6 +263,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="FP div shim unit tests (FDIV, FSQRT, flush)",
         supported_simulators=("verilator",),
     ),
+    "dispatch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.dispatch.test_dispatch",
+        hdl_toplevel_module="dispatch",
+        description="Dispatch unit tests (instruction classification, source resolution, stall, RS routing)",
+        supported_simulators=("verilator",),
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
