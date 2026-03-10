@@ -114,7 +114,7 @@ module cpu_tb
   // This is needed for AMO instructions which stall mid-pipeline
   assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
 
-  // Device Under Test - instantiate CPU with implicit port connections
-  cpu device_under_test (.*);
+  // Device Under Test - instantiate OOO CPU with implicit port connections
+  cpu_ooo device_under_test (.*);
 
 endmodule : cpu_tb

@@ -100,6 +100,7 @@ module pc_controller #(
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
     input logic [XLEN-1:0] i_predicted_target_r,  // Predicted target address (registered)
     input logic i_prediction_used,  // Prediction actually used this cycle
+    input logic i_ras_predicted,  // Prediction came from RAS/return detection
     input logic i_sel_prediction_r,  // Registered prediction used (for pc_reg)
     input logic i_prediction_holdoff,  // One cycle after prediction (for pc_increment)
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
@@ -114,7 +115,8 @@ module pc_controller #(
     output logic o_reset_holdoff,
     output logic o_any_holdoff,
     output logic o_any_holdoff_safe,
-    output logic o_mid_32bit_correction
+    output logic o_mid_32bit_correction,
+    output logic o_pending_prediction_holdoff
 );
 
   // ===========================================================================
@@ -231,13 +233,81 @@ module pc_controller #(
   //   - next_pc_reg stays sequential in cycle N (instruction at PC_{N-1} is processed)
   //   - next_pc_reg goes to target in cycle N+1 (using registered prediction)
   //
-  // CRITICAL: Use i_sel_prediction_r (registered i_prediction_used from branch_prediction_controller),
-  // not i_predicted_taken! i_predicted_taken is the raw BTB output which doesn't include the
-  // gating from i_prediction_used (halfword-aligned check, spanning check, etc.). If we blocked
-  // i_prediction_used for a halfword-aligned PC but used raw BTB output here, pc_reg
-  // would jump to the target while pc stays sequential - a mismatch.
+  // Word-aligned predictions still use the original registered 1-cycle handoff:
+  // the branch PC reaches o_pc_reg in the next cycle, and then i_sel_prediction_r
+  // advances pc_reg to the predicted target. This must remain active during the
+  // post-prediction holdoff cycle; otherwise pc_reg misses the target handoff
+  // and keeps stepping sequentially while fetch has already redirected.
+  //
+  // Halfword-aligned predictions are different. A compressed branch/return in
+  // the upper half of a fetch word can cause pc_reg to step past the branch PC
+  // numerically before the registered prediction pulse lines up. Keep a pending
+  // {branch_pc,target} pair only for that halfword-crossing case.
   logic sel_prediction_r;
-  assign sel_prediction_r = !i_reset && !o_any_holdoff_safe && i_sel_prediction_r;
+  assign sel_prediction_r = !i_reset && i_sel_prediction_r && !pending_prediction_valid;
+
+  logic            pending_prediction_valid;
+  logic [XLEN-1:0] pending_prediction_pc;
+  logic [XLEN-1:0] pending_prediction_target;
+  logic            pending_prediction_effective;
+  logic            prediction_needs_pending;
+  logic            use_pending_prediction_for_pc_reg;
+  logic            stale_pending_prediction;
+  logic            hold_pending_prediction_fetch;
+  logic            hold_pending_prediction_consume_fetch;
+  logic            redirect_kill_pending_q;
+  logic [XLEN-2:0] pending_prediction_pc_hw;
+  logic [XLEN-2:0] pc_reg_hw;
+  logic [XLEN-2:0] seq_next_pc_reg_hw;
+
+  assign pending_prediction_pc_hw = pending_prediction_pc[XLEN-1:1];
+  assign pc_reg_hw = o_pc_reg[XLEN-1:1];
+  assign seq_next_pc_reg_hw = seq_next_pc_reg[XLEN-1:1];
+  assign prediction_needs_pending = i_prediction_used && !i_ras_predicted && o_pc[1];
+  assign pending_prediction_effective = pending_prediction_valid && !redirect_kill_pending_q &&
+                                        !i_flush && !i_branch_taken &&
+                                        !i_trap_taken && !i_mret_taken;
+
+  // A compressed branch/return can be predicted from the upper halfword of a
+  // 32-bit fetch word. In that case pc_reg may advance from the lower halfword
+  // to the next word and never equal the branch PC exactly. Treat "crossing"
+  // the pending halfword as ready-to-apply, and clear anything already behind
+  // pc_reg so stale redirects cannot pin fetch forever.
+  assign use_pending_prediction_for_pc_reg = pending_prediction_effective &&
+                                             ((o_pc_reg == pending_prediction_pc) ||
+                                              ((pc_reg_hw < pending_prediction_pc_hw) &&
+                                               (seq_next_pc_reg_hw >= pending_prediction_pc_hw)));
+  assign stale_pending_prediction = pending_prediction_effective &&
+                                    !use_pending_prediction_for_pc_reg &&
+                                    (pc_reg_hw > pending_prediction_pc_hw);
+  assign hold_pending_prediction_fetch =
+      pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+      !stale_pending_prediction;
+  assign hold_pending_prediction_consume_fetch =
+      pending_prediction_effective && use_pending_prediction_for_pc_reg;
+  assign o_pending_prediction_holdoff =
+      hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
+
+  always_ff @(posedge i_clk) begin
+    if (i_reset) redirect_kill_pending_q <= 1'b0;
+    else redirect_kill_pending_q <= i_flush || i_branch_taken || i_trap_taken || i_mret_taken;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
+      pending_prediction_valid  <= 1'b0;
+      pending_prediction_pc     <= '0;
+      pending_prediction_target <= '0;
+    end else if (!i_stall) begin
+      if (use_pending_prediction_for_pc_reg || stale_pending_prediction) begin
+        pending_prediction_valid <= 1'b0;
+      end else if (prediction_needs_pending) begin
+        pending_prediction_valid  <= 1'b1;
+        pending_prediction_pc     <= o_pc;
+        pending_prediction_target <= i_predicted_target;
+      end
+    end
+  end
 
   logic [XLEN-1:0] next_pc, next_pc_reg;
   logic trap_or_mret;
@@ -249,6 +319,12 @@ module pc_controller #(
     else if (i_stall) next_pc = o_pc;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_prediction_used) next_pc = i_predicted_target;
+    else if (hold_pending_prediction_consume_fetch)
+      // Once pc_reg is ready to land on the pending halfword target, fetch can
+      // advance to the following word. Holding fetch on the target for this
+      // extra cycle duplicates the first target word and shifts downstream PCs.
+      next_pc = seq_next_pc;
+    else if (hold_pending_prediction_fetch) next_pc = pending_prediction_target;
     else next_pc = seq_next_pc;
   end
 
@@ -262,6 +338,9 @@ module pc_controller #(
     else if (trap_or_mret) next_pc_reg = i_trap_target;
     else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
+    else if (i_prediction_used && i_ras_predicted) next_pc_reg = i_predicted_target;
+    else if (pending_prediction_valid && use_pending_prediction_for_pc_reg)
+      next_pc_reg = pending_prediction_target;
     else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
     else next_pc_reg = seq_next_pc_reg;
   end
@@ -271,5 +350,6 @@ module pc_controller #(
     o_pc <= next_pc;
     o_pc_reg <= next_pc_reg;
   end
+
 
 endmodule : pc_controller

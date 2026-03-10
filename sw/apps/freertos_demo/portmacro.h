@@ -61,7 +61,9 @@ extern void vPortExitCritical(void);
  *----------------------------------------------------------*/
 
 extern void vPortYield(void);
+extern void vPortYieldWithinAPI(void);
 #define portYIELD() vPortYield()
+#define portYIELD_WITHIN_API() vPortYieldWithinAPI()
 
 #define portEND_SWITCHING_ISR(xSwitchRequired)                                                     \
     if (xSwitchRequired)                                                                           \

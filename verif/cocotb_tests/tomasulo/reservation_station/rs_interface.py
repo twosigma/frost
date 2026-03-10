@@ -187,6 +187,8 @@ def unpack_rs_issue(raw: int) -> dict:
     bit = 0
     result = {}
 
+    result["link_addr"] = (raw >> bit) & MASK32
+    bit += XLEN
     result["pc"] = (raw >> bit) & MASK32
     bit += XLEN
     result["csr_imm"] = (raw >> bit) & 0x1F

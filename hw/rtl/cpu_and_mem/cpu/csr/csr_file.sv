@@ -54,12 +54,13 @@ module csr_file #(
     input logic i_rst,
 
     // CSR access interface (directly from ID/EX stage)
-    input  logic            i_csr_read_enable,   // CSR instruction in EX stage
-    input  logic [    11:0] i_csr_address,       // CSR address
-    input  logic [     2:0] i_csr_op,            // CSR operation (funct3)
-    input  logic [XLEN-1:0] i_csr_write_data,    // rs1 value or zero-extended immediate
-    input  logic            i_csr_write_enable,  // Actually perform write (not stalled/flushed)
-    output logic [XLEN-1:0] o_csr_read_data,     // CSR read value
+    input  logic            i_csr_read_enable,    // CSR instruction in EX stage
+    input  logic [    11:0] i_csr_address,        // CSR address
+    input  logic [     2:0] i_csr_op,             // CSR operation (funct3)
+    input  logic [XLEN-1:0] i_csr_write_data,     // rs1 value or zero-extended immediate
+    input  logic            i_csr_write_enable,   // Actually perform write (not stalled/flushed)
+    output logic [XLEN-1:0] o_csr_read_data,      // CSR read value (registered, 1-cycle latency)
+    output logic [XLEN-1:0] o_csr_read_data_comb, // CSR read value (combinational, same cycle)
 
     // Instruction retire signal (active when instruction commits)
     input logic i_instruction_retired,
@@ -462,6 +463,7 @@ module csr_file #(
   end
 
   assign o_csr_read_data = csr_read_data_reg;
+  assign o_csr_read_data_comb = csr_read_data_comb;
 
   // ===========================================================================
   // Formal Verification Properties

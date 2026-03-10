@@ -79,18 +79,26 @@ module pc_increment_calculator #(
   assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_is_compressed || i_is_32bit_spanning;
 
   // Final PC increment select with priority encoding
-  // Priority: sel_4 (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
+  // Priority: sel_holdoff (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
   // Use i_any_holdoff_safe (registered) to break timing path from branch_taken.
   //
-  // CRITICAL: Include i_prediction_holdoff in the holdoff check!
-  // After prediction redirects PC to target, instruction data is STALE (BRAM latency).
-  // is_compressed is computed from stale data. If we use stale is_compressed
-  // to compute pc_increment, we'd get the wrong next PC.
-  // During prediction_holdoff, force pc_increment=4 to skip the stale cycle safely.
-  logic pc_inc_sel_4, pc_inc_sel_2, pc_inc_sel_0;
-  assign pc_inc_sel_4 = i_any_holdoff_safe || i_prediction_holdoff;
-  assign pc_inc_sel_0 = !i_any_holdoff_safe && !i_prediction_holdoff && i_spanning_wait_for_fetch;
-  assign pc_inc_sel_2 = !i_any_holdoff_safe && !i_prediction_holdoff &&
+  // CRITICAL: prediction holdoff and redirect/reset holdoff need different
+  // treatment for halfword PCs.
+  //
+  // For prediction holdoff, +2 from a halfword PC is correct: it advances to the
+  // next word boundary without letting o_pc get two instructions ahead of pc_reg.
+  //
+  // For redirect/reset holdoff, +4 is required even from a halfword PC. Using +2
+  // there leaves the numeric fetch lead too small, so the BRAM word for the next
+  // word-aligned instruction arrives one cycle late after a halfword redirect.
+  logic pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2, pc_inc_sel_0;
+  assign pc_inc_sel_redirect_holdoff = i_any_holdoff_safe;
+  assign pc_inc_sel_prediction_holdoff = !i_any_holdoff_safe && i_prediction_holdoff;
+  assign pc_inc_sel_0 = !pc_inc_sel_redirect_holdoff &&
+                        !pc_inc_sel_prediction_holdoff &&
+                        i_spanning_wait_for_fetch;
+  assign pc_inc_sel_2 = !pc_inc_sel_redirect_holdoff &&
+                        !pc_inc_sel_prediction_holdoff &&
                         !i_spanning_wait_for_fetch &&
                         (i_control_flow_to_halfword_r || i_spanning_to_halfword_registered ||
                          i_spanning_in_progress || i_is_32bit_spanning);
@@ -111,11 +119,12 @@ module pc_increment_calculator #(
   logic [XLEN-1:0] next_sequential_pc;
   always_comb begin
     casez ({
-      pc_inc_sel_4, pc_inc_sel_0, pc_inc_sel_2
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_0, pc_inc_sel_2
     })
-      3'b1??: next_sequential_pc = next_pc_plus_4;  // holdoff: +4
-      3'b01?: next_sequential_pc = next_pc_plus_0;  // spanning wait: +0
-      3'b001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
+      4'b1???: next_sequential_pc = next_pc_plus_4;
+      4'b01??: next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+      4'b001?: next_sequential_pc = next_pc_plus_0;  // spanning wait: +0
+      4'b0001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
       default: begin
         // Normal case: use combinational signals for fine-grained selection
         casez ({

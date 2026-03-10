@@ -92,7 +92,11 @@ module instruction_type_decoder #(
   assign o_is_divide = is_m_extension && i_instruction.funct3[2];  // funct3[2]=1 for DIV/REM
 
   // CSR instruction detection and field extraction (Zicsr extension)
-  assign o_is_csr_instruction = i_instruction.opcode == riscv_pkg::OPC_CSR;
+  // CSR instructions use OPC_CSR (SYSTEM) with funct3 != 000.
+  // Privileged instructions (ECALL, EBREAK, MRET, WFI) share the same opcode
+  // but have funct3=000 — they are NOT CSR instructions.
+  assign o_is_csr_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
+                                (i_instruction.funct3 != 3'b000);
   assign o_csr_address = {
     i_instruction.funct7, i_instruction.source_reg_2
   };  // CSR address in bits [31:20]

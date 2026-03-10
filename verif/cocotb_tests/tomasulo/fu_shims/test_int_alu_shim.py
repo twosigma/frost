@@ -255,12 +255,12 @@ async def test_auipc(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_jal_link(dut: Any) -> None:
-    """JAL: produces pc+4 as the link (return) address."""
+    """JAL produces the pre-computed link address on the CDB."""
     iface = await setup(dut)
 
     rob_tag = 7
     pc_val = 0x0000_0100
-    expected = (pc_val + 4) & MASK32
+    link_addr = (pc_val + 4) & MASK32
 
     iface.drive_issue(
         valid=True,
@@ -269,6 +269,7 @@ async def test_jal_link(dut: Any) -> None:
         src1_value=0,
         src2_value=0,
         pc=pc_val,
+        link_addr=link_addr,
     )
     await iface.step()
 
@@ -278,8 +279,8 @@ async def test_jal_link(dut: Any) -> None:
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:08X}, got 0x{result['value']:016X}"
+        result["value"] == link_addr
+    ), f"Expected 0x{link_addr:08X}, got 0x{result['value']:016X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -339,18 +340,17 @@ async def test_branch_no_valid(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_csr_read(dut: Any) -> None:
-    """CSRRS: result is i_csr_read_data."""
+    """CSRRS: ALU shim passes through src1_value (rs1) for register CSR ops."""
     iface = await setup(dut)
 
     rob_tag = 10
-    csr_val = 0xDEAD_BEEF
+    rs1_val = 0x0000_00A5
 
-    iface.drive_csr_read_data(csr_val)
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
         op=_op("CSRRS"),
-        src1_value=0,
+        src1_value=rs1_val,
         src2_value=0,
     )
     await iface.step()
@@ -361,7 +361,7 @@ async def test_csr_read(dut: Any) -> None:
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
-        result["value"] == csr_val
-    ), f"Expected 0x{csr_val:08X}, got 0x{result['value']:016X}"
+        result["value"] == rs1_val
+    ), f"Expected 0x{rs1_val:08X}, got 0x{result['value']:016X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
