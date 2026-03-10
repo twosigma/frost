@@ -117,6 +117,13 @@ module tomasulo_wrapper_tb (
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
     output logic                                        o_read_done,
     output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
+    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_rob_entry_done_vec,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_2,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3,
 
     // =========================================================================
     // RAT Source Lookups -- pass through (~70-bit outputs)
@@ -376,6 +383,13 @@ module tomasulo_wrapper_tb (
       .i_read_tag,
       .o_read_done,
       .o_read_value,
+      .o_rob_entry_done_vec,
+      .i_bypass_tag_1,
+      .o_bypass_value_1,
+      .i_bypass_tag_2,
+      .o_bypass_value_2,
+      .i_bypass_tag_3,
+      .o_bypass_value_3,
       // RAT
       .i_int_src1_addr,
       .i_int_src2_addr,

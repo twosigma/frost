@@ -43,6 +43,8 @@ module c_ext_state #(
     input logic i_control_flow_holdoff,  // Registered: stale instruction cycle
     input logic i_any_holdoff_safe,  // Holdoff using only registered signals
     input logic i_prediction_holdoff,  // Registered: prediction happened last cycle (clear state)
+    input logic i_prediction_reset_state,  // Non-buffer prediction redirected fetch this cycle
+    input logic i_prediction_from_buffer_holdoff,  // Need buffered old-path word next cycle
 
     // Instruction data
     input logic [31:0] i_effective_instr,  // Current effective instruction word
@@ -65,6 +67,7 @@ module c_ext_state #(
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
     output logic o_use_buffer_after_spanning,  // Use buffer after spanning_to_halfword holdoff
+    output logic o_use_buffer_after_prediction,  // Use buffer after predicted buffered instruction
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid  // Saved values are valid (not invalidated by control flow)
 );
@@ -98,15 +101,22 @@ module c_ext_state #(
   logic [31:0] effective_instr_saved;
   logic        is_compressed_saved;
   logic        saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
+  logic        invalidate_saved_values_holdoff;
 
-  // TIMING OPTIMIZATION: Use registered i_control_flow_holdoff instead of combinational
-  // i_flush to break the critical path from branch_taken. The state will be cleared
-  // one cycle later, but that's functionally safe because:
-  // 1. During the flush cycle, saved values are gated by flush elsewhere anyway
-  // 2. The following cycle, i_control_flow_holdoff clears the state
-  // Note: i_prediction_holdoff is already registered (from branch_prediction_controller).
+  // A stall-captured IF word must remain replayable for the rest of the stall.
+  // Registered prediction/control-flow holdoffs can arrive a cycle later than
+  // the captured instruction; if they clear saved_values_valid mid-stall, IF
+  // falls back to the live BRAM word while PC metadata remains held, creating
+  // wrong PC/instruction pairings like 0x78 -> 0x38.
+  assign invalidate_saved_values_holdoff =
+      !i_stall_registered &&
+      (i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state);
+
+  // Flush must clear saved state immediately on redirects. The one-cycle-delayed
+  // control_flow_holdoff cleanup is not sufficient for redirects that land on a
+  // halfword boundary immediately after a spanning instruction.
   always_ff @(posedge i_clk) begin
-    if (i_control_flow_holdoff || i_prediction_holdoff) begin
+    if (i_flush) begin
       // Registered control flow change invalidates saved values.
       // We've jumped to a different PC, so saved values are stale.
       // Also clear the data to prevent any stale data from persisting.
@@ -116,15 +126,18 @@ module c_ext_state #(
       // Save at stall start
       effective_instr_saved <= i_effective_instr;
       is_compressed_saved   <= i_is_compressed;
+    end else if (invalidate_saved_values_holdoff) begin
+      effective_instr_saved <= '0;
+      is_compressed_saved   <= 1'b0;
     end
   end
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       saved_values_valid <= 1'b0;
-    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
-      saved_values_valid <= 1'b0;
     end else if (i_stall & ~i_stall_registered) begin
       saved_values_valid <= 1'b1;
+    end else if (i_flush || invalidate_saved_values_holdoff) begin
+      saved_values_valid <= 1'b0;
     end
   end
 
@@ -146,9 +159,18 @@ module c_ext_state #(
 
   logic [31:0] effective_instr_for_buffer;
   logic        is_compressed_for_buffer;
+  logic        preserve_lo_compressed_buffer_on_prediction;
+  logic        prediction_reset_buffer_state;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
   assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
+  assign preserve_lo_compressed_buffer_on_prediction =
+      i_prediction_reset_state &&
+      is_compressed_for_buffer &&
+      !i_pc_reg[1] &&
+      !o_spanning_in_progress;
+  assign prediction_reset_buffer_state =
+      i_prediction_reset_state && !preserve_lo_compressed_buffer_on_prediction;
 
   // Export stall-restored is_compressed for use by pc_controller and spanning detection
   assign o_is_compressed_for_buffer = is_compressed_for_buffer;
@@ -164,13 +186,12 @@ module c_ext_state #(
   assign instr_hi = effective_instr_for_buffer[31:16];
 
   // Spanning state register updates
-  // TIMING OPTIMIZATION: Removed combinational i_flush check. The registered
-  // i_control_flow_holdoff and i_prediction_holdoff handle state clearing safely.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_spanning_wait_for_fetch <= 1'b0;
       o_spanning_in_progress <= 1'b0;
-    end else if (i_control_flow_holdoff || i_prediction_holdoff) begin
+    end else if (i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
+                 i_prediction_reset_state) begin
       // Cancel spanning on control flow change or prediction
       // control_flow_holdoff is registered to break timing path from branch_taken
       // i_prediction_holdoff clears stale state after branch prediction redirect
@@ -183,7 +204,7 @@ module c_ext_state #(
     end
   end
   always_ff @(posedge i_clk) begin
-    if (i_control_flow_holdoff || i_prediction_holdoff) begin
+    if (i_flush || i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state) begin
       // Clear buffers on control flow change/prediction
       o_spanning_buffer <= 16'b0;
       o_spanning_second_half <= 16'b0;
@@ -216,10 +237,10 @@ module c_ext_state #(
   assign next_pc_after_spanning = i_pc_reg + riscv_pkg::PcIncrement32bit;
   assign o_spanning_to_halfword = o_spanning_in_progress && next_pc_after_spanning[1];
 
-  // TIMING OPTIMIZATION: Use registered i_control_flow_holdoff instead of combinational
-  // i_flush to break the critical path from branch_taken.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff) o_spanning_to_halfword_registered <= 1'b0;
+    if (i_reset || i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
+        i_prediction_reset_state)
+      o_spanning_to_halfword_registered <= 1'b0;
     else if (!i_stall) o_spanning_to_halfword_registered <= o_spanning_to_halfword;
   end
 
@@ -228,13 +249,42 @@ module c_ext_state #(
   // advanced past the word containing the next instruction.
   logic spanning_to_halfword_registered_prev;
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff) spanning_to_halfword_registered_prev <= 1'b0;
+    if (i_reset || i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
+        i_prediction_reset_state)
+      spanning_to_halfword_registered_prev <= 1'b0;
     else if (!i_stall) spanning_to_halfword_registered_prev <= o_spanning_to_halfword_registered;
   end
 
-  // Use buffer on the cycle immediately after spanning_to_halfword holdoff ends
+  // Use buffer on the cycle immediately after spanning_to_halfword holdoff ends.
+  // Redirects must suppress this immediately; waiting for the registered clear
+  // lets an old-path buffered word leak into the first cycle of the new path.
   assign o_use_buffer_after_spanning = spanning_to_halfword_registered_prev &&
-                                       !o_spanning_to_halfword_registered;
+                                       !o_spanning_to_halfword_registered &&
+                                       !i_stall &&
+                                       !i_flush &&
+                                       !i_control_flow_holdoff &&
+                                       !i_prediction_holdoff &&
+                                       !i_prediction_reset_state;
+
+  // After a prediction fires while using the instruction buffer (for example a
+  // compressed return in the upper half of a word), the next cycle is a NOP
+  // holdoff, but the buffered old-path word must remain available for one more
+  // cycle so the predicted instruction itself can still be decoded correctly.
+  logic prediction_from_buffer_holdoff_prev;
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
+        i_prediction_reset_state)
+      prediction_from_buffer_holdoff_prev <= 1'b0;
+    else if (!i_stall) prediction_from_buffer_holdoff_prev <= i_prediction_from_buffer_holdoff;
+  end
+
+  assign o_use_buffer_after_prediction = prediction_from_buffer_holdoff_prev &&
+                                         !i_prediction_from_buffer_holdoff &&
+                                         !i_stall &&
+                                         !i_flush &&
+                                         !i_control_flow_holdoff &&
+                                         !i_prediction_holdoff &&
+                                         !i_prediction_reset_state;
 
   // ===========================================================================
   // Instruction Buffer State Machine
@@ -250,12 +300,23 @@ module c_ext_state #(
   // Note: Block updates during spanning_to_halfword (combinational) to preserve the buffer
   // for the next instruction after a spanning instruction that ends at a halfword boundary.
   // The buffer contains the word needed for the upper-half instruction.
+  //
+  // A BTB prediction can fire on the next word while IF is still outputting the
+  // low half of a compressed pair. In that case the upper-half sibling still
+  // needs the current buffer state for one more cycle, so preserve only the
+  // buffer bookkeeping across the immediate prediction reset. The regular
+  // prediction_holdoff in the following cycle still clears the state before the
+  // predicted target starts executing.
 
   // Control register: must be reset and cleared on control flow changes
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff) begin
+    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+        prediction_reset_buffer_state) begin
       o_prev_was_compressed_at_lo <= 1'b0;
-    end else if (!i_stall && !i_any_holdoff_safe && !o_spanning_to_halfword) begin
+    end else if (!i_stall && !i_any_holdoff_safe &&
+                 !o_spanning_to_halfword &&
+                 !i_prediction_from_buffer_holdoff &&
+                 !o_use_buffer_after_prediction) begin
       o_prev_was_compressed_at_lo <= is_compressed_for_buffer &&
                                      !i_pc_reg[1] &&
                                      !o_spanning_in_progress;
@@ -270,7 +331,13 @@ module c_ext_state #(
   // the buffer after a prediction redirect. Without this, stale data could be read later
   // when use_instr_buffer is true.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && !i_any_holdoff_safe && !o_spanning_to_halfword && !i_prediction_holdoff) begin
+    if (!i_stall && !i_any_holdoff_safe &&
+        !i_flush &&
+        !o_spanning_to_halfword &&
+        !i_prediction_holdoff &&
+        !i_prediction_from_buffer_holdoff &&
+        !prediction_reset_buffer_state &&
+        !o_use_buffer_after_prediction) begin
       o_instr_buffer <= effective_instr_for_buffer;
     end
   end
@@ -284,15 +351,10 @@ module c_ext_state #(
   // which is in the critical path. By using a registered is_compressed, we break
   // the path from stall logic through is_compressed to the PC adder.
   //
-  // Functional correctness: The PC increment only matters for sequential execution.
-  // When control flow changes (branch, trap, prediction), we select a different
-  // target and the sequential PC value is discarded. On holdoff cycles, we force
-  // pc_increment=4 anyway. So using a 1-cycle-stale is_compressed is safe.
-  //
   // Reset to 0 (assume 32-bit = increment by 4) for conservative behavior.
   // TIMING OPTIMIZATION: Removed combinational i_flush to break path from branch_taken.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff || i_prediction_holdoff) begin
+    if (i_reset || i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state) begin
       o_is_compressed_for_pc <= 1'b0;
     end else if (!i_stall) begin
       o_is_compressed_for_pc <= is_compressed_for_buffer;

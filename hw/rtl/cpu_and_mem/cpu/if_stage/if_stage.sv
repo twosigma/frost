@@ -107,6 +107,8 @@ module if_stage #(
   logic prediction_holdoff;  // Block prediction (stale data)
   logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
   logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
+  logic disable_branch_prediction_effective;  // Also suppress predictions
+                                              // during pending halfword redirect handoff
   logic sel_prediction_r;  // Select registered prediction target
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
 
@@ -129,6 +131,7 @@ module if_stage #(
   logic any_holdoff;  // Any holdoff condition active
   logic any_holdoff_safe;  // Safe holdoff (registered signals only)
   logic mid_32bit_correction;  // Correction for 32-bit at halfword boundary
+  logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -145,6 +148,7 @@ module if_stage #(
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
   logic use_buffer_after_spanning;  // Use buffer after spanning_to_halfword
+  logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
 
@@ -157,6 +161,7 @@ module if_stage #(
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic sel_nop;  // Select NOP (during holdoff/flush)
+  logic sel_nop_align;
   logic sel_spanning;  // Select spanning instruction
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
@@ -166,6 +171,7 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   logic is_32bit_spanning;  // 32-bit instruction spans two words
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
+  logic ras_instruction_valid;
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -175,6 +181,15 @@ module if_stage #(
   // C-extension state updates are already protected by flush checks in c_ext_state.
   logic [31:0] instr_for_aligner;
   assign instr_for_aligner = i_instr;
+  assign disable_branch_prediction_effective =
+      i_disable_branch_prediction || pending_prediction_holdoff;
+  assign ras_instruction_valid =
+      !sel_nop &&
+      !any_holdoff_safe &&
+      !i_from_ex_comb.branch_taken &&
+      !i_trap_ctrl.trap_taken &&
+      !i_trap_ctrl.mret_taken &&
+      (use_saved_values || !prediction_holdoff || btb_only_prediction_holdoff);
 
   // TIMING OPTIMIZATION: Create a "safe" flush signal for c_ext_state that uses
   // only REGISTERED trap/mret signals. This breaks the critical timing path:
@@ -188,19 +203,11 @@ module if_stage #(
   //   3. The 1-cycle delay doesn't affect correctness since state is stale anyway
   //
   // For PC selection (sel_trap), we still use combinational trap_taken for immediate
-  // redirect. Only c_ext_state uses this delayed flush.
-  //
-  // TIMING OPTIMIZATION (additional): Use stall_for_trap_check instead of stall.
-  // The regular stall signal depends on ~trap_taken (traps override stall), so
-  // gating with ~stall reintroduces trap_taken into the path. stall_for_trap_check
-  // is just stall_sources without trap/mret gating, breaking the timing path while
-  // still blocking flush during actual stalls (multiply, load-use, AMO, WFI).
-  // This is safe because control_flow_holdoff will clear state on the next cycle.
+  // redirect. The front-end state machines need the real flush signal for
+  // correctness; letting stale C-extension state survive a redirect corrupts PC
+  // alignment on the next predicted path.
   logic flush_for_c_ext_safe;
-  assign flush_for_c_ext_safe = (i_from_ex_comb.branch_taken |
-                                  i_pipeline_ctrl.trap_taken_registered |
-                                  i_pipeline_ctrl.mret_taken_registered) &
-                                 ~i_pipeline_ctrl.stall_for_trap_check;
+  assign flush_for_c_ext_safe = i_pipeline_ctrl.flush;
 
   // ===========================================================================
   // Spanning Detection
@@ -236,11 +243,13 @@ module if_stage #(
 
   // Forward declarations (moved before first use to avoid Vivado warnings)
   logic        use_saved_values;
-  assign use_saved_values = i_pipeline_ctrl.stall_registered;
+  assign use_saved_values = i_pipeline_ctrl.stall_registered && saved_values_valid;
+  logic            prediction_reset_c_ext;
   logic            sel_spanning_saved;
   logic [    15:0] raw_parcel_sc;
   logic [    31:0] effective_instr_sc;
   logic [    31:0] spanning_instr_sc;
+  logic [XLEN-1:0] instruction_pc_sc;
   logic [XLEN-1:0] link_address_sc;
   logic            prediction_from_buffer_holdoff;
 
@@ -255,8 +264,11 @@ module if_stage #(
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      // Use stall_for_trap_check to avoid pulling trap_taken into prediction gating.
-      .i_stall(i_pipeline_ctrl.stall_for_trap_check),
+      // In OOO mode, serialization stalls (for unresolved older branches/CSRs)
+      // must also block new predictions. Otherwise a younger speculative branch
+      // or return can arm a pending redirect that survives long enough to fight
+      // with the older instruction's eventual mispredict recovery.
+      .i_stall(i_pipeline_ctrl.stall),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -271,13 +283,15 @@ module if_stage #(
       .i_is_32bit_spanning(is_32bit_spanning),
       .i_spanning_wait_for_fetch(spanning_wait_for_fetch),
       .i_spanning_in_progress(spanning_in_progress),
-      .i_disable_branch_prediction(i_disable_branch_prediction),
+      .i_use_instr_buffer(use_instr_buffer),
+      .i_disable_branch_prediction(disable_branch_prediction_effective),
 
       // BTB update interface (from EX stage)
       .i_btb_update(i_from_ex_comb.btb_update),
       .i_btb_update_pc(i_from_ex_comb.btb_update_pc),
       .i_btb_update_target(i_from_ex_comb.btb_update_target),
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
+      .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
 
       // RAS inputs (instruction for call/return detection)
       // CRITICAL: Use saved instruction data during stall_registered. After multi-cycle
@@ -295,9 +309,7 @@ module if_stage #(
       //     RAS detection should be blocked to prevent spurious pushes.
       // IMPORTANT: When using saved values (after stall), the holdoffs are stale and
       // shouldn't affect validity. The saved instruction was valid when captured.
-      .i_instruction_valid(!sel_nop && !any_holdoff &&
-                           (use_saved_values || !prediction_holdoff ||
-                            btb_only_prediction_holdoff)),
+      .i_instruction_valid(ras_instruction_valid),
       // IMPORTANT: Use saved link_address when using saved instruction data. When coming
       // out of stall, the saved instruction triggers RAS push/pop but link_address is
       // now for the NEW instruction. Using the wrong link_address corrupts RAS.
@@ -365,6 +377,7 @@ module if_stage #(
       .i_predicted_target(btb_predicted_target),
       .i_predicted_target_r(btb_predicted_target_r),
       .i_prediction_used(prediction_used),
+      .i_ras_predicted(ras_predicted),
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
@@ -378,7 +391,8 @@ module if_stage #(
       .o_reset_holdoff(reset_holdoff),
       .o_any_holdoff(any_holdoff),
       .o_any_holdoff_safe(any_holdoff_safe),
-      .o_mid_32bit_correction(mid_32bit_correction)
+      .o_mid_32bit_correction(mid_32bit_correction),
+      .o_pending_prediction_holdoff(pending_prediction_holdoff)
   );
 
   // ===========================================================================
@@ -399,6 +413,8 @@ module if_stage #(
       .i_control_flow_holdoff(control_flow_holdoff),
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_prediction_holdoff(prediction_holdoff),
+      .i_prediction_reset_state(prediction_reset_c_ext),
+      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       .i_effective_instr(effective_instr),
       .i_pc_reg(pc_reg),
@@ -418,6 +434,7 @@ module if_stage #(
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_for_pc(is_compressed_for_pc),  // TIMING OPTIMIZATION: for PC increment
       .o_use_buffer_after_spanning(use_buffer_after_spanning),
+      .o_use_buffer_after_prediction(use_buffer_after_prediction),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid)
   );
@@ -428,7 +445,7 @@ module if_stage #(
   // Save prev_was_compressed_at_lo when stall begins
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe || prediction_reset_c_ext) begin
       // Clear on reset or flush - flush invalidates pre-flush state
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       prev_was_compressed_at_lo_saved <= 1'b0;
@@ -454,6 +471,7 @@ module if_stage #(
       .i_spanning_second_half(spanning_second_half),
       .i_spanning_to_halfword_registered(spanning_to_halfword_registered),
       .i_use_buffer_after_spanning(use_buffer_after_spanning),
+      .i_use_buffer_after_prediction(use_buffer_after_prediction),
 
       .i_mid_32bit_correction(mid_32bit_correction),
       // RAS predicts after instruction arrives; next cycle's instruction is stale.
@@ -466,14 +484,18 @@ module if_stage #(
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
       .i_is_compressed_saved(is_compressed_saved),
-      .i_saved_values_valid(saved_values_valid),
+      // Gate saved_values_valid during flush to prevent stale saved state from
+      // corrupting instruction alignment after pipeline redirects (misprediction,
+      // trap, mret). Without this, stall_registered=1 from the previous cycle
+      // causes the aligner to use pre-flush saved values on the flush cycle.
+      .i_saved_values_valid(saved_values_valid && !flush_for_c_ext_safe),
 
       .o_raw_parcel(raw_parcel),
       .o_effective_instr(effective_instr),
       .o_spanning_instr(spanning_instr),
       .o_is_compressed(is_compressed),
       .o_is_compressed_fast(is_compressed_fast),
-      .o_sel_nop(sel_nop),
+      .o_sel_nop(sel_nop_align),
       .o_sel_spanning(sel_spanning),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer)
@@ -482,6 +504,16 @@ module if_stage #(
   // RAS prediction stale cycle: only when prediction came from RAS (not BTB-only).
   assign ras_prediction_holdoff = prediction_holdoff && !btb_only_prediction_holdoff;
 
+  // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
+  // moved to the new PC but the returned word still belongs to the old path.
+  // Word-aligned redirects are not exempt: they can still pair a correct new
+  // PC with old-path bytes, which later poison the C-extension/buffer state.
+  // Keep the prediction path special-cased through prediction_holdoff so BTB
+  // hits still deliver the predicted branch instruction itself.
+  assign sel_nop = sel_nop_align || reset_holdoff ||
+                   pending_prediction_holdoff ||
+                   (control_flow_holdoff && !prediction_holdoff);
+
   // ===========================================================================
   // Stall State Registers
   // ===========================================================================
@@ -489,6 +521,8 @@ module if_stage #(
   // This is needed because BRAM output changes while stalled.
 
   logic sel_nop_saved;
+  logic spanning_first_cycle_saved;
+  logic replay_saved_if_outputs;
 
   // Stall-capture outputs (muxed: stall_registered ? saved : live)
   logic sel_compressed_sc;
@@ -498,7 +532,7 @@ module if_stage #(
   ) u_raw_parcel_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(raw_parcel),
@@ -510,7 +544,7 @@ module if_stage #(
   ) u_effective_instr_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(effective_instr),
@@ -522,7 +556,7 @@ module if_stage #(
   ) u_spanning_instr_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(spanning_instr),
@@ -548,9 +582,16 @@ module if_stage #(
     if (flush_for_c_ext_safe) begin
       sel_nop_saved <= 1'b1;
       sel_spanning_saved <= 1'b0;
+      spanning_first_cycle_saved <= 1'b0;
     end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
       sel_nop_saved <= sel_nop;
       sel_spanning_saved <= sel_spanning;
+      // A stall can hit on the first cycle of a halfword-spanning 32-bit
+      // instruction, when IF intentionally emits a NOP while c_ext_state is
+      // supposed to capture the upper half. Preserve that case so IF can
+      // replay the bubble and let c_ext_state retry the spanning transition
+      // after backpressure drops.
+      spanning_first_cycle_saved <= is_32bit_spanning;
     end
   end
 
@@ -571,38 +612,50 @@ module if_stage #(
     end
   end
 
+  assign prediction_reset_c_ext = prediction_used;
+
+  // Only replay saved IF outputs when the stalled cycle carried a real,
+  // still-valid instruction. The one exception is the first cycle of a
+  // halfword-spanning 32-bit instruction: that cycle is a NOP at the IF/PD
+  // boundary, but replaying it is required so c_ext_state can still capture
+  // the spanning first half after the stall drops.
+  assign replay_saved_if_outputs = i_pipeline_ctrl.stall_registered &&
+                                   !flush_for_c_ext_safe &&
+                                   saved_values_valid &&
+                                   (!sel_nop_saved || spanning_first_cycle_saved);
+
   // ===========================================================================
   // Outputs to PD Stage
   // ===========================================================================
 
   assign o_pc = pc;
 
-  // Raw parcel output: use saved during stall
-  assign o_from_if_to_pd.raw_parcel = raw_parcel_sc;
+  // Raw parcel output: replay saved values only when the saved cycle was a real
+  // instruction, otherwise use the live post-stall values.
+  assign o_from_if_to_pd.raw_parcel = replay_saved_if_outputs ? raw_parcel_sc : raw_parcel;
 
   // Selection signals
-  assign o_from_if_to_pd.sel_nop = use_saved_values ? sel_nop_saved : sel_nop;
-  assign o_from_if_to_pd.sel_spanning = use_saved_values ? sel_spanning_saved : sel_spanning;
-  assign o_from_if_to_pd.sel_compressed = sel_compressed_sc;
+  assign o_from_if_to_pd.sel_nop = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
+  assign o_from_if_to_pd.sel_spanning = replay_saved_if_outputs ? sel_spanning_saved : sel_spanning;
+  assign o_from_if_to_pd.sel_compressed = replay_saved_if_outputs ? sel_compressed_sc :
+                                          sel_compressed;
 
   // Pre-assembled instructions for PD stage mux
-  assign o_from_if_to_pd.spanning_instr = spanning_instr_sc;
-  assign o_from_if_to_pd.effective_instr = effective_instr_sc;
-
-  // PC output: use spanning PC when in spanning mode
-  assign o_from_if_to_pd.program_counter = spanning_in_progress ? spanning_pc : pc_reg;
+  assign o_from_if_to_pd.spanning_instr = replay_saved_if_outputs ? spanning_instr_sc :
+                                          spanning_instr;
+  assign o_from_if_to_pd.effective_instr = replay_saved_if_outputs ? effective_instr_sc :
+                                           effective_instr;
 
   // Pre-computed link address for JAL/JALR
   // Link address = instruction_pc + 2 (compressed) or + 4 (32-bit)
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
-  // Determine if current instruction is compressed for link address calculation
+  // Use the same stall-safe compressed selection metadata that PD consumes.
+  // This keeps link_address aligned with the actual instruction that will be
+  // seen downstream, including prediction/stall replay cases.
   logic is_compressed_for_link;
-  assign is_compressed_for_link = is_compressed && !spanning_in_progress &&
-                                  !spanning_wait_for_fetch && !spanning_to_halfword_registered &&
-                                  !mid_32bit_correction &&
-                                  !control_flow_holdoff && !reset_holdoff;
+  assign is_compressed_for_link = sel_compressed_sc;
 
   assign instruction_pc = spanning_in_progress ? spanning_pc : pc_reg;
   assign link_address = instruction_pc + (is_compressed_for_link ?
@@ -610,17 +663,33 @@ module if_stage #(
 
   stall_capture_reg #(
       .WIDTH(XLEN)
+  ) u_instruction_pc_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(instruction_pc),
+      .o_data(instruction_pc_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(XLEN)
   ) u_link_address_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(link_address),
       .o_data(link_address_sc)
   );
 
-  assign o_from_if_to_pd.link_address = link_address_sc;
+  // Keep the instruction PC aligned with the same stall-replayed instruction
+  // data/link metadata that PD consumes.
+  assign o_from_if_to_pd.program_counter = replay_saved_if_outputs ? instruction_pc_sc :
+                                           instruction_pc;
+  assign o_from_if_to_pd.link_address = replay_saved_if_outputs ? link_address_sc : link_address;
 
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
@@ -652,7 +721,7 @@ module if_stage #(
   ) u_ras_predicted_target_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(ras_predicted_target),
@@ -664,7 +733,7 @@ module if_stage #(
   ) u_ras_checkpoint_tos_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(ras_checkpoint_tos),
@@ -676,7 +745,7 @@ module if_stage #(
   ) u_ras_checkpoint_valid_count_sc (
       .i_clk,
       .i_reset(1'b0),
-      .i_flush(1'b0),
+      .i_flush(flush_for_c_ext_safe),
       .i_stall(i_pipeline_ctrl.stall),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(ras_checkpoint_valid_count),
@@ -685,13 +754,18 @@ module if_stage #(
 
   // Output RAS metadata - clear for NOP/spanning, use saved during stall
   logic sel_nop_effective;
-  assign sel_nop_effective = use_saved_values ? sel_nop_saved : sel_nop;
+  assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
 
   assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
-                                         (use_saved_values ? ras_predicted_saved : ras_predicted);
-  assign o_from_if_to_pd.ras_predicted_target = ras_predicted_target_sc;
-  assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos_sc;
-  assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count_sc;
+                                         (replay_saved_if_outputs ? ras_predicted_saved :
+                                          ras_predicted);
+  assign o_from_if_to_pd.ras_predicted_target = replay_saved_if_outputs ?
+                                                ras_predicted_target_sc :
+                                                ras_predicted_target;
+  assign o_from_if_to_pd.ras_checkpoint_tos = replay_saved_if_outputs ? ras_checkpoint_tos_sc :
+                                              ras_checkpoint_tos;
+  assign o_from_if_to_pd.ras_checkpoint_valid_count = replay_saved_if_outputs ?
+      ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count;
 
   // ===========================================================================
   // Prediction Metadata Tracker
@@ -721,7 +795,7 @@ module if_stage #(
       .i_sel_spanning(sel_spanning),
       .i_sel_nop_saved(sel_nop_saved),
       .i_sel_spanning_saved(sel_spanning_saved),
-      .i_use_saved_values(use_saved_values),
+      .i_use_saved_values(replay_saved_if_outputs),
 
       // Spanning detection
       .i_is_32bit_spanning(is_32bit_spanning),
@@ -732,5 +806,6 @@ module if_stage #(
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
+
 
 endmodule : if_stage

@@ -223,6 +223,7 @@ module ex_stage #(
       .o_btb_update_pc(o_from_ex_comb.btb_update_pc),
       .o_btb_update_target(o_from_ex_comb.btb_update_target),
       .o_btb_update_taken(o_from_ex_comb.btb_update_taken),
+      .o_btb_update_compressed(o_from_ex_comb.btb_update_compressed),
       // RAS recovery outputs
       .o_ras_misprediction(o_from_ex_comb.ras_misprediction),
       .o_ras_restore_tos(o_from_ex_comb.ras_restore_tos),

@@ -105,6 +105,17 @@ module dispatch
     output logic [ReorderBufferTagWidth-1:0] o_rat_alloc_rob_tag,
 
     // =========================================================================
+    // ROB Done-Entry Bypass (generic source ports)
+    // =========================================================================
+    input  logic [        ReorderBufferDepth-1:0] i_rob_entry_done,
+    output logic [ReorderBufferTagWidth-1:0]      o_bypass_tag_1,
+    input  logic [                   FLEN-1:0]    i_bypass_value_1,
+    output logic [ReorderBufferTagWidth-1:0]      o_bypass_tag_2,
+    input  logic [                   FLEN-1:0]    i_bypass_value_2,
+    output logic [ReorderBufferTagWidth-1:0]      o_bypass_tag_3,
+    input  logic [                   FLEN-1:0]    i_bypass_value_3,
+
+    // =========================================================================
     // RS Dispatch (to tomasulo_wrapper)
     // =========================================================================
     output rs_dispatch_t o_rs_dispatch,
@@ -217,7 +228,10 @@ module dispatch
       op != LUI && op != AUIPC && op != JAL &&
       op != ECALL && op != EBREAK &&
       op != FENCE && op != FENCE_I &&
-      op != WFI && op != MRET && op != PAUSE
+      op != WFI && op != MRET && op != PAUSE &&
+      // CSR immediate ops encode a 5-bit immediate in the rs1 field,
+      // not an actual register address. Don't look up the RAT for these.
+      op != CSRRWI && op != CSRRSI && op != CSRRCI
     );
 
     // INT rs2: branches, R-type ALU, stores, AMO, SC
@@ -447,18 +461,58 @@ module dispatch
   logic [ReorderBufferTagWidth-1:0] src3_tag;
   logic [FLEN-1:0]  src3_value;
 
+  logic [ReorderBufferTagWidth-1:0] bypass_tag_1_sel;
+  logic [ReorderBufferTagWidth-1:0] bypass_tag_2_sel;
+  logic [ReorderBufferTagWidth-1:0] bypass_tag_3_sel;
+
+  always_comb begin
+    if (uses_fp_rs1_flag)
+      bypass_tag_1_sel = i_fp_src1.tag;
+    else if (uses_int_rs1)
+      bypass_tag_1_sel = i_int_src1.tag;
+    else
+      bypass_tag_1_sel = '0;
+
+    if (uses_fp_rs2_flag)
+      bypass_tag_2_sel = i_fp_src2.tag;
+    else if (uses_int_rs2)
+      bypass_tag_2_sel = i_int_src2.tag;
+    else
+      bypass_tag_2_sel = '0;
+
+    if (uses_fp_rs3_flag)
+      bypass_tag_3_sel = i_fp_src3.tag;
+    else
+      bypass_tag_3_sel = '0;
+  end
+
+  assign o_bypass_tag_1 = bypass_tag_1_sel;
+  assign o_bypass_tag_2 = bypass_tag_2_sel;
+  assign o_bypass_tag_3 = bypass_tag_3_sel;
+
   // Source 1 resolution
-  // RAT lookup: renamed=1 means source is in-flight (not ready, wait for CDB)
-  //             renamed=0 means source is architectural (ready, use regfile value)
+  // RAT lookup: renamed=1 means source maps to an in-flight ROB entry.
+  // Dispatch checks whether that ROB entry is already done and uses the
+  // async bypass value when available; otherwise the RS waits for the CDB.
   always_comb begin
     if (uses_fp_rs1_flag) begin
       src1_ready = !i_fp_src1.renamed;
+      if (i_fp_src1.renamed && i_rob_entry_done[i_fp_src1.tag]) begin
+        src1_ready = 1'b1;
+        src1_value = i_bypass_value_1;
+      end else begin
+        src1_value = i_fp_src1.value;
+      end
       src1_tag   = i_fp_src1.tag;
-      src1_value = i_fp_src1.value;
     end else if (uses_int_rs1) begin
       src1_ready = !i_int_src1.renamed;
+      if (i_int_src1.renamed && i_rob_entry_done[i_int_src1.tag]) begin
+        src1_ready = 1'b1;
+        src1_value = i_bypass_value_1;
+      end else begin
+        src1_value = i_int_src1.value;
+      end
       src1_tag   = i_int_src1.tag;
-      src1_value = i_int_src1.value;
     end else begin
       // No source 1 needed (LUI, AUIPC, JAL, etc.)
       src1_ready = 1'b1;
@@ -471,12 +525,22 @@ module dispatch
   always_comb begin
     if (uses_fp_rs2_flag) begin
       src2_ready = !i_fp_src2.renamed;
+      if (i_fp_src2.renamed && i_rob_entry_done[i_fp_src2.tag]) begin
+        src2_ready = 1'b1;
+        src2_value = i_bypass_value_2;
+      end else begin
+        src2_value = i_fp_src2.value;
+      end
       src2_tag   = i_fp_src2.tag;
-      src2_value = i_fp_src2.value;
     end else if (uses_int_rs2) begin
       src2_ready = !i_int_src2.renamed;
+      if (i_int_src2.renamed && i_rob_entry_done[i_int_src2.tag]) begin
+        src2_ready = 1'b1;
+        src2_value = i_bypass_value_2;
+      end else begin
+        src2_value = i_int_src2.value;
+      end
       src2_tag   = i_int_src2.tag;
-      src2_value = i_int_src2.value;
     end else begin
       // No source 2 needed
       src2_ready = 1'b1;
@@ -489,8 +553,13 @@ module dispatch
   always_comb begin
     if (uses_fp_rs3_flag) begin
       src3_ready = !i_fp_src3.renamed;
+      if (i_fp_src3.renamed && i_rob_entry_done[i_fp_src3.tag]) begin
+        src3_ready = 1'b1;
+        src3_value = i_bypass_value_3;
+      end else begin
+        src3_value = i_fp_src3.value;
+      end
       src3_tag   = i_fp_src3.tag;
-      src3_value = i_fp_src3.value;
     end else begin
       src3_ready = 1'b1;
       src3_tag   = '0;
@@ -528,8 +597,10 @@ module dispatch
     o_rob_alloc_req.is_amo      = i_from_id_to_ex.is_amo_instruction;
     o_rob_alloc_req.is_lr       = i_from_id_to_ex.is_lr;
     o_rob_alloc_req.is_sc       = i_from_id_to_ex.is_sc;
-    // Compressed instruction detection: opcode[1:0] != 2'b11
-    o_rob_alloc_req.is_compressed = (i_from_id_to_ex.instruction.opcode[1:0] != 2'b11);
+    // Compressed instruction detection: link_address == PC + 2 (vs PC + 4 for 32-bit).
+    // Cannot check opcode[1:0] because decompression expands all instructions to 32-bit.
+    o_rob_alloc_req.is_compressed =
+        (i_from_id_to_ex.link_address == i_from_id_to_ex.program_counter + 32'd2);
 
     // CSR info (stored in ROB for commit-time serialized execution)
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
@@ -604,8 +675,9 @@ module dispatch
     o_rs_dispatch.csr_addr = i_from_id_to_ex.csr_address;
     o_rs_dispatch.csr_imm  = i_from_id_to_ex.csr_imm;
 
-    // PC (for AUIPC, branch/jump link address computation)
-    o_rs_dispatch.pc = i_from_id_to_ex.program_counter;
+    // PC and pre-computed link address for AUIPC/JAL/JALR handling.
+    o_rs_dispatch.pc        = i_from_id_to_ex.program_counter;
+    o_rs_dispatch.link_addr = i_from_id_to_ex.link_address;
   end
 
   // ===========================================================================

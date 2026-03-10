@@ -54,6 +54,7 @@ module branch_prediction_controller (
     input logic i_is_32bit_spanning,
     input logic i_spanning_wait_for_fetch,
     input logic i_spanning_in_progress,
+    input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
 
     // BTB update interface (from EX stage)
@@ -61,6 +62,7 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_pc,
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_target,
     input logic                       i_btb_update_taken,
+    input logic                       i_btb_update_compressed,
 
     // RAS inputs (for call/return detection)
     input riscv_pkg::instr_t i_instruction,  // Current instruction for RAS detection
@@ -107,6 +109,7 @@ module branch_prediction_controller (
   logic            btb_hit;
   logic            btb_predicted_taken;
   logic [XLEN-1:0] btb_predicted_target;
+  logic            btb_compressed;
 
   branch_predictor #(
       .XLEN(XLEN)
@@ -119,12 +122,14 @@ module branch_prediction_controller (
       .o_btb_hit(btb_hit),
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
+      .o_btb_compressed(btb_compressed),
 
       // Update from EX stage
       .i_update(i_btb_update),
       .i_update_pc(i_btb_update_pc),
       .i_update_target(i_btb_update_target),
-      .i_update_taken(i_btb_update_taken)
+      .i_update_taken(i_btb_update_taken),
+      .i_update_compressed(i_btb_update_compressed)
   );
 
   // ===========================================================================
@@ -180,8 +185,10 @@ module branch_prediction_controller (
   end
 
   // Compute prediction_allowed for BTB
-  // BTB doesn't know instruction type, so must block halfword-aligned PCs
-  // (could be second half of spanning instruction)
+  // Block halfword-aligned PCs unless the BTB entry is marked as compressed.
+  // A 32-bit spanning instruction at a halfword PC must NOT be predicted because
+  // the redirect would corrupt the spanning state machine. Compressed instructions
+  // at halfword PCs are safe to predict.
   // CRITICAL: Block during prediction_holdoff to prevent feedback loop.
   // After a prediction redirects PC, the next cycle has stale instruction data.
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
@@ -196,8 +203,9 @@ module branch_prediction_controller (
                              !o_prediction_holdoff &&
                              !i_is_32bit_spanning && !i_spanning_wait_for_fetch &&
                              !i_spanning_in_progress &&
+                             !i_use_instr_buffer &&
                              !i_disable_branch_prediction;
-  assign prediction_allowed_stable = prediction_common && !i_pc[1];
+  assign prediction_allowed_stable = prediction_common && (!i_pc[1] || btb_compressed);
 
   logic prediction_allowed;
   assign prediction_allowed = prediction_allowed_stable;
@@ -303,6 +311,14 @@ module branch_prediction_controller (
       o_prediction_used_r  <= 1'b0;
       o_predicted_target_r <= '0;
       o_sel_prediction_r   <= 1'b0;
+    end else if (i_flush) begin
+      // Redirect flushes invalidate any in-flight prediction metadata even if
+      // the front-end is stalled. Keeping the old registered target/live bit
+      // across a stall+flush lets a stale prediction apply to a later
+      // instruction stream with the wrong PC/instruction pairing.
+      o_prediction_used_r  <= 1'b0;
+      o_predicted_target_r <= '0;
+      o_sel_prediction_r   <= 1'b0;
     end else if (~i_stall) begin
       o_prediction_used_r  <= prediction_used_effective;
       // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
@@ -326,9 +342,11 @@ module branch_prediction_controller (
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_prediction_holdoff <= 1'b0;
+    end else if (i_flush) begin
+      o_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
-      // Set holdoff on cycle after prediction; clear on flush
-      o_prediction_holdoff <= i_flush ? 1'b0 : prediction_used_effective;
+      // Set holdoff on cycle after prediction.
+      o_prediction_holdoff <= prediction_used_effective;
     end
   end
 
@@ -354,8 +372,10 @@ module branch_prediction_controller (
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_btb_only_prediction_holdoff <= 1'b0;
+    end else if (i_flush) begin
+      o_btb_only_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
-      o_btb_only_prediction_holdoff <= i_flush ? 1'b0 : btb_only_prediction_effective;
+      o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
     end
   end
 

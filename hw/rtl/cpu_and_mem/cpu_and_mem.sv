@@ -109,7 +109,8 @@ module cpu_and_mem #(
   logic                  [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic                  [31:0] mmio_read_data_comb;
   logic                  [31:0] mmio_read_data_reg;
-  logic                         is_mmio_registered;
+  logic                         mmio_read_data_valid;
+  logic                         mmio_load_is_mmio;
   logic                  [31:0] mmio_load_addr;
   logic                         mmio_load_valid;
   logic                  [31:0] data_memory_read_data;  // From RAM only
@@ -141,9 +142,8 @@ module cpu_and_mem #(
   end
   assign interrupts.mtip = mtip_registered;
 
-  // RISC-V CPU core - 6-stage pipeline with RV32IMAB + Zicsr + Machine-mode
-  // Note: B = Zba + Zbb + Zbs (full bit manipulation extension)
-  cpu #(
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine-mode
+  cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
       .MMIO_SIZE_BYTES(MmioSizeBytes)
@@ -236,9 +236,9 @@ module cpu_and_mem #(
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
-  assign is_mmio_registered = mmio_load_valid
-                           && (mmio_load_addr >= MmioAddr)
-                           && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
+  assign mmio_load_is_mmio = mmio_load_valid
+                          && (mmio_load_addr >= MmioAddr)
+                          && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse)
   always_comb begin
@@ -260,16 +260,26 @@ module cpu_and_mem #(
     endcase
   end
 
-  // Register MMIO read data to break combinational FIFO/UART paths into the core.
+  // Register MMIO read data so both the legacy in-order path and the OOO path
+  // see a stable response after the side-effect pulse fires.
   always_ff @(posedge i_clk) begin
-    if (i_rst) mmio_read_data_reg <= '0;
-    else if (mmio_read_pulse && is_mmio_registered) mmio_read_data_reg <= mmio_read_data_comb;
+    if (i_rst) begin
+      mmio_read_data_reg   <= '0;
+      mmio_read_data_valid <= 1'b0;
+    end else begin
+      if (mmio_read_pulse && mmio_load_is_mmio) begin
+        mmio_read_data_reg   <= mmio_read_data_comb;
+        mmio_read_data_valid <= 1'b1;
+      end else if (mmio_read_data_valid && !mmio_load_valid) begin
+        mmio_read_data_valid <= 1'b0;
+      end
+    end
   end
 
   // Multiplexer for read data - selects between RAM and registered MMIO data
   always_comb begin
     data_memory_or_peripheral_read_data = data_memory_read_data;  // Default: use RAM data
-    if (is_mmio_registered) data_memory_or_peripheral_read_data = mmio_read_data_reg;
+    if (mmio_read_data_valid) data_memory_or_peripheral_read_data = mmio_read_data_reg;
   end
 
   // write to UART
@@ -287,14 +297,13 @@ module cpu_and_mem #(
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1MmioAddr;
 
-  // FIFO read enable generation - pulse on MMIO load (two-cycle bubble in CPU)
-  assign o_fifo0_rd_en = (data_memory_address_registered == Fifo0MmioAddr) && mmio_read_pulse;
-  assign o_fifo1_rd_en = (data_memory_address_registered == Fifo1MmioAddr) && mmio_read_pulse;
+  // FIFO read enable generation - pulse on the executing MMIO read request.
+  assign o_fifo0_rd_en = (mmio_load_addr == Fifo0MmioAddr) && mmio_read_pulse;
+  assign o_fifo1_rd_en = (mmio_load_addr == Fifo1MmioAddr) && mmio_read_pulse;
 
   // UART RX ready generation - pulses on load from UART RX data address
   // This consumes the byte from the RX FIFO
-  assign o_uart_rx_ready = (data_memory_address_registered == UartRxDataMmioAddr) &&
-                           mmio_read_pulse;
+  assign o_uart_rx_ready = (mmio_load_addr == UartRxDataMmioAddr) && mmio_read_pulse;
 
   // Timer register updates
   // mtime increments every clock cycle (provides wall-clock time)

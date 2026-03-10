@@ -48,6 +48,7 @@ module instruction_aligner #(
     input logic [15:0] i_spanning_second_half,  // Second half of spanning instr
     input logic i_spanning_to_halfword_registered,  // Spanning leads to halfword PC
     input logic i_use_buffer_after_spanning,  // Use buffer after spanning_to_halfword holdoff
+    input logic i_use_buffer_after_prediction,  // Use buffer after prediction-from-buffer holdoff
 
     // Control signals
     input logic i_mid_32bit_correction,  // Landed mid-instruction
@@ -91,7 +92,7 @@ module instruction_aligner #(
   // During trap/mret (stall goes low but stall_for_trap_check high), flush clears
   // the saved values anyway, so using saved vs live doesn't affect correctness.
   logic use_saved_prev;
-  assign use_saved_prev = i_stall_registered;
+  assign use_saved_prev = i_stall_registered && i_saved_values_valid;
 
   logic prev_was_compressed_at_lo_for_use;
   assign prev_was_compressed_at_lo_for_use = use_saved_prev ?
@@ -99,7 +100,8 @@ module instruction_aligner #(
 
   // Use buffer when: normal case (compressed at lo -> hi) OR after spanning_to_halfword holdoff
   assign o_use_instr_buffer = (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
-                               i_use_buffer_after_spanning;
+                               i_use_buffer_after_spanning ||
+                               i_use_buffer_after_prediction;
 
   // Select effective instruction source
   assign o_effective_instr = o_use_instr_buffer ? i_instr_buffer : i_instr;
@@ -181,7 +183,8 @@ module instruction_aligner #(
 
   logic need_buffer_fast;
   assign need_buffer_fast = (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
-                            i_use_buffer_after_spanning;
+                            i_use_buffer_after_spanning ||
+                            i_use_buffer_after_prediction;
 
   // One-hot select signals (computed from registered inputs, not on BRAM path)
   // Exactly one of these is true at any time

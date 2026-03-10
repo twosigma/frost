@@ -80,6 +80,7 @@ module branch_redirect_unit #(
     output logic [XLEN-1:0] o_btb_update_pc,
     output logic [XLEN-1:0] o_btb_update_target,
     output logic            o_btb_update_taken,
+    output logic            o_btb_update_compressed,
 
     // RAS recovery outputs
     output logic                  o_ras_misprediction,
@@ -207,13 +208,20 @@ module branch_redirect_unit #(
   assign btb_false_prediction = i_btb_predicted_taken && !is_branch_or_jump;
 
   // Update BTB when:
-  // 1. Any branch/jump instruction resolves (normal case - learn actual outcome)
+  // 1. A non-return branch/jump instruction resolves (normal case - learn actual outcome)
   // 2. Non-branch was falsely predicted as taken (clear stale prediction)
-  assign o_btb_update = is_branch_or_jump || btb_false_prediction;
+  //
+  // Returns are intentionally excluded. A BTB entry can only memorize one
+  // target, so training it on a dynamic return address creates stale targets
+  // once nested calls change the live RA. The RAS is the architectural
+  // predictor for returns; BTB entries for `ret` are actively harmful.
+  assign o_btb_update = (is_branch_or_jump && !actual_is_return) || btb_false_prediction;
   assign o_btb_update_pc = i_program_counter;
   assign o_btb_update_target = i_actual_branch_target;
   // For false predictions on non-branches, mark as not-taken to prevent repeated mispredictions
   assign o_btb_update_taken = is_branch_or_jump ? i_actual_branch_taken : 1'b0;
+  // Compressed if link_address == PC + 2 (vs PC + 4 for 32-bit)
+  assign o_btb_update_compressed = (i_link_address == i_program_counter + 32'd2);
 
   // ===========================================================================
   // RAS (Return Address Stack) Misprediction Detection

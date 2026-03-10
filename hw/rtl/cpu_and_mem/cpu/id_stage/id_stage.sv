@@ -313,6 +313,7 @@ module id_stage #(
   // ===========================================================================
   // Latch decoded values and pass to Execute stage
 
+
   always_ff @(posedge i_clk) begin
     // On reset, insert a NOP (no operation) into the pipeline
     if (i_pipeline_ctrl.reset) begin

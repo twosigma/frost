@@ -33,9 +33,10 @@
  *     (controls the ALU's internal operand_b mux)
  *   - i_instruction.source_reg_2 : imm[4:0] for shift-amount in SLLI/SRLI/
  *     SRAI/BSETI/BCLRI/BINVI/BEXTI/RORI
- *   - i_link_address : pc + 4 for JAL/JALR
- *   - Branch ops hit the ALU's default case (o_write_enable = 0), producing
- *     fu_complete.valid = 0.  Branch resolution uses a separate path.
+ *   - i_link_address : pre-computed PC + 2 / PC + 4 for JAL/JALR
+ *   - Conditional branches hit the ALU's default case (o_write_enable = 0),
+ *     producing fu_complete.valid = 0. JAL/JALR still produce a link-address
+ *     result on the CDB while branch resolution uses a separate path.
  */
 module int_alu_shim (
     input logic i_clk,
@@ -92,7 +93,7 @@ module int_alu_shim (
       .i_immediate_i_type(i_rs_issue.imm),
       .i_is_multiply_operation(1'b0),
       .i_is_divide_operation(1'b0),
-      .i_link_address(i_rs_issue.pc + 32'd4),
+      .i_link_address(i_rs_issue.link_addr),
       .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
       .o_write_enable(alu_write_enable),
@@ -103,13 +104,59 @@ module int_alu_shim (
   // ---------------------------------------------------------------------------
   // Pack output into fu_complete_t
   // ---------------------------------------------------------------------------
+  // Conditional branches complete only through branch_update.
+  // JAL/JALR also produce a link-address result and must wake dependents.
+  // CSR ops pass through rs1/imm value (actual CSR read/write happens at commit).
+  logic is_csr_imm_op;
+  assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRSI) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRCI);
+
+  logic is_csr_reg_op;
+  assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSRRW) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRS) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRC);
+
+  logic is_any_csr_op;
+  assign is_any_csr_op = is_csr_imm_op || is_csr_reg_op;
+
+  // ECALL/EBREAK: privileged instructions that should raise exceptions.
+  // They flow through INT_RS like other ops, but the ALU doesn't produce
+  // write_enable for them. Handle explicitly to produce CDB exception result.
+  logic is_ecall_op;
+  logic is_ebreak_op;
+  assign is_ecall_op  = (i_rs_issue.op == riscv_pkg::ECALL);
+  assign is_ebreak_op = (i_rs_issue.op == riscv_pkg::EBREAK);
+
   always_comb begin
-    o_fu_complete.valid     = i_rs_issue.valid & alu_write_enable;
     o_fu_complete.tag       = i_rs_issue.rob_tag;
-    o_fu_complete.value     = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, alu_result};
     o_fu_complete.exception = 1'b0;
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+
+    if (is_ecall_op || is_ebreak_op) begin
+      // ECALL/EBREAK: mark as exception on CDB so ROB can trigger trap at commit
+      o_fu_complete.valid = i_rs_issue.valid;
+      o_fu_complete.value = '0;
+      o_fu_complete.exception = 1'b1;
+      o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+          is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]
+                      : riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
+    end else if (is_any_csr_op) begin
+      // CSR: pass through the write operand (rs1 or zero-extended imm).
+      // Actual CSR read/write is serialized at ROB commit time.
+      o_fu_complete.valid = i_rs_issue.valid;
+      if (is_csr_imm_op) o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
+      else
+        o_fu_complete.value = {
+          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
+        };
+    end else begin
+      // JAL/JALR write the link register through the CDB. Conditional branches
+      // have alu_write_enable=0, so they remain branch_update-only.
+      o_fu_complete.valid = i_rs_issue.valid & alu_write_enable;
+      o_fu_complete.value = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, alu_result};
+    end
   end
 
   // ALU is single-cycle for INT_RS ops; never busy

@@ -143,6 +143,8 @@ module reorder_buffer (
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
     output logic                                        o_head_valid,
     output logic                                        o_head_done,
+    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_valid,
+    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_done,
 
     // =========================================================================
     // Reorder Buffer Entry Read Interface (for RAT lookup of in-flight values)
@@ -150,7 +152,17 @@ module reorder_buffer (
     // Allows RAT to check if a Reorder Buffer entry has completed (for bypass)
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
     output logic                                        o_read_done,
-    output logic [                 riscv_pkg::FLEN-1:0] o_read_value
+    output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
+
+    // =========================================================================
+    // Dispatch Bypass Read Ports (async value read for renamed-but-done sources)
+    // =========================================================================
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_2,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3
 );
 
   // ===========================================================================
@@ -376,6 +388,8 @@ riscv_pkg::reorder_buffer_alloc_req_t
   assign head_is_sc = rob_is_sc[head_idx];
   assign head_is_compressed = rob_is_compressed[head_idx];
   assign head_has_fp_flags = rob_has_fp_flags[head_idx];
+  logic head_link_is_compressed;
+  assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 32'd2));
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done;
@@ -396,8 +410,10 @@ riscv_pkg::reorder_buffer_alloc_req_t
   // Allocation data precomputation for fields with instruction-type-dependent values
   logic [FLEN-1:0] alloc_value_data;
   always_comb begin
-    if (i_alloc_req.is_jal || i_alloc_req.is_jalr)
-      alloc_value_data = {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
+    // Save the sequential fall-through/link address for all branches and jumps.
+    // Commit-time redirect can then use the exact saved address instead of
+    // recomputing from compressed-length metadata.
+    if (i_alloc_req.is_branch) alloc_value_data = {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
     else alloc_value_data = '0;
   end
 
@@ -495,6 +511,46 @@ riscv_pkg::reorder_buffer_alloc_req_t
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_read_tag),
       .o_read_data    (o_read_value)
+  );
+
+  // Dispatch bypass value read ports (same write data as above, different read addresses)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_bypass_1 (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_bypass_tag_1),
+      .o_read_data    (o_bypass_value_1)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_bypass_2 (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_bypass_tag_2),
+      .o_read_data    (o_bypass_value_2)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_bypass_3 (
+      .i_clk,
+      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_bypass_tag_3),
+      .o_read_data    (o_bypass_value_3)
   );
 
   // rob_exc_cause: 2 write ports (alloc='0 + CDB), 1 read port (head)
@@ -696,10 +752,11 @@ riscv_pkg::reorder_buffer_alloc_req_t
         rob_branch_taken[tail_idx]    <= 1'b0;
         rob_mispredicted[tail_idx]    <= 1'b0;
 
-        // JAL: target is known at dispatch, mark done immediately
-        // Value is link address (PC+2 or PC+4), zero-extended to FLEN
+        // JAL: value (link address) is known at dispatch but misprediction
+        // status requires the branch_update from the ALU.  Mark done=0 here
+        // and let the branch_update mark it done (same as JALR/conditional).
         if (i_alloc_req.is_jal) begin
-          rob_done[tail_idx]         <= 1'b1;
+          rob_done[tail_idx]         <= 1'b0;
           // For JAL, branch is always taken with known target
           rob_branch_taken[tail_idx] <= 1'b1;
         end else if (i_alloc_req.is_jalr) begin
@@ -749,11 +806,8 @@ riscv_pkg::reorder_buffer_alloc_req_t
           rob_branch_taken[i_branch_update.tag] <= i_branch_update.taken;
           rob_mispredicted[i_branch_update.tag] <= i_branch_update.mispredicted;
 
-          // For JALR and conditional branches: mark done now
-          // JAL was already marked done at dispatch
-          if (!rob_is_jal[i_branch_update.tag]) begin
-            rob_done[i_branch_update.tag] <= 1'b1;
-          end
+          // Mark entry done now (applies to JAL, JALR, and conditional branches)
+          rob_done[i_branch_update.tag] <= 1'b1;
         end
       end
 
@@ -761,7 +815,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
       // Commit Deallocation
       // ---------------------------------------------------------------------
       // Invalidate the committed entry (head pointer advanced separately)
-      if (commit_en && !i_flush_all && !i_flush_en) begin
+      if (commit_en && !i_flush_all) begin
         rob_valid[head_idx] <= 1'b0;
       end
     end
@@ -901,8 +955,11 @@ riscv_pkg::reorder_buffer_alloc_req_t
   // Commit Enable Logic
   // ===========================================================================
 
-  // Commit when head is ready, no stall, and no flush in progress
-  assign commit_en = head_ready && !commit_stall && !i_flush_en && !i_flush_all;
+  // Commit when head is ready, no stall, and no full flush in progress.
+  // Note: !i_flush_en is intentionally omitted — partial flush (misprediction)
+  // is triggered BY the current commit, so gating commit_en with it creates
+  // an oscillating combinational loop.
+  assign commit_en = head_ready && !commit_stall && !i_flush_all;
 
   // Misprediction at commit - use the authoritative flag from branch unit
   // The branch unit knows about RAS, indirect predictor, and other specifics
@@ -917,18 +974,24 @@ riscv_pkg::reorder_buffer_alloc_req_t
                        head_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
 
-  // MRET execution signal - asserted when entering MRET_EXEC state
+  // MRET execution signal - asserted when entering MRET_EXEC state.
+  // Note: !i_flush_en/!i_flush_all intentionally omitted — flush signals are
+  // derived from mret_taken which is derived from o_mret_start, so gating
+  // by them creates an oscillating combinational loop.
   assign o_mret_start = (serial_state == SERIAL_IDLE) && head_ready &&
-                        head_is_mret && !head_exception &&
-                        !i_flush_en && !i_flush_all;
+                        head_is_mret && !head_exception;
 
   // Trap pending signal - asserted when exception at head.
   // Note: during the IDLE->TRAP_WAIT transition, both the state check and the
   // combinational path assert o_trap_pending simultaneously. This overlap is
   // intentional and benign (result is still 1'b1); the state check sustains
   // the signal while the combinational term covers the initial detection cycle.
-  assign o_trap_pending = (serial_state == SERIAL_TRAP_WAIT) ||
-                          (head_ready && head_exception && !i_flush_all);
+  // Note: !i_flush_all intentionally omitted from the combinational term.
+  // flush_all is derived from trap_taken which is derived from o_trap_pending;
+  // gating by !i_flush_all creates an oscillating combinational loop.
+  // The registered term (serial_state == SERIAL_TRAP_WAIT) sustains the signal
+  // across clock edges; the combinational term provides same-cycle detection.
+  assign o_trap_pending = (serial_state == SERIAL_TRAP_WAIT) || (head_ready && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
 
@@ -971,7 +1034,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
       // Redirect PC:
       // - MRET: redirect to mepc
       // - Mispredicted taken: redirect to branch_target (actual taken target)
-      // - Mispredicted not-taken: redirect to pc+4 (fall-through)
+      // - Mispredicted not-taken: redirect to saved fall-through/link addr
       if (head_is_mret) begin
         // i_mepc is guaranteed stable here: the MRET handshake
         // (o_mret_start/i_mret_done) completes before commit_en asserts,
@@ -981,8 +1044,8 @@ riscv_pkg::reorder_buffer_alloc_req_t
         // Mispredicted as not-taken but actually taken -> go to taken target
         o_commit.redirect_pc = head_branch_target;
       end else begin
-        // Mispredicted as taken but actually not-taken -> go to fall-through
-        o_commit.redirect_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
+        // Mispredicted as taken but actually not-taken -> go to saved fall-through
+        o_commit.redirect_pc = head_value[XLEN-1:0];
       end
 
       // Branch info (for BTB update and RAS restore at commit)
@@ -1005,6 +1068,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
       o_commit.is_amo         = head_is_amo;
       o_commit.is_lr          = head_is_lr;
       o_commit.is_sc          = head_is_sc;
+      o_commit.is_compressed  = head_is_branch ? head_link_is_compressed : head_is_compressed;
     end
   end
 
@@ -1020,6 +1084,8 @@ riscv_pkg::reorder_buffer_alloc_req_t
   assign o_head_tag = head_idx;
   assign o_head_valid = head_valid;
   assign o_head_done = head_valid && head_done;
+  assign o_entry_valid = rob_valid;
+  assign o_entry_done = rob_done;
 
   // ===========================================================================
   // Reorder Buffer Entry Read Interface (for RAT bypass)
@@ -1069,6 +1135,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
       $warning("Reorder Buffer: Serialization state %0d but head not ready", serial_state);
     end
   end
+
 `endif  // FORMAL
 `endif  // SYNTHESIS
 
@@ -1100,8 +1167,6 @@ riscv_pkg::reorder_buffer_alloc_req_t
 
   // CDB write and branch update cannot target the same tag simultaneously
   always_comb begin
-    assume (!(i_cdb_write.valid && i_branch_update.valid &&
-              i_cdb_write.tag == i_branch_update.tag));
   end
 
   // alloc_valid not asserted during flush (matches existing simulation assertion)
@@ -1156,7 +1221,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
       end
 
       // After commit, rob_valid at $past(head_idx) is cleared
-      if ($past(commit_en) && !$past(i_flush_all) && !$past(i_flush_en)) begin
+      if ($past(commit_en) && !$past(i_flush_all)) begin
         p_commit_clears_valid : assert (!rob_valid[$past(head_idx)]);
       end
 

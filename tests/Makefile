@@ -169,10 +169,11 @@ ifeq ($(SIM),verilator)
 
 	# Extra verilator args: parallel verilation + optional waveforms
 	# -Wno-UNOPTFLAT: Suppress circular combinational logic warnings from FPU stall feedback
+	# -Wno-MODDUP: Suppress duplicate module warnings from nested file lists
 	ifeq ($(WAVES),1)
-		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT
+		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT -Wno-MODDUP
 	else
-		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT
+		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 	endif
 
 	# Simulation-only memory override (2MB default, allows arch tests with large data)
