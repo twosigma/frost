@@ -659,6 +659,7 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_pc;  // PC of branch instruction
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
+    logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
     // RAS misprediction recovery signals
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
@@ -1312,6 +1313,7 @@ package riscv_pkg;
     logic is_amo;  // AMO instruction (executed at head with SQ empty)
     logic is_lr;  // LR (load-reserved, sets reservation)
     logic is_sc;  // SC (store-conditional, checks reservation)
+    logic is_compressed;  // Compressed (16-bit) instruction (for BTB update)
   } reorder_buffer_commit_t;
 
   // ---------------------------------------------------------------------------
@@ -1407,7 +1409,9 @@ package riscv_pkg;
 
     // For CSR: address and immediate
     logic [11:0] csr_addr;  // CSR address
-    logic [4:0]  csr_imm;   // Zero-extended CSR immediate
+    logic [4:0] csr_imm;  // Zero-extended CSR immediate
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0] link_addr;
   } rs_entry_t;
 
   // RS dispatch request (from dispatch unit to RS)
@@ -1446,6 +1450,8 @@ package riscv_pkg;
     logic [4:0]                       csr_imm;
     // Program counter (for ALU: AUIPC, JAL/JALR link address)
     logic [XLEN-1:0]                  pc;
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0]                  link_addr;
   } rs_dispatch_t;
 
   // RS issue signals (from RS to functional unit)
@@ -1471,6 +1477,8 @@ package riscv_pkg;
     logic [4:0]                       csr_imm;
     // Program counter (for ALU: AUIPC, JAL/JALR link address)
     logic [XLEN-1:0]                  pc;
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0]                  link_addr;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------
@@ -1837,8 +1845,8 @@ package riscv_pkg;
   function automatic logic uses_fp_rs2(instr_op_e op);
     case (op)
       // FP compute ops with 2+ sources
-      FADD_S, FSUB_S, FMUL_S,
-      FADD_D, FSUB_D, FMUL_D,
+      FADD_S, FSUB_S, FMUL_S, FDIV_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D,
       FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
       FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
       FMIN_S, FMAX_S, FMIN_D, FMAX_D,

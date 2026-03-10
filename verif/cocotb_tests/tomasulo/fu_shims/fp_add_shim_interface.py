@@ -84,6 +84,7 @@ def pack_rs_issue(
     csr_addr: int = 0,
     csr_imm: int = 0,
     pc: int = 0,
+    link_addr: int = 0,
 ) -> int:
     """Pack rs_issue_t fields into a bit vector for driving i_rs_issue.
 
@@ -91,16 +92,18 @@ def pack_rs_issue(
     It does NOT contain rs_type, src*_tag, or src*_ready fields.
 
     Field order (LSB to MSB, reverse of struct declaration):
-    pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) | mem_size(2) |
+    link_addr(32) | pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) | mem_size(2) |
     is_fp_mem(1) | predicted_target(32) | predicted_taken(1) |
     branch_target(32) | rm(3) | use_imm(1) | imm(32) | src3_value(64) |
     src2_value(64) | src1_value(64) | op(32) | rob_tag(5) | valid(1)
-    Total: 384 bits.
+    Total: 416 bits.
     """
     val = 0
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (link_addr & MASK32) << bit
+    bit += XLEN
     val |= (pc & MASK32) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit

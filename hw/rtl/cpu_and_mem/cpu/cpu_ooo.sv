@@ -82,13 +82,121 @@ module cpu_ooo #(
   logic flush_for_trap;
   logic flush_for_mret;
 
-  // Front-end stall: dispatch back-pressure
+  // CSR dispatch fence: the CDB carries rs1 (write operand) for CSR ops,
+  // not the CSR read result (which is only available at commit). Stall
+  // dispatch after a CSR until it commits so no dependent instruction
+  // picks up the wrong CDB value.
+  logic csr_in_flight;
+  logic branch_in_flight;
+  localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
+  logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
+  logic front_end_control_flow_pending;
+  logic disable_branch_prediction_ooo;
+  logic serializing_alloc_fire;
+  logic csr_commit_fire;  // forward declaration; driven below in CSR section
+  logic branch_alloc_fire;
+  logic branch_commit_fire;
+
+  // CSR results are only architecturally available at commit, so hold the
+  // front-end after dispatching a CSR until it completes.
+  assign serializing_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_csr;
+  assign branch_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
+  assign branch_commit_fire = rob_commit.valid && rob_commit.has_checkpoint;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
+    else if (csr_commit_fire) csr_in_flight <= 1'b0;
+    else if (rob_alloc_req.alloc_valid && rob_alloc_req.is_csr) csr_in_flight <= 1'b1;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) begin
+      branch_in_flight_count <= '0;
+    end else begin
+      case ({
+        branch_alloc_fire, branch_commit_fire
+      })
+        2'b10:   branch_in_flight_count <= branch_in_flight_count + 1'b1;
+        2'b01:   branch_in_flight_count <= branch_in_flight_count - 1'b1;
+        default: branch_in_flight_count <= branch_in_flight_count;
+      endcase
+    end
+  end
+
+  assign branch_in_flight = (branch_in_flight_count != '0);
+
+  // The existing in-order front-end prediction machinery is not robust to a
+  // younger predicted redirect arriving behind an older unresolved branch/jump.
+  // In OOO mode, keep fetch flowing but suppress new predictions until the
+  // oldest in-flight or front-end-pending control-flow op commits. Waiting
+  // until ROB allocation is too late: a younger BTB hit can still redirect
+  // fetch while an older branch is sitting in PD/ID, which is exactly how the
+  // memcpy ladder was skipping `0x33b8` after `0x33b6`.
+  assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
+                                         front_end_control_flow_pending ||
+                                         branch_in_flight ||
+                                         csr_in_flight ||
+                                         serializing_alloc_fire;
+
+  // Registered stall for IF stage stall-capture registers.
+  // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
+  // on the rising edge of stall and restores them via stall_registered.
+  logic stall_q;
+  logic replay_after_dispatch_stall_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) stall_q <= 1'b0;
+    else stall_q <= (dispatch_stall || csr_in_flight || serializing_alloc_fire) && !flush_pipeline;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) replay_after_dispatch_stall_q <= 1'b0;
+    else replay_after_dispatch_stall_q <= dispatch_stall && !flush_pipeline;
+  end
+
+  // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
+  // for one cycle after a flush/redirect. Suppress the valid tracker during
+  // this cycle to prevent stale instructions from being dispatched.
+  logic [1:0] post_flush_holdoff_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) post_flush_holdoff_q <= '0;
+    else if (!pipeline_ctrl.stall)
+      if (flush_pipeline)
+        // One cycle is sufficient here: PD/ID are explicitly flushed in the
+        // redirect cycle, and the next cycle is the only stale BRAM return.
+        // Holding longer drops real target instructions after control-flow
+        // redirects, especially at compressed function entries.
+        post_flush_holdoff_q <= 2'd1;
+      else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
+  end
+
+  // Registered trap/mret for IF stage flush_for_c_ext_safe timing optimization.
+  logic trap_taken_reg, mret_taken_reg;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      trap_taken_reg <= 1'b0;
+      mret_taken_reg <= 1'b0;
+    end else begin
+      trap_taken_reg <= trap_taken;
+      mret_taken_reg <= mret_taken;
+    end
+  end
+
+  // Front-end stall: dispatch back-pressure or CSR serialization
   // Front-end flush: misprediction or trap at commit
   always_comb begin
     pipeline_ctrl = '0;
     pipeline_ctrl.reset = i_rst;
-    pipeline_ctrl.stall = dispatch_stall;
+    pipeline_ctrl.stall = (dispatch_stall || csr_in_flight || serializing_alloc_fire) &&
+                          !flush_pipeline;
+    pipeline_ctrl.stall_registered = stall_q;
+    // Only true execution/backpressure stalls belong in stall_for_trap_check.
+    // Front-end CSR serialization fences must not suppress IF-stage
+    // control-flow cleanup on redirects, or stale C-extension state can
+    // survive a branch/return flush.
+    pipeline_ctrl.stall_for_trap_check = dispatch_stall;
     pipeline_ctrl.flush = flush_pipeline;
+    pipeline_ctrl.trap_taken_registered = trap_taken_reg;
+    pipeline_ctrl.mret_taken_registered = mret_taken_reg;
   end
 
   // ===========================================================================
@@ -122,7 +230,7 @@ module cpu_ooo #(
       .i_instr,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
-      .i_disable_branch_prediction,
+      .i_disable_branch_prediction(disable_branch_prediction_ooo),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd)
   );
@@ -145,50 +253,95 @@ module cpu_ooo #(
   // ===========================================================================
 
   // Integer register file
-  logic       [2*XLEN-1:0] int_rf_read_data;
-  logic                    int_rf_write_enable;
-  logic       [       4:0] int_rf_write_addr;
-  logic       [  XLEN-1:0] int_rf_write_data;
+  logic           [4*XLEN-1:0] int_rf_read_data;
+  logic                        int_rf_write_enable;
+  logic           [       4:0] int_rf_write_addr;
+  logic           [  XLEN-1:0] int_rf_write_data;
+  logic                        int_rf_wb_bypass_id_rs1;
+  logic                        int_rf_wb_bypass_id_rs2;
+  logic                        int_rf_wb_bypass_dispatch_rs1;
+  logic                        int_rf_wb_bypass_dispatch_rs2;
+  logic           [  XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic           [  XLEN-1:0] int_rf_dispatch_rs2_data;
 
-  rf_to_fwd_t              rf_to_fwd;
+  rf_to_fwd_t                  rf_to_fwd;
+  from_ma_to_wb_t              from_ma_to_wb_commit;
 
   generic_regfile #(
       .DATA_WIDTH(XLEN),
-      .NUM_READ_PORTS(2),
+      .NUM_READ_PORTS(4),
       .HARDWIRE_ZERO(1)
   ) regfile_inst (
       .i_clk,
       .i_write_enable(int_rf_write_enable),
       .i_write_addr(int_rf_write_addr),
       .i_write_data(int_rf_write_data),
-      .i_stall(pipeline_ctrl.stall),
-      .i_read_addr({from_pd_to_id.source_reg_2_early, from_pd_to_id.source_reg_1_early}),
+      .i_stall(1'b0),  // OOO: commit writes must not be blocked by front-end stall
+      .i_read_addr({
+        from_id_to_ex.instruction.source_reg_2,
+        from_id_to_ex.instruction.source_reg_1,
+        from_pd_to_id.source_reg_2_early,
+        from_pd_to_id.source_reg_1_early
+      }),
       .o_read_data(int_rf_read_data)
   );
 
-  assign rf_to_fwd.source_reg_1_data = int_rf_read_data[XLEN-1:0];
-  assign rf_to_fwd.source_reg_2_data = int_rf_read_data[2*XLEN-1:XLEN];
+  assign int_rf_wb_bypass_id_rs1 = int_rf_write_enable &&
+                                   |int_rf_write_addr &&
+                                   (int_rf_write_addr == from_pd_to_id.source_reg_1_early);
+  assign int_rf_wb_bypass_id_rs2 = int_rf_write_enable &&
+                                   |int_rf_write_addr &&
+                                   (int_rf_write_addr == from_pd_to_id.source_reg_2_early);
+  assign int_rf_wb_bypass_dispatch_rs1 = int_rf_write_enable &&
+                                         |int_rf_write_addr &&
+                                         (int_rf_write_addr ==
+                                          from_id_to_ex.instruction.source_reg_1);
+  assign int_rf_wb_bypass_dispatch_rs2 = int_rf_write_enable &&
+                                         |int_rf_write_addr &&
+                                         (int_rf_write_addr ==
+                                          from_id_to_ex.instruction.source_reg_2);
+
+  assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_rf_write_data :
+                                       int_rf_read_data[XLEN-1:0];
+  assign rf_to_fwd.source_reg_2_data = int_rf_wb_bypass_id_rs2 ? int_rf_write_data :
+                                       int_rf_read_data[2*XLEN-1:XLEN];
+  assign int_rf_dispatch_rs1_data = int_rf_wb_bypass_dispatch_rs1 ? int_rf_write_data :
+                                    int_rf_read_data[3*XLEN-1:2*XLEN];
+  assign int_rf_dispatch_rs2_data = int_rf_wb_bypass_dispatch_rs2 ? int_rf_write_data :
+                                    int_rf_read_data[4*XLEN-1:3*XLEN];
 
   // FP register file
   localparam int unsigned FpW = riscv_pkg::FpWidth;
-  logic          [3*FpW-1:0] fp_rf_read_data;
+  logic          [6*FpW-1:0] fp_rf_read_data;
   logic                      fp_rf_write_enable;
   logic          [      4:0] fp_rf_write_addr;
   logic          [  FpW-1:0] fp_rf_write_data;
+  logic                      fp_rf_wb_bypass_id_rs1;
+  logic                      fp_rf_wb_bypass_id_rs2;
+  logic                      fp_rf_wb_bypass_id_rs3;
+  logic                      fp_rf_wb_bypass_dispatch_rs1;
+  logic                      fp_rf_wb_bypass_dispatch_rs2;
+  logic                      fp_rf_wb_bypass_dispatch_rs3;
+  logic          [  FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic          [  FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic          [  FpW-1:0] fp_rf_dispatch_rs3_data;
 
   fp_rf_to_fwd_t             fp_rf_to_fwd;
 
   generic_regfile #(
       .DATA_WIDTH(FpW),
-      .NUM_READ_PORTS(3),
+      .NUM_READ_PORTS(6),
       .HARDWIRE_ZERO(0)
   ) fp_regfile_inst (
       .i_clk,
       .i_write_enable(fp_rf_write_enable),
       .i_write_addr(fp_rf_write_addr),
       .i_write_data(fp_rf_write_data),
-      .i_stall(pipeline_ctrl.stall),
+      .i_stall(1'b0),  // OOO: commit writes must not be blocked by front-end stall
       .i_read_addr({
+        from_id_to_ex.instruction.funct7[6:2],
+        from_id_to_ex.instruction.source_reg_2,
+        from_id_to_ex.instruction.source_reg_1,
         from_pd_to_id.fp_source_reg_3_early,
         from_pd_to_id.source_reg_2_early,
         from_pd_to_id.source_reg_1_early
@@ -196,18 +349,48 @@ module cpu_ooo #(
       .o_read_data(fp_rf_read_data)
   );
 
-  assign fp_rf_to_fwd.fp_source_reg_1_data = fp_rf_read_data[FpW-1:0];
-  assign fp_rf_to_fwd.fp_source_reg_2_data = fp_rf_read_data[2*FpW-1:FpW];
-  assign fp_rf_to_fwd.fp_source_reg_3_data = fp_rf_read_data[3*FpW-1:2*FpW];
+  assign fp_rf_wb_bypass_id_rs1 = fp_rf_write_enable &&
+                                  (fp_rf_write_addr == from_pd_to_id.source_reg_1_early);
+  assign fp_rf_wb_bypass_id_rs2 = fp_rf_write_enable &&
+                                  (fp_rf_write_addr == from_pd_to_id.source_reg_2_early);
+  assign fp_rf_wb_bypass_id_rs3 = fp_rf_write_enable &&
+                                  (fp_rf_write_addr == from_pd_to_id.fp_source_reg_3_early);
+  assign fp_rf_wb_bypass_dispatch_rs1 = fp_rf_write_enable &&
+                                        (fp_rf_write_addr ==
+                                         from_id_to_ex.instruction.source_reg_1);
+  assign fp_rf_wb_bypass_dispatch_rs2 = fp_rf_write_enable &&
+                                        (fp_rf_write_addr ==
+                                         from_id_to_ex.instruction.source_reg_2);
+  assign fp_rf_wb_bypass_dispatch_rs3 = fp_rf_write_enable &&
+                                        (fp_rf_write_addr == from_id_to_ex.instruction.funct7[6:2]);
+
+  assign fp_rf_to_fwd.fp_source_reg_1_data = fp_rf_wb_bypass_id_rs1 ? fp_rf_write_data :
+                                             fp_rf_read_data[FpW-1:0];
+  assign fp_rf_to_fwd.fp_source_reg_2_data = fp_rf_wb_bypass_id_rs2 ? fp_rf_write_data :
+                                             fp_rf_read_data[2*FpW-1:FpW];
+  assign fp_rf_to_fwd.fp_source_reg_3_data = fp_rf_wb_bypass_id_rs3 ? fp_rf_write_data :
+                                             fp_rf_read_data[3*FpW-1:2*FpW];
+  assign fp_rf_dispatch_rs1_data = fp_rf_wb_bypass_dispatch_rs1 ? fp_rf_write_data :
+                                   fp_rf_read_data[4*FpW-1:3*FpW];
+  assign fp_rf_dispatch_rs2_data = fp_rf_wb_bypass_dispatch_rs2 ? fp_rf_write_data :
+                                   fp_rf_read_data[5*FpW-1:4*FpW];
+  assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_rf_write_data :
+                                   fp_rf_read_data[6*FpW-1:5*FpW];
 
   // ===========================================================================
-  // Stage 3: Instruction Decode (ID) — UNCHANGED
+  // Stage 3: Instruction Decode (ID)
   // ===========================================================================
-  // Note: In OOO mode, the WB bypass path is not used (regfile writes come
-  // from ROB commit which is decoupled). We tie the bypass source to zero.
-
-  from_ma_to_wb_t from_ma_to_wb_dummy;
-  assign from_ma_to_wb_dummy = '0;
+  // ROB commit writes are architectural WB for the OOO core. Decode still needs
+  // same-cycle bypass when it reads a source register that is being committed.
+  always_comb begin
+    from_ma_to_wb_commit                         = '0;
+    from_ma_to_wb_commit.regfile_write_enable    = int_rf_write_enable;
+    from_ma_to_wb_commit.regfile_write_data      = int_rf_write_data;
+    from_ma_to_wb_commit.instruction.dest_reg    = int_rf_write_addr;
+    from_ma_to_wb_commit.fp_regfile_write_enable = fp_rf_write_enable;
+    from_ma_to_wb_commit.fp_dest_reg             = fp_rf_write_addr;
+    from_ma_to_wb_commit.fp_regfile_write_data   = fp_rf_write_data;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -217,20 +400,101 @@ module cpu_ooo #(
       .i_from_pd_to_id(from_pd_to_id),
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
-      .i_from_ma_to_wb(from_ma_to_wb_dummy),
+      .i_from_ma_to_wb(from_ma_to_wb_commit),
       .o_from_id_to_ex(from_id_to_ex)
   );
 
   // ===========================================================================
-  // Instruction Validity
+  // Instruction Validity (pipeline valid tracking)
   // ===========================================================================
-  // An instruction is valid in dispatch if:
-  //   - ID output is valid (not a bubble from flush/stall)
-  //   - Not currently being flushed
+  // After a flush/reset, the pipeline inserts NOP bubbles:
+  //   T=0: PD/ID flush to NOP
+  //   T=1: IF holdoff NOP (stale i_instr from 1-cycle memory latency)
+  //   T=2: First real instruction reaches PD
+  //   T=3: First real instruction reaches ID (from_id_to_ex valid)
+  // A 3-stage valid tracker matches this IF→PD→ID latency plus the holdoff
+  // cycle, ensuring NOP bubbles are never dispatched.
+
+  logic if_valid_q;  // tracks valid at IF→PD boundary
+  logic pd_valid_q;  // tracks valid at PD→ID boundary
+
+  // Track IF stage's sel_nop through the pipeline to know when from_id_to_ex
+  // contains a real instruction vs a NOP bubble (holdoff/flush/reset).
+  // 2-stage chain: if_valid_q captures at PD register edge, pd_valid_q
+  // captures at ID register edge — matching when from_id_to_ex is updated.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || pipeline_ctrl.flush) begin
+      if_valid_q <= 1'b0;
+      pd_valid_q <= 1'b0;
+    end else if (!pipeline_ctrl.stall) begin
+      if_valid_q <= !from_if_to_pd.sel_nop && (post_flush_holdoff_q == 2'd0);
+      pd_valid_q <= if_valid_q;
+    end
+  end
 
   logic id_valid;
-  assign id_valid = !pipeline_ctrl.flush && !pipeline_ctrl.reset &&
-                    !from_id_to_ex.is_illegal_instruction;
+  assign id_valid = pd_valid_q && !pipeline_ctrl.flush && !pipeline_ctrl.reset &&
+                    !from_id_to_ex.is_illegal_instruction &&
+                    !csr_in_flight &&
+      // Re-dispatch the held ID image after real backpressure stalls,
+      // but keep suppressing replay after self-induced serialization
+      // stalls (e.g. CSR commit fencing), where the instruction has
+      // already allocated once and must not be re-issued.
+      (!pipeline_ctrl.stall_registered || replay_after_dispatch_stall_q);
+
+  logic if_has_control_flow;
+  logic pd_has_control_flow;
+  logic id_has_control_flow;
+
+  function automatic logic if_stage_has_control_flow(input from_if_to_pd_t if_pkt);
+    logic [2:0] c_funct3;
+    logic [3:0] c_funct4;
+    logic [4:0] c_rs1;
+    logic [4:0] c_rs2;
+    logic [1:0] c_op;
+    begin
+      c_funct3 = if_pkt.raw_parcel[15:13];
+      c_funct4 = if_pkt.raw_parcel[15:12];
+      c_rs1 = if_pkt.raw_parcel[11:7];
+      c_rs2 = if_pkt.raw_parcel[6:2];
+      c_op = if_pkt.raw_parcel[1:0];
+
+      if_stage_has_control_flow = 1'b0;
+      if (!if_pkt.sel_nop) begin
+        if (if_pkt.sel_compressed) begin
+          // IF stage carries raw compressed parcels, not decompressed opcodes.
+          // Recognize compressed control-flow directly so younger BTB lookups
+          // cannot run ahead of an older unresolved c.branch/c.jump.
+          if_stage_has_control_flow = ((c_op == 2'b01) && ((c_funct3 == 3'b001) ||  // C.JAL (RV32)
+          (c_funct3 == 3'b101) ||  // C.J
+          (c_funct3 == 3'b110) ||  // C.BEQZ
+          (c_funct3 == 3'b111))) ||  // C.BNEZ
+          ((c_op == 2'b10) &&
+               (c_rs2 == 5'b00000) &&
+               (c_rs1 != 5'b00000) &&
+               ((c_funct4 == 4'b1000) ||  // C.JR
+          (c_funct4 == 4'b1001)));  // C.JALR
+        end else begin
+          if_stage_has_control_flow =
+              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) ||
+              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JAL) ||
+              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JALR);
+        end
+      end
+    end
+  endfunction
+
+  assign if_has_control_flow = if_stage_has_control_flow(from_if_to_pd);
+  assign pd_has_control_flow = if_valid_q &&
+                               ((from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) ||
+                                (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL) ||
+                                (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR));
+  assign id_has_control_flow = pd_valid_q && is_branch_or_jump_op(
+      from_id_to_ex.instruction_operation
+  );
+  assign front_end_control_flow_pending = if_has_control_flow ||
+                                          pd_has_control_flow ||
+                                          id_has_control_flow;
 
   // ===========================================================================
   // Tomasulo Wrapper Instance
@@ -305,7 +569,7 @@ module cpu_ooo #(
   logic sq_mem_write_en;
   logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
   logic [3:0] sq_mem_write_byte_en;
-  logic sq_mem_write_done;
+  logic sq_mem_write_done, sq_mem_write_done_comb;
 
   logic lq_mem_read_en;
   logic [XLEN-1:0] lq_mem_read_addr;
@@ -326,6 +590,10 @@ module cpu_ooo #(
   logic [ReorderBufferTagWidth-1:0] rob_read_tag;
   logic rob_read_done;
   logic [FLEN-1:0] rob_read_value;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_dispatch;
+  logic [ReorderBufferTagWidth-1:0]
+      dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
+  logic [FLEN-1:0] dispatch_bypass_value_1, dispatch_bypass_value_2, dispatch_bypass_value_3;
 
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
@@ -355,10 +623,11 @@ module cpu_ooo #(
 `endif
 
   // FRM CSR
-  logic [2:0] frm_csr;
+  logic [     2:0] frm_csr;
 
-  // CSR read data for ALU shim
-  logic [XLEN-1:0] csr_read_data;
+  // CSR read data
+  logic [XLEN-1:0] csr_read_data;  // registered (1-cycle latency)
+  logic [XLEN-1:0] csr_read_data_comb;  // combinational (same cycle, for rd write)
 
   tomasulo_wrapper u_tomasulo (
       .i_clk,
@@ -423,9 +692,16 @@ module cpu_ooo #(
       .o_head_done(head_done),
 
       // ROB bypass read
-      .i_read_tag  (rob_read_tag),
-      .o_read_done (rob_read_done),
+      .i_read_tag(rob_read_tag),
+      .o_read_done(rob_read_done),
       .o_read_value(rob_read_value),
+      .o_rob_entry_done_vec(rob_entry_done_dispatch),
+      .i_bypass_tag_1(dispatch_bypass_tag_1),
+      .o_bypass_value_1(dispatch_bypass_value_1),
+      .i_bypass_tag_2(dispatch_bypass_tag_2),
+      .o_bypass_value_2(dispatch_bypass_value_2),
+      .i_bypass_tag_3(dispatch_bypass_tag_3),
+      .o_bypass_value_3(dispatch_bypass_value_3),
 
       // RAT source lookups
       .i_int_src1_addr(int_src1_addr),
@@ -440,11 +716,11 @@ module cpu_ooo #(
       .o_fp_src3(fp_src3_lookup),
 
       // RAT regfile data
-      .i_int_regfile_data1(rf_to_fwd.source_reg_1_data),
-      .i_int_regfile_data2(rf_to_fwd.source_reg_2_data),
-      .i_fp_regfile_data1 (fp_rf_to_fwd.fp_source_reg_1_data),
-      .i_fp_regfile_data2 (fp_rf_to_fwd.fp_source_reg_2_data),
-      .i_fp_regfile_data3 (fp_rf_to_fwd.fp_source_reg_3_data),
+      .i_int_regfile_data1(int_rf_dispatch_rs1_data),
+      .i_int_regfile_data2(int_rf_dispatch_rs2_data),
+      .i_fp_regfile_data1 (fp_rf_dispatch_rs1_data),
+      .i_fp_regfile_data2 (fp_rf_dispatch_rs2_data),
+      .i_fp_regfile_data3 (fp_rf_dispatch_rs3_data),
 
       // RAT rename
       .i_rat_alloc_valid(rat_alloc_valid),
@@ -611,9 +887,9 @@ module cpu_ooo #(
       .i_from_id_to_ex(from_id_to_ex),
       .i_valid(id_valid),
 
-      .i_rs1_addr(from_pd_to_id.source_reg_1_early),
-      .i_rs2_addr(from_pd_to_id.source_reg_2_early),
-      .i_fp_rs3_addr(from_pd_to_id.fp_source_reg_3_early),
+      .i_rs1_addr(from_id_to_ex.instruction.source_reg_1),
+      .i_rs2_addr(from_id_to_ex.instruction.source_reg_2),
+      .i_fp_rs3_addr(from_id_to_ex.instruction.funct7[6:2]),
 
       .i_frm_csr(frm_csr),
 
@@ -639,6 +915,15 @@ module cpu_ooo #(
       .o_rat_alloc_dest_rf(rat_alloc_dest_rf),
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
+
+      // ROB done-entry bypass
+      .i_rob_entry_done(rob_entry_done_dispatch),
+      .o_bypass_tag_1  (dispatch_bypass_tag_1),
+      .i_bypass_value_1(dispatch_bypass_value_1),
+      .o_bypass_tag_2  (dispatch_bypass_tag_2),
+      .i_bypass_value_2(dispatch_bypass_value_2),
+      .o_bypass_tag_3  (dispatch_bypass_tag_3),
+      .i_bypass_value_3(dispatch_bypass_value_3),
 
       // RS dispatch
       .o_rs_dispatch(rs_dispatch),
@@ -675,29 +960,94 @@ module cpu_ooo #(
   );
 
   // ===========================================================================
-  // ROB Bypass Read (tie off — RAT lookup handles source resolution)
+  // ROB Bypass Read — read head entry value for CSR write data
   // ===========================================================================
-  assign rob_read_tag  = '0;
+  assign rob_read_tag = head_tag;
 
   // ===========================================================================
-  // Branch Update from ALU Shim
+  // Branch Resolution Unit
   // ===========================================================================
-  // The ALU shim in the tomasulo_wrapper handles branch/jump resolution
-  // and produces a branch_update signal. We need to connect this.
-  // The branch_update is generated internally by the int_alu_shim and
-  // wired to the ROB inside tomasulo_wrapper. The ROB then records the
-  // misprediction flag. At commit time, the ROB outputs misprediction info
-  // in rob_commit.
+  // Branch/jump instructions issue from INT_RS. The ALU shim suppresses CDB
+  // broadcast for these ops. Instead, we resolve them here and generate
+  // a reorder_buffer_branch_update_t that goes to the ROB.
 
-  // Branch update is handled internally by the tomasulo_wrapper
-  // (int_alu_shim → ROB). We tie the external port to the internal path.
-  assign branch_update = '0;  // Internal wiring handles this
+  logic is_branch_issue;
+  assign is_branch_issue = rs_issue_int.valid && is_branch_or_jump_op(rs_issue_int.op);
+
+  logic is_jal_issue, is_jalr_issue;
+  assign is_jal_issue  = rs_issue_int.valid && is_jal_op(rs_issue_int.op);
+  assign is_jalr_issue = rs_issue_int.valid && is_jalr_op(rs_issue_int.op);
+
+  // Map instr_op_e → branch_taken_op_e for branch_jump_unit
+  branch_taken_op_e branch_op_resolved;
+  always_comb begin
+    case (rs_issue_int.op)
+      BEQ:       branch_op_resolved = BREQ;
+      BNE:       branch_op_resolved = BRNE;
+      BLT:       branch_op_resolved = BRLT;
+      BGE:       branch_op_resolved = BRGE;
+      BLTU:      branch_op_resolved = BRLTU;
+      BGEU:      branch_op_resolved = BRGEU;
+      JAL, JALR: branch_op_resolved = JUMP;
+      default:   branch_op_resolved = NULL;
+    endcase
+  end
+
+  // Branch/jump condition evaluation and target computation
+  logic            branch_taken_resolved;
+  logic [XLEN-1:0] branch_target_resolved;
+
+  branch_jump_unit #(
+      .XLEN(XLEN)
+  ) u_branch_resolve (
+      .i_branch_operation         (branch_op_resolved),
+      .i_is_jump_and_link         (is_jal_issue),
+      .i_is_jump_and_link_register(is_jalr_issue),
+      .i_operand_a                (rs_issue_int.src1_value[XLEN-1:0]),
+      .i_operand_b                (rs_issue_int.src2_value[XLEN-1:0]),
+      // Dispatch stores the correct pre-computed target in branch_target
+      // (jal_target_precomputed for JAL, branch_target_precomputed for branches)
+      .i_branch_target_precomputed(rs_issue_int.branch_target),
+      .i_jal_target_precomputed   (rs_issue_int.branch_target),
+      .i_immediate_i_type         (rs_issue_int.imm),
+      .o_branch_taken             (branch_taken_resolved),
+      .o_branch_target_address    (branch_target_resolved)
+  );
+
+  // Misprediction detection (authoritative — the ROB trusts this flag)
+  logic branch_mispredicted;
+  always_comb begin
+    if (!is_branch_issue) begin
+      branch_mispredicted = 1'b0;
+    end else if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
+      // Direction misprediction (taken vs not-taken)
+      branch_mispredicted = 1'b1;
+    end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
+                 branch_target_resolved != rs_issue_int.predicted_target) begin
+      // Target misprediction (both taken but different targets)
+      branch_mispredicted = 1'b1;
+    end else begin
+      branch_mispredicted = 1'b0;
+    end
+  end
+
+  // Generate branch_update for the ROB
+  always_comb begin
+    branch_update              = '0;
+    branch_update.valid        = is_branch_issue;
+    branch_update.tag          = rs_issue_int.rob_tag;
+    branch_update.taken        = branch_taken_resolved;
+    branch_update.target       = branch_target_resolved;
+    branch_update.mispredicted = branch_mispredicted;
+  end
 
   // ===========================================================================
   // Commit-Time Actions
   // ===========================================================================
 
   // --- Regfile writes from ROB commit ---
+  // CSR instructions use o_csr_read_data_comb (combinational, same cycle) so
+  // the rd write can happen on the same commit cycle as non-CSR instructions.
   always_comb begin
     int_rf_write_enable = 1'b0;
     int_rf_write_addr   = '0;
@@ -707,7 +1057,12 @@ module cpu_ooo #(
     fp_rf_write_data    = '0;
 
     if (rob_commit.valid && rob_commit.dest_valid && !rob_commit.exception) begin
-      if (rob_commit.dest_rf == 1'b0) begin
+      if (rob_commit.is_csr) begin
+        // CSR: write old CSR value (combinational read) to rd
+        int_rf_write_enable = 1'b1;
+        int_rf_write_addr   = rob_commit.dest_reg;
+        int_rf_write_data   = csr_read_data_comb;
+      end else if (rob_commit.dest_rf == 1'b0) begin
         // INT destination
         int_rf_write_enable = 1'b1;
         int_rf_write_addr   = rob_commit.dest_reg;
@@ -748,8 +1103,10 @@ module cpu_ooo #(
 
   // Flush pipeline on misprediction, trap, MRET, or FENCE.I
   always_comb begin
-    flush_pipeline = commit_is_misprediction || flush_for_trap || flush_for_mret ||
-                     (rob_commit.valid && fence_i_flush);
+    // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
+    // cycle after FENCE.I commits. Gate the front-end flush directly from that
+    // pulse so dispatch cannot allocate into the same cycle as a full flush.
+    flush_pipeline = commit_is_misprediction || flush_for_trap || flush_for_mret || fence_i_flush;
   end
 
   // ROB flush: partial flush on misprediction (younger than branch),
@@ -767,7 +1124,10 @@ module cpu_ooo #(
       flush_en  = 1'b1;
       flush_tag = rob_commit.tag;
       flush_all = 1'b0;
-    end else if (rob_commit.valid && fence_i_flush) begin
+    end else if (fence_i_flush) begin
+      // fence_i_flush is a registered 1-cycle pulse from ROB (fires cycle after
+      // FENCE.I commit). No need to gate with rob_commit.valid — doing so
+      // creates a combinational loop (flush_all -> commit_en -> rob_commit.valid).
       flush_en  = 1'b1;
       flush_all = 1'b1;
     end
@@ -775,13 +1135,18 @@ module cpu_ooo #(
 
   // Checkpoint restore on misprediction
   always_comb begin
-    checkpoint_restore    = commit_is_misprediction;
+    // Restore RAT state for every mispredicted control-flow instruction.
+    // The current RAT restore path clears speculative rename state rather than
+    // replaying a checkpoint image, so skipping restore on calls leaves flushed
+    // younger mappings for caller fall-through instructions live into the
+    // callee after redirect.
+    checkpoint_restore    = commit_is_misprediction && rob_commit.has_checkpoint;
     checkpoint_restore_id = rob_commit.checkpoint_id;
   end
 
-  // Checkpoint free on correct branch commit
+  // Checkpoint free on any branch commit (correct or mispredicted)
   always_comb begin
-    checkpoint_free    = rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction;
+    checkpoint_free    = rob_commit.valid && rob_commit.has_checkpoint;
     checkpoint_free_id = rob_commit.checkpoint_id;
   end
 
@@ -795,26 +1160,34 @@ module cpu_ooo #(
     from_ex_comb_synth = '0;
 
     if (commit_is_misprediction) begin
+      // Misprediction: redirect PC and update BTB
       from_ex_comb_synth.branch_taken          = 1'b1;
       from_ex_comb_synth.branch_target_address = misprediction_redirect_pc;
 
-      // BTB update on misprediction
-      from_ex_comb_synth.btb_update            = 1'b1;
-      from_ex_comb_synth.btb_update_pc         = rob_commit.pc;
-      from_ex_comb_synth.btb_update_target     = rob_commit.branch_target;
-      from_ex_comb_synth.btb_update_taken      = rob_commit.branch_taken;
+      if (!rob_commit.is_return) begin
+        from_ex_comb_synth.btb_update            = 1'b1;
+        from_ex_comb_synth.btb_update_pc         = rob_commit.pc;
+        from_ex_comb_synth.btb_update_target     = rob_commit.branch_target;
+        from_ex_comb_synth.btb_update_taken      = rob_commit.branch_taken;
+        from_ex_comb_synth.btb_update_compressed = rob_commit.is_compressed;
+      end
 
       // RAS restore on misprediction (if branch had a checkpoint)
-      if (rob_commit.is_call || rob_commit.is_return) begin
+      if (rob_commit.is_return) begin
         from_ex_comb_synth.ras_misprediction       = 1'b1;
         from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
         from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        from_ex_comb_synth.ras_pop_after_restore   = rob_commit.is_return;
+        from_ex_comb_synth.ras_pop_after_restore   = 1'b1;
       end
-    end else if (flush_for_trap) begin
-      // Trap redirect is handled via trap_ctrl, not from_ex_comb
-      // But we still need branch_taken for flush gating in IF
-      from_ex_comb_synth.branch_taken = 1'b0;
+    end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
+      // Correctly-predicted branch commit: update BTB (no PC redirect)
+      if (!rob_commit.is_return) begin
+        from_ex_comb_synth.btb_update            = 1'b1;
+        from_ex_comb_synth.btb_update_pc         = rob_commit.pc;
+        from_ex_comb_synth.btb_update_target     = rob_commit.branch_target;
+        from_ex_comb_synth.btb_update_taken      = rob_commit.branch_taken;
+        from_ex_comb_synth.btb_update_compressed = rob_commit.is_compressed;
+      end
     end
   end
 
@@ -832,9 +1205,7 @@ module cpu_ooo #(
     o_data_mem_read_enable    = 1'b0;
     o_mmio_load_addr          = '0;
     o_mmio_load_valid         = 1'b0;
-    sq_mem_write_done         = 1'b0;
-    lq_mem_read_data          = '0;
-    lq_mem_read_valid         = 1'b0;
+    sq_mem_write_done_comb    = 1'b0;
     amo_mem_write_done        = 1'b0;
 
     if (sq_mem_write_en) begin
@@ -842,14 +1213,12 @@ module cpu_ooo #(
       o_data_mem_addr           = sq_mem_write_addr;
       o_data_mem_wr_data        = sq_mem_write_data;
       o_data_mem_per_byte_wr_en = sq_mem_write_byte_en;
-      o_data_mem_read_enable    = 1'b0;
-      sq_mem_write_done         = 1'b1;  // Single-cycle write
+      sq_mem_write_done_comb    = 1'b1;  // Single-cycle write
     end else if (amo_mem_write_en) begin
       // AMO memory write
       o_data_mem_addr           = amo_mem_write_addr;
       o_data_mem_wr_data        = amo_mem_write_data;
       o_data_mem_per_byte_wr_en = 4'b1111;
-      o_data_mem_read_enable    = 1'b0;
       amo_mem_write_done        = 1'b1;
     end else if (lq_mem_read_en) begin
       // Load queue memory read
@@ -862,28 +1231,31 @@ module cpu_ooo #(
         o_mmio_load_valid = 1'b1;
       end
     end
-
-    // Load data comes back next cycle from memory
-    lq_mem_read_data = i_data_mem_rd_data;
-    // Memory read valid: data is available 1 cycle after read_enable
-    // This is registered in the memory response path
   end
+
+  // SQ write done: register to align with write_outstanding in the SQ
+  always_ff @(posedge i_clk) begin
+    if (i_rst) sq_mem_write_done <= 1'b0;
+    else sq_mem_write_done <= sq_mem_write_done_comb;
+  end
+
+  // Load data always comes from external memory
+  assign lq_mem_read_data = i_data_mem_rd_data;
 
   // Memory read valid: 1-cycle latency from read enable
   logic mem_read_pending;
+  logic lq_mem_read_accepted;
+  assign lq_mem_read_accepted = o_data_mem_read_enable;
   always_ff @(posedge i_clk) begin
     if (i_rst) mem_read_pending <= 1'b0;
-    else mem_read_pending <= lq_mem_read_en && !sq_mem_write_en && !amo_mem_write_en;
+    else mem_read_pending <= lq_mem_read_accepted;
   end
-  // Override the combinational assignment above
-  always_comb begin
-    lq_mem_read_valid = mem_read_pending;
-  end
+  assign lq_mem_read_valid = mem_read_pending;
 
   // MMIO read pulse
-  assign o_mmio_read_pulse = lq_mem_read_en &&
-                             (lq_mem_read_addr >= MMIO_ADDR[XLEN-1:0]) &&
-                             (lq_mem_read_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
+  assign o_mmio_read_pulse = lq_mem_read_accepted &&
+                             (o_data_mem_addr >= MMIO_ADDR[XLEN-1:0]) &&
+                             (o_data_mem_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
 
   // ===========================================================================
   // CSR File
@@ -895,40 +1267,35 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mtvec, csr_mepc;
   logic csr_mstatus_mie_direct;
 
-  // CSR write data from commit: the ALU shim computes the new CSR value
-  // and stores it in the ROB entry. At commit, we write it to the CSR file.
-  logic csr_write_enable;
-  assign csr_write_enable = csr_start;
+  // CSR execution happens at commit time (serialized by ROB).
+  // The ALU shim passes through the rs1/imm value as the CDB result.
+  // At commit, the value is available in rob_commit.value.
+  assign csr_commit_fire = rob_commit.valid && rob_commit.is_csr && !rob_commit.exception;
 
-  // CSR address from ROB commit (stored in the entry)
-  logic [11:0] csr_addr_from_commit;
-  assign csr_addr_from_commit = rob_commit.csr_addr;
-
-  // CSR op funct3 from ROB commit
-  logic [2:0] csr_op_from_commit;
-  assign csr_op_from_commit = rob_commit.csr_op;
-
-  // CSR write data: the ALU shim stores the rs1/imm value in the ROB
+  // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
+  // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
+  // the ALU shim stored zero_extend(csr_imm) in rob_commit.value.
   logic [XLEN-1:0] csr_write_data_from_commit;
-  assign csr_write_data_from_commit = rob_commit.csr_write_data[XLEN-1:0];
+  assign csr_write_data_from_commit = rob_commit.value[XLEN-1:0];
 
   csr_file #(
       .XLEN(XLEN)
   ) csr_file_inst (
       .i_clk,
       .i_rst,
-      .i_csr_read_enable(csr_start),
-      .i_csr_address(csr_addr_from_commit),
-      .i_csr_op(csr_op_from_commit),
+      .i_csr_read_enable(csr_commit_fire),
+      .i_csr_address(rob_commit.csr_addr),
+      .i_csr_op(rob_commit.csr_op),
       .i_csr_write_data(csr_write_data_from_commit),
-      .i_csr_write_enable(csr_write_enable),
+      .i_csr_write_enable(csr_commit_fire),
       .o_csr_read_data(csr_read_data),
+      .o_csr_read_data_comb(csr_read_data_comb),
       .i_instruction_retired(o_vld && !trap_taken),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
       .i_trap_pc(rob_trap_pc),
-      .i_trap_cause({rob_trap_cause}),
+      .i_trap_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
       .i_trap_value('0),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
@@ -945,8 +1312,15 @@ module cpu_ooo #(
       .o_frm(frm_csr)
   );
 
-  // CSR done acknowledgment (single-cycle CSR operations)
-  assign csr_done_ack = csr_start;
+  // CSR done acknowledgment — 1-cycle delay to match CSR file read latency.
+  // csr_start fires on cycle N (ROB enters SERIAL_CSR_EXEC), csr_done_ack
+  // fires on cycle N+1, allowing the ROB to commit.
+  logic csr_done_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) csr_done_q <= 1'b0;
+    else csr_done_q <= csr_start;
+  end
+  assign csr_done_ack = csr_done_q;
 
   // MEPC for MRET
   assign mepc_value = csr_mepc;
@@ -956,9 +1330,10 @@ module cpu_ooo #(
   // ===========================================================================
   // Handles exceptions from ROB commit and external interrupts.
 
-  // Interrupt pending signal
-  assign interrupt_pending = (i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip) &&
-                             csr_mstatus_mie_direct;
+  // Interrupt pending signal — raw pending without MIE gate.
+  // Per RISC-V spec, WFI wakes on ANY pending interrupt, even if masked.
+  // The trap unit separately checks MIE to decide whether to take the trap.
+  assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip;
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
   logic [XLEN-1:0] trap_cause_internal, trap_value_internal;
@@ -977,7 +1352,7 @@ module cpu_ooo #(
       .i_interrupts(i_interrupts),
       // Exception from ROB commit
       .i_exception_valid(trap_pending),
-      .i_exception_cause({rob_trap_cause}),
+      .i_exception_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
       .i_exception_tval('0),
       .i_exception_pc(rob_trap_pc),
       .i_mret_in_ex(mret_start),
@@ -1009,5 +1384,6 @@ module cpu_ooo #(
     else if (!o_rst_done) rst_counter <= rst_counter + 8'd1;
   end
   assign o_rst_done = (rst_counter == 8'hFF);
+
 
 endmodule : cpu_ooo

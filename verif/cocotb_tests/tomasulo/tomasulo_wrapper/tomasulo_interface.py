@@ -194,6 +194,9 @@ class TomasuloInterface:
 
         # ROB bypass read
         self.dut.i_read_tag.value = 0
+        self.dut.i_bypass_tag_1.value = 0
+        self.dut.i_bypass_tag_2.value = 0
+        self.dut.i_bypass_tag_3.value = 0
 
         # RAT source lookup addresses
         self.dut.i_int_src1_addr.value = 0

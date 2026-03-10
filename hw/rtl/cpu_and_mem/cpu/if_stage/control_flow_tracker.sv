@@ -75,7 +75,8 @@ module control_flow_tracker #(
   // ===========================================================================
   // Detect any control flow change this cycle (branches, traps, predictions)
 
-  assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken;
+  assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
+                                 i_prediction_used;
 
   // ===========================================================================
   // Holdoff Registers
@@ -86,8 +87,13 @@ module control_flow_tracker #(
     if (i_reset) begin
       o_control_flow_holdoff <= 1'b0;
       o_reset_holdoff <= 1'b1;
+    end else if (o_control_flow_change) begin
+      // Latch redirect holdoff even if the front-end is stalled. Otherwise a
+      // mispredict/redirect that arrives into back-pressure can skip the stale
+      // BRAM-suppression window and pair new-path instruction data with an old PC.
+      o_control_flow_holdoff <= 1'b1;
     end else if (!i_stall) begin
-      o_control_flow_holdoff <= o_control_flow_change;
+      o_control_flow_holdoff <= 1'b0;
       o_reset_holdoff <= 1'b0;
     end
   end
@@ -116,7 +122,8 @@ module control_flow_tracker #(
     (i_prediction_used && i_predicted_target[1]);
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush) o_control_flow_to_halfword_r <= 1'b0;
+    if (i_reset) o_control_flow_to_halfword_r <= 1'b0;
+    else if (o_control_flow_change) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
     else if (!i_stall) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
   end
 

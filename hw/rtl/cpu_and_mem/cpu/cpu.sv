@@ -586,6 +586,7 @@ module cpu #(
       .i_csr_write_data(csr_write_data),
       .i_csr_write_enable(csr_write_enable),
       .o_csr_read_data(csr_read_data),
+      .o_csr_read_data_comb(),  // unused in in-order pipeline
       // Instruction retire
       .i_instruction_retired(o_vld && ~trap_taken),
       // Interrupt inputs

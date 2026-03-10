@@ -7,8 +7,8 @@
 # Pipeline utilities (stall capture registers)
 $(ROOT)/hw/rtl/lib/stall_capture_reg.sv
 
-# RISC-V CPU core (6-stage pipeline with all submodules)
--f $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu.f
+# RISC-V OOO CPU core (Tomasulo out-of-order with all submodules)
+-f $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv

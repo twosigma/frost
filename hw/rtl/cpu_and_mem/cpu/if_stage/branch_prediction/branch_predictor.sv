@@ -68,16 +68,18 @@ module branch_predictor #(
     input logic i_rst,
 
     // Prediction interface (IF stage)
-    input  logic [XLEN-1:0] i_pc,               // Current PC for lookup
-    output logic            o_btb_hit,          // BTB entry hit
-    output logic            o_predicted_taken,  // Predict taken
-    output logic [XLEN-1:0] o_predicted_target, // Predicted target address
+    input  logic [XLEN-1:0] i_pc,                // Current PC for lookup
+    output logic            o_btb_hit,           // BTB entry hit
+    output logic            o_predicted_taken,   // Predict taken
+    output logic [XLEN-1:0] o_predicted_target,  // Predicted target address
+    output logic            o_btb_compressed,    // Entry is for compressed instruction
 
     // Update interface (from EX stage)
-    input logic            i_update,         // Update BTB entry
-    input logic [XLEN-1:0] i_update_pc,      // PC of branch instruction
-    input logic [XLEN-1:0] i_update_target,  // Actual branch target
-    input logic            i_update_taken    // Actual branch outcome
+    input logic            i_update,            // Update BTB entry
+    input logic [XLEN-1:0] i_update_pc,         // PC of branch instruction
+    input logic [XLEN-1:0] i_update_target,     // Actual branch target
+    input logic            i_update_taken,      // Actual branch outcome
+    input logic            i_update_compressed  // Branch was compressed (16-bit)
 );
 
   // BTB parameters
@@ -176,6 +178,20 @@ module branch_predictor #(
       .o_read_data(btb_counter_update)
   );
 
+  // Compressed flag RAM (lookup read only)
+  logic btb_compressed_lookup;
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(1)
+  ) btb_compressed_ram (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_compressed),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_compressed_lookup)
+  );
+
   // Combinational lookup
   wire lookup_valid = btb_valid[lookup_index];
   wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
@@ -188,6 +204,7 @@ module branch_predictor #(
   // Prediction output: predict taken when counter[1] == 1 (value >= 2)
   assign o_predicted_taken = o_btb_hit && lookup_counter[1];
   assign o_predicted_target = lookup_target;
+  assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
 
   // Current counter value for the entry being updated
   wire [1:0] current_counter = btb_counter_update;

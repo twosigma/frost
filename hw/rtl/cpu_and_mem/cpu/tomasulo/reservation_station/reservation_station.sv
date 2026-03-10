@@ -84,6 +84,7 @@ module reservation_station #(
     input logic [11:0] i_dispatch_csr_addr,
     input logic [4:0] i_dispatch_csr_imm,
     input logic [riscv_pkg::XLEN-1:0] i_dispatch_pc,
+    input logic [riscv_pkg::XLEN-1:0] i_dispatch_link_addr,
 `else
     input riscv_pkg::rs_dispatch_t i_dispatch,
 `endif
@@ -116,6 +117,7 @@ module reservation_station #(
     output logic                 [                                11:0] o_issue_csr_addr,
     output logic                 [                                 4:0] o_issue_csr_imm,
     output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_pc,
+    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_link_addr,
 `else
     output riscv_pkg::rs_issue_t                                        o_issue,
 `endif
@@ -199,6 +201,7 @@ module reservation_station #(
   wire [    11:0] dispatch_csr_addr = i_dispatch_csr_addr;
   wire [     4:0] dispatch_csr_imm = i_dispatch_csr_imm;
   wire [XLEN-1:0] dispatch_pc = i_dispatch_pc;
+  wire [XLEN-1:0] dispatch_link_addr = i_dispatch_link_addr;
 `else
   wire                                              dispatch_valid = i_dispatch.valid;
   wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch.rob_tag;
@@ -226,6 +229,7 @@ module reservation_station #(
   wire [    11:0] dispatch_csr_addr = i_dispatch.csr_addr;
   wire [     4:0] dispatch_csr_imm = i_dispatch.csr_imm;
   wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
+  wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
 `endif
 
   // ===========================================================================
@@ -260,6 +264,7 @@ module reservation_station #(
   logic [    11:0] issue_out_csr_addr;
   logic [     4:0] issue_out_csr_imm;
   logic [XLEN-1:0] issue_out_pc;
+  logic [XLEN-1:0] issue_out_link_addr;
 
   // ===========================================================================
   // Debug Signals (for verification -- Verilator only)
@@ -333,7 +338,7 @@ module reservation_station #(
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN;  // 185
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN;  // 217
 
   logic [PayloadWidth-1:0] payload_wr_data;
   logic [PayloadWidth-1:0] payload_rd_data;
@@ -350,7 +355,8 @@ module reservation_station #(
     dispatch_mem_signed,  //  1  mem_signed
     dispatch_csr_addr,  // 12  csr_addr
     dispatch_csr_imm,  //  5  csr_imm
-    dispatch_pc  // 32  pc
+    dispatch_pc,  // 32  pc
+    dispatch_link_addr  // 32  link_addr
   };
 
   sdp_dist_ram #(
@@ -378,10 +384,11 @@ module reservation_station #(
   logic [    11:0] pl_csr_addr;
   logic [     4:0] pl_csr_imm;
   logic [XLEN-1:0] pl_pc;
+  logic [XLEN-1:0] pl_link_addr;
 
   assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
           pl_predicted_target, pl_is_fp_mem, pl_mem_size_bits, pl_mem_signed,
-          pl_csr_addr, pl_csr_imm, pl_pc} = payload_rd_data;
+          pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr} = payload_rd_data;
 
   // ===========================================================================
   // Combinational Logic
@@ -416,10 +423,13 @@ module reservation_station #(
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i]
-                     && rs_src1_ready[i]
-                     && (rs_src2_ready[i] || rs_use_imm[i])
-                     && rs_src3_ready[i];
+      entry_ready[i] = rs_valid[i] && rs_src1_ready[i]
+      // Even when an instruction uses an immediate, issue still
+      // requires src2 to be ready if the opcode actually has a
+      // second source (for example stores: base+imm address and
+      // rs2 store data). Dispatch marks truly-unused src2
+      // operands ready, so a plain src2_ready check is correct.
+      && rs_src2_ready[i] && rs_src3_ready[i];
     end
   end
 
@@ -435,10 +445,15 @@ module reservation_station #(
     end
   end
 
-  assign issue_fire = any_ready && i_fu_ready;
+  // A partial/full flush invalidates younger entries on the clock edge, but the
+  // ready scan above still sees pre-flush state combinationally in the same
+  // cycle. Suppress issue so wrong-path ops cannot leak into the FUs during the
+  // misprediction/trap flush cycle.
+  assign issue_fire = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
 
   // --- SC issue peek: reports whether the next-to-issue entry is an SC ---
-  assign o_next_issue_is_sc = any_ready && (pl_op_bits == 32'(riscv_pkg::SC_W));
+  assign o_next_issue_is_sc = any_ready && !i_flush_all && !i_flush_en &&
+                              (pl_op_bits == 32'(riscv_pkg::SC_W));
 
   // --- Issue output ---
   always_comb begin
@@ -460,6 +475,7 @@ module reservation_station #(
     issue_out_csr_addr         = '0;
     issue_out_csr_imm          = '0;
     issue_out_pc               = '0;
+    issue_out_link_addr        = '0;
     if (issue_fire) begin
       issue_out_valid            = 1'b1;
       issue_out_rob_tag          = rs_rob_tag[issue_idx];
@@ -479,6 +495,7 @@ module reservation_station #(
       issue_out_csr_addr         = pl_csr_addr;
       issue_out_csr_imm          = pl_csr_imm;
       issue_out_pc               = pl_pc;
+      issue_out_link_addr        = pl_link_addr;
     end
   end
 
@@ -502,6 +519,7 @@ module reservation_station #(
   assign o_issue_csr_addr         = issue_out_csr_addr;
   assign o_issue_csr_imm          = issue_out_csr_imm;
   assign o_issue_pc               = issue_out_pc;
+  assign o_issue_link_addr        = issue_out_link_addr;
 `else
   always_comb begin
     o_issue.valid            = issue_out_valid;
@@ -522,6 +540,7 @@ module reservation_station #(
     o_issue.csr_addr         = issue_out_csr_addr;
     o_issue.csr_imm          = issue_out_csr_imm;
     o_issue.pc               = issue_out_pc;
+    o_issue.link_addr        = issue_out_link_addr;
   end
 `endif
 
@@ -655,6 +674,7 @@ module reservation_station #(
       // Issue fires only for ready entries (fatal: indicates RTL bug)
       if (issue_out_valid && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
+
     end
   end
 `endif

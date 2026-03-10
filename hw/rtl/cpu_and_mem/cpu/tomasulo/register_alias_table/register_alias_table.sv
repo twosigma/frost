@@ -110,6 +110,11 @@ module register_alias_table (
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
 
     // =========================================================================
+    // ROB Entry Valid Vector (for stale rename detection)
+    // =========================================================================
+    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_valid,
+
+    // =========================================================================
     // Flush All (exception)
     // =========================================================================
     input logic i_flush_all,
@@ -326,7 +331,10 @@ module register_alias_table (
     if (i_int_src1_addr == '0) begin
       // x0 hardwired to zero
       o_int_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src1_addr]) begin
+    end else if (int_rat_valid[i_int_src1_addr] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr]]) begin
+      // Renamed to an in-flight ROB entry. Dispatch resolves done-entry
+      // bypass uniformly for INT and FP sources.
       o_int_src1 = {
         1'b1, int_rat_tag[i_int_src1_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
       };
@@ -341,7 +349,8 @@ module register_alias_table (
   always_comb begin
     if (i_int_src2_addr == '0) begin
       o_int_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src2_addr]) begin
+    end else if (int_rat_valid[i_int_src2_addr] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr]]) begin
       o_int_src2 = {
         1'b1, int_rat_tag[i_int_src2_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
       };
@@ -354,7 +363,7 @@ module register_alias_table (
 
   // FP source 1
   always_comb begin
-    if (fp_rat_valid[i_fp_src1_addr]) begin
+    if (fp_rat_valid[i_fp_src1_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr]]) begin
       o_fp_src1 = {1'b1, fp_rat_tag[i_fp_src1_addr], i_fp_regfile_data1};
     end else begin
       o_fp_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data1};
@@ -363,7 +372,7 @@ module register_alias_table (
 
   // FP source 2
   always_comb begin
-    if (fp_rat_valid[i_fp_src2_addr]) begin
+    if (fp_rat_valid[i_fp_src2_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr]]) begin
       o_fp_src2 = {1'b1, fp_rat_tag[i_fp_src2_addr], i_fp_regfile_data2};
     end else begin
       o_fp_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data2};
@@ -372,7 +381,7 @@ module register_alias_table (
 
   // FP source 3 (for FMA)
   always_comb begin
-    if (fp_rat_valid[i_fp_src3_addr]) begin
+    if (fp_rat_valid[i_fp_src3_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr]]) begin
       o_fp_src3 = {1'b1, fp_rat_tag[i_fp_src3_addr], i_fp_regfile_data3};
     end else begin
       o_fp_src3 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3};
@@ -399,15 +408,15 @@ module register_alias_table (
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
     end else if (i_checkpoint_restore) begin
-      // Checkpoint restore: bulk overwrite from checkpoint RAM
-      int_rat_valid <= restored_int_valid;
-      fp_rat_valid  <= restored_fp_valid;
-      for (int i = 0; i < NumIntRegs; i++) begin
-        int_rat_tag[i] <= restored_int_tag[i];
-      end
-      for (int i = 0; i < NumFpRegs; i++) begin
-        fp_rat_tag[i] <= restored_fp_tag[i];
-      end
+      // Checkpoint restore is only used on branch commit misprediction
+      // recovery. By that point every instruction older than the branch has
+      // already committed architecturally, and every younger instruction is
+      // being flushed. That leaves no surviving speculative mappings, so
+      // restoring the pre-branch RAT image here can resurrect stale ROB tags
+      // after wraparound. Keep the checkpoint RAM for RAS metadata, but clear
+      // the active rename state on restore.
+      int_rat_valid <= '0;
+      fp_rat_valid  <= '0;
     end else begin
       // ---------------------------------------------------------------
       // Commit clear: if committing tag matches current RAT entry,

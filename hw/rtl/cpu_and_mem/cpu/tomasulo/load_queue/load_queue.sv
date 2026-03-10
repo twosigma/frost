@@ -80,6 +80,7 @@ module load_queue #(
     output riscv_pkg::mem_size_e                       o_mem_read_size,
     input  logic                 [riscv_pkg::XLEN-1:0] i_mem_read_data,
     input  logic                                       i_mem_read_valid,
+    input  logic                                       i_mem_bus_busy,
 
     // =========================================================================
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
@@ -269,13 +270,20 @@ module load_queue #(
   // issue_cdb_idx declared above (before LUTRAM instances)
   logic issue_mem_found;  // Phase B: entry ready for memory
   logic [IdxWidth-1:0] issue_mem_idx;
+  logic block_younger_mem;
 
   // Memory issued entry tracking
   logic mem_outstanding;  // One outstanding read at a time
   logic [IdxWidth-1:0] issued_idx;  // Which entry is awaiting mem response
+  logic drop_mem_response_pending;  // Drop the next 1-cycle-latency response after flush
 
   // Load unit wires
   logic [XLEN-1:0] lu_data_out;
+
+  // Response acceptance/drain control
+  logic issued_entry_flushed;
+  logic accept_mem_response;
+  logic drop_mem_response_now;
 
   // Entry freeing
   logic free_entry_en;
@@ -349,9 +357,10 @@ module load_queue #(
 
   always_comb begin
     issue_cdb_found = 1'b0;
-    issue_cdb_idx   = '0;
+    issue_cdb_idx = '0;
     issue_mem_found = 1'b0;
-    issue_mem_idx   = '0;
+    issue_mem_idx = '0;
+    block_younger_mem = 1'b0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // Walk from head toward tail in circular order
@@ -363,7 +372,7 @@ module load_queue #(
         end
         // Phase B: Memory issue candidate
         // LR/AMO require ROB head (like MMIO); AMO also needs SQ committed-empty
-        if (!issue_mem_found && lq_addr_valid[scan_idx[i]]
+        if (!issue_mem_found && !block_younger_mem && lq_addr_valid[scan_idx[i]]
             && !lq_issued[scan_idx[i]]
             && !lq_data_valid[scan_idx[i]]
             && (!lq_is_lr[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag))
@@ -372,6 +381,14 @@ module load_queue #(
         ) begin
           issue_mem_found = 1'b1;
           issue_mem_idx   = scan_idx[i];
+        end
+
+        // A pending older AMO must block younger memory ops until its write
+        // phase completes and the slot becomes data-valid. Otherwise a younger
+        // reload can observe the pre-AMO value even though the AMO itself is
+        // already underway.
+        if (!issue_mem_found && lq_is_amo[scan_idx[i]] && !lq_data_valid[scan_idx[i]]) begin
+          block_younger_mem = 1'b1;
         end
       end
     end
@@ -388,7 +405,7 @@ module load_queue #(
     o_sq_check_rob_tag = '0;
     o_sq_check_size    = riscv_pkg::MEM_SIZE_WORD;
 
-    if (issue_mem_found && !mem_outstanding) begin
+    if (issue_mem_found && !mem_outstanding && !drop_mem_response_pending && !i_mem_bus_busy) begin
       // MMIO check: only issue if at ROB head
       if (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag)) begin
         o_sq_check_valid   = 1'b1;
@@ -414,6 +431,19 @@ module load_queue #(
   assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
   assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward
       && !lq_is_mmio[issue_mem_idx] && !lq_is_lr[issue_mem_idx] && !lq_is_amo[issue_mem_idx];
+
+  // Data memory has fixed 1-cycle latency in this design. If a partial flush
+  // kills the outstanding load, drop that next response explicitly so the slot
+  // can be safely reused before the stale data returns.
+  assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] && is_younger(
+      lq_rob_tag[issued_idx], i_flush_tag, i_rob_head_tag
+  );
+  assign accept_mem_response = i_mem_read_valid && mem_outstanding &&
+                               !drop_mem_response_pending && !issued_entry_flushed &&
+                               lq_valid[issued_idx];
+  assign drop_mem_response_now = i_mem_read_valid &&
+                                 (drop_mem_response_pending || issued_entry_flushed ||
+                                  (mem_outstanding && !lq_valid[issued_idx]));
 
   // ===========================================================================
   // Load Unit Instance (byte/halfword extraction + sign extension)
@@ -486,7 +516,8 @@ module load_queue #(
   // two reads, skip cache for simplicity).
   // This avoids issuing to memory while still respecting SQ ordering.
   logic cache_hit_fast_path;
-  assign cache_hit_fast_path = sq_can_issue
+  assign cache_hit_fast_path = !i_flush_all && !i_flush_en
+      && sq_can_issue
       && cache_lookup_hit
       && !(lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE)
       && !lq_is_mmio[issue_mem_idx]
@@ -499,7 +530,7 @@ module load_queue #(
     o_mem_read_addr = '0;
     o_mem_read_size = riscv_pkg::MEM_SIZE_WORD;
 
-    if (sq_can_issue && !cache_hit_fast_path) begin
+    if (!i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path) begin
       o_mem_read_en = 1'b1;
       // FLD phase 1: read address+4 for upper word
       if (lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE
@@ -566,7 +597,7 @@ module load_queue #(
         lq_data_wr_addr[0] = issue_mem_idx;
         lq_data_lo_wd[0]   = i_sq_forward.data[XLEN-1:0];
         lq_data_hi_wd[0]   = i_sq_forward.data[FLEN-1:XLEN];
-      end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]) begin
+      end else if (accept_mem_response) begin
         lq_data_wr_addr[0] = issued_idx;
         if (lq_is_amo[issued_idx]) begin
           // AMO read: don't write data yet (port 1 handles after AMO write)
@@ -618,7 +649,7 @@ module load_queue #(
     end
   end
 
-  assign cache_fill_valid = i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]
+  assign cache_fill_valid = accept_mem_response
       && !lq_is_mmio[issued_idx] && !lq_is_lr[issued_idx] && !lq_is_amo[issued_idx];
   assign cache_fill_addr = cache_fill_actual_addr;
   assign cache_fill_data = i_mem_read_data;
@@ -637,8 +668,7 @@ module load_queue #(
       o_amo_mem_write_addr = lq_address[amo_entry_idx];
       o_amo_mem_write_data =
           amo_compute(lq_amo_op[amo_entry_idx], amo_old_value, lq_amo_rs2[amo_entry_idx]);
-    end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]
-                 && lq_is_amo[issued_idx]) begin
+    end else if (accept_mem_response && lq_is_amo[issued_idx]) begin
       // AMO read just arrived: start write in the same cycle
       amo_write_pending = 1'b1;
       amo_new_value = amo_compute(lq_amo_op[issued_idx], i_mem_read_data, lq_amo_rs2[issued_idx]);
@@ -656,7 +686,7 @@ module load_queue #(
     lu_addr        = '0;
     lu_raw_data    = i_mem_read_data;
 
-    if (i_mem_read_valid && mem_outstanding) begin
+    if (accept_mem_response) begin
       lu_is_byte     = (lq_size[issued_idx] == riscv_pkg::MEM_SIZE_BYTE);
       lu_is_half     = (lq_size[issued_idx] == riscv_pkg::MEM_SIZE_HALF);
       lu_is_unsigned = !lq_sign_ext[issued_idx];
@@ -677,7 +707,7 @@ module load_queue #(
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(0);
     o_fu_complete.fp_flags  = '0;
 
-    if (issue_cdb_found && !i_adapter_result_pending) begin
+    if (issue_cdb_found && !i_adapter_result_pending && !i_flush_all && !i_flush_en) begin
       o_fu_complete.valid = 1'b1;
       o_fu_complete.tag   = lq_rob_tag[issue_cdb_idx];
 
@@ -757,48 +787,50 @@ module load_queue #(
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      lq_valid          <= '0;
-      lq_is_fp          <= '0;
-      lq_addr_valid     <= '0;
-      lq_sign_ext       <= '0;
-      lq_is_mmio        <= '0;
-      lq_fp64_phase     <= '0;
-      lq_issued         <= '0;
-      lq_data_valid     <= '0;
-      lq_forwarded      <= '0;
-      lq_is_lr          <= '0;
-      lq_is_amo         <= '0;
-      mem_outstanding   <= 1'b0;
-      issued_idx        <= '0;
-      reservation_valid <= 1'b0;
-      reservation_addr  <= '0;
-      amo_state         <= AMO_IDLE;
-      amo_old_value     <= '0;
-      amo_entry_idx     <= '0;
+      head_ptr                  <= '0;
+      tail_ptr                  <= '0;
+      lq_valid                  <= '0;
+      lq_is_fp                  <= '0;
+      lq_addr_valid             <= '0;
+      lq_sign_ext               <= '0;
+      lq_is_mmio                <= '0;
+      lq_fp64_phase             <= '0;
+      lq_issued                 <= '0;
+      lq_data_valid             <= '0;
+      lq_forwarded              <= '0;
+      lq_is_lr                  <= '0;
+      lq_is_amo                 <= '0;
+      mem_outstanding           <= 1'b0;
+      issued_idx                <= '0;
+      drop_mem_response_pending <= 1'b0;
+      reservation_valid         <= 1'b0;
+      reservation_addr          <= '0;
+      amo_state                 <= AMO_IDLE;
+      amo_old_value             <= '0;
+      amo_entry_idx             <= '0;
     end else if (i_flush_all) begin
       // Full flush: reset everything
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      lq_valid          <= '0;
-      lq_is_fp          <= '0;
-      lq_addr_valid     <= '0;
-      lq_sign_ext       <= '0;
-      lq_is_mmio        <= '0;
-      lq_fp64_phase     <= '0;
-      lq_issued         <= '0;
-      lq_data_valid     <= '0;
-      lq_forwarded      <= '0;
-      lq_is_lr          <= '0;
-      lq_is_amo         <= '0;
-      mem_outstanding   <= 1'b0;
-      issued_idx        <= '0;
-      reservation_valid <= 1'b0;
-      reservation_addr  <= '0;
-      amo_state         <= AMO_IDLE;
-      amo_old_value     <= '0;
-      amo_entry_idx     <= '0;
+      head_ptr                  <= '0;
+      tail_ptr                  <= '0;
+      lq_valid                  <= '0;
+      lq_is_fp                  <= '0;
+      lq_addr_valid             <= '0;
+      lq_sign_ext               <= '0;
+      lq_is_mmio                <= '0;
+      lq_fp64_phase             <= '0;
+      lq_issued                 <= '0;
+      lq_data_valid             <= '0;
+      lq_forwarded              <= '0;
+      lq_is_lr                  <= '0;
+      lq_is_amo                 <= '0;
+      mem_outstanding           <= 1'b0;
+      issued_idx                <= '0;
+      drop_mem_response_pending <= 1'b0;
+      reservation_valid         <= 1'b0;
+      reservation_addr          <= '0;
+      amo_state                 <= AMO_IDLE;
+      amo_old_value             <= '0;
+      amo_entry_idx             <= '0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -810,10 +842,15 @@ module load_queue #(
             lq_valid[i] <= 1'b0;
           end
         end
-        // Drain approach: do NOT clear mem_outstanding for flushed in-flight
-        // loads.  When the late memory response arrives, the response handler
-        // checks lq_valid[issued_idx] and discards the data if the entry was
-        // flushed (see "stale response drain" below).
+        // If the outstanding load was flushed, drop the next fixed-latency
+        // memory response explicitly so the recycled slot cannot see stale data.
+        if (issued_entry_flushed) begin
+          mem_outstanding <= 1'b0;
+          lq_issued[issued_idx] <= 1'b0;
+          if (!i_mem_read_valid) begin
+            drop_mem_response_pending <= 1'b1;
+          end
+        end
         // Retract tail: computed combinationally (see flush_tail_target)
         tail_ptr <= flush_tail_target;
       end
@@ -882,13 +919,12 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
       // -----------------------------------------------------------------
-      // Stale response drain: if the entry was flushed (partial flush)
-      // while a memory read was in-flight, discard the response and
-      // just clear mem_outstanding.
-      if (i_mem_read_valid && mem_outstanding && !lq_valid[issued_idx]) begin
-        // Flushed entry — drain stale response
+      // Stale response drain: partial flushes can kill an outstanding load one
+      // cycle before the data returns. Drop that response explicitly.
+      if (drop_mem_response_now) begin
         mem_outstanding <= 1'b0;
-      end else if (i_mem_read_valid && mem_outstanding && lq_valid[issued_idx]) begin
+        drop_mem_response_pending <= 1'b0;
+      end else if (accept_mem_response) begin
         if (lq_is_amo[issued_idx]) begin
           // AMO: latch old value, start write phase (don't set data_valid yet)
           amo_old_value   <= i_mem_read_data;
@@ -1166,5 +1202,6 @@ module load_queue #(
   end
 
 `endif  // FORMAL
+
 
 endmodule

@@ -135,6 +135,17 @@ module tomasulo_wrapper (
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
     output logic                                        o_read_done,
     output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
+    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_rob_entry_done_vec,
+
+    // =========================================================================
+    // Dispatch Done-Entry Bypass (generic source ports)
+    // =========================================================================
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_2,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3,
 
     // =========================================================================
     // RAT Source Lookups (combinational)
@@ -361,6 +372,15 @@ module tomasulo_wrapper (
 
   // Expose commit bus to testbench
   assign o_commit = commit_bus;
+
+  // ROB entry valid/done vectors: ROB -> RAT/dispatch
+  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done;
+  assign o_rob_entry_done_vec = rob_entry_done;
+
+  // Dispatch bypass: dispatch selects up to three source ROB tags and the ROB
+  // returns their values asynchronously for done-entry forwarding.
+  logic [riscv_pkg::FLEN-1:0] bypass_value_1, bypass_value_2, bypass_value_3;
 
   // Head tag for RS partial flush
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
@@ -610,9 +630,28 @@ module tomasulo_wrapper (
     sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
   end
 
-  // MUX: SC takes priority over LQ for MEM adapter input
+  // Store completion: stores are "done" immediately after MEM_RS issue
+  // (address + data go to SQ; ROB just needs to know the store completed).
+  // SC_W is excluded — it has its own completion path above.
+  logic store_issue_fire;
+  assign store_issue_fire = o_mem_rs_issue.valid && sq_issue_is_store &&
+                            (o_mem_rs_issue.op != riscv_pkg::SC_W);
+
+  riscv_pkg::fu_complete_t store_fu_complete;
+  always_comb begin
+    store_fu_complete       = '0;
+    store_fu_complete.valid = store_issue_fire;
+    store_fu_complete.tag   = o_mem_rs_issue.rob_tag;
+    // Stores have no destination register; value is don't-care
+  end
+
+  // MUX: SC > store > LQ for MEM adapter input
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
-  assign mem_fu_to_adapter = sc_fu_complete.valid ? sc_fu_complete : lq_fu_complete;
+  always_comb begin
+    if (sc_fu_complete.valid) mem_fu_to_adapter = sc_fu_complete;
+    else if (store_fu_complete.valid) mem_fu_to_adapter = store_fu_complete;
+    else mem_fu_to_adapter = lq_fu_complete;
+  end
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
@@ -732,12 +771,26 @@ module tomasulo_wrapper (
       .o_head_tag     (o_head_tag),
       .o_head_valid   (o_head_valid),
       .o_head_done    (o_head_done),
+      .o_entry_valid  (rob_entry_valid),
+      .o_entry_done   (rob_entry_done),
 
       // Bypass read
       .i_read_tag  (i_read_tag),
       .o_read_done (o_read_done),
-      .o_read_value(o_read_value)
+      .o_read_value(o_read_value),
+
+      // Dispatch bypass value read
+      .i_bypass_tag_1  (i_bypass_tag_1),
+      .o_bypass_value_1(bypass_value_1),
+      .i_bypass_tag_2  (i_bypass_tag_2),
+      .o_bypass_value_2(bypass_value_2),
+      .i_bypass_tag_3  (i_bypass_tag_3),
+      .o_bypass_value_3(bypass_value_3)
   );
+
+  assign o_bypass_value_1 = bypass_value_1;
+  assign o_bypass_value_2 = bypass_value_2;
+  assign o_bypass_value_3 = bypass_value_3;
 
   // ===========================================================================
   // Register Alias Table Instance
@@ -790,6 +843,9 @@ module tomasulo_wrapper (
       // Checkpoint free
       .i_checkpoint_free   (i_checkpoint_free),
       .i_checkpoint_free_id(i_checkpoint_free_id),
+
+      // ROB entry valid (stale rename detection)
+      .i_rob_entry_valid(rob_entry_valid),
 
       // Flush
       .i_flush_all(i_flush_all),
@@ -1362,10 +1418,15 @@ module tomasulo_wrapper (
       .o_mem_read_size (o_lq_mem_read_size),
       .i_mem_read_data (i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
+      // AMO writes share the same external data-memory port as load reads.
+      // Treat them as bus-busy so the LQ cannot issue a younger load or
+      // take a stale L0-cache fast path in the AMO write-completion cycle.
+      .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en),
 
-      // CDB result (to MEM adapter; back-pressured when SC uses the slot)
-      .o_fu_complete           (lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid),
+      // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
+      .o_fu_complete(lq_fu_complete),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
+                                store_issue_fire),
 
       // ROB head tag (for MMIO ordering)
       .i_rob_head_tag(head_tag),
@@ -1476,7 +1537,9 @@ module tomasulo_wrapper (
   // Store Queue: Commit from ROB
   // ===========================================================================
   logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus.valid && commit_bus.is_store && !sc_discard;
+  assign sq_commit_valid = commit_bus.valid &&
+                           (commit_bus.is_store || commit_bus.is_fp_store || commit_bus.is_sc) &&
+                           !sc_discard;
 
   // ===========================================================================
   // Store Queue Instance
@@ -1631,6 +1694,7 @@ module tomasulo_wrapper (
   );
 `endif
 
+
   // ===========================================================================
   // Formal Verification
   // ===========================================================================
@@ -1652,8 +1716,6 @@ module tomasulo_wrapper (
 
   // CDB write and branch update cannot target same tag simultaneously
   always_comb begin
-    assume (!(cdb_write_from_arbiter.valid && i_branch_update.valid &&
-              cdb_write_from_arbiter.tag == i_branch_update.tag));
   end
 
   // No allocation during flush

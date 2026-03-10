@@ -76,11 +76,12 @@ class IntAluShimInterface:
         imm: int = 0,
         use_imm: bool = False,
         pc: int = 0,
+        link_addr: int = 0,
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Exposes imm, use_imm, and pc which the ALU shim uses for
-        immediate operations, LUI/AUIPC, and JAL link address.
+        Exposes imm, use_imm, pc, and link_addr which the ALU shim uses for
+        immediate operations, LUI/AUIPC, and JAL/JALR link results.
         """
         packed = pack_rs_issue(
             valid=valid,
@@ -91,6 +92,7 @@ class IntAluShimInterface:
             imm=imm,
             use_imm=use_imm,
             pc=pc,
+            link_addr=link_addr,
         )
         self.dut.i_rs_issue.value = packed
 
