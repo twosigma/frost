@@ -38,14 +38,6 @@
  *   in a single-port distributed RAM (sdp_dist_ram): written once at
  *   dispatch, read once at issue.  Valid bits in FFs gate all reads,
  *   so stale LUTRAM data behind flushed entries is harmless.
- *
- * Icarus VPI Workaround:
- *   Icarus Verilog 12.0 crashes (vvp event.cc assertion) on very wide
- *   packed struct VPI-facing ports. Internal signals of any width are
- *   fine; only ports that cocotb drives/reads via VPI are affected. Ports
- *   up to 187 bits work; 352+ bits crash. When ICARUS is defined, the
- *   module exposes dispatch and issue fields as individual ports. Internal
- *   wire aliases ensure the core logic is identical for both paths.
  */
 
 module reservation_station #(
@@ -57,71 +49,19 @@ module reservation_station #(
     // =========================================================================
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
-`ifdef ICARUS
-    // Flattened ports -- avoids wide packed struct signals in Icarus VVP.
-    input logic i_dispatch_valid,
-    input logic [2:0] i_dispatch_rs_type,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_rob_tag,
-    input logic [31:0] i_dispatch_op,
-    input logic i_dispatch_src1_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src1_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src1_value,
-    input logic i_dispatch_src2_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src2_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src2_value,
-    input logic i_dispatch_src3_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src3_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src3_value,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_imm,
-    input logic i_dispatch_use_imm,
-    input logic [2:0] i_dispatch_rm,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_branch_target,
-    input logic i_dispatch_predicted_taken,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_predicted_target,
-    input logic i_dispatch_is_fp_mem,
-    input logic [1:0] i_dispatch_mem_size,
-    input logic i_dispatch_mem_signed,
-    input logic [11:0] i_dispatch_csr_addr,
-    input logic [4:0] i_dispatch_csr_imm,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_pc,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_link_addr,
-`else
     input riscv_pkg::rs_dispatch_t i_dispatch,
-`endif
     output logic o_full,
 
     // =========================================================================
-    // CDB Snoop / Wakeup (84 bits -- small enough for all simulators)
+    // CDB Snoop / Wakeup
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
 
     // =========================================================================
     // Issue Interface (to Functional Unit)
     // =========================================================================
-`ifdef ICARUS
-    output logic                                                        o_issue_valid,
-    output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_issue_rob_tag,
-    output logic                 [                                31:0] o_issue_op,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src1_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src2_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src3_value,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_imm,
-    output logic                                                        o_issue_use_imm,
-    output logic                 [                                 2:0] o_issue_rm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_branch_target,
-    output logic                                                        o_issue_predicted_taken,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_predicted_target,
-    output logic                                                        o_issue_is_fp_mem,
-    output logic                 [                                 1:0] o_issue_mem_size,
-    output logic                                                        o_issue_mem_signed,
-    output logic                 [                                11:0] o_issue_csr_addr,
-    output logic                 [                                 4:0] o_issue_csr_imm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_pc,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_link_addr,
-`else
-    output riscv_pkg::rs_issue_t                                        o_issue,
-`endif
-    input  logic                                                        i_fu_ready,
+    output riscv_pkg::rs_issue_t o_issue,
+    input  logic                 i_fu_ready,
 
     // =========================================================================
     // SC Issue Peek (combinational, independent of i_fu_ready)
@@ -171,38 +111,8 @@ module reservation_station #(
   // ===========================================================================
   // Dispatch Field Extraction
   // ===========================================================================
-  // Wire aliases allow the module body to work identically regardless of
-  // whether the dispatch input is a packed struct port or individual signals.
+  // Wire aliases allow the module body to use short names for struct fields.
 
-`ifdef ICARUS
-  wire                                              dispatch_valid = i_dispatch_valid;
-  wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch_rob_tag;
-  riscv_pkg::instr_op_e                             dispatch_op;
-  assign dispatch_op = riscv_pkg::instr_op_e'(i_dispatch_op);
-  wire dispatch_src1_ready = i_dispatch_src1_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src1_tag = i_dispatch_src1_tag;
-  wire [FLEN-1:0] dispatch_src1_value = i_dispatch_src1_value;
-  wire dispatch_src2_ready = i_dispatch_src2_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src2_tag = i_dispatch_src2_tag;
-  wire [FLEN-1:0] dispatch_src2_value = i_dispatch_src2_value;
-  wire dispatch_src3_ready = i_dispatch_src3_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag = i_dispatch_src3_tag;
-  wire [FLEN-1:0] dispatch_src3_value = i_dispatch_src3_value;
-  wire [XLEN-1:0] dispatch_imm = i_dispatch_imm;
-  wire dispatch_use_imm = i_dispatch_use_imm;
-  wire [2:0] dispatch_rm = i_dispatch_rm;
-  wire [XLEN-1:0] dispatch_branch_target = i_dispatch_branch_target;
-  wire dispatch_predicted_taken = i_dispatch_predicted_taken;
-  wire [XLEN-1:0] dispatch_predicted_target = i_dispatch_predicted_target;
-  wire dispatch_is_fp_mem = i_dispatch_is_fp_mem;
-  riscv_pkg::mem_size_e dispatch_mem_size;
-  assign dispatch_mem_size = riscv_pkg::mem_size_e'(i_dispatch_mem_size);
-  wire            dispatch_mem_signed = i_dispatch_mem_signed;
-  wire [    11:0] dispatch_csr_addr = i_dispatch_csr_addr;
-  wire [     4:0] dispatch_csr_imm = i_dispatch_csr_imm;
-  wire [XLEN-1:0] dispatch_pc = i_dispatch_pc;
-  wire [XLEN-1:0] dispatch_link_addr = i_dispatch_link_addr;
-`else
   wire                                              dispatch_valid = i_dispatch.valid;
   wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch.rob_tag;
   riscv_pkg::instr_op_e                             dispatch_op;
@@ -225,46 +135,37 @@ module reservation_station #(
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = i_dispatch.mem_size;
-  wire            dispatch_mem_signed = i_dispatch.mem_signed;
-  wire [    11:0] dispatch_csr_addr = i_dispatch.csr_addr;
-  wire [     4:0] dispatch_csr_imm = i_dispatch.csr_imm;
-  wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
-  wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
-`endif
+  wire                                              dispatch_mem_signed = i_dispatch.mem_signed;
+  wire                  [                     11:0] dispatch_csr_addr = i_dispatch.csr_addr;
+  wire                  [                      4:0] dispatch_csr_imm = i_dispatch.csr_imm;
+  wire                  [                 XLEN-1:0] dispatch_pc = i_dispatch.pc;
+  wire                  [                 XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
 
   // ===========================================================================
   // Issue Output Intermediates
   // ===========================================================================
   // Set in the always_comb block below; assigned to output ports via
-  // simulator-specific logic (ifdef ICARUS assigns / else struct pack).
+  // struct pack into o_issue.
 
-  logic                             issue_out_valid;
-  logic [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
-`ifdef ICARUS
-  logic [31:0] issue_out_op;
-`else
-  riscv_pkg::instr_op_e issue_out_op;
-`endif
-  logic [FLEN-1:0] issue_out_src1_value;
-  logic [FLEN-1:0] issue_out_src2_value;
-  logic [FLEN-1:0] issue_out_src3_value;
-  logic [XLEN-1:0] issue_out_imm;
-  logic            issue_out_use_imm;
-  logic [     2:0] issue_out_rm;
-  logic [XLEN-1:0] issue_out_branch_target;
-  logic            issue_out_predicted_taken;
-  logic [XLEN-1:0] issue_out_predicted_target;
-  logic            issue_out_is_fp_mem;
-`ifdef ICARUS
-  logic [1:0] issue_out_mem_size;
-`else
-  riscv_pkg::mem_size_e issue_out_mem_size;
-`endif
-  logic            issue_out_mem_signed;
-  logic [    11:0] issue_out_csr_addr;
-  logic [     4:0] issue_out_csr_imm;
-  logic [XLEN-1:0] issue_out_pc;
-  logic [XLEN-1:0] issue_out_link_addr;
+  logic                                             issue_out_valid;
+  logic                 [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
+  riscv_pkg::instr_op_e                             issue_out_op;
+  logic                 [                 FLEN-1:0] issue_out_src1_value;
+  logic                 [                 FLEN-1:0] issue_out_src2_value;
+  logic                 [                 FLEN-1:0] issue_out_src3_value;
+  logic                 [                 XLEN-1:0] issue_out_imm;
+  logic                                             issue_out_use_imm;
+  logic                 [                      2:0] issue_out_rm;
+  logic                 [                 XLEN-1:0] issue_out_branch_target;
+  logic                                             issue_out_predicted_taken;
+  logic                 [                 XLEN-1:0] issue_out_predicted_target;
+  logic                                             issue_out_is_fp_mem;
+  riscv_pkg::mem_size_e                             issue_out_mem_size;
+  logic                                             issue_out_mem_signed;
+  logic                 [                     11:0] issue_out_csr_addr;
+  logic                 [                      4:0] issue_out_csr_imm;
+  logic                 [                 XLEN-1:0] issue_out_pc;
+  logic                 [                 XLEN-1:0] issue_out_link_addr;
 
   // ===========================================================================
   // Debug Signals (for verification -- Verilator only)
@@ -500,27 +401,6 @@ module reservation_station #(
   end
 
   // --- Issue port assignment ---
-`ifdef ICARUS
-  assign o_issue_valid            = issue_out_valid;
-  assign o_issue_rob_tag          = issue_out_rob_tag;
-  assign o_issue_op               = issue_out_op;
-  assign o_issue_src1_value       = issue_out_src1_value;
-  assign o_issue_src2_value       = issue_out_src2_value;
-  assign o_issue_src3_value       = issue_out_src3_value;
-  assign o_issue_imm              = issue_out_imm;
-  assign o_issue_use_imm          = issue_out_use_imm;
-  assign o_issue_rm               = issue_out_rm;
-  assign o_issue_branch_target    = issue_out_branch_target;
-  assign o_issue_predicted_taken  = issue_out_predicted_taken;
-  assign o_issue_predicted_target = issue_out_predicted_target;
-  assign o_issue_is_fp_mem        = issue_out_is_fp_mem;
-  assign o_issue_mem_size         = issue_out_mem_size;
-  assign o_issue_mem_signed       = issue_out_mem_signed;
-  assign o_issue_csr_addr         = issue_out_csr_addr;
-  assign o_issue_csr_imm          = issue_out_csr_imm;
-  assign o_issue_pc               = issue_out_pc;
-  assign o_issue_link_addr        = issue_out_link_addr;
-`else
   always_comb begin
     o_issue.valid            = issue_out_valid;
     o_issue.rob_tag          = issue_out_rob_tag;
@@ -542,7 +422,6 @@ module reservation_station #(
     o_issue.pc               = issue_out_pc;
     o_issue.link_addr        = issue_out_link_addr;
   end
-`endif
 
   // --- Status outputs ---
   assign o_full  = full;

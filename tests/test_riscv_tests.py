@@ -20,15 +20,15 @@ Self-checking tests: detect <<PASS>> or <<FAIL>> via UART output.
 Much simpler than arch_test (no signature comparison needed).
 
 Can be run standalone:
-    ./test_riscv_tests.py --sim verilator --suites rv32ui rv32um
-    ./test_riscv_tests.py --sim verilator --all
-    ./test_riscv_tests.py --sim verilator --test rv32ui/add
-    ./test_riscv_tests.py --sim verilator --suites rv32ui --parallel 4
-    ./test_riscv_tests.py --sim verilator --benchmarks median qsort
-    ./test_riscv_tests.py --sim verilator --all-benchmarks
+    ./test_riscv_tests.py --suites rv32ui rv32um
+    ./test_riscv_tests.py --all
+    ./test_riscv_tests.py --test rv32ui/add
+    ./test_riscv_tests.py --suites rv32ui --parallel 4
+    ./test_riscv_tests.py --benchmarks median qsort
+    ./test_riscv_tests.py --all-benchmarks
 
 Or via pytest:
-    pytest test_riscv_tests.py -v --sim verilator -m slow
+    pytest test_riscv_tests.py -v -m slow
 """
 
 import argparse
@@ -399,16 +399,11 @@ class TestRiscvTests:
     SUITES = list(ISA_TEST_SUITES.keys())
 
     @pytest.mark.parametrize("suite", SUITES)
-    def test_riscv_isa_suite(self, suite: str, request: Any, capsys: Any) -> None:
+    def test_riscv_isa_suite(self, suite: str, capsys: Any) -> None:
         """Run riscv-tests ISA suite for a given test category.
 
         Parametrized by suite (not individual test) for manageable pytest output.
-        Verilator only.
         """
-        sim = request.config.getoption("--sim")
-        if sim != "verilator":
-            pytest.skip("riscv-tests require verilator")
-
         os.environ["SIM"] = "verilator"
         with capsys.disabled():
             print(f"\nRunning riscv-tests ISA suite {suite}...")
@@ -428,15 +423,8 @@ class TestRiscvBenchmarks:
     BENCH_NAMES = list(BENCHMARKS.keys())
 
     @pytest.mark.parametrize("bench_name", BENCH_NAMES)
-    def test_riscv_benchmark(self, bench_name: str, request: Any, capsys: Any) -> None:
-        """Run a single riscv-tests benchmark.
-
-        Verilator only.
-        """
-        sim = request.config.getoption("--sim")
-        if sim != "verilator":
-            pytest.skip("riscv-tests benchmarks require verilator")
-
+    def test_riscv_benchmark(self, bench_name: str, capsys: Any) -> None:
+        """Run a single riscv-tests benchmark."""
         os.environ["SIM"] = "verilator"
         with capsys.disabled():
             print(f"\nRunning riscv-tests benchmark {bench_name}...")
@@ -459,23 +447,17 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  %(prog)s --sim verilator --suites rv32ui rv32um
-  %(prog)s --sim verilator --all
-  %(prog)s --sim verilator --test rv32ui/add
-  %(prog)s --sim verilator --suites rv32ui --parallel 4
-  %(prog)s --sim verilator --benchmarks median qsort mm
-  %(prog)s --sim verilator --all-benchmarks
+  %(prog)s --suites rv32ui rv32um
+  %(prog)s --all
+  %(prog)s --test rv32ui/add
+  %(prog)s --suites rv32ui --parallel 4
+  %(prog)s --benchmarks median qsort mm
+  %(prog)s --all-benchmarks
   %(prog)s --list
 
 Available ISA test suites: {', '.join(ISA_TEST_SUITES.keys())}
 Available benchmarks: {', '.join(BENCHMARKS.keys())}
 """,
-    )
-    parser.add_argument(
-        "--sim",
-        required=True,
-        choices=["icarus", "verilator"],
-        help="Simulator to use",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -545,7 +527,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
             return 1
 
         print(f"=== riscv-tests: {args.test} ===")
-        result = run_single_isa_test(test_path, suite, args.sim)
+        result = run_single_isa_test(test_path, suite, "verilator")
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
@@ -564,11 +546,11 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
 
         print("=" * 60)
         print("riscv-tests Benchmark Results")
-        print(f"Simulator: {args.sim}")
+        print("Simulator: verilator")
         print(f"Benchmarks: {', '.join(bench_names)}")
         print("=" * 60)
 
-        all_results = run_benchmark_tests(bench_names, args.sim)
+        all_results = run_benchmark_tests(bench_names, "verilator")
         n_pass = sum(1 for r in all_results if r.status == "PASS")
         n_fail = sum(1 for r in all_results if r.status == "FAIL")
         n_skip = sum(1 for r in all_results if r.status == "SKIP")
@@ -589,13 +571,13 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
 
     print("=" * 60)
     print("riscv-tests ISA Test Results")
-    print(f"Simulator: {args.sim}")
+    print("Simulator: verilator")
     print(f"Suites: {', '.join(suites)}")
     print("=" * 60)
 
     all_results = []
     for suite in suites:
-        results = run_suite_tests(suite, args.sim, parallel=args.parallel)
+        results = run_suite_tests(suite, "verilator", parallel=args.parallel)
         all_results.extend(results)
 
     # Summary

@@ -194,7 +194,7 @@ module reorder_buffer (
     end
   endfunction
 
-  // Forward declarations for ICARUS (used in debug assigns before main decl)
+  // Forward declarations (used in debug assigns before main decl)
   logic [ReorderBufferTagWidth:0] head_ptr;
   logic [ReorderBufferTagWidth:0] tail_ptr;
   logic full;
@@ -271,13 +271,13 @@ riscv_pkg::reorder_buffer_alloc_req_t
   logic [ReorderBufferDepth-1:0] rob_is_compressed;
   logic [ReorderBufferDepth-1:0] rob_has_fp_flags;
 
-  // Head and tail pointers (declared above for ICARUS forward ref)
+  // Head and tail pointers (declared above for forward ref)
 
   // Derived pointer values (without wrap bit)
   logic [ReorderBufferTagWidth-1:0] head_idx;
   logic [ReorderBufferTagWidth-1:0] tail_idx;
 
-  // Status signals (full and empty declared above for ICARUS forward ref)
+  // Status signals (full and empty declared above for forward ref)
   logic [ReorderBufferTagWidth:0] count;
 
   // Head entry fields for commit — RAM-backed fields are driven by RAM

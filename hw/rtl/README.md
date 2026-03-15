@@ -864,10 +864,6 @@ the middle of each bit period for noise immunity.
 Use `frost.f` to include all RTL files:
 
 ```bash
-# Icarus Verilog
-iverilog -g2012 -f frost.f -o frost_sim testbench.sv
-
-# Verilator
 verilator --cc -f frost.f --exe testbench.cpp
 ```
 

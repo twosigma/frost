@@ -13,11 +13,10 @@
 #    limitations under the License.
 
 # Makefile for FROST CPU Cocotb verification tests
-# Configures Verilator/Icarus simulation with Cocotb Python testbench
+# Configures Verilator simulation with Cocotb Python testbench
 
 # Simulation configuration:
-# Simulator choice (verilator or icarus)
-SIM             ?= verilator
+SIM             := verilator
 # HDL language (verilog or vhdl)
 TOPLEVEL_LANG   ?= verilog
 # Top-level module name for simulation
@@ -118,36 +117,12 @@ ifeq ($(TOPLEVEL),cpu_tb)
 VERILOG_SOURCES := \
         $(ROOT)/hw/sim/cpu_tb.sv  # Include testbench wrapper
 else
-# For Verilator/Icarus, frost.sv is already in frost.f so we don't add it again
+# frost.sv is already in frost.f so we don't add it again
 VERILOG_SOURCES :=
 endif
 endif
 
 export VERILOG_SOURCES
-
-# ---------------------------------------------------------------------------
-# Icarus VPI workaround: Use testbench wrappers with flattened ports.
-# Icarus VVP crashes (event.cc assertion) on very wide packed struct
-# VPI-facing ports. Internal signals of any width are fine; only ports
-# that cocotb drives/reads via VPI are affected. Ports up to 187 bits
-# work; 352+ bits crash. The _tb wrappers expose individual scalar ports
-# and connect directly to the modules' individual ICARUS ports.
-# ---------------------------------------------------------------------------
-ifeq ($(SIM),icarus)
-COMPILE_ARGS += -DICARUS
-ifeq ($(TOPLEVEL),reservation_station)
-COMPILE_ARGS += $(ROOT)/hw/sim/reservation_station_tb.sv
-override TOPLEVEL := reservation_station_tb
-endif
-ifeq ($(TOPLEVEL),cdb_arbiter)
-COMPILE_ARGS += $(ROOT)/hw/sim/cdb_arbiter_tb.sv
-override TOPLEVEL := cdb_arbiter_tb
-endif
-ifeq ($(TOPLEVEL),tomasulo_wrapper)
-COMPILE_ARGS += $(ROOT)/hw/sim/tomasulo_wrapper_tb.sv
-override TOPLEVEL := tomasulo_wrapper_tb
-endif
-endif
 
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
 export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)
@@ -155,33 +130,30 @@ export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)
 # Detect number of CPU cores for parallel compilation
 NUMBER_OF_CPU_CORES := $(shell nproc)
 
-# Simulator-specific options
-ifeq ($(SIM),verilator)
-	# Verilator threading configuration:
-	# - Runtime: Single-threaded for optimal cocotb performance (avoids VPI overhead)
-	# - Build/Verilation: Multi-threaded for faster compilation
-	#
-	# VERILATOR_THREADS controls runtime threads (1 = single-threaded simulation)
-	# -j flag during verilation enables parallel HDL-to-C++ conversion
-	# VERILATOR_MAKE_FLAGS controls C++ compilation parallelism
-	export VERILATOR_THREADS := 1
-	export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
+# Verilator threading configuration:
+# - Runtime: Single-threaded for optimal cocotb performance (avoids VPI overhead)
+# - Build/Verilation: Multi-threaded for faster compilation
+#
+# VERILATOR_THREADS controls runtime threads (1 = single-threaded simulation)
+# -j flag during verilation enables parallel HDL-to-C++ conversion
+# VERILATOR_MAKE_FLAGS controls C++ compilation parallelism
+export VERILATOR_THREADS := 1
+export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
 
-	# Extra verilator args: parallel verilation + optional waveforms
-	# -Wno-UNOPTFLAT: Suppress circular combinational logic warnings from FPU stall feedback
-	# -Wno-MODDUP: Suppress duplicate module warnings from nested file lists
-	ifeq ($(WAVES),1)
-		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT -Wno-MODDUP
-	else
-		export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
-	endif
+# Extra verilator args: parallel verilation + optional waveforms
+# -Wno-UNOPTFLAT: Suppress circular combinational logic warnings from FPU stall feedback
+# -Wno-MODDUP: Suppress duplicate module warnings from nested file lists
+ifeq ($(WAVES),1)
+	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT -Wno-MODDUP
+else
+	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
+endif
 
-	# Simulation-only memory override (2MB default, allows arch tests with large data)
-	# Only for toplevels that have the MEM_SIZE_BYTES parameter
-	SIM_MEM_SIZE_BYTES ?= 2097152
-	ifeq ($(TOPLEVEL),frost)
-		EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES)
-	endif
+# Simulation-only memory override (2MB default, allows arch tests with large data)
+# Only for toplevels that have the MEM_SIZE_BYTES parameter
+SIM_MEM_SIZE_BYTES ?= 2097152
+ifeq ($(TOPLEVEL),frost)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES)
 endif
 
 # Include Cocotb simulation makefile rules

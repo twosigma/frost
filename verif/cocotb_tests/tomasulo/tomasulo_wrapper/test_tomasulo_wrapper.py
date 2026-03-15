@@ -243,16 +243,6 @@ async def setup_test(dut: Any) -> tuple[TomasuloInterface, TomasuloModel]:
     return dut_if, model
 
 
-def is_icarus(dut: Any) -> bool:
-    """Return True if running under ICARUS (only INT_RS available).
-
-    The ICARUS tomasulo_wrapper_tb only exposes flattened INT_RS ports;
-    MUL/MEM/FP/FMUL/FDIV RS instances are only present in the Verilator
-    (non-ICARUS) RTL path. Multi-RS tests should return early when True.
-    """
-    return hasattr(dut, "i_rs_dispatch_valid")
-
-
 def check_rat_lookup(result: LookupResult, expected: LookupResult, label: str) -> None:
     """Assert RAT lookup result matches expected."""
     assert (
@@ -990,11 +980,6 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
 @cocotb.test()
 async def test_random_dispatch_execute_commit(dut: Any) -> None:
     """Constrained random: dispatch, RS dispatch, CDB, issue, commit, flush."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Random MEM_RS test requires Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Random Dispatch/Execute/Commit ===")
     seed = log_random_seed()
     dut_if, model = await setup_test(dut)
@@ -1127,11 +1112,6 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
 @cocotb.test()
 async def test_dispatch_routes_to_each_rs_type(dut: Any) -> None:
     """Dispatch with each rs_type routes entry only to the targeted RS."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Dispatch Routes to Each RS Type ===")
     dut_if, model = await setup_test(dut)
 
@@ -1189,11 +1169,6 @@ async def test_dispatch_routes_to_each_rs_type(dut: Any) -> None:
 @cocotb.test()
 async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
     """CDB broadcast simultaneously wakes pending sources across all RS types."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: CDB Broadcast Wakes All RS Types ===")
     dut_if, model = await setup_test(dut)
 
@@ -1263,11 +1238,6 @@ async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
 @cocotb.test()
 async def test_per_rs_full_independence(dut: Any) -> None:
     """Filling one RS does not affect fullness of other RS types."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Per-RS Full Independence ===")
     dut_if, model = await setup_test(dut)
 
@@ -1327,11 +1297,6 @@ async def test_per_rs_full_independence(dut: Any) -> None:
 @cocotb.test()
 async def test_flush_all_clears_all_rs_types(dut: Any) -> None:
     """flush_all empties every RS type."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Flush All Clears All RS Types ===")
     dut_if, model = await setup_test(dut)
 
@@ -1383,11 +1348,6 @@ async def test_flush_all_clears_all_rs_types(dut: Any) -> None:
 @cocotb.test()
 async def test_partial_flush_across_all_rs(dut: Any) -> None:
     """Partial flush invalidates younger entries in ALL RS types."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Partial Flush Across All RS ===")
     dut_if, model = await setup_test(dut)
 
@@ -1465,11 +1425,6 @@ async def test_partial_flush_across_all_rs(dut: Any) -> None:
 @cocotb.test()
 async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     """FMUL_RS with 3 source operands (FMA), rounding mode, and CDB wakeup."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: FMUL_RS Three-Source FMA ===")
     dut_if, model = await setup_test(dut)
 
@@ -1543,11 +1498,6 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
 @cocotb.test()
 async def test_mixed_dispatch_and_issue_across_rs(dut: Any) -> None:
     """Dispatch to multiple RS types, issue from each independently."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Mixed Dispatch and Issue Across RS ===")
     dut_if, model = await setup_test(dut)
 
@@ -1653,11 +1603,6 @@ async def test_mixed_dispatch_and_issue_across_rs(dut: Any) -> None:
 @cocotb.test()
 async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     """Constrained random with dispatch routed across all 6 RS types."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Random Multi-RS Dispatch/Execute/Commit ===")
     seed = log_random_seed()
     dut_if, model = await setup_test(dut)
@@ -1800,11 +1745,6 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
 @cocotb.test()
 async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     """Multiple FU completions contend; highest-priority FU wins CDB grant."""
-    if is_icarus(dut):
-        cocotb.log.info(
-            "SKIP: Multi-RS tests require Verilator (ICARUS has INT_RS only)"
-        )
-        return
     cocotb.log.info("=== Test: Multi-FU Arbitration Contention ===")
     dut_if, model = await setup_test(dut)
 
@@ -1900,9 +1840,6 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
 @cocotb.test()
 async def test_alu_shim_end_to_end(dut: Any) -> None:
     """ADD dispatched to INT_RS completes through ALU shim -> CDB -> ROB commit."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: ALU Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
@@ -1965,9 +1902,6 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
 @cocotb.test()
 async def test_mul_shim_end_to_end(dut: Any) -> None:
     """MUL dispatched to MUL_RS completes through multiplier -> CDB -> ROB commit."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: MUL Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
@@ -2025,9 +1959,6 @@ async def test_mul_shim_end_to_end(dut: Any) -> None:
 @cocotb.test()
 async def test_div_shim_end_to_end(dut: Any) -> None:
     """DIV dispatched to MUL_RS completes through divider -> CDB -> ROB commit."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: DIV Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
@@ -2085,9 +2016,6 @@ async def test_div_shim_end_to_end(dut: Any) -> None:
 @cocotb.test()
 async def test_integrated_fu_back_to_back(dut: Any) -> None:
     """Back-to-back ALU + MUL operations with CDB contention."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: Integrated FU Back-to-Back ===")
     dut_if, model = await setup_test(dut)
 
@@ -2182,9 +2110,6 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
 @cocotb.test()
 async def test_integrated_fu_flush_inflight(dut: Any) -> None:
     """Flush while MUL operation is in-flight suppresses stale results."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: Integrated FU Flush In-Flight ===")
     dut_if, model = await setup_test(dut)
 
@@ -2244,9 +2169,6 @@ async def test_integrated_fu_flush_inflight(dut: Any) -> None:
 @cocotb.test()
 async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
     """Partial flush (i_flush_en) suppresses in-flight MUL while older entry survives."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: Integrated FU Partial Flush In-Flight ===")
     dut_if, model = await setup_test(dut)
 
@@ -2337,9 +2259,6 @@ async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
 @cocotb.test()
 async def test_lq_end_to_end_lw(dut: Any) -> None:
     """Full LW flow: ROB alloc -> MEM_RS dispatch -> RS issue -> LQ addr -> mem -> CDB -> commit."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: LQ tests require Verilator")
-        return
     cocotb.log.info("=== Test: LQ End-to-End LW ===")
     dut_if, model = await setup_test(dut)
 
@@ -2433,9 +2352,6 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
 @cocotb.test()
 async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     """End-to-end: dispatch SW then LW to same address, SQ forwards to LQ."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: LQ tests require Verilator")
-        return
     cocotb.log.info("=== Test: LQ SQ Forward Through Wrapper ===")
     dut_if, model = await setup_test(dut)
 
@@ -2560,9 +2476,6 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
 @cocotb.test()
 async def test_lq_flush_all_clears_lq(dut: Any) -> None:
     """flush_all empties LQ alongside ROB+RS."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: LQ tests require Verilator")
-        return
     cocotb.log.info("=== Test: LQ Flush All Clears LQ ===")
     dut_if, model = await setup_test(dut)
 
@@ -2621,9 +2534,6 @@ async def test_lq_flush_all_clears_lq(dut: Any) -> None:
 @cocotb.test()
 async def test_lq_cdb_arbitration(dut: Any) -> None:
     """LQ CDB result contends with external FP_ADD completion, arbiter resolves."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: LQ tests require Verilator")
-        return
     cocotb.log.info("=== Test: LQ CDB Arbitration ===")
     dut_if, model = await setup_test(dut)
 
@@ -2733,9 +2643,6 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
 @cocotb.test()
 async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
     """Two back-to-back DIVs both complete and commit through the wrapper."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: DIV Pipeline Back-to-Back Commit ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
@@ -2833,9 +2740,6 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     with simultaneous partial flush verifies the younger result is suppressed
     even in the back-to-back adapter capture window.
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Integrated FU tests require Verilator")
-        return
     cocotb.log.info("=== Test: DIV Pipeline Adapter Contention + Partial Flush ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
@@ -3004,9 +2908,6 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
 @cocotb.test()
 async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
     """FRM_DYN (rm=7) is resolved to i_frm_csr at dispatch, not at issue."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: FP RS tests require Verilator (ICARUS has INT_RS only)")
-        return
     cocotb.log.info("=== Test: FP Dynamic Rounding Dispatch Capture ===")
     dut_if, model = await setup_test(dut)
 
@@ -3064,9 +2965,6 @@ async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
 @cocotb.test()
 async def test_fp_explicit_rm_unchanged(dut: Any) -> None:
     """Explicit rm (non-DYN) passes through unchanged, ignoring i_frm_csr."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: FP RS tests require Verilator (ICARUS has INT_RS only)")
-        return
     cocotb.log.info("=== Test: FP Explicit RM Unchanged ===")
     dut_if, model = await setup_test(dut)
 
@@ -3131,9 +3029,6 @@ async def test_lr_sc_success_flow(dut: Any) -> None:
     pending and fires the result on CDB when SC is at ROB head and SQ
     committed-empty.
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: LR/SC Success Flow ===")
     dut_if, model = await setup_test(dut)
 
@@ -3311,9 +3206,6 @@ async def test_lr_sc_failure_flow(dut: Any) -> None:
     reservation and address match. Since the reservation was snoop-invalidated
     by the SW write, SC fires with value=1 (failure).
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: LR/SC Failure Flow ===")
     dut_if, model = await setup_test(dut)
 
@@ -3522,9 +3414,6 @@ async def test_lr_sc_failure_flow(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_swap_integration(dut: Any) -> None:
     """Full AMOSWAP: read old value, write rs2, CDB gets old value."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOSWAP Integration ===")
     dut_if, model = await setup_test(dut)
 
@@ -3630,9 +3519,6 @@ async def test_amo_swap_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_mmio_load_integration(dut: Any) -> None:
     """MMIO load end-to-end: waits for ROB head, bypasses cache, reads memory."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: MMIO tests require Verilator")
-        return
     cocotb.log.info("=== Test: MMIO Load Integration ===")
     dut_if, model = await setup_test(dut)
 
@@ -3742,9 +3628,6 @@ async def test_sc_pending_does_not_block_older_load(dut: Any) -> None:
     After sc_pending is set, deliver the load's operand via CDB snoop.
     The load must still issue from MEM_RS despite sc_pending being high.
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: SC Pending Does Not Block Older Load ===")
     dut_if, model = await setup_test(dut)
 
@@ -3930,9 +3813,6 @@ async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
     Scenario: SC (tag 1) issues → sc_pending set. Branch (tag 2) mispredicts →
     partial flush with flush_tag=2. SC is older → sc_pending survives.
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: Partial Flush Preserves Older SC Pending ===")
     dut_if, model = await setup_test(dut)
 
@@ -4078,9 +3958,6 @@ async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
     Scenario: Branch (tag 1) dispatched, SC (tag 2) issues → sc_pending set.
     Branch mispredicts → partial flush with flush_tag=1. SC is younger → cleared.
     """
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: Partial Flush Clears Younger SC Pending ===")
     dut_if, model = await setup_test(dut)
 
@@ -4218,9 +4095,6 @@ async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
 @cocotb.test()
 async def test_mmio_store_integration(dut: Any) -> None:
     """MMIO store end-to-end: dispatches SW to MMIO address, commits, SQ drains."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: MMIO tests require Verilator")
-        return
     cocotb.log.info("=== Test: MMIO Store Integration ===")
     dut_if, model = await setup_test(dut)
 
@@ -4432,9 +4306,6 @@ async def _run_amo_test(
 @cocotb.test()
 async def test_amo_add_integration(dut: Any) -> None:
     """AMOADD: mem[addr] = old + rs2, CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOADD Integration ===")
     await _run_amo_test(
         dut,
@@ -4449,9 +4320,6 @@ async def test_amo_add_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_xor_integration(dut: Any) -> None:
     """AMOXOR: mem[addr] = old ^ rs2, CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOXOR Integration ===")
     await _run_amo_test(
         dut,
@@ -4466,9 +4334,6 @@ async def test_amo_xor_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_and_integration(dut: Any) -> None:
     """AMOAND: mem[addr] = old & rs2, CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOAND Integration ===")
     await _run_amo_test(
         dut,
@@ -4483,9 +4348,6 @@ async def test_amo_and_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_or_integration(dut: Any) -> None:
     """AMOOR: mem[addr] = old | rs2, CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOOR Integration ===")
     await _run_amo_test(
         dut,
@@ -4500,9 +4362,6 @@ async def test_amo_or_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_min_integration(dut: Any) -> None:
     """AMOMIN (signed): mem[addr] = min(old, rs2), CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOMIN Integration ===")
     # -1 (0xFFFFFFFF) < 5 in signed comparison
     await _run_amo_test(
@@ -4518,9 +4377,6 @@ async def test_amo_min_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_max_integration(dut: Any) -> None:
     """AMOMAX (signed): mem[addr] = max(old, rs2), CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOMAX Integration ===")
     # max(-1, 5) = 5 in signed comparison
     await _run_amo_test(
@@ -4536,9 +4392,6 @@ async def test_amo_max_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_minu_integration(dut: Any) -> None:
     """AMOMINU (unsigned): mem[addr] = min(old, rs2), CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOMINU Integration ===")
     # 0xFFFFFFFF > 5 unsigned, so min = 5
     await _run_amo_test(
@@ -4554,9 +4407,6 @@ async def test_amo_minu_integration(dut: Any) -> None:
 @cocotb.test()
 async def test_amo_maxu_integration(dut: Any) -> None:
     """AMOMAXU (unsigned): mem[addr] = max(old, rs2), CDB = old."""
-    if is_icarus(dut):
-        cocotb.log.info("SKIP: Atomics tests require Verilator")
-        return
     cocotb.log.info("=== Test: AMOMAXU Integration ===")
     # 0xFFFFFFFF > 5 unsigned, so max = 0xFFFFFFFF
     await _run_amo_test(

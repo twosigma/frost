@@ -21,12 +21,12 @@ simulation, extracts UART signature, and compares against Spike golden
 references.
 
 Can be run standalone:
-    ./test_riscv_torture.py --sim verilator --all
-    ./test_riscv_torture.py --sim verilator --test test_001
-    ./test_riscv_torture.py --sim verilator --parallel 4
+    ./test_riscv_torture.py --all
+    ./test_riscv_torture.py --test test_001
+    ./test_riscv_torture.py --parallel 4
 
 Or via pytest:
-    pytest test_riscv_torture.py -v --sim verilator -m slow
+    pytest test_riscv_torture.py -v -m slow
 """
 
 import argparse
@@ -339,15 +339,8 @@ def run_all_tests(
 class TestRiscvTorture:
     """riscv-torture random instruction tests."""
 
-    def test_riscv_torture(self, request: Any, capsys: Any) -> None:
-        """Run all riscv-torture tests.
-
-        Verilator only.
-        """
-        sim = request.config.getoption("--sim")
-        if sim != "verilator":
-            pytest.skip("riscv-torture tests require verilator")
-
+    def test_riscv_torture(self, capsys: Any) -> None:
+        """Run all riscv-torture tests."""
         tests = discover_tests()
         if not tests:
             pytest.skip("No torture tests found (generate with generate_tests.py)")
@@ -375,16 +368,10 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --sim verilator --all
-  %(prog)s --sim verilator --test test_001
-  %(prog)s --sim verilator --parallel 4
+  %(prog)s --all
+  %(prog)s --test test_001
+  %(prog)s --parallel 4
 """,
-    )
-    parser.add_argument(
-        "--sim",
-        required=True,
-        choices=["icarus", "verilator"],
-        help="Simulator to use",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -431,17 +418,17 @@ Examples:
             return 1
 
         print(f"=== riscv-torture: {args.test} ===")
-        result = run_single_test(test_path, args.sim)
+        result = run_single_test(test_path, "verilator")
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
     # All tests mode
     print("=" * 60)
     print("riscv-torture Test Results")
-    print(f"Simulator: {args.sim}")
+    print("Simulator: verilator")
     print("=" * 60)
 
-    all_results = run_all_tests(args.sim, parallel=args.parallel)
+    all_results = run_all_tests("verilator", parallel=args.parallel)
 
     n_pass = sum(1 for r in all_results if r.status == "PASS")
     n_fail = sum(1 for r in all_results if r.status == "FAIL")

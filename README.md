@@ -8,7 +8,7 @@ A 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with f
 
 There are many RISC-V cores. Here's what makes FROST different:
 
-- **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
+- **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
 - **Practical performance** — 1.76 CoreMark/MHz (527 CoreMark at 300 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
@@ -98,7 +98,6 @@ Validated with these tool versions:
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
 | **Testbench** | Cocotb            | 2.0.1   |
 | **Simulator** | Verilator         | 5.044   |
-|               | Icarus Verilog    | 12.0    |
 | **Synthesis** | Yosys             | 0.60    |
 | **Formal**    | SymbiYosys        | 0.62    |
 |               | Z3                | 4.15.0  |
@@ -127,7 +126,6 @@ pytest tests/
 
 The Docker image includes:
 - Verilator 5.044 (built from source)
-- Icarus Verilog 12.0
 - Yosys 0.60 (built from source)
 - SymbiYosys 0.62 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
 - RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
@@ -231,8 +229,6 @@ git submodule update --init
 # Using pytest (recommended)
 pytest tests/                              # Run all tests
 pytest tests/ -s                           # With live output
-pytest tests/ --sim=verilator              # Use Verilator
-
 # Standalone test runner
 ./tests/test_run_cocotb.py cpu             # CPU verification
 ./tests/test_run_cocotb.py hello_world     # Hello World program
@@ -240,9 +236,8 @@ pytest tests/ --sim=verilator              # Use Verilator
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
-# With specific simulator
-./tests/test_run_cocotb.py cpu --sim=verilator
-./tests/test_run_cocotb.py cpu --sim=verilator
+# With waveform output
+WAVES=1 ./tests/test_run_cocotb.py cpu
 ```
 
 ### Running Synthesis

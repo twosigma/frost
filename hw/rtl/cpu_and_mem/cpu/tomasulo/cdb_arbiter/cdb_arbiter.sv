@@ -46,7 +46,7 @@ module cdb_arbiter (
     // Only Verilator supports unpacked arrays of packed structs as ports.
     input riscv_pkg::fu_complete_t i_fu_complete  [riscv_pkg::NumFus],
 `else
-    // Icarus and Yosys (synthesis/formal) need flattened individual ports.
+    // Yosys (synthesis/formal) needs flattened individual ports.
     input riscv_pkg::fu_complete_t i_fu_complete_0,
     input riscv_pkg::fu_complete_t i_fu_complete_1,
     input riscv_pkg::fu_complete_t i_fu_complete_2,
@@ -124,7 +124,7 @@ module cdb_arbiter (
     end
   end
 `else
-  // Icarus / Yosys (synthesis + formal): reference individual port names
+  // Yosys (synthesis + formal): reference individual port names
   always_comb begin
     valid_vec[0] = i_fu_complete_0.valid;
     valid_vec[1] = i_fu_complete_1.valid;

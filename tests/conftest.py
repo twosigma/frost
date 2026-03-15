@@ -31,48 +31,14 @@ def pytest_configure(config: Any) -> None:
     config.addinivalue_line("markers", "slow: mark test as slow running")
 
 
-def pytest_addoption(parser: Any) -> None:
-    """Add custom command line options for tests."""
-    parser.addoption(
-        "--sim",
-        action="store",
-        default=None,
-        help="Simulator to use (verilator or icarus). "
-        "When set, only parametrized tests for this simulator are run.",
-    )
-
-
 @pytest.fixture(scope="session", autouse=True)
-def setup_cocotb_env(request: Any) -> None:
-    """Set up environment variables for cocotb from command line options."""
-    # Set SIM if explicitly provided via command line.
-    # Parametrized tests override this in run_test_with_simulator().
-    sim = request.config.getoption("--sim")
-    if sim:
-        os.environ["SIM"] = sim
+def setup_cocotb_env() -> None:
+    """Set up environment variables for cocotb simulation."""
+    os.environ["SIM"] = "verilator"
 
 
 def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Filter cocotb tests by simulator and mark unsupported Python versions."""
-    # Filter parametrized cocotb tests by --sim option.
-    # Tests parametrized with "simulator" (e.g., test_cpu[verilator], test_cpu[icarus])
-    # are deselected if they don't match the requested --sim value.
-    sim = config.getoption("--sim")
-    if sim:
-        selected = []
-        deselected = []
-        for item in items:
-            # Check if this test has a "simulator" parameter from parametrize
-            callspec = getattr(item, "callspec", None)
-            if callspec and "simulator" in callspec.params:
-                if callspec.params["simulator"] != sim:
-                    deselected.append(item)
-                    continue
-            selected.append(item)
-        if deselected:
-            config.hook.pytest_deselected(items=deselected)
-            items[:] = selected
-
+    """Mark unsupported Python versions."""
     if sys.version_info[:2] == (3, 11):
         reason = (
             f"Cocotb tests not supported for Python 3.11, "
