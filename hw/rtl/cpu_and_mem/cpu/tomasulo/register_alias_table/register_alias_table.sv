@@ -154,35 +154,6 @@ module register_alias_table (
       ReorderBufferTagWidth + RasPtrBits + (RasPtrBits + 1);
 
   // ===========================================================================
-  // Debug Signals (for verification)
-  // ===========================================================================
-  logic dbg_alloc_valid  /* verilator public_flat_rd */;
-  assign dbg_alloc_valid = i_alloc_valid;
-
-  logic dbg_alloc_dest_rf  /* verilator public_flat_rd */;
-  assign dbg_alloc_dest_rf = i_alloc_dest_rf;
-
-  logic [RegAddrWidth-1:0] dbg_alloc_dest_reg  /* verilator public_flat_rd */;
-  assign dbg_alloc_dest_reg = i_alloc_dest_reg;
-
-  logic [ReorderBufferTagWidth-1:0]
-      dbg_alloc_rob_tag
-/* verilator public_flat_rd */;
-  assign dbg_alloc_rob_tag = i_alloc_rob_tag;
-
-  logic dbg_commit_valid  /* verilator public_flat_rd */;
-  assign dbg_commit_valid = i_commit.valid;
-
-  logic dbg_checkpoint_save  /* verilator public_flat_rd */;
-  assign dbg_checkpoint_save = i_checkpoint_save;
-
-  logic dbg_checkpoint_restore  /* verilator public_flat_rd */;
-  assign dbg_checkpoint_restore = i_checkpoint_restore;
-
-  logic dbg_flush_all  /* verilator public_flat_rd */;
-  assign dbg_flush_all = i_flush_all;
-
-  // ===========================================================================
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
   // ===========================================================================
 

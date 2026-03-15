@@ -64,8 +64,6 @@ module cpu_ooo #(
     input logic i_disable_branch_prediction
 );
 
-  import riscv_pkg::*;
-
   // Active-low reset for Tomasulo modules
   logic rst_n;
   assign rst_n = ~i_rst;
@@ -76,7 +74,7 @@ module cpu_ooo #(
   // Simplified pipeline control for OOO: only stall/flush from dispatch
   // and commit-time events (traps, mispredictions).
 
-  pipeline_ctrl_t pipeline_ctrl  /* verilator isolate_assignments */;
+  riscv_pkg::pipeline_ctrl_t pipeline_ctrl  /* verilator isolate_assignments */;
   logic dispatch_stall  /* verilator isolate_assignments */;
   logic flush_pipeline  /* verilator isolate_assignments */;
   logic flush_for_trap;
@@ -243,29 +241,28 @@ module cpu_ooo #(
   // ===========================================================================
   // Inter-stage signals
   // ===========================================================================
-  from_if_to_pd_t from_if_to_pd;
-  from_pd_to_id_t from_pd_to_id;
-  from_id_to_ex_t from_id_to_ex;
+  riscv_pkg::from_if_to_pd_t from_if_to_pd;
+  riscv_pkg::from_pd_to_id_t from_pd_to_id;
+  riscv_pkg::from_id_to_ex_t from_id_to_ex;
 
   // Temporary debug mirrors for cocotb control-flow tracing.
   logic dbg_if_ras_predicted  /* verilator public_flat_rd */;
   logic dbg_pd_ras_predicted  /* verilator public_flat_rd */;
   logic dbg_id_ras_predicted  /* verilator public_flat_rd */;
-  logic [RasPtrBits-1:0] dbg_if_ras_checkpoint_tos  /* verilator public_flat_rd */;
-  logic [RasPtrBits:0] dbg_if_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
-  logic [RasPtrBits-1:0] dbg_pd_ras_checkpoint_tos  /* verilator public_flat_rd */;
-  logic [RasPtrBits:0] dbg_pd_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
-  logic [RasPtrBits-1:0] dbg_id_ras_checkpoint_tos  /* verilator public_flat_rd */;
-  logic [RasPtrBits:0] dbg_id_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits-1:0] dbg_if_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits:0] dbg_if_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits-1:0] dbg_pd_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits:0] dbg_pd_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits-1:0] dbg_id_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RasPtrBits:0] dbg_id_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
   logic dbg_commit_valid  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_commit_pc  /* verilator public_flat_rd */;
   logic dbg_commit_is_return  /* verilator public_flat_rd */;
   logic dbg_commit_is_call  /* verilator public_flat_rd */;
-  logic [CheckpointIdWidth-1:0] dbg_commit_checkpoint_id  /* verilator public_flat_rd */;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] dbg_commit_checkpoint_id  /* verilator public_flat_rd */;
   logic dbg_commit_has_checkpoint  /* verilator public_flat_rd */;
   logic dbg_commit_predicted_taken  /* verilator public_flat_rd */;
   logic dbg_commit_branch_taken  /* verilator public_flat_rd */;
-  logic dbg_commit_misprediction  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_pd_pc  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_pd_instr  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_id_pc  /* verilator public_flat_rd */;
@@ -305,7 +302,6 @@ module cpu_ooo #(
   assign dbg_commit_has_checkpoint = rob_commit.has_checkpoint;
   assign dbg_commit_predicted_taken = rob_commit.predicted_taken;
   assign dbg_commit_branch_taken = rob_commit.branch_taken;
-  assign dbg_commit_misprediction = rob_commit.misprediction;
   assign dbg_pd_pc = from_pd_to_id.program_counter;
   assign dbg_pd_instr = from_pd_to_id.instruction;
   assign dbg_id_pc = from_id_to_ex.program_counter;
@@ -322,10 +318,10 @@ module cpu_ooo #(
   assign dbg_branch_in_flight_count = branch_in_flight_count;
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
-  from_ex_comb_t from_ex_comb_synth;
+  riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
   // Trap control
-  trap_ctrl_t trap_ctrl;
+  riscv_pkg::trap_ctrl_t trap_ctrl;
   logic trap_taken, mret_taken;
   logic [XLEN-1:0] trap_target;
 
@@ -368,19 +364,19 @@ module cpu_ooo #(
   // ===========================================================================
 
   // Integer register file
-  logic           [4*XLEN-1:0] int_rf_read_data;
-  logic                        int_rf_write_enable;
-  logic           [       4:0] int_rf_write_addr;
-  logic           [  XLEN-1:0] int_rf_write_data;
-  logic                        int_rf_wb_bypass_id_rs1;
-  logic                        int_rf_wb_bypass_id_rs2;
-  logic                        int_rf_wb_bypass_dispatch_rs1;
-  logic                        int_rf_wb_bypass_dispatch_rs2;
-  logic           [  XLEN-1:0] int_rf_dispatch_rs1_data;
-  logic           [  XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic                      [4*XLEN-1:0] int_rf_read_data;
+  logic                                   int_rf_write_enable;
+  logic                      [       4:0] int_rf_write_addr;
+  logic                      [  XLEN-1:0] int_rf_write_data;
+  logic                                   int_rf_wb_bypass_id_rs1;
+  logic                                   int_rf_wb_bypass_id_rs2;
+  logic                                   int_rf_wb_bypass_dispatch_rs1;
+  logic                                   int_rf_wb_bypass_dispatch_rs2;
+  logic                      [  XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic                      [  XLEN-1:0] int_rf_dispatch_rs2_data;
 
-  rf_to_fwd_t                  rf_to_fwd;
-  from_ma_to_wb_t              from_ma_to_wb_commit;
+  riscv_pkg::rf_to_fwd_t                  rf_to_fwd;
+  riscv_pkg::from_ma_to_wb_t              from_ma_to_wb_commit;
 
   generic_regfile #(
       .DATA_WIDTH(XLEN),
@@ -427,21 +423,21 @@ module cpu_ooo #(
 
   // FP register file
   localparam int unsigned FpW = riscv_pkg::FpWidth;
-  logic          [6*FpW-1:0] fp_rf_read_data;
-  logic                      fp_rf_write_enable;
-  logic          [      4:0] fp_rf_write_addr;
-  logic          [  FpW-1:0] fp_rf_write_data;
-  logic                      fp_rf_wb_bypass_id_rs1;
-  logic                      fp_rf_wb_bypass_id_rs2;
-  logic                      fp_rf_wb_bypass_id_rs3;
-  logic                      fp_rf_wb_bypass_dispatch_rs1;
-  logic                      fp_rf_wb_bypass_dispatch_rs2;
-  logic                      fp_rf_wb_bypass_dispatch_rs3;
-  logic          [  FpW-1:0] fp_rf_dispatch_rs1_data;
-  logic          [  FpW-1:0] fp_rf_dispatch_rs2_data;
-  logic          [  FpW-1:0] fp_rf_dispatch_rs3_data;
+  logic                     [6*FpW-1:0] fp_rf_read_data;
+  logic                                 fp_rf_write_enable;
+  logic                     [      4:0] fp_rf_write_addr;
+  logic                     [  FpW-1:0] fp_rf_write_data;
+  logic                                 fp_rf_wb_bypass_id_rs1;
+  logic                                 fp_rf_wb_bypass_id_rs2;
+  logic                                 fp_rf_wb_bypass_id_rs3;
+  logic                                 fp_rf_wb_bypass_dispatch_rs1;
+  logic                                 fp_rf_wb_bypass_dispatch_rs2;
+  logic                                 fp_rf_wb_bypass_dispatch_rs3;
+  logic                     [  FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic                     [  FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic                     [  FpW-1:0] fp_rf_dispatch_rs3_data;
 
-  fp_rf_to_fwd_t             fp_rf_to_fwd;
+  riscv_pkg::fp_rf_to_fwd_t             fp_rf_to_fwd;
 
   generic_regfile #(
       .DATA_WIDTH(FpW),
@@ -568,7 +564,7 @@ module cpu_ooo #(
   logic pd_has_control_flow;
   logic id_has_control_flow;
 
-  function automatic logic if_stage_has_control_flow(input from_if_to_pd_t if_pkt);
+  function automatic logic if_stage_has_control_flow(input riscv_pkg::from_if_to_pd_t if_pkt);
     logic [2:0] c_funct3;
     logic [3:0] c_funct4;
     logic [4:0] c_rs1;
@@ -611,8 +607,15 @@ module cpu_ooo #(
                                ((from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) ||
                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL) ||
                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR));
-  assign id_has_control_flow = pd_valid_q && is_branch_or_jump_op(
-      from_id_to_ex.instruction_operation
+  assign id_has_control_flow = pd_valid_q && (
+      from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BNE ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BLT ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BGE ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BLTU ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BGEU ||
+      from_id_to_ex.instruction_operation == riscv_pkg::JAL ||
+      from_id_to_ex.instruction_operation == riscv_pkg::JALR
   );
 
   // Only unpredicted front-end control flow needs the extra prediction fence.
@@ -639,39 +642,39 @@ module cpu_ooo #(
   // ===========================================================================
 
   // ROB interface
-  reorder_buffer_alloc_req_t  rob_alloc_req;
-  reorder_buffer_alloc_resp_t rob_alloc_resp;
+  riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req;
+  riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp;
   assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
   assign dbg_rob_alloc_pc = rob_alloc_req.pc;
   assign dbg_rob_alloc_is_csr = rob_alloc_req.is_csr;
   assign dbg_rob_alloc_is_mret = rob_alloc_req.is_mret;
-  reorder_buffer_commit_t rob_commit;
+  riscv_pkg::reorder_buffer_commit_t rob_commit;
 
   // RAT lookup
-  logic [RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
-  logic [RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
-  rat_lookup_t int_src1_lookup, int_src2_lookup;
-  rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
+  logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
+  logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
+  riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
+  riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
   // RAT rename
-  logic                                     rat_alloc_valid;
-  logic                                     rat_alloc_dest_rf;
-  logic         [         RegAddrWidth-1:0] rat_alloc_dest_reg;
-  logic         [ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
+  logic                                                           rat_alloc_valid;
+  logic                                                           rat_alloc_dest_rf;
+  logic                    [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
+  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
 
   // RS dispatch
-  rs_dispatch_t                             rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        rs_dispatch;
 
   // Checkpoint
-  logic                                     checkpoint_available;
-  logic         [    CheckpointIdWidth-1:0] checkpoint_alloc_id;
-  logic                                     checkpoint_save;
-  logic         [    CheckpointIdWidth-1:0] checkpoint_id;
-  logic         [ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
-  logic         [           RasPtrBits-1:0] dispatch_ras_tos;
-  logic         [             RasPtrBits:0] dispatch_ras_valid_count;
-  logic                                     rob_checkpoint_valid;
-  logic         [    CheckpointIdWidth-1:0] rob_checkpoint_id;
+  logic                                                           checkpoint_available;
+  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] checkpoint_alloc_id;
+  logic                                                           checkpoint_save;
+  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
+  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
+  logic                    [           riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
+  logic                    [             riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
+  logic                                                           rob_checkpoint_valid;
+  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
 
   // Resource status
   logic rob_full, rob_empty;
@@ -680,20 +683,20 @@ module cpu_ooo #(
   logic lq_full, sq_full;
 
   // Branch update
-  reorder_buffer_branch_update_t                             branch_update;
+  riscv_pkg::reorder_buffer_branch_update_t                                        branch_update;
 
   // Flush
-  logic                                                      flush_en;
-  logic                          [ReorderBufferTagWidth-1:0] flush_tag;
-  logic                                                      flush_all;
+  logic                                                                            flush_en;
+  logic                                     [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
+  logic                                                                            flush_all;
 
   // CDB
-  cdb_broadcast_t                                            cdb_out;
-  logic                          [               NumFus-1:0] cdb_grant;
+  riscv_pkg::cdb_broadcast_t                                                       cdb_out;
+  logic                                     [               riscv_pkg::NumFus-1:0] cdb_grant;
 
   // ROB status
-  logic                          [  ReorderBufferTagWidth:0] rob_count;
-  logic                          [ReorderBufferTagWidth-1:0] head_tag;
+  logic                                     [  riscv_pkg::ReorderBufferTagWidth:0] rob_count;
+  logic                                     [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
 
@@ -701,7 +704,7 @@ module cpu_ooo #(
   logic csr_start, csr_done_ack;
   logic trap_pending;
   logic [XLEN-1:0] rob_trap_pc;
-  exc_cause_t rob_trap_cause;
+  riscv_pkg::exc_cause_t rob_trap_cause;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -715,7 +718,7 @@ module cpu_ooo #(
 
   logic lq_mem_read_en;
   logic [XLEN-1:0] lq_mem_read_addr;
-  mem_size_e lq_mem_read_size;
+  riscv_pkg::mem_size_e lq_mem_read_size;
   logic [XLEN-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
 
@@ -725,27 +728,28 @@ module cpu_ooo #(
   logic amo_mem_write_done;
 
   // RS issue (exposed but not externally driven — FU shims are inside wrapper)
-  rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
-  rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
+  riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
+  riscv_pkg::rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
 
   // ROB bypass read
-  logic [ReorderBufferTagWidth-1:0] rob_read_tag;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rob_read_tag;
   logic rob_read_done;
-  logic [FLEN-1:0] rob_read_value;
+  logic [riscv_pkg::FLEN-1:0] rob_read_value;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_dispatch;
-  logic [ReorderBufferTagWidth-1:0]
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
-  logic [FLEN-1:0] dispatch_bypass_value_1, dispatch_bypass_value_2, dispatch_bypass_value_3;
+  logic [riscv_pkg::FLEN-1:0]
+      dispatch_bypass_value_1, dispatch_bypass_value_2, dispatch_bypass_value_3;
 
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
-  logic [CheckpointIdWidth-1:0] checkpoint_restore_id;
-  logic [RasPtrBits-1:0] restored_ras_tos;
-  logic [RasPtrBits:0] restored_ras_valid_count;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
+  logic [riscv_pkg::RasPtrBits-1:0] restored_ras_tos;
+  logic [riscv_pkg::RasPtrBits:0] restored_ras_valid_count;
 
   // Checkpoint free (from commit)
   logic checkpoint_free;
-  logic [CheckpointIdWidth-1:0] checkpoint_free_id;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_free_id;
 
   // LQ/SQ status
   logic lq_empty, sq_empty;
@@ -754,18 +758,8 @@ module cpu_ooo #(
   logic rs_empty;
   logic [3:0] rs_count;
 
-  // FU completion (external injection not used — FU shims are inside wrapper)
-`ifdef VERILATOR
-  fu_complete_t fu_complete_ext[NumFus];
-  always_comb begin
-    for (int i = 0; i < NumFus; i++) begin
-      fu_complete_ext[i] = '0;
-    end
-  end
-`endif
-
   // FRM CSR
-  logic [     2:0] frm_csr;
+  logic [2:0] frm_csr;
 
   // CSR read data
   logic [XLEN-1:0] csr_read_data;  // registered (1-cycle latency)
@@ -780,19 +774,6 @@ module cpu_ooo #(
       // ROB allocation
       .i_alloc_req (rob_alloc_req),
       .o_alloc_resp(rob_alloc_resp),
-
-      // FU completion (not externally driven)
-`ifdef VERILATOR
-      .i_fu_complete  (fu_complete_ext),
-`else
-      .i_fu_complete_0('0),
-      .i_fu_complete_1('0),
-      .i_fu_complete_2('0),
-      .i_fu_complete_3('0),
-      .i_fu_complete_4('0),
-      .i_fu_complete_5('0),
-      .i_fu_complete_6('0),
-`endif
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -892,60 +873,11 @@ module cpu_ooo #(
       .o_checkpoint_alloc_id (checkpoint_alloc_id),
 
       // RS dispatch
-`ifdef VERILATOR
       .i_rs_dispatch(rs_dispatch),
-`else
-      .i_rs_dispatch_valid(rs_dispatch.valid),
-      .i_rs_dispatch_rs_type(rs_dispatch.rs_type),
-      .i_rs_dispatch_rob_tag(rs_dispatch.rob_tag),
-      .i_rs_dispatch_op(rs_dispatch.op),
-      .i_rs_dispatch_src1_ready(rs_dispatch.src1_ready),
-      .i_rs_dispatch_src1_tag(rs_dispatch.src1_tag),
-      .i_rs_dispatch_src1_value(rs_dispatch.src1_value),
-      .i_rs_dispatch_src2_ready(rs_dispatch.src2_ready),
-      .i_rs_dispatch_src2_tag(rs_dispatch.src2_tag),
-      .i_rs_dispatch_src2_value(rs_dispatch.src2_value),
-      .i_rs_dispatch_src3_ready(rs_dispatch.src3_ready),
-      .i_rs_dispatch_src3_tag(rs_dispatch.src3_tag),
-      .i_rs_dispatch_src3_value(rs_dispatch.src3_value),
-      .i_rs_dispatch_imm(rs_dispatch.imm),
-      .i_rs_dispatch_use_imm(rs_dispatch.use_imm),
-      .i_rs_dispatch_rm(rs_dispatch.rm),
-      .i_rs_dispatch_branch_target(rs_dispatch.branch_target),
-      .i_rs_dispatch_predicted_taken(rs_dispatch.predicted_taken),
-      .i_rs_dispatch_predicted_target(rs_dispatch.predicted_target),
-      .i_rs_dispatch_is_fp_mem(rs_dispatch.is_fp_mem),
-      .i_rs_dispatch_mem_size(rs_dispatch.mem_size),
-      .i_rs_dispatch_mem_signed(rs_dispatch.mem_signed),
-      .i_rs_dispatch_csr_addr(rs_dispatch.csr_addr),
-      .i_rs_dispatch_csr_imm(rs_dispatch.csr_imm),
-      .i_rs_dispatch_pc(rs_dispatch.pc),
-`endif
       .o_rs_full(),
 
       // RS issue + status (INT_RS)
-`ifdef VERILATOR
       .o_rs_issue(rs_issue_int),
-`else
-      .o_rs_issue_valid(),
-      .o_rs_issue_rob_tag(),
-      .o_rs_issue_op(),
-      .o_rs_issue_src1_value(),
-      .o_rs_issue_src2_value(),
-      .o_rs_issue_src3_value(),
-      .o_rs_issue_imm(),
-      .o_rs_issue_use_imm(),
-      .o_rs_issue_rm(),
-      .o_rs_issue_branch_target(),
-      .o_rs_issue_predicted_taken(),
-      .o_rs_issue_predicted_target(),
-      .o_rs_issue_is_fp_mem(),
-      .o_rs_issue_mem_size(),
-      .o_rs_issue_mem_signed(),
-      .o_rs_issue_csr_addr(),
-      .o_rs_issue_csr_imm(),
-      .o_rs_issue_pc(),
-`endif
       .i_rs_fu_ready(1'b1),
       .o_int_rs_full(int_rs_full),
       .o_rs_empty(rs_empty),
@@ -1114,24 +1046,28 @@ module cpu_ooo #(
   // a reorder_buffer_branch_update_t that goes to the ROB.
 
   logic is_branch_issue;
-  assign is_branch_issue = rs_issue_int.valid && is_branch_or_jump_op(rs_issue_int.op);
+  assign is_branch_issue = rs_issue_int.valid && (
+      rs_issue_int.op == riscv_pkg::BEQ  || rs_issue_int.op == riscv_pkg::BNE  ||
+      rs_issue_int.op == riscv_pkg::BLT  || rs_issue_int.op == riscv_pkg::BGE  ||
+      rs_issue_int.op == riscv_pkg::BLTU || rs_issue_int.op == riscv_pkg::BGEU ||
+      rs_issue_int.op == riscv_pkg::JAL  || rs_issue_int.op == riscv_pkg::JALR);
 
   logic is_jal_issue, is_jalr_issue;
-  assign is_jal_issue  = rs_issue_int.valid && is_jal_op(rs_issue_int.op);
-  assign is_jalr_issue = rs_issue_int.valid && is_jalr_op(rs_issue_int.op);
+  assign is_jal_issue  = rs_issue_int.valid && (rs_issue_int.op == riscv_pkg::JAL);
+  assign is_jalr_issue = rs_issue_int.valid && (rs_issue_int.op == riscv_pkg::JALR);
 
   // Map instr_op_e → branch_taken_op_e for branch_jump_unit
-  branch_taken_op_e branch_op_resolved;
+  riscv_pkg::branch_taken_op_e branch_op_resolved;
   always_comb begin
     case (rs_issue_int.op)
-      BEQ:       branch_op_resolved = BREQ;
-      BNE:       branch_op_resolved = BRNE;
-      BLT:       branch_op_resolved = BRLT;
-      BGE:       branch_op_resolved = BRGE;
-      BLTU:      branch_op_resolved = BRLTU;
-      BGEU:      branch_op_resolved = BRGEU;
-      JAL, JALR: branch_op_resolved = JUMP;
-      default:   branch_op_resolved = NULL;
+      riscv_pkg::BEQ:                  branch_op_resolved = riscv_pkg::BREQ;
+      riscv_pkg::BNE:                  branch_op_resolved = riscv_pkg::BRNE;
+      riscv_pkg::BLT:                  branch_op_resolved = riscv_pkg::BRLT;
+      riscv_pkg::BGE:                  branch_op_resolved = riscv_pkg::BRGE;
+      riscv_pkg::BLTU:                 branch_op_resolved = riscv_pkg::BRLTU;
+      riscv_pkg::BGEU:                 branch_op_resolved = riscv_pkg::BRGEU;
+      riscv_pkg::JAL, riscv_pkg::JALR: branch_op_resolved = riscv_pkg::JUMP;
+      default:                         branch_op_resolved = riscv_pkg::NULL;
     endcase
   end
 

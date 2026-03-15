@@ -1700,6 +1700,10 @@ package riscv_pkg;
   // Instruction Routing Table
   // ---------------------------------------------------------------------------
   // Helper function to determine RS assignment from instruction operation.
+  // Guarded from synthesis because Yosys cannot resolve enum values inside
+  // package functions.  Modules that need these during synthesis must inline
+  // equivalent logic using fully-qualified riscv_pkg:: enum references.
+`ifndef SYNTHESIS
 
   function automatic rs_type_e get_rs_type(instr_op_e op);
     case (op)
@@ -1925,5 +1929,7 @@ package riscv_pkg;
       default: is_conditional_branch_op = 1'b0;
     endcase
   endfunction
+
+`endif  // SYNTHESIS
 
 endpackage : riscv_pkg

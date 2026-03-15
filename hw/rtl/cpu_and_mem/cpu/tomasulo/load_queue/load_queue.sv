@@ -502,11 +502,11 @@ module load_queue #(
 
   // AMO serialization (ROB head + SQ committed-empty) guarantees these
   // two invalidation sources are mutually exclusive.
-  // synopsys translate_off
+`ifndef SYNTHESIS
   assert property (@(posedge i_clk) disable iff (!i_rst_n)
       !(i_cache_invalidate_valid && amo_cache_inv))
   else $error("BUG: SQ and AMO cache invalidation fired simultaneously");
-  // synopsys translate_on
+`endif
 
   // Cache-hit fast path signal: Phase B candidate hits L0 cache, SQ
   // disambiguation confirms no conflicting store, and the consumer is a
