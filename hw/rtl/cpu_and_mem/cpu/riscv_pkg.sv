@@ -660,11 +660,14 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
     logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
+    logic btb_update_requires_pc_reg_handoff;  // Predicted op must still execute in IF/PD/ID
     // RAS misprediction recovery signals
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
     logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
     logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
+    logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
+    logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
     // F extension fields
     logic stall_for_fpu;  // Stall for multi-cycle FP operation
     logic fpu_completing_next_cycle;  // FPU result will be valid next cycle
@@ -1210,6 +1213,7 @@ package riscv_pkg;
     logic                    is_branch;
     logic                    predicted_taken;
     logic [XLEN-1:0]         predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0]         branch_target;     // Architectural taken target when known at dispatch
     logic                    is_call;
     logic                    is_return;
     // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
@@ -1295,10 +1299,14 @@ package riscv_pkg;
     logic [CheckpointIdWidth-1:0] checkpoint_id;
     logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
     // Branch info (for BTB update and RAS restore at commit)
+    logic predicted_taken;  // Front-end predicted this control flow as taken
     logic branch_taken;  // Actual branch outcome
     logic [XLEN-1:0] branch_target;  // Actual branch target
+    logic is_branch;  // Conditional branch or jump
     logic is_call;  // Call instruction (for RAS update)
     logic is_return;  // Return instruction (for RAS restore)
+    logic is_jal;  // JAL instruction
+    logic is_jalr;  // JALR instruction
     // CSR info (for commit-time CSR execution)
     logic [11:0] csr_addr;  // CSR address
     logic [2:0] csr_op;  // CSR operation funct3
@@ -1698,7 +1706,7 @@ package riscv_pkg;
       // Integer ALU operations -> INT_RS
       ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
       ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
-      LUI, AUIPC, JAL, JALR,
+      LUI, AUIPC, JALR,
       BEQ, BNE, BLT, BGE, BLTU, BGEU,
       // Zba/Zbb/Zbs/Zbkb/Zicond -> INT_RS (all 1-cycle ALU ops)
       SH1ADD, SH2ADD, SH3ADD,
@@ -1746,7 +1754,7 @@ package riscv_pkg;
       FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer)
-      WFI, MRET, PAUSE: get_rs_type = RS_NONE;
+      JAL, WFI, MRET, PAUSE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase

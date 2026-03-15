@@ -408,15 +408,17 @@ module register_alias_table (
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
     end else if (i_checkpoint_restore) begin
-      // Checkpoint restore is only used on branch commit misprediction
-      // recovery. By that point every instruction older than the branch has
-      // already committed architecturally, and every younger instruction is
-      // being flushed. That leaves no surviving speculative mappings, so
-      // restoring the pre-branch RAT image here can resurrect stale ROB tags
-      // after wraparound. Keep the checkpoint RAM for RAS metadata, but clear
-      // the active rename state on restore.
-      int_rat_valid <= '0;
-      fp_rat_valid  <= '0;
+      // Restore the saved snapshot, but suppress any mapping whose ROB tag is
+      // no longer live. This preserves checkpoint semantics without reviving
+      // stale tags after ROB wraparound.
+      for (int i = 0; i < NumIntRegs; i++) begin
+        int_rat_valid[i] <= restored_int_valid[i] && i_rob_entry_valid[restored_int_tag[i]];
+        int_rat_tag[i]   <= restored_int_tag[i];
+      end
+      for (int i = 0; i < NumFpRegs; i++) begin
+        fp_rat_valid[i] <= restored_fp_valid[i] && i_rob_entry_valid[restored_fp_tag[i]];
+        fp_rat_tag[i]   <= restored_fp_tag[i];
+      end
     end else begin
       // ---------------------------------------------------------------
       // Commit clear: if committing tag matches current RAT entry,

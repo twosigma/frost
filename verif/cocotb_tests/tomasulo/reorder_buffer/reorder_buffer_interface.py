@@ -39,17 +39,18 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (169 bits total, MSB to LSB):
-# [168]      alloc_valid
-# [167:136]  pc (32 bits)
-# [135]      dest_rf
-# [134:130]  dest_reg (5 bits)
-# [129]      dest_valid
-# [128]      is_store
-# [127]      is_fp_store
-# [126]      is_branch
-# [125]      predicted_taken
-# [124:93]   predicted_target (32 bits)
+# reorder_buffer_alloc_req_t field positions (201 bits total, MSB to LSB):
+# [200]      alloc_valid
+# [199:168]  pc (32 bits)
+# [167]      dest_rf
+# [166:162]  dest_reg (5 bits)
+# [161]      dest_valid
+# [160]      is_store
+# [159]      is_fp_store
+# [158]      is_branch
+# [157]      predicted_taken
+# [156:125]  predicted_target (32 bits)
+# [124:93]   branch_target (32 bits)
 # [92]       is_call
 # [91]       is_return
 # [90:59]    link_addr (32 bits)
@@ -68,7 +69,7 @@ from .reorder_buffer_model import (
 # [35:33]    csr_op (3 bits)
 # [32:1]     csr_write_data (32 bits)
 # [0]        has_fp_flags
-ALLOC_REQ_WIDTH = 169
+ALLOC_REQ_WIDTH = 201
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -116,6 +117,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 1
     val |= (1 if req.is_call else 0) << bit
     bit += 1
+    val |= (req.branch_target & MASK32) << bit
+    bit += 32
     val |= (req.predicted_target & MASK32) << bit
     bit += 32
     val |= (1 if req.predicted_taken else 0) << bit
@@ -220,78 +223,60 @@ def pack_branch_update_invalid() -> int:
     return 0
 
 
-# reorder_buffer_commit_t (unpacking for reads):
-# See tomasulo_pkg.sv for field order
-# Total approximately 200+ bits
+COMMIT_FIELDS = [
+    ("valid", 1),
+    ("tag", 5),
+    ("dest_rf", 1),
+    ("dest_reg", 5),
+    ("dest_valid", 1),
+    ("value", 64),
+    ("is_store", 1),
+    ("is_fp_store", 1),
+    ("exception", 1),
+    ("pc", 32),
+    ("exc_cause", 5),
+    ("fp_flags", 5),
+    ("has_fp_flags", 1),
+    ("misprediction", 1),
+    ("has_checkpoint", 1),
+    ("checkpoint_id", 2),
+    ("redirect_pc", 32),
+    ("predicted_taken", 1),
+    ("branch_taken", 1),
+    ("branch_target", 32),
+    ("is_branch", 1),
+    ("is_call", 1),
+    ("is_return", 1),
+    ("is_jal", 1),
+    ("is_jalr", 1),
+    ("csr_addr", 12),
+    ("csr_op", 3),
+    ("csr_write_data", 32),
+    ("is_csr", 1),
+    ("is_fence", 1),
+    ("is_fence_i", 1),
+    ("is_wfi", 1),
+    ("is_mret", 1),
+    ("is_amo", 1),
+    ("is_lr", 1),
+    ("is_sc", 1),
+    ("is_compressed", 1),
+]
+
+_COMMIT_OFFSETS: dict[str, tuple[int, int]] = {}
+_offset = sum(width for _, width in COMMIT_FIELDS)
+for _name, _width in COMMIT_FIELDS:
+    _offset -= _width
+    _COMMIT_OFFSETS[_name] = (_offset, _width)
+assert _offset == 0
+
+
 def unpack_commit(val: int) -> dict[str, Any]:
     """Unpack commit output into a dictionary."""
-    bit = 0
     result: dict[str, Any] = {}
-
-    result["is_sc"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_lr"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_amo"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_mret"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_wfi"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fence_i"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fence"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_csr"] = bool((val >> bit) & 1)
-    bit += 1
-    result["csr_write_data"] = (val >> bit) & MASK32
-    bit += 32
-    result["csr_op"] = (val >> bit) & 0x7
-    bit += 3
-    result["csr_addr"] = (val >> bit) & 0xFFF
-    bit += 12
-    result["is_return"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_call"] = bool((val >> bit) & 1)
-    bit += 1
-    result["branch_target"] = (val >> bit) & MASK32
-    bit += 32
-    result["branch_taken"] = bool((val >> bit) & 1)
-    bit += 1
-    result["redirect_pc"] = (val >> bit) & MASK32
-    bit += 32
-    result["checkpoint_id"] = (val >> bit) & 0x3
-    bit += 2
-    result["has_checkpoint"] = bool((val >> bit) & 1)
-    bit += 1
-    result["misprediction"] = bool((val >> bit) & 1)
-    bit += 1
-    result["has_fp_flags"] = bool((val >> bit) & 1)
-    bit += 1
-    result["fp_flags"] = (val >> bit) & 0x1F
-    bit += 5
-    result["exc_cause"] = (val >> bit) & 0x1F
-    bit += 5
-    result["pc"] = (val >> bit) & MASK32
-    bit += 32
-    result["exception"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fp_store"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_store"] = bool((val >> bit) & 1)
-    bit += 1
-    result["value"] = (val >> bit) & MASK64
-    bit += 64
-    result["dest_valid"] = bool((val >> bit) & 1)
-    bit += 1
-    result["dest_reg"] = (val >> bit) & 0x1F
-    bit += 5
-    result["dest_rf"] = (val >> bit) & 1
-    bit += 1
-    result["tag"] = (val >> bit) & 0x1F
-    bit += 5
-    result["valid"] = bool((val >> bit) & 1)
-
+    for name, (offset, width) in _COMMIT_OFFSETS.items():
+        raw = (val >> offset) & ((1 << width) - 1)
+        result[name] = bool(raw) if width == 1 else raw
     return result
 
 

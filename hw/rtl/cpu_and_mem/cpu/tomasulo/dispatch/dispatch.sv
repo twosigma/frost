@@ -271,14 +271,11 @@ module dispatch
     is_jal_flag    = is_jal_op(op);
     is_jalr_flag   = is_jalr_op(op);
 
-    // Call: JAL/JALR with rd in {x1, x5}
-    is_call_flag = (is_jal_flag || is_jalr_flag) &&
-                   (dest_reg == 5'd1 || dest_reg == 5'd5);
-
-    // Return: JALR with rs1 in {x1, x5}, rd != rs1
-    is_return_flag = is_jalr_flag &&
-                     (i_rs1_addr == 5'd1 || i_rs1_addr == 5'd5) &&
-                     (dest_reg != i_rs1_addr);
+    // Reuse the ID-stage RAS classification so commit-time recovery matches the
+    // IF-stage RAS detector. In particular, compressed `c.jalr t0` expands to
+    // `jalr x1, x5, 0` and is a plain call in real code, not a return.
+    is_call_flag = i_from_id_to_ex.is_ras_call;
+    is_return_flag = i_from_id_to_ex.is_ras_return;
   end
 
   // Memory operation size and sign
@@ -584,6 +581,7 @@ module dispatch
     o_rob_alloc_req.is_branch   = is_branch_flag;
     o_rob_alloc_req.predicted_taken  = predicted_taken;
     o_rob_alloc_req.predicted_target = predicted_target;
+    o_rob_alloc_req.branch_target    = branch_target;
     o_rob_alloc_req.is_call     = is_call_flag;
     o_rob_alloc_req.is_return   = is_return_flag;
     o_rob_alloc_req.link_addr   = i_from_id_to_ex.link_address;

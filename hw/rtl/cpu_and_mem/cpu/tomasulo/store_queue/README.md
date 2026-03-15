@@ -7,34 +7,62 @@ and freed when their memory write completes.
 ## Architecture
 
 ```
-  Dispatch ──> [Alloc] ──> Tail
-                              |
-  MEM_RS Issue ──> [Addr Update] ──> CAM search by rob_tag
-               ──> [Data Update] ──> CAM search by rob_tag
-                              |
-  ROB Commit ──> [Commit Mark] ──> CAM search by rob_tag
-                              |
-  [Memory Write] ──> Head (committed + addr_valid + data_valid)
-      |                   |
-  [FSD Phase 0]     [FSD Phase 1]
-      |                   |
-  [Write Done] ──> Free entry, advance head
-      |
-  [L0 Cache Invalidate] ──> to LQ
-```
+                           Store Queue Block Diagram
 
-**Forwarding to Load Queue (combinational):**
-
-```
-  LQ ──> [SQ Check: addr, rob_tag, size]
-                    |
-  SQ ──> scan all older entries
-      |           |
-  [all_older_addrs_known]  [newest matching store]
-                    |
-              [can_forward?]
-                    |
-  SQ ──> [Forward Result: match, can_forward, data] ──> LQ
+       Dispatch         MEM_RS Issue          ROB Commit       LQ (Fwd Check)
+      ┌──────────┐     ┌────────────┐       ┌───────────┐     ┌──────────────┐
+      │ i_alloc  │     │addr_update │       │commit_    │     │i_sq_check_*  │
+      └────┬─────┘     │data_update │       │valid/tag  │     └──────┬───────┘
+           │           └─────┬──────┘       └─────┬─────┘            │
+      write @ tail    CAM tag match        CAM tag match       comb scan all
+           │                │                    │              older entries
+           ▼                ▼                    ▼                    ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                     DEPTH-Entry Circular Buffer                        │
+  │                                                                        │
+  │  Per-Entry FFs (control / CAM-scanned):                                │
+  │    valid, rob_tag, is_fp, addr_valid, address[31:0], size[1:0]         │
+  │    data_valid, is_mmio, fp64_phase, committed, sent, is_sc             │
+  │                                                                        │
+  │  LUTRAM (2× sdp_dist_ram, identical writes, independent reads):        │
+  │    data[63:0]                                                          │
+  │    Write: CAM-resolved index on data_update                            │
+  │    Read 1: fwd_match_idx (forwarding to LQ)                            │
+  │    Read 2: head_idx (memory writeback)                                 │
+  │                                                                        │
+  │  Forwarding Scan (combinational, all entries):                         │
+  │    For each valid older entry with addr_valid:                         │
+  │      addr match + size match + data_valid → can_forward                │
+  │    all_older_addrs_known: conservative stall signal                    │
+  │                                                                        │
+  │      head_ptr ─────┐                           ┌────── tail_ptr        │
+  │   (4-bit, wrap MSB)│                           │(4-bit, wrap MSB)      │
+  └────────────────────┼───────────────────────────┼───────────────────────┘
+            ┌──────────┘                           └───────────┐
+            ▼                                                  ▼
+  ┌──────────────────────────┐                    ┌────────────────────────┐
+  │  Head Drain (Mem Write)  │                    │  Forwarding Result     │
+  │                          │                    │  o_sq_forward          │
+  │  Fires when:             │                    │    match, can_forward, │
+  │   committed && addr_valid│                    │    data                │
+  │   && data_valid && !sent │                    │  o_sq_all_older_addrs_ │
+  │                          │                    │    known               │
+  │  o_mem_write_en/addr/    │                    └────────────────────────┘
+  │    data/byte_en          │
+  │  FSD: 2-phase (lo, hi)   │                    ┌────────────────────────┐
+  │                          │                    │  o_full / o_empty      │
+  │  On write done:          │                    │  o_committed_empty     │
+  │   → free entry           │                    │  o_count               │
+  │   → advance head         │                    └────────────────────────┘
+  │   → o_cache_invalidate   │
+  │     (to LQ L0 cache)     │                    ┌────────────────────────┐
+  └──────────────────────────┘                    │  Flush Control         │
+                                                  │  flush_all → reset all │
+  ┌──────────────────────────┐                    │  flush_en → age-based  │
+  │  SC Discard              │                    │   (uncommitted only)   │
+  │  i_sc_discard → invalid- │                    └────────────────────────┘
+  │  ate uncommitted SC entry│
+  └──────────────────────────┘
 ```
 
 ## Storage Strategy

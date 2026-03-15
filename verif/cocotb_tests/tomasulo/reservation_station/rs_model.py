@@ -63,12 +63,7 @@ class RSEntry:
 
     def is_ready(self) -> bool:
         """Check if entry is ready to issue."""
-        return (
-            self.valid
-            and self.src1_ready
-            and (self.src2_ready or self.use_imm)
-            and self.src3_ready
-        )
+        return self.valid and self.src1_ready and self.src2_ready and self.src3_ready
 
 
 class RSModel:

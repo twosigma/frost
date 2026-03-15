@@ -44,15 +44,20 @@ module c_ext_state #(
     input logic i_any_holdoff_safe,  // Holdoff using only registered signals
     input logic i_prediction_holdoff,  // Registered: prediction happened last cycle (clear state)
     input logic i_prediction_reset_state,  // Non-buffer prediction redirected fetch this cycle
+    input logic i_pending_prediction_active,  // pc_reg still consumes old-path instruction sizes
+    input logic i_pending_prediction_target_handoff,  // Old-path control-flow op just redirected
+    input logic i_pending_prediction_target_holdoff,  // Bubble while halfword branch PC catches up
     input logic i_prediction_from_buffer_holdoff,  // Need buffered old-path word next cycle
 
     // Instruction data
     input logic [31:0] i_effective_instr,  // Current effective instruction word
+    input logic [31:0] i_pc,               // Current fetch PC
     input logic [31:0] i_pc_reg,           // Registered PC
 
     // Instruction type detection (from instruction aligner)
-    input logic i_is_compressed,     // Current parcel is compressed
-    input logic i_is_32bit_spanning, // Detected spanning this cycle
+    input logic i_is_compressed,      // Current parcel is compressed
+    input logic i_is_32bit_spanning,  // Detected spanning this cycle
+    input logic i_sel_nop,            // IF is outputting a stale/invalid bubble this cycle
 
     // Outputs
     output logic o_spanning_wait_for_fetch,
@@ -80,17 +85,9 @@ module c_ext_state #(
   //   2. spanning_wait_for_fetch: Waiting for BRAM to return second word
   //   3. spanning_in_progress: Second word available, combine and output
 
-  logic spanning_in_progress_next;
-
-  // Compute next state for spanning_in_progress
-  // TIMING OPTIMIZATION: Removed i_flush check to break timing path from branch_taken.
-  // State will be cleared on next cycle via control_flow_holdoff (in any_holdoff_safe).
-  always_comb begin
-    spanning_in_progress_next = 1'b0;
-    if (!i_stall && !i_reset && !i_any_holdoff_safe) begin
-      spanning_in_progress_next = o_spanning_wait_for_fetch;
-    end
-  end
+  logic spanning_wait_extra_cycle;
+  logic fetch_still_on_spanning_word;
+  assign fetch_still_on_spanning_word = (i_pc[XLEN-1:2] == i_pc_reg[XLEN-1:2]);
 
   // ===========================================================================
   // Stall State Preservation (needed before spanning state machine)
@@ -102,7 +99,8 @@ module c_ext_state #(
   logic        is_compressed_saved;
   logic        saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
   logic        invalidate_saved_values_holdoff;
-
+  logic        capture_valid_stall_values;
+  logic        is_compressed_for_pc_capture;
   // A stall-captured IF word must remain replayable for the rest of the stall.
   // Registered prediction/control-flow holdoffs can arrive a cycle later than
   // the captured instruction; if they clear saved_values_valid mid-stall, IF
@@ -111,6 +109,13 @@ module c_ext_state #(
   assign invalidate_saved_values_holdoff =
       !i_stall_registered &&
       (i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state);
+  assign capture_valid_stall_values =
+      i_stall && !i_stall_registered &&
+      (!i_sel_nop || i_is_32bit_spanning || o_spanning_wait_for_fetch);
+  assign is_compressed_for_pc_capture =
+      capture_valid_stall_values &&
+      (i_pc == (i_pc_reg + riscv_pkg::PcIncrementCompressed)) ? 1'b1 :
+      is_compressed_for_buffer;
 
   // Flush must clear saved state immediately on redirects. The one-cycle-delayed
   // control_flow_holdoff cleanup is not sufficient for redirects that land on a
@@ -123,9 +128,17 @@ module c_ext_state #(
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
     end else if (i_stall & ~i_stall_registered) begin
-      // Save at stall start
-      effective_instr_saved <= i_effective_instr;
-      is_compressed_saved   <= i_is_compressed;
+      if (capture_valid_stall_values) begin
+        // Save real instructions, the first-cycle spanning bubble, and the
+        // spanning-wait bubble. A stall can hit exactly when the second word
+        // of a spanning instruction arrives; preserving that wait-cycle word
+        // lets the spanning FSM resume with the correct upper-half fetch.
+        effective_instr_saved <= i_effective_instr;
+        is_compressed_saved   <= i_is_compressed;
+      end else begin
+        effective_instr_saved <= '0;
+        is_compressed_saved   <= 1'b0;
+      end
     end else if (invalidate_saved_values_holdoff) begin
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
@@ -135,7 +148,7 @@ module c_ext_state #(
     if (i_reset) begin
       saved_values_valid <= 1'b0;
     end else if (i_stall & ~i_stall_registered) begin
-      saved_values_valid <= 1'b1;
+      saved_values_valid <= capture_valid_stall_values;
     end else if (i_flush || invalidate_saved_values_holdoff) begin
       saved_values_valid <= 1'b0;
     end
@@ -161,6 +174,9 @@ module c_ext_state #(
   logic        is_compressed_for_buffer;
   logic        preserve_lo_compressed_buffer_on_prediction;
   logic        prediction_reset_buffer_state;
+  logic        capture_pending_prediction_buffer;
+  logic        pending_prediction_target_holdoff_prev;
+  logic        pending_prediction_target_holdoff_needs_buffer;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
   assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
@@ -169,6 +185,16 @@ module c_ext_state #(
       is_compressed_for_buffer &&
       !i_pc_reg[1] &&
       !o_spanning_in_progress;
+  assign capture_pending_prediction_buffer =
+      i_pending_prediction_active &&
+      i_prediction_holdoff &&
+      is_compressed_for_buffer &&
+      !i_pc_reg[1] &&
+      !o_spanning_in_progress;
+  assign pending_prediction_target_holdoff_needs_buffer =
+      i_pending_prediction_target_holdoff &&
+      o_prev_was_compressed_at_lo &&
+      i_pc_reg[1];
   assign prediction_reset_buffer_state =
       i_prediction_reset_state && !preserve_lo_compressed_buffer_on_prediction;
 
@@ -190,6 +216,7 @@ module c_ext_state #(
     if (i_reset) begin
       o_spanning_wait_for_fetch <= 1'b0;
       o_spanning_in_progress <= 1'b0;
+      spanning_wait_extra_cycle <= 1'b0;
     end else if (i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
                  i_prediction_reset_state) begin
       // Cancel spanning on control flow change or prediction
@@ -197,10 +224,28 @@ module c_ext_state #(
       // i_prediction_holdoff clears stale state after branch prediction redirect
       o_spanning_wait_for_fetch <= 1'b0;
       o_spanning_in_progress <= 1'b0;
+      spanning_wait_extra_cycle <= 1'b0;
     end else if (!i_stall && !i_any_holdoff_safe) begin
-      // State transitions
-      o_spanning_wait_for_fetch <= i_is_32bit_spanning && !o_spanning_wait_for_fetch;
-      o_spanning_in_progress <= spanning_in_progress_next;
+      if (i_is_32bit_spanning && !o_spanning_wait_for_fetch) begin
+        o_spanning_wait_for_fetch <= 1'b1;
+        o_spanning_in_progress <= 1'b0;
+        // If fetch is still on the same word as pc_reg, the first wait cycle
+        // still returns the old word. Hold one extra cycle so the next-word
+        // BRAM read can arrive before we capture spanning_second_half.
+        spanning_wait_extra_cycle <= fetch_still_on_spanning_word;
+      end else if (o_spanning_wait_for_fetch) begin
+        if (spanning_wait_extra_cycle) begin
+          o_spanning_wait_for_fetch <= 1'b1;
+          o_spanning_in_progress <= 1'b0;
+          spanning_wait_extra_cycle <= 1'b0;
+        end else begin
+          o_spanning_wait_for_fetch <= 1'b0;
+          o_spanning_in_progress <= 1'b1;
+        end
+      end else begin
+        o_spanning_wait_for_fetch <= 1'b0;
+        o_spanning_in_progress <= 1'b0;
+      end
     end
   end
   always_ff @(posedge i_clk) begin
@@ -216,7 +261,7 @@ module c_ext_state #(
         o_spanning_pc <= i_pc_reg;
       end
 
-      if (o_spanning_wait_for_fetch) begin
+      if (o_spanning_wait_for_fetch && !spanning_wait_extra_cycle) begin
         // During wait cycle, memory returns second word - save lower half
         o_spanning_second_half <= instr_lo;
       end
@@ -278,13 +323,23 @@ module c_ext_state #(
     else if (!i_stall) prediction_from_buffer_holdoff_prev <= i_prediction_from_buffer_holdoff;
   end
 
-  assign o_use_buffer_after_prediction = prediction_from_buffer_holdoff_prev &&
-                                         !i_prediction_from_buffer_holdoff &&
-                                         !i_stall &&
-                                         !i_flush &&
-                                         !i_control_flow_holdoff &&
-                                         !i_prediction_holdoff &&
-                                         !i_prediction_reset_state;
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_control_flow_holdoff || i_prediction_holdoff ||
+        i_prediction_reset_state)
+      pending_prediction_target_holdoff_prev <= 1'b0;
+    else if (!i_stall)
+      pending_prediction_target_holdoff_prev <= pending_prediction_target_holdoff_needs_buffer;
+  end
+
+  assign o_use_buffer_after_prediction =
+      ((prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
+       (pending_prediction_target_holdoff_prev &&
+        !i_pending_prediction_target_holdoff)) &&
+      !i_stall &&
+      !i_flush &&
+      !i_control_flow_holdoff &&
+      !i_prediction_holdoff &&
+      !i_prediction_reset_state;
 
   // ===========================================================================
   // Instruction Buffer State Machine
@@ -311,12 +366,17 @@ module c_ext_state #(
   // Control register: must be reset and cleared on control flow changes
   always_ff @(posedge i_clk) begin
     if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
-        prediction_reset_buffer_state) begin
+        prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
       o_prev_was_compressed_at_lo <= 1'b0;
+      if (capture_pending_prediction_buffer) begin
+        o_prev_was_compressed_at_lo <= 1'b1;
+      end
     end else if (!i_stall && !i_any_holdoff_safe &&
                  !o_spanning_to_halfword &&
+                 !pending_prediction_target_holdoff_needs_buffer &&
                  !i_prediction_from_buffer_holdoff &&
-                 !o_use_buffer_after_prediction) begin
+                 !o_use_buffer_after_prediction &&
+                 !i_pending_prediction_active) begin
       o_prev_was_compressed_at_lo <= is_compressed_for_buffer &&
                                      !i_pc_reg[1] &&
                                      !o_spanning_in_progress;
@@ -331,13 +391,15 @@ module c_ext_state #(
   // the buffer after a prediction redirect. Without this, stale data could be read later
   // when use_instr_buffer is true.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && !i_any_holdoff_safe &&
+    if (!i_stall && (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
         !i_flush &&
         !o_spanning_to_halfword &&
-        !i_prediction_holdoff &&
+        !pending_prediction_target_holdoff_needs_buffer &&
+        (!i_prediction_holdoff || capture_pending_prediction_buffer) &&
         !i_prediction_from_buffer_holdoff &&
         !prediction_reset_buffer_state &&
-        !o_use_buffer_after_prediction) begin
+        !o_use_buffer_after_prediction &&
+        (!i_pending_prediction_active || capture_pending_prediction_buffer)) begin
       o_instr_buffer <= effective_instr_for_buffer;
     end
   end
@@ -352,12 +414,19 @@ module c_ext_state #(
   // the path from stall logic through is_compressed to the PC adder.
   //
   // Reset to 0 (assume 32-bit = increment by 4) for conservative behavior.
-  // TIMING OPTIMIZATION: Removed combinational i_flush to break path from branch_taken.
+  // Keep the old-path size alive through the immediate prediction cycle: if IF
+  // has already fetched ahead to a predicted branch, pc_reg may still need one
+  // more compressed +2 step before it reaches the branch PC.
+  //
+  // Do not sample is_compressed_for_buffer on sel_nop cycles. Those bubbles can
+  // still carry stale BRAM bytes from an old control-flow path; latching their
+  // apparent 16-bit parcel size corrupts pc_reg and shifts later instruction PCs.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state) begin
+    if (i_reset || i_control_flow_holdoff) begin
       o_is_compressed_for_pc <= 1'b0;
-    end else if (!i_stall) begin
-      o_is_compressed_for_pc <= is_compressed_for_buffer;
+    end else if (!i_pending_prediction_active &&
+                 ((!i_stall && !i_sel_nop) || capture_valid_stall_values)) begin
+      o_is_compressed_for_pc <= is_compressed_for_pc_capture;
     end
   end
 

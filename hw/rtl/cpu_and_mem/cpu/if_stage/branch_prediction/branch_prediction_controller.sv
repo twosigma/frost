@@ -41,6 +41,7 @@ module branch_prediction_controller (
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
+    input logic i_stall_registered,
     input logic i_flush,
 
     // Current PC for BTB lookup
@@ -63,6 +64,7 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_target,
     input logic                       i_btb_update_taken,
     input logic                       i_btb_update_compressed,
+    input logic                       i_btb_update_requires_pc_reg_handoff,
 
     // RAS inputs (for call/return detection)
     input riscv_pkg::instr_t i_instruction,  // Current instruction for RAS detection
@@ -76,6 +78,8 @@ module branch_prediction_controller (
     input logic [riscv_pkg::RasPtrBits-1:0] i_ras_restore_tos,
     input logic [  riscv_pkg::RasPtrBits:0] i_ras_restore_valid_count,
     input logic                             i_ras_pop_after_restore,
+    input logic                             i_ras_push_after_restore,
+    input logic [      riscv_pkg::XLEN-1:0] i_ras_push_address_after_restore,
 
     // Combinational prediction outputs (for pc_controller next_pc selection)
     output logic                       o_predicted_taken,
@@ -90,6 +94,8 @@ module branch_prediction_controller (
     output logic o_prediction_holdoff,  // One cycle after prediction (for c_ext_state)
     output logic o_btb_only_prediction_holdoff,  // Holdoff when BTB (not RAS) predicted
     output logic o_sel_prediction_r,  // Registered sel_prediction (for pc_controller pc_reg)
+    output logic o_prediction_requires_pc_reg_handoff,
+    // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
     // RAS prediction outputs (for pipeline passthrough)
@@ -110,6 +116,9 @@ module branch_prediction_controller (
   logic            btb_predicted_taken;
   logic [XLEN-1:0] btb_predicted_target;
   logic            btb_compressed;
+  logic            btb_requires_pc_reg_handoff;
+
+  assign o_prediction_requires_pc_reg_handoff = btb_requires_pc_reg_handoff;
 
   branch_predictor #(
       .XLEN(XLEN)
@@ -123,13 +132,15 @@ module branch_prediction_controller (
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
       .o_btb_compressed(btb_compressed),
+      .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
       // Update from EX stage
       .i_update(i_btb_update),
       .i_update_pc(i_btb_update_pc),
       .i_update_target(i_btb_update_target),
       .i_update_taken(i_btb_update_taken),
-      .i_update_compressed(i_btb_update_compressed)
+      .i_update_compressed(i_btb_update_compressed),
+      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff)
   );
 
   // ===========================================================================
@@ -169,6 +180,8 @@ module branch_prediction_controller (
   logic [RasPtrBits-1:0] ras_restore_tos_r;
   logic [  RasPtrBits:0] ras_restore_valid_count_r;
   logic                  ras_pop_after_restore_r;
+  logic                  ras_push_after_restore_r;
+  logic [      XLEN-1:0] ras_push_address_after_restore_r;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
@@ -176,11 +189,15 @@ module branch_prediction_controller (
       ras_restore_tos_r <= '0;
       ras_restore_valid_count_r <= '0;
       ras_pop_after_restore_r <= 1'b0;
+      ras_push_after_restore_r <= 1'b0;
+      ras_push_address_after_restore_r <= '0;
     end else begin
       ras_misprediction_r <= i_ras_misprediction;
       ras_restore_tos_r <= i_ras_restore_tos;
       ras_restore_valid_count_r <= i_ras_restore_valid_count;
       ras_pop_after_restore_r <= i_ras_pop_after_restore;
+      ras_push_after_restore_r <= i_ras_push_after_restore;
+      ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
     end
   end
 
@@ -224,6 +241,7 @@ module branch_prediction_controller (
       .i_clk,
       .i_rst(i_reset),
       .i_stall,
+      .i_stall_registered,
       .i_is_call(ras_is_call),
       .i_is_return(ras_is_return),
       .i_is_coroutine(ras_is_coroutine),
@@ -234,6 +252,8 @@ module branch_prediction_controller (
       .i_restore_tos(ras_restore_tos_r),
       .i_restore_valid_count(ras_restore_valid_count_r),
       .i_pop_after_restore(ras_pop_after_restore_r),
+      .i_push_after_restore(ras_push_after_restore_r),
+      .i_push_address_after_restore(ras_push_address_after_restore_r),
       .o_ras_valid(ras_valid),
       .o_ras_target(ras_target),
       .o_checkpoint_tos(ras_checkpoint_tos),

@@ -510,16 +510,17 @@ module load_queue #(
   // synopsys translate_on
 `endif
 
-  // Cache-hit fast path signal: Phase B candidate hits L0 cache
-  // AND SQ disambiguation confirms no conflicting store (sq_can_issue)
-  // AND it's a word-sized or byte/half non-FP load (not FLD — FLD needs
-  // two reads, skip cache for simplicity).
-  // This avoids issuing to memory while still respecting SQ ordering.
+  // Cache-hit fast path signal: Phase B candidate hits L0 cache, SQ
+  // disambiguation confirms no conflicting store, and the consumer is a
+  // simple word-sized non-FP load. Subword loads and FLD stay on the memory
+  // path to keep cache-hit semantics conservative around partial-word and
+  // two-phase operations.
   logic cache_hit_fast_path;
   assign cache_hit_fast_path = !i_flush_all && !i_flush_en
       && sq_can_issue
       && cache_lookup_hit
-      && !(lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE)
+      && (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_WORD)
+      && !lq_is_fp[issue_mem_idx]
       && !lq_is_mmio[issue_mem_idx]
       && !lq_is_lr[issue_mem_idx]
       && !lq_is_amo[issue_mem_idx];
@@ -832,7 +833,6 @@ module load_queue #(
       amo_old_value             <= '0;
       amo_entry_idx             <= '0;
     end else begin
-
       // -----------------------------------------------------------------
       // Partial flush: invalidate entries younger than flush_tag
       // -----------------------------------------------------------------
@@ -1203,5 +1203,4 @@ module load_queue #(
 
 `endif  // FORMAL
 
-
-endmodule
+endmodule : load_queue

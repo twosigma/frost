@@ -162,4 +162,6 @@ module int_alu_shim (
   // ALU is single-cycle for INT_RS ops; never busy
   assign o_fu_busy = 1'b0;
 
+  // (debug trace removed)
+
 endmodule : int_alu_shim

@@ -54,12 +54,14 @@ module pc_increment_calculator #(
     input logic i_spanning_to_halfword,
     input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,
+    input logic i_is_compressed_for_pc,
 
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_control_flow_to_halfword_r,
+    input logic i_stall_registered,
 
     // Mid-32bit correction (from pc_controller)
     input logic i_mid_32bit_correction,
@@ -76,7 +78,7 @@ module pc_increment_calculator #(
   // Priority: sel_0 (spanning wait) > sel_2 (compressed/spanning) > default (32-bit)
   logic pc_inc_comb_sel_0, pc_inc_comb_sel_2;
   assign pc_inc_comb_sel_0 = i_spanning_wait_for_fetch;
-  assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_is_compressed || i_is_32bit_spanning;
+  assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_is_32bit_spanning || i_is_compressed;
 
   // Final PC increment select with priority encoding
   // Priority: sel_holdoff (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
@@ -147,6 +149,7 @@ module pc_increment_calculator #(
   // (use_buffer_after_spanning), instruction_aligner uses pc_reg[1] to select
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
+  //
   logic pc_reg_inc_sel_0, pc_reg_inc_sel_2;
   assign pc_reg_inc_sel_0 = i_spanning_wait_for_fetch || i_is_32bit_spanning ||
                             i_spanning_to_halfword_registered ||
