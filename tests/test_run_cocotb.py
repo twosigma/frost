@@ -66,11 +66,6 @@ CPU_TEST_MODULES = ",".join(
 # Registry of all available tests - single source of truth
 # Maps test name to its configuration
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
-    "cpu": CocotbRunConfig(
-        python_test_module=CPU_TEST_MODULES,
-        hdl_toplevel_module="cpu_tb",
-        description="CPU random regression and directed tests",
-    ),
     # Real program tests - all use same module/toplevel, differ only in app
     "branch_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -645,15 +640,17 @@ def run_test_with_simulator(
 # =============================================================================
 
 
-@pytest.mark.cocotb
-class TestCPU:
-    """Test cases for RISC-V CPU core (random regression + directed tests)."""
+if "cpu" in TEST_REGISTRY:
 
-    @pytest.mark.slow
-    @pytest.mark.parametrize("simulator", CI_SIMULATORS)
-    def test_cpu(self, simulator: str, capsys: Any) -> None:
-        """Run the CPU test through cocotb with different simulators."""
-        run_test_with_simulator("cpu", simulator, capsys)
+    @pytest.mark.cocotb
+    class TestCPU:
+        """Test cases for RISC-V CPU core (random regression + directed tests)."""
+
+        @pytest.mark.slow
+        @pytest.mark.parametrize("simulator", CI_SIMULATORS)
+        def test_cpu(self, simulator: str, capsys: Any) -> None:
+            """Run the CPU test through cocotb with different simulators."""
+            run_test_with_simulator("cpu", simulator, capsys)
 
 
 @pytest.mark.cocotb
@@ -834,10 +831,8 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s cpu                    # Run CPU test with default simulator (icarus)
   %(prog)s hello_world --sim=verilator  # Run Hello World with Verilator
   %(prog)s isa_test --sim=icarus  # Run ISA compliance tests
-  %(prog)s cpu --sim=verilator --seed-sweep 10  # Run 10 seeds in parallel, report results
   %(prog)s --list-tests           # Show available tests from TEST_REGISTRY and exit
 
 Note: Seed sweep runs simulations in parallel and reports pass/fail for each seed.
