@@ -57,6 +57,17 @@ module tomasulo_wrapper (
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
     // =========================================================================
+    // FU Completion Test Injection (active when internal adapter is idle)
+    // =========================================================================
+    input riscv_pkg::fu_complete_t i_fu_complete_0,
+    input riscv_pkg::fu_complete_t i_fu_complete_1,
+    input riscv_pkg::fu_complete_t i_fu_complete_2,
+    input riscv_pkg::fu_complete_t i_fu_complete_3,
+    input riscv_pkg::fu_complete_t i_fu_complete_4,
+    input riscv_pkg::fu_complete_t i_fu_complete_5,
+    input riscv_pkg::fu_complete_t i_fu_complete_6,
+
+    // =========================================================================
     // CDB Grant (back-pressure to FUs)
     // =========================================================================
     output logic [riscv_pkg::NumFus-1:0] o_cdb_grant,
@@ -336,16 +347,18 @@ module tomasulo_wrapper (
   riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
   riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
 
-  // Route internal FU adapter outputs to CDB arbiter inputs.
+  // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
+  // take priority; test-injection ports (i_fu_complete_*) fall through
+  // when the adapter is idle.  In production cpu_ooo ties them to '0.
   riscv_pkg::fu_complete_t cdb_arb_in[riscv_pkg::NumFus];
   always_comb begin
-    cdb_arb_in[0] = alu_adapter_to_arbiter;
-    cdb_arb_in[1] = mul_adapter_to_arbiter;
-    cdb_arb_in[2] = div_adapter_to_arbiter;
-    cdb_arb_in[3] = mem_adapter_to_arbiter;
-    cdb_arb_in[4] = fp_add_adapter_to_arbiter;
-    cdb_arb_in[5] = fp_mul_adapter_to_arbiter;
-    cdb_arb_in[6] = fp_div_adapter_to_arbiter;
+    cdb_arb_in[0] = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
+    cdb_arb_in[1] = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
+    cdb_arb_in[2] = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
+    cdb_arb_in[3] = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
+    cdb_arb_in[4] = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
+    cdb_arb_in[5] = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
+    cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
   end
 
   cdb_arbiter u_cdb_arbiter (
