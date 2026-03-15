@@ -76,9 +76,9 @@ module cpu_ooo #(
   // Simplified pipeline control for OOO: only stall/flush from dispatch
   // and commit-time events (traps, mispredictions).
 
-  pipeline_ctrl_t pipeline_ctrl;
-  logic dispatch_stall;
-  logic flush_pipeline;
+  pipeline_ctrl_t pipeline_ctrl  /* verilator isolate_assignments */;
+  logic dispatch_stall  /* verilator isolate_assignments */;
+  logic flush_pipeline  /* verilator isolate_assignments */;
   logic flush_for_trap;
   logic flush_for_mret;
 
@@ -91,6 +91,10 @@ module cpu_ooo #(
   localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
   logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
   logic front_end_control_flow_pending;
+  logic if_unpredicted_control_flow;
+  logic pd_unpredicted_control_flow;
+  logic id_unpredicted_control_flow;
+  logic front_end_prediction_fence_pending;
   logic disable_branch_prediction_ooo;
   logic serializing_alloc_fire;
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
@@ -99,8 +103,20 @@ module cpu_ooo #(
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.
-  assign serializing_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_csr;
-  assign branch_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
+  //
+  // Register serializing_alloc_fire to break the UNOPTFLAT combinational
+  // loop: dispatch_fire → serializing_alloc_fire → pipeline_ctrl.stall →
+  // IF stage → dispatch_fire.  The 1-cycle delay is safe because
+  // csr_in_flight (also registered) provides the long-duration stall;
+  // serializing_alloc_fire_q covers the same cycle once csr_in_flight
+  // rises.
+  logic serializing_alloc_fire_comb;
+  assign serializing_alloc_fire_comb = rob_alloc_req.alloc_valid && rob_alloc_req.is_csr;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
+    else serializing_alloc_fire <= serializing_alloc_fire_comb;
+  end
+  assign branch_alloc_fire  = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
   assign branch_commit_fire = rob_commit.valid && rob_commit.has_checkpoint;
 
   always_ff @(posedge i_clk) begin
@@ -127,30 +143,55 @@ module cpu_ooo #(
 
   // The existing in-order front-end prediction machinery is not robust to a
   // younger predicted redirect arriving behind an older unresolved branch/jump.
-  // In OOO mode, keep fetch flowing but suppress new predictions until the
-  // oldest in-flight or front-end-pending control-flow op commits. Waiting
-  // until ROB allocation is too late: a younger BTB hit can still redirect
-  // fetch while an older branch is sitting in PD/ID, which is exactly how the
-  // memcpy ladder was skipping `0x33b8` after `0x33b6`.
+  // Suppress new predictions once an unpredicted control-flow op has advanced
+  // into PD/ID or a branch is already in flight. Do not let an IF-stage branch
+  // self-lock prediction off forever: in hot loops that creates a circular
+  // dependency where the current branch is always "unpredicted" only because
+  // prediction is already disabled.
+  assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
+                                              id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
-                                         front_end_control_flow_pending ||
+                                         front_end_prediction_fence_pending ||
                                          branch_in_flight ||
                                          csr_in_flight ||
                                          serializing_alloc_fire;
+
+  // If an older unresolved branch/jump is still in flight, the shared
+  // in-order front-end cannot safely march a younger *unpredicted*
+  // control-flow instruction through IF/PD/ID. Hold the front-end at that
+  // younger op until the older branch resolves, instead of letting wrong-path
+  // fetch run ahead and relying on a later commit-time redirect to clean it up.
+  logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
+  assign front_end_cf_serialize_stall = branch_in_flight && front_end_control_flow_pending;
 
   // Registered stall for IF stage stall-capture registers.
   // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
   // on the rising edge of stall and restores them via stall_registered.
   logic stall_q;
   logic replay_after_dispatch_stall_q;
+  logic replay_after_serialize_stall_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
-    else stall_q <= (dispatch_stall || csr_in_flight || serializing_alloc_fire) && !flush_pipeline;
+    else
+      stall_q <= (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
+                  front_end_cf_serialize_stall) && !flush_pipeline;
   end
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) replay_after_dispatch_stall_q <= 1'b0;
     else replay_after_dispatch_stall_q <= dispatch_stall && !flush_pipeline;
+  end
+
+  // CSR serialization stalls are asserted a cycle after the serializing CSR
+  // allocates, so the ID register already contains the younger blocked
+  // instruction on the first stalled cycle. Give that held image one replay
+  // cycle after the fence drops; otherwise instructions like `mret` following
+  // `csrw mepc, ...` are stranded in ID and overwritten by younger fetch.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
+    else
+      replay_after_serialize_stall_q <=
+        (csr_in_flight || serializing_alloc_fire) && !flush_pipeline;
   end
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
@@ -186,8 +227,8 @@ module cpu_ooo #(
   always_comb begin
     pipeline_ctrl = '0;
     pipeline_ctrl.reset = i_rst;
-    pipeline_ctrl.stall = (dispatch_stall || csr_in_flight || serializing_alloc_fire) &&
-                          !flush_pipeline;
+    pipeline_ctrl.stall = (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
+                           front_end_cf_serialize_stall) && !flush_pipeline;
     pipeline_ctrl.stall_registered = stall_q;
     // Only true execution/backpressure stalls belong in stall_for_trap_check.
     // Front-end CSR serialization fences must not suppress IF-stage
@@ -205,6 +246,80 @@ module cpu_ooo #(
   from_if_to_pd_t from_if_to_pd;
   from_pd_to_id_t from_pd_to_id;
   from_id_to_ex_t from_id_to_ex;
+
+  // Temporary debug mirrors for cocotb control-flow tracing.
+  logic dbg_if_ras_predicted  /* verilator public_flat_rd */;
+  logic dbg_pd_ras_predicted  /* verilator public_flat_rd */;
+  logic dbg_id_ras_predicted  /* verilator public_flat_rd */;
+  logic [RasPtrBits-1:0] dbg_if_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [RasPtrBits:0] dbg_if_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic [RasPtrBits-1:0] dbg_pd_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [RasPtrBits:0] dbg_pd_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic [RasPtrBits-1:0] dbg_id_ras_checkpoint_tos  /* verilator public_flat_rd */;
+  logic [RasPtrBits:0] dbg_id_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
+  logic dbg_commit_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_pc  /* verilator public_flat_rd */;
+  logic dbg_commit_is_return  /* verilator public_flat_rd */;
+  logic dbg_commit_is_call  /* verilator public_flat_rd */;
+  logic [CheckpointIdWidth-1:0] dbg_commit_checkpoint_id  /* verilator public_flat_rd */;
+  logic dbg_commit_has_checkpoint  /* verilator public_flat_rd */;
+  logic dbg_commit_predicted_taken  /* verilator public_flat_rd */;
+  logic dbg_commit_branch_taken  /* verilator public_flat_rd */;
+  logic dbg_commit_misprediction  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_pd_pc  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_pd_instr  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_id_pc  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_id_instr  /* verilator public_flat_rd */;
+  logic dbg_id_is_mret  /* verilator public_flat_rd */;
+  logic dbg_if_valid_q  /* verilator public_flat_rd */;
+  logic dbg_pd_valid_q  /* verilator public_flat_rd */;
+  logic dbg_id_valid  /* verilator public_flat_rd */;
+  logic [1:0] dbg_post_flush_holdoff_q  /* verilator public_flat_rd */;
+  logic dbg_csr_in_flight  /* verilator public_flat_rd */;
+  logic dbg_pipeline_stall  /* verilator public_flat_rd */;
+  logic dbg_pipeline_stall_registered  /* verilator public_flat_rd */;
+  logic dbg_dispatch_stall  /* verilator public_flat_rd */;
+  logic dbg_front_end_cf_serialize_stall  /* verilator public_flat_rd */;
+  logic dbg_stall_q  /* verilator public_flat_rd */;
+  logic dbg_replay_after_dispatch_stall_q  /* verilator public_flat_rd */;
+  logic [BranchInFlightCountWidth-1:0] dbg_branch_in_flight_count  /* verilator public_flat_rd */;
+  logic dbg_rob_alloc_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_alloc_pc  /* verilator public_flat_rd */;
+  logic dbg_rob_alloc_is_csr  /* verilator public_flat_rd */;
+  logic dbg_rob_alloc_is_mret  /* verilator public_flat_rd */;
+
+  assign dbg_if_ras_predicted = from_if_to_pd.ras_predicted;
+  assign dbg_pd_ras_predicted = from_pd_to_id.ras_predicted;
+  assign dbg_id_ras_predicted = from_id_to_ex.ras_predicted;
+  assign dbg_if_ras_checkpoint_tos = from_if_to_pd.ras_checkpoint_tos;
+  assign dbg_if_ras_checkpoint_valid_count = from_if_to_pd.ras_checkpoint_valid_count;
+  assign dbg_pd_ras_checkpoint_tos = from_pd_to_id.ras_checkpoint_tos;
+  assign dbg_pd_ras_checkpoint_valid_count = from_pd_to_id.ras_checkpoint_valid_count;
+  assign dbg_id_ras_checkpoint_tos = from_id_to_ex.ras_checkpoint_tos;
+  assign dbg_id_ras_checkpoint_valid_count = from_id_to_ex.ras_checkpoint_valid_count;
+  assign dbg_commit_valid = rob_commit.valid;
+  assign dbg_commit_pc = rob_commit.pc;
+  assign dbg_commit_is_return = rob_commit.is_return;
+  assign dbg_commit_is_call = rob_commit.is_call;
+  assign dbg_commit_checkpoint_id = rob_commit.checkpoint_id;
+  assign dbg_commit_has_checkpoint = rob_commit.has_checkpoint;
+  assign dbg_commit_predicted_taken = rob_commit.predicted_taken;
+  assign dbg_commit_branch_taken = rob_commit.branch_taken;
+  assign dbg_commit_misprediction = rob_commit.misprediction;
+  assign dbg_pd_pc = from_pd_to_id.program_counter;
+  assign dbg_pd_instr = from_pd_to_id.instruction;
+  assign dbg_id_pc = from_id_to_ex.program_counter;
+  assign dbg_id_instr = from_id_to_ex.instruction;
+  assign dbg_id_is_mret = from_id_to_ex.is_mret;
+  assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
+  assign dbg_csr_in_flight = csr_in_flight;
+  assign dbg_pipeline_stall = pipeline_ctrl.stall;
+  assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
+  assign dbg_dispatch_stall = dispatch_stall;
+  assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
+  assign dbg_stall_q = stall_q;
+  assign dbg_replay_after_dispatch_stall_q = replay_after_dispatch_stall_q;
+  assign dbg_branch_in_flight_count = branch_in_flight_count;
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
   from_ex_comb_t from_ex_comb_synth;
@@ -434,13 +549,20 @@ module cpu_ooo #(
 
   logic id_valid;
   assign id_valid = pd_valid_q && !pipeline_ctrl.flush && !pipeline_ctrl.reset &&
+                    (from_id_to_ex.instruction != riscv_pkg::NOP) &&
                     !from_id_to_ex.is_illegal_instruction &&
                     !csr_in_flight &&
       // Re-dispatch the held ID image after real backpressure stalls,
-      // but keep suppressing replay after self-induced serialization
-      // stalls (e.g. CSR commit fencing), where the instruction has
-      // already allocated once and must not be re-issued.
-      (!pipeline_ctrl.stall_registered || replay_after_dispatch_stall_q);
+      // and after CSR serialization fences. The CSR itself has already
+      // allocated before csr_in_flight rises; the held ID image during the
+      // fence is the younger blocked instruction that still needs exactly
+      // one valid replay cycle after the fence drops.
+      (!pipeline_ctrl.stall_registered ||
+       replay_after_dispatch_stall_q ||
+       replay_after_serialize_stall_q);
+  assign dbg_if_valid_q = if_valid_q;
+  assign dbg_pd_valid_q = pd_valid_q;
+  assign dbg_id_valid = id_valid;
 
   logic if_has_control_flow;
   logic pd_has_control_flow;
@@ -492,9 +614,25 @@ module cpu_ooo #(
   assign id_has_control_flow = pd_valid_q && is_branch_or_jump_op(
       from_id_to_ex.instruction_operation
   );
-  assign front_end_control_flow_pending = if_has_control_flow ||
-                                          pd_has_control_flow ||
-                                          id_has_control_flow;
+
+  // Only unpredicted front-end control flow needs the extra prediction fence.
+  // Once an older branch/return has already redirected fetch onto its predicted
+  // path, later predictions on that same path are expected and required for
+  // tight loops. Treating already-predicted IF/PD/ID control-flow ops as
+  // "pending" shuts prediction back off and creates a second unpredicted copy
+  // of the same branch, which is exactly what breaks compressed back-edge loops.
+  assign if_unpredicted_control_flow = if_has_control_flow &&
+                                       !(from_if_to_pd.btb_predicted_taken ||
+                                         from_if_to_pd.ras_predicted);
+  assign pd_unpredicted_control_flow = pd_has_control_flow &&
+                                       !(from_pd_to_id.btb_predicted_taken ||
+                                         from_pd_to_id.ras_predicted);
+  assign id_unpredicted_control_flow = id_has_control_flow &&
+                                       !(from_id_to_ex.btb_predicted_taken ||
+                                         from_id_to_ex.ras_predicted);
+  assign front_end_control_flow_pending = if_unpredicted_control_flow ||
+                                          pd_unpredicted_control_flow ||
+                                          id_unpredicted_control_flow;
 
   // ===========================================================================
   // Tomasulo Wrapper Instance
@@ -503,7 +641,11 @@ module cpu_ooo #(
   // ROB interface
   reorder_buffer_alloc_req_t  rob_alloc_req;
   reorder_buffer_alloc_resp_t rob_alloc_resp;
-  reorder_buffer_commit_t     rob_commit;
+  assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
+  assign dbg_rob_alloc_pc = rob_alloc_req.pc;
+  assign dbg_rob_alloc_is_csr = rob_alloc_req.is_csr;
+  assign dbg_rob_alloc_is_mret = rob_alloc_req.is_mret;
+  reorder_buffer_commit_t rob_commit;
 
   // RAT lookup
   logic [RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
@@ -1034,7 +1176,10 @@ module cpu_ooo #(
   // Generate branch_update for the ROB
   always_comb begin
     branch_update              = '0;
-    branch_update.valid        = is_branch_issue;
+    // JAL is resolved architecturally at ROB allocation time, so its later
+    // branch-unit issue must not write back into a possibly already-committed
+    // ROB slot.
+    branch_update.valid        = is_branch_issue && !is_jal_issue;
     branch_update.tag          = rs_issue_int.rob_tag;
     branch_update.taken        = branch_taken_resolved;
     branch_update.target       = branch_target_resolved;
@@ -1164,29 +1309,39 @@ module cpu_ooo #(
       from_ex_comb_synth.branch_taken          = 1'b1;
       from_ex_comb_synth.branch_target_address = misprediction_redirect_pc;
 
-      if (!rob_commit.is_return) begin
-        from_ex_comb_synth.btb_update            = 1'b1;
-        from_ex_comb_synth.btb_update_pc         = rob_commit.pc;
-        from_ex_comb_synth.btb_update_target     = rob_commit.branch_target;
-        from_ex_comb_synth.btb_update_taken      = rob_commit.branch_taken;
-        from_ex_comb_synth.btb_update_compressed = rob_commit.is_compressed;
+      if (rob_commit.is_branch && !rob_commit.is_jal && !rob_commit.is_jalr) begin
+        from_ex_comb_synth.btb_update                         = 1'b1;
+        from_ex_comb_synth.btb_update_pc                      = rob_commit.pc;
+        from_ex_comb_synth.btb_update_target                  = rob_commit.branch_target;
+        from_ex_comb_synth.btb_update_taken                   = rob_commit.branch_taken;
+        from_ex_comb_synth.btb_update_compressed              = rob_commit.is_compressed;
+        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
 
-      // RAS restore on misprediction (if branch had a checkpoint)
-      if (rob_commit.is_return) begin
+      // Restore RAS state for any checkpointed misprediction to discard
+      // wrong-path speculative pushes/pops. Calls then re-apply their own
+      // architectural push after restore; returns re-apply the pop.
+      if (rob_commit.has_checkpoint) begin
         from_ex_comb_synth.ras_misprediction       = 1'b1;
         from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
         from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        from_ex_comb_synth.ras_pop_after_restore   = 1'b1;
+        if (rob_commit.is_return) begin
+          from_ex_comb_synth.ras_pop_after_restore = 1'b1;
+        end else if (rob_commit.is_call) begin
+          from_ex_comb_synth.ras_push_after_restore = 1'b1;
+          from_ex_comb_synth.ras_push_address_after_restore = rob_commit.pc +
+              (rob_commit.is_compressed ? 32'd2 : 32'd4);
+        end
       end
     end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
       // Correctly-predicted branch commit: update BTB (no PC redirect)
-      if (!rob_commit.is_return) begin
-        from_ex_comb_synth.btb_update            = 1'b1;
-        from_ex_comb_synth.btb_update_pc         = rob_commit.pc;
-        from_ex_comb_synth.btb_update_target     = rob_commit.branch_target;
-        from_ex_comb_synth.btb_update_taken      = rob_commit.branch_taken;
-        from_ex_comb_synth.btb_update_compressed = rob_commit.is_compressed;
+      if (rob_commit.is_branch && !rob_commit.is_jal && !rob_commit.is_jalr) begin
+        from_ex_comb_synth.btb_update                         = 1'b1;
+        from_ex_comb_synth.btb_update_pc                      = rob_commit.pc;
+        from_ex_comb_synth.btb_update_target                  = rob_commit.branch_target;
+        from_ex_comb_synth.btb_update_taken                   = rob_commit.branch_taken;
+        from_ex_comb_synth.btb_update_compressed              = rob_commit.is_compressed;
+        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
     end
   end
@@ -1384,6 +1539,5 @@ module cpu_ooo #(
     else if (!o_rst_done) rst_counter <= rst_counter + 8'd1;
   end
   assign o_rst_done = (rst_counter == 8'hFF);
-
 
 endmodule : cpu_ooo

@@ -479,6 +479,31 @@ async def test_forward_size_mismatch(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 15b: Disjoint halfwords in same word do not conflict
+# ============================================================================
+@cocotb.test()
+async def test_forward_disjoint_halfwords_no_match(dut: Any) -> None:
+    """SH at addr, LH at addr+2 → no match because byte lanes do not overlap."""
+    dut_if, model = await setup(dut)
+
+    await alloc_addr_data(
+        dut_if, model, rob_tag=3, address=0x2000, data=0x1234, size=MEM_SIZE_HALF
+    )
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=0x2002, rob_tag=5, size=MEM_SIZE_HALF)
+    await Timer(1, unit="ns")
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "All older addrs should be known"
+    assert not fwd.match, "Disjoint halfwords in the same word should not conflict"
+    assert not fwd.can_forward, "No match means no forward either"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
 # Test 16: Forwarding - newer store overwrites older
 # ============================================================================
 @cocotb.test()

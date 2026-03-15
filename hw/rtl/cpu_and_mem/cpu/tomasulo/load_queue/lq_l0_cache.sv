@@ -86,12 +86,32 @@ module lq_l0_cache #(
 
   wire  [IndexWidth-1:0] inv_index = i_invalidate_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] inv_tag = i_invalidate_addr[(2+IndexWidth)+:TagWidth];
+  logic                  invalidate_fill_entry;
+  logic                  invalidate_existing_entry;
+  logic                  lookup_hit_array;
+  logic                  lookup_fill_bypass;
+  logic                  lookup_invalidated;
 
   // ===========================================================================
   // Combinational Lookup
   // ===========================================================================
-  assign o_lookup_hit  = valid[lookup_index] && (tags[lookup_index] == lookup_tag) && !lookup_mmio;
-  assign o_lookup_data = data[lookup_index];
+  assign invalidate_fill_entry =
+      i_invalidate_valid && i_fill_valid &&
+      (fill_index == inv_index) && (fill_tag == inv_tag);
+  assign invalidate_existing_entry =
+      i_invalidate_valid &&
+      valid[inv_index] &&
+      (tags[inv_index] == inv_tag) &&
+      !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
+  assign lookup_hit_array = valid[lookup_index] && (tags[lookup_index] == lookup_tag);
+  assign lookup_fill_bypass =
+      i_fill_valid && (fill_index == lookup_index) && (fill_tag == lookup_tag);
+  assign lookup_invalidated =
+      i_invalidate_valid && (inv_index == lookup_index) && (inv_tag == lookup_tag);
+  assign o_lookup_hit = !lookup_mmio &&
+                        (lookup_fill_bypass || lookup_hit_array) &&
+                        !lookup_invalidated;
+  assign o_lookup_data = lookup_fill_bypass ? i_fill_data : data[lookup_index];
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
@@ -110,10 +130,13 @@ module lq_l0_cache #(
       end
 
       // Invalidate (single address).
-      // Suppress when a concurrent fill targets the same index — the fill
-      // takes priority since it writes a fresh tag+data.
-      if (i_invalidate_valid && valid[inv_index] && tags[inv_index] == inv_tag
-          && !(i_fill_valid && fill_index == inv_index)) begin
+      //
+      // A concurrent fill to the same index is only allowed to win when it
+      // replaces a DIFFERENT tag in that direct-mapped slot. If the fill and
+      // invalidate target the same tag, the invalidate must win; otherwise a
+      // load response can reinsert stale data into the cache in the same cycle
+      // that a committed store is trying to invalidate that word.
+      if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
       end
     end

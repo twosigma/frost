@@ -7,24 +7,58 @@ freed when their result is accepted by the CDB arbiter (via `fu_cdb_adapter`).
 ## Architecture
 
 ```
-  Dispatch ──> [Alloc] ──> Tail
-                              |
-  MEM_RS Issue ──> [Addr Update] ──> CAM search by rob_tag
-                              |
-  [Issue Selection] ──> Priority scan head→tail
-      |           |
-   Phase A     Phase B
-   (CDB)       (Memory)
-      |           |
-      |        [SQ Disambig] ──> o_sq_check_* / i_sq_forward
-      |           |
-      |        [Mem Issue] ──> o_mem_read_*
-      |           |
-      |        [Mem Resp] ──> load_unit ──> data capture
-      |           |
-   [CDB Broadcast] ──> o_fu_complete ──> fu_cdb_adapter ──> CDB slot 3
-      |
-  [Free Entry] ──> Head advances
+                            Load Queue Block Diagram
+
+       Dispatch          MEM_RS Issue           Store Queue
+      ┌──────────┐      ┌────────────┐        ┌───────────────────────┐
+      │ i_alloc  │      │addr_update │        │ o_sq_check_* →        │
+      └────┬─────┘      └─────┬──────┘        │ ← i_sq_forward       │
+           │                  │               │ ← i_cache_invalidate  │
+      write @ tail      CAM tag match         └──────────┬────────────┘
+           │                  │                          │
+           ▼                  ▼                     comb scan
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                    DEPTH-Entry Circular Buffer                      │
+  │                                                                     │
+  │  Per-Entry FFs (control / CAM-scanned):                             │
+  │    valid, rob_tag, is_fp, addr_valid, address[31:0], size[1:0]      │
+  │    sign_ext, is_mmio, fp64_phase, issued, data_valid, forwarded     │
+  │    is_lr, is_amo, amo_op[4:0], amo_rs2[31:0]                       │
+  │                                                                     │
+  │  LUTRAM (mwp_dist_ram, 2 write ports, lo/hi split):                 │
+  │    data_lo[31:0]   data_hi[31:0]                                    │
+  │    P0: L0 hit / SQ fwd / mem resp     P1: AMO result                │
+  │                                                                     │
+  │      head_ptr ─────┐                        ┌────── tail_ptr        │
+  │   (4-bit, wrap MSB)│                        │(4-bit, wrap MSB)      │
+  └────────────────────┼────────────────────────┼───────────────────────┘
+            ┌──────────┘                        └───────────┐
+            ▼                                               ▼
+  ┌──────────────────────────────────────────┐   ┌────────────────────┐
+  │  Issue Selection (scan head → tail)      │   │  o_full / o_empty  │
+  │                                          │   │  o_count           │
+  │  Phase A: oldest data_valid              │   └────────────────────┘
+  │    → CDB broadcast (slot 3)              │
+  │    INT: zero-ext   FLW: NaN-box          │   ┌────────────────────┐
+  │    FLD: raw 64-bit                       │   │  L0 Cache (128)    │
+  │                                          │   │  Direct-mapped     │
+  │  Phase B: oldest addr_valid & !issued    │   │  ← mem resp fill   │
+  │    (MMIO/LR/AMO gated to ROB head)      │   │  ← SQ invalidate   │
+  │    → SQ disambig + L0 lookup             │   │  → Phase B fast    │
+  │    → forward / L0 hit / mem / stall      │   │    path bypass     │
+  └────────┬────────────────────┬────────────┘   └────────────────────┘
+           │                    │
+           ▼                    ▼                 ┌────────────────────┐
+  ┌────────────────┐   ┌────────────────────┐     │  LR/SC Reservation │
+  │ fu_cdb_adapter │   │ Memory Interface   │     │  Set on LR done    │
+  │ → CDB slot 3   │   │ o_mem_read_en/addr │     │  Clear on SC/snoop │
+  │                │   │ i_mem_read_data    │     └────────────────────┘
+  │ On broadcast:  │   │ FLD: 2-phase       │
+  │  free entry,   │   │ AMO: read→compute  │     ┌────────────────────┐
+  │  advance head  │   │  →o_amo_mem_write  │     │  Flush Control     │
+  └────────────────┘   └────────────────────┘     │  flush_all → reset │
+                                                  │  flush_en → age    │
+                                                  └────────────────────┘
 ```
 
 ## Storage Strategy

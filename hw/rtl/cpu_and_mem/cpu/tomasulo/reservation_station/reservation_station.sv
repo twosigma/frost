@@ -27,7 +27,7 @@
  *   - Up to 3 source operands (for FMA instructions)
  *   - CDB snoop for operand wakeup with same-cycle dispatch bypass
  *   - Priority-encoder issue selection (lowest index first)
- *   - Immediate bypass: use_imm skips src2 readiness check
+ *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
  *
  * Storage Strategy:

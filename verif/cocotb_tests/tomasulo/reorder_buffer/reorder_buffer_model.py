@@ -127,6 +127,7 @@ class AllocationRequest:
     is_branch: bool = False
     predicted_taken: bool = False
     predicted_target: int = 0
+    branch_target: int = 0
     is_call: bool = False
     is_return: bool = False
     link_addr: int = 0
@@ -339,7 +340,7 @@ class ReorderBufferModel:
         entry.is_fp_store = req.is_fp_store
         entry.is_branch = req.is_branch
         entry.branch_taken = False
-        entry.branch_target = 0
+        entry.branch_target = req.branch_target & MASK32 if req.is_jal else 0
         entry.predicted_taken = req.predicted_taken
         entry.predicted_target = req.predicted_target & MASK32
         entry.mispredicted = False  # Set by branch_update
@@ -368,6 +369,10 @@ class ReorderBufferModel:
         if req.is_jal:
             entry.done = True
             entry.value = req.link_addr & MASK64
+            entry.branch_taken = True
+            entry.mispredicted = (not req.predicted_taken) or (
+                (req.predicted_target & MASK32) != (req.branch_target & MASK32)
+            )
         elif req.is_jalr:
             # JALR: value is link address but not done until branch resolves
             entry.value = req.link_addr & MASK64
