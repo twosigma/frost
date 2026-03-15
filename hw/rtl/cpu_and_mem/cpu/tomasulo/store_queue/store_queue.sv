@@ -703,6 +703,7 @@ module store_queue #(
   // ===========================================================================
   // Simulation Assertions
   // ===========================================================================
+`ifndef SYNTHESIS
 `ifndef FORMAL
   always @(posedge i_clk) begin
     if (i_rst_n) begin
@@ -711,6 +712,7 @@ module store_queue #(
         $warning("SQ: allocation attempted during flush");
     end
   end
+`endif
 `endif
 
 

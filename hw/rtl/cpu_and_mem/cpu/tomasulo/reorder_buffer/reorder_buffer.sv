@@ -203,35 +203,6 @@ module reorder_buffer (
   // ===========================================================================
   // Debug Signals (for verification)
   // ===========================================================================
-  // Expose internal struct field values for debug
-  logic dbg_alloc_valid  /* verilator public_flat_rd */;
-  assign dbg_alloc_valid = i_alloc_req.alloc_valid;
-
-  logic [XLEN-1:0] dbg_alloc_pc  /* verilator public_flat_rd */;
-  assign dbg_alloc_pc = i_alloc_req.pc;
-
-  logic dbg_alloc_is_branch  /* verilator public_flat_rd */;
-  assign dbg_alloc_is_branch = i_alloc_req.is_branch;
-
-  // Allocation condition components
-  logic dbg_alloc_condition  /* verilator public_flat_rd */;
-  assign dbg_alloc_condition = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
-
-  // Raw packed struct debug
-  logic [$bits(
-riscv_pkg::reorder_buffer_alloc_req_t
-)-1:0] dbg_raw_alloc_req  /* verilator public_flat_rd */;
-  assign dbg_raw_alloc_req = i_alloc_req;
-
-  logic dbg_full_signal  /* verilator public_flat_rd */;
-  assign dbg_full_signal = full;
-
-  logic dbg_flush_all  /* verilator public_flat_rd */;
-  assign dbg_flush_all = i_flush_all;
-
-  logic dbg_flush_en  /* verilator public_flat_rd */;
-  assign dbg_flush_en = i_flush_en;
-
   logic [ReorderBufferTagWidth:0] dbg_tail_ptr  /* verilator public_flat_rd */;
   assign dbg_tail_ptr = tail_ptr;
 

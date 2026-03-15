@@ -30,8 +30,8 @@
  * Internal wiring:
  *   ROB.o_commit --> commit_bus --> RAT.i_commit
  *                               --> o_commit (exposed for testbench observation)
- *   i_fu_complete --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
- *                                            --> all RS .i_cdb (broadcast for wakeup)
+ *   FU adapters --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
+ *                                           --> all RS .i_cdb (broadcast for wakeup)
  *   cdb_arbiter.o_grant --> o_cdb_grant (back-pressure to FUs)
  *   LQ.o_sq_check --> SQ.i_sq_check (store-to-load forwarding)
  *   SQ.o_sq_forward --> LQ.i_sq_forward
@@ -55,21 +55,6 @@ module tomasulo_wrapper (
     // =========================================================================
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
-
-    // =========================================================================
-    // FU Completion Requests (to CDB Arbiter)
-    // =========================================================================
-`ifdef VERILATOR
-    input riscv_pkg::fu_complete_t i_fu_complete  [riscv_pkg::NumFus],
-`else
-    input riscv_pkg::fu_complete_t i_fu_complete_0,
-    input riscv_pkg::fu_complete_t i_fu_complete_1,
-    input riscv_pkg::fu_complete_t i_fu_complete_2,
-    input riscv_pkg::fu_complete_t i_fu_complete_3,
-    input riscv_pkg::fu_complete_t i_fu_complete_4,
-    input riscv_pkg::fu_complete_t i_fu_complete_5,
-    input riscv_pkg::fu_complete_t i_fu_complete_6,
-`endif
 
     // =========================================================================
     // CDB Grant (back-pressure to FUs)
@@ -343,53 +328,39 @@ module tomasulo_wrapper (
   riscv_pkg::cdb_broadcast_t cdb_bus;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
-  riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   div_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   mem_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_add_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
 
-`ifdef VERILATOR
-  // Override slots 0-6: internal FU pipelines replace external i_fu_complete.
-  // Slots 4-6 use a priority mux: internal FP adapter takes precedence,
-  // external i_fu_complete falls through when idle (test injection path).
+  // Route internal FU adapter outputs to CDB arbiter inputs.
   riscv_pkg::fu_complete_t cdb_arb_in[riscv_pkg::NumFus];
   always_comb begin
     cdb_arb_in[0] = alu_adapter_to_arbiter;
     cdb_arb_in[1] = mul_adapter_to_arbiter;
     cdb_arb_in[2] = div_adapter_to_arbiter;
     cdb_arb_in[3] = mem_adapter_to_arbiter;
-    cdb_arb_in[4] = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete[4];
-    cdb_arb_in[5] = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete[5];
-    cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete[6];
+    cdb_arb_in[4] = fp_add_adapter_to_arbiter;
+    cdb_arb_in[5] = fp_mul_adapter_to_arbiter;
+    cdb_arb_in[6] = fp_div_adapter_to_arbiter;
   end
 
   cdb_arbiter u_cdb_arbiter (
-      .i_clk        (i_clk),
-      .i_rst_n      (i_rst_n),
-      .i_fu_complete(cdb_arb_in),
-      .o_cdb        (cdb_bus),
-      .o_grant      (o_cdb_grant)
-  );
-`else
-  // Individual flattened ports
-  // Slots 0-2 come from internal FU pipelines; slots 3-6 from external ports
-  cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
       .i_rst_n        (i_rst_n),
-      .i_fu_complete_0(alu_adapter_to_arbiter),
-      .i_fu_complete_1(mul_adapter_to_arbiter),
-      .i_fu_complete_2(div_adapter_to_arbiter),
-      .i_fu_complete_3(mem_adapter_to_arbiter),
-      .i_fu_complete_4(fp_add_adapter_to_arbiter),
-      .i_fu_complete_5(fp_mul_adapter_to_arbiter),
-      .i_fu_complete_6(fp_div_adapter_to_arbiter),
+      .i_fu_complete_0(cdb_arb_in[0]),
+      .i_fu_complete_1(cdb_arb_in[1]),
+      .i_fu_complete_2(cdb_arb_in[2]),
+      .i_fu_complete_3(cdb_arb_in[3]),
+      .i_fu_complete_4(cdb_arb_in[4]),
+      .i_fu_complete_5(cdb_arb_in[5]),
+      .i_fu_complete_6(cdb_arb_in[6]),
       .o_cdb          (cdb_bus),
       .o_grant        (o_cdb_grant)
   );
-`endif
 
   // Expose CDB broadcast for testbench observation
   assign o_cdb = cdb_bus;

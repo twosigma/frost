@@ -135,11 +135,11 @@ module reservation_station #(
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = i_dispatch.mem_size;
-  wire                                              dispatch_mem_signed = i_dispatch.mem_signed;
-  wire                  [                     11:0] dispatch_csr_addr = i_dispatch.csr_addr;
-  wire                  [                      4:0] dispatch_csr_imm = i_dispatch.csr_imm;
-  wire                  [                 XLEN-1:0] dispatch_pc = i_dispatch.pc;
-  wire                  [                 XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
+  wire dispatch_mem_signed = i_dispatch.mem_signed;
+  wire [11:0] dispatch_csr_addr = i_dispatch.csr_addr;
+  wire [4:0] dispatch_csr_imm = i_dispatch.csr_imm;
+  wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
+  wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
 
   // ===========================================================================
   // Issue Output Intermediates
@@ -147,39 +147,25 @@ module reservation_station #(
   // Set in the always_comb block below; assigned to output ports via
   // struct pack into o_issue.
 
-  logic                                             issue_out_valid;
-  logic                 [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
-  riscv_pkg::instr_op_e                             issue_out_op;
-  logic                 [                 FLEN-1:0] issue_out_src1_value;
-  logic                 [                 FLEN-1:0] issue_out_src2_value;
-  logic                 [                 FLEN-1:0] issue_out_src3_value;
-  logic                 [                 XLEN-1:0] issue_out_imm;
-  logic                                             issue_out_use_imm;
-  logic                 [                      2:0] issue_out_rm;
-  logic                 [                 XLEN-1:0] issue_out_branch_target;
-  logic                                             issue_out_predicted_taken;
-  logic                 [                 XLEN-1:0] issue_out_predicted_target;
-  logic                                             issue_out_is_fp_mem;
-  riscv_pkg::mem_size_e                             issue_out_mem_size;
-  logic                                             issue_out_mem_signed;
-  logic                 [                     11:0] issue_out_csr_addr;
-  logic                 [                      4:0] issue_out_csr_imm;
-  logic                 [                 XLEN-1:0] issue_out_pc;
-  logic                 [                 XLEN-1:0] issue_out_link_addr;
-
-  // ===========================================================================
-  // Debug Signals (for verification -- Verilator only)
-  // ===========================================================================
-`ifdef VERILATOR
-  logic dbg_dispatch_valid  /* verilator public_flat_rd */;
-  assign dbg_dispatch_valid = dispatch_valid;
-
-  logic dbg_issue_valid  /* verilator public_flat_rd */;
-  assign dbg_issue_valid = issue_out_valid;
-
-  logic dbg_full  /* verilator public_flat_rd */;
-  assign dbg_full = full;
-`endif
+  logic issue_out_valid;
+  logic [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
+  riscv_pkg::instr_op_e issue_out_op;
+  logic [FLEN-1:0] issue_out_src1_value;
+  logic [FLEN-1:0] issue_out_src2_value;
+  logic [FLEN-1:0] issue_out_src3_value;
+  logic [XLEN-1:0] issue_out_imm;
+  logic issue_out_use_imm;
+  logic [2:0] issue_out_rm;
+  logic [XLEN-1:0] issue_out_branch_target;
+  logic issue_out_predicted_taken;
+  logic [XLEN-1:0] issue_out_predicted_target;
+  logic issue_out_is_fp_mem;
+  riscv_pkg::mem_size_e issue_out_mem_size;
+  logic issue_out_mem_signed;
+  logic [11:0] issue_out_csr_addr;
+  logic [4:0] issue_out_csr_imm;
+  logic [XLEN-1:0] issue_out_pc;
+  logic [XLEN-1:0] issue_out_link_addr;
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -191,44 +177,44 @@ module reservation_station #(
   //   written once at dispatch, read once at issue (single port each).
 
   // 1-bit packed vectors (for bulk operations)
-  logic [                DEPTH-1:0] rs_valid;
-  logic [                DEPTH-1:0] rs_src1_ready;
-  logic [                DEPTH-1:0] rs_src2_ready;
-  logic [                DEPTH-1:0] rs_src3_ready;
-  logic [                DEPTH-1:0] rs_use_imm;
+  logic [DEPTH-1:0] rs_valid;
+  logic [DEPTH-1:0] rs_src1_ready;
+  logic [DEPTH-1:0] rs_src2_ready;
+  logic [DEPTH-1:0] rs_src3_ready;
+  logic [DEPTH-1:0] rs_use_imm;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
-  logic [ReorderBufferTagWidth-1:0] rs_rob_tag    [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src1_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src1_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src1_tag[DEPTH];
+  logic [FLEN-1:0] rs_src1_value[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src2_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src2_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src2_tag[DEPTH];
+  logic [FLEN-1:0] rs_src2_value[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src3_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src3_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src3_tag[DEPTH];
+  logic [FLEN-1:0] rs_src3_value[DEPTH];
 
   // ===========================================================================
   // Internal Signals
   // ===========================================================================
 
-  logic                             full;
-  logic                             empty;
-  logic [           CountWidth-1:0] count;
+  logic full;
+  logic empty;
+  logic [CountWidth-1:0] count;
 
   // Free entry selection
-  logic [        $clog2(DEPTH)-1:0] free_idx;
-  logic                             free_found;
+  logic [$clog2(DEPTH)-1:0] free_idx;
+  logic free_found;
 
   // Issue selection
-  logic [                DEPTH-1:0] entry_ready;
-  logic [        $clog2(DEPTH)-1:0] issue_idx;
-  logic                             any_ready;
-  logic                             issue_fire;
+  logic [DEPTH-1:0] entry_ready;
+  logic [$clog2(DEPTH)-1:0] issue_idx;
+  logic any_ready;
+  logic issue_fire;
 
   // Dispatch condition
-  logic                             dispatch_fire;
+  logic dispatch_fire;
 
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
