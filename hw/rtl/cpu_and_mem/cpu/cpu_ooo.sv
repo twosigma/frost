@@ -771,6 +771,15 @@ module cpu_ooo #(
 
       .i_frm_csr(frm_csr),
 
+      // FU completion test injection (unused in production)
+      .i_fu_complete_0('0),
+      .i_fu_complete_1('0),
+      .i_fu_complete_2('0),
+      .i_fu_complete_3('0),
+      .i_fu_complete_4('0),
+      .i_fu_complete_5('0),
+      .i_fu_complete_6('0),
+
       // ROB allocation
       .i_alloc_req (rob_alloc_req),
       .o_alloc_resp(rob_alloc_resp),

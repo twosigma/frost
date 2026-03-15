@@ -293,8 +293,8 @@ class TomasuloInterface:
         self._get_fu_signal(fu_index).value = pack_fu_complete(req)
 
     def _get_fu_signal(self, fu_index: int) -> Any:
-        """Get DUT signal for a specific FU complete slot."""
-        return self.dut.i_fu_complete[fu_index]
+        """Get the test-injection port for a specific FU completion slot."""
+        return getattr(self.dut, f"i_fu_complete_{fu_index}")
 
     def clear_fu_complete(self, fu_index: int = FU_FP_ADD) -> None:
         """Clear a single FU completion slot."""
