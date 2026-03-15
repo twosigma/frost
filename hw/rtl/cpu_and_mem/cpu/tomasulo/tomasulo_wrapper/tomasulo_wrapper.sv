@@ -209,63 +209,14 @@ module tomasulo_wrapper (
     // =========================================================================
     // RS Dispatch (from Dispatch)
     // =========================================================================
-`ifdef ICARUS
-    input logic i_rs_dispatch_valid,
-    input logic [2:0] i_rs_dispatch_rs_type,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_rob_tag,
-    input logic [31:0] i_rs_dispatch_op,
-    input logic i_rs_dispatch_src1_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src1_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src1_value,
-    input logic i_rs_dispatch_src2_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src2_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src2_value,
-    input logic i_rs_dispatch_src3_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rs_dispatch_src3_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_rs_dispatch_src3_value,
-    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_imm,
-    input logic i_rs_dispatch_use_imm,
-    input logic [2:0] i_rs_dispatch_rm,
-    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_branch_target,
-    input logic i_rs_dispatch_predicted_taken,
-    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_predicted_target,
-    input logic i_rs_dispatch_is_fp_mem,
-    input logic [1:0] i_rs_dispatch_mem_size,
-    input logic i_rs_dispatch_mem_signed,
-    input logic [11:0] i_rs_dispatch_csr_addr,
-    input logic [4:0] i_rs_dispatch_csr_imm,
-    input logic [riscv_pkg::XLEN-1:0] i_rs_dispatch_pc,
-`else
     input riscv_pkg::rs_dispatch_t i_rs_dispatch,
-`endif
     output logic o_rs_full,
 
     // =========================================================================
     // RS Issue (to Functional Unit)
     // =========================================================================
-`ifdef ICARUS
-    output logic                                                        o_rs_issue_valid,
-    output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_rs_issue_rob_tag,
-    output logic                 [                                31:0] o_rs_issue_op,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src1_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src2_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_rs_issue_src3_value,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_imm,
-    output logic                                                        o_rs_issue_use_imm,
-    output logic                 [                                 2:0] o_rs_issue_rm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_branch_target,
-    output logic                                                        o_rs_issue_predicted_taken,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_predicted_target,
-    output logic                                                        o_rs_issue_is_fp_mem,
-    output logic                 [                                 1:0] o_rs_issue_mem_size,
-    output logic                                                        o_rs_issue_mem_signed,
-    output logic                 [                                11:0] o_rs_issue_csr_addr,
-    output logic                 [                                 4:0] o_rs_issue_csr_imm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_rs_issue_pc,
-`else
-    output riscv_pkg::rs_issue_t                                        o_rs_issue,
-`endif
-    input  logic                                                        i_rs_fu_ready,
+    output riscv_pkg::rs_issue_t o_rs_issue,
+    input  logic                 i_rs_fu_ready,
 
     // =========================================================================
     // RS Status (INT_RS)
@@ -423,7 +374,7 @@ module tomasulo_wrapper (
       .o_grant      (o_cdb_grant)
   );
 `else
-  // Icarus / Yosys: connect individual flattened ports
+  // Individual flattened ports
   // Slots 0-2 come from internal FU pipelines; slots 3-6 from external ports
   cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
@@ -457,20 +408,15 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Dispatch Routing: decode rs_type to per-RS dispatch valid signals
   // ===========================================================================
-  logic int_rs_dispatch_valid;
-  logic mul_rs_dispatch_valid;
-  logic mem_rs_dispatch_valid;
-  logic fp_rs_dispatch_valid;
-  logic fmul_rs_dispatch_valid;
-  logic fdiv_rs_dispatch_valid;
+  logic       int_rs_dispatch_valid;
+  logic       mul_rs_dispatch_valid;
+  logic       mem_rs_dispatch_valid;
+  logic       fp_rs_dispatch_valid;
+  logic       fmul_rs_dispatch_valid;
+  logic       fdiv_rs_dispatch_valid;
 
-`ifdef ICARUS
-  wire [2:0] dispatch_rs_type = i_rs_dispatch_rs_type;
-  wire       dispatch_valid = i_rs_dispatch_valid;
-`else
-  wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
-  wire       dispatch_valid = i_rs_dispatch.valid;
-`endif
+  wire  [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
+  wire        dispatch_valid = i_rs_dispatch.valid;
 
   always_comb begin
     int_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
@@ -595,7 +541,7 @@ module tomasulo_wrapper (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_pending_rob_tag;
   logic [riscv_pkg::XLEN-1:0] sc_pending_addr;
   logic mem_rs_next_is_sc;
-  // Forward declaration for ICARUS (assigned in SQ address section below)
+  // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
 
   // Age comparison for SC flush guard (identical to load_queue/reservation_station)
@@ -862,128 +808,7 @@ module tomasulo_wrapper (
   // ---------------------------------------------------------------------------
   // INT_RS (depth 8): Integer ALU ops, branches, CSR
   // ---------------------------------------------------------------------------
-`ifdef ICARUS
-  // Individual port connections -- avoids wide packed struct VPI-facing ports
-  // (Icarus VPI crashes on 352+ bit struct ports; see reservation_station.sv).
-  reservation_station #(
-      .DEPTH(riscv_pkg::IntRsDepth)
-  ) u_int_rs (
-      .i_clk  (i_clk),
-      .i_rst_n(i_rst_n),
-
-      // Dispatch (individual ports)
-      .i_dispatch_valid           (int_rs_dispatch_valid),
-      .i_dispatch_rs_type         (i_rs_dispatch_rs_type),
-      .i_dispatch_rob_tag         (i_rs_dispatch_rob_tag),
-      .i_dispatch_op              (i_rs_dispatch_op),
-      .i_dispatch_src1_ready      (i_rs_dispatch_src1_ready),
-      .i_dispatch_src1_tag        (i_rs_dispatch_src1_tag),
-      .i_dispatch_src1_value      (i_rs_dispatch_src1_value),
-      .i_dispatch_src2_ready      (i_rs_dispatch_src2_ready),
-      .i_dispatch_src2_tag        (i_rs_dispatch_src2_tag),
-      .i_dispatch_src2_value      (i_rs_dispatch_src2_value),
-      .i_dispatch_src3_ready      (i_rs_dispatch_src3_ready),
-      .i_dispatch_src3_tag        (i_rs_dispatch_src3_tag),
-      .i_dispatch_src3_value      (i_rs_dispatch_src3_value),
-      .i_dispatch_imm             (i_rs_dispatch_imm),
-      .i_dispatch_use_imm         (i_rs_dispatch_use_imm),
-      .i_dispatch_rm              (i_rs_dispatch_rm),
-      .i_dispatch_branch_target   (i_rs_dispatch_branch_target),
-      .i_dispatch_predicted_taken (i_rs_dispatch_predicted_taken),
-      .i_dispatch_predicted_target(i_rs_dispatch_predicted_target),
-      .i_dispatch_is_fp_mem       (i_rs_dispatch_is_fp_mem),
-      .i_dispatch_mem_size        (i_rs_dispatch_mem_size),
-      .i_dispatch_mem_signed      (i_rs_dispatch_mem_signed),
-      .i_dispatch_csr_addr        (i_rs_dispatch_csr_addr),
-      .i_dispatch_csr_imm         (i_rs_dispatch_csr_imm),
-      .i_dispatch_pc              (i_rs_dispatch_pc),
-      .o_full                     (int_rs_full_w),
-
-      // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus),
-
-      // Issue (individual ports → internal wires for shim)
-      .o_issue_valid           (o_rs_issue_valid),
-      .o_issue_rob_tag         (o_rs_issue_rob_tag),
-      .o_issue_op              (o_rs_issue_op),
-      .o_issue_src1_value      (o_rs_issue_src1_value),
-      .o_issue_src2_value      (o_rs_issue_src2_value),
-      .o_issue_src3_value      (o_rs_issue_src3_value),
-      .o_issue_imm             (o_rs_issue_imm),
-      .o_issue_use_imm         (o_rs_issue_use_imm),
-      .o_issue_rm              (o_rs_issue_rm),
-      .o_issue_branch_target   (o_rs_issue_branch_target),
-      .o_issue_predicted_taken (o_rs_issue_predicted_taken),
-      .o_issue_predicted_target(o_rs_issue_predicted_target),
-      .o_issue_is_fp_mem       (o_rs_issue_is_fp_mem),
-      .o_issue_mem_size        (o_rs_issue_mem_size),
-      .o_issue_mem_signed      (o_rs_issue_mem_signed),
-      .o_issue_csr_addr        (o_rs_issue_csr_addr),
-      .o_issue_csr_imm         (o_rs_issue_csr_imm),
-      .o_issue_pc              (o_rs_issue_pc),
-      .i_fu_ready              (int_rs_fu_ready),
-      .o_next_issue_is_sc      (),                             // unused — no SC ops in INT_RS
-
-      // Flush (shared with ROB)
-      .i_flush_en    (i_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
-
-      // Status
-      .o_empty(o_rs_empty),
-      .o_count(o_rs_count)
-  );
-
-  // ICARUS: Pack individual RS issue outputs into struct for ALU shim.
-  // Internal packed struct wires are fine for Icarus — only VPI-facing ports
-  // of >352 bits cause crashes.
-  always_comb begin
-    int_rs_issue_w.valid            = o_rs_issue_valid;
-    int_rs_issue_w.rob_tag          = o_rs_issue_rob_tag;
-    int_rs_issue_w.op               = riscv_pkg::instr_op_e'(o_rs_issue_op);
-    int_rs_issue_w.src1_value       = o_rs_issue_src1_value;
-    int_rs_issue_w.src2_value       = o_rs_issue_src2_value;
-    int_rs_issue_w.src3_value       = o_rs_issue_src3_value;
-    int_rs_issue_w.imm              = o_rs_issue_imm;
-    int_rs_issue_w.use_imm          = o_rs_issue_use_imm;
-    int_rs_issue_w.rm               = o_rs_issue_rm;
-    int_rs_issue_w.branch_target    = o_rs_issue_branch_target;
-    int_rs_issue_w.predicted_taken  = o_rs_issue_predicted_taken;
-    int_rs_issue_w.predicted_target = o_rs_issue_predicted_target;
-    int_rs_issue_w.is_fp_mem        = o_rs_issue_is_fp_mem;
-    int_rs_issue_w.mem_size         = riscv_pkg::mem_size_e'(o_rs_issue_mem_size);
-    int_rs_issue_w.mem_signed       = o_rs_issue_mem_signed;
-    int_rs_issue_w.csr_addr         = o_rs_issue_csr_addr;
-    int_rs_issue_w.csr_imm          = o_rs_issue_csr_imm;
-    int_rs_issue_w.pc               = o_rs_issue_pc;
-  end
-
-  // ICARUS: other RS types not instantiated (multi-RS integration tests
-  // use Verilator; the RS module itself has standalone Icarus tests).
-  assign mul_rs_full_w   = 1'b0;
-  assign mem_rs_full_w   = 1'b0;
-  assign fp_rs_full_w    = 1'b0;
-  assign fmul_rs_full_w  = 1'b0;
-  assign fdiv_rs_full_w  = 1'b0;
-  assign o_mul_rs_issue  = '0;
-  assign o_mem_rs_issue  = '0;
-  assign o_fp_rs_issue   = '0;
-  assign o_fmul_rs_issue = '0;
-  assign o_fdiv_rs_issue = '0;
-  assign o_mul_rs_empty  = 1'b1;
-  assign o_mem_rs_empty  = 1'b1;
-  assign o_fp_rs_empty   = 1'b1;
-  assign o_fmul_rs_empty = 1'b1;
-  assign o_fdiv_rs_empty = 1'b1;
-  assign o_mul_rs_count  = '0;
-  assign o_mem_rs_count  = '0;
-  assign o_fp_rs_count   = '0;
-  assign o_fmul_rs_count = '0;
-  assign o_fdiv_rs_count = '0;
-  assign mem_rs_next_is_sc = 1'b0;  // MEM_RS not instantiated under ICARUS
-`else
-  // Packed struct port connections (Verilator, synthesis, formal).
+  // Packed struct port connections.
 
   // INT_RS dispatch with routed valid
   riscv_pkg::rs_dispatch_t int_rs_dispatch;
@@ -1181,7 +1006,6 @@ module tomasulo_wrapper (
   assign o_fp_rs_issue   = fp_rs_issue_w;
   assign o_fmul_rs_issue = fmul_rs_issue_w;
   assign o_fdiv_rs_issue = fdiv_rs_issue_w;
-`endif
 
   // ===========================================================================
   // ALU Shim: translate rs_issue_t → ALU → fu_complete_t
@@ -1260,60 +1084,6 @@ module tomasulo_wrapper (
       .i_rob_head_tag  (head_tag)
   );
 
-`ifdef ICARUS
-  // Under Icarus, MEM_RS is stubbed and LQ is not instantiated.
-  // Slot 3 reverts to external i_fu_complete_3 (handled by CDB arbiter wiring).
-  assign mem_adapter_to_arbiter = i_fu_complete_3;
-  assign mem_adapter_result_pending = 1'b0;
-  assign lq_fu_complete = '0;
-  assign o_lq_full = 1'b0;
-  assign o_lq_empty = 1'b1;
-  assign o_lq_count = '0;
-  assign o_lq_mem_read_en = 1'b0;
-  assign o_lq_mem_read_addr = '0;
-  assign o_lq_mem_read_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
-  assign o_sq_full = 1'b0;
-  assign o_sq_empty = 1'b1;
-  assign o_sq_count = '0;
-  assign o_sq_mem_write_en = 1'b0;
-  assign o_sq_mem_write_addr = '0;
-  assign o_sq_mem_write_data = '0;
-  assign o_sq_mem_write_byte_en = '0;
-
-  // Internal SQ<->LQ wires: stub to defaults under Icarus
-  assign sq_check_valid = 1'b0;
-  assign sq_check_addr = '0;
-  assign sq_check_rob_tag = '0;
-  assign sq_check_size = riscv_pkg::MEM_SIZE_WORD;  // verilog_lint: waive parameter-name-style
-  assign sq_all_older_addrs_known = 1'b1;
-  assign sq_forward = '0;
-  assign sq_cache_invalidate_valid = 1'b0;
-  assign sq_cache_invalidate_addr = '0;
-  assign lq_reservation_valid = 1'b0;
-  assign lq_reservation_addr = '0;
-  assign sq_committed_empty = 1'b1;
-  assign o_amo_mem_write_en = 1'b0;
-  assign o_amo_mem_write_addr = '0;
-  assign o_amo_mem_write_data = '0;
-
-  // Under Icarus, FP_RS/FMUL_RS/FDIV_RS are stubbed (no FP shims).
-  // Slots 4-6 revert to external i_fu_complete_4/5/6.
-  assign fp_add_adapter_to_arbiter = i_fu_complete_4;
-  assign fp_add_adapter_result_pending = 1'b0;
-  assign fp_add_shim_out = '0;
-  assign fp_add_busy = 1'b0;
-  assign fp_mul_adapter_to_arbiter = i_fu_complete_5;
-  assign fp_mul_adapter_result_pending = 1'b0;
-  assign fp_mul_shim_out = '0;
-  assign fp_mul_busy = 1'b0;
-  assign fp_div_adapter_to_arbiter = i_fu_complete_6;
-  assign fp_div_adapter_result_pending = 1'b0;
-  assign fp_div_shim_out = '0;
-  assign fp_div_busy = 1'b0;
-  assign fp_rs_issue_w = '0;
-  assign fmul_rs_issue_w = '0;
-  assign fdiv_rs_issue_w = '0;
-`else
   // ===========================================================================
   // Load Queue: Allocation from Dispatch
   // ===========================================================================
@@ -1692,7 +1462,6 @@ module tomasulo_wrapper (
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
-`endif
 
 
   // ===========================================================================

@@ -177,7 +177,7 @@ module int_muldiv_shim (
       .o_completing_next_cycle(mul_completing_next_cycle)
   );
 
-  // mul_tag_reg and mul_op_reg declared above (forward declaration for ICARUS)
+  // mul_tag_reg and mul_op_reg declared above (forward declaration)
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin

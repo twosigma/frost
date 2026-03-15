@@ -48,7 +48,7 @@ Constrained Random Tests:
 Usage:
     cd frost/tests
     make clean
-    ./test_run_cocotb.py --sim verilator register_alias_table
+    ./test_run_cocotb.py register_alias_table
 """
 
 import cocotb

@@ -2208,8 +2208,6 @@ tomasulo/
 
 Current integration notes:
 - The same `reservation_station.sv` module is reused for INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, and FDIV_RS with per-instance depth and dispatch routing in `tomasulo_wrapper.sv`.
-- Under `ICARUS`, `tomasulo_wrapper.sv` intentionally instantiates only INT_RS and ties off other RS outputs to avoid known wide packed-struct VPI limitations in Icarus. Full 6-RS integration testing uses Verilator.
-
 ---
 
 ## Implementation Schedule (14 Weeks)

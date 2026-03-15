@@ -67,7 +67,7 @@ Non-Interference & Additional Coverage Tests:
 Usage:
     cd frost/tests
     make clean
-    ./test_run_cocotb.py --sim verilator reorder_buffer
+    ./test_run_cocotb.py reorder_buffer
 """
 
 import cocotb
