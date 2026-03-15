@@ -390,6 +390,7 @@ ROB_ALLOC_REQ_FIELDS = [
     ("is_branch", 1),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
+    ("branch_target", XLEN),
     ("is_call", 1),
     ("is_return", 1),
     ("link_addr", XLEN),
@@ -498,6 +499,7 @@ RS_DISPATCH_FIELDS = [
     ("csr_addr", 12),
     ("csr_imm", 5),
     ("pc", XLEN),
+    ("link_addr", XLEN),
 ]
 
 RS_DISPATCH_WIDTH = sum(w for _, w in RS_DISPATCH_FIELDS)

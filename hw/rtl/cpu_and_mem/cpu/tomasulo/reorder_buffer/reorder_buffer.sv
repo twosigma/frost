@@ -320,6 +320,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
   logic [11:0] head_csr_addr;
   logic [2:0] head_csr_op;
   logic [XLEN-1:0] head_csr_write_data;
+  logic [XLEN-1:0] head_fallthrough_pc;
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
@@ -390,6 +391,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
   assign head_has_fp_flags = rob_has_fp_flags[head_idx];
   logic head_link_is_compressed;
   assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 32'd2));
+  assign head_fallthrough_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done;
@@ -418,7 +420,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
   end
 
   logic [XLEN-1:0] alloc_branch_target_data;
-  assign alloc_branch_target_data = i_alloc_req.is_jal ? i_alloc_req.predicted_target : '0;
+  assign alloc_branch_target_data = i_alloc_req.is_jal ? i_alloc_req.branch_target : '0;
 
   logic [CheckpointIdWidth-1:0] alloc_checkpoint_id_data;
   assign alloc_checkpoint_id_data = (i_checkpoint_valid && i_alloc_req.is_branch) ?
@@ -752,13 +754,14 @@ riscv_pkg::reorder_buffer_alloc_req_t
         rob_branch_taken[tail_idx]    <= 1'b0;
         rob_mispredicted[tail_idx]    <= 1'b0;
 
-        // JAL: value (link address) is known at dispatch but misprediction
-        // status requires the branch_update from the ALU.  Mark done=0 here
-        // and let the branch_update mark it done (same as JALR/conditional).
+        // JAL has fully known link/target information at allocation time.
+        // JALR and conditional branches still wait for branch resolution.
         if (i_alloc_req.is_jal) begin
-          rob_done[tail_idx]         <= 1'b0;
+          rob_done[tail_idx] <= 1'b1;
           // For JAL, branch is always taken with known target
           rob_branch_taken[tail_idx] <= 1'b1;
+          rob_mispredicted[tail_idx] <= !i_alloc_req.predicted_taken ||
+                                        (i_alloc_req.predicted_target != i_alloc_req.branch_target);
         end else if (i_alloc_req.is_jalr) begin
           // JALR: target unknown until execute, but link addr is known
           rob_done[tail_idx] <= 1'b0;
@@ -1033,42 +1036,46 @@ riscv_pkg::reorder_buffer_alloc_req_t
       o_commit.checkpoint_id = head_checkpoint_id;
       // Redirect PC:
       // - MRET: redirect to mepc
-      // - Mispredicted taken: redirect to branch_target (actual taken target)
-      // - Mispredicted not-taken: redirect to saved fall-through/link addr
+      // - Taken branch/jump: redirect to resolved target
+      // - Not-taken branch: redirect to architectural fall-through
       if (head_is_mret) begin
         // i_mepc is guaranteed stable here: the MRET handshake
         // (o_mret_start/i_mret_done) completes before commit_en asserts,
         // so the trap unit has finished updating mepc by this point.
         o_commit.redirect_pc = i_mepc;
-      end else if (head_branch_taken) begin
-        // Mispredicted as not-taken but actually taken -> go to taken target
-        o_commit.redirect_pc = head_branch_target;
-      end else begin
-        // Mispredicted as taken but actually not-taken -> go to saved fall-through
-        o_commit.redirect_pc = head_value[XLEN-1:0];
+      end else if (head_is_branch) begin
+        if (head_branch_taken) begin
+          o_commit.redirect_pc = head_branch_target;
+        end else begin
+          o_commit.redirect_pc = head_fallthrough_pc;
+        end
       end
 
       // Branch info (for BTB update and RAS restore at commit)
-      o_commit.branch_taken   = head_branch_taken;
-      o_commit.branch_target  = head_branch_target;
-      o_commit.is_call        = head_is_call;
-      o_commit.is_return      = head_is_return;
+      o_commit.predicted_taken = head_predicted_taken;
+      o_commit.branch_taken    = head_branch_taken;
+      o_commit.branch_target   = head_branch_target;
+      o_commit.is_branch       = head_is_branch;
+      o_commit.is_call         = head_is_call;
+      o_commit.is_return       = head_is_return;
+      o_commit.is_jal          = head_is_jal;
+      o_commit.is_jalr         = head_is_jalr;
 
       // CSR info (for commit-time serialized CSR execution)
-      o_commit.csr_addr       = head_csr_addr;
-      o_commit.csr_op         = head_csr_op;
-      o_commit.csr_write_data = head_csr_write_data;
+      o_commit.csr_addr        = head_csr_addr;
+      o_commit.csr_op          = head_csr_op;
+      o_commit.csr_write_data  = head_csr_write_data;
 
       // Serializing instruction flags (for external units)
-      o_commit.is_csr         = head_is_csr;
-      o_commit.is_fence       = head_is_fence;
-      o_commit.is_fence_i     = head_is_fence_i;
-      o_commit.is_wfi         = head_is_wfi;
-      o_commit.is_mret        = head_is_mret;
-      o_commit.is_amo         = head_is_amo;
-      o_commit.is_lr          = head_is_lr;
-      o_commit.is_sc          = head_is_sc;
-      o_commit.is_compressed  = head_is_branch ? head_link_is_compressed : head_is_compressed;
+      o_commit.is_csr          = head_is_csr;
+      o_commit.is_fence        = head_is_fence;
+      o_commit.is_fence_i      = head_is_fence_i;
+      o_commit.is_wfi          = head_is_wfi;
+      o_commit.is_mret         = head_is_mret;
+      o_commit.is_amo          = head_is_amo;
+      o_commit.is_lr           = head_is_lr;
+      o_commit.is_sc           = head_is_sc;
+      o_commit.is_compressed   = head_is_branch ? head_link_is_compressed : head_is_compressed;
     end
   end
 
@@ -1137,6 +1144,7 @@ riscv_pkg::reorder_buffer_alloc_req_t
   end
 
 `endif  // FORMAL
+
 `endif  // SYNTHESIS
 
   // ===========================================================================

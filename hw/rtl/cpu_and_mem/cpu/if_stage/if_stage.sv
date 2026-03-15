@@ -110,6 +110,7 @@ module if_stage #(
   logic disable_branch_prediction_effective;  // Also suppress predictions
                                               // during pending halfword redirect handoff
   logic sel_prediction_r;  // Select registered prediction target
+  logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
 
   // RAS (Return Address Stack) signals
@@ -131,7 +132,11 @@ module if_stage #(
   logic any_holdoff;  // Any holdoff condition active
   logic any_holdoff_safe;  // Safe holdoff (registered signals only)
   logic mid_32bit_correction;  // Correction for 32-bit at halfword boundary
+  logic pending_prediction_active;  // pc_reg still walking old-path instructions
+  logic pending_prediction_target_handoff;  // Old-path branch consumed, pc_reg jumps to target
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
+  logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
+  logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -221,8 +226,13 @@ module if_stage #(
   // When branch is taken, pc_controller selects branch_target, so is_32bit_spanning
   // value doesn't affect PC. Any spurious spanning state gets cleared on next cycle
   // via control_flow_holdoff (which is in any_holdoff_safe checked by c_ext_state).
+  // The pending halfword-target bubble is still returning old-path BRAM data.
+  // Suppress spanning detection there so a stale upper parcel cannot seed the
+  // spanning FSM for the real halfword target instruction on the next cycle.
   assign is_32bit_spanning = pc_reg[1] && !is_compressed_for_buffer &&
                              !spanning_in_progress &&
+                             !pending_prediction_active &&
+                             !pending_prediction_target_holdoff &&
                              !control_flow_holdoff && !reset_holdoff &&
                              !spanning_to_halfword_registered;
 
@@ -252,6 +262,7 @@ module if_stage #(
   logic [XLEN-1:0] instruction_pc_sc;
   logic [XLEN-1:0] link_address_sc;
   logic            prediction_from_buffer_holdoff;
+  logic            prediction_used_from_buffer;
 
   assign sel_spanning_effective = use_saved_values ? sel_spanning_saved : sel_spanning;
   assign ras_spanning_instr = spanning_instr_sc;
@@ -260,6 +271,7 @@ module if_stage #(
   assign ras_raw_parcel = sel_spanning_effective ? ras_spanning_instr[15:0] : raw_parcel_sc;
   assign ras_is_compressed = sel_spanning_effective ? 1'b0 :
                              (use_saved_values ? is_compressed_for_buffer : is_compressed);
+  assign prediction_used_from_buffer = prediction_used && use_instr_buffer;
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -269,6 +281,7 @@ module if_stage #(
       // or return can arm a pending redirect that survives long enough to fight
       // with the older instruction's eventual mispredict recovery.
       .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -292,6 +305,7 @@ module if_stage #(
       .i_btb_update_target(i_from_ex_comb.btb_update_target),
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
+      .i_btb_update_requires_pc_reg_handoff(i_from_ex_comb.btb_update_requires_pc_reg_handoff),
 
       // RAS inputs (instruction for call/return detection)
       // CRITICAL: Use saved instruction data during stall_registered. After multi-cycle
@@ -320,6 +334,8 @@ module if_stage #(
       .i_ras_restore_tos(i_from_ex_comb.ras_restore_tos),
       .i_ras_restore_valid_count(i_from_ex_comb.ras_restore_valid_count),
       .i_ras_pop_after_restore(i_from_ex_comb.ras_pop_after_restore),
+      .i_ras_push_after_restore(i_from_ex_comb.ras_push_after_restore),
+      .i_ras_push_address_after_restore(i_from_ex_comb.ras_push_address_after_restore),
 
       // Combinational prediction outputs (for pc_controller)
       .o_predicted_taken (btb_predicted_taken),
@@ -334,6 +350,7 @@ module if_stage #(
       .o_prediction_holdoff(prediction_holdoff),
       .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
+      .o_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
 
       // RAS prediction outputs
@@ -352,6 +369,7 @@ module if_stage #(
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -379,8 +397,11 @@ module if_stage #(
       .i_prediction_used(prediction_used),
       .i_ras_predicted(ras_predicted),
       .i_sel_prediction_r(sel_prediction_r),
+      .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
+      .i_prediction_used_from_buffer(prediction_used_from_buffer),
+      .i_sel_nop(sel_nop),
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
@@ -392,7 +413,11 @@ module if_stage #(
       .o_any_holdoff(any_holdoff),
       .o_any_holdoff_safe(any_holdoff_safe),
       .o_mid_32bit_correction(mid_32bit_correction),
-      .o_pending_prediction_holdoff(pending_prediction_holdoff)
+      .o_pending_prediction_active(pending_prediction_active),
+      .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
+      .o_pending_prediction_holdoff(pending_prediction_holdoff),
+      .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
+      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff)
   );
 
   // ===========================================================================
@@ -414,13 +439,18 @@ module if_stage #(
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_reset_state(prediction_reset_c_ext),
+      .i_pending_prediction_active(pending_prediction_active),
+      .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
+      .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       .i_effective_instr(effective_instr),
+      .i_pc(pc),
       .i_pc_reg(pc_reg),
 
       .i_is_compressed(is_compressed),
       .i_is_32bit_spanning(is_32bit_spanning),
+      .i_sel_nop(sel_nop),
 
       .o_spanning_wait_for_fetch(spanning_wait_for_fetch),
       .o_spanning_in_progress(spanning_in_progress),
@@ -509,9 +539,13 @@ module if_stage #(
   // Word-aligned redirects are not exempt: they can still pair a correct new
   // PC with old-path bytes, which later poison the C-extension/buffer state.
   // Keep the prediction path special-cased through prediction_holdoff so BTB
-  // hits still deliver the predicted branch instruction itself.
-  assign sel_nop = sel_nop_align || reset_holdoff ||
-                   pending_prediction_holdoff ||
+  // hits still deliver the predicted branch instruction itself. This applies
+  // both to the generic control-flow holdoff and to pending halfword-prediction
+  // holdoff in pc_controller: the cycle after a BTB redirect is when the
+  // predicted branch instruction itself arrives from BRAM.
+  assign sel_nop = i_pipeline_ctrl.flush || sel_nop_align || reset_holdoff ||
+                   pending_prediction_target_holdoff ||
+                   (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff && !prediction_holdoff);
 
   // ===========================================================================
@@ -608,7 +642,7 @@ module if_stage #(
     end else if (!i_pipeline_ctrl.stall) begin
       // Set when prediction happens while using buffered instruction.
       // Next cycle's instruction data will be stale and needs suppression.
-      prediction_from_buffer_holdoff <= prediction_used && use_instr_buffer;
+      prediction_from_buffer_holdoff <= prediction_used_from_buffer;
     end
   end
 
@@ -787,8 +821,9 @@ module if_stage #(
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
 
       // Registered prediction from branch_prediction_controller
-      .i_prediction_used_r (prediction_used_r),
+      .i_prediction_used_r(prediction_used_r),
       .i_predicted_target_r(btb_predicted_target_r),
+      .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
 
       // Instruction type signals
       .i_sel_nop(sel_nop),
@@ -806,6 +841,5 @@ module if_stage #(
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
-
 
 endmodule : if_stage

@@ -106,18 +106,23 @@ module cpu_and_mem #(
   // CPU interface signals
   logic [31:0] program_counter, instruction;
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
-  logic                  [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
-  logic                  [31:0] mmio_read_data_comb;
-  logic                  [31:0] mmio_read_data_reg;
-  logic                         mmio_read_data_valid;
-  logic                         mmio_load_is_mmio;
-  logic                  [31:0] mmio_load_addr;
-  logic                         mmio_load_valid;
-  logic                  [31:0] data_memory_read_data;  // From RAM only
-  logic                  [31:0] data_memory_address_registered;  // Delayed for read data alignment
-  logic                  [ 3:0] data_memory_byte_write_enable;
-  logic                         data_memory_read_enable;
-  logic                         mmio_read_pulse;
+  logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
+  logic [31:0] mmio_read_data_comb;
+  logic [31:0] mmio_read_data_reg;
+  logic        mmio_read_data_valid;
+  logic        mmio_load_is_mmio;
+  logic [31:0] mmio_load_addr;
+  logic        mmio_load_valid;
+  logic [31:0] data_memory_read_data;  // From RAM only
+  logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
+  logic [ 3:0] data_memory_byte_write_enable;
+  logic        data_memory_read_enable;
+  logic        mmio_read_pulse;
+`ifndef SYNTHESIS
+  logic [31:0] data_memory_store_last_addr;
+  localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
+  localparam logic [31:0] CoremarkListNodeHi = 32'h0001_f910;
+`endif
 
   // Timer registers (CLINT-style)
   logic                  [63:0] mtime;  // Machine time counter
@@ -230,8 +235,10 @@ module cpu_and_mem #(
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
   logic [3:0] data_memory_byte_write_enable_registered;
+  logic       data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
+    data_memory_read_enable_registered <= i_rst ? 1'b0 : data_memory_read_enable;
     data_memory_byte_write_enable_registered <= i_rst ? '0 : data_memory_byte_write_enable;
     data_memory_write_data_registered <= data_memory_write_data;
   end

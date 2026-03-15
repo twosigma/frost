@@ -29,6 +29,7 @@ from typing import Any
 from collections.abc import Mapping
 
 import pytest
+import cocotb
 
 # Simulators to test in CI
 CI_SIMULATORS = ["icarus", "verilator"]
@@ -48,6 +49,7 @@ class CocotbRunConfig:
     app_name: str | None = None  # Application name (compiled on demand)
     description: str = ""
     supported_simulators: tuple[str, ...] | None = None  # None means all simulators
+    include_in_pytest: bool = True
 
 
 # CPU testbench tests (multiple modules combined)
@@ -283,7 +285,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)
-REAL_PROGRAM_TESTS = [name for name in TEST_REGISTRY if name != "cpu"]
+REAL_PROGRAM_TESTS = [
+    name
+    for name, config in TEST_REGISTRY.items()
+    if name != "cpu" and config.include_in_pytest
+]
 
 
 # =============================================================================
@@ -449,11 +455,18 @@ class CocotbRunner:
             True if rebuild needed (toplevel changed), False for incremental build.
         """
         toplevel_marker = sim_build_dir / ".last_toplevel"
+        cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
         verilator_binary = sim_build_dir / "Vtop"
+        cocotb_libs_dir = str(
+            (Path(cocotb.__file__).resolve().parent / "libs").resolve()
+        )
 
-        # If sim_build exists with a binary but no marker, force rebuild
-        # (this handles stale state from before marker tracking was added)
-        if verilator_binary.exists() and not toplevel_marker.exists():
+        # If sim_build exists with a binary but no marker, force rebuild.
+        # This handles stale state from before marker tracking was added or
+        # before cocotb/Python environment changes were tracked.
+        if verilator_binary.exists() and (
+            not toplevel_marker.exists() or not cocotb_libs_marker.exists()
+        ):
             return True
 
         if not toplevel_marker.exists():
@@ -461,15 +474,47 @@ class CocotbRunner:
 
         try:
             last_toplevel = toplevel_marker.read_text().strip()
-            return last_toplevel != self.hdl_toplevel_module
+            last_cocotb_libs = cocotb_libs_marker.read_text().strip()
+            return (
+                last_toplevel != self.hdl_toplevel_module
+                or last_cocotb_libs != cocotb_libs_dir
+            )
         except OSError:
             return False
 
     def _update_verilator_toplevel_marker(self, sim_build_dir: Path) -> None:
-        """Record the current toplevel for future incremental build checks."""
+        """Record the current build environment for future incremental checks."""
         sim_build_dir.mkdir(exist_ok=True)
         toplevel_marker = sim_build_dir / ".last_toplevel"
+        cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
         toplevel_marker.write_text(self.hdl_toplevel_module)
+        cocotb_libs_marker.write_text(
+            str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
+        )
+
+    def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
+        """Return True when the existing Verilator build dir can be rebuilt in place."""
+        if not sim_build_dir.exists():
+            return True
+        if not os.access(sim_build_dir, os.W_OK):
+            return False
+        for path in (
+            sim_build_dir / "Vtop",
+            sim_build_dir / ".last_toplevel",
+            sim_build_dir / ".last_cocotb_libs",
+        ):
+            if path.exists() and not os.access(path, os.W_OK):
+                return False
+        return True
+
+    def _fallback_verilator_build_dir(self) -> Path:
+        """Create a user-writable temporary Verilator build directory."""
+        prefix = f"{self.hdl_toplevel_module}_"
+        if self.app_name:
+            prefix = f"{self.app_name}_"
+        return Path(
+            tempfile.mkdtemp(prefix=prefix + "sim_build_", dir=tempfile.gettempdir())
+        )
 
     def run_simulation(
         self, check: bool = True, capture_output: bool = True
@@ -493,6 +538,15 @@ class CocotbRunner:
             needs_clean = simulator != "verilator" or self._verilator_needs_rebuild(
                 sim_build_dir
             )
+
+            if (
+                simulator == "verilator"
+                and needs_clean
+                and not self._verilator_build_dir_writable(sim_build_dir)
+            ):
+                sim_build_dir = self._fallback_verilator_build_dir()
+                env["SIM_BUILD"] = str(sim_build_dir)
+                needs_clean = False
 
             if needs_clean:
                 # Don't fail on clean errors (e.g., permission denied on root-owned files)

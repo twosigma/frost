@@ -286,7 +286,271 @@ async def test_jal_link(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: busy is always 0 (ALU is single-cycle)
+# Test 9: SEXT_H sign-extends low 16 bits
+# ============================================================================
+@cocotb.test()
+async def test_sext_h(dut: Any) -> None:
+    """SEXT_H: sign-extend low halfword to 32 bits."""
+    iface = await setup(dut)
+
+    rob_tag = 8
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("SEXT_H"),
+        src1_value=0x0000_8001,
+        src2_value=0,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0xFFFF_8001
+    ), f"Expected 0xFFFF8001, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 10: PACK implements zext.h when rs2=x0
+# ============================================================================
+@cocotb.test()
+async def test_pack_zext_h(dut: Any) -> None:
+    """PACK with rs2=0 behaves like zext.h on RV32."""
+    iface = await setup(dut)
+
+    rob_tag = 9
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("PACK"),
+        src1_value=0xAABB_CCDD,
+        src2_value=0,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0x0000_CCDD
+    ), f"Expected 0x0000CCDD, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 11: SH2ADD computes rs2 + (rs1 << 2)
+# ============================================================================
+@cocotb.test()
+async def test_sh2add(dut: Any) -> None:
+    """SH2ADD: rs2 + (rs1 << 2)."""
+    iface = await setup(dut)
+
+    rob_tag = 10
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("SH2ADD"),
+        src1_value=3,
+        src2_value=4,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 16, f"Expected 16, got {result['value']}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 12: REV8 reverses byte order
+# ============================================================================
+@cocotb.test()
+async def test_rev8(dut: Any) -> None:
+    """REV8: reverse the order of bytes in the word."""
+    iface = await setup(dut)
+
+    rob_tag = 11
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("REV8"),
+        src1_value=0x1122_3344,
+        src2_value=0,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0x4433_2211
+    ), f"Expected 0x44332211, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 13: BREV8 reverses bits within each byte
+# ============================================================================
+@cocotb.test()
+async def test_brev8(dut: Any) -> None:
+    """BREV8: reverse bits within each byte independently."""
+    iface = await setup(dut)
+
+    rob_tag = 12
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("BREV8"),
+        src1_value=0x0123_4567,
+        src2_value=0,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0x80C4_A2E6
+    ), f"Expected 0x80C4A2E6, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 14: BEXTI extracts a single immediate-selected bit
+# ============================================================================
+@cocotb.test()
+async def test_bexti(dut: Any) -> None:
+    """BEXTI: extract the selected bit into bit 0."""
+    iface = await setup(dut)
+
+    rob_tag = 13
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("BEXTI"),
+        src1_value=0x0000_0080,
+        src2_value=0,
+        imm=7,
+        use_imm=True,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 1, f"Expected 1, got {result['value']}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 15: CZERO.EQZ zeros the value when rs2 is zero
+# ============================================================================
+@cocotb.test()
+async def test_czero_eqz(dut: Any) -> None:
+    """CZERO.EQZ: rd=0 when rs2 == 0, else rd=rs1."""
+    iface = await setup(dut)
+
+    rob_tag = 14
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("CZERO_EQZ"),
+        src1_value=0x1234_5678,
+        src2_value=0,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 0, f"Expected 0, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 16: CZERO.NEZ zeros the value when rs2 is nonzero
+# ============================================================================
+@cocotb.test()
+async def test_czero_nez(dut: Any) -> None:
+    """CZERO.NEZ: rd=0 when rs2 != 0, else rd=rs1."""
+    iface = await setup(dut)
+
+    rob_tag = 15
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("CZERO_NEZ"),
+        src1_value=0x89AB_CDEF,
+        src2_value=5,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == 0, f"Expected 0, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 17: PACK packs low halfwords from rs1 and rs2
+# ============================================================================
+@cocotb.test()
+async def test_pack_general(dut: Any) -> None:
+    """PACK: upper halfword from rs2, lower halfword from rs1."""
+    iface = await setup(dut)
+
+    rob_tag = 16
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("PACK"),
+        src1_value=0xAABB_CCDD,
+        src2_value=0x1122_3344,
+    )
+    await iface.step()
+
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, "Expected valid completion"
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == 0x3344_CCDD
+    ), f"Expected 0x3344CCDD, got 0x{result['value']:08X}"
+    assert result["exception"] is False, "unexpected exception"
+    iface.clear_issue()
+
+
+# ============================================================================
+# Test 18: busy is always 0 (ALU is single-cycle)
 # ============================================================================
 @cocotb.test()
 async def test_never_busy(dut: Any) -> None:
@@ -312,7 +576,7 @@ async def test_never_busy(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: Branch ops (BEQ) produce valid=0 (no writeback)
+# Test 19: Branch ops (BEQ) produce valid=0 (no writeback)
 # ============================================================================
 @cocotb.test()
 async def test_branch_no_valid(dut: Any) -> None:
@@ -321,7 +585,7 @@ async def test_branch_no_valid(dut: Any) -> None:
 
     iface.drive_issue(
         valid=True,
-        rob_tag=9,
+        rob_tag=13,
         op=_op("BEQ"),
         src1_value=42,
         src2_value=42,
@@ -336,14 +600,14 @@ async def test_branch_no_valid(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: CSR read (CSRRS with i_csr_read_data)
+# Test 16: CSR read (CSRRS with i_csr_read_data)
 # ============================================================================
 @cocotb.test()
 async def test_csr_read(dut: Any) -> None:
     """CSRRS: ALU shim passes through src1_value (rs1) for register CSR ops."""
     iface = await setup(dut)
 
-    rob_tag = 10
+    rob_tag = 14
     rs1_val = 0x0000_00A5
 
     iface.drive_issue(

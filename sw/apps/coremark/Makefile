@@ -23,8 +23,20 @@ MABI := ilp32f
 # Default: 11000 iterations for X3 at 300 MHz (~10 second runtime)
 ITERATIONS ?= 11000
 
+# Restore the original stack-backed CoreMark workspace now that the OOO core
+# handles the stack mode correctly again. Keep the setting overridable for
+# targeted reproducer runs.
+COREMARK_MEM_METHOD ?= MEM_STACK
+COREMARK_MEM_LOCATION ?= "STACK"
+
+COREMARK_EXTRA_CFLAGS ?=
+COREMARK_EXTRA_LDFLAGS ?=
+
 # Add ITERATIONS to CFLAGS before including common.mk
-EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1
-EXTRA_LDFLAGS = -lgcc
+EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1 \
+               -DMEM_METHOD=$(COREMARK_MEM_METHOD) \
+               '-DMEM_LOCATION=$(COREMARK_MEM_LOCATION)' \
+               $(COREMARK_EXTRA_CFLAGS)
+EXTRA_LDFLAGS = -lgcc $(COREMARK_EXTRA_LDFLAGS)
 
 include ../../common/common.mk

@@ -731,8 +731,8 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
         op=OP_ADD,
         src1_ready=True,
         src1_value=0x1111,
-        src2_ready=False,
-        src2_tag=15,  # src2 not ready
+        src2_ready=True,
+        src2_tag=0,
         src3_ready=True,
         use_imm=True,
         imm=0x42,
@@ -742,8 +742,8 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
         op=OP_ADD,
         src1_ready=True,
         src1_value=0x1111,
-        src2_ready=False,
-        src2_tag=15,
+        src2_ready=True,
+        src2_tag=0,
         src3_ready=True,
         use_imm=True,
         imm=0x42,
@@ -751,13 +751,13 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Should be ready because use_imm bypasses src2
+    # Dispatch is responsible for marking unused src2 operands ready.
     dut_if.set_fu_ready(True)
     await Timer(1, unit="ps")  # Let combinational logic settle
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
-    check_issue(issue, model_issue, "use_imm bypass")
-    assert issue["valid"], "Should issue with use_imm=1 despite src2 not ready"
+    check_issue(issue, model_issue, "use_imm ready path")
+    assert issue["valid"], "Should issue when dispatch already marked src2 ready"
     assert issue["use_imm"], "use_imm should be set"
     assert issue["imm"] == 0x42, f"imm should be 0x42, got {issue['imm']:#x}"
 
@@ -1094,6 +1094,10 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
     issued_count = 0
 
     for cycle in range(200):
+        # Previous-cycle clears happen after the falling edge, so allow
+        # combinational issue/full/count outputs to settle before sampling.
+        await Timer(1, unit="ps")
+
         # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
@@ -1196,6 +1200,10 @@ async def test_random_with_flush(dut: Any) -> None:
     await Timer(1, unit="ps")  # Let fu_ready propagate
 
     for cycle in range(200):
+        # Previous-cycle clears happen after the falling edge, so allow
+        # combinational issue/full/count outputs to settle before sampling.
+        await Timer(1, unit="ps")
+
         # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count

@@ -139,6 +139,11 @@ module store_queue #(
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
 
+`ifndef SYNTHESIS
+  localparam logic [XLEN-1:0] CoremarkListNodeLo = 32'h0001_f810;
+  localparam logic [XLEN-1:0] CoremarkListNodeHi = 32'h0001_f910;
+`endif
+
   // ===========================================================================
   // Helper Functions
   // ===========================================================================
@@ -336,7 +341,8 @@ module store_queue #(
   //
   // Forwarding rules (conservative):
   //   - can_forward when: exact address match, same size, WORD or DOUBLE, data_valid
-  //   - match (stall) when: word-aligned address overlaps (including DOUBLE +4)
+  //   - match (stall) when: accessed byte lanes overlap within a word
+  //     (including DOUBLE +4 overlap)
   //   - all_older_addrs_known: all older valid entries have addr_valid
 
   // Pre-computed circular scan indices (head-relative order, oldest first)
@@ -360,9 +366,12 @@ module store_queue #(
   // forwarding status from FF-based fields only (no LUTRAM read).
   always_comb begin
     logic [IdxWidth-1:0] idx;
+    logic same_word;
     logic base_match;
     logic double_hi_match;
     logic load_double_hi;
+    logic [3:0] store_byte_mask;
+    logic [3:0] load_byte_mask;
 
     fwd_all_older_known = 1'b1;
     fwd_found_match     = 1'b0;
@@ -372,9 +381,12 @@ module store_queue #(
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       idx             = scan_idx[i];
+      same_word       = 1'b0;
       base_match      = 1'b0;
       double_hi_match = 1'b0;
       load_double_hi  = 1'b0;
+      store_byte_mask = 4'b0000;
+      load_byte_mask  = 4'b0000;
 
       if (sq_valid[idx] && (sq_committed[idx] || is_older_than(
               sq_rob_tag[idx], i_sq_check_rob_tag, i_rob_head_tag
@@ -387,8 +399,14 @@ module store_queue #(
 
         // Check for address overlap
         if (sq_addr_valid[idx]) begin
-          // Word-aligned match: same 32-bit word
-          base_match = (sq_address[idx][XLEN-1:2] == i_sq_check_addr[XLEN-1:2]);
+          same_word = (sq_address[idx][XLEN-1:2] == i_sq_check_addr[XLEN-1:2]);
+          store_byte_mask = gen_byte_en(sq_address[idx][1:0], riscv_pkg::mem_size_e'(sq_size[idx]));
+          load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
+
+          // Non-double accesses only conflict when their byte ranges overlap.
+          base_match = same_word && ((sq_size[idx] == riscv_pkg::MEM_SIZE_DOUBLE) ||
+                       (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
+                       (|(store_byte_mask & load_byte_mask)));
 
           // DOUBLE store: also overlaps at word addr+4
           double_hi_match =
@@ -685,7 +703,6 @@ module store_queue #(
   // ===========================================================================
   // Simulation Assertions
   // ===========================================================================
-`ifndef SYNTHESIS
 `ifndef FORMAL
   always @(posedge i_clk) begin
     if (i_rst_n) begin
@@ -694,7 +711,6 @@ module store_queue #(
         $warning("SQ: allocation attempted during flush");
     end
   end
-`endif
 `endif
 
 

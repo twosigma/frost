@@ -154,11 +154,15 @@ def make_branch_request(
     pc: int,
     predicted_taken: bool = False,
     predicted_target: int = 0,
+    branch_target: int | None = None,
     is_jal: bool = False,
     is_jalr: bool = False,
     link_addr: int = 0,
 ) -> AllocationRequest:
     """Create allocation request for branch/jump instruction."""
+    actual_target = (
+        predicted_target if (branch_target is None and is_jal) else (branch_target or 0)
+    )
     return AllocationRequest(
         pc=pc,
         dest_rf=0,
@@ -167,6 +171,7 @@ def make_branch_request(
         is_branch=True,
         predicted_taken=predicted_taken,
         predicted_target=predicted_target,
+        branch_target=actual_target,
         is_jal=is_jal,
         is_jalr=is_jalr,
         link_addr=link_addr,
