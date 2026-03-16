@@ -624,9 +624,20 @@ module cpu_ooo #(
   // tight loops. Treating already-predicted IF/PD/ID control-flow ops as
   // "pending" shuts prediction back off and creates a second unpredicted copy
   // of the same branch, which is exactly what breaks compressed back-edge loops.
-  assign if_unpredicted_control_flow = if_has_control_flow &&
+  // IF-stage control flow detection is registered to break a combinational
+  // loop: pipeline_ctrl.stall → IF stage (c_ext_state, aligner, prediction
+  // metadata) → from_if_to_pd → front_end_control_flow_pending →
+  // front_end_cf_serialize_stall → pipeline_ctrl.stall.  One cycle of
+  // latency is harmless — the serialization fence is a performance hint.
+  logic if_unpredicted_control_flow_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) if_unpredicted_control_flow_q <= 1'b0;
+    else
+      if_unpredicted_control_flow_q <= if_has_control_flow &&
                                        !(from_if_to_pd.btb_predicted_taken ||
                                          from_if_to_pd.ras_predicted);
+  end
+  assign if_unpredicted_control_flow = if_unpredicted_control_flow_q;
   assign pd_unpredicted_control_flow = pd_has_control_flow &&
                                        !(from_pd_to_id.btb_predicted_taken ||
                                          from_pd_to_id.ras_predicted);
