@@ -304,6 +304,7 @@ module store_queue #(
 
   // Head advancement target
   logic [PtrWidth-1:0] head_advance_target;
+  logic flush_all_uncommitted;
 
   // ===========================================================================
   // Count, Full, Empty
@@ -522,10 +523,13 @@ module store_queue #(
 
   // Pre-compute post-flush validity per entry:
   logic [DEPTH-1:0] post_flush_valid;
+  assign flush_all_uncommitted = i_flush_en &&
+      (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       post_flush_valid[i] = sq_valid[i] && !(
-          i_flush_en && !sq_committed[i] && is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag));
+          i_flush_en && !sq_committed[i] &&
+          (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
     end
   end
 
@@ -593,9 +597,9 @@ module store_queue #(
       // -----------------------------------------------------------------
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_committed[i] && is_younger(
+          if (sq_valid[i] && !sq_committed[i] && (flush_all_uncommitted || is_younger(
                   sq_rob_tag[i], i_flush_tag, i_rob_head_tag
-              )) begin
+              ))) begin
             sq_valid[i] <= 1'b0;
           end
         end

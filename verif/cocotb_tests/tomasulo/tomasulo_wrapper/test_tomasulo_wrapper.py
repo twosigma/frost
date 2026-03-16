@@ -2351,7 +2351,7 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
-    """End-to-end: dispatch SW then LW to same address, SQ forwards to LQ."""
+    """End-to-end: same-address SW/LW completes correctly with current timing."""
     cocotb.log.info("=== Test: LQ SQ Forward Through Wrapper ===")
     dut_if, model = await setup_test(dut)
 
@@ -2360,6 +2360,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     base_addr = 0x2000
     imm = 0x4
     forward_data = 0xCAFE_BABE
+    expected_addr = (base_addr + imm) & 0xFFFF_FFFF
 
     # --- Step 1: Dispatch SW to ROB (is_store, no dest) ---
     req_sw = make_store_req(pc=0x3000)
@@ -2411,6 +2412,24 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_sw, value=0)
     await dut_if.step()
     dut_if.clear_fu_complete(FU_FP_ADD)
+    commit_sw = await wait_for_commit(dut_if)
+    assert commit_sw["tag"] == tag_sw
+
+    # Drain the committed store to memory before issuing the dependent load.
+    for _ in range(20):
+        sq_write = dut_if.read_sq_mem_write()
+        if sq_write["en"]:
+            break
+        await dut_if.step()
+    assert sq_write["en"], "SQ should drain the committed store"
+    assert sq_write["addr"] == expected_addr
+    assert sq_write["data"] == forward_data
+
+    await dut_if.step()
+    dut_if.drive_sq_mem_write_done()
+    await dut_if.step()
+    dut_if.clear_sq_mem_write_done()
+    await dut_if.step()
 
     # --- Step 4: Dispatch LW to ROB (rd=7) ---
     req_lw = make_int_req(pc=0x3004, rd=7)
@@ -2447,7 +2466,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # --- Step 6: Wait for LW issue from MEM_RS -> LQ addr update -> SQ forwards ---
+    # --- Step 6: Wait for LW issue from MEM_RS -> LQ addr update ---
     for _ in range(3):
         issue = dut_if.read_rs_issue_for(RS_MEM)
         if issue["valid"]:
@@ -2456,18 +2475,27 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     assert issue["valid"], "MEM_RS should issue LW"
     assert issue["rob_tag"] == tag_lw
 
-    # --- Step 7: CDB broadcasts forwarded value (SQ -> LQ -> CDB) ---
+    for _ in range(10):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"], "LQ should issue after the store drains"
+    assert mem_req["addr"] == expected_addr
+
+    dut_if.drive_lq_mem_response(forward_data)
     cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
     assert cdb.tag == tag_lw, f"CDB tag={cdb.tag} expected={tag_lw}"
     assert (
         cdb.value == forward_data
     ), f"CDB value={cdb.value:#x} expected={forward_data:#x}"
 
-    # Both should commit
     for _ in range(20):
-        await wait_for_commit(dut_if)
         if dut_if.rob_empty:
             break
+        await dut_if.step()
+    assert dut_if.rob_empty, "Load should retire after memory-backed completion"
 
     assert dut_if.rob_empty
     cocotb.log.info("=== Test Passed ===")

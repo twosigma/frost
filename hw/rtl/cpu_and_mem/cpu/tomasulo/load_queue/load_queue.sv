@@ -46,7 +46,9 @@
  */
 
 module load_queue #(
-    parameter int unsigned DEPTH = riscv_pkg::LqDepth  // 8
+    parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
+    parameter bit ENABLE_L0_FAST_PATH = 1'b0,
+    parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -427,17 +429,22 @@ module load_queue #(
 
   logic sq_can_issue;
   logic sq_do_forward;
+  logic flush_all_entries;
 
   assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
-  assign sq_do_forward = o_sq_check_valid && i_sq_forward.can_forward
+  assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
+      && o_sq_check_valid && i_sq_forward.can_forward
       && !lq_is_mmio[issue_mem_idx] && !lq_is_lr[issue_mem_idx] && !lq_is_amo[issue_mem_idx];
+  assign flush_all_entries = i_flush_en &&
+      (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Data memory has fixed 1-cycle latency in this design. If a partial flush
   // kills the outstanding load, drop that next response explicitly so the slot
   // can be safely reused before the stale data returns.
-  assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] && is_younger(
+  assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] &&
+      (flush_all_entries || is_younger(
       lq_rob_tag[issued_idx], i_flush_tag, i_rob_head_tag
-  );
+  ));
   assign accept_mem_response = i_mem_read_valid && mem_outstanding &&
                                !drop_mem_response_pending && !issued_entry_flushed &&
                                lq_valid[issued_idx];
@@ -514,7 +521,8 @@ module load_queue #(
   // path to keep cache-hit semantics conservative around partial-word and
   // two-phase operations.
   logic cache_hit_fast_path;
-  assign cache_hit_fast_path = !i_flush_all && !i_flush_en
+  assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
+      && !i_flush_all && !i_flush_en
       && sq_can_issue
       && cache_lookup_hit
       && (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_WORD)
@@ -744,7 +752,8 @@ module load_queue #(
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       post_flush_valid[i] = lq_valid[i] &&
-          !(i_flush_en && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag));
+          !(i_flush_en &&
+            (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
     end
   end
 
@@ -835,9 +844,13 @@ module load_queue #(
       // Partial flush: invalidate entries younger than flush_tag
       // -----------------------------------------------------------------
       if (i_flush_en) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-            lq_valid[i] <= 1'b0;
+        if (flush_all_entries) begin
+          lq_valid <= '0;
+        end else begin
+          for (int i = 0; i < DEPTH; i++) begin
+            if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
+              lq_valid[i] <= 1'b0;
+            end
           end
         end
         // If the outstanding load was flushed, drop the next fixed-latency
