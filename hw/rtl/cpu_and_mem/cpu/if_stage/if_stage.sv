@@ -646,7 +646,15 @@ module if_stage #(
     end
   end
 
-  assign prediction_reset_c_ext = prediction_used;
+  // Registered to break combinational loop: prediction_used → c_ext_state
+  // (use_buffer_after_spanning) → instruction_aligner (is_compressed) →
+  // pc_controller/branch_prediction_controller → prediction_used.
+  // One cycle delay is correct: prediction redirects PC this cycle, new
+  // fetch data arrives next cycle, so c_ext_state reset aligns with it.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) prediction_reset_c_ext <= 1'b0;
+    else prediction_reset_c_ext <= prediction_used;
+  end
 
   // Only replay saved IF outputs when the stalled cycle carried a real,
   // still-valid instruction. The one exception is the first cycle of a
