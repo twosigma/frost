@@ -616,10 +616,15 @@ module reorder_buffer (
   assign o_alloc_resp.alloc_tag = tail_idx;
   assign o_alloc_resp.full = full;
 
-  // Flush age calculation for partial flush (computed combinationally)
-  // flush_age = flush_tag - head_idx (mod depth, wraps naturally in 5-bit arithmetic)
+  // Flush age calculation for generic partial flush (computed combinationally).
   logic [ReorderBufferTagWidth-1:0] flush_age;
   assign flush_age = i_flush_tag - head_idx;
+
+  // Registered mispredict recovery arrives one cycle after the flushing
+  // branch already retired, so the current head is exactly one tag younger.
+  logic flush_after_head_commit;
+  assign flush_after_head_commit = i_flush_en &&
+      (head_idx == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Allocation write - tail pointer management
   always_ff @(posedge i_clk or negedge i_rst_n) begin
@@ -629,9 +634,15 @@ module reorder_buffer (
       // Full flush: reset tail to head
       tail_ptr <= head_ptr;
     end else if (i_flush_en) begin
-      // Partial flush: set tail to flush_tag + 1
-      // Use age-based arithmetic to handle wrap correctly (extend 5-bit age to 6-bit)
-      tail_ptr <= head_ptr + {1'b0, flush_age} + 1'b1;
+      if (flush_after_head_commit) begin
+        // Delayed recovery: the mispredicted head already retired last cycle,
+        // so every remaining live entry is younger and the ROB becomes empty.
+        tail_ptr <= head_ptr;
+      end else begin
+        // Generic partial flush: set tail to flush_tag + 1
+        // Use age-based arithmetic to handle wrap correctly (extend 5-bit age to 6-bit)
+        tail_ptr <= head_ptr + {1'b0, flush_age} + 1'b1;
+      end
     end else if (alloc_en) begin
       // Normal allocation: advance tail
       tail_ptr <= tail_ptr + 1'b1;
@@ -682,13 +693,19 @@ module reorder_buffer (
         // Full flush: invalidate all entries
         rob_valid <= '0;
       end else if (i_flush_en) begin
-        // Partial flush: invalidate entries after flush_tag
-        for (int i = 0; i < ReorderBufferDepth; i++) begin
-          // Invalidate if entry is younger than flush point
-          if (rob_valid[i] && should_flush_entry(
-                  i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
-              )) begin
-            rob_valid[i] <= 1'b0;
+        if (flush_after_head_commit) begin
+          // Head-driven recovery leaves no architecturally-live entries in the
+          // ROB after the branch boundary.
+          rob_valid <= '0;
+        end else begin
+          // Partial flush: invalidate entries after flush_tag
+          for (int i = 0; i < ReorderBufferDepth; i++) begin
+            // Invalidate if entry is younger than flush point
+            if (rob_valid[i] && should_flush_entry(
+                    i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
+                )) begin
+              rob_valid[i] <= 1'b0;
+            end
           end
         end
       end
@@ -930,10 +947,10 @@ module reorder_buffer (
   // ===========================================================================
 
   // Commit when head is ready, no stall, and no full flush in progress.
-  // Note: !i_flush_en is intentionally omitted — partial flush (misprediction)
-  // is triggered BY the current commit, so gating commit_en with it creates
-  // an oscillating combinational loop.
-  assign commit_en = head_ready && !commit_stall && !i_flush_all;
+  // If a delayed partial flush arrives one cycle after the mispredicted branch
+  // retired, suppress the younger head commit so recovery wins over any
+  // speculative successor.
+  assign commit_en = head_ready && !commit_stall && !i_flush_all && !flush_after_head_commit;
 
   // Misprediction at commit - use the authoritative flag from branch unit
   // The branch unit knows about RAS, indirect predictor, and other specifics

@@ -333,6 +333,17 @@ module tomasulo_wrapper (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   assign head_tag = o_head_tag;
 
+  // cpu_ooo now delivers misprediction recovery one cycle after the flushing
+  // branch committed. In that delayed-recovery cycle, every speculative-only
+  // backend structure can treat the partial flush as a full clear.
+  logic speculative_partial_flush;
+  logic speculative_flush_all;
+  logic speculative_flush_en;
+  assign speculative_partial_flush = i_flush_en &&
+      (head_tag == (i_flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
+  assign speculative_flush_all = i_flush_all || speculative_partial_flush;
+  assign speculative_flush_en = i_flush_en && !speculative_partial_flush;
+
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
   // ===========================================================================
@@ -599,8 +610,12 @@ module tomasulo_wrapper (
       if (sc_fu_complete_valid) begin
         sc_pending <= 1'b0;
       end
-      // Clear on partial flush only if SC is younger than flush tag
-      if (i_flush_en && sc_pending && is_younger(sc_pending_rob_tag, i_flush_tag, head_tag)) begin
+      // A pending SC is speculative if it is younger than the flush boundary,
+      // or if recovery is draining everything younger than the current/just-
+      // retired head.
+      if (i_flush_en && sc_pending && (speculative_partial_flush || is_younger(
+              sc_pending_rob_tag, i_flush_tag, head_tag
+          ))) begin
         sc_pending <= 1'b0;
       end
     end
@@ -820,10 +835,10 @@ module tomasulo_wrapper (
       .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
 
       // Flush (shared with ROB)
-      .i_flush_en    (i_flush_en),
+      .i_flush_en    (speculative_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
-      .i_flush_all   (i_flush_all),
+      .i_flush_all   (speculative_flush_all),
 
       // Status
       .o_empty(o_rs_empty),
@@ -852,11 +867,11 @@ module tomasulo_wrapper (
       .i_cdb             (cdb_bus),
       .o_issue           (mul_rs_issue_w),
       .i_fu_ready        (mul_rs_fu_ready),
-      .o_next_issue_is_sc(),                 // unused — no SC ops in MUL_RS
-      .i_flush_en        (i_flush_en),
+      .o_next_issue_is_sc(),                       // unused — no SC ops in MUL_RS
+      .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
-      .i_flush_all       (i_flush_all),
+      .i_flush_all       (speculative_flush_all),
       .o_empty           (o_mul_rs_empty),
       .o_count           (o_mul_rs_count)
   );
@@ -884,10 +899,10 @@ module tomasulo_wrapper (
       .o_issue           (o_mem_rs_issue),
       .i_fu_ready        (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
-      .i_flush_en        (i_flush_en),
+      .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
-      .i_flush_all       (i_flush_all),
+      .i_flush_all       (speculative_flush_all),
       .o_empty           (o_mem_rs_empty),
       .o_count           (o_mem_rs_count)
   );
@@ -919,11 +934,11 @@ module tomasulo_wrapper (
       .i_cdb             (cdb_bus),
       .o_issue           (fp_rs_issue_w),
       .i_fu_ready        (fp_rs_fu_ready),
-      .o_next_issue_is_sc(),                // unused — no SC ops in FP_RS
-      .i_flush_en        (i_flush_en),
+      .o_next_issue_is_sc(),                       // unused — no SC ops in FP_RS
+      .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
-      .i_flush_all       (i_flush_all),
+      .i_flush_all       (speculative_flush_all),
       .o_empty           (o_fp_rs_empty),
       .o_count           (o_fp_rs_count)
   );
@@ -948,11 +963,11 @@ module tomasulo_wrapper (
       .i_cdb             (cdb_bus),
       .o_issue           (fmul_rs_issue_w),
       .i_fu_ready        (fmul_rs_fu_ready),
-      .o_next_issue_is_sc(),                  // unused — no SC ops in FMUL_RS
-      .i_flush_en        (i_flush_en),
+      .o_next_issue_is_sc(),                       // unused — no SC ops in FMUL_RS
+      .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
-      .i_flush_all       (i_flush_all),
+      .i_flush_all       (speculative_flush_all),
       .o_empty           (o_fmul_rs_empty),
       .o_count           (o_fmul_rs_count)
   );
@@ -977,11 +992,11 @@ module tomasulo_wrapper (
       .i_cdb             (cdb_bus),
       .o_issue           (fdiv_rs_issue_w),
       .i_fu_ready        (fdiv_rs_fu_ready),
-      .o_next_issue_is_sc(),                  // unused — no SC ops in FDIV_RS
-      .i_flush_en        (i_flush_en),
+      .o_next_issue_is_sc(),                       // unused — no SC ops in FDIV_RS
+      .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
-      .i_flush_all       (i_flush_all),
+      .i_flush_all       (speculative_flush_all),
       .o_empty           (o_fdiv_rs_empty),
       .o_count           (o_fdiv_rs_count)
   );
@@ -1013,8 +1028,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (alu_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[0]),
       .o_result_pending(alu_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1029,8 +1044,8 @@ module tomasulo_wrapper (
       .o_mul_fu_complete(mul_shim_out),
       .o_div_fu_complete(div_shim_out),
       .o_fu_busy        (muldiv_busy),
-      .i_flush          (i_flush_all),
-      .i_flush_en       (i_flush_en),
+      .i_flush          (speculative_flush_all),
+      .i_flush_en       (speculative_flush_en),
       .i_flush_tag      (i_flush_tag),
       .i_rob_head_tag   (head_tag),
       .i_div_accepted   (div_result_accepted)
@@ -1046,8 +1061,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (mul_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[1]),
       .o_result_pending(mul_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1062,8 +1077,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (div_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[2]),
       .o_result_pending(div_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1224,8 +1239,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (mem_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[3]),
       .o_result_pending(mem_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1362,8 +1377,8 @@ module tomasulo_wrapper (
       .i_rs_issue    (fp_rs_issue_w),
       .o_fu_complete (fp_add_shim_out),
       .o_fu_busy     (fp_add_busy),
-      .i_flush       (i_flush_all),
-      .i_flush_en    (i_flush_en),
+      .i_flush       (speculative_flush_all),
+      .i_flush_en    (speculative_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag)
   );
@@ -1378,8 +1393,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (fp_add_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[4]),
       .o_result_pending(fp_add_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1393,8 +1408,8 @@ module tomasulo_wrapper (
       .i_rs_issue    (fmul_rs_issue_w),
       .o_fu_complete (fp_mul_shim_out),
       .o_fu_busy     (fp_mul_busy),
-      .i_flush       (i_flush_all),
-      .i_flush_en    (i_flush_en),
+      .i_flush       (speculative_flush_all),
+      .i_flush_en    (speculative_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag)
   );
@@ -1409,8 +1424,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (fp_mul_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[5]),
       .o_result_pending(fp_mul_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
@@ -1424,8 +1439,8 @@ module tomasulo_wrapper (
       .i_rs_issue    (fdiv_rs_issue_w),
       .o_fu_complete (fp_div_shim_out),
       .o_fu_busy     (fp_div_busy),
-      .i_flush       (i_flush_all),
-      .i_flush_en    (i_flush_en),
+      .i_flush       (speculative_flush_all),
+      .i_flush_en    (speculative_flush_en),
       .i_flush_tag   (i_flush_tag),
       .i_rob_head_tag(head_tag),
       .i_div_accepted(fp_div_result_accepted)
@@ -1441,8 +1456,8 @@ module tomasulo_wrapper (
       .o_fu_complete   (fp_div_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[6]),
       .o_result_pending(fp_div_adapter_result_pending),
-      .i_flush         (i_flush_all),
-      .i_flush_en      (i_flush_en),
+      .i_flush         (speculative_flush_all),
+      .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );

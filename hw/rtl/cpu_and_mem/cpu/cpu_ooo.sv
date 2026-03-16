@@ -694,20 +694,22 @@ module cpu_ooo #(
   logic lq_full, sq_full;
 
   // Branch update
-  riscv_pkg::reorder_buffer_branch_update_t                                        branch_update;
+  riscv_pkg::reorder_buffer_branch_update_t branch_update;
 
   // Flush
-  logic                                                                            flush_en;
-  logic                                     [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
-  logic                                                                            flush_all;
+  logic flush_en;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
+  logic flush_all;
+  logic mispredict_recovery_pending;
+  riscv_pkg::reorder_buffer_commit_t mispredict_commit_q;
 
   // CDB
-  riscv_pkg::cdb_broadcast_t                                                       cdb_out;
-  logic                                     [               riscv_pkg::NumFus-1:0] cdb_grant;
+  riscv_pkg::cdb_broadcast_t cdb_out;
+  logic [riscv_pkg::NumFus-1:0] cdb_grant;
 
   // ROB status
-  logic                                     [  riscv_pkg::ReorderBufferTagWidth:0] rob_count;
-  logic                                     [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
+  logic [riscv_pkg::ReorderBufferTagWidth:0] rob_count;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
 
@@ -732,6 +734,8 @@ module cpu_ooo #(
   riscv_pkg::mem_size_e lq_mem_read_size;
   logic [XLEN-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
+  logic lq_mem_request_valid;
+  logic [XLEN-1:0] lq_mem_request_addr;
 
   // AMO memory interface
   logic amo_mem_write_en;
@@ -1195,22 +1199,31 @@ module cpu_ooo #(
   logic commit_is_misprediction;
   assign commit_is_misprediction = rob_commit.valid && rob_commit.misprediction;
 
-  // The correct redirect PC for misprediction is computed by the ROB:
-  //   - For taken branches/jumps: the actual target from branch resolution
-  //   - For not-taken branches: PC + 4 (or PC + 2 for compressed)
-  //   - For MRET: mepc
-  logic [XLEN-1:0] misprediction_redirect_pc;
-  assign misprediction_redirect_pc = rob_commit.redirect_pc;
+  // Register the mispredicted commit for one cycle so recovery does not sit on
+  // the same combinational path as ROB commit generation.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      mispredict_recovery_pending <= 1'b0;
+      mispredict_commit_q         <= '0;
+    end else begin
+      mispredict_recovery_pending <= commit_is_misprediction;
+      if (commit_is_misprediction) begin
+        mispredict_commit_q <= rob_commit;
+      end
+    end
+  end
 
-  // Flush pipeline on misprediction, trap, MRET, or FENCE.I
+  // Flush pipeline on registered misprediction recovery, trap, MRET, or FENCE.I
   always_comb begin
     // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
     // cycle after FENCE.I commits. Gate the front-end flush directly from that
     // pulse so dispatch cannot allocate into the same cycle as a full flush.
-    flush_pipeline = commit_is_misprediction || flush_for_trap || flush_for_mret || fence_i_flush;
+    flush_pipeline = mispredict_recovery_pending || flush_for_trap || flush_for_mret ||
+                     fence_i_flush;
   end
 
-  // ROB flush: partial flush on misprediction (younger than branch),
+  // ROB flush: partial flush on registered misprediction recovery (younger than
+  // branch), full flush on trap/MRET/FENCE.I.
   // full flush on trap/MRET/FENCE.I
   always_comb begin
     flush_en  = 1'b0;
@@ -1220,10 +1233,10 @@ module cpu_ooo #(
     if (flush_for_trap || flush_for_mret) begin
       flush_en  = 1'b1;
       flush_all = 1'b1;
-    end else if (commit_is_misprediction) begin
+    end else if (mispredict_recovery_pending) begin
       // Flush everything after the mispredicted branch's ROB tag
       flush_en  = 1'b1;
-      flush_tag = rob_commit.tag;
+      flush_tag = mispredict_commit_q.tag;
       flush_all = 1'b0;
     end else if (fence_i_flush) begin
       // fence_i_flush is a registered 1-cycle pulse from ROB (fires cycle after
@@ -1241,14 +1254,22 @@ module cpu_ooo #(
     // replaying a checkpoint image, so skipping restore on calls leaves flushed
     // younger mappings for caller fall-through instructions live into the
     // callee after redirect.
-    checkpoint_restore    = commit_is_misprediction && rob_commit.has_checkpoint;
-    checkpoint_restore_id = rob_commit.checkpoint_id;
+    checkpoint_restore    = mispredict_recovery_pending && mispredict_commit_q.has_checkpoint;
+    checkpoint_restore_id = mispredict_commit_q.checkpoint_id;
   end
 
   // Checkpoint free on any branch commit (correct or mispredicted)
   always_comb begin
-    checkpoint_free    = rob_commit.valid && rob_commit.has_checkpoint;
-    checkpoint_free_id = rob_commit.checkpoint_id;
+    checkpoint_free    = 1'b0;
+    checkpoint_free_id = '0;
+
+    if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
+      checkpoint_free    = 1'b1;
+      checkpoint_free_id = mispredict_commit_q.checkpoint_id;
+    end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
+      checkpoint_free    = 1'b1;
+      checkpoint_free_id = rob_commit.checkpoint_id;
+    end
   end
 
   // ===========================================================================
@@ -1260,33 +1281,34 @@ module cpu_ooo #(
   always_comb begin
     from_ex_comb_synth = '0;
 
-    if (commit_is_misprediction) begin
+    if (mispredict_recovery_pending) begin
       // Misprediction: redirect PC and update BTB
       from_ex_comb_synth.branch_taken          = 1'b1;
-      from_ex_comb_synth.branch_target_address = misprediction_redirect_pc;
+      from_ex_comb_synth.branch_target_address = mispredict_commit_q.redirect_pc;
 
-      if (rob_commit.is_branch && !rob_commit.is_jal && !rob_commit.is_jalr) begin
+      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jal &&
+          !mispredict_commit_q.is_jalr) begin
         from_ex_comb_synth.btb_update                         = 1'b1;
-        from_ex_comb_synth.btb_update_pc                      = rob_commit.pc;
-        from_ex_comb_synth.btb_update_target                  = rob_commit.branch_target;
-        from_ex_comb_synth.btb_update_taken                   = rob_commit.branch_taken;
-        from_ex_comb_synth.btb_update_compressed              = rob_commit.is_compressed;
+        from_ex_comb_synth.btb_update_pc                      = mispredict_commit_q.pc;
+        from_ex_comb_synth.btb_update_target                  = mispredict_commit_q.branch_target;
+        from_ex_comb_synth.btb_update_taken                   = mispredict_commit_q.branch_taken;
+        from_ex_comb_synth.btb_update_compressed              = mispredict_commit_q.is_compressed;
         from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
 
       // Restore RAS state for any checkpointed misprediction to discard
       // wrong-path speculative pushes/pops. Calls then re-apply their own
       // architectural push after restore; returns re-apply the pop.
-      if (rob_commit.has_checkpoint) begin
+      if (mispredict_commit_q.has_checkpoint) begin
         from_ex_comb_synth.ras_misprediction       = 1'b1;
         from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
         from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        if (rob_commit.is_return) begin
+        if (mispredict_commit_q.is_return) begin
           from_ex_comb_synth.ras_pop_after_restore = 1'b1;
-        end else if (rob_commit.is_call) begin
+        end else if (mispredict_commit_q.is_call) begin
           from_ex_comb_synth.ras_push_after_restore = 1'b1;
-          from_ex_comb_synth.ras_push_address_after_restore = rob_commit.pc +
-              (rob_commit.is_compressed ? 32'd2 : 32'd4);
+          from_ex_comb_synth.ras_push_address_after_restore = mispredict_commit_q.pc +
+              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
         end
       end
     end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
@@ -1306,7 +1328,7 @@ module cpu_ooo #(
   // Memory Interface
   // ===========================================================================
   // Route LQ/SQ memory requests to the external data memory port.
-  // Priority: SQ writes > LQ reads > AMO writes
+  // Priority: SQ writes > queued LQ reads > AMO writes
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
   always_comb begin
@@ -1331,14 +1353,14 @@ module cpu_ooo #(
       o_data_mem_wr_data        = amo_mem_write_data;
       o_data_mem_per_byte_wr_en = 4'b1111;
       amo_mem_write_done        = 1'b1;
-    end else if (lq_mem_read_en) begin
+    end else if (lq_mem_request_valid) begin
       // Load queue memory read
-      o_data_mem_addr        = lq_mem_read_addr;
+      o_data_mem_addr        = lq_mem_request_addr;
       o_data_mem_read_enable = 1'b1;
       // MMIO detection
-      if (lq_mem_read_addr >= MMIO_ADDR[XLEN-1:0] &&
-          lq_mem_read_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0])) begin
-        o_mmio_load_addr  = lq_mem_read_addr;
+      if (lq_mem_request_addr >= MMIO_ADDR[XLEN-1:0] &&
+          lq_mem_request_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0])) begin
+        o_mmio_load_addr  = lq_mem_request_addr;
         o_mmio_load_valid = 1'b1;
       end
     end
@@ -1346,14 +1368,30 @@ module cpu_ooo #(
 
   // SQ write done: register to align with write_outstanding in the SQ
   always_ff @(posedge i_clk) begin
-    if (i_rst) sq_mem_write_done <= 1'b0;
-    else sq_mem_write_done <= sq_mem_write_done_comb;
+    if (i_rst) begin
+      sq_mem_write_done <= 1'b0;
+      lq_mem_request_valid <= 1'b0;
+      lq_mem_request_addr <= '0;
+    end else begin
+      sq_mem_write_done <= sq_mem_write_done_comb;
+
+      if (lq_mem_request_valid) begin
+        // Hold the queued load request until stores/AMOs stop owning the port.
+        if (!sq_mem_write_en && !amo_mem_write_en) begin
+          lq_mem_request_valid <= 1'b0;
+        end
+      end else if (lq_mem_read_en) begin
+        lq_mem_request_valid <= 1'b1;
+        lq_mem_request_addr  <= lq_mem_read_addr;
+      end
+    end
   end
 
   // Load data always comes from external memory
   assign lq_mem_read_data = i_data_mem_rd_data;
 
-  // Memory read valid: 1-cycle latency from read enable
+  // Memory read valid: 1-cycle latency from when the queued load request
+  // actually reaches the external memory/MMIO port.
   logic mem_read_pending;
   logic lq_mem_read_accepted;
   assign lq_mem_read_accepted = o_data_mem_read_enable;
