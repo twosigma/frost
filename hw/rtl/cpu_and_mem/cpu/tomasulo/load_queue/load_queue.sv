@@ -775,16 +775,19 @@ module load_queue #(
   // ===========================================================================
   // Head Advancement (combinational scan past contiguous invalid entries)
   // ===========================================================================
-  // Advance head past all invalid entries (including one being freed this cycle).
-  // At DEPTH=8 this is a trivial combinational chain.
+  // Advance head past all currently-invalid entries.
+  //
+  // Do not fold the same-cycle CDB free into this scan. Letting issue/CDB
+  // selection feed head_ptr directly creates a long MEM_RS -> LQ head advance
+  // cone in post-synthesis timing. A one-cycle lag before the head pointer
+  // catches up to a newly-freed slot is architecturally harmless: the entry is
+  // already invalid in lq_valid, so the next cycle's scans naturally skip it.
+  // At DEPTH=8 this remaining chain is still trivial.
 
   always_comb begin
     head_advance_target = head_ptr;
     for (int unsigned s = 0; s < DEPTH; s++) begin
-      // Entry is effectively invalid if currently invalid OR being freed this cycle
-      if (head_advance_target != tail_ptr &&
-          !(lq_valid[head_advance_target[IdxWidth-1:0]] &&
-            !(free_entry_en && (free_entry_idx == head_advance_target[IdxWidth-1:0]))))
+      if (head_advance_target != tail_ptr && !lq_valid[head_advance_target[IdxWidth-1:0]])
         head_advance_target = head_advance_target + PtrWidth'(1);
     end
   end
