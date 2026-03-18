@@ -159,8 +159,17 @@ module cpu_ooo #(
   // control-flow instruction through IF/PD/ID. Hold the front-end at that
   // younger op until the older branch resolves, instead of letting wrong-path
   // fetch run ahead and relying on a later commit-time redirect to clean it up.
+  logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
-  assign front_end_cf_serialize_stall = branch_in_flight && front_end_control_flow_pending;
+  assign front_end_cf_serialize_stall_comb = branch_in_flight && front_end_control_flow_pending;
+
+  // This stall is a front-end serialization fence, not an architectural
+  // requirement. Register it so the branch_in_flight + IF/PD/ID control-flow
+  // decode cone does not sit directly on the main pipeline stall path.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) front_end_cf_serialize_stall <= 1'b0;
+    else front_end_cf_serialize_stall <= front_end_cf_serialize_stall_comb;
+  end
 
   // Registered stall for IF stage stall-capture registers.
   // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
