@@ -1,37 +1,46 @@
 /*
+ *    Copyright 2026 Two Sigma Open Source, LLC
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
+/*
  * sprintf_test.c
  *
- * Standalone test suite for sprintf / snprintf.
+ * Bare-metal test suite for sprintf / snprintf.
  *
  * Rules:
- *   - NO calls to system printf/sprintf/snprintf/fprintf for validation.
+ *   - NO calls to system printf/sprintf/snprintf for validation.
  *   - Expected values are compile-time string/integer constants.
- *   - Only stdio used: puts() / fwrite() for test-result reporting.
- *   - All 129 original cases are covered; ~80 additional cases added.
+ *   - Output via uart_puts / uart_putchar only.
+ *   - Emits <<PASS>> / <<FAIL>> markers for cocotb test harness.
  */
 
 #include <sprintf.h>
+#include <uart.h>
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>  /* puts, fwrite, fputs – output only, no printf family */
-#include <stdlib.h> /* EXIT_SUCCESS / EXIT_FAILURE */
 #include <string.h> /* strcmp, strlen, memset, memcmp */
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Tiny report helpers – no printf, just puts / fwrite
+ * Tiny report helpers – uses UART, avoids sprintf for reporting
  * ────────────────────────────────────────────────────────────────────────── */
 
 static int g_pass = 0;
 static int g_fail = 0;
 
-/* Write a NUL-terminated string to stdout */
-static void out(const char *s)
-{
-    fputs(s, stdout);
-}
-
-/* Correct decimal printer */
+/* Correct decimal printer (avoids using sprintf for test infrastructure) */
 static void print_int(int n)
 {
     char tmp[24];
@@ -49,23 +58,23 @@ static void print_int(int n)
     }
     if (neg)
         tmp[--i] = '-';
-    fputs(&tmp[i], stdout);
+    uart_puts(&tmp[i]);
 }
 
 static void print_str_escaped(const char *s)
 {
-    putc('[', stdout);
+    uart_putchar('[');
     for (; *s; s++) {
         if (*s == '\n') {
-            putc('\\', stdout);
-            putc('n', stdout);
+            uart_putchar('\\');
+            uart_putchar('n');
         } else if (*s == '\t') {
-            putc('\\', stdout);
-            putc('t', stdout);
+            uart_putchar('\\');
+            uart_putchar('t');
         } else
-            putc(*s, stdout);
+            uart_putchar(*s);
     }
-    putc(']', stdout);
+    uart_putchar(']');
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -83,30 +92,30 @@ static void check(
         return;
     }
     g_fail++;
-    out("FAIL  ");
-    out(name);
-    putc('\n', stdout);
+    uart_puts("FAIL  ");
+    uart_puts(name);
+    uart_putchar('\n');
     if (!str_ok) {
-        out("      expected : ");
+        uart_puts("      expected : ");
         print_str_escaped(expected_str);
-        out("  (ret ");
+        uart_puts("  (ret ");
         print_int(expected_ret);
-        out(")\n");
-        out("      got      : ");
+        uart_puts(")\n");
+        uart_puts("      got      : ");
         print_str_escaped(got_str);
-        out("  (ret ");
+        uart_puts("  (ret ");
         print_int(got_ret);
-        out(")\n");
+        uart_puts(")\n");
     } else {
-        out("      strings match but return values differ: expected=");
+        uart_puts("      strings match but return values differ: expected=");
         print_int(expected_ret);
-        out(" got=");
+        uart_puts(" got=");
         print_int(got_ret);
-        putc('\n', stdout);
+        uart_putchar('\n');
     }
 }
 
-/* Floating-point: accept ±1 ULP in the last printed digit */
+/* Floating-point: accept +/-1 ULP in the last printed digit */
 static void check_fp(
     const char *name, const char *expected_str, int expected_ret, const char *got_str, int got_ret)
 {
@@ -134,19 +143,19 @@ static void check_fp(
         }
     }
     g_fail++;
-    out("FAIL  ");
-    out(name);
-    putc('\n', stdout);
-    out("      expected : ");
+    uart_puts("FAIL  ");
+    uart_puts(name);
+    uart_putchar('\n');
+    uart_puts("      expected : ");
     print_str_escaped(expected_str);
-    out("  (ret ");
+    uart_puts("  (ret ");
     print_int(expected_ret);
-    out(")\n");
-    out("      got      : ");
+    uart_puts(")\n");
+    uart_puts("      got      : ");
     print_str_escaped(got_str);
-    out("  (ret ");
+    uart_puts("  (ret ");
     print_int(got_ret);
-    out(")\n");
+    uart_puts(")\n");
 }
 
 /* Convenience macros */
@@ -169,9 +178,9 @@ static void check_fp(
 /* section header */
 static void section(const char *s)
 {
-    out("\n=== ");
-    out(s);
-    out(" ===\n");
+    uart_puts("\n=== ");
+    uart_puts(s);
+    uart_puts(" ===\n");
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -428,7 +437,7 @@ static void test_snprintf_trunc(void)
 {
     section("snprintf truncation / return value");
 
-    /* Truncation: "hello world" → buf size 5 → "hell\0", ret=11 */
+    /* Truncation: "hello world" -> buf size 5 -> "hell\0", ret=11 */
     {
         char got[5];
         int r = snprintf(got, 5, "%s", "hello world");
@@ -451,12 +460,12 @@ static void test_snprintf_trunc(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  size=0 no-write\n");
-            out("      ret=");
+            uart_puts("FAIL  size=0 no-write\n");
+            uart_puts("      ret=");
             print_int(r);
-            out(" got[0]='");
-            putc(got[0], stdout);
-            out("'\n");
+            uart_puts(" got[0]='");
+            uart_putchar(got[0]);
+            uart_puts("'\n");
         }
     }
 
@@ -535,7 +544,7 @@ static void test_length_mods(void)
     T("ll signed min", "-9223372036854775808", 20, "%lld", -9223372036854775807LL - 1);
     T("ll unsigned max", "18446744073709551615", 20, "%llu", 18446744073709551615ULL);
     T("z size_t", "65536", 5, "%zu", (size_t) 65536);
-    T("z size_t large", "1099511627776", 13, "%zu", (size_t) 1099511627776ULL);
+    T("z size_t large", "4294967295", 10, "%zu", (size_t) 4294967295UL);
     T("lx", "ffffffffffffffff", 16, "%llx", 18446744073709551615ULL);
     T("lX", "FFFFFFFFFFFFFFFF", 16, "%llX", 18446744073709551615ULL);
 }
@@ -554,7 +563,7 @@ static void test_pointer(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  p NULL has 0x prefix\n");
+            uart_puts("FAIL  p NULL has 0x prefix\n");
         }
     }
     {
@@ -566,7 +575,7 @@ static void test_pointer(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  p 0xDEAD has 0x prefix\n");
+            uart_puts("FAIL  p 0xDEAD has 0x prefix\n");
         }
     }
     {
@@ -579,11 +588,11 @@ static void test_pointer(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  p width=20: ");
+            uart_puts("FAIL  p width=20: ");
             print_str_escaped(got);
-            out(" ret=");
+            uart_puts(" ret=");
             print_int(r);
-            putc('\n', stdout);
+            uart_putchar('\n');
         }
     }
 }
@@ -629,9 +638,9 @@ static void test_n(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  %n pos: expected 5 got ");
+            uart_puts("FAIL  %n pos: expected 5 got ");
             print_int(pos);
-            putc('\n', stdout);
+            uart_putchar('\n');
         }
     }
     {
@@ -643,9 +652,9 @@ static void test_n(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  %n after %d: expected 5 got ");
+            uart_puts("FAIL  %n after %d: expected 5 got ");
             print_int(pos);
-            putc('\n', stdout);
+            uart_putchar('\n');
         }
     }
 }
@@ -663,7 +672,7 @@ static void test_regression(void)
             g_pass++;
         else {
             g_fail++;
-            out("FAIL  NUL via %c\n");
+            uart_puts("FAIL  NUL via %c\n");
         }
     }
     T("d 10 digits", "1000000000", 10, "%d", 1000000000);
@@ -697,9 +706,8 @@ static void test_regression(void)
 
 int main(void)
 {
-    out("╔══════════════════════════════════════════════════╗\n");
-    out("║    sprintf standalone static test suite          ║\n");
-    out("╚══════════════════════════════════════════════════╝\n");
+    uart_puts("sprintf/snprintf Test Suite\n");
+    uart_puts("==========================\n");
 
     test_literal();
     test_char();
@@ -721,15 +729,24 @@ int main(void)
     test_n();
     test_regression();
 
-    out("\n══════════════════════════════════════════════════════\n");
-    out("Results:  ");
+    uart_puts("\n==========================\n");
+    uart_puts("Results: ");
     print_int(g_pass);
-    out(" passed,  ");
+    uart_puts(" passed, ");
     print_int(g_fail);
-    out(" failed  (total ");
+    uart_puts(" failed (total ");
     print_int(g_pass + g_fail);
-    out(")\n");
-    out("══════════════════════════════════════════════════════\n");
+    uart_puts(")\n");
 
-    return (g_fail == 0) ? 0 : -1;
+    if (g_fail == 0) {
+        uart_puts("ALL TESTS PASSED\n");
+        uart_puts("<<PASS>>\n");
+    } else {
+        uart_puts("SOME TESTS FAILED\n");
+        uart_puts("<<FAIL>>\n");
+    }
+
+    /* Halt */
+    for (;;) {
+    }
 }
