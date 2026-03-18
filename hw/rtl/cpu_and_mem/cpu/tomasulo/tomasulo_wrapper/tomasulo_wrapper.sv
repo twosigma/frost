@@ -492,6 +492,7 @@ module tomasulo_wrapper (
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
+  logic lq_result_accepted;
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -593,6 +594,11 @@ module tomasulo_wrapper (
     else if (store_fu_complete.valid) mem_fu_to_adapter = store_fu_complete;
     else mem_fu_to_adapter = lq_fu_complete;
   end
+
+  assign lq_result_accepted = lq_fu_complete.valid &&
+                              !sc_fu_complete_valid &&
+                              !store_issue_fire &&
+                              (!mem_adapter_result_pending || o_cdb_grant[3]);
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
@@ -1196,6 +1202,7 @@ module tomasulo_wrapper (
       .o_fu_complete(lq_fu_complete),
       .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
                                 store_issue_fire),
+      .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
       .i_rob_head_tag(head_tag),
