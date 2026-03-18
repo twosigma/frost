@@ -303,9 +303,11 @@ module c_ext_state #(
   // Use buffer on the cycle immediately after spanning_to_halfword holdoff ends.
   // Redirects must suppress this immediately; waiting for the registered clear
   // lets an old-path buffered word leak into the first cycle of the new path.
+  // No live-stall gate is needed here: the tracked holdoff source flops only
+  // advance when the front-end is unstalled, so this pulse cannot begin while
+  // IF is frozen.
   assign o_use_buffer_after_spanning = spanning_to_halfword_registered_prev &&
                                        !o_spanning_to_halfword_registered &&
-                                       !i_stall &&
                                        !i_flush &&
                                        !i_control_flow_holdoff &&
                                        !i_prediction_holdoff &&
@@ -331,11 +333,12 @@ module c_ext_state #(
       pending_prediction_target_holdoff_prev <= pending_prediction_target_holdoff_needs_buffer;
   end
 
+  // As above, the holdoff source state only changes on unstalled cycles, so
+  // the replay pulse does not need a live-stall dependency.
   assign o_use_buffer_after_prediction =
       ((prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
        (pending_prediction_target_holdoff_prev &&
         !i_pending_prediction_target_holdoff)) &&
-      !i_stall &&
       !i_flush &&
       !i_control_flow_holdoff &&
       !i_prediction_holdoff &&

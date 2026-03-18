@@ -196,21 +196,8 @@ module if_stage #(
       !i_trap_ctrl.mret_taken &&
       (use_saved_values || !prediction_holdoff || btb_only_prediction_holdoff);
 
-  // TIMING OPTIMIZATION: Create a "safe" flush signal for c_ext_state that uses
-  // only REGISTERED trap/mret signals. This breaks the critical timing path:
-  //   EX stage data → trap detection → flush → c_ext_state → PC
-  //
-  // The combinational flush from pipeline_ctrl uses trap_taken directly, creating
-  // a long path from EX stage exception detection. By using the registered versions,
-  // we delay the c_ext_state clear by 1 cycle, which is fine because:
-  //   1. Flush lasts 2 cycles (trap in cycle N, trap_registered in cycle N+1)
-  //   2. c_ext_state also clears on control_flow_holdoff (registered)
-  //   3. The 1-cycle delay doesn't affect correctness since state is stale anyway
-  //
-  // For PC selection (sel_trap), we still use combinational trap_taken for immediate
-  // redirect. The front-end state machines need the real flush signal for
-  // correctness; letting stale C-extension state survive a redirect corrupts PC
-  // alignment on the next predicted path.
+  // Front-end state cleanup must happen in the same cycle as any pipeline
+  // flush so stale buffered/spanning state cannot leak across redirects.
   logic flush_for_c_ext_safe;
   assign flush_for_c_ext_safe = i_pipeline_ctrl.flush;
 
