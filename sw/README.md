@@ -128,6 +128,33 @@ free(ptr);                                // Return to freelist
 - Arena: Fast allocation, bulk deallocation, no fragmentation, fixed lifetime
 - malloc/free: Flexible lifetime, individual deallocation, potential fragmentation
 
+### Sprintf (`lib/include/sprintf.h`, `lib/src/sprintf.c`)
+
+Portable `sprintf`/`snprintf` with no `<stdio.h>` dependency. Uses integer-scaling for floating-point formatting to avoid cascading FP-rounding errors.
+
+```c
+#include "sprintf.h"
+
+char buf[128];
+sprintf(buf, "x=%d y=%s", 42, "hello");       // Unbounded format
+snprintf(buf, sizeof(buf), "%.2f", 3.14159);   // Bounded (C99 semantics)
+```
+
+**Supported format specifiers:**
+- `%d`/`%i`, `%u`, `%o`, `%x`/`%X` — integer (signed/unsigned, octal, hex)
+- `%f`/`%F`, `%e`/`%E`, `%g`/`%G` — floating-point (fixed, scientific, shortest)
+- `%c` — character, `%s` — string, `%p` — pointer, `%%` — literal percent
+- Flags: `-` `+` `space` `0` `#`
+- Width/precision: literal or `*`
+- Length modifiers: `hh` `h` `l` `ll` `z` `t`
+
+**Makefile setup:** The 64-bit integer arithmetic used internally requires `-lgcc`. Add this to your app's Makefile before the `include`:
+```makefile
+EXTRA_LDFLAGS := -lgcc
+SRC_C := ../../lib/src/uart.c ../../lib/src/sprintf.c your_app.c
+include ../../common/common.mk
+```
+
 ### Limits (`lib/include/limits.h`)
 
 Integer limit constants for 32-bit systems.
@@ -308,6 +335,7 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
 | `ras_test/` | Return Address Stack verification (deep nesting, coroutines, alignment) |
 | `spanning_test/` | 32-bit instruction fetch across word boundary verification |
+| `sprintf_test/` | sprintf/snprintf formatting test suite (~200 cases) |
 | `strings_test/` | String/ctype/stdlib library test suite |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
 

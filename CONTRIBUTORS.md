@@ -24,3 +24,8 @@
 - Implemented freelist-based `malloc`/`free`
 - Modified linker script to carve out 8KB heap region
 - Wrote original packet parser software app
+
+## Erez Strauss ([@erez-strauss](https://github.com/erez-strauss))
+
+- Implemented portable `sprintf`/`snprintf` library with full format support (`%d`, `%f`, `%e`, `%g`, `%x`, flags, width, precision, length modifiers)
+- Created comprehensive test suite (~260 test cases) covering integer, floating-point, string, and truncation formatting

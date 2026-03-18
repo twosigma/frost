@@ -79,6 +79,9 @@ NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 # Coremark needs more cycles since it runs the full benchmark even with ITERATIONS=1
 COREMARK_MAX_CYCLES = 5000000
 
+# sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting on RV32
+SPRINTF_TEST_MAX_CYCLES = 2000000
+
 # Number of clock cycles to hold reset between runs
 RESET_CYCLES = 10
 
@@ -708,8 +711,13 @@ async def test_real_program(dut: Any) -> None:
         get_expected_behavior()
     )
 
-    # Use longer timeout for coremark since it runs the full benchmark
-    max_cycles = COREMARK_MAX_CYCLES if app_name == "coremark" else MAX_CYCLES
+    # Use longer timeout for tests that need more cycles
+    if app_name == "coremark":
+        max_cycles = COREMARK_MAX_CYCLES
+    elif app_name == "sprintf_test":
+        max_cycles = SPRINTF_TEST_MAX_CYCLES
+    else:
+        max_cycles = MAX_CYCLES
 
     cocotb.log.info(
         f"Expected behavior: success_marker={success_marker}, "

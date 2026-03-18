@@ -160,6 +160,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="spanning_test",
         description="Spanning instruction test",
     ),
+    "sprintf_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sprintf_test",
+        description="sprintf/snprintf formatting test suite",
+    ),
     "strings_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
