@@ -213,8 +213,6 @@ module store_queue #(
 
   // Index extraction (lower bits)
   wire                  [             IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
-  wire                  [             IdxWidth-1:0] tail_idx = tail_ptr[IdxWidth-1:0];
-
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic                 [                DEPTH-1:0] sq_valid;
   logic                 [                DEPTH-1:0] sq_is_fp;
@@ -302,8 +300,9 @@ module store_queue #(
   // Head entry readiness
   logic head_ready;  // Head entry committed + addr_valid + data_valid
 
-  // Head advancement target
+  // Head/tail search targets for the sparse valid-bit queue.
   logic [PtrWidth-1:0] head_advance_target;
+  logic [PtrWidth-1:0] alloc_target;
   logic flush_all_uncommitted;
 
   // ===========================================================================
@@ -316,9 +315,8 @@ module store_queue #(
     end
   end
 
-  assign full  = (head_ptr[IdxWidth-1:0] == tail_ptr[IdxWidth-1:0]) &&
-                 (head_ptr[PtrWidth-1] != tail_ptr[PtrWidth-1]);
-  assign empty = (head_ptr == tail_ptr);
+  assign full = (count == CountWidth'(DEPTH));
+  assign empty = (count == CountWidth'(0));
 
   assign o_full = full;
   assign o_empty = empty;
@@ -516,43 +514,30 @@ module store_queue #(
           : sq_address[head_idx];
 
   // ===========================================================================
-  // Tail Retraction (combinational scan for partial flush)
+  // Allocation Search
   // ===========================================================================
-  // After partial flush, retract tail backwards past consecutive invalid
-  // entries at the tail end so that pointer-based full is accurate.
-
-  // Pre-compute post-flush validity per entry:
-  logic [DEPTH-1:0] post_flush_valid;
+  // Keep sparse holes after partial flush/free and search forward from tail_ptr
+  // to find the next invalid slot instead of compacting the tail on flush.
   assign flush_all_uncommitted = i_flush_en &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
   always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      post_flush_valid[i] = sq_valid[i] && !(
-          i_flush_en && !sq_committed[i] &&
-          (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
-    end
-  end
-
-  logic [PtrWidth-1:0] flush_tail_target;
-
-  always_comb begin
-    flush_tail_target = tail_ptr;
-    for (int s = 0; s < DEPTH; s++) begin
-      if (flush_tail_target != head_ptr
-          && !post_flush_valid[flush_tail_target[IdxWidth-1:0] - IdxWidth'(1)])
-        flush_tail_target = flush_tail_target - PtrWidth'(1);
+    alloc_target = tail_ptr;
+    for (int unsigned s = 0; s < DEPTH; s++) begin
+      if (sq_valid[alloc_target[IdxWidth-1:0]]) alloc_target = alloc_target + PtrWidth'(1);
     end
   end
 
   // ===========================================================================
-  // Head Advancement (combinational scan past contiguous freed entries)
+  // Head Advancement (combinational scan to the next live entry)
   // ===========================================================================
-  // Advance head past all freed (sent && !valid) entries.
+  // Advance head to the oldest still-live entry. Scan the full ring rather
+  // than using tail_ptr as a hard boundary; partial flush can leave holes that
+  // alloc_target will recycle later.
 
   always_comb begin
     head_advance_target = head_ptr;
     for (int unsigned s = 0; s < DEPTH; s++) begin
-      if (head_advance_target != tail_ptr && !sq_valid[head_advance_target[IdxWidth-1:0]])
+      if (!empty && !sq_valid[head_advance_target[IdxWidth-1:0]])
         head_advance_target = head_advance_target + PtrWidth'(1);
     end
   end
@@ -603,27 +588,27 @@ module store_queue #(
             sq_valid[i] <= 1'b0;
           end
         end
-        // Retract tail
-        tail_ptr <= flush_tail_target;
+        // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
+        // after the flush instead of compacting the tail in this cycle.
       end
 
       // -----------------------------------------------------------------
       // Allocation: write new entry at tail
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
-        sq_valid[tail_idx]      <= 1'b1;
-        sq_rob_tag[tail_idx]    <= i_alloc.rob_tag;
-        sq_is_fp[tail_idx]      <= i_alloc.is_fp;
-        sq_addr_valid[tail_idx] <= 1'b0;
-        sq_address[tail_idx]    <= '0;
-        sq_data_valid[tail_idx] <= 1'b0;
-        sq_size[tail_idx]       <= i_alloc.size;
-        sq_is_mmio[tail_idx]    <= 1'b0;
-        sq_fp64_phase[tail_idx] <= 1'b0;
-        sq_committed[tail_idx]  <= 1'b0;
-        sq_sent[tail_idx]       <= 1'b0;
-        sq_is_sc[tail_idx]      <= i_alloc.is_sc;
-        tail_ptr                <= tail_ptr + PtrWidth'(1);
+        sq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
+        sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
+        sq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
+        sq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        sq_address[alloc_target[IdxWidth-1:0]]    <= '0;
+        sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
+        sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= 1'b0;
+        sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
+        sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
+        sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
+        tail_ptr                                  <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
@@ -791,7 +776,7 @@ module store_queue #(
     end
   end
 
-  // If all entries are valid, must be pointer-full
+  // If all entries are valid, the queue must report full.
   always_comb begin
     if (i_rst_n) begin
       p_all_valid_implies_full : assert (f_valid_count < CountWidth'(DEPTH) || o_full);
@@ -868,7 +853,7 @@ module store_queue #(
           ) && !$past(
               i_flush_en
           ) && !i_flush_all && !i_flush_en) begin
-        p_alloc_advances_tail : assert (sq_valid[$past(tail_idx)]);
+        p_alloc_advances_tail : assert (sq_valid[$past(alloc_target[IdxWidth-1:0])]);
       end
 
       // flush_all empties SQ

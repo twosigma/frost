@@ -1321,17 +1321,16 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 38: Non-contiguous hole — pointer-full with fewer than DEPTH valid
+# Test 38: Non-contiguous hole reuse without immediate tail compaction
 # ============================================================================
 @cocotb.test()
 async def test_pointer_full_with_hole(dut: Any) -> None:
-    """Partial flush creates a hole; pointer-full fires with < DEPTH valid entries.
+    """Partial flush leaves holes; the queue fills only after every hole is reused.
 
     Allocate out-of-ROB-order so partial flush creates:
       idx 0(V:tag0) 1(V:tag1) 2(I:tag5) 3(V:tag2) 4(I:tag6) 5(I:tag7)
-    Tail retracts from 6→4 (stops at valid idx 3).  Then allocate 4 more
-    to exhaust pointer space: pointer-full with only 7 valid entries.
-    Pointer-based full in the model must agree with the DUT.
+    Then allocate into the available holes. After four allocations the queue
+    still has one free slot; the fifth allocation should make it full.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
@@ -1358,17 +1357,24 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert not dut_if.full, "SQ should not be full after partial flush"
     assert not model.full, "Model should not be full after partial flush"
 
-    # Allocate 4 more entries to exhaust pointer space (tail wraps to head)
+    # Four allocations should reuse four of the five free holes.
     for i in range(4):
         dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
         model.alloc(10 + i, False, MEM_SIZE_WORD)
         await dut_if.step()
         dut_if.clear_alloc()
 
-    # Pointer-full with 7 valid entries (idx 2 is a hole)
-    assert dut_if.full, "SQ should be pointer-full after filling remaining slots"
-    assert model.full, "Model pointer-full must agree with DUT"  # type: ignore[unreachable]
+    assert not dut_if.full, "SQ should not be full while one free hole remains"
+    assert not model.full, "Model should not be full while one free hole remains"
     assert (
         dut_if.count == 7
     ), f"Expected 7 valid entries (with hole), got {dut_if.count}"
     assert model.count == 7, f"Model count must match DUT (got {model.count})"
+
+    dut_if.drive_alloc(rob_tag=14, size=MEM_SIZE_WORD)
+    model.alloc(14, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 8, f"Expected 8 valid entries, got {dut_if.count}"
+    assert model.count == 8, f"Model count must match DUT (got {model.count})"

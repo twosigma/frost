@@ -88,7 +88,8 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
-    input  logic                    i_adapter_result_pending, // back-pressure
+    input logic i_adapter_result_pending,  // downstream busy hint
+    input logic i_result_accepted,  // staged result advanced toward adapter
 
     // =========================================================================
     // ROB Head Tag (MMIO: must be at head to issue)
@@ -173,8 +174,6 @@ module load_queue #(
 
   // Index extraction (lower bits)
   wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
-  wire [IdxWidth-1:0] tail_idx = tail_ptr[IdxWidth-1:0];
-
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
   logic [DEPTH-1:0] lq_is_fp;
@@ -273,6 +272,11 @@ module load_queue #(
   logic issue_mem_found;  // Phase B: entry ready for memory
   logic [IdxWidth-1:0] issue_mem_idx;
   logic block_younger_mem;
+  logic issue_cdb_fire;
+  logic cdb_stage_result_flushed;
+  logic cdb_stage_slot_available;
+  riscv_pkg::fu_complete_t issue_cdb_result;
+  riscv_pkg::fu_complete_t cdb_stage_result;
 
   // Memory issued entry tracking
   logic mem_outstanding;  // One outstanding read at a time
@@ -291,8 +295,9 @@ module load_queue #(
   logic free_entry_en;
   logic [IdxWidth-1:0] free_entry_idx;
 
-  // Head advancement target (scans past all contiguous invalid entries)
+  // Head/tail search targets for the sparse valid-bit queue.
   logic [PtrWidth-1:0] head_advance_target;
+  logic [PtrWidth-1:0] alloc_target;
 
   // ===========================================================================
   // AMO ALU (combinational)
@@ -333,9 +338,8 @@ module load_queue #(
     end
   end
 
-  assign full  = (head_ptr[IdxWidth-1:0] == tail_ptr[IdxWidth-1:0]) &&
-                 (head_ptr[PtrWidth-1] != tail_ptr[PtrWidth-1]);
-  assign empty = (head_ptr == tail_ptr);
+  assign full = (count == CountWidth'(DEPTH));
+  assign empty = (count == CountWidth'(0));
 
   assign o_full = full;
   assign o_empty = empty;
@@ -702,92 +706,76 @@ module load_queue #(
   end
 
   // ===========================================================================
-  // CDB Broadcast Logic (combinational)
+  // CDB Broadcast Logic
   // ===========================================================================
-  // Phase A candidate broadcasts to CDB when not back-pressured.
+  // Phase A candidate is captured into a one-entry registered stage before it
+  // leaves the LQ. That breaks the issue/data-select cone away from the
+  // downstream MEM adapter / CDB wakeup path while preserving ordering.
 
   always_comb begin
-    o_fu_complete.valid     = 1'b0;
-    o_fu_complete.tag       = '0;
-    o_fu_complete.value     = '0;
-    o_fu_complete.exception = 1'b0;
-    o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(0);
-    o_fu_complete.fp_flags  = '0;
-
-    if (issue_cdb_found && !i_adapter_result_pending && !i_flush_all && !i_flush_en) begin
-      o_fu_complete.valid = 1'b1;
-      o_fu_complete.tag   = lq_rob_tag[issue_cdb_idx];
+    issue_cdb_result = '0;
+    if (issue_cdb_found && !i_flush_all && !i_flush_en) begin
+      issue_cdb_result.valid = 1'b1;
+      issue_cdb_result.tag   = lq_rob_tag[issue_cdb_idx];
 
       if (lq_is_fp[issue_cdb_idx]) begin
         if (lq_size[issue_cdb_idx] == riscv_pkg::MEM_SIZE_DOUBLE) begin
           // FLD: raw 64-bit data (lo + hi from LUTRAM)
-          o_fu_complete.value = {lq_data_hi_rd, lq_data_lo_rd};
+          issue_cdb_result.value = {lq_data_hi_rd, lq_data_lo_rd};
         end else begin
           // FLW: NaN-box 32-bit to 64-bit
-          o_fu_complete.value = {32'hFFFF_FFFF, lq_data_lo_rd};
+          issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_lo_rd};
         end
       end else begin
         // INT load: zero-extend XLEN to FLEN
-        o_fu_complete.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
+        issue_cdb_result.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
       end
     end
   end
 
-  // Entry freeing: when CDB is presenting a valid result (will be captured by adapter)
-  assign free_entry_en  = o_fu_complete.valid;
+  assign cdb_stage_slot_available = !cdb_stage_result.valid || i_result_accepted;
+  assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
+  assign cdb_stage_result_flushed = i_flush_en && cdb_stage_result.valid &&
+      (flush_all_entries || is_younger(
+      cdb_stage_result.tag, i_flush_tag, i_rob_head_tag
+  ));
+
+  always_comb begin
+    o_fu_complete = '0;
+    if (cdb_stage_result.valid && !i_flush_all && !i_flush_en && !cdb_stage_result_flushed) begin
+      o_fu_complete = cdb_stage_result;
+    end
+  end
+
+  // Entry freeing: once the result is captured into the stage, the queue slot
+  // can be released. The staged copy now owns the completion payload.
+  assign free_entry_en  = issue_cdb_fire;
   assign free_entry_idx = issue_cdb_idx;
 
   // ===========================================================================
-  // Tail Retraction (combinational scan for partial flush)
+  // Allocation Search
   // ===========================================================================
-  // After partial flush, retract tail backwards past consecutive invalid
-  // entries at the tail end so that pointer-based full is accurate.
-  // Uses the *current* (pre-flush) lq_valid together with the partial flush
-  // invalidation predicate to see the post-flush validity.
-
-  // Pre-compute post-flush validity per entry (combinational):
-  // An entry will be invalid after flush if it is currently invalid
-  // OR it is being flushed (younger than flush_tag).
-  logic [DEPTH-1:0] post_flush_valid;
+  // The queue keeps sparse holes after partial flush/free. Search forward from
+  // tail_ptr to the next invalid slot instead of trying to compact the tail in
+  // the flush cycle.
   always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      post_flush_valid[i] = lq_valid[i] &&
-          !(i_flush_en &&
-            (flush_all_entries || is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)));
-    end
-  end
-
-  logic [PtrWidth-1:0] flush_tail_target;
-
-  // Retract tail past contiguous invalid entries at the tail end.
-  // Mirrors head_advance_target: recompute check index from the current
-  // flush_tail_target each iteration so we stop at the first valid entry
-  // and never skip over non-contiguous gaps.
-  always_comb begin
-    flush_tail_target = tail_ptr;
-    for (int s = 0; s < DEPTH; s++) begin
-      if (flush_tail_target != head_ptr
-          && !post_flush_valid[flush_tail_target[IdxWidth-1:0] - IdxWidth'(1)])
-        flush_tail_target = flush_tail_target - PtrWidth'(1);
+    alloc_target = tail_ptr;
+    for (int unsigned s = 0; s < DEPTH; s++) begin
+      if (lq_valid[alloc_target[IdxWidth-1:0]]) alloc_target = alloc_target + PtrWidth'(1);
     end
   end
 
   // ===========================================================================
-  // Head Advancement (combinational scan past contiguous invalid entries)
+  // Head Advancement (combinational scan to the next valid entry)
   // ===========================================================================
-  // Advance head past all currently-invalid entries.
-  //
-  // Do not fold the same-cycle CDB free into this scan. Letting issue/CDB
-  // selection feed head_ptr directly creates a long MEM_RS -> LQ head advance
-  // cone in post-synthesis timing. A one-cycle lag before the head pointer
-  // catches up to a newly-freed slot is architecturally harmless: the entry is
-  // already invalid in lq_valid, so the next cycle's scans naturally skip it.
-  // At DEPTH=8 this remaining chain is still trivial.
+  // Advance head to the oldest still-valid entry. Scan the full ring rather
+  // than treating tail_ptr as a hard boundary; partial flush can leave holes
+  // behind the oldest live entry, and alloc_target reuses them later.
 
   always_comb begin
     head_advance_target = head_ptr;
     for (int unsigned s = 0; s < DEPTH; s++) begin
-      if (head_advance_target != tail_ptr && !lq_valid[head_advance_target[IdxWidth-1:0]])
+      if (!empty && !lq_valid[head_advance_target[IdxWidth-1:0]])
         head_advance_target = head_advance_target + PtrWidth'(1);
     end
   end
@@ -819,6 +807,7 @@ module load_queue #(
       amo_state                 <= AMO_IDLE;
       amo_old_value             <= '0;
       amo_entry_idx             <= '0;
+      cdb_stage_result          <= '0;
     end else if (i_flush_all) begin
       // Full flush: reset everything
       head_ptr                  <= '0;
@@ -842,6 +831,7 @@ module load_queue #(
       amo_state                 <= AMO_IDLE;
       amo_old_value             <= '0;
       amo_entry_idx             <= '0;
+      cdb_stage_result          <= '0;
     end else begin
       // -----------------------------------------------------------------
       // Partial flush: invalidate entries younger than flush_tag
@@ -865,31 +855,31 @@ module load_queue #(
             drop_mem_response_pending <= 1'b1;
           end
         end
-        // Retract tail: computed combinationally (see flush_tail_target)
-        tail_ptr <= flush_tail_target;
+        // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
+        // after the flush instead of compacting the tail in this cycle.
       end
 
       // -----------------------------------------------------------------
       // Allocation: write new entry at tail
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
-        lq_valid[tail_idx]      <= 1'b1;
-        lq_rob_tag[tail_idx]    <= i_alloc.rob_tag;
-        lq_is_fp[tail_idx]      <= i_alloc.is_fp;
-        lq_addr_valid[tail_idx] <= 1'b0;
-        lq_address[tail_idx]    <= '0;
-        lq_size[tail_idx]       <= i_alloc.size;
-        lq_sign_ext[tail_idx]   <= i_alloc.sign_ext;
-        lq_is_mmio[tail_idx]    <= 1'b0;
-        lq_fp64_phase[tail_idx] <= 1'b0;
-        lq_issued[tail_idx]     <= 1'b0;
-        lq_data_valid[tail_idx] <= 1'b0;
-        lq_forwarded[tail_idx]  <= 1'b0;
-        lq_is_lr[tail_idx]      <= i_alloc.is_lr;
-        lq_is_amo[tail_idx]     <= i_alloc.is_amo;
-        lq_amo_op[tail_idx]     <= i_alloc.amo_op;
-        lq_amo_rs2[tail_idx]    <= '0;
-        tail_ptr                <= tail_ptr + PtrWidth'(1);
+        lq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
+        lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
+        lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
+        lq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        lq_address[alloc_target[IdxWidth-1:0]]    <= '0;
+        lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
+        lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
+        lq_is_mmio[alloc_target[IdxWidth-1:0]]    <= 1'b0;
+        lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        lq_issued[alloc_target[IdxWidth-1:0]]     <= 1'b0;
+        lq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        lq_forwarded[alloc_target[IdxWidth-1:0]]  <= 1'b0;
+        lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
+        lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
+        lq_amo_op[alloc_target[IdxWidth-1:0]]     <= i_alloc.amo_op;
+        lq_amo_rs2[alloc_target[IdxWidth-1:0]]    <= '0;
+        tail_ptr                                  <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
@@ -977,6 +967,16 @@ module load_queue #(
       if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
         lq_data_valid[amo_entry_idx] <= 1'b1;
         amo_state                    <= AMO_IDLE;
+      end
+
+      // -----------------------------------------------------------------
+      // Completion Stage: hold one completed load result for downstream
+      // MEM adapter / CDB consumption.
+      // -----------------------------------------------------------------
+      if (issue_cdb_fire) begin
+        cdb_stage_result <= issue_cdb_result;
+      end else if (i_result_accepted || cdb_stage_result_flushed) begin
+        cdb_stage_result <= '0;
       end
 
       // -----------------------------------------------------------------
@@ -1081,9 +1081,7 @@ module load_queue #(
     end
   end
 
-  // If all entries are valid, the buffer must be pointer-full.
-  // Note: o_full (pointer-based) can be true with f_valid_count < DEPTH
-  // after partial flush, since head advancement happens on the next posedge.
+  // If all entries are valid, the buffer must report full.
   always_comb begin
     if (i_rst_n) begin
       p_all_valid_implies_full : assert (f_valid_count < CountWidth'(DEPTH) || o_full);
@@ -1118,24 +1116,24 @@ module load_queue #(
     end
   end
 
-  // fu_complete tag matches a valid entry's rob_tag
+  // Captured completion tag matches the selected valid entry's rob_tag
   always_comb begin
-    if (i_rst_n && o_fu_complete.valid) begin
-      p_fu_complete_tag_matches : assert (o_fu_complete.tag == lq_rob_tag[issue_cdb_idx]);
+    if (i_rst_n && issue_cdb_fire) begin
+      p_fu_complete_tag_matches : assert (issue_cdb_result.tag == lq_rob_tag[issue_cdb_idx]);
     end
   end
 
-  // fu_complete valid only when entry has data_valid
+  // Captured completion requires the selected entry to have data_valid
   always_comb begin
-    if (i_rst_n && o_fu_complete.valid) begin
+    if (i_rst_n && issue_cdb_fire) begin
       p_fu_complete_needs_data : assert (lq_data_valid[issue_cdb_idx]);
     end
   end
 
-  // CDB back-pressure: fu_complete deasserted when adapter pending
+  // A staged result can only be consumed when the wrapper reports acceptance.
   always_comb begin
-    if (i_rst_n && i_adapter_result_pending) begin
-      p_cdb_backpressure : assert (!o_fu_complete.valid);
+    if (i_rst_n && i_result_accepted) begin
+      p_result_accept_needs_valid : assert (o_fu_complete.valid);
     end
   end
 
@@ -1172,7 +1170,7 @@ module load_queue #(
           ) && !$past(
               i_flush_en
           ) && !i_flush_all && !i_flush_en) begin
-        p_alloc_advances_tail : assert (lq_valid[$past(tail_idx)]);
+        p_alloc_advances_tail : assert (lq_valid[$past(alloc_target[IdxWidth-1:0])]);
       end
 
       // flush_all empties LQ

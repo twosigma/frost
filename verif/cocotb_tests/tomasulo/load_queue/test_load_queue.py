@@ -73,6 +73,23 @@ async def alloc_and_addr(
     dut_if.clear_addr_update()
 
 
+async def wait_for_fu_complete(dut_if: LQInterface, max_cycles: int = 4) -> FuComplete:
+    """Allow staged completion timing before declaring the result missing."""
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    for _ in range(max_cycles):
+        if result.valid:
+            return result
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+    return result
+
+
+async def accept_fu_complete(dut_if: LQInterface) -> None:
+    """Accept and clear the currently-presented staged completion."""
+    await dut_if.accept_fu_complete()
+
+
 async def complete_load_no_forward(
     dut_if: LQInterface,
     model: LQModel,
@@ -103,9 +120,9 @@ async def complete_load_no_forward(
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
 
-    # Now CDB should have the result
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    result = await wait_for_fu_complete(dut_if)
+    if result.valid:
+        await accept_fu_complete(dut_if)
     return result
 
 
@@ -128,15 +145,19 @@ async def complete_load_fast_path_or_memory(
         dut_if.clear_mem_response()
         dut_if.drive_sq_all_older_known(False)
         dut_if.clear_sq_forward()
-        await Timer(1, unit="ns")
-        return dut_if.read_fu_complete(), False
+        result = await wait_for_fu_complete(dut_if)
+        if result.valid:
+            await accept_fu_complete(dut_if)
+        return result, False
 
     model.cache_hit_complete()
     await dut_if.step()
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
-    await Timer(1, unit="ns")
-    return dut_if.read_fu_complete(), True
+    result = await wait_for_fu_complete(dut_if)
+    if result.valid:
+        await accept_fu_complete(dut_if)
+    return result, True
 
 
 # ============================================================================
@@ -346,11 +367,11 @@ async def test_sq_forward(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_mem_response()
         dut_if.drive_sq_all_older_known(False)
-        await Timer(1, unit="ns")
-        result = dut_if.read_fu_complete()
+        result = await wait_for_fu_complete(dut_if)
     else:
         dut_if.clear_sq_forward()
         dut_if.drive_sq_all_older_known(False)
+        result = await wait_for_fu_complete(dut_if)
 
     assert result.valid, "Load should complete via SQ fast path or memory fallback"
     assert result.tag == 10
@@ -473,15 +494,15 @@ async def test_fld_two_phase(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_mem_response()
 
-    # CDB should have full 64-bit value
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    # CDB should have full 64-bit value after the staged completion registers it
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should be valid after FLD"
     assert result.tag == 14
     expected = (0xCCCC_DDDD << 32) | 0xAAAA_BBBB
     assert (
         result.value == expected
     ), f"Expected 0x{expected:016x}, got 0x{result.value:016x}"
+    await accept_fu_complete(dut_if)
 
 
 # ============================================================================
@@ -592,7 +613,7 @@ async def test_oldest_first_ordering(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_cdb_backpressure(dut: Any) -> None:
-    """Adapter pending -> LQ holds result, presents when clear."""
+    """Staged completion remains asserted until the consumer accepts it."""
     dut_if, model = await setup(dut)
 
     await alloc_and_addr(dut_if, model, rob_tag=19, address=0x8000)
@@ -608,20 +629,20 @@ async def test_cdb_backpressure(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_mem_response()
 
-    # Set adapter pending
-    dut_if.drive_adapter_pending(True)
-    await Timer(1, unit="ns")
-
-    result = dut_if.read_fu_complete()
-    assert not result.valid, "CDB should be suppressed when adapter pending"
-
-    # Clear back-pressure
-    dut_if.drive_adapter_pending(False)
-    await Timer(1, unit="ns")
-
-    result = dut_if.read_fu_complete()
-    assert result.valid, "CDB should present when adapter clear"
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Staged completion should appear once ready"
     assert result.value == 0x1234_5678
+
+    # Without acceptance, the staged result must remain visible.
+    await dut_if.step()
+    held = dut_if.read_fu_complete()
+    assert held.valid, "Completion should stay asserted until accepted"
+    assert held.value == 0x1234_5678
+
+    await accept_fu_complete(dut_if)
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Completion should clear after acceptance"
 
 
 # ============================================================================
@@ -679,15 +700,16 @@ async def test_constrained_random(dut: Any) -> None:
         # Priority 1: Drain any pending CDB result
         model_cdb = model.get_fu_complete()
         if model_cdb.valid:
-            await Timer(1, unit="ns")
-            dut_cdb = dut_if.read_fu_complete()
+            dut_cdb = await wait_for_fu_complete(dut_if)
             assert dut_cdb.valid, f"cycle {cycle}: model CDB valid but DUT not"
             assert (
                 dut_cdb.tag == model_cdb.tag
             ), f"cycle {cycle}: CDB tag DUT={dut_cdb.tag} model={model_cdb.tag}"
+            dut_if.drive_result_accepted(True)
             model.free_cdb_entry()
             model.advance_head()
             await dut_if.step()
+            dut_if.clear_result_accepted()
 
         # Priority 2: Provide memory response if outstanding
         elif model.mem_outstanding:
@@ -838,15 +860,16 @@ async def test_tail_reclamation_after_partial_flush(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 24: Non-contiguous tail hole — retraction must stop at valid entry
+# Test 24: Non-contiguous hole reuse without immediate tail compaction
 # ============================================================================
 @cocotb.test()
 async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
-    """Tail retraction stops at first valid entry, not skipping past holes.
+    """Sparse allocation reuses holes even though partial flush leaves tail stale.
 
     Allocate out-of-ROB-order so that a partial flush creates the pattern:
       idx 0(V) 1(V) 2(INVALID) 3(V) 4(INVALID) 5(INVALID)
-    Tail must retract from 6 to 4, not past the valid entry at idx 3.
+    The queue should not report full after reusing four free holes, and the
+    fifth new allocation should consume the last remaining hole.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
@@ -868,26 +891,30 @@ async def test_tail_retraction_non_contiguous_hole(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_partial_flush()
 
-    # Tail should retract from 6→5→4 (skipping idx 5,4) then STOP at idx 3 (valid)
     assert dut_if.count == 3, f"Expected 3 valid entries, got {dut_if.count}"
     assert not dut_if.full, "LQ should not be full after partial flush"
 
-    # The key check: we can allocate exactly DEPTH - (tail-head) new entries.
-    # tail=4, head=0 → 4 slots used → 4 free.  Allocate 4 to fill.
+    # Four allocations should reuse four of the five free holes, but the queue
+    # should not report full until the final free slot is consumed.
     for i in range(4):
         dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
         model.alloc(10 + i, False, MEM_SIZE_WORD, False)
         await dut_if.step()
         dut_if.clear_alloc()
 
-    assert dut_if.full, "LQ should be full after allocating remaining slots"
-    assert model.full, "Model pointer-full must agree with DUT"  # type: ignore[unreachable]
-    # Valid count: 3 original + 4 new = 7 (idx 2 is a hole, still invalid).
-    # Pointer-based full fires with fewer than DEPTH valid entries — this is
-    # accepted capacity loss from tail-only allocation with out-of-order frees.
     count = dut_if.count
     assert count == 7, f"Expected 7 valid entries (with hole), got {count}"
     assert model.count == 7, f"Model count must match DUT (got {model.count})"
+    assert not dut_if.full, "LQ should not be full while one free hole remains"
+    assert not model.full, "Model should not be full while one free hole remains"
+
+    dut_if.drive_alloc(rob_tag=14, size=MEM_SIZE_WORD)
+    model.alloc(14, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 8, f"Expected 8 valid entries, got {dut_if.count}"
+    assert model.count == 8, f"Model count must match DUT (got {model.count})"
 
 
 # ============================================================================
@@ -1035,13 +1062,10 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     # CDB broadcast for FLD
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "FLD CDB should be valid"
     assert result.tag == 1
-
-    # Free the FLD entry
-    await dut_if.step()
+    await accept_fu_complete(dut_if)
 
     # -- LW at base_addr: should hit L0 cache with low_word --
     await alloc_and_addr(dut_if, model, rob_tag=2, address=base_addr)
@@ -1057,9 +1081,6 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
         f"LW at base_addr: expected 0x{low_word:08x}, got 0x{result.value:08x} "
         "(cache poisoned by FLD phase 1?)"
     )
-
-    # Free the LW entry
-    await dut_if.step()
 
     # -- LW at base_addr + 4: should hit L0 cache with high_word --
     await alloc_and_addr(dut_if, model, rob_tag=3, address=base_addr + 4)
@@ -1443,14 +1464,14 @@ async def test_amo_swap(dut: Any) -> None:
     await dut_if.step()
     dut_if.drive_amo_mem_write_done(False)
 
-    # CDB should have old value
+    # CDB should have old value after the staged completion registers it
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should be valid after AMO"
     assert result.tag == 0
     assert result.value == old_val, f"Expected 0x{old_val:x}, got 0x{result.value:x}"
+    await accept_fu_complete(dut_if)
 
 
 # ============================================================================
@@ -1506,13 +1527,13 @@ async def test_amo_add(dut: Any) -> None:
     await dut_if.step()
     dut_if.drive_amo_mem_write_done(False)
 
-    # CDB gets old value
+    # CDB gets old value after the staged completion registers it
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should be valid"
     assert result.value == old_val, f"Expected {old_val}, got {result.value}"
+    await accept_fu_complete(dut_if)
 
 
 # ============================================================================
@@ -1564,11 +1585,10 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_mem_response()
 
-    # Free entry via CDB broadcast
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    # Accept the staged LW completion
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should broadcast LW result"
-    await dut_if.step()
+    await accept_fu_complete(dut_if)
 
     # --- Step 2: AMOSWAP at same address ---
     dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
@@ -1606,11 +1626,10 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     await dut_if.step()
     dut_if.drive_amo_mem_write_done(False)
 
-    # Free AMO entry via CDB
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
+    # Accept the staged AMO completion
+    result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should broadcast AMO result"
-    await dut_if.step()
+    await accept_fu_complete(dut_if)
 
     # --- Step 3: New LW at same address should MISS L0 cache ---
     dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)

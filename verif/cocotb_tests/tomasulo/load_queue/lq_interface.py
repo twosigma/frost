@@ -197,6 +197,7 @@ class LQInterface:
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
         self.dut.i_adapter_result_pending.value = 0
+        self.dut.i_result_accepted.value = 0
         self.dut.i_rob_head_tag.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
@@ -318,13 +319,27 @@ class LQInterface:
     # =========================================================================
 
     def drive_adapter_pending(self, pending: bool = True) -> None:
-        """Drive adapter back-pressure signal."""
+        """Drive legacy downstream-busy hint."""
         self.dut.i_adapter_result_pending.value = 1 if pending else 0
+
+    def drive_result_accepted(self, accepted: bool = True) -> None:
+        """Drive the staged-result acceptance handshake."""
+        self.dut.i_result_accepted.value = 1 if accepted else 0
+
+    def clear_result_accepted(self) -> None:
+        """Clear the staged-result acceptance handshake."""
+        self.dut.i_result_accepted.value = 0
 
     def read_fu_complete(self) -> FuComplete:
         """Read fu_complete output."""
         raw = int(self.dut.o_fu_complete.value)
         return unpack_fu_complete(raw)
+
+    async def accept_fu_complete(self) -> None:
+        """Pulse acceptance for the currently-presented staged result."""
+        self.drive_result_accepted(True)
+        await self.step()
+        self.clear_result_accepted()
 
     # =========================================================================
     # ROB Head Tag
