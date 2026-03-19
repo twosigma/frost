@@ -428,7 +428,16 @@ module tomasulo_wrapper (
   logic mem_rs_full_w;
   logic fp_rs_full_w;
   logic fmul_rs_full_w;
+  logic fmul_rs_full_raw;
+  logic fmul_rs_empty_raw;
+  logic [$clog2(riscv_pkg::FmulRsDepth + 1) - 1:0] fmul_rs_count_raw;
   logic fdiv_rs_full_w;
+  logic fmul_dispatch_pending_valid;
+  riscv_pkg::rs_dispatch_t fmul_dispatch_pending;
+  riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs;
+  logic fmul_dispatch_dequeue;
+  logic fmul_dispatch_slot_available;
+  logic fmul_dispatch_pending_flushed;
 
   // o_rs_full: dispatch-target mux (NOT dedicated INT_RS full; use o_int_rs_full)
   always_comb begin
@@ -444,12 +453,30 @@ module tomasulo_wrapper (
   end
 
   // Per-RS full output ports (dedicated, not muxed)
-  assign o_int_rs_full  = int_rs_full_w;
-  assign o_mul_rs_full  = mul_rs_full_w;
-  assign o_mem_rs_full  = mem_rs_full_w;
-  assign o_fp_rs_full   = fp_rs_full_w;
+  assign o_int_rs_full = int_rs_full_w;
+  assign o_mul_rs_full = mul_rs_full_w;
+  assign o_mem_rs_full = mem_rs_full_w;
+  assign o_fp_rs_full = fp_rs_full_w;
   assign o_fmul_rs_full = fmul_rs_full_w;
   assign o_fdiv_rs_full = fdiv_rs_full_w;
+
+  assign fmul_dispatch_dequeue = fmul_dispatch_pending_valid &&
+      !fmul_rs_full_raw &&
+      !speculative_flush_all &&
+      !speculative_flush_en;
+  assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue;
+  assign fmul_dispatch_pending_flushed = speculative_flush_all ||
+      (speculative_flush_en &&
+       fmul_dispatch_pending_valid &&
+       is_younger(
+      fmul_dispatch_pending.rob_tag, i_flush_tag, head_tag
+  ));
+  assign fmul_rs_full_w = fmul_rs_full_raw ||
+                         (fmul_dispatch_pending_valid && !fmul_dispatch_dequeue);
+  assign o_fmul_rs_empty = fmul_rs_empty_raw && !fmul_dispatch_pending_valid;
+  assign o_fmul_rs_count = fmul_rs_count_raw + {{($bits(
+      o_fmul_rs_count
+  ) - 1) {1'b0}}, fmul_dispatch_pending_valid};
 
   // ===========================================================================
   // ALU Pipeline: INT_RS issue → shim → adapter → CDB arbiter slot 0
@@ -954,9 +981,26 @@ module tomasulo_wrapper (
   // ---------------------------------------------------------------------------
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch;
   always_comb begin
-    fmul_rs_dispatch       = i_rs_dispatch;
-    fmul_rs_dispatch.valid = fmul_rs_dispatch_valid;
-    fmul_rs_dispatch.rm    = rm_resolved;
+    fmul_rs_dispatch             = i_rs_dispatch;
+    fmul_rs_dispatch.valid       = fmul_rs_dispatch_valid;
+    fmul_rs_dispatch.rm          = rm_resolved;
+
+    fmul_rs_dispatch_to_rs       = fmul_dispatch_pending;
+    fmul_rs_dispatch_to_rs.valid = fmul_dispatch_dequeue;
+  end
+
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+      fmul_dispatch_pending_valid <= 1'b0;
+    end else if (fmul_dispatch_pending_flushed) begin
+      fmul_dispatch_pending_valid <= 1'b0;
+    end else if (fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                 !speculative_flush_all && !speculative_flush_en) begin
+      fmul_dispatch_pending <= fmul_rs_dispatch;
+      fmul_dispatch_pending_valid <= 1'b1;
+    end else if (fmul_dispatch_dequeue) begin
+      fmul_dispatch_pending_valid <= 1'b0;
+    end
   end
 
   reservation_station #(
@@ -964,18 +1008,18 @@ module tomasulo_wrapper (
   ) u_fmul_rs (
       .i_clk             (i_clk),
       .i_rst_n           (i_rst_n),
-      .i_dispatch        (fmul_rs_dispatch),
-      .o_full            (fmul_rs_full_w),
+      .i_dispatch        (fmul_rs_dispatch_to_rs),
+      .o_full            (fmul_rs_full_raw),
       .i_cdb             (cdb_bus),
       .o_issue           (fmul_rs_issue_w),
       .i_fu_ready        (fmul_rs_fu_ready),
-      .o_next_issue_is_sc(),                       // unused — no SC ops in FMUL_RS
+      .o_next_issue_is_sc(),                        // unused — no SC ops in FMUL_RS
       .i_flush_en        (speculative_flush_en),
       .i_flush_tag       (i_flush_tag),
       .i_rob_head_tag    (head_tag),
       .i_flush_all       (speculative_flush_all),
-      .o_empty           (o_fmul_rs_empty),
-      .o_count           (o_fmul_rs_count)
+      .o_empty           (fmul_rs_empty_raw),
+      .o_count           (fmul_rs_count_raw)
   );
 
   // ---------------------------------------------------------------------------
