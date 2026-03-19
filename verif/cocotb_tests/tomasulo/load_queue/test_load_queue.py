@@ -85,6 +85,34 @@ async def wait_for_fu_complete(dut_if: LQInterface, max_cycles: int = 4) -> FuCo
     return result
 
 
+async def wait_for_sq_check(
+    dut_if: LQInterface, max_cycles: int = 4
+) -> dict[str, int | bool]:
+    """Allow the staged SQ-check launch path to present a valid candidate."""
+    await Timer(1, unit="ns")
+    sq_check = dut_if.read_sq_check()
+    for _ in range(max_cycles):
+        if sq_check["valid"]:
+            return sq_check
+        await dut_if.step()
+        sq_check = dut_if.read_sq_check()
+    return sq_check
+
+
+async def wait_for_mem_request(
+    dut_if: LQInterface, max_cycles: int = 4
+) -> dict[str, int | bool]:
+    """Allow the staged memory-launch path to present a request."""
+    await Timer(1, unit="ns")
+    mem_req = dut_if.read_mem_request()
+    for _ in range(max_cycles):
+        if mem_req["en"]:
+            return mem_req
+        await dut_if.step()
+        mem_req = dut_if.read_mem_request()
+    return mem_req
+
+
 async def accept_fu_complete(dut_if: LQInterface) -> None:
     """Accept and clear the currently-presented staged completion."""
     await dut_if.accept_fu_complete()
@@ -101,10 +129,9 @@ async def complete_load_no_forward(
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_rob_head_tag(rob_head_tag)
-    await Timer(1, unit="ns")
 
     # Check memory request
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "Expected memory read to be issued"
 
     # Step to register the issue
@@ -134,30 +161,41 @@ async def complete_load_fast_path_or_memory(
 ) -> tuple[FuComplete, bool]:
     """Complete a disambiguated load via fast path when enabled or via memory."""
     await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
     mem_req = dut_if.read_mem_request()
 
-    if mem_req["en"]:
-        assert mem_req["addr"] == expected_addr
-        await dut_if.step()
-        dut_if.drive_mem_response(mem_data)
-        model.mem_response(mem_data)
-        await dut_if.step()
-        dut_if.clear_mem_response()
-        dut_if.drive_sq_all_older_known(False)
-        dut_if.clear_sq_forward()
-        result = await wait_for_fu_complete(dut_if)
-        if result.valid:
-            await accept_fu_complete(dut_if)
-        return result, False
+    for _ in range(6):
+        if mem_req["en"]:
+            assert mem_req["addr"] == expected_addr
+            await dut_if.step()
+            dut_if.drive_mem_response(mem_data)
+            model.mem_response(mem_data)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+            dut_if.drive_sq_all_older_known(False)
+            dut_if.clear_sq_forward()
+            result = await wait_for_fu_complete(dut_if)
+            if result.valid:
+                await accept_fu_complete(dut_if)
+            return result, False
 
-    model.cache_hit_complete()
-    await dut_if.step()
+        if result.valid:
+            model.cache_hit_complete()
+            _ = model.get_fu_complete()
+            model.free_cdb_entry()
+            model.advance_head()
+            dut_if.drive_sq_all_older_known(False)
+            dut_if.clear_sq_forward()
+            await accept_fu_complete(dut_if)
+            return result, True
+
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+        mem_req = dut_if.read_mem_request()
+
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
-    result = await wait_for_fu_complete(dut_if)
-    if result.valid:
-        await accept_fu_complete(dut_if)
-    return result, True
+    return result, False
 
 
 # ============================================================================
@@ -227,9 +265,8 @@ async def test_addr_update(dut: Any) -> None:
     # With SQ disambiguation enabled, should see check
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
 
-    sq_check = dut_if.read_sq_check()
+    sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "SQ check should be valid"
     assert (
         sq_check["addr"] == 0x1000
@@ -345,20 +382,18 @@ async def test_sq_forward(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=True, can_forward=True, data=0xCAFE_BABE)
     model.apply_forward(SQForwardResult(match=True, can_forward=True, data=0xCAFE_BABE))
-    await Timer(1, unit="ns")
+    sq_check = await wait_for_sq_check(dut_if)
+    assert sq_check["valid"], "Expected forwarded load to reach SQ check stage"
 
     # While SQ still reports a match, the load must not issue to memory.
     mem_req = dut_if.read_mem_request()
     assert not mem_req["en"], "Should not issue memory read when SQ forwards"
 
-    # Step once: fast-path configurations complete here.
-    await dut_if.step()
-    result = dut_if.read_fu_complete()
+    result = await wait_for_fu_complete(dut_if)
     if not result.valid:
         # Conservative timing config: release the SQ match and let memory complete.
         dut_if.clear_sq_forward()
-        await Timer(1, unit="ns")
-        mem_req = dut_if.read_mem_request()
+        mem_req = await wait_for_mem_request(dut_if)
         assert mem_req["en"], "Expected memory read once SQ conflict is released"
         assert mem_req["addr"] == 0x3000
         await dut_if.step()
@@ -439,11 +474,10 @@ async def test_mmio_load(dut: Any) -> None:
 
     # Now set head to our tag
     dut_if.drive_rob_head_tag(5)
-    await Timer(1, unit="ns")
+    sq_check = await wait_for_sq_check(dut_if)
 
-    sq_check = dut_if.read_sq_check()
     assert sq_check["valid"], "MMIO should check SQ when at head"
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "MMIO should issue when at head"
 
 
@@ -462,9 +496,8 @@ async def test_fld_two_phase(dut: Any) -> None:
     # Phase 0: memory read at addr
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
 
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "Phase 0 should issue"
     assert (
         mem_req["addr"] == 0x6000
@@ -479,8 +512,7 @@ async def test_fld_two_phase(dut: Any) -> None:
     dut_if.clear_mem_response()
 
     # Phase 1: should re-issue at addr+4
-    await Timer(1, unit="ns")
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "Phase 1 should issue"
     assert (
         mem_req["addr"] == 0x6004
@@ -597,12 +629,9 @@ async def test_oldest_first_ordering(dut: Any) -> None:
     # Enable SQ disambiguation
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
 
     # Memory request should be for the oldest (tag 10)
-    mem_req = dut_if.read_mem_request()
-    assert mem_req["en"]
-    sq_check = dut_if.read_sq_check()
+    sq_check = await wait_for_sq_check(dut_if)
     assert (
         sq_check["rob_tag"] == 10
     ), f"Expected oldest tag=10, got {sq_check['rob_tag']}"
@@ -621,7 +650,8 @@ async def test_cdb_backpressure(dut: Any) -> None:
     # Complete the load
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Expected memory read before response"
     await dut_if.step()
 
     dut_if.drive_mem_response(0x1234_5678)
@@ -784,8 +814,7 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
     # Issue to memory
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "Should issue to memory"
     model.issue_to_memory(True, SQForwardResult())
     await dut_if.step()
@@ -1005,10 +1034,9 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
     # Enable disambiguation
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
 
     # Memory should be issued (cache always misses MMIO)
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "MMIO load should issue to memory, not cache"
 
 
@@ -1036,8 +1064,7 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     # Phase 0: memory read at base_addr
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    await Timer(1, unit="ns")
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "FLD phase 0 should issue"
     assert mem_req["addr"] == base_addr
     await dut_if.step()
@@ -1048,8 +1075,7 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     dut_if.clear_mem_response()
 
     # Phase 1: memory read at base_addr + 4
-    await Timer(1, unit="ns")
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "FLD phase 1 should issue"
     assert mem_req["addr"] == base_addr + 4
     await dut_if.step()
@@ -1119,10 +1145,9 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
     # SQ says: all older known, can_forward=True (would forward for non-MMIO)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=True, can_forward=True, data=0xBADD_A7A0)
-    await Timer(1, unit="ns")
 
     # SQ check should be valid (MMIO at head can disambiguate)
-    sq_check = dut_if.read_sq_check()
+    sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "MMIO load at head should check SQ"
 
     # Despite can_forward=True, MMIO guard should block forwarding.
@@ -1171,16 +1196,13 @@ async def test_lr_waits_for_rob_head(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
 
     mem_req = dut_if.read_mem_request()
     assert not mem_req["en"], "LR should not issue when not at ROB head"
 
     # Set head to our tag - LR should issue
     dut_if.drive_rob_head_tag(5)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LR should issue when at ROB head"
 
 
@@ -1214,9 +1236,7 @@ async def test_lr_sets_reservation(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LR should issue"
     await dut_if.step()
 
@@ -1255,7 +1275,8 @@ async def test_lr_reservation_cleared_by_flush(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "LR should issue before reservation is set"
     await dut_if.step()
 
     dut_if.drive_mem_response(0x1234)
@@ -1298,7 +1319,8 @@ async def test_lr_reservation_cleared_by_sc(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "LR should issue before reservation is set"
     await dut_if.step()
 
     dut_if.drive_mem_response(0x5678)
@@ -1341,7 +1363,8 @@ async def test_lr_reservation_cleared_by_snoop(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "LR should issue before reservation is set"
     await dut_if.step()
 
     dut_if.drive_mem_response(0x9ABC)
@@ -1387,7 +1410,6 @@ async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(False)
-    await Timer(1, unit="ns")
 
     mem_req = dut_if.read_mem_request()
     assert not mem_req["en"], "AMO should not issue when sq_committed_empty=false"
@@ -1403,9 +1425,7 @@ async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
     # Case 3: head=3 AND sq_committed_empty=true → should issue
     dut_if.drive_rob_head_tag(3)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "AMO should issue when at ROB head and sq_committed_empty"
 
 
@@ -1439,9 +1459,7 @@ async def test_amo_swap(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "AMO should issue memory read"
     await dut_if.step()
 
@@ -1503,7 +1521,8 @@ async def test_amo_add(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "AMOADD should issue memory read"
     await dut_if.step()
 
     # Memory response
@@ -1573,9 +1592,7 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     dut_if.drive_sq_committed_empty(True)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LW should issue to memory"
     await dut_if.step()
 
@@ -1603,9 +1620,7 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
 
     # Issue AMO
     dut_if.drive_rob_head_tag(1)
-    await Timer(1, unit="ns")
-
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "AMO should issue memory read"
     await dut_if.step()
 
@@ -1643,9 +1658,8 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     dut_if.clear_addr_update()
 
     dut_if.drive_rob_head_tag(2)
-    await Timer(1, unit="ns")
 
     # If L0 cache was properly invalidated, this should issue to memory
     # (not fast-path from cache)
-    mem_req = dut_if.read_mem_request()
+    mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LW after AMO should miss L0 cache and issue to memory"
