@@ -278,6 +278,23 @@ module load_queue #(
   riscv_pkg::fu_complete_t issue_cdb_result;
   riscv_pkg::fu_complete_t cdb_stage_result;
 
+  // Staged SQ-disambiguation candidate. This breaks the same-cycle
+  // issue-scan -> SQ compare -> memory-launch loop by holding one
+  // candidate load stable while SQ resolves it.
+  logic sq_check_pending;
+  logic [IdxWidth-1:0] sq_check_idx;
+  logic sq_check_capture;
+  logic sq_check_replace;
+  logic sq_check_entry_valid;
+  logic sq_check_entry_issueable;
+
+  // Staged external-memory launch. After SQ disambiguation clears a load for
+  // memory, hold the exact request in a register and launch it the next cycle.
+  logic mem_issue_pending;
+  logic [IdxWidth-1:0] mem_issue_idx;
+  logic [XLEN-1:0] mem_issue_addr;
+  riscv_pkg::mem_size_e mem_issue_size;
+
   // Memory issued entry tracking
   logic mem_outstanding;  // One outstanding read at a time
   logic [IdxWidth-1:0] issued_idx;  // Which entry is awaiting mem response
@@ -405,20 +422,42 @@ module load_queue #(
   // ===========================================================================
   // For Phase B candidate: drive SQ check ports
 
+  assign sq_check_entry_valid = sq_check_pending && lq_valid[sq_check_idx] &&
+      lq_addr_valid[sq_check_idx] && !lq_issued[sq_check_idx] &&
+      !lq_data_valid[sq_check_idx];
+
+  assign sq_check_entry_issueable = sq_check_entry_valid &&
+      (!lq_is_lr[sq_check_idx] || (lq_rob_tag[sq_check_idx] == i_rob_head_tag)) &&
+      (!lq_is_amo[sq_check_idx]
+       || (lq_rob_tag[sq_check_idx] == i_rob_head_tag && i_sq_committed_empty)) &&
+      (!lq_is_mmio[sq_check_idx] || (lq_rob_tag[sq_check_idx] == i_rob_head_tag));
+
+  assign sq_check_capture = !sq_check_pending && !mem_issue_pending && issue_mem_found &&
+      !mem_outstanding &&
+      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
+      (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag));
+
+  assign sq_check_replace = sq_check_pending && !mem_issue_pending && issue_mem_found &&
+      !mem_outstanding &&
+      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
+      (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag)) &&
+      (!sq_check_entry_valid || is_younger(
+      lq_rob_tag[sq_check_idx], lq_rob_tag[issue_mem_idx], i_rob_head_tag
+  ));
+
   always_comb begin
     o_sq_check_valid   = 1'b0;
     o_sq_check_addr    = '0;
     o_sq_check_rob_tag = '0;
     o_sq_check_size    = riscv_pkg::MEM_SIZE_WORD;
 
-    if (issue_mem_found && !mem_outstanding && !drop_mem_response_pending && !i_mem_bus_busy) begin
-      // MMIO check: only issue if at ROB head
-      if (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag)) begin
-        o_sq_check_valid   = 1'b1;
-        o_sq_check_addr    = lq_address[issue_mem_idx];
-        o_sq_check_rob_tag = lq_rob_tag[issue_mem_idx];
-        o_sq_check_size    = riscv_pkg::mem_size_e'(lq_size[issue_mem_idx]);
-      end
+    if (!i_flush_all && !i_flush_en && !mem_issue_pending && !mem_outstanding &&
+        !drop_mem_response_pending &&
+        !i_mem_bus_busy && sq_check_entry_issueable) begin
+      o_sq_check_valid   = 1'b1;
+      o_sq_check_addr    = lq_address[sq_check_idx];
+      o_sq_check_rob_tag = lq_rob_tag[sq_check_idx];
+      o_sq_check_size    = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
     end
   end
 
@@ -433,12 +472,15 @@ module load_queue #(
 
   logic sq_can_issue;
   logic sq_do_forward;
+  logic stage_mem_issue;
+  logic [XLEN-1:0] stage_mem_issue_addr;
+  riscv_pkg::mem_size_e stage_mem_issue_size;
   logic flush_all_entries;
 
   assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && o_sq_check_valid && i_sq_forward.can_forward
-      && !lq_is_mmio[issue_mem_idx] && !lq_is_lr[issue_mem_idx] && !lq_is_amo[issue_mem_idx];
+      && !lq_is_mmio[sq_check_idx] && !lq_is_lr[sq_check_idx] && !lq_is_amo[sq_check_idx];
   assign flush_all_entries = i_flush_en &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
@@ -493,8 +535,8 @@ module load_queue #(
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
-      // Lookup: candidate address from Phase B
-      .i_lookup_addr(issue_mem_found ? lq_address[issue_mem_idx] : '0),
+      // Lookup: staged SQ-disambiguation candidate
+      .i_lookup_addr(sq_check_entry_valid ? lq_address[sq_check_idx] : '0),
       .o_lookup_hit (cache_lookup_hit),
       .o_lookup_data(cache_lookup_data),
 
@@ -529,29 +571,28 @@ module load_queue #(
       && !i_flush_all && !i_flush_en
       && sq_can_issue
       && cache_lookup_hit
-      && (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_WORD)
-      && !lq_is_fp[issue_mem_idx]
-      && !lq_is_mmio[issue_mem_idx]
-      && !lq_is_lr[issue_mem_idx]
-      && !lq_is_amo[issue_mem_idx];
+      && (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_WORD)
+      && !lq_is_fp[sq_check_idx]
+      && !lq_is_mmio[sq_check_idx]
+      && !lq_is_lr[sq_check_idx]
+      && !lq_is_amo[sq_check_idx];
+
+  always_comb begin
+    stage_mem_issue_addr = lq_address[sq_check_idx];
+    if (lq_is_fp[sq_check_idx] && lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        lq_fp64_phase[sq_check_idx]) begin
+      stage_mem_issue_addr = lq_address[sq_check_idx] + 32'd4;
+    end
+  end
+
+  assign stage_mem_issue = !i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path;
+  assign stage_mem_issue_size = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
 
   // Memory issue (placed after cache_hit_fast_path for Icarus compatibility)
   always_comb begin
-    o_mem_read_en   = 1'b0;
-    o_mem_read_addr = '0;
-    o_mem_read_size = riscv_pkg::MEM_SIZE_WORD;
-
-    if (!i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path) begin
-      o_mem_read_en = 1'b1;
-      // FLD phase 1: read address+4 for upper word
-      if (lq_is_fp[issue_mem_idx] && lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_DOUBLE
-          && lq_fp64_phase[issue_mem_idx]) begin
-        o_mem_read_addr = lq_address[issue_mem_idx] + 32'd4;
-      end else begin
-        o_mem_read_addr = lq_address[issue_mem_idx];
-      end
-      o_mem_read_size = riscv_pkg::mem_size_e'(lq_size[issue_mem_idx]);
-    end
+    o_mem_read_en   = mem_issue_pending && !i_flush_all && !i_flush_en;
+    o_mem_read_addr = mem_issue_addr;
+    o_mem_read_size = mem_issue_size;
   end
 
   // Load unit for cache hit path: feed cache data through load unit
@@ -565,15 +606,15 @@ module load_queue #(
       .i_is_load_byte           (lu_cache_is_byte),
       .i_is_load_halfword       (lu_cache_is_half),
       .i_is_load_unsigned       (lu_cache_is_unsigned),
-      .i_data_memory_address    (lq_address[issue_mem_idx]),
+      .i_data_memory_address    (lq_address[sq_check_idx]),
       .i_data_memory_read_data  (cache_lookup_data),
       .o_data_loaded_from_memory(lu_cache_out)
   );
 
   always_comb begin
-    lu_cache_is_byte     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_BYTE);
-    lu_cache_is_half     = (lq_size[issue_mem_idx] == riscv_pkg::MEM_SIZE_HALF);
-    lu_cache_is_unsigned = !lq_sign_ext[issue_mem_idx];
+    lu_cache_is_byte     = (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_BYTE);
+    lu_cache_is_half     = (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_HALF);
+    lu_cache_is_unsigned = !lq_sign_ext[sq_check_idx];
   end
 
   // ===========================================================================
@@ -599,13 +640,13 @@ module load_queue #(
       if (cache_hit_fast_path) begin
         lq_data_lo_we[0]   = 1'b1;
         lq_data_hi_we[0]   = 1'b1;
-        lq_data_wr_addr[0] = issue_mem_idx;
-        lq_data_lo_wd[0]   = lq_is_fp[issue_mem_idx] ? cache_lookup_data : lu_cache_out;
+        lq_data_wr_addr[0] = sq_check_idx;
+        lq_data_lo_wd[0]   = lq_is_fp[sq_check_idx] ? cache_lookup_data : lu_cache_out;
         lq_data_hi_wd[0]   = '0;
       end else if (sq_do_forward) begin
         lq_data_lo_we[0]   = 1'b1;
         lq_data_hi_we[0]   = 1'b1;
-        lq_data_wr_addr[0] = issue_mem_idx;
+        lq_data_wr_addr[0] = sq_check_idx;
         lq_data_lo_wd[0]   = i_sq_forward.data[XLEN-1:0];
         lq_data_hi_wd[0]   = i_sq_forward.data[FLEN-1:XLEN];
       end else if (accept_mem_response) begin
@@ -802,6 +843,12 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       issued_idx                <= '0;
       drop_mem_response_pending <= 1'b0;
+      sq_check_pending          <= 1'b0;
+      sq_check_idx              <= '0;
+      mem_issue_pending         <= 1'b0;
+      mem_issue_idx             <= '0;
+      mem_issue_addr            <= '0;
+      mem_issue_size            <= riscv_pkg::MEM_SIZE_WORD;
       reservation_valid         <= 1'b0;
       reservation_addr          <= '0;
       amo_state                 <= AMO_IDLE;
@@ -826,6 +873,12 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       issued_idx                <= '0;
       drop_mem_response_pending <= 1'b0;
+      sq_check_pending          <= 1'b0;
+      sq_check_idx              <= '0;
+      mem_issue_pending         <= 1'b0;
+      mem_issue_idx             <= '0;
+      mem_issue_addr            <= '0;
+      mem_issue_size            <= riscv_pkg::MEM_SIZE_WORD;
       reservation_valid         <= 1'b0;
       reservation_addr          <= '0;
       amo_state                 <= AMO_IDLE;
@@ -854,6 +907,16 @@ module load_queue #(
           if (!i_mem_read_valid) begin
             drop_mem_response_pending <= 1'b1;
           end
+        end
+        if (sq_check_pending && (flush_all_entries || (lq_valid[sq_check_idx] && is_younger(
+                lq_rob_tag[sq_check_idx], i_flush_tag, i_rob_head_tag
+            )))) begin
+          sq_check_pending <= 1'b0;
+        end
+        if (mem_issue_pending && (flush_all_entries || (lq_valid[mem_issue_idx] && is_younger(
+                lq_rob_tag[mem_issue_idx], i_flush_tag, i_rob_head_tag
+            )))) begin
+          mem_issue_pending <= 1'b0;
         end
         // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
         // after the flush instead of compacting the tail in this cycle.
@@ -896,28 +959,45 @@ module load_queue #(
         end
       end
 
+      if (sq_check_capture || sq_check_replace) begin
+        sq_check_pending <= 1'b1;
+        sq_check_idx     <= issue_mem_idx;
+      end else if (sq_check_pending &&
+                   (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
+                    stage_mem_issue)) begin
+        sq_check_pending <= 1'b0;
+      end
+
       // -----------------------------------------------------------------
       // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
       // -----------------------------------------------------------------
       if (cache_hit_fast_path) begin
-        lq_data_valid[issue_mem_idx] <= 1'b1;
+        lq_data_valid[sq_check_idx] <= 1'b1;
       end
 
       // -----------------------------------------------------------------
       // Store forwarding: write data directly, skip memory
       // -----------------------------------------------------------------
       if (sq_do_forward) begin
-        lq_data_valid[issue_mem_idx] <= 1'b1;
-        lq_forwarded[issue_mem_idx]  <= 1'b1;
+        lq_data_valid[sq_check_idx] <= 1'b1;
+        lq_forwarded[sq_check_idx]  <= 1'b1;
+      end
+
+      if (stage_mem_issue) begin
+        mem_issue_pending <= 1'b1;
+        mem_issue_idx     <= sq_check_idx;
+        mem_issue_addr    <= stage_mem_issue_addr;
+        mem_issue_size    <= stage_mem_issue_size;
       end
 
       // -----------------------------------------------------------------
       // Memory Issue: mark entry as issued, track for response routing
       // -----------------------------------------------------------------
       if (o_mem_read_en) begin
-        lq_issued[issue_mem_idx] <= 1'b1;
+        mem_issue_pending        <= 1'b0;
+        lq_issued[mem_issue_idx] <= 1'b1;
         mem_outstanding          <= 1'b1;
-        issued_idx               <= issue_mem_idx;
+        issued_idx               <= mem_issue_idx;
       end
 
       // -----------------------------------------------------------------
@@ -1091,28 +1171,28 @@ module load_queue #(
   // No memory issue without addr_valid
   always_comb begin
     if (i_rst_n && o_mem_read_en) begin
-      p_no_mem_issue_without_addr : assert (lq_addr_valid[issue_mem_idx]);
+      p_no_mem_issue_without_addr : assert (lq_addr_valid[mem_issue_idx]);
     end
   end
 
   // No memory issue for already-issued entries
   always_comb begin
     if (i_rst_n && o_mem_read_en) begin
-      p_no_mem_issue_when_issued : assert (!lq_issued[issue_mem_idx]);
+      p_no_mem_issue_when_issued : assert (!lq_issued[mem_issue_idx]);
     end
   end
 
   // MMIO entries only issue when rob_tag == i_rob_head_tag
   always_comb begin
-    if (i_rst_n && o_sq_check_valid && lq_is_mmio[issue_mem_idx]) begin
-      p_mmio_only_at_head : assert (lq_rob_tag[issue_mem_idx] == i_rob_head_tag);
+    if (i_rst_n && o_sq_check_valid && lq_is_mmio[sq_check_idx]) begin
+      p_mmio_only_at_head : assert (lq_rob_tag[sq_check_idx] == i_rob_head_tag);
     end
   end
 
   // SQ check valid implies valid address on check ports
   always_comb begin
     if (i_rst_n && o_sq_check_valid) begin
-      p_sq_check_valid_has_addr : assert (lq_addr_valid[issue_mem_idx]);
+      p_sq_check_valid_has_addr : assert (lq_addr_valid[sq_check_idx]);
     end
   end
 

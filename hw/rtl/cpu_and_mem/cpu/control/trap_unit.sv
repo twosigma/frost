@@ -154,6 +154,31 @@ module trap_unit #(
     else interrupt_pending <= interrupt_pending_comb;
   end
 
+  // Register synchronous exceptions from the ROB head before trap entry.
+  // This adds one cycle to synchronous-exception handling, but removes the
+  // ROB-head exception -> trap_taken -> front-end redirect cone from the
+  // same cycle. Interrupts stay on their existing registered path.
+  logic            exception_pending;
+  logic [XLEN-1:0] exception_cause_q;
+  logic [XLEN-1:0] exception_tval_q;
+  logic [XLEN-1:0] exception_pc_q;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      exception_pending <= 1'b0;
+      exception_cause_q <= '0;
+      exception_tval_q  <= '0;
+      exception_pc_q    <= '0;
+    end else if (o_trap_taken) begin
+      exception_pending <= 1'b0;
+    end else if (i_exception_valid) begin
+      exception_pending <= 1'b1;
+      exception_cause_q <= i_exception_cause;
+      exception_tval_q  <= i_exception_tval;
+      exception_pc_q    <= i_exception_pc;
+    end
+  end
+
   // Vectored mode offset: 4 * cause_code (fits in 6 bits, enables small/fast adder)
   // MEI=11*4=44, MTI=7*4=28, MSI=3*4=12
   // TIMING OPTIMIZATION: Register vectored_offset to stay synchronized with interrupt_pending
@@ -216,7 +241,7 @@ module trap_unit #(
   // Trap taken: either interrupt or exception, and pipeline not stalled
   // (except for WFI stall, which should be broken by interrupt)
   logic take_trap;
-  assign take_trap = (interrupt_pending || i_exception_valid) && !i_pipeline_stall;
+  assign take_trap = (interrupt_pending || exception_pending) && !i_pipeline_stall;
 
   // MRET execution (trap has priority: if interrupt/exception fires same cycle, trap wins)
   logic take_mret;
@@ -257,9 +282,9 @@ module trap_unit #(
       // For interrupts, save PC of next instruction (the one that will be interrupted)
       o_trap_pc = i_exception_pc;
     end else begin
-      o_trap_cause = i_exception_cause;
-      o_trap_value = i_exception_tval;
-      o_trap_pc = i_exception_pc;
+      o_trap_cause = exception_cause_q;
+      o_trap_value = exception_tval_q;
+      o_trap_pc = exception_pc_q;
     end
   end
 
@@ -291,7 +316,7 @@ module trap_unit #(
       p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
 
       // Trap needs source: trap_taken requires interrupt or exception.
-      p_trap_needs_source : assert (!o_trap_taken || (interrupt_pending || i_exception_valid));
+      p_trap_needs_source : assert (!o_trap_taken || (interrupt_pending || exception_pending));
 
       // Trap not during stall: traps only fire when pipeline not stalled.
       p_trap_not_stalled : assert (!o_trap_taken || !i_pipeline_stall);

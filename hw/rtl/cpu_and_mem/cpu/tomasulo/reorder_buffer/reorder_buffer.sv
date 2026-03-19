@@ -374,8 +374,10 @@ module reorder_buffer (
   logic alloc_en;
   assign alloc_en = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
 
-  logic cdb_wr_en;
-  assign cdb_wr_en = i_cdb_write.valid && !i_flush_all && rob_valid[i_cdb_write.tag];
+  logic cdb_ram_wr_en;
+  logic cdb_state_wr_en;
+  assign cdb_ram_wr_en   = i_cdb_write.valid && !i_flush_all;
+  assign cdb_state_wr_en = cdb_ram_wr_en && rob_valid[i_cdb_write.tag];
 
   logic branch_wr_en;
   assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
@@ -466,7 +468,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_value_head (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (head_idx),
@@ -479,7 +481,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_value_rat (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_read_tag),
@@ -493,7 +495,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_value_bypass_1 (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_bypass_tag_1),
@@ -506,7 +508,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_value_bypass_2 (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_bypass_tag_2),
@@ -519,7 +521,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_value_bypass_3 (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_bypass_tag_3),
@@ -533,7 +535,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_exc_cause (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0)}),
       .i_read_address (head_idx),
@@ -547,7 +549,7 @@ module reorder_buffer (
       .NUM_WRITE_PORTS(2)
   ) u_rob_fp_flags (
       .i_clk,
-      .i_write_enable ({cdb_wr_en, alloc_en}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
       .i_write_address({i_cdb_write.tag, tail_idx}),
       .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0)}),
       .i_read_address (head_idx),
@@ -777,11 +779,9 @@ module reorder_buffer (
       // ---------------------------------------------------------------------
       // For non-branch instructions (ALU, MUL, DIV, MEM, FP)
       // Value, exc_cause, fp_flags are written via distributed RAM.
-      if (i_cdb_write.valid && !i_flush_all) begin
-        if (rob_valid[i_cdb_write.tag]) begin
-          rob_done[i_cdb_write.tag]      <= 1'b1;
-          rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
-        end
+      if (cdb_state_wr_en) begin
+        rob_done[i_cdb_write.tag]      <= 1'b1;
+        rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
       end
 
       // ---------------------------------------------------------------------
