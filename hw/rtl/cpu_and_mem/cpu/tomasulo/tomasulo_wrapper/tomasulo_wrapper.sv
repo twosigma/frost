@@ -328,6 +328,9 @@ module tomasulo_wrapper (
   // Dispatch bypass: dispatch selects up to three source ROB tags and the ROB
   // returns their values asynchronously for done-entry forwarding.
   logic [riscv_pkg::FLEN-1:0] bypass_value_1, bypass_value_2, bypass_value_3;
+  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_1;
+  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_2;
+  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_3;
 
   // Head tag for RS partial flush
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
@@ -763,7 +766,15 @@ module tomasulo_wrapper (
       .i_bypass_tag_2  (i_bypass_tag_2),
       .o_bypass_value_2(bypass_value_2),
       .i_bypass_tag_3  (i_bypass_tag_3),
-      .o_bypass_value_3(bypass_value_3)
+      .o_bypass_value_3(bypass_value_3),
+
+      // Buffered FMUL repair reads
+      .i_fmul_pending_bypass_tag_1  (fmul_dispatch_pending.src1_tag),
+      .o_fmul_pending_bypass_value_1(fmul_pending_bypass_value_1),
+      .i_fmul_pending_bypass_tag_2  (fmul_dispatch_pending.src2_tag),
+      .o_fmul_pending_bypass_value_2(fmul_pending_bypass_value_2),
+      .i_fmul_pending_bypass_tag_3  (fmul_dispatch_pending.src3_tag),
+      .o_fmul_pending_bypass_value_3(fmul_pending_bypass_value_3)
   );
 
   assign o_bypass_value_1 = bypass_value_1;
@@ -987,6 +998,28 @@ module tomasulo_wrapper (
 
     fmul_rs_dispatch_to_rs       = fmul_dispatch_pending;
     fmul_rs_dispatch_to_rs.valid = fmul_dispatch_dequeue;
+
+    // Repair operands that completed while buffered outside the RS by
+    // re-reading the ROB value store at dequeue time.
+    //
+    // Do not require rob_entry_valid here: an older producer can commit while a
+    // younger FMUL is still buffered outside the RS, but its value remains in
+    // the ROB value RAM until that tag is reused.
+    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src1_ready &&
+        rob_entry_done[fmul_dispatch_pending.src1_tag]) begin
+      fmul_rs_dispatch_to_rs.src1_ready = 1'b1;
+      fmul_rs_dispatch_to_rs.src1_value = fmul_pending_bypass_value_1;
+    end
+    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src2_ready &&
+        rob_entry_done[fmul_dispatch_pending.src2_tag]) begin
+      fmul_rs_dispatch_to_rs.src2_ready = 1'b1;
+      fmul_rs_dispatch_to_rs.src2_value = fmul_pending_bypass_value_2;
+    end
+    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src3_ready &&
+        rob_entry_done[fmul_dispatch_pending.src3_tag]) begin
+      fmul_rs_dispatch_to_rs.src3_ready = 1'b1;
+      fmul_rs_dispatch_to_rs.src3_value = fmul_pending_bypass_value_3;
+    end
   end
 
   always_ff @(posedge i_clk or negedge i_rst_n) begin

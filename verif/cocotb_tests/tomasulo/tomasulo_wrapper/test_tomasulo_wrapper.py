@@ -139,6 +139,7 @@ OP_SW = _INSTR_OPS["SW"]
 OP_FLW = _INSTR_OPS["FLW"]
 OP_LR_W = _INSTR_OPS["LR_W"]
 OP_SC_W = _INSTR_OPS["SC_W"]
+OP_FMADD_D = _INSTR_OPS["FMADD_D"]
 OP_AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
 OP_AMOADD_W = _INSTR_OPS["AMOADD_W"]
 OP_AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
@@ -1423,6 +1424,169 @@ async def test_partial_flush_across_all_rs(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fmul_pending_dispatch_wakes_while_buffered(dut: Any) -> None:
+    """An FMUL staged behind a full RS must still snoop the CDB before enqueue."""
+    cocotb.log.info("=== Test: FMUL Pending Dispatch Wakes While Buffered ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_fu_ready(RS_FMUL, True)
+
+    blocker_tags: list[int] = []
+    blocker_fmul_tags: list[int] = []
+    for idx in range(4):
+        producer_tag = await dut_if.dispatch(make_store_req(pc=0x1F40 + idx * 4))
+        blocker_tags.append(producer_tag)
+
+        req = make_fp_req(pc=0x2040 + idx * 4, fd=6 + idx)
+        tag = await dut_if.dispatch(req)
+        blocker_fmul_tags.append(tag)
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_FMUL,
+            rob_tag=tag,
+            op=OP_FMADD_D,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=0x4000000000000000,  # 2.0 double
+            src3_ready=True,
+            src3_value=0x3FF0000000000000,  # 1.0 double
+            rm=0b000,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+
+    producer_tag = await dut_if.dispatch(make_store_req(pc=0x1F80))
+    req = make_fp_req(pc=0x2080, fd=12)
+    tag = await dut_if.dispatch(req)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=tag,
+        op=OP_FMADD_D,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=True,
+        src2_value=0x4000000000000000,  # 2.0 double
+        src3_ready=True,
+        src3_value=0x3FF0000000000000,  # 1.0 double
+        rm=0b000,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    assert dut_if.rs_count_for(RS_FMUL) == 5
+
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=0x4008000000000000)  # 3.0 double
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+
+    await Timer(1, unit="ps")
+    assert not dut_if.rs_issue_valid_for(
+        RS_FMUL
+    ), "Buffered FMUL should still be blocked behind the full RS"
+
+    dut_if.drive_cdb_broadcast(tag=blocker_tags[0], value=0x4008000000000000)
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+
+    await Timer(1, unit="ps")
+    issue = dut_if.read_rs_issue_for(RS_FMUL)
+    assert issue["valid"], "Older FMUL should become ready after its CDB wakeup"
+    assert issue["rob_tag"] == blocker_fmul_tags[0]
+
+    cdb = await wait_for_cdb(dut_if, max_cycles=40)
+    assert cdb.tag == blocker_fmul_tags[0]
+
+    cdb = await wait_for_cdb(dut_if, max_cycles=40)
+    assert cdb.tag == tag
+    assert cdb.value == 0x401C000000000000  # 3.0 * 2.0 + 1.0 = 7.0 double
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_dispatch_wakes_after_producer_commits(dut: Any) -> None:
+    """A buffered FMUL must recover a producer value even after that ROB entry commits."""
+    cocotb.log.info("=== Test: FMUL Pending Dispatch Wakes After Producer Commits ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_fu_ready(RS_FMUL, True)
+
+    producer_tag = await dut_if.dispatch(make_store_req(pc=0x2100))
+
+    blocker_tags: list[int] = []
+    blocker_fmul_tags: list[int] = []
+    for idx in range(4):
+        blocker_producer_tag = await dut_if.dispatch(
+            make_store_req(pc=0x2140 + idx * 4)
+        )
+        blocker_tags.append(blocker_producer_tag)
+
+        req = make_fp_req(pc=0x2200 + idx * 4, fd=8 + idx)
+        tag = await dut_if.dispatch(req)
+        blocker_fmul_tags.append(tag)
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_FMUL,
+            rob_tag=tag,
+            op=OP_FMADD_D,
+            src1_ready=False,
+            src1_tag=blocker_producer_tag,
+            src2_ready=True,
+            src2_value=0x4000000000000000,  # 2.0 double
+            src3_ready=True,
+            src3_value=0x3FF0000000000000,  # 1.0 double
+            rm=0b000,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+
+    req = make_fp_req(pc=0x2280, fd=12)
+    tag = await dut_if.dispatch(req)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=tag,
+        op=OP_FMADD_D,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=True,
+        src2_value=0x4000000000000000,  # 2.0 double
+        src3_ready=True,
+        src3_value=0x3FF0000000000000,  # 1.0 double
+        rm=0b000,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    assert dut_if.rs_count_for(RS_FMUL) == 5
+
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=0x4008000000000000)  # 3.0 double
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+
+    commit = await wait_for_commit(dut_if, max_cycles=8)
+    assert commit["tag"] == producer_tag
+    await Timer(1, unit="ps")
+    assert not dut_if.rs_issue_valid_for(
+        RS_FMUL
+    ), "Buffered FMUL should still be blocked behind the full RS"
+
+    dut_if.drive_cdb_broadcast(tag=blocker_tags[0], value=0x4008000000000000)
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+
+    await Timer(1, unit="ps")
+    issue = dut_if.read_rs_issue_for(RS_FMUL)
+    assert issue["valid"], "Older FMUL should become ready after its CDB wakeup"
+    assert issue["rob_tag"] == blocker_fmul_tags[0]
+
+    cdb = await wait_for_cdb(dut_if, max_cycles=40)
+    assert cdb.tag == blocker_fmul_tags[0]
+
+    cdb = await wait_for_cdb(dut_if, max_cycles=40)
+    assert cdb.tag == tag
+    assert cdb.value == 0x401C000000000000  # 3.0 * 2.0 + 1.0 = 7.0 double
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     """FMUL_RS with 3 source operands (FMA), rounding mode, and CDB wakeup."""
     cocotb.log.info("=== Test: FMUL_RS Three-Source FMA ===")
@@ -1612,15 +1776,17 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()
+    random_manual_cdb_rs_types = [RS_MEM, RS_FP, RS_FDIV]
 
     for cycle in range(300):
         dut_rob_full = dut_if.rob_full
 
-        # Check RS issue from each type (skip after flush)
-        # Only check RS types without integrated FU pipeline (INT_RS and
-        # MUL_RS auto-complete via ALU/MUL/DIV and aren't manually driven).
+        # Check RS issue from each type (skip after flush). FMUL_RS is excluded
+        # here because the wrapper intentionally stages FMUL dispatch through a
+        # one-entry ingress buffer before the RS, so its issue timing is not
+        # cycle-identical to the unstaged manual-CDB RS types in this loop.
         if not prev_was_flush:
-            for rs_type in MANUAL_CDB_RS_TYPES:
+            for rs_type in random_manual_cdb_rs_types:
                 issue = dut_if.read_rs_issue_for(rs_type)
                 model_issue = model.rs_try_issue(rs_type=rs_type, fu_ready=True)
                 if model_issue is not None:
@@ -1637,10 +1803,11 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         prev_was_flush = False
 
         # Dispatch to random RS type (~35%) — skip INT_RS and MUL_RS since
-        # their FU pipelines auto-complete, conflicting with manual CDB drives.
+        # their FU pipelines auto-complete, and skip FMUL_RS because its
+        # staging behavior is covered in dedicated FMUL tests above.
         if r < 0.35 and not dut_rob_full:
             # Pick a random RS type and check if it's full
-            rs_type = random.choice(MANUAL_CDB_RS_TYPES)
+            rs_type = random.choice(random_manual_cdb_rs_types)
             if dut_if.rs_full_for(rs_type):
                 await dut_if.step()
                 continue

@@ -162,7 +162,15 @@ module reorder_buffer (
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_2,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
-    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3,
+
+    // Buffered FMUL dispatch repair ports (wrapper-local async reads)
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_1,
+    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_1,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_2,
+    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_2,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_3,
+    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_3
 );
 
   // ===========================================================================
@@ -526,6 +534,45 @@ module reorder_buffer (
       .i_write_data   ({i_cdb_write.value, alloc_value_data}),
       .i_read_address (i_bypass_tag_3),
       .o_read_data    (o_bypass_value_3)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_fmul_pending_1 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_fmul_pending_bypass_tag_1),
+      .o_read_data    (o_fmul_pending_bypass_value_1)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_fmul_pending_2 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_fmul_pending_bypass_tag_2),
+      .o_read_data    (o_fmul_pending_bypass_value_2)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_value_fmul_pending_3 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_read_address (i_fmul_pending_bypass_tag_3),
+      .o_read_data    (o_fmul_pending_bypass_value_3)
   );
 
   // rob_exc_cause: 2 write ports (alloc='0 + CDB), 1 read port (head)
