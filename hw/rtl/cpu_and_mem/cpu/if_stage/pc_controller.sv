@@ -404,8 +404,6 @@ module pc_controller #(
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
       pending_prediction_valid       <= 1'b0;
-      pending_prediction_pc          <= '0;
-      pending_prediction_target      <= '0;
       pending_prediction_allow_cross <= 1'b0;
       pending_prediction_from_buffer <= 1'b0;
     end else if (!i_stall) begin
@@ -416,11 +414,23 @@ module pc_controller #(
         pending_prediction_from_buffer <= 1'b0;
       end else if (prediction_needs_pending) begin
         pending_prediction_valid       <= 1'b1;
-        pending_prediction_pc          <= o_pc;
-        pending_prediction_target      <= i_predicted_target;
         pending_prediction_allow_cross <= o_pc[1];
         pending_prediction_from_buffer <= i_prediction_used_from_buffer;
       end
+    end
+  end
+
+  // The buffered pending-prediction payload only matters while
+  // pending_prediction_valid is set. Avoid rewriting these wide buses during
+  // redirect/clear cycles; dropping valid is enough to invalidate stale data,
+  // and it removes those payload register enables from the ROB->IF redirect cone.
+  always_ff @(posedge i_clk) begin
+    if (i_reset) begin
+      pending_prediction_pc     <= '0;
+      pending_prediction_target <= '0;
+    end else if (!i_stall && prediction_needs_pending) begin
+      pending_prediction_pc     <= o_pc;
+      pending_prediction_target <= i_predicted_target;
     end
   end
 
