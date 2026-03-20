@@ -86,6 +86,7 @@ module if_stage #(
     input logic [31:0] i_instr,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
+    input logic i_frontend_state_flush,
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
     output logic [XLEN-1:0] o_pc,
@@ -187,7 +188,8 @@ module if_stage #(
   logic [31:0] instr_for_aligner;
   assign instr_for_aligner = i_instr;
   assign disable_branch_prediction_effective =
-      i_disable_branch_prediction || pending_prediction_holdoff;
+      i_disable_branch_prediction || pending_prediction_holdoff ||
+      i_pipeline_ctrl.flush || i_frontend_state_flush;
   assign ras_instruction_valid =
       !sel_nop &&
       !any_holdoff_safe &&
@@ -196,10 +198,11 @@ module if_stage #(
       !i_trap_ctrl.mret_taken &&
       (use_saved_values || !prediction_holdoff || btb_only_prediction_holdoff);
 
-  // Front-end state cleanup must happen in the same cycle as any pipeline
-  // flush so stale buffered/spanning state cannot leak across redirects.
+  // IF internal state cleanup is allowed to lag the architectural pipeline
+  // flush by one cycle. OOO trap/MRET recovery uses this to pay an extra
+  // redirect bubble in IF while still flushing PD/ID immediately.
   logic flush_for_c_ext_safe;
-  assign flush_for_c_ext_safe = i_pipeline_ctrl.flush;
+  assign flush_for_c_ext_safe = i_frontend_state_flush;
 
   // ===========================================================================
   // Spanning Detection
@@ -530,7 +533,8 @@ module if_stage #(
   // both to the generic control-flow holdoff and to pending halfword-prediction
   // holdoff in pc_controller: the cycle after a BTB redirect is when the
   // predicted branch instruction itself arrives from BRAM.
-  assign sel_nop = i_pipeline_ctrl.flush || sel_nop_align || reset_holdoff ||
+  assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe ||
+                   sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff && !prediction_holdoff);
