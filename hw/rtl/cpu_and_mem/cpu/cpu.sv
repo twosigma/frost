@@ -272,6 +272,7 @@ module cpu #(
       .i_from_ex_comb(from_ex_comb),
       // Trap handling: PC redirection on trap entry/exit
       .i_trap_ctrl(trap_ctrl),
+      .i_frontend_state_flush(pipeline_ctrl.flush),
       // Branch prediction control (for verification)
       .i_disable_branch_prediction,
       .o_pc,

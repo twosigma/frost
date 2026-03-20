@@ -217,8 +217,11 @@ module cpu_ooo #(
       else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
   end
 
-  // Registered trap/mret for IF stage flush_for_c_ext_safe timing optimization.
+  // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle. PD/ID
+  // still flush immediately, but IF and Tomasulo pay an extra recovery bubble
+  // to break the long ROB/trap -> redirect/backend-flush cones.
   logic trap_taken_reg, mret_taken_reg;
+  logic [XLEN-1:0] trap_target_reg;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       trap_taken_reg <= 1'b0;
@@ -227,6 +230,11 @@ module cpu_ooo #(
       trap_taken_reg <= trap_taken;
       mret_taken_reg <= mret_taken;
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) trap_target_reg <= '0;
+    else if (trap_taken || mret_taken) trap_target_reg <= trap_target;
   end
 
   // Front-end stall: dispatch back-pressure or CSR serialization
@@ -334,9 +342,9 @@ module cpu_ooo #(
   logic trap_taken, mret_taken;
   logic [XLEN-1:0] trap_target;
 
-  assign trap_ctrl.trap_taken  = trap_taken;
-  assign trap_ctrl.mret_taken  = mret_taken;
-  assign trap_ctrl.trap_target = trap_target;
+  assign trap_ctrl.trap_taken  = trap_taken_reg;
+  assign trap_ctrl.mret_taken  = mret_taken_reg;
+  assign trap_ctrl.trap_target = trap_target_reg;
 
   // ===========================================================================
   // Stage 1: Instruction Fetch (IF) — UNCHANGED
@@ -350,6 +358,7 @@ module cpu_ooo #(
       .i_instr,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
+      .i_frontend_state_flush(frontend_state_flush),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd)
@@ -711,6 +720,7 @@ module cpu_ooo #(
   logic flush_all;
   logic mispredict_recovery_pending;
   riscv_pkg::reorder_buffer_commit_t mispredict_commit_q;
+  logic frontend_state_flush;
 
   // CDB
   riscv_pkg::cdb_broadcast_t cdb_out;
@@ -1231,15 +1241,19 @@ module cpu_ooo #(
                      fence_i_flush;
   end
 
-  // ROB flush: partial flush on registered misprediction recovery (younger than
-  // branch), full flush on trap/MRET/FENCE.I.
-  // full flush on trap/MRET/FENCE.I
+  // IF internal state cleanup can lag trap/MRET by one cycle, but keep
+  // mispredict and FENCE.I cleanup on their existing timing.
+  assign frontend_state_flush =
+      mispredict_recovery_pending || fence_i_flush || trap_taken_reg || mret_taken_reg;
+
+  // Tomasulo flush: partial flush on registered misprediction recovery
+  // (younger than branch), full flush on registered trap/MRET or FENCE.I.
   always_comb begin
     flush_en  = 1'b0;
     flush_tag = '0;
     flush_all = 1'b0;
 
-    if (flush_for_trap || flush_for_mret) begin
+    if (trap_taken_reg || mret_taken_reg) begin
       flush_en  = 1'b1;
       flush_all = 1'b1;
     end else if (mispredict_recovery_pending) begin
