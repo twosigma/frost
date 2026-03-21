@@ -41,7 +41,8 @@
  */
 
 module reservation_station #(
-    parameter int unsigned DEPTH = 8
+    parameter int unsigned DEPTH = 8,
+    parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -62,6 +63,7 @@ module reservation_station #(
     // =========================================================================
     output riscv_pkg::rs_issue_t o_issue,
     input  logic                 i_fu_ready,
+    output logic                 o_issue_writes_cdb_hint,
 
     // =========================================================================
     // SC Issue Peek (combinational, independent of i_fu_ready)
@@ -105,6 +107,21 @@ module reservation_station #(
       entry_age = {1'b0, entry_tag} - {1'b0, head};
       flush_age = {1'b0, flush_tag} - {1'b0, head};
       should_flush_entry = entry_age > flush_age;
+    end
+  endfunction
+
+  function automatic logic int_rs_writes_cdb(input riscv_pkg::instr_op_e op);
+    begin
+      case (op)
+        riscv_pkg::BEQ,
+        riscv_pkg::BNE,
+        riscv_pkg::BLT,
+        riscv_pkg::BGE,
+        riscv_pkg::BLTU,
+        riscv_pkg::BGEU:
+        int_rs_writes_cdb = 1'b0;
+        default: int_rs_writes_cdb = 1'b1;
+      endcase
     end
   endfunction
 
@@ -155,6 +172,7 @@ module reservation_station #(
   logic [FLEN-1:0] issue_out_src3_value;
   logic [XLEN-1:0] issue_out_imm;
   logic issue_out_use_imm;
+  logic issue_out_writes_cdb_hint;
   logic [2:0] issue_out_rm;
   logic [XLEN-1:0] issue_out_branch_target;
   logic issue_out_predicted_taken;
@@ -182,6 +200,7 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_src2_ready;
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
+  logic [DEPTH-1:0] rs_writes_cdb_hint;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
@@ -352,6 +371,7 @@ module reservation_station #(
     issue_out_src3_value       = '0;
     issue_out_imm              = '0;
     issue_out_use_imm          = 1'b0;
+    issue_out_writes_cdb_hint  = 1'b0;
     issue_out_rm               = '0;
     issue_out_branch_target    = '0;
     issue_out_predicted_taken  = 1'b0;
@@ -372,6 +392,7 @@ module reservation_station #(
       issue_out_src3_value       = rs_src3_value[issue_idx];
       issue_out_imm              = pl_imm;
       issue_out_use_imm          = rs_use_imm[issue_idx];
+      issue_out_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
       issue_out_rm               = pl_rm;
       issue_out_branch_target    = pl_branch_target;
       issue_out_predicted_taken  = pl_predicted_taken;
@@ -409,8 +430,10 @@ module reservation_station #(
     o_issue.link_addr        = issue_out_link_addr;
   end
 
+  assign o_issue_writes_cdb_hint = issue_out_writes_cdb_hint;
+
   // --- Status outputs ---
-  assign o_full  = full;
+  assign o_full = full;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -421,11 +444,12 @@ module reservation_station #(
   always_ff @(posedge i_clk or negedge i_rst_n) begin
     if (!i_rst_n) begin
       // Reset: clear all valid bits
-      rs_valid      <= '0;
-      rs_src1_ready <= '0;
-      rs_src2_ready <= '0;
-      rs_src3_ready <= '0;
-      rs_use_imm    <= '0;
+      rs_valid           <= '0;
+      rs_src1_ready      <= '0;
+      rs_src2_ready      <= '0;
+      rs_src3_ready      <= '0;
+      rs_use_imm         <= '0;
+      rs_writes_cdb_hint <= '0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -454,6 +478,9 @@ module reservation_station #(
         if (dispatch_fire) begin
           rs_valid[free_idx]   <= 1'b1;
           rs_rob_tag[free_idx] <= dispatch_rob_tag;
+          if (TRACK_INT_WRITEBACK_HINT) begin
+            rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
+          end
 
           // Source 1 -- CDB bypass: if CDB matches src1 tag, capture value
           if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) begin
