@@ -855,13 +855,15 @@ module tomasulo_wrapper (
 
   // INT_RS dispatch with routed valid
   riscv_pkg::rs_dispatch_t int_rs_dispatch;
+  logic                    int_rs_issue_writes_cdb_hint;
   always_comb begin
     int_rs_dispatch       = i_rs_dispatch;
     int_rs_dispatch.valid = int_rs_dispatch_valid;
   end
 
   reservation_station #(
-      .DEPTH(riscv_pkg::IntRsDepth)
+      .DEPTH(riscv_pkg::IntRsDepth),
+      .TRACK_INT_WRITEBACK_HINT(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -874,9 +876,10 @@ module tomasulo_wrapper (
       .i_cdb(cdb_bus),
 
       // Issue (to internal wire for ALU shim)
-      .o_issue(int_rs_issue_w),
-      .i_fu_ready(int_rs_fu_ready),
-      .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
+      .o_issue                (int_rs_issue_w),
+      .i_fu_ready             (int_rs_fu_ready),
+      .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .o_next_issue_is_sc     (),                              // unused — no SC ops in INT_RS
 
       // Flush (shared with ROB)
       .i_flush_en    (speculative_flush_en),
@@ -904,20 +907,21 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth)
   ) u_mul_rs (
-      .i_clk             (i_clk),
-      .i_rst_n           (i_rst_n),
-      .i_dispatch        (mul_rs_dispatch),
-      .o_full            (mul_rs_full_w),
-      .i_cdb             (cdb_bus),
-      .o_issue           (mul_rs_issue_w),
-      .i_fu_ready        (mul_rs_fu_ready),
-      .o_next_issue_is_sc(),                       // unused — no SC ops in MUL_RS
-      .i_flush_en        (speculative_flush_en),
-      .i_flush_tag       (i_flush_tag),
-      .i_rob_head_tag    (head_tag),
-      .i_flush_all       (speculative_flush_all),
-      .o_empty           (o_mul_rs_empty),
-      .o_count           (o_mul_rs_count)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_dispatch             (mul_rs_dispatch),
+      .o_full                 (mul_rs_full_w),
+      .i_cdb                  (cdb_bus),
+      .o_issue                (mul_rs_issue_w),
+      .i_fu_ready             (mul_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
+      .i_flush_en             (speculative_flush_en),
+      .i_flush_tag            (i_flush_tag),
+      .i_rob_head_tag         (head_tag),
+      .i_flush_all            (speculative_flush_all),
+      .o_empty                (o_mul_rs_empty),
+      .o_count                (o_mul_rs_count)
   );
 
   // Observation port: expose MUL_RS issue for testbench
@@ -935,20 +939,21 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MemRsDepth)
   ) u_mem_rs (
-      .i_clk             (i_clk),
-      .i_rst_n           (i_rst_n),
-      .i_dispatch        (mem_rs_dispatch),
-      .o_full            (mem_rs_full_w),
-      .i_cdb             (cdb_bus),
-      .o_issue           (o_mem_rs_issue),
-      .i_fu_ready        (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
-      .o_next_issue_is_sc(mem_rs_next_is_sc),
-      .i_flush_en        (speculative_flush_en),
-      .i_flush_tag       (i_flush_tag),
-      .i_rob_head_tag    (head_tag),
-      .i_flush_all       (speculative_flush_all),
-      .o_empty           (o_mem_rs_empty),
-      .o_count           (o_mem_rs_count)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_dispatch             (mem_rs_dispatch),
+      .o_full                 (mem_rs_full_w),
+      .i_cdb                  (cdb_bus),
+      .o_issue                (o_mem_rs_issue),
+      .i_fu_ready             (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
+      .o_issue_writes_cdb_hint(),
+      .o_next_issue_is_sc     (mem_rs_next_is_sc),
+      .i_flush_en             (speculative_flush_en),
+      .i_flush_tag            (i_flush_tag),
+      .i_rob_head_tag         (head_tag),
+      .i_flush_all            (speculative_flush_all),
+      .o_empty                (o_mem_rs_empty),
+      .o_count                (o_mem_rs_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -971,20 +976,21 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth)
   ) u_fp_rs (
-      .i_clk             (i_clk),
-      .i_rst_n           (i_rst_n),
-      .i_dispatch        (fp_rs_dispatch),
-      .o_full            (fp_rs_full_w),
-      .i_cdb             (cdb_bus),
-      .o_issue           (fp_rs_issue_w),
-      .i_fu_ready        (fp_rs_fu_ready),
-      .o_next_issue_is_sc(),                       // unused — no SC ops in FP_RS
-      .i_flush_en        (speculative_flush_en),
-      .i_flush_tag       (i_flush_tag),
-      .i_rob_head_tag    (head_tag),
-      .i_flush_all       (speculative_flush_all),
-      .o_empty           (o_fp_rs_empty),
-      .o_count           (o_fp_rs_count)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_dispatch             (fp_rs_dispatch),
+      .o_full                 (fp_rs_full_w),
+      .i_cdb                  (cdb_bus),
+      .o_issue                (fp_rs_issue_w),
+      .i_fu_ready             (fp_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_next_issue_is_sc     (),                       // unused — no SC ops in FP_RS
+      .i_flush_en             (speculative_flush_en),
+      .i_flush_tag            (i_flush_tag),
+      .i_rob_head_tag         (head_tag),
+      .i_flush_all            (speculative_flush_all),
+      .o_empty                (o_fp_rs_empty),
+      .o_count                (o_fp_rs_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -1039,20 +1045,21 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth)
   ) u_fmul_rs (
-      .i_clk             (i_clk),
-      .i_rst_n           (i_rst_n),
-      .i_dispatch        (fmul_rs_dispatch_to_rs),
-      .o_full            (fmul_rs_full_raw),
-      .i_cdb             (cdb_bus),
-      .o_issue           (fmul_rs_issue_w),
-      .i_fu_ready        (fmul_rs_fu_ready),
-      .o_next_issue_is_sc(),                        // unused — no SC ops in FMUL_RS
-      .i_flush_en        (speculative_flush_en),
-      .i_flush_tag       (i_flush_tag),
-      .i_rob_head_tag    (head_tag),
-      .i_flush_all       (speculative_flush_all),
-      .o_empty           (fmul_rs_empty_raw),
-      .o_count           (fmul_rs_count_raw)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_dispatch             (fmul_rs_dispatch_to_rs),
+      .o_full                 (fmul_rs_full_raw),
+      .i_cdb                  (cdb_bus),
+      .o_issue                (fmul_rs_issue_w),
+      .i_fu_ready             (fmul_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_next_issue_is_sc     (),                        // unused — no SC ops in FMUL_RS
+      .i_flush_en             (speculative_flush_en),
+      .i_flush_tag            (i_flush_tag),
+      .i_rob_head_tag         (head_tag),
+      .i_flush_all            (speculative_flush_all),
+      .o_empty                (fmul_rs_empty_raw),
+      .o_count                (fmul_rs_count_raw)
   );
 
   // ---------------------------------------------------------------------------
@@ -1068,20 +1075,21 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth)
   ) u_fdiv_rs (
-      .i_clk             (i_clk),
-      .i_rst_n           (i_rst_n),
-      .i_dispatch        (fdiv_rs_dispatch),
-      .o_full            (fdiv_rs_full_w),
-      .i_cdb             (cdb_bus),
-      .o_issue           (fdiv_rs_issue_w),
-      .i_fu_ready        (fdiv_rs_fu_ready),
-      .o_next_issue_is_sc(),                       // unused — no SC ops in FDIV_RS
-      .i_flush_en        (speculative_flush_en),
-      .i_flush_tag       (i_flush_tag),
-      .i_rob_head_tag    (head_tag),
-      .i_flush_all       (speculative_flush_all),
-      .o_empty           (o_fdiv_rs_empty),
-      .o_count           (o_fdiv_rs_count)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_dispatch             (fdiv_rs_dispatch),
+      .o_full                 (fdiv_rs_full_w),
+      .i_cdb                  (cdb_bus),
+      .o_issue                (fdiv_rs_issue_w),
+      .i_fu_ready             (fdiv_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_next_issue_is_sc     (),                       // unused — no SC ops in FDIV_RS
+      .i_flush_en             (speculative_flush_en),
+      .i_flush_tag            (i_flush_tag),
+      .i_rob_head_tag         (head_tag),
+      .i_flush_all            (speculative_flush_all),
+      .o_empty                (o_fdiv_rs_empty),
+      .o_count                (o_fdiv_rs_count)
   );
 
   // Observation ports: expose FP RS issue for testbench
@@ -1093,12 +1101,13 @@ module tomasulo_wrapper (
   // ALU Shim: translate rs_issue_t → ALU → fu_complete_t
   // ===========================================================================
   int_alu_shim u_alu_shim (
-      .i_clk          (i_clk),
-      .i_rst_n        (i_rst_n),
-      .i_rs_issue     (int_rs_issue_w),
-      .i_csr_read_data(i_csr_read_data),
-      .o_fu_complete  (alu_shim_out),
-      .o_fu_busy      (alu_fu_busy)
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_rs_issue             (int_rs_issue_w),
+      .i_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .i_csr_read_data        (i_csr_read_data),
+      .o_fu_complete          (alu_shim_out),
+      .o_fu_busy              (alu_fu_busy)
   );
 
   // ===========================================================================
