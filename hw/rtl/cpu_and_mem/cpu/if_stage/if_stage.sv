@@ -178,6 +178,7 @@ module if_stage #(
   logic is_32bit_spanning;  // 32-bit instruction spans two words
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   logic ras_instruction_valid;
+  logic ras_instruction_valid_live;
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -190,13 +191,8 @@ module if_stage #(
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
       i_pipeline_ctrl.flush || i_frontend_state_flush;
-  assign ras_instruction_valid =
-      !sel_nop &&
-      !any_holdoff_safe &&
-      !i_from_ex_comb.branch_taken &&
-      !i_trap_ctrl.trap_taken &&
-      !i_trap_ctrl.mret_taken &&
-      (use_saved_values || !prediction_holdoff || btb_only_prediction_holdoff);
+  assign ras_instruction_valid_live = !sel_nop &&
+                                      (!prediction_holdoff || btb_only_prediction_holdoff);
 
   // IF internal state cleanup is allowed to lag the architectural pipeline
   // flush by one cycle. OOO trap/MRET recovery uses this to pay an extra
@@ -240,6 +236,9 @@ module if_stage #(
   logic        ras_is_compressed;
   logic        sel_spanning_effective;
   logic [31:0] ras_spanning_instr;
+  logic        ras_saved_input_available_sc;
+  logic        ras_replay_inputs;
+  logic        ras_instruction_valid_sc;
 
   // Forward declarations (moved before first use to avoid Vivado warnings)
   logic        use_saved_values;
@@ -254,13 +253,21 @@ module if_stage #(
   logic            prediction_from_buffer_holdoff;
   logic            prediction_used_from_buffer;
 
-  assign sel_spanning_effective = use_saved_values ? sel_spanning_saved : sel_spanning;
+  assign ras_replay_inputs = i_pipeline_ctrl.stall_registered && ras_saved_input_available_sc;
+  assign sel_spanning_effective = ras_replay_inputs ? sel_spanning_saved : sel_spanning;
   assign ras_spanning_instr = spanning_instr_sc;
 
   assign ras_instruction = sel_spanning_effective ? ras_spanning_instr : effective_instr_sc;
   assign ras_raw_parcel = sel_spanning_effective ? ras_spanning_instr[15:0] : raw_parcel_sc;
   assign ras_is_compressed = sel_spanning_effective ? 1'b0 :
-                             (use_saved_values ? is_compressed_for_buffer : is_compressed);
+                             (ras_replay_inputs ? is_compressed_for_buffer : is_compressed);
+  assign ras_instruction_valid = !any_holdoff_safe &&
+                                 !i_from_ex_comb.branch_taken &&
+                                 !i_trap_ctrl.trap_taken &&
+                                 !i_trap_ctrl.mret_taken &&
+                                 ras_instruction_valid_sc &&
+                                 (!i_pipeline_ctrl.stall_registered ||
+                                   ras_saved_input_available_sc);
   assign prediction_used_from_buffer = prediction_used && use_instr_buffer;
 
   branch_prediction_controller branch_prediction_controller_inst (
@@ -598,6 +605,33 @@ module if_stage #(
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_data(sel_compressed),
       .o_data(sel_compressed_sc)
+  );
+
+  // Keep RAS replay eligibility and validity aligned with the same stall-entry
+  // cycle as the captured instruction data instead of depending on
+  // c_ext_state.saved_values_valid in the live RAS cone.
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_ras_saved_input_available_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(!sel_nop || is_32bit_spanning || spanning_wait_for_fetch),
+      .o_data(ras_saved_input_available_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_ras_instruction_valid_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_data(ras_instruction_valid_live),
+      .o_data(ras_instruction_valid_sc)
   );
 
   // sel_nop_saved and sel_spanning_saved have non-standard flush behavior:
