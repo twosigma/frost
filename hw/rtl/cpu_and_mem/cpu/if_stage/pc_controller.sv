@@ -513,7 +513,11 @@ module pc_controller #(
     else next_pc = seq_next_pc;
   end
 
-  // For next_pc_reg, use the REGISTERED prediction (sel_prediction_r).
+  // For next_pc_reg, use the REGISTERED prediction handoff for both BTB and
+  // RAS predictions. next_pc still redirects fetch immediately, but pc_reg is
+  // the instruction-side view and can pay one extra cycle here to keep the
+  // current fetch-response cone out of the pc_reg D path.
+  //
   // This ensures o_pc_reg tracks the instruction PC correctly:
   //   - In cycle N (prediction made): next_pc_reg = sequential (for current instruction)
   //   - In cycle N+1 (registered): next_pc_reg = predicted_target_r (for branch instruction)
@@ -523,7 +527,6 @@ module pc_controller #(
     else if (trap_or_mret) next_pc_reg = i_trap_target;
     else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
-    else if (i_prediction_used && i_ras_predicted) next_pc_reg = i_predicted_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next
