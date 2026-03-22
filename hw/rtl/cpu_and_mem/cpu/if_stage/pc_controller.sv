@@ -280,6 +280,12 @@ module pc_controller #(
   logic            stale_pending_prediction;
   logic            hold_pending_prediction_fetch;
   logic            hold_pending_prediction_consume_fetch;
+  (* keep = "true" *)logic            pending_prediction_cross_handoff_pc_mux;
+  (* keep = "true" *)logic            pending_prediction_target_handoff_pc_mux;
+  (* keep = "true" *)logic            use_pending_prediction_for_pc_reg_pc_mux;
+  (* keep = "true" *)logic            stale_pending_prediction_pc_mux;
+  (* keep = "true" *)logic            hold_pending_prediction_fetch_pc_mux;
+  (* keep = "true" *)logic            hold_pending_prediction_consume_fetch_pc_mux;
   logic            pending_prediction_target_holdoff_q;
   logic            pending_prediction_target_holdoff_prev_q;
   logic            pending_prediction_pc_ready_q;
@@ -340,6 +346,34 @@ module pc_controller #(
       !stale_pending_prediction;
   assign hold_pending_prediction_consume_fetch =
       pending_prediction_effective && use_pending_prediction_for_pc_reg;
+  // Keep a PC-mux-local copy of the pending-handoff cone so synthesis can
+  // place it near the next_pc/next_pc_reg muxes instead of routing the shared
+  // state/output version back across the IF control logic.
+  assign pending_prediction_cross_handoff_pc_mux =
+      pending_prediction_effective &&
+      pending_prediction_allow_cross &&
+      pending_prediction_crossing_pc_reg;
+  assign pending_prediction_target_handoff_pc_mux =
+      pending_prediction_effective &&
+      (pending_prediction_allow_cross ?
+           ((o_pc_reg == pending_prediction_pc) &&
+            !pending_prediction_crossing_pc_reg) :
+           ((o_pc_reg == pending_prediction_pc) &&
+            pending_prediction_pc_ready_q));
+  assign use_pending_prediction_for_pc_reg_pc_mux =
+      pending_prediction_cross_handoff_pc_mux ||
+      pending_prediction_target_handoff_pc_mux;
+  assign stale_pending_prediction_pc_mux =
+      pending_prediction_effective &&
+      !use_pending_prediction_for_pc_reg_pc_mux &&
+      (pc_reg_hw > pending_prediction_pc_hw);
+  assign hold_pending_prediction_fetch_pc_mux =
+      pending_prediction_effective &&
+      !use_pending_prediction_for_pc_reg_pc_mux &&
+      !stale_pending_prediction_pc_mux;
+  assign hold_pending_prediction_consume_fetch_pc_mux =
+      pending_prediction_effective &&
+      use_pending_prediction_for_pc_reg_pc_mux;
   assign o_pending_prediction_holdoff =
       hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
   assign o_pending_prediction_target_handoff = pending_prediction_target_handoff;
@@ -451,7 +485,7 @@ module pc_controller #(
     // assembly by a full word.
     else if (o_pending_prediction_target_holdoff)
       next_pc = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
-    else if (hold_pending_prediction_consume_fetch)
+    else if (hold_pending_prediction_consume_fetch_pc_mux)
       // Upper-half predictions need a 2-step handoff:
       // 1. Land pc_reg on the predicted branch PC so the control-flow
       //    instruction itself still flows through IF/PD/ID.
@@ -463,9 +497,9 @@ module pc_controller #(
       // steps leaves the next target instruction paired with the stale target
       // word instead of the following word.
       next_pc =
-          pending_prediction_cross_handoff ? pending_prediction_target :
+          pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
           ((pending_prediction_allow_cross &&
-            pending_prediction_target_handoff &&
+            pending_prediction_target_handoff_pc_mux &&
             !pending_prediction_from_buffer) ?
                seq_next_pc : pending_prediction_target);
     else if (halfword_target_lead_catchup)
@@ -474,7 +508,7 @@ module pc_controller #(
       // skipping the extra halfword-parcel step and requesting the following
       // word immediately.
       next_pc = seq_next_pc + riscv_pkg::PcIncrementCompressed;
-    else if (hold_pending_prediction_fetch)
+    else if (hold_pending_prediction_fetch_pc_mux)
       next_pc = pending_prediction_allow_cross ? pending_prediction_target : pending_prediction_pc;
     else next_pc = seq_next_pc;
   end
@@ -496,10 +530,10 @@ module pc_controller #(
     // halfword PC and corrupts C-extension alignment on loop back-edges.
     else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
     else if (pending_prediction_effective && !pending_prediction_allow_cross &&
-             !use_pending_prediction_for_pc_reg)
+             !use_pending_prediction_for_pc_reg_pc_mux)
       next_pc_reg = pending_prediction_pc;
-    else if (pending_prediction_cross_handoff) next_pc_reg = pending_prediction_pc;
-    else if (pending_prediction_target_handoff) next_pc_reg = pending_prediction_target;
+    else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
+    else if (pending_prediction_target_handoff_pc_mux) next_pc_reg = pending_prediction_target;
     else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
     else next_pc_reg = seq_next_pc_reg;
   end
