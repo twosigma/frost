@@ -430,13 +430,22 @@ module cpu_ooo #(
                                          (int_rf_write_addr ==
                                           from_id_to_ex.instruction.source_reg_2);
 
-  assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_rf_write_data :
+  // Bypass data for ID/dispatch: use rob_commit.value directly (fast path).
+  // For CSR commits, int_rf_write_data includes the slow csr_read_data_comb
+  // path (16 logic levels through exception FSM + CSR file).  But CSR commits
+  // never coincide with active dispatch/ID consumption because csr_in_flight
+  // stalls the entire front-end pipeline, so using rob_commit.value here is
+  // functionally safe and eliminates the critical path.
+  logic [XLEN-1:0] int_rf_commit_bypass_data;
+  assign int_rf_commit_bypass_data = rob_commit.value[XLEN-1:0];
+
+  assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_rf_commit_bypass_data :
                                        int_rf_read_data[XLEN-1:0];
-  assign rf_to_fwd.source_reg_2_data = int_rf_wb_bypass_id_rs2 ? int_rf_write_data :
+  assign rf_to_fwd.source_reg_2_data = int_rf_wb_bypass_id_rs2 ? int_rf_commit_bypass_data :
                                        int_rf_read_data[2*XLEN-1:XLEN];
-  assign int_rf_dispatch_rs1_data = int_rf_wb_bypass_dispatch_rs1 ? int_rf_write_data :
+  assign int_rf_dispatch_rs1_data = int_rf_wb_bypass_dispatch_rs1 ? int_rf_commit_bypass_data :
                                     int_rf_read_data[3*XLEN-1:2*XLEN];
-  assign int_rf_dispatch_rs2_data = int_rf_wb_bypass_dispatch_rs2 ? int_rf_write_data :
+  assign int_rf_dispatch_rs2_data = int_rf_wb_bypass_dispatch_rs2 ? int_rf_commit_bypass_data :
                                     int_rf_read_data[4*XLEN-1:3*XLEN];
 
   // FP register file
