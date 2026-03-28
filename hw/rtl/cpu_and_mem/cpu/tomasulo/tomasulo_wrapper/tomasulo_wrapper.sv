@@ -533,6 +533,27 @@ module tomasulo_wrapper (
   riscv_pkg::mem_size_e sq_check_size;
   logic sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_forward;
+
+  // ---------------------------------------------------------------------------
+  // Pipeline register: LQ sq_check request → SQ
+  // Breaks the critical combinational path from mispredict_recovery/flush logic
+  // through LQ sq_check_valid → SQ forwarding scan → LQ response.
+  // ---------------------------------------------------------------------------
+  logic sq_check_valid_q;
+  logic [riscv_pkg::XLEN-1:0] sq_check_addr_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
+  riscv_pkg::mem_size_e sq_check_size_q;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) sq_check_valid_q <= 1'b0;
+    else sq_check_valid_q <= sq_check_valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    sq_check_addr_q    <= sq_check_addr;
+    sq_check_rob_tag_q <= sq_check_rob_tag;
+    sq_check_size_q    <= sq_check_size;
+  end
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
@@ -630,7 +651,7 @@ module tomasulo_wrapper (
                               !store_issue_fire &&
                               (!mem_adapter_result_pending || o_cdb_grant[3]);
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       sc_pending <= 1'b0;
     end else if (i_flush_all) begin
@@ -1028,7 +1049,7 @@ module tomasulo_wrapper (
     end
   end
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fmul_dispatch_pending_valid <= 1'b0;
     end else if (fmul_dispatch_pending_flushed) begin
@@ -1425,10 +1446,10 @@ module tomasulo_wrapper (
       .i_commit_rob_tag(commit_bus.tag),
 
       // Store-to-load forwarding (from LQ)
-      .i_sq_check_valid          (sq_check_valid),
-      .i_sq_check_addr           (sq_check_addr),
-      .i_sq_check_rob_tag        (sq_check_rob_tag),
-      .i_sq_check_size           (sq_check_size),
+      .i_sq_check_valid          (sq_check_valid_q),
+      .i_sq_check_addr           (sq_check_addr_q),
+      .i_sq_check_rob_tag        (sq_check_rob_tag_q),
+      .i_sq_check_size           (sq_check_size_q),
       .o_sq_all_older_addrs_known(sq_all_older_addrs_known),
       .o_sq_forward              (sq_forward),
 
@@ -1598,7 +1619,7 @@ module tomasulo_wrapper (
 
   initial f_cp_valid = '0;
 
-  always @(posedge i_clk or negedge i_rst_n) begin
+  always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_cp_valid <= '0;
     end else if (i_flush_all) begin

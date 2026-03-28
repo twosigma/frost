@@ -676,7 +676,7 @@ module reorder_buffer (
       (head_idx == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Allocation write - tail pointer management
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       tail_ptr <= '0;
     end else if (i_flush_all) begin
@@ -705,7 +705,7 @@ module reorder_buffer (
   // Handle allocation, CDB writes, branch updates, and flush for FF-backed fields.
   // Multi-bit fields (pc, dest_reg, value, branch_target, predicted_target,
   // checkpoint_id, exc_cause, fp_flags) are handled by distributed RAM above.
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       // Reset all entries to invalid
       rob_valid           <= '0;
@@ -863,7 +863,7 @@ module reorder_buffer (
   // Head Pointer Management
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr <= '0;
     end else if (i_flush_all) begin
@@ -879,7 +879,7 @@ module reorder_buffer (
   // ===========================================================================
   // Handles WFI, CSR, FENCE, FENCE.I, MRET, and exceptions at Reorder Buffer head
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       serial_state <= SERIAL_IDLE;
     end else if (i_flush_all) begin
@@ -1034,7 +1034,7 @@ module reorder_buffer (
   assign o_trap_cause = head_exc_cause;
 
   // FENCE.I flush signal - pulse when FENCE.I commits
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fence_i_committed <= 1'b0;
     end else begin

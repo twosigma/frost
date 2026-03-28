@@ -259,7 +259,7 @@ module fp_div_shim (
                                     (u == UDivD)  ? DivDDepth  :
                                     (u == USqrtS) ? SqrtSDepth : SqrtDDepth;
 
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
+    always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         for (int i = 0; i < MaxPipeDepth; i++) begin
           tq_valid[u][i]   <= 1'b0;
@@ -370,7 +370,7 @@ module fp_div_shim (
 
   // Hold buffer management (2-deep circular buffer per sub-unit)
   for (genvar u = 0; u < NumUnits; u++) begin : gen_hold
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
+    always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         hold_valid[u][0]   <= 1'b0;
         hold_valid[u][1]   <= 1'b0;
@@ -468,7 +468,7 @@ module fp_div_shim (
       (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
   assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       for (int i = 0; i < FifoDepth; i++) begin
         fifo_valid[i]   <= 1'b0;

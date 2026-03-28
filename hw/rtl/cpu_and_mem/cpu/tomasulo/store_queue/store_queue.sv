@@ -459,7 +459,11 @@ module store_queue #(
   // Separated so Verilator does not see a circular dependency through the
   // async LUTRAM read (fwd_match_idx → sq_data_fwd_rd → output).
   always_comb begin
-    o_sq_all_older_addrs_known = i_sq_check_valid ? fwd_all_older_known : 1'b1;
+    // Default to 0 (stall) when no check active.  This is safe because the
+    // LQ only inspects the response when its own o_sq_check_valid is high.
+    // Returning 0 prevents accidental load issue during the 1-cycle pipeline
+    // fill when the registered sq_check request hasn't reached the SQ yet.
+    o_sq_all_older_addrs_known = i_sq_check_valid ? fwd_all_older_known : 1'b0;
     o_sq_forward.match         = i_sq_check_valid ? fwd_found_match : 1'b0;
     o_sq_forward.can_forward   = i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
     case (fwd_extract_type)
@@ -546,7 +550,7 @@ module store_queue #(
   // Sequential Logic
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr          <= '0;
       tail_ptr          <= '0;
