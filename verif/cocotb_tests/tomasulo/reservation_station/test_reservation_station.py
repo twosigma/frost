@@ -216,13 +216,12 @@ async def test_dispatch_and_issue(dut: Any) -> None:
     dut_if.clear_dispatch()
 
     # Now set FU ready and check issue
-    # Note: RTL uses registered outputs — entry was written on previous rising edge,
-    # issue output is combinational from registered state. So the entry is now valid
-    # and ready. Set fu_ready and wait for combinational logic to settle.
+    # Stage2 pipeline: issue_fire latches into stage2 on rising edge,
+    # so we need one step for the data to appear on o_issue.
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle after driving input
+    await dut_if.step()  # rising edge: issue_fire loads stage2
 
-    # Read combinational issue output
+    # Read issue output from stage2 register
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
 
@@ -368,7 +367,10 @@ async def test_cdb_wakeup_src1(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Now should issue
+    # Stage2 pipeline: need one step for issue_fire to load stage2
+    await dut_if.step()
+
+    # Now should issue from stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src1")
@@ -410,6 +412,9 @@ async def test_cdb_wakeup_src2(dut: Any) -> None:
     model.cdb_snoop(tag=7, value=0xBEEF)
     await dut_if.step()
     dut_if.clear_cdb()
+
+    # Stage2 pipeline: need one step for issue_fire to load stage2
+    await dut_if.step()
 
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
@@ -455,6 +460,9 @@ async def test_cdb_wakeup_src3(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
+    # Stage2 pipeline: need one step for issue_fire to load stage2
+    await dut_if.step()
+
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src3")
@@ -498,6 +506,9 @@ async def test_cdb_wakeup_multiple_sources(dut: Any) -> None:
     model.cdb_snoop(tag=3, value=0xAAAA)
     await dut_if.step()
     dut_if.clear_cdb()
+
+    # Stage2 pipeline: need one step for issue_fire to load stage2
+    await dut_if.step()
 
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
@@ -563,17 +574,18 @@ async def test_cdb_wakeup_across_entries(dut: Any) -> None:
     dut_if.clear_cdb()
 
     # Both should now be ready — lowest index (0) issues first
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2 with entry 0
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "entry 0 issues first")
     assert issue["rob_tag"] == 0, "Entry 0 should issue first (priority)"
 
-    # Step to consume the issue (entry 0 invalidated on rising edge)
+    # Step to consume entry 0, back-to-back refill with entry 1
     await dut_if.step()
 
-    # Entry 1 should issue next (fu_ready still 1, combinational output settled by step)
+    # Entry 1 should issue next via back-to-back pipeline refill
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "entry 1 issues second")
@@ -615,13 +627,14 @@ async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Entry should be ready immediately (CDB bypassed at dispatch)
+    # Entry should be ready (CDB bypassed at dispatch)
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "CDB bypass at dispatch")
-    assert issue["valid"], "Should issue immediately with CDB bypass"
+    assert issue["valid"], "Should issue with CDB bypass"
     assert issue["src1_value"] == 0xCAFE, "src1_value should be CDB value"
 
     cocotb.log.info("=== Test Passed ===")
@@ -661,8 +674,9 @@ async def test_issue_priority(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_dispatch()
 
+    # Stage2 pipeline: first step loads stage2 with entry 0
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2 with entry 0
 
     # Issue all 3, verify order is index 0, 1, 2
     for expected_tag in range(3):
@@ -672,7 +686,7 @@ async def test_issue_priority(dut: Any) -> None:
         assert (
             issue["rob_tag"] == expected_tag
         ), f"Expected tag {expected_tag}, got {issue['rob_tag']}"
-        await dut_if.step()
+        await dut_if.step()  # consume current, back-to-back refill with next
 
     assert dut_if.empty, "Should be empty after issuing all"
 
@@ -706,14 +720,14 @@ async def test_issue_gated_by_fu_ready(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # FU not ready
+    # FU not ready — nothing moves to stage2
     dut_if.set_fu_ready(False)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: no issue_fire (fu_ready=0), stage2 stays empty
     assert not dut_if.issue_valid, "Should not issue when FU not ready"
 
-    # Make FU ready
+    # Make FU ready — issue_fire loads stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     assert dut_if.issue_valid, "Should issue when FU is ready"
 
     cocotb.log.info("=== Test Passed ===")  # type: ignore[unreachable]
@@ -752,8 +766,9 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
     dut_if.clear_dispatch()
 
     # Dispatch is responsible for marking unused src2 operands ready.
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "use_imm ready path")
@@ -815,8 +830,9 @@ async def test_issue_output_fields(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "full field check")
@@ -986,8 +1002,9 @@ async def test_partial_flush_preserves_older(dut: Any) -> None:
     assert dut_if.count == 1, f"Count should be 1, got {dut_if.count}"
 
     # The preserved entry should still issue
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let combinational logic settle
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "preserved entry issues")
@@ -1065,8 +1082,9 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
     # Only the surviving entry should remain, and it should now be ready
     assert dut_if.count == 1, f"Expected 1 entry, got {dut_if.count}"
 
+    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     assert issue["valid"], "Surviving entry should issue (CDB woke src1 during flush)"
@@ -1090,29 +1108,37 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let fu_ready propagate
     issued_count = 0
 
+    # Stage2 pipeline delay tracking: the DUT's issue output is 1 cycle behind
+    # the model's prediction because of the stage2 register.
+    prev_model_issue: dict | None = None
+    prev_model_issue_info: tuple[int, dict] | None = None
+
     for cycle in range(200):
-        # Previous-cycle clears happen after the falling edge, so allow
-        # combinational issue/full/count outputs to settle before sampling.
         await Timer(1, unit="ps")
 
         # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
 
-        # Peek model issue without mutating, then compare with DUT combinational issue.
-        model_issue_info = model.peek_issue(fu_ready=True)
+        # Compare DUT output with PREVIOUS cycle's model prediction (stage2 delay)
         issue = dut_if.read_issue()
-        model_issue = model_issue_info[1] if model_issue_info is not None else None
-
-        if model_issue is not None:
+        if prev_model_issue is not None:
             assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
-            check_issue(issue, model_issue, f"cycle {cycle}")
+            check_issue(issue, prev_model_issue, f"cycle {cycle}")
             issued_count += 1
         else:
             assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
+
+        # Consume the previous cycle's issued entry from the model
+        if prev_model_issue_info is not None:
+            model.consume_issue(prev_model_issue_info[0])
+
+        # Peek what the model WOULD issue this cycle (will appear on DUT next cycle)
+        model_issue_info = model.peek_issue(fu_ready=True)
+        prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
+        prev_model_issue_info = model_issue_info
 
         # Drive new inputs for this cycle
         # Gate dispatch on DUT full/count from the old registered state.
@@ -1170,13 +1196,7 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
             model.cdb_snoop(tag=cdb_tag, value=cdb_value)
 
-        # Consume issue after same-cycle action modeling.
-        # This matches RTL behavior where dispatch/free-index selection uses the
-        # old registered state before issue invalidation takes effect.
-        if model_issue_info is not None:
-            model.consume_issue(model_issue_info[0])
-
-        # Step: DUT registers inputs, issue invalidation, CDB wakeup
+        # Step: DUT registers inputs, issue_fire loads stage2, CDB wakeup
         await dut_if.step()
         dut_if.clear_dispatch()
         dut_if.clear_cdb()
@@ -1197,26 +1217,34 @@ async def test_random_with_flush(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     dut_if.set_fu_ready(True)
-    await Timer(1, unit="ps")  # Let fu_ready propagate
+
+    # Stage2 pipeline delay tracking: the DUT's issue output is 1 cycle behind
+    # the model's prediction because of the stage2 register.
+    prev_model_issue: dict | None = None
+    prev_model_issue_info: tuple[int, dict] | None = None
 
     for cycle in range(200):
-        # Previous-cycle clears happen after the falling edge, so allow
-        # combinational issue/full/count outputs to settle before sampling.
         await Timer(1, unit="ps")
 
         # Read DUT state from settled registered state
         dut_full = dut_if.full
         dut_count = dut_if.count
 
-        # Peek model issue without mutating, then compare with DUT combinational issue.
-        model_issue_info = model.peek_issue(fu_ready=True)
+        # Compare DUT output with PREVIOUS cycle's model prediction (stage2 delay)
         issue = dut_if.read_issue()
-        model_issue = model_issue_info[1] if model_issue_info is not None else None
-
-        if model_issue is not None:
+        if prev_model_issue is not None:
             assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
         else:
             assert not issue["valid"], f"Cycle {cycle}: DUT issued but model did not"
+
+        # Consume the previous cycle's issued entry from the model
+        if prev_model_issue_info is not None:
+            model.consume_issue(prev_model_issue_info[0])
+
+        # Peek what the model WOULD issue this cycle (will appear on DUT next cycle)
+        model_issue_info = model.peek_issue(fu_ready=True)
+        prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
+        prev_model_issue_info = model_issue_info
 
         # Drive new inputs for this cycle
         # Gate dispatch on DUT's full signal (matches RTL dispatch_fire gate)
@@ -1285,11 +1313,12 @@ async def test_random_with_flush(dut: Any) -> None:
             model.partial_flush(flush_tag=flush_tag, head_tag=head_tag)
             flush_applied = True
 
-        # Flush has priority over issue invalidation in RTL.
-        if not flush_applied and model_issue_info is not None:
-            model.consume_issue(model_issue_info[0])
+        # Flush squashes any pending stage2 instruction
+        if flush_applied:
+            prev_model_issue = None
+            prev_model_issue_info = None
 
-        # Step: DUT registers inputs, processes issue/flush/CDB
+        # Step: DUT registers inputs, issue_fire loads stage2, flush/CDB
         await dut_if.step()
         dut_if.clear_dispatch()
         dut_if.clear_cdb()
@@ -1334,16 +1363,18 @@ async def test_next_issue_is_sc_output(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Entry is ready (all sources ready) → o_next_issue_is_sc should be high
+    # o_next_issue_is_sc now reads from stage2 (registered), so we need
+    # fu_ready=True + step to load the SC_W entry into stage2 first.
+    dut_if.set_fu_ready(True)
+    await dut_if.step()  # rising edge: issue_fire loads SC_W into stage2
     await Timer(1, unit="ps")
     assert int(sc_sig.value), "o_next_issue_is_sc should be high for ready SC_W entry"
 
-    # Issue the entry by setting fu_ready
-    dut_if.set_fu_ready(True)
-    await dut_if.step()
+    # Consume the SC_W entry from stage2
+    await dut_if.step()  # rising edge: stage2 consumed
     dut_if.set_fu_ready(False)
 
-    # RS is now empty → o_next_issue_is_sc should be low
+    # RS is now empty, stage2 consumed → o_next_issue_is_sc should be low
     await Timer(1, unit="ps")
     assert not int(sc_sig.value), "o_next_issue_is_sc should be low after SC issued"
     assert dut_if.empty, "RS should be empty after issue"

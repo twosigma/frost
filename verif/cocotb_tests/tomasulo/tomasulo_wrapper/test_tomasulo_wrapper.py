@@ -714,15 +714,16 @@ async def test_cdb_wakes_rs_and_completes_rob(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
+    # ROB head should be done (CDB write marked it done on the previous step)
+    assert dut_if.head_done, "ROB head should be done after CDB"
+
     # RS should now be ready to issue
     dut_if.set_rs_fu_ready(True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")  # Let combinational logic settle
     issue = dut_if.read_rs_issue()
     assert issue["valid"], "RS should issue after CDB wakeup"
     assert issue["rob_tag"] == tag
-
-    # ROB head should be done
-    assert dut_if.head_done, "ROB head should be done after CDB"
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -778,6 +779,7 @@ async def test_full_pipeline_cycle(dut: Any) -> None:
 
     # 3. RS issues
     dut_if.set_rs_fu_ready(True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")  # Let combinational logic settle
     issue = dut_if.read_rs_issue()
     assert issue["valid"], "RS should issue"
@@ -957,6 +959,7 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
 
     # Issue from RS
     dut_if.set_rs_fu_ready(True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")  # Let combinational logic settle
     issue = dut_if.read_rs_issue()
     assert issue["valid"], "RS should issue"
@@ -992,18 +995,28 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()  # Track valid ROB tags for safe CDB
+    # Stage2 pipeline delay: DUT issue output appears 1 cycle after model
+    prev_model_issue: object | None = None
 
     for cycle in range(200):
         # Read DUT state BEFORE try_issue (matches RTL's registered state)
         dut_rob_full = dut_if.rob_full
         dut_rs_full = dut_if.rs_full_for(RS_MEM)
 
-        # Check RS issue from settled state (skip after flush cycles)
+        # Check RS issue from settled state (skip after flush cycles).
+        # DUT stage2 output reflects the PREVIOUS cycle's model issue.
         if not prev_was_flush:
             issue = dut_if.read_rs_issue_for(RS_MEM)
+            if prev_model_issue is not None:
+                assert issue[
+                    "valid"
+                ], f"Cycle {cycle}: model issued prev cycle but DUT did not"
             model_issue = model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)
-            if model_issue is not None:
-                assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
+            prev_model_issue = model_issue
+        else:
+            # Flush clears stage2
+            prev_model_issue = None
+            model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)  # keep model in sync
 
         # Auto-commit ROB head if done (one per cycle, matching DUT rate)
         c = model.try_commit()
@@ -1222,7 +1235,8 @@ async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
-    # Now all RS should be ready to issue
+    # Now all RS should be ready to issue (stage2 register loads after 1 extra cycle)
+    await dut_if.step()
     await Timer(1, unit="ps")
     for rs_type in ALL_RS_TYPES:
         issue = dut_if.read_rs_issue_for(rs_type)
@@ -1487,6 +1501,7 @@ async def test_fmul_pending_dispatch_wakes_while_buffered(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    await dut_if.step()  # stage2 register loads
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
     assert issue["valid"], "Older FMUL should become ready after its CDB wakeup"
@@ -1571,6 +1586,7 @@ async def test_fmul_pending_dispatch_wakes_after_producer_commits(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    await dut_if.step()  # stage2 register loads
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
     assert issue["valid"], "Older FMUL should become ready after its CDB wakeup"
@@ -1644,7 +1660,8 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
-    # Now it should issue
+    # Now it should issue (stage2 register loads after 1 extra cycle)
+    await dut_if.step()
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
     model_issue = model.rs_try_issue(rs_type=RS_FMUL, fu_ready=True)
@@ -1729,6 +1746,7 @@ async def test_mixed_dispatch_and_issue_across_rs(dut: Any) -> None:
     # Issue from INT_RS only (MEM_RS fu_ready=0)
     dut_if.set_fu_ready(RS_INT, True)
     dut_if.set_fu_ready(RS_MEM, False)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")
 
     int_issue = dut_if.read_rs_issue_for(RS_INT)
@@ -1747,6 +1765,7 @@ async def test_mixed_dispatch_and_issue_across_rs(dut: Any) -> None:
 
     # Now issue from MEM_RS
     dut_if.set_fu_ready(RS_MEM, True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")
 
     mem_issue = dut_if.read_rs_issue_for(RS_MEM)
@@ -1777,6 +1796,10 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     prev_was_flush = False
     pending_tags: set[int] = set()
     random_manual_cdb_rs_types = [RS_MEM, RS_FP, RS_FDIV]
+    # Stage2 pipeline delay: DUT issue output appears 1 cycle after model
+    prev_model_issue: dict[int, object] = {
+        rs: None for rs in random_manual_cdb_rs_types
+    }
 
     for cycle in range(300):
         dut_rob_full = dut_if.rob_full
@@ -1785,14 +1808,21 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         # here because the wrapper intentionally stages FMUL dispatch through a
         # one-entry ingress buffer before the RS, so its issue timing is not
         # cycle-identical to the unstaged manual-CDB RS types in this loop.
+        # DUT stage2 output reflects the PREVIOUS cycle's model issue.
         if not prev_was_flush:
             for rs_type in random_manual_cdb_rs_types:
                 issue = dut_if.read_rs_issue_for(rs_type)
-                model_issue = model.rs_try_issue(rs_type=rs_type, fu_ready=True)
-                if model_issue is not None:
+                if prev_model_issue[rs_type] is not None:
                     assert issue[
                         "valid"
-                    ], f"Cycle {cycle}: {RS_NAMES[rs_type]} model issued but DUT did not"
+                    ], f"Cycle {cycle}: {RS_NAMES[rs_type]} model issued prev cycle but DUT did not"
+                model_issue = model.rs_try_issue(rs_type=rs_type, fu_ready=True)
+                prev_model_issue[rs_type] = model_issue
+        else:
+            # Flush clears stage2 for all RS types
+            for rs_type in random_manual_cdb_rs_types:
+                prev_model_issue[rs_type] = None
+                model.rs_try_issue(rs_type=rs_type, fu_ready=True)  # keep model in sync
 
         # Auto-commit ROB head
         c = model.try_commit()
@@ -2041,10 +2071,11 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
     )
     # Enable INT_RS FU ready so RS issues on the same cycle
     dut_if.set_fu_ready(RS_INT, True)
-    await dut_if.step()
+    await dut_if.step()  # issue_fire loads stage2 register
+    await dut_if.step()  # stage2 valid -> ALU produces result combinationally
 
     # ALU is single-cycle: result appears on CDB combinationally at this
-    # falling edge (same cycle as RS issue). Read before next rising edge
+    # falling edge (same cycle as stage2 valid). Read before next rising edge
     # consumes it.
     cdb = dut_if.read_cdb_output()
     assert cdb.valid, "ALU result should be on CDB same cycle as issue"
@@ -2241,8 +2272,10 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
         src2_value=0x2000,
         src3_ready=True,
     )
-    await dut_if.step()
+    await dut_if.step()  # issue_fire loads stage2 register for ADD
     expected_add = 0x3000
+
+    await dut_if.step()  # stage2 valid -> ALU produces result combinationally
 
     # ALU result is combinational — read CDB at current falling edge
     cdb = dut_if.read_cdb_output()
@@ -2253,6 +2286,12 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
     ), f"ADD result: got {cdb.value:#x}, expected {expected_add:#x}"
     dut_if.clear_rs_dispatch()
     model.fu_complete(FU_ALU, tag=tag_b, value=expected_add)
+
+    # Stage2 consumption causes the combinational ALU adapter to re-latch
+    # the same result for one extra cycle.  Drain that duplicate before
+    # waiting for the MUL result.
+    await dut_if.step()  # adapter re-latches duplicate
+    await dut_if.step()  # adapter clears
 
     # Wait for MUL result on CDB (multiplier ~4 cycles)
     cdb = await wait_for_cdb(dut_if, max_cycles=10)
@@ -3146,6 +3185,7 @@ async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
 
     # Issue: all sources ready, FU ready
     dut_if.set_fu_ready(RS_FP, True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FP)
     assert issue["valid"], "FP_RS should issue"
@@ -3200,6 +3240,7 @@ async def test_fp_explicit_rm_unchanged(dut: Any) -> None:
 
     # Issue
     dut_if.set_fu_ready(RS_FP, True)
+    await dut_if.step()  # issue_fire loads stage2 register
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FP)
     assert issue["valid"], "FP_RS should issue"
