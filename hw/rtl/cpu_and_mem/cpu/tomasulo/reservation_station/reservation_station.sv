@@ -159,31 +159,39 @@ module reservation_station #(
   wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
 
   // ===========================================================================
-  // Issue Output Intermediates
+  // Stage 2 Pipeline Register
   // ===========================================================================
-  // Set in the always_comb block below; assigned to output ports via
-  // struct pack into o_issue.
+  // Issue output is registered to break the combinational path from RS
+  // entry arrays (priority encoder + LUTRAM read + operand mux) to
+  // downstream consumers (FU shims, LQ/SQ address computation, CDB).
+  // The stage2 register holds a full copy of the issued instruction's data,
+  // presented to downstream with one-shot valid when i_fu_ready is asserted.
 
-  logic issue_out_valid;
-  logic [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
-  riscv_pkg::instr_op_e issue_out_op;
-  logic [FLEN-1:0] issue_out_src1_value;
-  logic [FLEN-1:0] issue_out_src2_value;
-  logic [FLEN-1:0] issue_out_src3_value;
-  logic [XLEN-1:0] issue_out_imm;
-  logic issue_out_use_imm;
-  logic issue_out_writes_cdb_hint;
-  logic [2:0] issue_out_rm;
-  logic [XLEN-1:0] issue_out_branch_target;
-  logic issue_out_predicted_taken;
-  logic [XLEN-1:0] issue_out_predicted_target;
-  logic issue_out_is_fp_mem;
-  riscv_pkg::mem_size_e issue_out_mem_size;
-  logic issue_out_mem_signed;
-  logic [11:0] issue_out_csr_addr;
-  logic [4:0] issue_out_csr_imm;
-  logic [XLEN-1:0] issue_out_pc;
-  logic [XLEN-1:0] issue_out_link_addr;
+  logic stage2_valid;
+  logic [ReorderBufferTagWidth-1:0] stage2_rob_tag;
+  riscv_pkg::instr_op_e stage2_op;
+  logic [FLEN-1:0] stage2_src1_value;
+  logic [FLEN-1:0] stage2_src2_value;
+  logic [FLEN-1:0] stage2_src3_value;
+  logic [XLEN-1:0] stage2_imm;
+  logic stage2_use_imm;
+  logic stage2_writes_cdb_hint;
+  logic [2:0] stage2_rm;
+  logic [XLEN-1:0] stage2_branch_target;
+  logic stage2_predicted_taken;
+  logic [XLEN-1:0] stage2_predicted_target;
+  logic stage2_is_fp_mem;
+  riscv_pkg::mem_size_e stage2_mem_size;
+  logic stage2_mem_signed;
+  logic [11:0] stage2_csr_addr;
+  logic [4:0] stage2_csr_imm;
+  logic [XLEN-1:0] stage2_pc;
+  logic [XLEN-1:0] stage2_link_addr;
+
+  // Stage 2 control signals
+  logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
+  logic stage2_accept;  // Stage2 content consumed by FU this cycle
+  logic can_issue_to_stage2;  // Stage2 is empty or being consumed — RS may load it
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -351,86 +359,59 @@ module reservation_station #(
     end
   end
 
+  // --- Stage 2 control ---
+  // Flush squash: stage2 holds an instruction younger than the flush boundary.
+  assign stage2_should_flush = stage2_valid && (i_flush_all || (i_flush_en && should_flush_entry(
+      stage2_rob_tag, i_flush_tag, i_rob_head_tag
+  )));
+
+  // Stage2 content consumed by downstream FU this cycle (one-shot pulse).
+  assign stage2_accept = stage2_valid && i_fu_ready && !stage2_should_flush;
+
+  // RS may load stage2 when it is empty or being consumed this cycle.
+  assign can_issue_to_stage2 = !stage2_valid || stage2_accept;
+
+  // Issue from RS entry arrays into stage2. i_fu_ready is retained so that
+  // entries only move to stage2 when the FU can accept — preserving the same
+  // count/full/empty semantics as the old combinational design. The timing
+  // benefit comes from registering the DATA path in stage2, not from decoupling
+  // the control path.
   // A partial/full flush invalidates younger entries on the clock edge, but the
   // ready scan above still sees pre-flush state combinationally in the same
-  // cycle. Suppress issue so wrong-path ops cannot leak into the FUs during the
+  // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
   // misprediction/trap flush cycle.
-  assign issue_fire = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
+  assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
 
-  // --- SC issue peek: reports whether the next-to-issue entry is an SC ---
-  assign o_next_issue_is_sc = any_ready && !i_flush_all && !i_flush_en &&
-                              (pl_op_bits == 32'(riscv_pkg::SC_W));
+  // --- SC issue peek: reports whether stage2 holds a Store Conditional ---
+  // Now reads from the registered stage2 pipeline register, breaking the
+  // combinational path through the LUTRAM that existed before.
+  assign o_next_issue_is_sc = stage2_valid && !stage2_should_flush &&
+                              (stage2_op == riscv_pkg::SC_W);
 
-  // --- Issue output ---
-  always_comb begin
-    issue_out_valid            = 1'b0;
-    issue_out_rob_tag          = '0;
-    issue_out_op               = riscv_pkg::instr_op_e'(0);
-    issue_out_src1_value       = '0;
-    issue_out_src2_value       = '0;
-    issue_out_src3_value       = '0;
-    issue_out_imm              = '0;
-    issue_out_use_imm          = 1'b0;
-    issue_out_writes_cdb_hint  = 1'b0;
-    issue_out_rm               = '0;
-    issue_out_branch_target    = '0;
-    issue_out_predicted_taken  = 1'b0;
-    issue_out_predicted_target = '0;
-    issue_out_is_fp_mem        = 1'b0;
-    issue_out_mem_size         = riscv_pkg::mem_size_e'(0);
-    issue_out_mem_signed       = 1'b0;
-    issue_out_csr_addr         = '0;
-    issue_out_csr_imm          = '0;
-    issue_out_pc               = '0;
-    issue_out_link_addr        = '0;
-    if (issue_fire) begin
-      issue_out_valid            = 1'b1;
-      issue_out_rob_tag          = rs_rob_tag[issue_idx];
-      issue_out_op               = riscv_pkg::instr_op_e'(pl_op_bits);
-      issue_out_src1_value       = rs_src1_value[issue_idx];
-      issue_out_src2_value       = rs_src2_value[issue_idx];
-      issue_out_src3_value       = rs_src3_value[issue_idx];
-      issue_out_imm              = pl_imm;
-      issue_out_use_imm          = rs_use_imm[issue_idx];
-      issue_out_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
-      issue_out_rm               = pl_rm;
-      issue_out_branch_target    = pl_branch_target;
-      issue_out_predicted_taken  = pl_predicted_taken;
-      issue_out_predicted_target = pl_predicted_target;
-      issue_out_is_fp_mem        = pl_is_fp_mem;
-      issue_out_mem_size         = riscv_pkg::mem_size_e'(pl_mem_size_bits);
-      issue_out_mem_signed       = pl_mem_signed;
-      issue_out_csr_addr         = pl_csr_addr;
-      issue_out_csr_imm          = pl_csr_imm;
-      issue_out_pc               = pl_pc;
-      issue_out_link_addr        = pl_link_addr;
-    end
-  end
+  // --- Issue port assignment (driven from stage2 pipeline register) ---
+  // Data fields are driven unconditionally from stage2 FFs.
+  // Only valid is gated — downstream consumers gate all logic on valid.
+  assign o_issue.valid = stage2_accept;
+  assign o_issue.rob_tag = stage2_rob_tag;
+  assign o_issue.op = stage2_op;
+  assign o_issue.src1_value = stage2_src1_value;
+  assign o_issue.src2_value = stage2_src2_value;
+  assign o_issue.src3_value = stage2_src3_value;
+  assign o_issue.imm = stage2_imm;
+  assign o_issue.use_imm = stage2_use_imm;
+  assign o_issue.rm = stage2_rm;
+  assign o_issue.branch_target = stage2_branch_target;
+  assign o_issue.predicted_taken = stage2_predicted_taken;
+  assign o_issue.predicted_target = stage2_predicted_target;
+  assign o_issue.is_fp_mem = stage2_is_fp_mem;
+  assign o_issue.mem_size = stage2_mem_size;
+  assign o_issue.mem_signed = stage2_mem_signed;
+  assign o_issue.csr_addr = stage2_csr_addr;
+  assign o_issue.csr_imm = stage2_csr_imm;
+  assign o_issue.pc = stage2_pc;
+  assign o_issue.link_addr = stage2_link_addr;
 
-  // --- Issue port assignment ---
-  always_comb begin
-    o_issue.valid            = issue_out_valid;
-    o_issue.rob_tag          = issue_out_rob_tag;
-    o_issue.op               = issue_out_op;
-    o_issue.src1_value       = issue_out_src1_value;
-    o_issue.src2_value       = issue_out_src2_value;
-    o_issue.src3_value       = issue_out_src3_value;
-    o_issue.imm              = issue_out_imm;
-    o_issue.use_imm          = issue_out_use_imm;
-    o_issue.rm               = issue_out_rm;
-    o_issue.branch_target    = issue_out_branch_target;
-    o_issue.predicted_taken  = issue_out_predicted_taken;
-    o_issue.predicted_target = issue_out_predicted_target;
-    o_issue.is_fp_mem        = issue_out_is_fp_mem;
-    o_issue.mem_size         = issue_out_mem_size;
-    o_issue.mem_signed       = issue_out_mem_signed;
-    o_issue.csr_addr         = issue_out_csr_addr;
-    o_issue.csr_imm          = issue_out_csr_imm;
-    o_issue.pc               = issue_out_pc;
-    o_issue.link_addr        = issue_out_link_addr;
-  end
-
-  assign o_issue_writes_cdb_hint = issue_out_writes_cdb_hint;
+  assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
 
   // --- Status outputs ---
   assign o_full = full;
@@ -551,6 +532,49 @@ module reservation_station #(
   end
 
   // ===========================================================================
+  // Stage 2 Pipeline Register — Sequential Logic
+  // ===========================================================================
+  // Captures the issued instruction's data on issue_fire and holds it until
+  // consumed by the downstream FU (stage2_accept) or flushed.
+
+  always_ff @(posedge i_clk or negedge i_rst_n) begin
+    if (!i_rst_n) begin
+      stage2_valid <= 1'b0;
+    end else if (stage2_should_flush) begin
+      // Flush squash: clear stage2. No refill is possible here because
+      // issue_fire is suppressed during flush (!i_flush_all && !i_flush_en).
+      stage2_valid <= 1'b0;
+    end else if (issue_fire) begin
+      // Load stage2 from the RS entry selected by the priority encoder.
+      // This covers both the empty-fill and back-to-back (accept + refill) cases.
+      stage2_valid            <= 1'b1;
+      stage2_rob_tag          <= rs_rob_tag[issue_idx];
+      stage2_op               <= riscv_pkg::instr_op_e'(pl_op_bits);
+      stage2_src1_value       <= rs_src1_value[issue_idx];
+      stage2_src2_value       <= rs_src2_value[issue_idx];
+      stage2_src3_value       <= rs_src3_value[issue_idx];
+      stage2_imm              <= pl_imm;
+      stage2_use_imm          <= rs_use_imm[issue_idx];
+      stage2_writes_cdb_hint  <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
+      stage2_rm               <= pl_rm;
+      stage2_branch_target    <= pl_branch_target;
+      stage2_predicted_taken  <= pl_predicted_taken;
+      stage2_predicted_target <= pl_predicted_target;
+      stage2_is_fp_mem        <= pl_is_fp_mem;
+      stage2_mem_size         <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      stage2_mem_signed       <= pl_mem_signed;
+      stage2_csr_addr         <= pl_csr_addr;
+      stage2_csr_imm          <= pl_csr_imm;
+      stage2_pc               <= pl_pc;
+      stage2_link_addr        <= pl_link_addr;
+    end else if (stage2_accept) begin
+      // Consumed by FU, no new entry ready — go empty.
+      stage2_valid <= 1'b0;
+    end
+    // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
+  end
+
+  // ===========================================================================
   // Simulation Assertions
   // ===========================================================================
 `ifndef SYNTHESIS
@@ -564,7 +588,8 @@ module reservation_station #(
         $warning("RS: dispatch attempted during flush");
 
       // Issue fires only for ready entries (fatal: indicates RTL bug)
-      if (issue_out_valid && !entry_ready[issue_idx])
+      // Checks stage1 issue_fire (RS→stage2), not stage2 output.
+      if (issue_fire && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
 
     end
@@ -636,11 +661,18 @@ module reservation_station #(
     end
   end
 
-  // Issue output valid implies the entry was valid and ready
+  // Stage1 issue_fire implies the selected entry was valid and ready
   always_comb begin
-    if (i_rst_n && issue_out_valid) begin
+    if (i_rst_n && issue_fire) begin
       p_issue_entry_was_valid : assert (rs_valid[issue_idx]);
       p_issue_entry_was_ready : assert (entry_ready[issue_idx]);
+    end
+  end
+
+  // Stage2 output valid implies stage2 is occupied
+  always_comb begin
+    if (i_rst_n && o_issue.valid) begin
+      p_stage2_output_coherent : assert (stage2_valid);
     end
   end
 
@@ -661,9 +693,10 @@ module reservation_station #(
         p_issue_clears_valid : assert (!rs_valid[$past(issue_idx)]);
       end
 
-      // flush_all empties RS
+      // flush_all empties RS and stage2
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (rs_valid == '0);
+        p_flush_all_empties_stage2 : assert (!stage2_valid);
       end
 
       // CDB snoop sets ready bit when tag matches (all entries checked).
@@ -729,6 +762,15 @@ module reservation_station #(
       cover_cdb_bypass_at_dispatch :
       cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
              && dispatch_src1_tag == i_cdb.tag);
+
+      // Stage2 back-to-back: consumed and refilled in the same cycle
+      cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
+
+      // Stage2 flush squash
+      cover_stage2_flush : cover (stage2_should_flush);
+
+      // Stage2 blocked (FU not ready)
+      cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
     end
   end
 
