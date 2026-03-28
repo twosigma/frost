@@ -301,6 +301,19 @@ module pc_controller #(
       {pending_prediction_target[XLEN-1:2], 2'b00} + riscv_pkg::PcIncrement32bit;
   assign pc_reg_hw = o_pc_reg[XLEN-1:1];
   assign seq_next_pc_reg_hw = seq_next_pc_reg[XLEN-1:1];
+
+  // TIMING OPTIMIZATION: Register seq_next_pc_reg_hw before the pending
+  // prediction crossing comparison. This breaks the critical 24-level path
+  // from mispredict_recovery → flush → is_compressed → pc_reg_normal →
+  // seq_next_pc_reg → CARRY8 comparison → pending_prediction_allow_cross/CE.
+  // The 1-cycle-old value is safe because stale_pending_prediction and
+  // redirect_kill_pending_q handle delayed crossing detection gracefully.
+  logic [XLEN-2:0] seq_next_pc_reg_hw_q;
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_branch_taken || i_trap_taken || i_mret_taken)
+      seq_next_pc_reg_hw_q <= '0;
+    else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
+  end
   // Word-aligned predicted branches that land on a halfword target still need
   // the pending-handoff path. Without it, pc_reg can advance to the target one
   // cycle before BRAM returns the target word, and IF seeds a spanning decode
@@ -323,7 +336,7 @@ module pc_controller #(
       pending_prediction_effective &&
       pending_prediction_allow_cross &&
       (pc_reg_hw < pending_prediction_pc_hw) &&
-      (seq_next_pc_reg_hw >= pending_prediction_pc_hw);
+      (seq_next_pc_reg_hw_q >= pending_prediction_pc_hw);
   assign pending_prediction_cross_handoff =
       pending_prediction_effective &&
       pending_prediction_allow_cross &&
