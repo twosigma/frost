@@ -825,7 +825,7 @@ module load_queue #(
   // Sequential Logic
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr                  <= '0;
       tail_ptr                  <= '0;

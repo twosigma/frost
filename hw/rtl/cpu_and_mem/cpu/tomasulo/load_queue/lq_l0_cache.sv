@@ -116,7 +116,7 @@ module lq_l0_cache #(
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
   // ===========================================================================
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       valid <= '0;
     end else if (i_flush_all) begin
@@ -187,7 +187,7 @@ module lq_l0_cache #(
   // Track a single fill address across one cycle for a cleaner assertion.
   reg [XLEN-1:0] f_fill_addr_q;
   reg            f_fill_valid_q;
-  always @(posedge i_clk or negedge i_rst_n) begin
+  always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_fill_valid_q <= 1'b0;
       f_fill_addr_q  <= '0;

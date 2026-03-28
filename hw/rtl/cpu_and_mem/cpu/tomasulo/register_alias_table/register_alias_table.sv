@@ -363,7 +363,7 @@ module register_alias_table (
   // Sequential Logic: Active RAT Updates
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       // Reset: all entries not renamed
       int_rat_valid <= '0;
@@ -436,7 +436,7 @@ module register_alias_table (
   // Sequential Logic: Checkpoint Valid Bits
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       checkpoint_valid <= '0;
     end else if (i_flush_all) begin

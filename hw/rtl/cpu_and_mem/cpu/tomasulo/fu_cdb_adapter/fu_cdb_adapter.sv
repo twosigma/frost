@@ -119,7 +119,7 @@ module fu_cdb_adapter (
   // ---------------------------------------------------------------------------
   // Register logic
   // ---------------------------------------------------------------------------
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       result_pending <= 1'b0;
       held_result    <= '0;

@@ -172,7 +172,7 @@ module fp_add_shim (
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       in_flight <= 1'b0;
       flushed   <= 1'b0;
@@ -191,7 +191,7 @@ module fp_add_shim (
   logic [TagW-1:0] tag_reg;
   riscv_pkg::instr_op_e op_reg;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       tag_reg <= '0;
       op_reg  <= riscv_pkg::instr_op_e'('0);
@@ -364,7 +364,7 @@ module fp_add_shim (
   logic [4:0] unit_sel_reg;  // [0]=adder,[1]=compare,[2]=classify,[3]=sgnj,[4]=convert
   logic op_double_reg;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       unit_sel_reg  <= '0;
       op_double_reg <= 1'b0;
@@ -378,7 +378,7 @@ module fp_add_shim (
   logic compare_is_compare_reg;
   logic convert_is_fp_to_int_reg;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       compare_is_compare_reg   <= 1'b0;
       convert_is_fp_to_int_reg <= 1'b0;

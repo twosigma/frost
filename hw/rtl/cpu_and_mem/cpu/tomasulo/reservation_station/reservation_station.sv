@@ -422,7 +422,7 @@ module reservation_station #(
   // Sequential Logic
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       // Reset: clear all valid bits
       rs_valid           <= '0;
@@ -537,7 +537,7 @@ module reservation_station #(
   // Captures the issued instruction's data on issue_fire and holds it until
   // consumed by the downstream FU (stage2_accept) or flushed.
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       stage2_valid <= 1'b0;
     end else if (stage2_should_flush) begin

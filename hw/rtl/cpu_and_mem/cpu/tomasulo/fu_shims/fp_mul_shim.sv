@@ -159,7 +159,7 @@ module fp_mul_shim (
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       in_flight <= 1'b0;
       flushed   <= 1'b0;
@@ -178,7 +178,7 @@ module fp_mul_shim (
   logic [TagW-1:0] tag_reg;
   logic use_mult_reg, op_double_reg;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       tag_reg       <= '0;
       use_mult_reg  <= 1'b0;

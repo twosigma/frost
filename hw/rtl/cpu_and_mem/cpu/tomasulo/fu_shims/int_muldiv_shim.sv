@@ -125,7 +125,7 @@ module int_muldiv_shim (
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       mul_in_flight <= 1'b0;
       mul_flushed   <= 1'b0;
@@ -179,7 +179,7 @@ module int_muldiv_shim (
 
   // mul_tag_reg and mul_op_reg declared above (forward declaration)
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       mul_tag_reg <= '0;
       mul_op_reg  <= riscv_pkg::instr_op_e'('0);
@@ -244,7 +244,7 @@ module int_muldiv_shim (
   logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM/REMU, 0 = DIV/DIVU
   logic            div_trk_flushed[DivPipeDepth];
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       for (int i = 0; i < DivPipeDepth; i++) begin
         div_trk_valid[i]   <= 1'b0;
@@ -361,7 +361,7 @@ module int_muldiv_shim (
   logic fifo_push;
   assign fifo_push = div_completing;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       for (int i = 0; i < FifoDepth; i++) begin
         div_fifo_valid[i]   <= 1'b0;
