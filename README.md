@@ -298,16 +298,16 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 65,959 | 1,029,600 | 6.4% |
-|   LUT as Logic | 63,223 | 1,029,600 | 6.1% |
+| CLB LUTs | 65,788 | 1,029,600 | 6.4% |
+|   LUT as Logic | 63,052 | 1,029,600 | 6.1% |
 |   LUT as Distributed RAM | 2,246 | — | — |
 |   LUT as Shift Register | 490 | — | — |
-| CLB Registers | 47,740 | 2,059,200 | 2.3% |
+| CLB Registers | 47,741 | 2,059,200 | 2.3% |
 | Block RAM Tile | 68.5 | 2,112 | 3.2% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 36 | 1,320 | 2.7% |
 | CARRY8 | 3,112 | 128,700 | 2.4% |
-| F7 Muxes | 1,047 | 514,800 | 0.2% |
+| F7 Muxes | 1,020 | 514,800 | 0.2% |
 | F8 Muxes | 42 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |

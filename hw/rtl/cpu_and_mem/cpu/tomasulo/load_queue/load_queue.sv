@@ -799,12 +799,37 @@ module load_queue #(
   // The queue keeps sparse holes after partial flush/free. Search forward from
   // tail_ptr to the next invalid slot instead of trying to compact the tail in
   // the flush cycle.
+  // Tree-based free-entry search: find first invalid entry starting from
+  // tail_ptr using rotate → tree-priority-encode → add-back, replacing
+  // the O(DEPTH) serial scan with O(log2(DEPTH)) logic levels.
+  logic [DEPTH-1:0] lq_free_mask;
+  logic [DEPTH-1:0] lq_free_rotated;
+  logic [IdxWidth-1:0] lq_first_free_offset;
+  logic lq_first_free_found;
+
+  assign lq_free_mask = ~lq_valid;
+
+  // Barrel-rotate free mask so tail_ptr maps to index 0
   always_comb begin
-    alloc_target = tail_ptr;
-    for (int unsigned s = 0; s < DEPTH; s++) begin
-      if (lq_valid[alloc_target[IdxWidth-1:0]]) alloc_target = alloc_target + PtrWidth'(1);
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      lq_free_rotated[i] = lq_free_mask[(32'(i)+32'(tail_ptr[IdxWidth-1:0]))%DEPTH];
     end
   end
+
+  // Tree priority encoder: find lowest-index set bit in rotated mask
+  always_comb begin
+    lq_first_free_offset = '0;
+    lq_first_free_found  = 1'b0;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (lq_free_rotated[i] && !lq_first_free_found) begin
+        lq_first_free_offset = IdxWidth'(i);
+        lq_first_free_found  = 1'b1;
+      end
+    end
+  end
+
+  // Add offset back to tail_ptr to get absolute alloc target
+  assign alloc_target = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
 
   // ===========================================================================
   // Head Advancement (combinational scan to the next valid entry)
