@@ -1293,15 +1293,17 @@ module cpu_ooo #(
   assign frontend_state_flush =
       mispredict_recovery_pending || fence_i_flush || trap_taken_reg || mret_taken_reg;
 
-  // Tomasulo flush: partial flush on registered misprediction recovery
-  // (younger than branch), full flush on registered trap/MRET or FENCE.I.
+  // Tomasulo flush:
+  //   - Partial flush uses flush_en + flush_tag for misprediction recovery.
+  //   - Trap/MRET/FENCE.I use flush_all only. Keeping flush_en low on full
+  //     flushes keeps trap recovery out of the backend partial-flush age
+  //     compare logic; trap latency is unimportant, timing closure is.
   always_comb begin
     flush_en  = 1'b0;
     flush_tag = '0;
     flush_all = 1'b0;
 
     if (trap_taken_reg || mret_taken_reg) begin
-      flush_en  = 1'b1;
       flush_all = 1'b1;
     end else if (mispredict_recovery_pending) begin
       // Flush everything after the mispredicted branch's ROB tag
@@ -1312,7 +1314,6 @@ module cpu_ooo #(
       // fence_i_flush is a registered 1-cycle pulse from ROB (fires cycle after
       // FENCE.I commit). No need to gate with rob_commit_valid — doing so
       // creates a combinational loop (flush_all -> commit_en -> rob_commit_valid).
-      flush_en  = 1'b1;
       flush_all = 1'b1;
     end
   end
