@@ -366,16 +366,21 @@ module tomasulo_wrapper (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   assign head_tag = o_head_tag;
 
-  // cpu_ooo now delivers misprediction recovery one cycle after the flushing
-  // branch committed. In that delayed-recovery cycle, every speculative-only
-  // backend structure can treat the partial flush as a full clear.
+  // cpu_ooo delivers misprediction recovery one cycle after the mispredicted
+  // branch committed. By then, every remaining entry in the speculative-only
+  // Tomasulo backend is younger than that retired branch, so speculative
+  // structures can treat any i_flush_en as a full clear. Keep partial flush
+  // semantics only in ROB/SQ, which may still hold architecturally older state.
+  //
+  // Full flushes (trap/MRET/FENCE.I) also arrive on i_flush_all. Collapse both
+  // cases into a single speculative-only clear pulse so mispredict recovery
+  // does not drag the backend through extra age-compare logic.
   logic speculative_partial_flush;
   logic speculative_flush_all;
   logic speculative_flush_en;
-  assign speculative_partial_flush = i_flush_en &&
-      (head_tag == (i_flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
+  assign speculative_partial_flush = i_flush_en;
   assign speculative_flush_all = i_flush_all || speculative_partial_flush;
-  assign speculative_flush_en = i_flush_en && !speculative_partial_flush;
+  assign speculative_flush_en = 1'b0;
 
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
@@ -709,7 +714,7 @@ module tomasulo_wrapper (
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       sc_pending <= 1'b0;
-    end else if (i_flush_all) begin
+    end else if (speculative_flush_all) begin
       sc_pending <= 1'b0;
     end else begin
       // Set when MEM_RS issues SC.  Gate with flush signals because
@@ -1407,9 +1412,9 @@ module tomasulo_wrapper (
       .i_cache_invalidate_addr (sq_cache_invalidate_addr),
 
       // Flush
-      .i_flush_en (i_flush_en),
+      .i_flush_en (speculative_flush_en),
       .i_flush_tag(i_flush_tag),
-      .i_flush_all(i_flush_all),
+      .i_flush_all(speculative_flush_all),
 
       // Status
       .o_empty(o_lq_empty),
