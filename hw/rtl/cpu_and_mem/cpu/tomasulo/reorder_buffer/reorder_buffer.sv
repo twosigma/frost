@@ -1157,9 +1157,18 @@ module reorder_buffer (
     end
   end
 
-  // Check that CDB writes target valid entries
+  // Check that CDB writes target valid entries (unless a flush just happened).
+  // The CDB is pipelined (registered in tomasulo_wrapper), so the CDB may
+  // present results for entries that were flushed between capture and delivery.
+  // This is harmless: cdb_state_wr_en gates all FF/RAM writes on rob_valid.
+  logic dbg_flush_prev_cycle;
   always @(posedge i_clk) begin
-    if (i_rst_n && i_cdb_write.valid && !rob_valid[i_cdb_write.tag]) begin
+    if (!i_rst_n) dbg_flush_prev_cycle <= 1'b0;
+    else dbg_flush_prev_cycle <= i_flush_all || i_flush_en;
+  end
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_cdb_write.valid && !rob_valid[i_cdb_write.tag] &&
+        !dbg_flush_prev_cycle && !i_flush_all && !i_flush_en) begin
       $error("Reorder Buffer: CDB write to invalid entry tag=%0d", i_cdb_write.tag);
     end
   end

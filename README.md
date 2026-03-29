@@ -298,54 +298,20 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 65,788 | 1,029,600 | 6.4% |
-|   LUT as Logic | 63,052 | 1,029,600 | 6.1% |
+| CLB LUTs | 64,917 | 1,029,600 | 6.3% |
+|   LUT as Logic | 62,181 | 1,029,600 | 6.0% |
 |   LUT as Distributed RAM | 2,246 | — | — |
 |   LUT as Shift Register | 490 | — | — |
-| CLB Registers | 47,741 | 2,059,200 | 2.3% |
+| CLB Registers | 47,993 | 2,059,200 | 2.3% |
 | Block RAM Tile | 68.5 | 2,112 | 3.2% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 36 | 1,320 | 2.7% |
 | CARRY8 | 3,112 | 128,700 | 2.4% |
-| F7 Muxes | 1,020 | 514,800 | 0.2% |
-| F8 Muxes | 42 | 257,400 | 0.0% |
+| F7 Muxes | 985 | 514,800 | 0.2% |
+| F8 Muxes | 43 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
-
-**Digilent Genesys2** (Kintex-7 @ 133 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 46,683 | 203,800 | 22.9% |
-|   LUT as Logic | 44,988 | 203,800 | 22.1% |
-|   LUT as Distributed RAM | 1,308 | — | — |
-|   LUT as Shift Register | 387 | — | — |
-| Slice Registers | 37,151 | 407,600 | 9.1% |
-| Block RAM Tile | 68.5 | 445 | 15.4% |
-| DSPs | 34 | 840 | 4.0% |
-| F7 Muxes | 386 | 101,900 | 0.4% |
-| F8 Muxes | 2 | 50,950 | 0.0% |
-| Bonded IOB | 6 | 500 | 1.2% |
-| MMCM | 1 | 10 | 10.0% |
-| PLL | 0 | 10 | 0.0% |
-
-**Digilent Nexys A7** (Artix-7 @ 80 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 46,683 | 63,400 | 73.6% |
-|   LUT as Logic | 44,988 | 63,400 | 71.0% |
-|   LUT as Distributed RAM | 1,308 | — | — |
-|   LUT as Shift Register | 387 | — | — |
-| Slice Registers | 37,151 | 126,800 | 29.3% |
-| Block RAM Tile | 68.5 | 135 | 50.7% |
-| DSPs | 34 | 240 | 14.2% |
-| F7 Muxes | 384 | 31,700 | 1.2% |
-| F8 Muxes | 2 | 15,850 | 0.0% |
-| Bonded IOB | 4 | 210 | 1.9% |
-| MMCM | 1 | 6 | 16.7% |
-| PLL | 0 | 6 | 0.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 
