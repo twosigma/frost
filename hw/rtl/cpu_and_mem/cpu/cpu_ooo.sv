@@ -114,8 +114,9 @@ module cpu_ooo #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  assign branch_alloc_fire  = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
-  assign branch_commit_fire = rob_commit.valid && rob_commit.has_checkpoint;
+  assign branch_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
+  assign branch_commit_fire = correct_branch_commit_pending ||
+                             (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
@@ -311,14 +312,14 @@ module cpu_ooo #(
   assign dbg_pd_ras_checkpoint_valid_count = from_pd_to_id.ras_checkpoint_valid_count;
   assign dbg_id_ras_checkpoint_tos = from_id_to_ex.ras_checkpoint_tos;
   assign dbg_id_ras_checkpoint_valid_count = from_id_to_ex.ras_checkpoint_valid_count;
-  assign dbg_commit_valid = rob_commit.valid;
-  assign dbg_commit_pc = rob_commit.pc;
-  assign dbg_commit_is_return = rob_commit.is_return;
-  assign dbg_commit_is_call = rob_commit.is_call;
-  assign dbg_commit_checkpoint_id = rob_commit.checkpoint_id;
-  assign dbg_commit_has_checkpoint = rob_commit.has_checkpoint;
-  assign dbg_commit_predicted_taken = rob_commit.predicted_taken;
-  assign dbg_commit_branch_taken = rob_commit.branch_taken;
+  assign dbg_commit_valid = rob_commit_comb.valid;
+  assign dbg_commit_pc = rob_commit_comb.pc;
+  assign dbg_commit_is_return = rob_commit_comb.is_return;
+  assign dbg_commit_is_call = rob_commit_comb.is_call;
+  assign dbg_commit_checkpoint_id = rob_commit_comb.checkpoint_id;
+  assign dbg_commit_has_checkpoint = rob_commit_comb.has_checkpoint;
+  assign dbg_commit_predicted_taken = rob_commit_comb.predicted_taken;
+  assign dbg_commit_branch_taken = rob_commit_comb.branch_taken;
   assign dbg_pd_pc = from_pd_to_id.program_counter;
   assign dbg_pd_instr = from_pd_to_id.instruction;
   assign dbg_id_pc = from_id_to_ex.program_counter;
@@ -686,7 +687,8 @@ module cpu_ooo #(
   assign dbg_rob_alloc_pc = rob_alloc_req.pc;
   assign dbg_rob_alloc_is_csr = rob_alloc_req.is_csr;
   assign dbg_rob_alloc_is_mret = rob_alloc_req.is_mret;
-  riscv_pkg::reorder_buffer_commit_t rob_commit;
+  riscv_pkg::reorder_buffer_commit_t rob_commit_comb;  // combinational from ROB
+  riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered — drives CSR/regfile/bypass
 
   // RAT lookup
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
@@ -838,7 +840,7 @@ module cpu_ooo #(
       .i_rob_checkpoint_id(rob_checkpoint_id),
 
       // Commit
-      .o_commit(rob_commit),
+      .o_commit(rob_commit_comb),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1216,6 +1218,19 @@ module cpu_ooo #(
   assign o_pc_vld = o_vld;
 
   // ===========================================================================
+  // Commit-Bus Pipeline Register
+  // ===========================================================================
+  // Register the ROB commit output to break the commit_en → CSR/regfile
+  // critical path (mispredict_recovery_pending → ROB alloc → commit_en →
+  // commit bus → CSR read → regfile write, 18 levels).
+  // Misprediction/branch detection uses the combinational version to avoid
+  // adding latency to flush initiation.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) rob_commit <= '0;
+    else rob_commit <= rob_commit_comb;
+  end
+
+  // ===========================================================================
   // Misprediction & Flush Controller
   // ===========================================================================
   // On ROB commit of a mispredicted branch:
@@ -1225,7 +1240,7 @@ module cpu_ooo #(
   //   4. Flush front-end pipeline (IF/PD/ID)
 
   logic commit_is_misprediction;
-  assign commit_is_misprediction = rob_commit.valid && rob_commit.misprediction;
+  assign commit_is_misprediction = rob_commit_comb.valid && rob_commit_comb.misprediction;
 
   // Register the mispredicted commit for one cycle so recovery does not sit on
   // the same combinational path as ROB commit generation.
@@ -1236,7 +1251,28 @@ module cpu_ooo #(
     end else begin
       mispredict_recovery_pending <= commit_is_misprediction;
       if (commit_is_misprediction) begin
-        mispredict_commit_q <= rob_commit;
+        mispredict_commit_q <= rob_commit_comb;
+      end
+    end
+  end
+
+  // Register correctly-predicted branch commit for BTB update + checkpoint free.
+  // Breaks the rob_exception → commit_en → BTB write critical path (same pattern
+  // as mispredict_commit_q above).
+  logic correct_branch_commit_pending;
+  riscv_pkg::reorder_buffer_commit_t correct_branch_commit_q;
+
+  wire commit_is_correct_branch = rob_commit_comb.valid && rob_commit_comb.has_checkpoint &&
+                                  !rob_commit_comb.misprediction;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      correct_branch_commit_pending <= 1'b0;
+      correct_branch_commit_q       <= '0;
+    end else begin
+      correct_branch_commit_pending <= commit_is_correct_branch;
+      if (commit_is_correct_branch) begin
+        correct_branch_commit_q <= rob_commit_comb;
       end
     end
   end
@@ -1298,9 +1334,9 @@ module cpu_ooo #(
     if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = mispredict_commit_q.checkpoint_id;
-    end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
+    end else if (correct_branch_commit_pending) begin
       checkpoint_free    = 1'b1;
-      checkpoint_free_id = rob_commit.checkpoint_id;
+      checkpoint_free_id = correct_branch_commit_q.checkpoint_id;
     end
   end
 
@@ -1343,14 +1379,16 @@ module cpu_ooo #(
               (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
         end
       end
-    end else if (rob_commit.valid && rob_commit.has_checkpoint && !rob_commit.misprediction) begin
-      // Correctly-predicted branch commit: update BTB (no PC redirect)
-      if (rob_commit.is_branch && !rob_commit.is_jal && !rob_commit.is_jalr) begin
-        from_ex_comb_synth.btb_update                         = 1'b1;
-        from_ex_comb_synth.btb_update_pc                      = rob_commit.pc;
-        from_ex_comb_synth.btb_update_target                  = rob_commit.branch_target;
-        from_ex_comb_synth.btb_update_taken                   = rob_commit.branch_taken;
-        from_ex_comb_synth.btb_update_compressed              = rob_commit.is_compressed;
+    end else if (correct_branch_commit_pending) begin
+      // Correctly-predicted branch commit: update BTB (no PC redirect).
+      // Uses registered commit data to break rob_exception → BTB critical path.
+      if (correct_branch_commit_q.is_branch && !correct_branch_commit_q.is_jal &&
+          !correct_branch_commit_q.is_jalr) begin
+        from_ex_comb_synth.btb_update = 1'b1;
+        from_ex_comb_synth.btb_update_pc = correct_branch_commit_q.pc;
+        from_ex_comb_synth.btb_update_target = correct_branch_commit_q.branch_target;
+        from_ex_comb_synth.btb_update_taken = correct_branch_commit_q.branch_taken;
+        from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q.is_compressed;
         from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
     end
@@ -1550,9 +1588,12 @@ module cpu_ooo #(
   assign flush_for_trap = trap_taken;
   assign flush_for_mret = mret_taken;
 
-  // Acknowledge trap/mret to ROB
-  assign rob_trap_taken_ack = trap_taken;
-  assign mret_done_ack = mret_taken;
+  // Acknowledge trap/mret to ROB using REGISTERED versions to break the
+  // combinational feedback: rob_valid → o_mret_start → trap_unit →
+  // mret_taken → i_mret_done → serial FSM → commit_en → CSR → regfile.
+  // The ROB's serial FSM stays in TRAP_WAIT/MRET_EXEC one extra cycle.
+  assign rob_trap_taken_ack = trap_taken_reg;
+  assign mret_done_ack = mret_taken_reg;
 
   // ===========================================================================
   // Reset Done

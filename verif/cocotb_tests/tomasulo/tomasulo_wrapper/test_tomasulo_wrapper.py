@@ -714,7 +714,11 @@ async def test_cdb_wakes_rs_and_completes_rob(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # ROB head should be done (CDB write marked it done on the previous step)
+    # CDB is now pipelined: the registered CDB reaches ROB/RS one cycle after
+    # the arbiter output, so an extra step is needed before the effects land.
+    await dut_if.step()
+
+    # ROB head should be done (registered CDB write marked it done)
     assert dut_if.head_done, "ROB head should be done after CDB"
 
     # RS should now be ready to issue
@@ -968,8 +972,9 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     assert dut_if.rs_empty
 
     # ALU pipeline auto-completed the entry: ADD(0x100, 0x200) = 0x300.
-    # CDB write latched on this step's rising edge — entry is done.
-    # Check bypass at falling edge (before commit fires on next rising edge).
+    # CDB arbiter captured the result combinationally; the registered CDB
+    # pipeline register delivers it to the ROB on the NEXT rising edge.
+    await dut_if.step()  # registered CDB → ROB marks entry done
     alu_result = (0x100 + 0x200) & 0xFFFFFFFF
     model.cdb_write(CDBWrite(tag=tag, value=alu_result))
 
@@ -995,27 +1000,37 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()  # Track valid ROB tags for safe CDB
-    # Stage2 pipeline delay: DUT issue output appears 1 cycle after model
-    prev_model_issue: object | None = None
+    # CDB pipeline register changes wakeup-to-issue latency. Instead of
+    # cycle-exact issue checking, use an ordered FIFO: model predicts what
+    # should issue, DUT must produce those issues in the same order.
+    deferred_cdb: tuple[int, int] | None = None
+    expected_issues: list[int] = []  # ROB tags the model expects DUT to issue
 
     for cycle in range(200):
+        # Apply deferred CDB from previous cycle (matches registered CDB timing)
+        if deferred_cdb is not None:
+            model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])
+            deferred_cdb = None
+
         # Read DUT state BEFORE try_issue (matches RTL's registered state)
         dut_rob_full = dut_if.rob_full
         dut_rs_full = dut_if.rs_full_for(RS_MEM)
 
-        # Check RS issue from settled state (skip after flush cycles).
-        # DUT stage2 output reflects the PREVIOUS cycle's model issue.
+        # Check RS issue: DUT issues must match model's predicted order
         if not prev_was_flush:
             issue = dut_if.read_rs_issue_for(RS_MEM)
-            if prev_model_issue is not None:
-                assert issue[
-                    "valid"
-                ], f"Cycle {cycle}: model issued prev cycle but DUT did not"
+            if issue["valid"]:
+                assert expected_issues, f"Cycle {cycle}: DUT issued tag {issue['rob_tag']} but model expected nothing"
+                expected_tag = expected_issues.pop(0)
+                assert (
+                    issue["rob_tag"] == expected_tag
+                ), f"Cycle {cycle}: DUT issued tag {issue['rob_tag']} but model expected {expected_tag}"
             model_issue = model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)
-            prev_model_issue = model_issue
+            if model_issue is not None:
+                expected_issues.append(model_issue["rob_tag"])
         else:
-            # Flush clears stage2
-            prev_model_issue = None
+            # Flush clears pending issues
+            expected_issues.clear()
             model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)  # keep model in sync
 
         # Auto-commit ROB head if done (one per cycle, matching DUT rate)
@@ -1088,7 +1103,8 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
             cdb_tag = random.choice(list(pending_tags))
             cdb_value = random.getrandbits(64)
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
-            model.cdb_write_and_snoop(tag=cdb_tag, value=cdb_value)
+            # Defer model CDB update by 1 cycle to match registered CDB pipeline
+            deferred_cdb = (cdb_tag, cdb_value)
             pending_tags.discard(cdb_tag)  # An instruction completes only once
             await dut_if.step()
             dut_if.clear_cdb()
@@ -1096,6 +1112,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
         # Flush all (~5%)
         elif r < 0.70:
             prev_was_flush = True
+            deferred_cdb = None  # Flush cancels any pending CDB
             dut_if.drive_flush_all()
             model.flush_all()
             pending_tags.clear()
@@ -1235,6 +1252,8 @@ async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    # CDB is pipelined: registered CDB reaches RS on this cycle, wakeup fires
+    await dut_if.step()  # registered CDB → RS wakeup
     # Now all RS should be ready to issue (stage2 register loads after 1 extra cycle)
     await dut_if.step()
     await Timer(1, unit="ps")
@@ -1492,6 +1511,7 @@ async def test_fmul_pending_dispatch_wakes_while_buffered(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    await dut_if.step()  # registered CDB → pending-buffer snoop
     await Timer(1, unit="ps")
     assert not dut_if.rs_issue_valid_for(
         RS_FMUL
@@ -1501,6 +1521,7 @@ async def test_fmul_pending_dispatch_wakes_while_buffered(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    await dut_if.step()  # registered CDB → RS wakeup
     await dut_if.step()  # stage2 register loads
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
@@ -1586,6 +1607,7 @@ async def test_fmul_pending_dispatch_wakes_after_producer_commits(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
+    await dut_if.step()  # registered CDB → RS wakeup
     await dut_if.step()  # stage2 register loads
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
@@ -1660,8 +1682,9 @@ async def test_fmul_rs_three_source_fma(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb_broadcast()
 
-    # Now it should issue (stage2 register loads after 1 extra cycle)
-    await dut_if.step()
+    # CDB is pipelined: registered CDB → RS wakeup, then stage2 loads
+    await dut_if.step()  # registered CDB → RS wakeup
+    await dut_if.step()  # stage2 register loads
     await Timer(1, unit="ps")
     issue = dut_if.read_rs_issue_for(RS_FMUL)
     model_issue = model.rs_try_issue(rs_type=RS_FMUL, fu_ready=True)
@@ -1796,32 +1819,42 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     prev_was_flush = False
     pending_tags: set[int] = set()
     random_manual_cdb_rs_types = [RS_MEM, RS_FP, RS_FDIV]
-    # Stage2 pipeline delay: DUT issue output appears 1 cycle after model
-    prev_model_issue: dict[int, object] = {
-        rs: None for rs in random_manual_cdb_rs_types
+    # Deferred CDB + FIFO-based issue checking (see test_random_dispatch_execute_commit).
+    deferred_cdb: tuple[int, int] | None = None
+    expected_issues: dict[int, list[int]] = {
+        rs: [] for rs in random_manual_cdb_rs_types
     }
 
     for cycle in range(300):
+        # Apply deferred CDB from previous cycle (matches registered CDB timing)
+        if deferred_cdb is not None:
+            model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])
+            deferred_cdb = None
+
         dut_rob_full = dut_if.rob_full
 
         # Check RS issue from each type (skip after flush). FMUL_RS is excluded
         # here because the wrapper intentionally stages FMUL dispatch through a
         # one-entry ingress buffer before the RS, so its issue timing is not
         # cycle-identical to the unstaged manual-CDB RS types in this loop.
-        # DUT stage2 output reflects the PREVIOUS cycle's model issue.
         if not prev_was_flush:
             for rs_type in random_manual_cdb_rs_types:
                 issue = dut_if.read_rs_issue_for(rs_type)
-                if prev_model_issue[rs_type] is not None:
-                    assert issue[
-                        "valid"
-                    ], f"Cycle {cycle}: {RS_NAMES[rs_type]} model issued prev cycle but DUT did not"
+                if issue["valid"]:
+                    assert expected_issues[
+                        rs_type
+                    ], f"Cycle {cycle}: {RS_NAMES[rs_type]} DUT issued but model expected nothing"
+                    expected_tag = expected_issues[rs_type].pop(0)
+                    assert (
+                        issue["rob_tag"] == expected_tag
+                    ), f"Cycle {cycle}: {RS_NAMES[rs_type]} DUT tag {issue['rob_tag']} != model {expected_tag}"
                 model_issue = model.rs_try_issue(rs_type=rs_type, fu_ready=True)
-                prev_model_issue[rs_type] = model_issue
+                if model_issue is not None:
+                    expected_issues[rs_type].append(model_issue["rob_tag"])
         else:
-            # Flush clears stage2 for all RS types
+            # Flush clears pending issues for all RS types
             for rs_type in random_manual_cdb_rs_types:
-                prev_model_issue[rs_type] = None
+                expected_issues[rs_type].clear()
                 model.rs_try_issue(rs_type=rs_type, fu_ready=True)  # keep model in sync
 
         # Auto-commit ROB head
@@ -1904,7 +1937,8 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
             cdb_tag = random.choice(list(pending_tags))
             cdb_value = random.getrandbits(64)
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
-            model.cdb_write_and_snoop(tag=cdb_tag, value=cdb_value)
+            # Defer model CDB update by 1 cycle to match registered CDB pipeline
+            deferred_cdb = (cdb_tag, cdb_value)
             pending_tags.discard(cdb_tag)
             await dut_if.step()
             dut_if.clear_cdb()
@@ -1912,6 +1946,7 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         # Flush all (~5%)
         elif r < 0.70:
             prev_was_flush = True
+            deferred_cdb = None  # Flush cancels any pending CDB
             dut_if.drive_flush_all()
             model.flush_all()
             pending_tags.clear()

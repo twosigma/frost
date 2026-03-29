@@ -350,21 +350,22 @@ module tomasulo_wrapper (
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
   // ===========================================================================
-  riscv_pkg::cdb_broadcast_t cdb_bus;
+  riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
+  riscv_pkg::cdb_broadcast_t cdb_bus;  // registered — feeds RS/ROB wakeup
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
-  riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t div_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   mem_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_add_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t   fp_div_adapter_to_arbiter;
 
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
   // when the adapter is idle.  In production cpu_ooo ties them to '0.
-  riscv_pkg::fu_complete_t cdb_arb_in[riscv_pkg::NumFus];
+  riscv_pkg::fu_complete_t   cdb_arb_in                                     [riscv_pkg::NumFus];
   always_comb begin
     cdb_arb_in[0] = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
     cdb_arb_in[1] = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
@@ -385,12 +386,20 @@ module tomasulo_wrapper (
       .i_fu_complete_4(cdb_arb_in[4]),
       .i_fu_complete_5(cdb_arb_in[5]),
       .i_fu_complete_6(cdb_arb_in[6]),
-      .o_cdb          (cdb_bus),
+      .o_cdb          (cdb_bus_comb),
       .o_grant        (o_cdb_grant)
   );
 
-  // Expose CDB broadcast for testbench observation
-  assign o_cdb = cdb_bus;
+  // Pipeline register: break the CDB arbiter → RS/ROB wakeup critical path.
+  // Grants stay combinational (back to adapters); only the broadcast fanout
+  // to RS snoop + ROB CDB-write is registered.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus <= '0;
+    else cdb_bus <= cdb_bus_comb;
+  end
+
+  // Expose combinational CDB for testbench observation (grant timing matches)
+  assign o_cdb = cdb_bus_comb;
 
   // Derive ROB CDB write from CDB broadcast
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter;
