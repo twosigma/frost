@@ -87,6 +87,7 @@ module if_stage #(
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
     input logic i_frontend_state_flush,
+    input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - plumbed to pc_controller
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
     output logic [XLEN-1:0] o_pc,
@@ -388,6 +389,7 @@ module if_stage #(
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
+      .i_fence_i_flush(i_fence_i_flush),
 
       .i_branch_taken (i_from_ex_comb.branch_taken),
       .i_branch_target(i_from_ex_comb.branch_target_address),
@@ -449,6 +451,7 @@ module if_stage #(
       // This uses registered trap/mret signals to break the critical path from
       // EX stage exception detection through c_ext_state to PC calculation.
       .i_flush(flush_for_c_ext_safe),
+      .i_fence_i_flush(i_fence_i_flush),
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
 
       .i_control_flow_holdoff(control_flow_holdoff),
@@ -530,11 +533,18 @@ module if_stage #(
       .i_stall_registered(i_pipeline_ctrl.stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
       .i_is_compressed_saved(is_compressed_saved),
-      // Gate saved_values_valid during flush to prevent stale saved state from
-      // corrupting instruction alignment after pipeline redirects (misprediction,
-      // trap, mret). Without this, stall_registered=1 from the previous cycle
-      // causes the aligner to use pre-flush saved values on the flush cycle.
-      .i_saved_values_valid(saved_values_valid && !flush_for_c_ext_safe),
+      // TIMING OPTIMIZATION: Replace !flush_for_c_ext_safe with !i_fence_i_flush
+      // to break the critical path from mispredict_recovery_pending through
+      // flush_pipeline into the is_compressed cone. saved_values_valid feeds
+      // instruction_aligner's one-hot select for is_compressed_fast, which feeds
+      // pc_increment_calculator → seq_next_pc_reg → next_pc_reg default leg.
+      //
+      // Safety: On mispredict flush, branch_taken overrides the PC mux default.
+      // On trap/mret flush (+1 cycle), control_flow_holdoff → hold pc_reg.
+      // Only FENCE.I needs explicit suppression (already registered, not late).
+      // c_ext_state clears saved_values_valid on i_flush next clock edge, so
+      // the stale value persists for at most one cycle (the flush cycle itself).
+      .i_saved_values_valid(saved_values_valid && !i_fence_i_flush),
 
       .o_raw_parcel(raw_parcel),
       .o_effective_instr(effective_instr),

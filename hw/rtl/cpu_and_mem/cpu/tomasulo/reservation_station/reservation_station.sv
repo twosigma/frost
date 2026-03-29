@@ -435,9 +435,9 @@ module reservation_station #(
   // Sequential Logic
   // ===========================================================================
 
+  // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      // Reset: clear all valid bits
       rs_valid           <= '0;
       rs_src1_ready      <= '0;
       rs_src2_ready      <= '0;
@@ -446,9 +446,7 @@ module reservation_station #(
       rs_writes_cdb_hint <= '0;
     end else begin
 
-      // -----------------------------------------------------------------
       // Flush logic (highest priority for rs_valid)
-      // -----------------------------------------------------------------
       if (i_flush_all) begin
         rs_valid <= '0;
       end else if (i_flush_en) begin
@@ -458,90 +456,73 @@ module reservation_station #(
           end
         end
       end else begin
+        if (issue_fire) rs_valid[issue_idx] <= 1'b0;
 
-        // -----------------------------------------------------------------
-        // Issue: invalidate issued entry
-        // -----------------------------------------------------------------
-        if (issue_fire) begin
-          rs_valid[issue_idx] <= 1'b0;
-        end
-
-        // -----------------------------------------------------------------
-        // Dispatch: write new entry at free index
-        // -----------------------------------------------------------------
         if (dispatch_fire) begin
-          rs_valid[free_idx]   <= 1'b1;
-          rs_rob_tag[free_idx] <= dispatch_rob_tag;
-          if (TRACK_INT_WRITEBACK_HINT) begin
+          rs_valid[free_idx] <= 1'b1;
+          if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
-          end
 
-          // Source 1 -- CDB bypass: if CDB matches src1 tag, capture value
-          if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) begin
-            rs_src1_ready[free_idx] <= 1'b1;
-            rs_src1_tag[free_idx]   <= dispatch_src1_tag;
-            rs_src1_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src1_ready[free_idx] <= dispatch_src1_ready;
-            rs_src1_tag[free_idx]   <= dispatch_src1_tag;
-            rs_src1_value[free_idx] <= dispatch_src1_value;
-          end
-
-          // Source 2 -- CDB bypass
-          if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag) begin
-            rs_src2_ready[free_idx] <= 1'b1;
-            rs_src2_tag[free_idx]   <= dispatch_src2_tag;
-            rs_src2_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src2_ready[free_idx] <= dispatch_src2_ready;
-            rs_src2_tag[free_idx]   <= dispatch_src2_tag;
-            rs_src2_value[free_idx] <= dispatch_src2_value;
-          end
-
-          // Source 3 -- CDB bypass
-          if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag) begin
-            rs_src3_ready[free_idx] <= 1'b1;
-            rs_src3_tag[free_idx]   <= dispatch_src3_tag;
-            rs_src3_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src3_ready[free_idx] <= dispatch_src3_ready;
-            rs_src3_tag[free_idx]   <= dispatch_src3_tag;
-            rs_src3_value[free_idx] <= dispatch_src3_value;
-          end
-
+          // Source ready bits (dispatch + CDB bypass)
+          rs_src1_ready[free_idx] <= dispatch_src1_ready ||
+              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag);
+          rs_src2_ready[free_idx] <= dispatch_src2_ready ||
+              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag);
+          rs_src3_ready[free_idx] <= dispatch_src3_ready ||
+              (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag);
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
+      end
 
-      end  // !flush
-
-      // -----------------------------------------------------------------
-      // CDB snoop (wakeup): update pending sources across all entries.
-      // Runs independently of flush/dispatch so surviving entries are
-      // woken even when partial flush coincides with a CDB broadcast.
-      // -----------------------------------------------------------------
+      // CDB snoop wakeup (control: ready bits only)
       if (i_cdb.valid) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i]) begin
-            // Source 1 wakeup
-            if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) begin
-              rs_src1_ready[i] <= 1'b1;
-              rs_src1_value[i] <= i_cdb.value;
-            end
-            // Source 2 wakeup
-            if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) begin
-              rs_src2_ready[i] <= 1'b1;
-              rs_src2_value[i] <= i_cdb.value;
-            end
-            // Source 3 wakeup
-            if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) begin
-              rs_src3_ready[i] <= 1'b1;
-              rs_src3_value[i] <= i_cdb.value;
-            end
+            if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_ready[i] <= 1'b1;
+            if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_ready[i] <= 1'b1;
+            if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_ready[i] <= 1'b1;
           end
         end
       end
 
-    end  // !reset
+    end
+  end
+
+  // --- Data signals (no reset) ---
+  always_ff @(posedge i_clk) begin
+    // Dispatch: capture tags and values at free index
+    if (dispatch_fire) begin
+      rs_rob_tag[free_idx]  <= dispatch_rob_tag;
+
+      // Source 1 (CDB bypass or dispatch value)
+      rs_src1_tag[free_idx] <= dispatch_src1_tag;
+      if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag)
+        rs_src1_value[free_idx] <= i_cdb.value;
+      else rs_src1_value[free_idx] <= dispatch_src1_value;
+
+      // Source 2
+      rs_src2_tag[free_idx] <= dispatch_src2_tag;
+      if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag)
+        rs_src2_value[free_idx] <= i_cdb.value;
+      else rs_src2_value[free_idx] <= dispatch_src2_value;
+
+      // Source 3
+      rs_src3_tag[free_idx] <= dispatch_src3_tag;
+      if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
+        rs_src3_value[free_idx] <= i_cdb.value;
+      else rs_src3_value[free_idx] <= dispatch_src3_value;
+    end
+
+    // CDB snoop wakeup (data: capture values)
+    if (i_cdb.valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (rs_valid[i]) begin
+          if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_value[i] <= i_cdb.value;
+          if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_value[i] <= i_cdb.value;
+          if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_value[i] <= i_cdb.value;
+        end
+      end
+    end
   end
 
   // ===========================================================================

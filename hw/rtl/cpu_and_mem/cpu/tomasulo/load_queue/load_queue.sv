@@ -276,7 +276,11 @@ module load_queue #(
   logic cdb_stage_result_flushed;
   logic cdb_stage_slot_available;
   riscv_pkg::fu_complete_t issue_cdb_result;
-  riscv_pkg::fu_complete_t cdb_stage_result;
+  // Split cdb_stage_result into separate valid + data to prevent Vivado from
+  // connecting the reset net to data register R pins (struct-field multi-block
+  // assignment causes Vivado to merge reset across all bits).
+  logic cdb_stage_valid;
+  riscv_pkg::fu_complete_t cdb_stage_data;
 
   // Staged SQ-disambiguation candidate. This breaks the same-cycle
   // issue-scan -> SQ compare -> memory-launch loop by holding one
@@ -774,17 +778,18 @@ module load_queue #(
     end
   end
 
-  assign cdb_stage_slot_available = !cdb_stage_result.valid || i_result_accepted;
+  assign cdb_stage_slot_available = !cdb_stage_valid || i_result_accepted;
   assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
-  assign cdb_stage_result_flushed = i_flush_en && cdb_stage_result.valid &&
+  assign cdb_stage_result_flushed = i_flush_en && cdb_stage_valid &&
       (flush_all_entries || is_younger(
-      cdb_stage_result.tag, i_flush_tag, i_rob_head_tag
+      cdb_stage_data.tag, i_flush_tag, i_rob_head_tag
   ));
 
   always_comb begin
     o_fu_complete = '0;
-    if (cdb_stage_result.valid && !i_flush_all && !i_flush_en && !cdb_stage_result_flushed) begin
-      o_fu_complete = cdb_stage_result;
+    if (cdb_stage_valid && !i_flush_all && !i_flush_en && !cdb_stage_result_flushed) begin
+      o_fu_complete       = cdb_stage_data;
+      o_fu_complete.valid = 1'b1;
     end
   end
 
@@ -855,61 +860,31 @@ module load_queue #(
       head_ptr                  <= '0;
       tail_ptr                  <= '0;
       lq_valid                  <= '0;
-      lq_is_fp                  <= '0;
       lq_addr_valid             <= '0;
-      lq_sign_ext               <= '0;
-      lq_is_mmio                <= '0;
-      lq_fp64_phase             <= '0;
       lq_issued                 <= '0;
       lq_data_valid             <= '0;
       lq_forwarded              <= '0;
-      lq_is_lr                  <= '0;
-      lq_is_amo                 <= '0;
       mem_outstanding           <= 1'b0;
-      issued_idx                <= '0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
-      sq_check_idx              <= '0;
       mem_issue_pending         <= 1'b0;
-      mem_issue_idx             <= '0;
-      mem_issue_addr            <= '0;
-      mem_issue_size            <= riscv_pkg::MEM_SIZE_WORD;
       reservation_valid         <= 1'b0;
-      reservation_addr          <= '0;
       amo_state                 <= AMO_IDLE;
-      amo_old_value             <= '0;
-      amo_entry_idx             <= '0;
-      cdb_stage_result          <= '0;
     end else if (i_flush_all) begin
-      // Full flush: reset everything
+      // Full flush: reset control signals
       head_ptr                  <= '0;
       tail_ptr                  <= '0;
       lq_valid                  <= '0;
-      lq_is_fp                  <= '0;
       lq_addr_valid             <= '0;
-      lq_sign_ext               <= '0;
-      lq_is_mmio                <= '0;
-      lq_fp64_phase             <= '0;
       lq_issued                 <= '0;
       lq_data_valid             <= '0;
       lq_forwarded              <= '0;
-      lq_is_lr                  <= '0;
-      lq_is_amo                 <= '0;
       mem_outstanding           <= 1'b0;
-      issued_idx                <= '0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
-      sq_check_idx              <= '0;
       mem_issue_pending         <= 1'b0;
-      mem_issue_idx             <= '0;
-      mem_issue_addr            <= '0;
-      mem_issue_size            <= riscv_pkg::MEM_SIZE_WORD;
       reservation_valid         <= 1'b0;
-      reservation_addr          <= '0;
       amo_state                 <= AMO_IDLE;
-      amo_old_value             <= '0;
-      amo_entry_idx             <= '0;
-      cdb_stage_result          <= '0;
     end else begin
       // -----------------------------------------------------------------
       // Partial flush: invalidate entries younger than flush_tag
@@ -948,45 +923,32 @@ module load_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Allocation: write new entry at tail
+      // Allocation: write new entry at tail (control signals only;
+      // data signals written in dedicated no-reset always_ff blocks)
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
         lq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
-        lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
-        lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
         lq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        lq_address[alloc_target[IdxWidth-1:0]]    <= '0;
-        lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
-        lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
-        lq_is_mmio[alloc_target[IdxWidth-1:0]]    <= 1'b0;
-        lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
         lq_issued[alloc_target[IdxWidth-1:0]]     <= 1'b0;
         lq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         lq_forwarded[alloc_target[IdxWidth-1:0]]  <= 1'b0;
-        lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
-        lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
-        lq_amo_op[alloc_target[IdxWidth-1:0]]     <= i_alloc.amo_op;
-        lq_amo_rs2[alloc_target[IdxWidth-1:0]]    <= '0;
         tail_ptr                                  <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag
+      // Address Update: CAM search for matching rob_tag (control only;
+      // data signals written in dedicated no-reset always_ff blocks)
       // -----------------------------------------------------------------
       if (i_addr_update.valid) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (lq_valid[i] && !lq_addr_valid[i] && lq_rob_tag[i] == i_addr_update.rob_tag) begin
             lq_addr_valid[i] <= 1'b1;
-            lq_address[i]    <= i_addr_update.address;
-            lq_is_mmio[i]    <= i_addr_update.is_mmio;
-            lq_amo_rs2[i]    <= i_addr_update.amo_rs2;
           end
         end
       end
 
       if (sq_check_capture || sq_check_replace) begin
         sq_check_pending <= 1'b1;
-        sq_check_idx     <= issue_mem_idx;
       end else if (sq_check_pending &&
                    (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                     stage_mem_issue)) begin
@@ -1010,9 +972,6 @@ module load_queue #(
 
       if (stage_mem_issue) begin
         mem_issue_pending <= 1'b1;
-        mem_issue_idx     <= sq_check_idx;
-        mem_issue_addr    <= stage_mem_issue_addr;
-        mem_issue_size    <= stage_mem_issue_size;
       end
 
       // -----------------------------------------------------------------
@@ -1022,7 +981,6 @@ module load_queue #(
         mem_issue_pending        <= 1'b0;
         lq_issued[mem_issue_idx] <= 1'b1;
         mem_outstanding          <= 1'b1;
-        issued_idx               <= mem_issue_idx;
       end
 
       // -----------------------------------------------------------------
@@ -1035,24 +993,23 @@ module load_queue #(
         drop_mem_response_pending <= 1'b0;
       end else if (accept_mem_response) begin
         if (lq_is_amo[issued_idx]) begin
-          // AMO: latch old value, start write phase (don't set data_valid yet)
-          amo_old_value   <= i_mem_read_data;
-          amo_entry_idx   <= issued_idx;
+          // AMO: start write phase (don't set data_valid yet);
+          // data signals (amo_old_value, amo_entry_idx) in no-reset block
           amo_state       <= AMO_WRITE_ACTIVE;
           mem_outstanding <= 1'b0;
         end else if (lq_is_lr[issued_idx]) begin
-          // LR: data captured by LUTRAM write logic
+          // LR: data captured by LUTRAM write logic;
+          // reservation_addr in no-reset block
           lq_data_valid[issued_idx] <= 1'b1;
           mem_outstanding           <= 1'b0;
           reservation_valid         <= 1'b1;
-          reservation_addr          <= lq_address[issued_idx];
         end else if (lq_is_fp[issued_idx] &&
             lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
             !lq_fp64_phase[issued_idx]) begin
-          // FLD phase 0: advance to phase 1, data captured by LUTRAM
-          lq_fp64_phase[issued_idx] <= 1'b1;
-          lq_issued[issued_idx]     <= 1'b0;  // Re-issue for phase 1
-          mem_outstanding           <= 1'b0;
+          // FLD phase 0: re-issue for phase 1;
+          // lq_fp64_phase in no-reset block
+          lq_issued[issued_idx] <= 1'b0;  // Re-issue for phase 1
+          mem_outstanding       <= 1'b0;
         end else if (lq_is_fp[issued_idx] &&
                      lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
                      lq_fp64_phase[issued_idx]) begin
@@ -1075,16 +1032,6 @@ module load_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Completion Stage: hold one completed load result for downstream
-      // MEM adapter / CDB consumption.
-      // -----------------------------------------------------------------
-      if (issue_cdb_fire) begin
-        cdb_stage_result <= issue_cdb_result;
-      end else if (i_result_accepted || cdb_stage_result_flushed) begin
-        cdb_stage_result <= '0;
-      end
-
-      // -----------------------------------------------------------------
       // Reservation clear (priority: clear wins over set)
       // -----------------------------------------------------------------
       if (i_sc_clear_reservation || i_reservation_snoop_invalidate) begin
@@ -1102,6 +1049,130 @@ module load_queue #(
       head_ptr <= head_advance_target;
 
     end  // !flush_all
+  end
+
+  // ===========================================================================
+  // Data-Only Sequential Logic (no reset sensitivity)
+  // ===========================================================================
+  // These signals are pure data payloads whose consumers are already gated by
+  // control-valid bits (lq_valid, lq_addr_valid, lq_data_valid, sq_check_pending,
+  // mem_issue_pending, mem_outstanding, reservation_valid, amo_state, etc.)
+  // that ARE reset.  Keeping data FFs out of the reset tree saves area, power,
+  // and fanout on the reset net.
+
+  // -----------------------------------------------------------------
+  // Per-entry data: allocation writes
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (i_alloc.valid && !full) begin
+      lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
+      lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
+      lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
+      lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
+      lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
+      lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
+      lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
+      lq_amo_op[alloc_target[IdxWidth-1:0]]     <= i_alloc.amo_op;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Per-entry data: address update writes
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (i_addr_update.valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (lq_valid[i] && !lq_addr_valid[i] && lq_rob_tag[i] == i_addr_update.rob_tag) begin
+          lq_address[i] <= i_addr_update.address;
+          lq_is_mmio[i] <= i_addr_update.is_mmio;
+          lq_amo_rs2[i] <= i_addr_update.amo_rs2;
+        end
+      end
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Per-entry data: FLD phase advance
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (accept_mem_response && lq_is_fp[issued_idx] &&
+        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        !lq_fp64_phase[issued_idx]) begin
+      lq_fp64_phase[issued_idx] <= 1'b1;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: SQ check candidate index
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (sq_check_capture || sq_check_replace) begin
+      sq_check_idx <= issue_mem_idx;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: staged memory issue request
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (stage_mem_issue) begin
+      mem_issue_idx  <= sq_check_idx;
+      mem_issue_addr <= stage_mem_issue_addr;
+      mem_issue_size <= stage_mem_issue_size;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: issued entry tracker
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (o_mem_read_en) begin
+      issued_idx <= mem_issue_idx;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: AMO old value and entry index
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (accept_mem_response && lq_is_amo[issued_idx]) begin
+      amo_old_value <= i_mem_read_data;
+      amo_entry_idx <= issued_idx;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: reservation address
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (accept_mem_response && lq_is_lr[issued_idx]) begin
+      reservation_addr <= lq_address[issued_idx];
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Internal data: CDB completion stage result
+  // -----------------------------------------------------------------
+  // The .valid field acts as a control gate for o_fu_complete and
+  // cdb_stage_slot_available, so guard against spurious captures
+  // during reset / flush_all when lq_valid has not yet been cleared.
+  // Control: cdb_stage_valid (with reset) — separate from data to prevent
+  // Vivado from connecting reset to data register R pins.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) cdb_stage_valid <= 1'b0;
+    else if (issue_cdb_fire) cdb_stage_valid <= 1'b1;
+    else if (i_result_accepted || cdb_stage_result_flushed) cdb_stage_valid <= 1'b0;
+  end
+
+  // Data: cdb_stage_data payload (no reset)
+  always_ff @(posedge i_clk) begin
+    if (issue_cdb_fire) begin
+      cdb_stage_data.tag       <= issue_cdb_result.tag;
+      cdb_stage_data.value     <= issue_cdb_result.value;
+      cdb_stage_data.exception <= issue_cdb_result.exception;
+      cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
+      cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
+    end
   end
 
   // ===========================================================================
@@ -1145,8 +1216,10 @@ module load_queue #(
 
   // Address updates MAY arrive during flush (RS stage2 issues without
   // same-cycle flush gating for timing closure).  This is safe:
-  //   - flush_all: the else-if branch resets all state; addr_update code
-  //     in the else branch is unreachable.
+  //   - flush_all: lq_valid is bulk-cleared; the CAM match
+  //     (lq_valid[i] && ...) prevents any write to a flushed slot.
+  //     Data writes are in a no-reset block but are harmless behind
+  //     invalid entries.
   //   - flush_en: CAM matches only entries with lq_valid[i]==1; entries
   //     whose valid is being cleared on the same edge get a harmless
   //     address write into a dead slot.

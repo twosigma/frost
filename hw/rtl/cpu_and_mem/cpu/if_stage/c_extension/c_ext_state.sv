@@ -37,6 +37,7 @@ module c_ext_state #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,            // Pipeline flush - block state updates during flush
+    input logic i_fence_i_flush,    // FENCE.I flush (registered) - for use_buffer_after_* timing
     input logic i_stall_registered,
 
     // Control flow signals (from control flow tracker)
@@ -306,9 +307,22 @@ module c_ext_state #(
   // No live-stall gate is needed here: the tracked holdoff source flops only
   // advance when the front-end is unstalled, so this pulse cannot begin while
   // IF is frozen.
+  //
+  // TIMING OPTIMIZATION: Replace !i_flush with !i_fence_i_flush to break the
+  // critical path from mispredict_recovery_pending through flush_pipeline into
+  // the is_compressed cone (use_buffer → instruction_aligner → is_compressed_fast
+  // → pc_increment_calculator → seq_next_pc_reg → next_pc_reg mux → o_pc_reg).
+  //
+  // Safety: For mispredict, i_branch_taken selects branch_target in the PC mux,
+  // so seq_next_pc_reg (and thus is_compressed) is irrelevant. For trap/mret,
+  // frontend_state_flush fires one cycle later (via trap_taken_reg/mret_taken_reg),
+  // and by then control_flow_holdoff → any_holdoff_safe → seq_next_pc_reg = hold.
+  // Only FENCE.I needs the explicit guard here because it doesn't assert
+  // branch_taken and may not have control_flow_holdoff on its first cycle.
+  // fence_i_flush is already registered, so it doesn't create a timing path.
   assign o_use_buffer_after_spanning = spanning_to_halfword_registered_prev &&
                                        !o_spanning_to_halfword_registered &&
-                                       !i_flush &&
+                                       !i_fence_i_flush &&
                                        !i_control_flow_holdoff &&
                                        !i_prediction_holdoff &&
                                        !i_prediction_reset_state;
@@ -335,11 +349,13 @@ module c_ext_state #(
 
   // As above, the holdoff source state only changes on unstalled cycles, so
   // the replay pulse does not need a live-stall dependency.
+  // TIMING OPTIMIZATION: !i_fence_i_flush instead of !i_flush (same rationale
+  // as use_buffer_after_spanning above).
   assign o_use_buffer_after_prediction =
       ((prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
        (pending_prediction_target_holdoff_prev &&
         !i_pending_prediction_target_holdoff)) &&
-      !i_flush &&
+      !i_fence_i_flush &&
       !i_control_flow_holdoff &&
       !i_prediction_holdoff &&
       !i_prediction_reset_state;

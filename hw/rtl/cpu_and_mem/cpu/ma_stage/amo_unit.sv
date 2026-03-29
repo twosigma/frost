@@ -195,9 +195,7 @@ module amo_unit #(
   // The key is that we capture when stall is LOW and AMO is in EX - this is
   // exactly the cycle when the AMO will move to MA at the next posedge.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      rs2_early_captured <= '0;
-    end else if (i_amo_in_ex && !i_stall) begin
+    if (i_amo_in_ex && !i_stall) begin
       // Capture forwarded rs2 when AMO is in EX and about to enter MA
       rs2_early_captured <= i_rs2_fwd;
     end

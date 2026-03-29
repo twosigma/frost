@@ -211,14 +211,20 @@ module branch_prediction_controller (
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
   //
   // TIMING OPTIMIZATION: Keep BTB/RAS allow logic independent of late
-  // i_branch_taken. Branch filtering is applied at the final "prediction used"
-  // stage to avoid dragging branch resolution through the full predictor cone.
+  // i_branch_taken and i_is_32bit_spanning. Both are applied at the final
+  // "prediction used" stage to avoid dragging them through the full predictor
+  // cone. This makes is_32bit_spanning (which depends on BRAM → is_compressed)
+  // parallel with the prediction logic instead of serial, cutting ~5 LUT levels
+  // from the critical path:
+  //   BEFORE: BRAM → is_compressed → is_32bit_spanning → prediction_common → RAS → PC
+  //   AFTER:  BRAM → is_32bit_spanning ─┐
+  //           registered → prediction_common → sel_prediction ─ AND → prediction_used → PC
   logic prediction_common;
   logic prediction_allowed_stable;
   assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall &&
                              !i_any_holdoff_safe &&
                              !o_prediction_holdoff &&
-                             !i_is_32bit_spanning && !i_spanning_wait_for_fetch &&
+                             !i_spanning_wait_for_fetch &&
                              !i_spanning_in_progress &&
                              !i_use_instr_buffer &&
                              !i_disable_branch_prediction;
@@ -234,6 +240,12 @@ module branch_prediction_controller (
   logic ras_prediction_allowed;
   assign ras_prediction_allowed = ras_prediction_allowed_stable;
 
+  // Gate RAS pop with is_32bit_spanning (removed from prediction_common for timing).
+  // This is on the registered pop path (RAS always_ff), not the PC mux critical path.
+  // Prevents RAS state corruption from spurious pops during spanning instructions.
+  logic ras_pop_prediction_allowed;
+  assign ras_pop_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning;
+
   return_address_stack #(
       .RAS_DEPTH(RasDepth),
       .RAS_PTR_BITS(RasPtrBits)
@@ -246,7 +258,7 @@ module branch_prediction_controller (
       .i_is_return(ras_is_return),
       .i_is_coroutine(ras_is_coroutine),
       .i_link_address(i_link_address),
-      .i_prediction_allowed(ras_prediction_allowed),
+      .i_prediction_allowed(ras_pop_prediction_allowed),
       .i_btb_only_prediction_holdoff(o_btb_only_prediction_holdoff),
       .i_misprediction(ras_misprediction_r),
       .i_restore_tos(ras_restore_tos_r),
@@ -288,10 +300,11 @@ module branch_prediction_controller (
   logic sel_prediction;
   assign sel_prediction = sel_ras_prediction || sel_btb_prediction;
 
-  // Actual prediction use must still be blocked when branch resolution is taking
-  // priority this cycle. Keep this as a final gate to shorten branch_taken depth.
+  // Actual prediction use must still be blocked when branch resolution or spanning
+  // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
+  // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
-  assign prediction_used_effective = sel_prediction && !i_branch_taken;
+  assign prediction_used_effective = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
@@ -387,7 +400,8 @@ module branch_prediction_controller (
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
   logic btb_only_prediction_effective;
-  assign btb_only_prediction_effective = btb_only_prediction && !i_branch_taken;
+  assign btb_only_prediction_effective = btb_only_prediction && !i_branch_taken &&
+                                       !i_is_32bit_spanning;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin

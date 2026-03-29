@@ -368,12 +368,6 @@ module register_alias_table (
       // Reset: all entries not renamed
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
-      for (int i = 0; i < NumIntRegs; i++) begin
-        int_rat_tag[i] <= '0;
-      end
-      for (int i = 0; i < NumFpRegs; i++) begin
-        fp_rat_tag[i] <= '0;
-      end
     end else if (i_flush_all) begin
       // Full flush: clear all valid bits (tags don't matter)
       int_rat_valid <= '0;

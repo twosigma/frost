@@ -190,7 +190,14 @@ module return_address_stack #(
   // predicted-taken metadata and recovery checkpoint attach to the following
   // instruction instead of the return itself, which corrupts commit-time
   // recovery on tightly-packed call/return thunks.
-  assign o_ras_valid = (i_is_return || i_is_coroutine) && stack_not_empty && i_prediction_allowed;
+  // TIMING OPTIMIZATION: Removed i_prediction_allowed from o_ras_valid.
+  // It was redundant: sel_ras_prediction = ras_prediction_allowed && ras_valid
+  // already gates on ras_prediction_allowed (which includes prediction_common).
+  // Removing it here makes o_ras_valid depend only on registered signals
+  // (is_return/is_coroutine from pipelined detector, stack_not_empty from
+  // registered valid_count), breaking the deep combinational path:
+  // prediction_common → ras_prediction_allowed → o_ras_valid → sel_ras_prediction
+  assign o_ras_valid = (i_is_return || i_is_coroutine) && stack_not_empty;
   assign o_ras_target = ras_read_data;
 
   // ===========================================================================

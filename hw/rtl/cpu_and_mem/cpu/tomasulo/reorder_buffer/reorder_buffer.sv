@@ -705,35 +705,15 @@ module reorder_buffer (
   // Handle allocation, CDB writes, branch updates, and flush for FF-backed fields.
   // Multi-bit fields (pc, dest_reg, value, branch_target, predicted_target,
   // checkpoint_id, exc_cause, fp_flags) are handled by distributed RAM above.
+  // -------------------------------------------------------------------------
+  // Control signals (rob_valid, rob_done, rob_exception) -- need reset
+  // -------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      // Reset all entries to invalid
-      rob_valid           <= '0;
-      rob_done            <= '0;
-      rob_exception       <= '0;
-      rob_dest_rf         <= '0;
-      rob_dest_valid      <= '0;
-      rob_is_store        <= '0;
-      rob_is_fp_store     <= '0;
-      rob_is_branch       <= '0;
-      rob_branch_taken    <= '0;
-      rob_predicted_taken <= '0;
-      rob_mispredicted    <= '0;
-      rob_is_call         <= '0;
-      rob_is_return       <= '0;
-      rob_is_jal          <= '0;
-      rob_is_jalr         <= '0;
-      rob_has_checkpoint  <= '0;
-      rob_is_csr          <= '0;
-      rob_is_fence        <= '0;
-      rob_is_fence_i      <= '0;
-      rob_is_wfi          <= '0;
-      rob_is_mret         <= '0;
-      rob_is_amo          <= '0;
-      rob_is_lr           <= '0;
-      rob_is_sc           <= '0;
-      rob_is_compressed   <= '0;
-      rob_has_fp_flags    <= '0;
+      // Reset control signals to invalid
+      rob_valid     <= '0;
+      rob_done      <= '0;
+      rob_exception <= '0;
     end else begin
       // ---------------------------------------------------------------------
       // Flush Logic
@@ -760,45 +740,18 @@ module reorder_buffer (
       end
 
       // ---------------------------------------------------------------------
-      // Allocation Write (FF-backed fields only)
+      // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
       if (alloc_en) begin
-        rob_valid[tail_idx]           <= 1'b1;
-        rob_dest_rf[tail_idx]         <= i_alloc_req.dest_rf;
-        rob_dest_valid[tail_idx]      <= i_alloc_req.dest_valid;
-        rob_is_store[tail_idx]        <= i_alloc_req.is_store;
-        rob_is_fp_store[tail_idx]     <= i_alloc_req.is_fp_store;
-        rob_is_branch[tail_idx]       <= i_alloc_req.is_branch;
-        rob_predicted_taken[tail_idx] <= i_alloc_req.predicted_taken;
-        rob_is_call[tail_idx]         <= i_alloc_req.is_call;
-        rob_is_return[tail_idx]       <= i_alloc_req.is_return;
-        rob_is_jal[tail_idx]          <= i_alloc_req.is_jal;
-        rob_is_jalr[tail_idx]         <= i_alloc_req.is_jalr;
-        rob_is_csr[tail_idx]          <= i_alloc_req.is_csr;
-        rob_is_fence[tail_idx]        <= i_alloc_req.is_fence;
-        rob_is_fence_i[tail_idx]      <= i_alloc_req.is_fence_i;
-        rob_is_wfi[tail_idx]          <= i_alloc_req.is_wfi;
-        rob_is_mret[tail_idx]         <= i_alloc_req.is_mret;
-        rob_is_amo[tail_idx]          <= i_alloc_req.is_amo;
-        rob_is_lr[tail_idx]           <= i_alloc_req.is_lr;
-        rob_is_sc[tail_idx]           <= i_alloc_req.is_sc;
-        rob_is_compressed[tail_idx]   <= i_alloc_req.is_compressed;
-        rob_has_fp_flags[tail_idx]    <= i_alloc_req.has_fp_flags;
+        rob_valid[tail_idx]     <= 1'b1;
 
-        // Initialize done/exception/checkpoint/misprediction fields
-        rob_exception[tail_idx]       <= 1'b0;
-        rob_has_checkpoint[tail_idx]  <= 1'b0;
-        rob_branch_taken[tail_idx]    <= 1'b0;
-        rob_mispredicted[tail_idx]    <= 1'b0;
+        // Initialize control fields for new entry
+        rob_exception[tail_idx] <= 1'b0;
 
         // JAL has fully known link/target information at allocation time.
         // JALR and conditional branches still wait for branch resolution.
         if (i_alloc_req.is_jal) begin
           rob_done[tail_idx] <= 1'b1;
-          // For JAL, branch is always taken with known target
-          rob_branch_taken[tail_idx] <= 1'b1;
-          rob_mispredicted[tail_idx] <= !i_alloc_req.predicted_taken ||
-                                        (i_alloc_req.predicted_target != i_alloc_req.branch_target);
         end else if (i_alloc_req.is_jalr) begin
           // JALR: target unknown until execute, but link addr is known
           rob_done[tail_idx] <= 1'b0;
@@ -813,15 +766,6 @@ module reorder_buffer (
       end
 
       // ---------------------------------------------------------------------
-      // Checkpoint Assignment (same cycle as allocation for branches)
-      // ---------------------------------------------------------------------
-      // When dispatch allocates a branch and checkpoint unit provides an ID
-      if (i_checkpoint_valid && i_alloc_req.alloc_valid && i_alloc_req.is_branch &&
-          !full && !i_flush_all && !i_flush_en) begin
-        rob_has_checkpoint[tail_idx] <= 1'b1;
-      end
-
-      // ---------------------------------------------------------------------
       // CDB Write (mark entry done with result)
       // ---------------------------------------------------------------------
       // For non-branch instructions (ALU, MUL, DIV, MEM, FP)
@@ -832,21 +776,10 @@ module reorder_buffer (
       end
 
       // ---------------------------------------------------------------------
-      // Branch Update (mark branch done with resolution)
+      // Branch Update (mark branch done)
       // ---------------------------------------------------------------------
-      // For branch/jump instructions only.
-      // The mispredicted field from branch unit is authoritative - it knows about
-      // RAS/indirect predictor specifics that the ROB doesn't track.
-      // branch_target is written via distributed RAM.
-      if (i_branch_update.valid && !i_flush_all) begin
-        if (rob_valid[i_branch_update.tag]) begin
-          // Record branch resolution
-          rob_branch_taken[i_branch_update.tag] <= i_branch_update.taken;
-          rob_mispredicted[i_branch_update.tag] <= i_branch_update.mispredicted;
-
-          // Mark entry done now (applies to JAL, JALR, and conditional branches)
-          rob_done[i_branch_update.tag] <= 1'b1;
-        end
+      if (branch_wr_en) begin
+        rob_done[i_branch_update.tag] <= 1'b1;
       end
 
       // ---------------------------------------------------------------------
@@ -856,6 +789,71 @@ module reorder_buffer (
       if (commit_en && !i_flush_all) begin
         rob_valid[head_idx] <= 1'b0;
       end
+    end
+  end
+
+  // -------------------------------------------------------------------------
+  // Data signals -- no reset needed, gated by alloc_en / branch_wr_en
+  // -------------------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    // -------------------------------------------------------------------
+    // Allocation Write (data fields)
+    // -------------------------------------------------------------------
+    if (alloc_en) begin
+      rob_dest_rf[tail_idx]         <= i_alloc_req.dest_rf;
+      rob_dest_valid[tail_idx]      <= i_alloc_req.dest_valid;
+      rob_is_store[tail_idx]        <= i_alloc_req.is_store;
+      rob_is_fp_store[tail_idx]     <= i_alloc_req.is_fp_store;
+      rob_is_branch[tail_idx]       <= i_alloc_req.is_branch;
+      rob_predicted_taken[tail_idx] <= i_alloc_req.predicted_taken;
+      rob_is_call[tail_idx]         <= i_alloc_req.is_call;
+      rob_is_return[tail_idx]       <= i_alloc_req.is_return;
+      rob_is_jal[tail_idx]          <= i_alloc_req.is_jal;
+      rob_is_jalr[tail_idx]         <= i_alloc_req.is_jalr;
+      rob_is_csr[tail_idx]          <= i_alloc_req.is_csr;
+      rob_is_fence[tail_idx]        <= i_alloc_req.is_fence;
+      rob_is_fence_i[tail_idx]      <= i_alloc_req.is_fence_i;
+      rob_is_wfi[tail_idx]          <= i_alloc_req.is_wfi;
+      rob_is_mret[tail_idx]         <= i_alloc_req.is_mret;
+      rob_is_amo[tail_idx]          <= i_alloc_req.is_amo;
+      rob_is_lr[tail_idx]           <= i_alloc_req.is_lr;
+      rob_is_sc[tail_idx]           <= i_alloc_req.is_sc;
+      rob_is_compressed[tail_idx]   <= i_alloc_req.is_compressed;
+      rob_has_fp_flags[tail_idx]    <= i_alloc_req.has_fp_flags;
+
+      // Initialize data fields for new entry
+      rob_has_checkpoint[tail_idx]  <= 1'b0;
+      rob_branch_taken[tail_idx]    <= 1'b0;
+      rob_mispredicted[tail_idx]    <= 1'b0;
+
+      // JAL has fully known link/target information at allocation time.
+      if (i_alloc_req.is_jal) begin
+        // For JAL, branch is always taken with known target
+        rob_branch_taken[tail_idx] <= 1'b1;
+        rob_mispredicted[tail_idx] <= !i_alloc_req.predicted_taken ||
+                                      (i_alloc_req.predicted_target != i_alloc_req.branch_target);
+      end
+    end
+
+    // -------------------------------------------------------------------
+    // Checkpoint Assignment (same cycle as allocation for branches)
+    // -------------------------------------------------------------------
+    // When dispatch allocates a branch and checkpoint unit provides an ID
+    if (i_checkpoint_valid && i_alloc_req.alloc_valid && i_alloc_req.is_branch &&
+        !full && !i_flush_all && !i_flush_en) begin
+      rob_has_checkpoint[tail_idx] <= 1'b1;
+    end
+
+    // -------------------------------------------------------------------
+    // Branch Update (record branch resolution data)
+    // -------------------------------------------------------------------
+    // For branch/jump instructions only.
+    // The mispredicted field from branch unit is authoritative - it knows about
+    // RAS/indirect predictor specifics that the ROB doesn't track.
+    // branch_target is written via distributed RAM.
+    if (branch_wr_en) begin
+      rob_branch_taken[i_branch_update.tag] <= i_branch_update.taken;
+      rob_mispredicted[i_branch_update.tag] <= i_branch_update.mispredicted;
     end
   end
 

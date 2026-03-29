@@ -234,8 +234,7 @@ module cpu_ooo #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) trap_target_reg <= '0;
-    else if (trap_taken || mret_taken) trap_target_reg <= trap_target;
+    if (trap_taken || mret_taken) trap_target_reg <= trap_target;
   end
 
   // Front-end stall: dispatch back-pressure or CSR serialization
@@ -360,6 +359,7 @@ module cpu_ooo #(
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
+      .i_fence_i_flush(fence_i_flush),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd)
@@ -1191,7 +1191,7 @@ module cpu_ooo #(
     fp_rf_write_addr    = '0;
     fp_rf_write_data    = '0;
 
-    if (rob_commit.valid && rob_commit.dest_valid && !rob_commit.exception) begin
+    if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception) begin
       if (rob_commit.is_csr) begin
         // CSR: write old CSR value (combinational read) to rd
         int_rf_write_enable = 1'b1;
@@ -1212,7 +1212,7 @@ module cpu_ooo #(
   end
 
   // --- Instruction retire signal ---
-  assign o_vld = rob_commit.valid && !rob_commit.exception;
+  assign o_vld = rob_commit_valid && !rob_commit.exception;
 
   // --- PC validity ---
   assign o_pc_vld = o_vld;
@@ -1225,9 +1225,15 @@ module cpu_ooo #(
   // commit bus → CSR read → regfile write, 18 levels).
   // Misprediction/branch detection uses the combinational version to avoid
   // adding latency to flush initiation.
+  // Split valid from data to prevent Vivado from dragging reset onto payload.
+  logic rob_commit_valid;
   always_ff @(posedge i_clk) begin
-    if (i_rst) rob_commit <= '0;
-    else rob_commit <= rob_commit_comb;
+    if (i_rst) rob_commit_valid <= 1'b0;
+    else rob_commit_valid <= rob_commit_comb.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    rob_commit <= rob_commit_comb;
   end
 
   // ===========================================================================
@@ -1245,15 +1251,13 @@ module cpu_ooo #(
   // Register the mispredicted commit for one cycle so recovery does not sit on
   // the same combinational path as ROB commit generation.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      mispredict_recovery_pending <= 1'b0;
-      mispredict_commit_q         <= '0;
-    end else begin
-      mispredict_recovery_pending <= commit_is_misprediction;
-      if (commit_is_misprediction) begin
-        mispredict_commit_q <= rob_commit_comb;
-      end
-    end
+    if (i_rst) mispredict_recovery_pending <= 1'b0;
+    else mispredict_recovery_pending <= commit_is_misprediction;
+  end
+
+  // Misprediction data capture (no reset - gated by mispredict_recovery_pending)
+  always_ff @(posedge i_clk) begin
+    if (commit_is_misprediction) mispredict_commit_q <= rob_commit_comb;
   end
 
   // Register correctly-predicted branch commit for BTB update + checkpoint free.
@@ -1266,15 +1270,13 @@ module cpu_ooo #(
                                   !rob_commit_comb.misprediction;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      correct_branch_commit_pending <= 1'b0;
-      correct_branch_commit_q       <= '0;
-    end else begin
-      correct_branch_commit_pending <= commit_is_correct_branch;
-      if (commit_is_correct_branch) begin
-        correct_branch_commit_q <= rob_commit_comb;
-      end
-    end
+    if (i_rst) correct_branch_commit_pending <= 1'b0;
+    else correct_branch_commit_pending <= commit_is_correct_branch;
+  end
+
+  // Correct branch data capture (no reset - gated by correct_branch_commit_pending)
+  always_ff @(posedge i_clk) begin
+    if (commit_is_correct_branch) correct_branch_commit_q <= rob_commit_comb;
   end
 
   // Flush pipeline on registered misprediction recovery, trap, MRET, or FENCE.I
@@ -1308,8 +1310,8 @@ module cpu_ooo #(
       flush_all = 1'b0;
     end else if (fence_i_flush) begin
       // fence_i_flush is a registered 1-cycle pulse from ROB (fires cycle after
-      // FENCE.I commit). No need to gate with rob_commit.valid — doing so
-      // creates a combinational loop (flush_all -> commit_en -> rob_commit.valid).
+      // FENCE.I commit). No need to gate with rob_commit_valid — doing so
+      // creates a combinational loop (flush_all -> commit_en -> rob_commit_valid).
       flush_en  = 1'b1;
       flush_all = 1'b1;
     end
@@ -1441,7 +1443,6 @@ module cpu_ooo #(
     if (i_rst) begin
       sq_mem_write_done <= 1'b0;
       lq_mem_request_valid <= 1'b0;
-      lq_mem_request_addr <= '0;
     end else begin
       sq_mem_write_done <= sq_mem_write_done_comb;
 
@@ -1452,9 +1453,13 @@ module cpu_ooo #(
         end
       end else if (lq_mem_read_en) begin
         lq_mem_request_valid <= 1'b1;
-        lq_mem_request_addr  <= lq_mem_read_addr;
       end
     end
+  end
+
+  // LQ memory request address capture (no reset - gated by lq_mem_request_valid)
+  always_ff @(posedge i_clk) begin
+    if (lq_mem_read_en) lq_mem_request_addr <= lq_mem_read_addr;
   end
 
   // Load data always comes from external memory
@@ -1489,7 +1494,7 @@ module cpu_ooo #(
   // CSR execution happens at commit time (serialized by ROB).
   // The ALU shim passes through the rs1/imm value as the CDB result.
   // At commit, the value is available in rob_commit.value.
-  assign csr_commit_fire = rob_commit.valid && rob_commit.is_csr && !rob_commit.exception;
+  assign csr_commit_fire = rob_commit_valid && rob_commit.is_csr && !rob_commit.exception;
 
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
   // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
@@ -1524,8 +1529,8 @@ module cpu_ooo #(
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit.fp_flags),
-      .i_fp_flags_valid(rob_commit.valid && rob_commit.has_fp_flags && !rob_commit.exception),
-      .i_fp_flags_wb_valid(rob_commit.valid && rob_commit.has_fp_flags),
+      .i_fp_flags_valid(rob_commit_valid && rob_commit.has_fp_flags && !rob_commit.exception),
+      .i_fp_flags_wb_valid(rob_commit_valid && rob_commit.has_fp_flags),
       .i_fp_flags_ma('0),
       .i_fp_flags_ma_valid(1'b0),
       .o_frm(frm_csr)

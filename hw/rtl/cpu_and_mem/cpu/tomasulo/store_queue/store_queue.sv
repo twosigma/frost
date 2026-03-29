@@ -575,33 +575,28 @@ module store_queue #(
   // Sequential Logic
   // ===========================================================================
 
+  // -------------------------------------------------------------------
+  // Control-signal always_ff (with reset and flush_all sensitivity)
+  // -------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr          <= '0;
       tail_ptr          <= '0;
       sq_valid          <= '0;
-      sq_is_fp          <= '0;
       sq_addr_valid     <= '0;
       sq_data_valid     <= '0;
-      sq_is_mmio        <= '0;
-      sq_fp64_phase     <= '0;
       sq_committed      <= '0;
       sq_sent           <= '0;
-      sq_is_sc          <= '0;
       write_outstanding <= 1'b0;
     end else if (i_flush_all) begin
-      // Full flush: reset everything
+      // Full flush: reset control signals
       head_ptr          <= '0;
       tail_ptr          <= '0;
       sq_valid          <= '0;
-      sq_is_fp          <= '0;
       sq_addr_valid     <= '0;
       sq_data_valid     <= '0;
-      sq_is_mmio        <= '0;
-      sq_fp64_phase     <= '0;
       sq_committed      <= '0;
       sq_sent           <= '0;
-      sq_is_sc          <= '0;
       write_outstanding <= 1'b0;
     end else begin
 
@@ -622,33 +617,24 @@ module store_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Allocation: write new entry at tail
+      // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
         sq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
-        sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
-        sq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
         sq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        sq_address[alloc_target[IdxWidth-1:0]]    <= '0;
         sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
-        sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= 1'b0;
-        sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
         sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
         sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
-        sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
         tail_ptr                                  <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag
+      // Address Update: CAM search for matching rob_tag (control only)
       // -----------------------------------------------------------------
       if (i_addr_update.valid) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
             sq_addr_valid[i] <= 1'b1;
-            sq_address[i]    <= i_addr_update.address;
-            sq_is_mmio[i]    <= i_addr_update.is_mmio;
           end
         end
       end
@@ -700,8 +686,7 @@ module store_queue #(
       if (i_mem_write_done && write_outstanding) begin
         if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx]) begin
           // FSD phase 0 complete: advance to phase 1, allow next write
-          sq_fp64_phase[head_idx] <= 1'b1;
-          write_outstanding       <= 1'b0;
+          write_outstanding <= 1'b0;
         end else begin
           // Single-phase complete or FSD phase 1 complete: free entry
           sq_valid[head_idx] <= 1'b0;
@@ -716,6 +701,51 @@ module store_queue #(
       head_ptr <= head_advance_target;
 
     end  // !flush_all
+  end
+
+  // -------------------------------------------------------------------
+  // Data-signal always_ff (no reset, no flush_all — self-gated writes)
+  // -------------------------------------------------------------------
+  // These per-entry data fields are only consumed when paired control
+  // flags (sq_valid, sq_addr_valid, sq_data_valid) are set.  The control
+  // block above clears those flags on reset/flush, so the data values
+  // are inherently don't-care and need no reset.
+  // -------------------------------------------------------------------
+
+  always_ff @(posedge i_clk) begin
+
+    // -----------------------------------------------------------------
+    // Allocation: write per-entry data for new entry at tail
+    // -----------------------------------------------------------------
+    if (i_alloc.valid && !full) begin
+      sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
+      sq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
+      sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
+      sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
+      sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
+    end
+
+    // -----------------------------------------------------------------
+    // Address Update: CAM search for matching rob_tag (data only)
+    // -----------------------------------------------------------------
+    if (i_addr_update.valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
+          sq_address[i] <= i_addr_update.address;
+          sq_is_mmio[i] <= i_addr_update.is_mmio;
+        end
+      end
+    end
+
+    // -----------------------------------------------------------------
+    // Memory Write Completion: FSD phase advance (data only)
+    // -----------------------------------------------------------------
+    if (i_mem_write_done && write_outstanding) begin
+      if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx]) begin
+        sq_fp64_phase[head_idx] <= 1'b1;
+      end
+    end
+
   end
 
   // ===========================================================================

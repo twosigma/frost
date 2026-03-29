@@ -180,10 +180,7 @@ module int_muldiv_shim (
   // mul_tag_reg and mul_op_reg declared above (forward declaration)
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      mul_tag_reg <= '0;
-      mul_op_reg  <= riscv_pkg::instr_op_e'('0);
-    end else if (multiplier_valid_input) begin
+    if (multiplier_valid_input) begin
       mul_tag_reg <= i_rs_issue.rob_tag;
       mul_op_reg  <= i_rs_issue.op;
     end
@@ -245,11 +242,10 @@ module int_muldiv_shim (
   logic            div_trk_flushed[DivPipeDepth];
 
   always_ff @(posedge i_clk) begin
+    // --- Control: valid + flushed (with reset) ---
     if (!i_rst_n) begin
       for (int i = 0; i < DivPipeDepth; i++) begin
         div_trk_valid[i]   <= 1'b0;
-        div_trk_tag[i]     <= '0;
-        div_trk_is_rem[i]  <= 1'b0;
         div_trk_flushed[i] <= 1'b0;
       end
     end else if (i_flush) begin
@@ -257,44 +253,38 @@ module int_muldiv_shim (
         div_trk_valid[i] <= 1'b0;
       end
     end else begin
-      // Shift stages [0..DivPipeDepth-2] -> [1..DivPipeDepth-1]
+      // Shift control stages
       for (int i = DivPipeDepth - 1; i >= 1; i--) begin
-        div_trk_valid[i]  <= div_trk_valid[i-1];
-        div_trk_tag[i]    <= div_trk_tag[i-1];
-        div_trk_is_rem[i] <= div_trk_is_rem[i-1];
-        // Propagate flushed, or mark flushed via partial flush
+        div_trk_valid[i] <= div_trk_valid[i-1];
         if (div_trk_valid[i-1] && i_flush_en && is_younger(
                 div_trk_tag[i-1], i_flush_tag, i_rob_head_tag
-            )) begin
+            ))
           div_trk_flushed[i] <= 1'b1;
-        end else begin
-          div_trk_flushed[i] <= div_trk_flushed[i-1];
-        end
+        else div_trk_flushed[i] <= div_trk_flushed[i-1];
       end
-      // Stage 0: load from issue or invalidate
+      // Stage 0 control
       if (divider_valid_input) begin
         div_trk_valid[0] <= 1'b1;
-        div_trk_tag[0] <= i_rs_issue.rob_tag;
-        div_trk_is_rem[0] <= (i_rs_issue.op == riscv_pkg::REM) ||
-                             (i_rs_issue.op == riscv_pkg::REMU);
-        // Check same-cycle launch+flush race
-        if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag)) begin
+        if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
           div_trk_flushed[0] <= 1'b1;
-        end else begin
-          div_trk_flushed[0] <= 1'b0;
-        end
+        else div_trk_flushed[0] <= 1'b0;
       end else begin
         div_trk_valid[0]   <= 1'b0;
-        div_trk_tag[0]     <= '0;
-        div_trk_is_rem[0]  <= 1'b0;
         div_trk_flushed[0] <= 1'b0;
       end
-      // Partial flush sweep on entries already in the register (not shifting)
-      // The shift above already handles partial flush for shifted entries.
-      // But we also need to mark entries that are currently valid and younger.
-      // Since we shift first and then check, the partial flush on the shifted
-      // value is handled inline above. For the tail entry (DivPipeDepth-1),
-      // it was already shifted from DivPipeDepth-2, so it's covered.
+    end
+  end
+
+  // --- Data: tag + is_rem shift register (no reset) ---
+  always_ff @(posedge i_clk) begin
+    for (int i = DivPipeDepth - 1; i >= 1; i--) begin
+      div_trk_tag[i]    <= div_trk_tag[i-1];
+      div_trk_is_rem[i] <= div_trk_is_rem[i-1];
+    end
+    if (divider_valid_input) begin
+      div_trk_tag[0]    <= i_rs_issue.rob_tag;
+      div_trk_is_rem[0] <= (i_rs_issue.op == riscv_pkg::REM) ||
+                           (i_rs_issue.op == riscv_pkg::REMU);
     end
   end
 

@@ -526,210 +526,131 @@ module fp_adder #(
   // State Machine and Sequential Logic
   // =========================================================================
 
+  // Control block (with reset): only state register
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      state <= IDLE;
-      operand_a_reg <= '0;
-      operand_b_reg <= '0;
-      is_subtract_reg <= 1'b0;
-      rounding_mode_reg <= 3'b0;
-      // Stage 2 registers
-      sign_large_s2 <= 1'b0;
-      sign_small_s2 <= 1'b0;
-      exp_s2 <= '0;
-      shift_amt_s2 <= '0;
-      mant_large_s2_pre <= '0;
-      mant_small_s2_pre <= '0;
-      effective_sub_s2 <= 1'b0;
-      is_special_s2 <= 1'b0;
-      special_result_s2 <= '0;
-      special_invalid_s2 <= 1'b0;
-      rm_s2 <= 3'b0;
-      // Stage 3 registers
-      sign_large_s3 <= 1'b0;
-      sign_small_s3 <= 1'b0;
-      exp_s3 <= '0;
-      mant_large_s3 <= '0;
-      mant_small_s3 <= '0;
-      sticky_s3 <= 1'b0;
-      effective_sub_s3 <= 1'b0;
-      is_special_s3 <= 1'b0;
-      special_result_s3 <= '0;
-      special_invalid_s3 <= 1'b0;
-      rm_s3 <= 3'b0;
-      // Stage 3A registers
-      sum_s3a <= '0;
-      result_sign_s3a <= 1'b0;
-      // Stage 4 registers
-      result_sign_s4 <= 1'b0;
-      sign_large_s4 <= 1'b0;
-      sign_small_s4 <= 1'b0;
-      exp_s4 <= '0;
-      sum_s4 <= '0;
-      lzc_s4 <= '0;
-      sum_is_zero_s4 <= 1'b0;
-      sticky_s4 <= 1'b0;
-      is_special_s4 <= 1'b0;
-      special_result_s4 <= '0;
-      special_invalid_s4 <= 1'b0;
-      rm_s4 <= 3'b0;
-      // Stage 5 registers
-      result_sign_s5 <= 1'b0;
-      sign_large_s5 <= 1'b0;
-      sign_small_s5 <= 1'b0;
-      normalized_exp_s5 <= '0;
-      normalized_sum_s5 <= '0;
-      overflow_guard_s5 <= 1'b0;
-      sum_is_zero_s5 <= 1'b0;
-      sticky_s5 <= 1'b0;
-      is_special_s5 <= 1'b0;
-      special_result_s5 <= '0;
-      special_invalid_s5 <= 1'b0;
-      rm_s5 <= 3'b0;
-      // Stage 5B registers (after subnormal handling)
-      mantissa_work_s5b <= '0;
-      guard_work_s5b <= 1'b0;
-      round_work_s5b <= 1'b0;
-      sticky_work_s5b <= 1'b0;
-      exp_work_s5b <= '0;
-      // Stage 6 registers (after round-up decision)
-      result_sign_s6 <= 1'b0;
-      exp_work_s6 <= '0;
-      mantissa_work_s6 <= '0;
-      round_up_s6 <= 1'b0;
-      is_inexact_s6 <= 1'b0;
-      sum_is_zero_s6 <= 1'b0;
-      sticky_s6_saved <= 1'b0;
-      sign_large_s6 <= 1'b0;
-      sign_small_s6 <= 1'b0;
-      rm_s6 <= 3'b0;
-      is_special_s6 <= 1'b0;
-      special_result_s6 <= '0;
-      special_invalid_s6 <= 1'b0;
-      // Stage 7 registers (final output)
-      result_s7 <= '0;
-      flags_s7 <= '0;
-    end else begin
-      state <= next_state;
+    if (i_rst) state <= IDLE;
+    else state <= next_state;
+  end
 
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            // Capture operands at start of operation
-            operand_a_reg <= i_operand_a;
-            operand_b_reg <= i_operand_b;
-            is_subtract_reg <= i_is_subtract;
-            rounding_mode_reg <= i_rounding_mode;
-          end
+  // Data block (no reset): state machine gates writes, registers hold during IDLE/reset
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE: begin
+        if (i_valid) begin
+          // Capture operands at start of operation
+          operand_a_reg <= i_operand_a;
+          operand_b_reg <= i_operand_b;
+          is_subtract_reg <= i_is_subtract;
+          rounding_mode_reg <= i_rounding_mode;
         end
+      end
 
-        STAGE1: begin
-          // Capture stage 1 results into stage 2 registers
-          sign_large_s2 <= sign_large;
-          sign_small_s2 <= sign_small;
-          exp_s2 <= exp_large;
-          shift_amt_s2 <= shift_amt;
-          mant_large_s2_pre <= mant_large;
-          mant_small_s2_pre <= mant_small;
-          effective_sub_s2 <= effective_sub;
-          is_special_s2 <= is_special;
-          special_result_s2 <= special_result;
-          special_invalid_s2 <= special_invalid;
-          rm_s2 <= rounding_mode_reg;
-        end
+      STAGE1: begin
+        // Capture stage 1 results into stage 2 registers
+        sign_large_s2 <= sign_large;
+        sign_small_s2 <= sign_small;
+        exp_s2 <= exp_large;
+        shift_amt_s2 <= shift_amt;
+        mant_large_s2_pre <= mant_large;
+        mant_small_s2_pre <= mant_small;
+        effective_sub_s2 <= effective_sub;
+        is_special_s2 <= is_special;
+        special_result_s2 <= special_result;
+        special_invalid_s2 <= special_invalid;
+        rm_s2 <= rounding_mode_reg;
+      end
 
-        STAGE2: begin
-          // Capture stage 2 results into stage 3 registers
-          sign_large_s3 <= sign_large_s2;
-          sign_small_s3 <= sign_small_s2;
-          exp_s3 <= exp_s2;
-          mant_large_s3 <= {mant_large_s2_pre, {MantBits{1'b0}}};
-          mant_small_s3 <= aligned_small;
-          sticky_s3 <= sticky_from_shift;
-          effective_sub_s3 <= effective_sub_s2;
-          is_special_s3 <= is_special_s2;
-          special_result_s3 <= special_result_s2;
-          special_invalid_s3 <= special_invalid_s2;
-          rm_s3 <= rm_s2;
-        end
+      STAGE2: begin
+        // Capture stage 2 results into stage 3 registers
+        sign_large_s3 <= sign_large_s2;
+        sign_small_s3 <= sign_small_s2;
+        exp_s3 <= exp_s2;
+        mant_large_s3 <= {mant_large_s2_pre, {MantBits{1'b0}}};
+        mant_small_s3 <= aligned_small;
+        sticky_s3 <= sticky_from_shift;
+        effective_sub_s3 <= effective_sub_s2;
+        is_special_s3 <= is_special_s2;
+        special_result_s3 <= special_result_s2;
+        special_invalid_s3 <= special_invalid_s2;
+        rm_s3 <= rm_s2;
+      end
 
-        STAGE3A: begin
-          // Capture stage 3A results into stage 3B registers
-          sum_s3a <= sum_s3a_comb;
-          result_sign_s3a <= result_sign_s3a_comb;
-        end
+      STAGE3A: begin
+        // Capture stage 3A results into stage 3B registers
+        sum_s3a <= sum_s3a_comb;
+        result_sign_s3a <= result_sign_s3a_comb;
+      end
 
-        STAGE3B: begin
-          // Capture stage 3B results into stage 4 registers
-          result_sign_s4 <= result_sign_s3a;
-          sign_large_s4 <= sign_large_s3;
-          sign_small_s4 <= sign_small_s3;
-          exp_s4 <= {{(ExpExtBits - ExpBits) {1'b0}}, exp_s3};
-          sum_s4 <= sum_s3a;
-          lzc_s4 <= lzc_s3b_comb;
-          sum_is_zero_s4 <= sum_is_zero_s3b_comb;
-          sticky_s4 <= sticky_s3;
-          is_special_s4 <= is_special_s3;
-          special_result_s4 <= special_result_s3;
-          special_invalid_s4 <= special_invalid_s3;
-          rm_s4 <= rm_s3;
-        end
+      STAGE3B: begin
+        // Capture stage 3B results into stage 4 registers
+        result_sign_s4 <= result_sign_s3a;
+        sign_large_s4 <= sign_large_s3;
+        sign_small_s4 <= sign_small_s3;
+        exp_s4 <= {{(ExpExtBits - ExpBits) {1'b0}}, exp_s3};
+        sum_s4 <= sum_s3a;
+        lzc_s4 <= lzc_s3b_comb;
+        sum_is_zero_s4 <= sum_is_zero_s3b_comb;
+        sticky_s4 <= sticky_s3;
+        is_special_s4 <= is_special_s3;
+        special_result_s4 <= special_result_s3;
+        special_invalid_s4 <= special_invalid_s3;
+        rm_s4 <= rm_s3;
+      end
 
-        STAGE4: begin
-          // Capture stage 4 normalization into stage 5 registers
-          result_sign_s5 <= result_sign_s4;
-          sign_large_s5 <= sign_large_s4;
-          sign_small_s5 <= sign_small_s4;
-          normalized_exp_s5 <= normalized_exp_s4_comb;
-          normalized_sum_s5 <= normalized_sum_s4_comb;
-          overflow_guard_s5 <= overflow_guard_s4_comb;
-          sum_is_zero_s5 <= sum_is_zero_s4;
-          sticky_s5 <= sticky_s4;
-          is_special_s5 <= is_special_s4;
-          special_result_s5 <= special_result_s4;
-          special_invalid_s5 <= special_invalid_s4;
-          rm_s5 <= rm_s4;
-        end
+      STAGE4: begin
+        // Capture stage 4 normalization into stage 5 registers
+        result_sign_s5 <= result_sign_s4;
+        sign_large_s5 <= sign_large_s4;
+        sign_small_s5 <= sign_small_s4;
+        normalized_exp_s5 <= normalized_exp_s4_comb;
+        normalized_sum_s5 <= normalized_sum_s4_comb;
+        overflow_guard_s5 <= overflow_guard_s4_comb;
+        sum_is_zero_s5 <= sum_is_zero_s4;
+        sticky_s5 <= sticky_s4;
+        is_special_s5 <= is_special_s4;
+        special_result_s5 <= special_result_s4;
+        special_invalid_s5 <= special_invalid_s4;
+        rm_s5 <= rm_s4;
+      end
 
-        STAGE5A: begin
-          // Capture subnormal handling outputs into stage 5B registers
-          mantissa_work_s5b <= mantissa_work_s5a_comb;
-          guard_work_s5b <= guard_work_s5a_comb;
-          round_work_s5b <= round_work_s5a_comb;
-          sticky_work_s5b <= sticky_work_s5a_comb;
-          exp_work_s5b <= exp_work_s5a_comb;
-        end
+      STAGE5A: begin
+        // Capture subnormal handling outputs into stage 5B registers
+        mantissa_work_s5b <= mantissa_work_s5a_comb;
+        guard_work_s5b <= guard_work_s5a_comb;
+        round_work_s5b <= round_work_s5a_comb;
+        sticky_work_s5b <= sticky_work_s5a_comb;
+        exp_work_s5b <= exp_work_s5a_comb;
+      end
 
-        STAGE5B: begin
-          // Capture round-up decision and inputs into s6 registers
-          result_sign_s6 <= result_sign_s5;
-          exp_work_s6 <= exp_work_s5b;
-          mantissa_work_s6 <= mantissa_work_s5b;
-          round_up_s6 <= round_up_s5b_comb;
-          is_inexact_s6 <= is_inexact_s5b;
-          sum_is_zero_s6 <= sum_is_zero_s5;
-          sticky_s6_saved <= sticky_s5;
-          sign_large_s6 <= sign_large_s5;
-          sign_small_s6 <= sign_small_s5;
-          rm_s6 <= rm_s5;
-          is_special_s6 <= is_special_s5;
-          special_result_s6 <= special_result_s5;
-          special_invalid_s6 <= special_invalid_s5;
-        end
+      STAGE5B: begin
+        // Capture round-up decision and inputs into s6 registers
+        result_sign_s6 <= result_sign_s5;
+        exp_work_s6 <= exp_work_s5b;
+        mantissa_work_s6 <= mantissa_work_s5b;
+        round_up_s6 <= round_up_s5b_comb;
+        is_inexact_s6 <= is_inexact_s5b;
+        sum_is_zero_s6 <= sum_is_zero_s5;
+        sticky_s6_saved <= sticky_s5;
+        sign_large_s6 <= sign_large_s5;
+        sign_small_s6 <= sign_small_s5;
+        rm_s6 <= rm_s5;
+        is_special_s6 <= is_special_s5;
+        special_result_s6 <= special_result_s5;
+        special_invalid_s6 <= special_invalid_s5;
+      end
 
-        STAGE6: begin
-          // Capture final result into output registers
-          result_s7 <= final_result_s6_comb;
-          flags_s7  <= final_flags_s6_comb;
-        end
+      STAGE6: begin
+        // Capture final result into output registers
+        result_s7 <= final_result_s6_comb;
+        flags_s7  <= final_flags_s6_comb;
+      end
 
-        STAGE7: begin
-          // Output stage - result already captured
-        end
+      STAGE7: begin
+        // Output stage - result already captured
+      end
 
-        default: ;
-      endcase
-    end
+      default: ;
+    endcase
   end
 
   // Next state logic

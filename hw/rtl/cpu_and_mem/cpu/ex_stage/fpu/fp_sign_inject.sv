@@ -79,7 +79,6 @@ module fp_sign_inject #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       started <= 1'b0;
-      result_reg <= '0;
     end else if (i_valid && is_sign_inject_op && !started) begin
       // Capture result on start
       started <= 1'b1;

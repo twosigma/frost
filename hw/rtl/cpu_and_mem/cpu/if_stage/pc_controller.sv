@@ -77,6 +77,7 @@ module pc_controller #(
     input logic i_stall,
     input logic i_stall_registered,
     input logic i_flush,  // Pipeline flush - block state updates from garbage instructions
+    input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - for pending prediction kill
 
     // Branch/Jump from EX stage (includes JAL, JALR, and all conditional branches)
     input logic            i_branch_taken,
@@ -322,8 +323,13 @@ module pc_controller #(
       i_prediction_used && !i_ras_predicted &&
       (o_pc[1] || i_predicted_target[1] ||
        ((seq_next_pc_reg != o_pc) && i_prediction_requires_pc_reg_handoff));
+  // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
+  // from mispredict_recovery_pending through flush_pipeline into this cone.
+  // For mispredict, !i_branch_taken already kills the pending prediction.
+  // For trap/mret, !i_trap_taken/!i_mret_taken already kill it.
+  // Only FENCE.I needs explicit suppression here (and it's already registered).
   assign pending_prediction_effective = pending_prediction_valid && !redirect_kill_pending_q &&
-                                        !i_flush && !i_branch_taken &&
+                                        !i_fence_i_flush && !i_branch_taken &&
                                         !i_trap_taken && !i_mret_taken;
   assign o_pending_prediction_active = pending_prediction_effective;
 

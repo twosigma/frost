@@ -119,28 +119,24 @@ module fu_cdb_adapter (
   // ---------------------------------------------------------------------------
   // Register logic
   // ---------------------------------------------------------------------------
+  // Control: result_pending (with reset)
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       result_pending <= 1'b0;
-      held_result    <= '0;
     end else if (i_flush || partial_flush_held) begin
-      // Full flush or partial flush of held result — discard
       result_pending <= 1'b0;
-      held_result    <= '0;
     end else if (result_pending && i_grant) begin
-      // Currently pending result was granted
-      if (i_fu_result.valid) begin
-        // Back-to-back: grant old + latch new
-        held_result    <= i_fu_result;
-        result_pending <= 1'b1;
-      end else begin
-        // Granted, go idle
-        result_pending <= 1'b0;
-      end
+      result_pending <= i_fu_result.valid;  // back-to-back if new input, else idle
     end else if (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input) begin
-      // Pass-through failed (not granted), latch — but not if partially flushed
-      held_result    <= i_fu_result;
       result_pending <= 1'b1;
+    end
+  end
+
+  // Data: held_result (no reset - gated by result_pending)
+  always_ff @(posedge i_clk) begin
+    if ((result_pending && i_grant && i_fu_result.valid) ||
+        (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input)) begin
+      held_result <= i_fu_result;
     end
   end
 

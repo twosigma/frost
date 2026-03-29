@@ -259,11 +259,11 @@ module fp_div_shim (
                                     (u == UDivD)  ? DivDDepth  :
                                     (u == USqrtS) ? SqrtSDepth : SqrtDDepth;
 
+    // Control: valid + flushed (with reset)
     always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         for (int i = 0; i < MaxPipeDepth; i++) begin
           tq_valid[u][i]   <= 1'b0;
-          tq_tag[u][i]     <= '0;
           tq_flushed[u][i] <= 1'b0;
         end
       end else if (i_flush) begin
@@ -271,33 +271,32 @@ module fp_div_shim (
           tq_valid[u][i] <= 1'b0;
         end
       end else begin
-        // Shift stages [0..Depth-2] -> [1..Depth-1]
         for (int i = Depth - 1; i >= 1; i--) begin
           tq_valid[u][i] <= tq_valid[u][i-1];
-          tq_tag[u][i]   <= tq_tag[u][i-1];
           if (tq_valid[u][i-1] && i_flush_en && is_younger(
                   tq_tag[u][i-1], i_flush_tag, i_rob_head_tag
-              )) begin
+              ))
             tq_flushed[u][i] <= 1'b1;
-          end else begin
-            tq_flushed[u][i] <= tq_flushed[u][i-1];
-          end
+          else tq_flushed[u][i] <= tq_flushed[u][i-1];
         end
-        // Stage 0: load from issue or invalidate
         if (fire_unit[u]) begin
           tq_valid[u][0] <= 1'b1;
-          tq_tag[u][0]   <= i_rs_issue.rob_tag;
-          if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag)) begin
+          if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
             tq_flushed[u][0] <= 1'b1;
-          end else begin
-            tq_flushed[u][0] <= 1'b0;
-          end
+          else tq_flushed[u][0] <= 1'b0;
         end else begin
           tq_valid[u][0]   <= 1'b0;
-          tq_tag[u][0]     <= '0;
           tq_flushed[u][0] <= 1'b0;
         end
       end
+    end
+
+    // Data: tag shift register (no reset)
+    always_ff @(posedge i_clk) begin
+      for (int i = Depth - 1; i >= 1; i--) begin
+        tq_tag[u][i] <= tq_tag[u][i-1];
+      end
+      if (fire_unit[u]) tq_tag[u][0] <= i_rs_issue.rob_tag;
     end
   end
 
