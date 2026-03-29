@@ -777,10 +777,11 @@ module store_queue #(
     assume (!i_mem_write_done || write_outstanding);
   end
 
-  // No commit during flush
-  always_comb begin
-    if (i_flush_all || i_flush_en) assume (!i_commit_valid);
-  end
+  // Commit MAY overlap with flush due to commit bus pipelining.  This is
+  // safe: flush_all resets all SQ state (else-if priority over commit
+  // processing), and flush_en only flushes younger entries while the
+  // committed head is always older than the flush boundary.
+  // (assumption removed — was: no commit during flush)
 
   // -------------------------------------------------------------------------
   // Combinational assertions
