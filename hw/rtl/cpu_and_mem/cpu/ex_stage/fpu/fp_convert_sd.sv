@@ -421,6 +421,8 @@ module fp_convert_sd #(
   // ======================================================================
   // Register outputs (4-cycle latency)
   // ======================================================================
+
+  // Control block (with reset): pipeline valid signals
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       stage1_valid <= 1'b0;
@@ -428,139 +430,92 @@ module fp_convert_sd #(
       stage3_valid <= 1'b0;
       stage4_valid <= 1'b0;
       valid_reg <= 1'b0;
-      op_s_reg <= 32'b0;
-      op_d_reg <= '0;
-      op_reg <= riscv_pkg::instr_op_e'(0);
-      rm_reg <= 3'b0;
-      // TIMING: LZC pipeline registers
-      lzc_d_reg <= '0;
-      d_is_subnormal_reg <= 1'b0;
-      frac_d_reg <= '0;
-      exp_s_biased_normal <= '0;
-      op_reg_s2 <= riscv_pkg::instr_op_e'(0);
-      rm_reg_s2 <= 3'b0;
-      op_reg_s3 <= riscv_pkg::instr_op_e'(0);
-      op_reg_s4 <= riscv_pkg::instr_op_e'(0);
-      sign_d_s1 <= 1'b0;
-      exp_s_biased_s1 <= '0;
-      mant_s_s1 <= '0;
-      guard_s_s1 <= 1'b0;
-      round_s_s1 <= 1'b0;
-      sticky_s_s1 <= 1'b0;
-      d_is_zero_s1 <= 1'b0;
-      d_is_inf_s1 <= 1'b0;
-      d_is_nan_s1 <= 1'b0;
-      d_is_snan_s1 <= 1'b0;
-      d_overflow_s1 <= 1'b0;
-      d_underflow_too_small_s1 <= 1'b0;
-      d_overflow_result_s1 <= '0;
-      sign_s_s1 <= 1'b0;
-      exp_d_from_s_s1 <= '0;
-      frac_d_from_s_s1 <= '0;
-      s_is_zero_s1 <= 1'b0;
-      s_is_inf_s1 <= 1'b0;
-      s_is_nan_s1 <= 1'b0;
-      s_is_snan_s1 <= 1'b0;
-      result_reg <= '0;
-      flags_reg <= '0;
-      mantissa_work_s2a <= '0;
-      guard_work_s2a <= 1'b0;
-      round_work_s2a <= 1'b0;
-      sticky_work_s2a <= 1'b0;
-      exp_work_s2a <= '0;
-      round_result_s2 <= '0;
-      round_flags_s2 <= '0;
-      sign_d_s2 <= 1'b0;
-      d_is_zero_s2 <= 1'b0;
-      d_is_inf_s2 <= 1'b0;
-      d_is_nan_s2 <= 1'b0;
-      d_is_snan_s2 <= 1'b0;
-      d_overflow_s2 <= 1'b0;
-      d_underflow_too_small_s2 <= 1'b0;
-      d_overflow_result_s2 <= '0;
-      sign_s_s2 <= 1'b0;
-      exp_d_from_s_s2 <= '0;
-      frac_d_from_s_s2 <= '0;
-      s_is_zero_s2 <= 1'b0;
-      s_is_inf_s2 <= 1'b0;
-      s_is_nan_s2 <= 1'b0;
-      s_is_snan_s2 <= 1'b0;
     end else begin
       valid_reg <= 1'b0;
       if (stage4_valid) begin
-        result_reg <= result_comb;
-        flags_reg <= flags_comb;
         valid_reg <= 1'b1;
         stage4_valid <= 1'b0;
       end else if (stage3_valid) begin
-        round_result_s2 <= round_result_s2_comb;
-        round_flags_s2 <= round_flags_s2_comb;
-        op_reg_s4 <= op_reg_s3;
         stage4_valid <= 1'b1;
         stage3_valid <= 1'b0;
       end else if (stage2_valid) begin
-        mantissa_work_s2a <= mantissa_work_s1_comb;
-        guard_work_s2a <= guard_work_s1_comb;
-        round_work_s2a <= round_work_s1_comb;
-        sticky_work_s2a <= sticky_work_s1_comb;
-        exp_work_s2a <= exp_work_s1_comb;
-        sign_d_s2 <= sign_d_s1;
-        d_is_zero_s2 <= d_is_zero_s1;
-        d_is_inf_s2 <= d_is_inf_s1;
-        d_is_nan_s2 <= d_is_nan_s1;
-        d_is_snan_s2 <= d_is_snan_s1;
-        d_overflow_s2 <= d_overflow_s1;
-        d_underflow_too_small_s2 <= d_underflow_too_small_s1;
-        d_overflow_result_s2 <= d_overflow_result_s1;
-        sign_s_s2 <= sign_s_s1;
-        exp_d_from_s_s2 <= exp_d_from_s_s1;
-        frac_d_from_s_s2 <= frac_d_from_s_s1;
-        s_is_zero_s2 <= s_is_zero_s1;
-        s_is_inf_s2 <= s_is_inf_s1;
-        s_is_nan_s2 <= s_is_nan_s1;
-        s_is_snan_s2 <= s_is_snan_s1;
-        op_reg_s3 <= op_reg_s2;
         stage3_valid <= 1'b1;
         stage2_valid <= 1'b0;
       end else if (stage1_valid) begin
-        sign_d_s1 <= sign_d;
-        exp_s_biased_s1 <= exp_s_biased;
-        mant_s_s1 <= mant_s;
-        guard_s_s1 <= guard_s;
-        round_s_s1 <= round_s;
-        sticky_s_s1 <= sticky_s;
-        d_is_zero_s1 <= d_is_zero;
-        d_is_inf_s1 <= d_is_inf;
-        d_is_nan_s1 <= d_is_nan;
-        d_is_snan_s1 <= d_is_snan;
-        d_overflow_s1 <= d_overflow;
-        d_underflow_too_small_s1 <= d_underflow_too_small;
-        d_overflow_result_s1 <= d_overflow_result;
-        sign_s_s1 <= sign_s;
-        exp_d_from_s_s1 <= exp_d_from_s;
-        frac_d_from_s_s1 <= frac_d_from_s;
-        s_is_zero_s1 <= s_is_zero;
-        s_is_inf_s1 <= s_is_inf;
-        s_is_nan_s1 <= s_is_nan;
-        s_is_snan_s1 <= s_is_snan;
-        op_reg_s2 <= op_reg;
-        rm_reg_s2 <= rm_reg;
         stage2_valid <= 1'b1;
         stage1_valid <= 1'b0;
       end else if (i_valid) begin
-        op_s_reg <= i_operand_s;
-        op_d_reg <= i_operand_d;
-        op_reg <= i_operation;
-        rm_reg <= i_rounding_mode;
         stage1_valid <= 1'b1;
-        // TIMING: Pre-compute and register LZC and related values from input
-        // to break the critical path from op_d_reg to sticky_s
-        frac_d_reg <= i_operand_d[51:0];
-        d_is_subnormal_reg <= (i_operand_d[62:52] == 11'b0) && (i_operand_d[51:0] != 52'b0);
-        exp_s_biased_normal <= $signed({2'b0, i_operand_d[62:52]}) - 13'sd1023 + 13'sd127;
-        // Register LZC computed from input operand
-        lzc_d_reg <= lzc_d;
       end
+    end
+  end
+
+  // Data block (no reset): pipeline data registers
+  always_ff @(posedge i_clk) begin
+    if (stage4_valid) begin
+      result_reg <= result_comb;
+      flags_reg  <= flags_comb;
+    end else if (stage3_valid) begin
+      round_result_s2 <= round_result_s2_comb;
+      round_flags_s2 <= round_flags_s2_comb;
+      op_reg_s4 <= op_reg_s3;
+    end else if (stage2_valid) begin
+      mantissa_work_s2a <= mantissa_work_s1_comb;
+      guard_work_s2a <= guard_work_s1_comb;
+      round_work_s2a <= round_work_s1_comb;
+      sticky_work_s2a <= sticky_work_s1_comb;
+      exp_work_s2a <= exp_work_s1_comb;
+      sign_d_s2 <= sign_d_s1;
+      d_is_zero_s2 <= d_is_zero_s1;
+      d_is_inf_s2 <= d_is_inf_s1;
+      d_is_nan_s2 <= d_is_nan_s1;
+      d_is_snan_s2 <= d_is_snan_s1;
+      d_overflow_s2 <= d_overflow_s1;
+      d_underflow_too_small_s2 <= d_underflow_too_small_s1;
+      d_overflow_result_s2 <= d_overflow_result_s1;
+      sign_s_s2 <= sign_s_s1;
+      exp_d_from_s_s2 <= exp_d_from_s_s1;
+      frac_d_from_s_s2 <= frac_d_from_s_s1;
+      s_is_zero_s2 <= s_is_zero_s1;
+      s_is_inf_s2 <= s_is_inf_s1;
+      s_is_nan_s2 <= s_is_nan_s1;
+      s_is_snan_s2 <= s_is_snan_s1;
+      op_reg_s3 <= op_reg_s2;
+    end else if (stage1_valid) begin
+      sign_d_s1 <= sign_d;
+      exp_s_biased_s1 <= exp_s_biased;
+      mant_s_s1 <= mant_s;
+      guard_s_s1 <= guard_s;
+      round_s_s1 <= round_s;
+      sticky_s_s1 <= sticky_s;
+      d_is_zero_s1 <= d_is_zero;
+      d_is_inf_s1 <= d_is_inf;
+      d_is_nan_s1 <= d_is_nan;
+      d_is_snan_s1 <= d_is_snan;
+      d_overflow_s1 <= d_overflow;
+      d_underflow_too_small_s1 <= d_underflow_too_small;
+      d_overflow_result_s1 <= d_overflow_result;
+      sign_s_s1 <= sign_s;
+      exp_d_from_s_s1 <= exp_d_from_s;
+      frac_d_from_s_s1 <= frac_d_from_s;
+      s_is_zero_s1 <= s_is_zero;
+      s_is_inf_s1 <= s_is_inf;
+      s_is_nan_s1 <= s_is_nan;
+      s_is_snan_s1 <= s_is_snan;
+      op_reg_s2 <= op_reg;
+      rm_reg_s2 <= rm_reg;
+    end else if (i_valid) begin
+      op_s_reg <= i_operand_s;
+      op_d_reg <= i_operand_d;
+      op_reg <= i_operation;
+      rm_reg <= i_rounding_mode;
+      // TIMING: Pre-compute and register LZC and related values from input
+      // to break the critical path from op_d_reg to sticky_s
+      frac_d_reg <= i_operand_d[51:0];
+      d_is_subnormal_reg <= (i_operand_d[62:52] == 11'b0) && (i_operand_d[51:0] != 52'b0);
+      exp_s_biased_normal <= $signed({2'b0, i_operand_d[62:52]}) - 13'sd1023 + 13'sd127;
+      // Register LZC computed from input operand
+      lzc_d_reg <= lzc_d;
     end
   end
 

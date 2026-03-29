@@ -326,14 +326,25 @@ module tomasulo_wrapper (
   // overlapping pipelined commits with flush_all only occurs for non-store
   // instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
+  // Split commit_bus_q into separate valid + data to prevent Vivado from
+  // dragging the reset net onto payload register bits.
+  logic commit_bus_q_valid;
   riscv_pkg::reorder_buffer_commit_t commit_bus_q;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      commit_bus_q <= '0;
-    end else begin
-      commit_bus_q <= commit_bus;
-    end
+    if (!i_rst_n || i_flush_all) commit_bus_q_valid <= 1'b0;
+    else commit_bus_q_valid <= commit_bus.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    commit_bus_q <= commit_bus;
+  end
+
+  // Reconstruct commit bus with reset-qualified valid for downstream consumers
+  riscv_pkg::reorder_buffer_commit_t commit_bus_q_qualified;
+  always_comb begin
+    commit_bus_q_qualified       = commit_bus_q;
+    commit_bus_q_qualified.valid = commit_bus_q_valid;
   end
 
   // Expose combinational commit bus to cpu_ooo for misprediction detection
@@ -412,18 +423,32 @@ module tomasulo_wrapper (
   // Pipeline register: break the CDB arbiter → RS/ROB wakeup critical path.
   // Grants stay combinational (back to adapters); only the broadcast fanout
   // to RS snoop + ROB CDB-write is registered.
+  // Split valid from data to prevent Vivado from dragging reset onto payload.
+  logic cdb_bus_valid;
+
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) cdb_bus <= '0;
-    else cdb_bus <= cdb_bus_comb;
+    if (!i_rst_n) cdb_bus_valid <= 1'b0;
+    else cdb_bus_valid <= cdb_bus_comb.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    cdb_bus <= cdb_bus_comb;
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
   assign o_cdb = cdb_bus_comb;
 
+  // Reconstruct CDB broadcast with reset-qualified valid for downstream consumers
+  riscv_pkg::cdb_broadcast_t cdb_bus_qualified;
+  always_comb begin
+    cdb_bus_qualified       = cdb_bus;
+    cdb_bus_qualified.valid = cdb_bus_valid;
+  end
+
   // Derive ROB CDB write from CDB broadcast
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter;
   always_comb begin
-    cdb_write_from_arbiter.valid     = cdb_bus.valid;
+    cdb_write_from_arbiter.valid     = cdb_bus_valid;
     cdb_write_from_arbiter.tag       = cdb_bus.tag;
     cdb_write_from_arbiter.value     = cdb_bus.value;
     cdb_write_from_arbiter.exception = cdb_bus.exception;
@@ -598,7 +623,7 @@ module tomasulo_wrapper (
   // SC clear reservation: on any SC commit (success or failure clears reservation)
   // Uses pipelined commit bus to break ROB → LQ/SQ critical path.
   logic sc_clear_reservation;
-  assign sc_clear_reservation = commit_bus_q.valid && commit_bus_q.is_sc;
+  assign sc_clear_reservation = commit_bus_q_valid && commit_bus_q.is_sc;
 
   // Reservation snoop invalidation: SQ write to reservation address
   logic reservation_snoop_invalidate;
@@ -609,7 +634,7 @@ module tomasulo_wrapper (
   // SC discard: failed SC invalidates its SQ entry
   // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sc_discard;
-  assign sc_discard = commit_bus_q.valid && commit_bus_q.is_sc && commit_bus_q.value[0];
+  assign sc_discard = commit_bus_q_valid && commit_bus_q.is_sc && commit_bus_q.value[0];
 
   // ===========================================================================
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
@@ -693,9 +718,7 @@ module tomasulo_wrapper (
       // leave sc_pending stuck (the flushed tag never reaches head).
       if (o_mem_rs_issue.valid && !speculative_flush_all && !speculative_flush_en
           && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
-        sc_pending         <= 1'b1;
-        sc_pending_rob_tag <= o_mem_rs_issue.rob_tag;
-        sc_pending_addr    <= sq_effective_addr;
+        sc_pending <= 1'b1;
       end
       // Clear when SC fu_complete fires (accepted by adapter)
       if (sc_fu_complete_valid) begin
@@ -709,6 +732,15 @@ module tomasulo_wrapper (
           ))) begin
         sc_pending <= 1'b0;
       end
+    end
+  end
+
+  // SC data capture (no reset - gated by sc_pending)
+  always_ff @(posedge i_clk) begin
+    if (o_mem_rs_issue.valid && !speculative_flush_all && !speculative_flush_en
+        && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
+      sc_pending_rob_tag <= o_mem_rs_issue.rob_tag;
+      sc_pending_addr    <= sq_effective_addr;
     end
   end
 
@@ -869,7 +901,7 @@ module tomasulo_wrapper (
       .i_alloc_rob_tag (i_rat_alloc_rob_tag),
 
       // Commit (pipelined — breaks ROB → RAT critical path)
-      .i_commit(commit_bus_q),
+      .i_commit(commit_bus_q_qualified),
 
       // Checkpoint save
       .i_checkpoint_save      (i_checkpoint_save),
@@ -928,7 +960,7 @@ module tomasulo_wrapper (
       .o_full    (int_rs_full_w),
 
       // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus),
+      .i_cdb(cdb_bus_qualified),
 
       // Issue (to internal wire for ALU shim)
       .o_issue                (int_rs_issue_w),
@@ -966,7 +998,7 @@ module tomasulo_wrapper (
       .i_rst_n                (i_rst_n),
       .i_dispatch             (mul_rs_dispatch),
       .o_full                 (mul_rs_full_w),
-      .i_cdb                  (cdb_bus),
+      .i_cdb                  (cdb_bus_qualified),
       .o_issue                (mul_rs_issue_w),
       .i_fu_ready             (mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
@@ -998,7 +1030,7 @@ module tomasulo_wrapper (
       .i_rst_n                (i_rst_n),
       .i_dispatch             (mem_rs_dispatch),
       .o_full                 (mem_rs_full_w),
-      .i_cdb                  (cdb_bus),
+      .i_cdb                  (cdb_bus_qualified),
       .o_issue                (o_mem_rs_issue),
       .i_fu_ready             (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
       .o_issue_writes_cdb_hint(),
@@ -1035,7 +1067,7 @@ module tomasulo_wrapper (
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fp_rs_dispatch),
       .o_full                 (fp_rs_full_w),
-      .i_cdb                  (cdb_bus),
+      .i_cdb                  (cdb_bus_qualified),
       .o_issue                (fp_rs_issue_w),
       .i_fu_ready             (fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
@@ -1090,10 +1122,17 @@ module tomasulo_wrapper (
       fmul_dispatch_pending_valid <= 1'b0;
     end else if (fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
                  !speculative_flush_all && !speculative_flush_en) begin
-      fmul_dispatch_pending <= fmul_rs_dispatch;
       fmul_dispatch_pending_valid <= 1'b1;
     end else if (fmul_dispatch_dequeue) begin
       fmul_dispatch_pending_valid <= 1'b0;
+    end
+  end
+
+  // FMUL dispatch data capture (no reset - gated by fmul_dispatch_pending_valid)
+  always_ff @(posedge i_clk) begin
+    if (fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+        !speculative_flush_all && !speculative_flush_en) begin
+      fmul_dispatch_pending <= fmul_rs_dispatch;
     end
   end
 
@@ -1104,7 +1143,7 @@ module tomasulo_wrapper (
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fmul_rs_dispatch_to_rs),
       .o_full                 (fmul_rs_full_raw),
-      .i_cdb                  (cdb_bus),
+      .i_cdb                  (cdb_bus_qualified),
       .o_issue                (fmul_rs_issue_w),
       .i_fu_ready             (fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
@@ -1134,7 +1173,7 @@ module tomasulo_wrapper (
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fdiv_rs_dispatch),
       .o_full                 (fdiv_rs_full_w),
-      .i_cdb                  (cdb_bus),
+      .i_cdb                  (cdb_bus_qualified),
       .o_issue                (fdiv_rs_issue_w),
       .i_fu_ready             (fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
@@ -1455,7 +1494,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus_q.valid &&
+  assign sq_commit_valid = commit_bus_q_valid &&
                            (commit_bus_q.is_store || commit_bus_q.is_fp_store ||
                             commit_bus_q.is_sc) &&
                            !sc_discard;
@@ -1769,7 +1808,7 @@ module tomasulo_wrapper (
       // RAT receives commit_bus_q (1-cycle pipelined), so check $past of
       // the registered version rather than the combinational commit_bus.
       if ($past(
-              commit_bus_q.valid
+              commit_bus_q_valid
           ) && $past(
               commit_bus_q.dest_valid
           ) && !$past(
@@ -1798,7 +1837,7 @@ module tomasulo_wrapper (
 
       // INT WAW: commit does NOT clear when tag mismatches (newer rename)
       if ($past(
-              commit_bus_q.valid
+              commit_bus_q_valid
           ) && $past(
               commit_bus_q.dest_valid
           ) && !$past(
@@ -1827,7 +1866,7 @@ module tomasulo_wrapper (
 
       // FP commit clears RAT entry when tag matches
       if ($past(
-              commit_bus_q.valid
+              commit_bus_q_valid
           ) && $past(
               commit_bus_q.dest_valid
           ) && $past(
@@ -1871,7 +1910,7 @@ module tomasulo_wrapper (
           ) && $past(
               i_rat_alloc_dest_reg
           ) == f_int_track && $past(
-              commit_bus_q.valid
+              commit_bus_q_valid
           ) && $past(
               commit_bus_q.dest_valid
           ) && !$past(
@@ -1961,7 +2000,7 @@ module tomasulo_wrapper (
       cover_rs_issue : cover (o_rs_issue.valid);
 
       // CDB simultaneously present with RS dispatch
-      cover_cdb_and_rs_dispatch : cover (cdb_bus.valid && i_rs_dispatch.valid);
+      cover_cdb_and_rs_dispatch : cover (cdb_bus_valid && i_rs_dispatch.valid);
 
       // flush_all while RS non-empty
       cover_flush_while_rs_nonempty : cover (i_flush_all && !o_rs_empty);

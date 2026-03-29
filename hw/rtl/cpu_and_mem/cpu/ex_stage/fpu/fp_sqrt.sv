@@ -92,10 +92,7 @@ module fp_sqrt #(
   logic [2:0] s0_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s0_operand <= '0;
-      s0_rm <= 3'b0;
-    end else if (i_valid) begin
+    if (i_valid) begin
       s0_operand <= i_operand;
       s0_rm <= i_rounding_mode;
     end
@@ -210,21 +207,12 @@ module fp_sqrt #(
   logic [2:0] s1_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s1_is_special <= 1'b0;
-      s1_special_result <= '0;
-      s1_special_invalid <= 1'b0;
-      s1_adjusted_exp <= '0;
-      s1_mantissa_int <= '0;
-      s1_rm <= 3'b0;
-    end else begin
-      s1_is_special <= setup_is_special;
-      s1_special_result <= setup_special_result;
-      s1_special_invalid <= setup_special_invalid;
-      s1_adjusted_exp <= setup_adjusted_exp;
-      s1_mantissa_int <= setup_mantissa_int;
-      s1_rm <= s0_rm;
-    end
+    s1_is_special <= setup_is_special;
+    s1_special_result <= setup_special_result;
+    s1_special_invalid <= setup_special_invalid;
+    s1_adjusted_exp <= setup_adjusted_exp;
+    s1_mantissa_int <= setup_mantissa_int;
+    s1_rm <= s0_rm;
   end
 
   // =========================================================================
@@ -251,25 +239,14 @@ module fp_sqrt #(
   logic [2:0] s2_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s2_result_exp <= '0;
-      s2_root <= '0;
-      s2_remainder <= '0;
-      s2_radicand <= '0;
-      s2_is_special <= 1'b0;
-      s2_special_result <= '0;
-      s2_special_invalid <= 1'b0;
-      s2_rm <= 3'b0;
-    end else begin
-      s2_result_exp <= prep_result_exp;
-      s2_root <= '0;
-      s2_remainder <= '0;
-      s2_radicand <= prep_radicand;
-      s2_is_special <= s1_is_special;
-      s2_special_result <= s1_special_result;
-      s2_special_invalid <= s1_special_invalid;
-      s2_rm <= s1_rm;
-    end
+    s2_result_exp <= prep_result_exp;
+    s2_root <= '0;
+    s2_remainder <= '0;
+    s2_radicand <= prep_radicand;
+    s2_is_special <= s1_is_special;
+    s2_special_result <= s1_special_result;
+    s2_special_invalid <= s1_special_invalid;
+    s2_rm <= s1_rm;
   end
 
   // =========================================================================
@@ -312,30 +289,19 @@ module fp_sqrt #(
 
     // Registered output
     always_ff @(posedge i_clk) begin
-      if (i_rst) begin
-        comp_root[g+1]            <= '0;
-        comp_remainder[g+1]       <= '0;
-        comp_radicand[g+1]        <= '0;
-        comp_result_exp[g+1]      <= '0;
-        comp_is_special[g+1]      <= 1'b0;
-        comp_special_result[g+1]  <= '0;
-        comp_special_invalid[g+1] <= 1'b0;
-        comp_rm[g+1]              <= 3'b0;
+      comp_radicand[g+1] <= {comp_radicand[g][RadicandBits-3:0], 2'b00};
+      if (rem_ge) begin
+        comp_remainder[g+1] <= rem_candidate - trial_divisor;
+        comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b1};
       end else begin
-        comp_radicand[g+1] <= {comp_radicand[g][RadicandBits-3:0], 2'b00};
-        if (rem_ge) begin
-          comp_remainder[g+1] <= rem_candidate - trial_divisor;
-          comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b1};
-        end else begin
-          comp_remainder[g+1] <= rem_candidate;
-          comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b0};
-        end
-        comp_result_exp[g+1]      <= comp_result_exp[g];
-        comp_is_special[g+1]      <= comp_is_special[g];
-        comp_special_result[g+1]  <= comp_special_result[g];
-        comp_special_invalid[g+1] <= comp_special_invalid[g];
-        comp_rm[g+1]              <= comp_rm[g];
+        comp_remainder[g+1] <= rem_candidate;
+        comp_root[g+1]      <= {comp_root[g][RootBits-2:0], 1'b0};
       end
+      comp_result_exp[g+1]      <= comp_result_exp[g];
+      comp_is_special[g+1]      <= comp_is_special[g];
+      comp_special_result[g+1]  <= comp_special_result[g];
+      comp_special_invalid[g+1] <= comp_special_invalid[g];
+      comp_rm[g+1]              <= comp_rm[g];
     end
   end
 
@@ -351,23 +317,13 @@ module fp_sqrt #(
   logic [2:0] s_pad_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_pad_root <= '0;
-      s_pad_remainder <= '0;
-      s_pad_result_exp <= '0;
-      s_pad_is_special <= 1'b0;
-      s_pad_special_result <= '0;
-      s_pad_special_invalid <= 1'b0;
-      s_pad_rm <= 3'b0;
-    end else begin
-      s_pad_root <= comp_root[RootBits];
-      s_pad_remainder <= comp_remainder[RootBits];
-      s_pad_result_exp <= comp_result_exp[RootBits];
-      s_pad_is_special <= comp_is_special[RootBits];
-      s_pad_special_result <= comp_special_result[RootBits];
-      s_pad_special_invalid <= comp_special_invalid[RootBits];
-      s_pad_rm <= comp_rm[RootBits];
-    end
+    s_pad_root <= comp_root[RootBits];
+    s_pad_remainder <= comp_remainder[RootBits];
+    s_pad_result_exp <= comp_result_exp[RootBits];
+    s_pad_is_special <= comp_is_special[RootBits];
+    s_pad_special_result <= comp_special_result[RootBits];
+    s_pad_special_invalid <= comp_special_invalid[RootBits];
+    s_pad_rm <= comp_rm[RootBits];
   end
 
   // =========================================================================
@@ -395,23 +351,13 @@ module fp_sqrt #(
   logic [2:0] s_norm_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_norm_root <= '0;
-      s_norm_remainder <= '0;
-      s_norm_result_exp <= '0;
-      s_norm_is_special <= 1'b0;
-      s_norm_special_result <= '0;
-      s_norm_special_invalid <= 1'b0;
-      s_norm_rm <= 3'b0;
-    end else begin
-      s_norm_root <= norm_root;
-      s_norm_remainder <= s_pad_remainder;
-      s_norm_result_exp <= norm_result_exp;
-      s_norm_is_special <= s_pad_is_special;
-      s_norm_special_result <= s_pad_special_result;
-      s_norm_special_invalid <= s_pad_special_invalid;
-      s_norm_rm <= s_pad_rm;
-    end
+    s_norm_root <= norm_root;
+    s_norm_remainder <= s_pad_remainder;
+    s_norm_result_exp <= norm_result_exp;
+    s_norm_is_special <= s_pad_is_special;
+    s_norm_special_result <= s_pad_special_result;
+    s_norm_special_invalid <= s_pad_special_invalid;
+    s_norm_rm <= s_pad_rm;
   end
 
   // =========================================================================
@@ -463,29 +409,16 @@ module fp_sqrt #(
   logic s_rsh_special_invalid;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rsh_exp <= '0;
-      s_rsh_mantissa <= '0;
-      s_rsh_guard <= 1'b0;
-      s_rsh_round <= 1'b0;
-      s_rsh_sticky <= 1'b0;
-      s_rsh_is_zero <= 1'b0;
-      s_rsh_rm <= 3'b0;
-      s_rsh_is_special <= 1'b0;
-      s_rsh_special_result <= '0;
-      s_rsh_special_invalid <= 1'b0;
-    end else begin
-      s_rsh_exp <= rsh_exp_out;
-      s_rsh_mantissa <= rsh_mantissa_out;
-      s_rsh_guard <= rsh_guard_out;
-      s_rsh_round <= rsh_round_out;
-      s_rsh_sticky <= rsh_sticky_out;
-      s_rsh_is_zero <= rsh_is_zero;
-      s_rsh_rm <= s_norm_rm;
-      s_rsh_is_special <= s_norm_is_special;
-      s_rsh_special_result <= s_norm_special_result;
-      s_rsh_special_invalid <= s_norm_special_invalid;
-    end
+    s_rsh_exp <= rsh_exp_out;
+    s_rsh_mantissa <= rsh_mantissa_out;
+    s_rsh_guard <= rsh_guard_out;
+    s_rsh_round <= rsh_round_out;
+    s_rsh_sticky <= rsh_sticky_out;
+    s_rsh_is_zero <= rsh_is_zero;
+    s_rsh_rm <= s_norm_rm;
+    s_rsh_is_special <= s_norm_is_special;
+    s_rsh_special_result <= s_norm_special_result;
+    s_rsh_special_invalid <= s_norm_special_invalid;
   end
 
   // =========================================================================
@@ -514,27 +447,15 @@ module fp_sqrt #(
   logic s_rprep_special_invalid;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rprep_exp <= '0;
-      s_rprep_mantissa <= '0;
-      s_rprep_round_up <= 1'b0;
-      s_rprep_is_inexact <= 1'b0;
-      s_rprep_is_zero <= 1'b0;
-      s_rprep_rm <= 3'b0;
-      s_rprep_is_special <= 1'b0;
-      s_rprep_special_result <= '0;
-      s_rprep_special_invalid <= 1'b0;
-    end else begin
-      s_rprep_exp <= s_rsh_exp;
-      s_rprep_mantissa <= s_rsh_mantissa;
-      s_rprep_round_up <= rprep_round_up;
-      s_rprep_is_inexact <= rprep_is_inexact;
-      s_rprep_is_zero <= s_rsh_is_zero;
-      s_rprep_rm <= s_rsh_rm;
-      s_rprep_is_special <= s_rsh_is_special;
-      s_rprep_special_result <= s_rsh_special_result;
-      s_rprep_special_invalid <= s_rsh_special_invalid;
-    end
+    s_rprep_exp <= s_rsh_exp;
+    s_rprep_mantissa <= s_rsh_mantissa;
+    s_rprep_round_up <= rprep_round_up;
+    s_rprep_is_inexact <= rprep_is_inexact;
+    s_rprep_is_zero <= s_rsh_is_zero;
+    s_rprep_rm <= s_rsh_rm;
+    s_rprep_is_special <= s_rsh_is_special;
+    s_rprep_special_result <= s_rsh_special_result;
+    s_rprep_special_invalid <= s_rsh_special_invalid;
   end
 
   // =========================================================================
@@ -571,13 +492,8 @@ module fp_sqrt #(
   riscv_pkg::fp_flags_t s_rapply_flags;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rapply_result <= '0;
-      s_rapply_flags  <= '0;
-    end else begin
-      s_rapply_result <= rapply_result;
-      s_rapply_flags  <= rapply_flags;
-    end
+    s_rapply_result <= rapply_result;
+    s_rapply_flags  <= rapply_flags;
   end
 
   // =========================================================================
@@ -587,13 +503,8 @@ module fp_sqrt #(
   riscv_pkg::fp_flags_t s_output_flags;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_output_result <= '0;
-      s_output_flags  <= '0;
-    end else begin
-      s_output_result <= s_rapply_result;
-      s_output_flags  <= s_rapply_flags;
-    end
+    s_output_result <= s_rapply_result;
+    s_output_flags  <= s_rapply_flags;
   end
 
   // =========================================================================

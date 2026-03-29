@@ -93,8 +93,7 @@ module fpu_convert_unit #(
 
   // Dest reg capture
   always_ff @(posedge i_clk) begin
-    if (i_rst) o_dest_reg <= 5'b0;
-    else if (i_valid && (i_use_convert_s || i_use_convert_d || i_use_convert_sd) && can_start)
+    if (i_valid && (i_use_convert_s || i_use_convert_d || i_use_convert_sd) && can_start)
       o_dest_reg <= i_dest_reg;
   end
 

@@ -192,10 +192,7 @@ module fp_add_shim (
   riscv_pkg::instr_op_e op_reg;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      tag_reg <= '0;
-      op_reg  <= riscv_pkg::instr_op_e'('0);
-    end else if (fire) begin
+    if (fire) begin
       tag_reg <= i_rs_issue.rob_tag;
       op_reg  <= i_rs_issue.op;
     end
@@ -365,10 +362,7 @@ module fp_add_shim (
   logic op_double_reg;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      unit_sel_reg  <= '0;
-      op_double_reg <= 1'b0;
-    end else if (fire) begin
+    if (fire) begin
       unit_sel_reg  <= {use_convert, use_sgnj, use_classify, use_compare, use_adder};
       op_double_reg <= op_is_double;
     end
@@ -379,10 +373,7 @@ module fp_add_shim (
   logic convert_is_fp_to_int_reg;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      compare_is_compare_reg   <= 1'b0;
-      convert_is_fp_to_int_reg <= 1'b0;
-    end else if (completing) begin
+    if (completing) begin
       compare_is_compare_reg   <= compare_is_compare;
       convert_is_fp_to_int_reg <= convert_is_fp_to_int;
     end

@@ -148,28 +148,13 @@ module fpu #(
   // Forward declaration (moved before first use to avoid Vivado warnings)
   logic            fpu_active;
 
+  // Control signals (valid_r, input_capture_pending) - with reset
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       valid_r <= 1'b0;
       input_capture_pending <= 1'b0;
-      operation_r <= riscv_pkg::instr_op_e'(0);
-      operand_a_r <= '0;
-      operand_b_r <= '0;
-      operand_c_r <= '0;
-      int_operand_r <= '0;
-      dest_reg_r <= '0;
-      rm_instr_r <= '0;
     end else begin
-      // Capture inputs when i_valid arrives and no operation is pending
-      // Must also check !fpu_active to prevent re-capture during multi-cycle ops
       if (i_valid && !input_capture_pending && !valid_r && !fpu_active) begin
-        operation_r <= i_operation;
-        operand_a_r <= i_operand_a;
-        operand_b_r <= i_operand_b;
-        operand_c_r <= i_operand_c;
-        int_operand_r <= i_int_operand;
-        dest_reg_r <= i_dest_reg;
-        rm_instr_r <= i_rm_instr;
         input_capture_pending <= 1'b1;
       end
       // One cycle after capture, assert valid_r to start the operation
@@ -179,6 +164,21 @@ module fpu #(
       end else begin
         valid_r <= 1'b0;
       end
+    end
+  end
+
+  // Data signals (operands, dest_reg, rounding mode, operation) - no reset
+  always_ff @(posedge i_clk) begin
+    // Capture inputs when i_valid arrives and no operation is pending
+    // Must also check !fpu_active to prevent re-capture during multi-cycle ops
+    if (i_valid && !input_capture_pending && !valid_r && !fpu_active) begin
+      operation_r <= i_operation;
+      operand_a_r <= i_operand_a;
+      operand_b_r <= i_operand_b;
+      operand_c_r <= i_operand_c;
+      int_operand_r <= i_int_operand;
+      dest_reg_r <= i_dest_reg;
+      rm_instr_r <= i_rm_instr;
     end
   end
 
@@ -710,21 +710,22 @@ module fpu #(
   logic [4:0] dest_reg_out;
   logic valid_reg;
 
+  // Control signal (valid_reg) - with reset
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      result_reg <= '0;
-      flags_reg <= '0;
-      result_to_int_reg <= 1'b0;
-      dest_reg_out <= 5'b0;
       valid_reg <= 1'b0;
     end else begin
       valid_reg <= any_valid_comb;
-      if (any_valid_comb) begin
-        result_reg <= result_comb;
-        flags_reg <= flags_comb;
-        result_to_int_reg <= result_to_int_comb;
-        dest_reg_out <= dest_reg_comb;
-      end
+    end
+  end
+
+  // Data signals (result, flags, dest_reg) - no reset
+  always_ff @(posedge i_clk) begin
+    if (any_valid_comb) begin
+      result_reg <= result_comb;
+      flags_reg <= flags_comb;
+      result_to_int_reg <= result_to_int_comb;
+      dest_reg_out <= dest_reg_comb;
     end
   end
 

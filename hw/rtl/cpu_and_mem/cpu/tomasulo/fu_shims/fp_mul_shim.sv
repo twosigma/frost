@@ -179,11 +179,7 @@ module fp_mul_shim (
   logic use_mult_reg, op_double_reg;
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      tag_reg       <= '0;
-      use_mult_reg  <= 1'b0;
-      op_double_reg <= 1'b0;
-    end else if (fire) begin
+    if (fire) begin
       tag_reg       <= i_rs_issue.rob_tag;
       use_mult_reg  <= use_mult;
       op_double_reg <= op_is_double;

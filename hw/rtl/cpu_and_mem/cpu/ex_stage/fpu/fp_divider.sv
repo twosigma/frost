@@ -92,11 +92,7 @@ module fp_divider #(
   logic [2:0] s0_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s0_operand_a <= '0;
-      s0_operand_b <= '0;
-      s0_rm <= 3'b0;
-    end else if (i_valid) begin
+    if (i_valid) begin
       s0_operand_a <= i_operand_a;
       s0_operand_b <= i_operand_b;
       s0_rm <= i_rounding_mode;
@@ -175,47 +171,25 @@ module fp_divider #(
   logic [2:0] s1_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s1_sign_a <= 1'b0;
-      s1_sign_b <= 1'b0;
-      s1_exp_a <= '0;
-      s1_exp_b <= '0;
-      s1_mant_lzc_a <= '0;
-      s1_mant_lzc_b <= '0;
-      s1_is_subnormal_a <= 1'b0;
-      s1_is_subnormal_b <= 1'b0;
-      s1_is_zero_a <= 1'b0;
-      s1_is_zero_b <= 1'b0;
-      s1_is_inf_a <= 1'b0;
-      s1_is_inf_b <= 1'b0;
-      s1_is_nan_a <= 1'b0;
-      s1_is_nan_b <= 1'b0;
-      s1_is_snan_a <= 1'b0;
-      s1_is_snan_b <= 1'b0;
-      s1_raw_mant_a <= '0;
-      s1_raw_mant_b <= '0;
-      s1_rm <= 3'b0;
-    end else begin
-      s1_sign_a <= sign_a;
-      s1_sign_b <= sign_b;
-      s1_exp_a <= exp_a;
-      s1_exp_b <= exp_b;
-      s1_mant_lzc_a <= mant_lzc_a;
-      s1_mant_lzc_b <= mant_lzc_b;
-      s1_is_subnormal_a <= is_subnormal_a;
-      s1_is_subnormal_b <= is_subnormal_b;
-      s1_is_zero_a <= is_zero_a;
-      s1_is_zero_b <= is_zero_b;
-      s1_is_inf_a <= is_inf_a;
-      s1_is_inf_b <= is_inf_b;
-      s1_is_nan_a <= is_nan_a;
-      s1_is_nan_b <= is_nan_b;
-      s1_is_snan_a <= is_snan_a;
-      s1_is_snan_b <= is_snan_b;
-      s1_raw_mant_a <= s0_operand_a[FracBits-1:0];
-      s1_raw_mant_b <= s0_operand_b[FracBits-1:0];
-      s1_rm <= s0_rm;
-    end
+    s1_sign_a <= sign_a;
+    s1_sign_b <= sign_b;
+    s1_exp_a <= exp_a;
+    s1_exp_b <= exp_b;
+    s1_mant_lzc_a <= mant_lzc_a;
+    s1_mant_lzc_b <= mant_lzc_b;
+    s1_is_subnormal_a <= is_subnormal_a;
+    s1_is_subnormal_b <= is_subnormal_b;
+    s1_is_zero_a <= is_zero_a;
+    s1_is_zero_b <= is_zero_b;
+    s1_is_inf_a <= is_inf_a;
+    s1_is_inf_b <= is_inf_b;
+    s1_is_nan_a <= is_nan_a;
+    s1_is_nan_b <= is_nan_b;
+    s1_is_snan_a <= is_snan_a;
+    s1_is_snan_b <= is_snan_b;
+    s1_raw_mant_a <= s0_operand_a[FracBits-1:0];
+    s1_raw_mant_b <= s0_operand_b[FracBits-1:0];
+    s1_rm <= s0_rm;
   end
 
   // =========================================================================
@@ -308,29 +282,16 @@ module fp_divider #(
   logic [2:0] s2_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s2_result_sign <= 1'b0;
-      s2_exp_a_adj <= '0;
-      s2_exp_b_adj <= '0;
-      s2_mant_a <= '0;
-      s2_mant_b <= '0;
-      s2_is_special <= 1'b0;
-      s2_special_result <= '0;
-      s2_special_invalid <= 1'b0;
-      s2_special_div_zero <= 1'b0;
-      s2_rm <= 3'b0;
-    end else begin
-      s2_result_sign <= s1_sign_a ^ s1_sign_b;
-      s2_exp_a_adj <= init_exp_a_adj;
-      s2_exp_b_adj <= init_exp_b_adj;
-      s2_mant_a <= init_mant_a;
-      s2_mant_b <= init_mant_b;
-      s2_is_special <= init_is_special;
-      s2_special_result <= init_special_result;
-      s2_special_invalid <= init_special_invalid;
-      s2_special_div_zero <= init_special_div_zero;
-      s2_rm <= s1_rm;
-    end
+    s2_result_sign <= s1_sign_a ^ s1_sign_b;
+    s2_exp_a_adj <= init_exp_a_adj;
+    s2_exp_b_adj <= init_exp_b_adj;
+    s2_mant_a <= init_mant_a;
+    s2_mant_b <= init_mant_b;
+    s2_is_special <= init_is_special;
+    s2_special_result <= init_special_result;
+    s2_special_invalid <= init_special_invalid;
+    s2_special_div_zero <= init_special_div_zero;
+    s2_rm <= s1_rm;
   end
 
   // =========================================================================
@@ -368,29 +329,16 @@ module fp_divider #(
   logic [2:0] s3_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s3_result_exp <= '0;
-      s3_quotient <= '0;
-      s3_remainder <= '0;
-      s3_divisor <= '0;
-      s3_result_sign <= 1'b0;
-      s3_is_special <= 1'b0;
-      s3_special_result <= '0;
-      s3_special_invalid <= 1'b0;
-      s3_special_div_zero <= 1'b0;
-      s3_rm <= 3'b0;
-    end else begin
-      s3_result_exp <= setup_result_exp;
-      s3_quotient <= setup_quotient;
-      s3_remainder <= setup_remainder;
-      s3_divisor <= setup_divisor;
-      s3_result_sign <= s2_result_sign;
-      s3_is_special <= s2_is_special;
-      s3_special_result <= s2_special_result;
-      s3_special_invalid <= s2_special_invalid;
-      s3_special_div_zero <= s2_special_div_zero;
-      s3_rm <= s2_rm;
-    end
+    s3_result_exp <= setup_result_exp;
+    s3_quotient <= setup_quotient;
+    s3_remainder <= setup_remainder;
+    s3_divisor <= setup_divisor;
+    s3_result_sign <= s2_result_sign;
+    s3_is_special <= s2_is_special;
+    s3_special_result <= s2_special_result;
+    s3_special_invalid <= s2_special_invalid;
+    s3_special_div_zero <= s2_special_div_zero;
+    s3_rm <= s2_rm;
   end
 
   // =========================================================================
@@ -437,34 +385,21 @@ module fp_divider #(
 
     // Registered output
     always_ff @(posedge i_clk) begin
-      if (i_rst) begin
-        div_quotient[g+1]         <= '0;
-        div_remainder[g+1]        <= '0;
-        div_divisor[g+1]          <= '0;
-        div_result_exp[g+1]       <= '0;
-        div_result_sign[g+1]      <= 1'b0;
-        div_is_special[g+1]       <= 1'b0;
-        div_special_result[g+1]   <= '0;
-        div_special_invalid[g+1]  <= 1'b0;
-        div_special_div_zero[g+1] <= 1'b0;
-        div_rm[g+1]               <= 3'b0;
+      if (diff_neg) begin
+        div_remainder[g+1] <= shifted_rem;
+        div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b0};
       end else begin
-        if (diff_neg) begin
-          div_remainder[g+1] <= shifted_rem;
-          div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b0};
-        end else begin
-          div_remainder[g+1] <= diff;
-          div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b1};
-        end
-        div_divisor[g+1]          <= div_divisor[g];
-        div_result_exp[g+1]       <= div_result_exp[g];
-        div_result_sign[g+1]      <= div_result_sign[g];
-        div_is_special[g+1]       <= div_is_special[g];
-        div_special_result[g+1]   <= div_special_result[g];
-        div_special_invalid[g+1]  <= div_special_invalid[g];
-        div_special_div_zero[g+1] <= div_special_div_zero[g];
-        div_rm[g+1]               <= div_rm[g];
+        div_remainder[g+1] <= diff;
+        div_quotient[g+1]  <= {div_quotient[g][DivBits-2:0], 1'b1};
       end
+      div_divisor[g+1]          <= div_divisor[g];
+      div_result_exp[g+1]       <= div_result_exp[g];
+      div_result_sign[g+1]      <= div_result_sign[g];
+      div_is_special[g+1]       <= div_is_special[g];
+      div_special_result[g+1]   <= div_special_result[g];
+      div_special_invalid[g+1]  <= div_special_invalid[g];
+      div_special_div_zero[g+1] <= div_special_div_zero[g];
+      div_rm[g+1]               <= div_rm[g];
     end
   end
 
@@ -496,31 +431,17 @@ module fp_divider #(
   logic [2:0] s_nprep_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_nprep_quotient <= '0;
-      s_nprep_remainder <= '0;
-      s_nprep_result_exp <= '0;
-      s_nprep_lzc <= '0;
-      s_nprep_is_zero <= 1'b0;
-      s_nprep_result_sign <= 1'b0;
-      s_nprep_is_special <= 1'b0;
-      s_nprep_special_result <= '0;
-      s_nprep_special_invalid <= 1'b0;
-      s_nprep_special_div_zero <= 1'b0;
-      s_nprep_rm <= 3'b0;
-    end else begin
-      s_nprep_quotient <= div_quotient[DivCycles];
-      s_nprep_remainder <= div_remainder[DivCycles];
-      s_nprep_result_exp <= div_result_exp[DivCycles];
-      s_nprep_lzc <= norm_prep_lzc;
-      s_nprep_is_zero <= norm_prep_is_zero;
-      s_nprep_result_sign <= div_result_sign[DivCycles];
-      s_nprep_is_special <= div_is_special[DivCycles];
-      s_nprep_special_result <= div_special_result[DivCycles];
-      s_nprep_special_invalid <= div_special_invalid[DivCycles];
-      s_nprep_special_div_zero <= div_special_div_zero[DivCycles];
-      s_nprep_rm <= div_rm[DivCycles];
-    end
+    s_nprep_quotient <= div_quotient[DivCycles];
+    s_nprep_remainder <= div_remainder[DivCycles];
+    s_nprep_result_exp <= div_result_exp[DivCycles];
+    s_nprep_lzc <= norm_prep_lzc;
+    s_nprep_is_zero <= norm_prep_is_zero;
+    s_nprep_result_sign <= div_result_sign[DivCycles];
+    s_nprep_is_special <= div_is_special[DivCycles];
+    s_nprep_special_result <= div_special_result[DivCycles];
+    s_nprep_special_invalid <= div_special_invalid[DivCycles];
+    s_nprep_special_div_zero <= div_special_div_zero[DivCycles];
+    s_nprep_rm <= div_rm[DivCycles];
   end
 
   // =========================================================================
@@ -551,27 +472,15 @@ module fp_divider #(
   logic [2:0] s_norm_rm;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_norm_quotient <= '0;
-      s_norm_remainder <= '0;
-      s_norm_result_exp <= '0;
-      s_norm_result_sign <= 1'b0;
-      s_norm_is_special <= 1'b0;
-      s_norm_special_result <= '0;
-      s_norm_special_invalid <= 1'b0;
-      s_norm_special_div_zero <= 1'b0;
-      s_norm_rm <= 3'b0;
-    end else begin
-      s_norm_quotient <= norm_quotient;
-      s_norm_remainder <= s_nprep_remainder;
-      s_norm_result_exp <= norm_result_exp;
-      s_norm_result_sign <= s_nprep_result_sign;
-      s_norm_is_special <= s_nprep_is_special;
-      s_norm_special_result <= s_nprep_special_result;
-      s_norm_special_invalid <= s_nprep_special_invalid;
-      s_norm_special_div_zero <= s_nprep_special_div_zero;
-      s_norm_rm <= s_nprep_rm;
-    end
+    s_norm_quotient <= norm_quotient;
+    s_norm_remainder <= s_nprep_remainder;
+    s_norm_result_exp <= norm_result_exp;
+    s_norm_result_sign <= s_nprep_result_sign;
+    s_norm_is_special <= s_nprep_is_special;
+    s_norm_special_result <= s_nprep_special_result;
+    s_norm_special_invalid <= s_nprep_special_invalid;
+    s_norm_special_div_zero <= s_nprep_special_div_zero;
+    s_norm_rm <= s_nprep_rm;
   end
 
   // =========================================================================
@@ -627,33 +536,18 @@ module fp_divider #(
   logic s_rsh_special_div_zero;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rsh_exp <= '0;
-      s_rsh_mantissa <= '0;
-      s_rsh_guard <= 1'b0;
-      s_rsh_round <= 1'b0;
-      s_rsh_sticky <= 1'b0;
-      s_rsh_is_zero <= 1'b0;
-      s_rsh_rm <= 3'b0;
-      s_rsh_result_sign <= 1'b0;
-      s_rsh_is_special <= 1'b0;
-      s_rsh_special_result <= '0;
-      s_rsh_special_invalid <= 1'b0;
-      s_rsh_special_div_zero <= 1'b0;
-    end else begin
-      s_rsh_exp <= rsh_exp_out;
-      s_rsh_mantissa <= rsh_mantissa_out;
-      s_rsh_guard <= rsh_guard_out;
-      s_rsh_round <= rsh_round_out;
-      s_rsh_sticky <= rsh_sticky_out;
-      s_rsh_is_zero <= rsh_is_zero;
-      s_rsh_rm <= s_norm_rm;
-      s_rsh_result_sign <= s_norm_result_sign;
-      s_rsh_is_special <= s_norm_is_special;
-      s_rsh_special_result <= s_norm_special_result;
-      s_rsh_special_invalid <= s_norm_special_invalid;
-      s_rsh_special_div_zero <= s_norm_special_div_zero;
-    end
+    s_rsh_exp <= rsh_exp_out;
+    s_rsh_mantissa <= rsh_mantissa_out;
+    s_rsh_guard <= rsh_guard_out;
+    s_rsh_round <= rsh_round_out;
+    s_rsh_sticky <= rsh_sticky_out;
+    s_rsh_is_zero <= rsh_is_zero;
+    s_rsh_rm <= s_norm_rm;
+    s_rsh_result_sign <= s_norm_result_sign;
+    s_rsh_is_special <= s_norm_is_special;
+    s_rsh_special_result <= s_norm_special_result;
+    s_rsh_special_invalid <= s_norm_special_invalid;
+    s_rsh_special_div_zero <= s_norm_special_div_zero;
   end
 
   // =========================================================================
@@ -683,31 +577,17 @@ module fp_divider #(
   logic s_rprep_special_div_zero;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rprep_result_sign <= 1'b0;
-      s_rprep_exp <= '0;
-      s_rprep_mantissa <= '0;
-      s_rprep_round_up <= 1'b0;
-      s_rprep_is_inexact <= 1'b0;
-      s_rprep_is_zero <= 1'b0;
-      s_rprep_rm <= 3'b0;
-      s_rprep_is_special <= 1'b0;
-      s_rprep_special_result <= '0;
-      s_rprep_special_invalid <= 1'b0;
-      s_rprep_special_div_zero <= 1'b0;
-    end else begin
-      s_rprep_result_sign <= s_rsh_result_sign;
-      s_rprep_exp <= s_rsh_exp;
-      s_rprep_mantissa <= s_rsh_mantissa;
-      s_rprep_round_up <= rprep_round_up;
-      s_rprep_is_inexact <= rprep_is_inexact;
-      s_rprep_is_zero <= s_rsh_is_zero;
-      s_rprep_rm <= s_rsh_rm;
-      s_rprep_is_special <= s_rsh_is_special;
-      s_rprep_special_result <= s_rsh_special_result;
-      s_rprep_special_invalid <= s_rsh_special_invalid;
-      s_rprep_special_div_zero <= s_rsh_special_div_zero;
-    end
+    s_rprep_result_sign <= s_rsh_result_sign;
+    s_rprep_exp <= s_rsh_exp;
+    s_rprep_mantissa <= s_rsh_mantissa;
+    s_rprep_round_up <= rprep_round_up;
+    s_rprep_is_inexact <= rprep_is_inexact;
+    s_rprep_is_zero <= s_rsh_is_zero;
+    s_rprep_rm <= s_rsh_rm;
+    s_rprep_is_special <= s_rsh_is_special;
+    s_rprep_special_result <= s_rsh_special_result;
+    s_rprep_special_invalid <= s_rsh_special_invalid;
+    s_rprep_special_div_zero <= s_rsh_special_div_zero;
   end
 
   // =========================================================================
@@ -744,13 +624,8 @@ module fp_divider #(
   riscv_pkg::fp_flags_t s_rapply_flags;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_rapply_result <= '0;
-      s_rapply_flags  <= '0;
-    end else begin
-      s_rapply_result <= rapply_result;
-      s_rapply_flags  <= rapply_flags;
-    end
+    s_rapply_result <= rapply_result;
+    s_rapply_flags  <= rapply_flags;
   end
 
   // =========================================================================
@@ -760,13 +635,8 @@ module fp_divider #(
   riscv_pkg::fp_flags_t s_output_flags;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      s_output_result <= '0;
-      s_output_flags  <= '0;
-    end else begin
-      s_output_result <= s_rapply_result;
-      s_output_flags  <= s_rapply_flags;
-    end
+    s_output_result <= s_rapply_result;
+    s_output_flags  <= s_rapply_flags;
   end
 
   // =========================================================================

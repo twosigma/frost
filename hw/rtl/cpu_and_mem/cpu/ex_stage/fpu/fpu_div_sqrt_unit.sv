@@ -101,7 +101,6 @@ module fpu_div_sqrt_unit #(
   // Dest reg capture with valid tracking (sequential ops need valid flag for hazard)
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_dest_reg <= 5'b0;
       o_dest_reg_valid <= 1'b0;
     end else begin
       if (o_divider_valid || o_sqrt_valid) begin

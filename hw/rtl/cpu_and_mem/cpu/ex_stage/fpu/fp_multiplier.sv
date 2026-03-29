@@ -422,172 +422,114 @@ module fp_multiplier #(
   // State Machine and Sequential Logic
   // =========================================================================
 
+  // Control: state register with reset
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      state <= IDLE;
-      operand_a_reg <= '0;
-      operand_b_reg <= '0;
-      rounding_mode_reg <= 3'b0;
-      // Stage 2 registers
-      result_sign_s2 <= 1'b0;
-      tentative_exp_s2 <= '0;
-      mant_a_s2 <= '0;
-      mant_b_s2 <= '0;
-      is_special_s2 <= 1'b0;
-      special_result_s2 <= '0;
-      special_invalid_s2 <= 1'b0;
-      rm_s2 <= 3'b0;
-      // Stage 3 registers (before LZC)
-      result_sign_s3 <= 1'b0;
-      tentative_exp_s3 <= '0;
-      product_s3 <= '0;
-      is_special_s3 <= 1'b0;
-      special_result_s3 <= '0;
-      special_invalid_s3 <= 1'b0;
-      rm_s3 <= 3'b0;
-      // Stage 3B registers (after LZC, before shift)
-      result_sign_s3b <= 1'b0;
-      tentative_exp_s3b <= '0;
-      product_s3b <= '0;
-      product_is_zero_s3b <= 1'b0;
-      product_msb_set_s3b <= 1'b0;
-      lzc_s3b <= '0;
-      is_special_s3b <= 1'b0;
-      special_result_s3b <= '0;
-      special_invalid_s3b <= 1'b0;
-      rm_s3b <= 3'b0;
-      // Stage 4 registers
-      result_sign_s4 <= 1'b0;
-      exp_s4 <= '0;
-      product_s4 <= '0;
-      product_is_zero_s4 <= 1'b0;
-      is_special_s4 <= 1'b0;
-      special_result_s4 <= '0;
-      special_invalid_s4 <= 1'b0;
-      rm_s4 <= 3'b0;
-      // Stage 4B registers (after subnormal handling)
-      mantissa_work_s4b <= '0;
-      guard_work_s4b <= 1'b0;
-      round_work_s4b <= 1'b0;
-      sticky_work_s4b <= 1'b0;
-      exp_work_s4b <= '0;
-      // Stage 5 registers (after round-up decision)
-      result_sign_s5 <= 1'b0;
-      exp_work_s5 <= '0;
-      mantissa_work_s5 <= '0;
-      round_up_s5 <= 1'b0;
-      is_inexact_s5 <= 1'b0;
-      product_is_zero_s5 <= 1'b0;
-      rm_s5 <= 3'b0;
-      is_special_s5 <= 1'b0;
-      special_result_s5 <= '0;
-      special_invalid_s5 <= 1'b0;
-      // Stage 6 registers (final output)
-      result_s6 <= '0;
-      flags_s6 <= '0;
-    end else begin
-      state <= next_state;
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            // Capture operands at start of operation
-            operand_a_reg <= i_operand_a;
-            operand_b_reg <= i_operand_b;
-            rounding_mode_reg <= i_rounding_mode;
-          end
-        end
+    if (i_rst) state <= IDLE;
+    else state <= next_state;
+  end
 
-        STAGE1: begin
-          // Capture stage 1 results into stage 2 registers
-          result_sign_s2 <= result_sign;
-          tentative_exp_s2 <= tentative_exp;
-          mant_a_s2 <= mant_a;
-          mant_b_s2 <= mant_b;
-          is_special_s2 <= is_special;
-          special_result_s2 <= special_result;
-          special_invalid_s2 <= special_invalid;
-          rm_s2 <= rounding_mode_reg;
+  // Data: pipeline registers (no reset needed)
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE: begin
+        if (i_valid) begin
+          // Capture operands at start of operation
+          operand_a_reg <= i_operand_a;
+          operand_b_reg <= i_operand_b;
+          rounding_mode_reg <= i_rounding_mode;
         end
+      end
 
-        STAGE2: begin
-          // Multiply pipeline runs continuously; no action needed here.
+      STAGE1: begin
+        // Capture stage 1 results into stage 2 registers
+        result_sign_s2 <= result_sign;
+        tentative_exp_s2 <= tentative_exp;
+        mant_a_s2 <= mant_a;
+        mant_b_s2 <= mant_b;
+        is_special_s2 <= is_special;
+        special_result_s2 <= special_result;
+        special_invalid_s2 <= special_invalid;
+        rm_s2 <= rounding_mode_reg;
+      end
+
+      STAGE2: begin
+        // Multiply pipeline runs continuously; no action needed here.
+      end
+
+      STAGE2B: begin
+        // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
+        if (product_s2_tiled_valid) begin
+          result_sign_s3 <= result_sign_s2;
+          tentative_exp_s3 <= tentative_exp_s2;
+          product_s3 <= product_s2_tiled;
+          is_special_s3 <= is_special_s2;
+          special_result_s3 <= special_result_s2;
+          special_invalid_s3 <= special_invalid_s2;
+          rm_s3 <= rm_s2;
         end
+      end
 
-        STAGE2B: begin
-          // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
-          if (product_s2_tiled_valid) begin
-            result_sign_s3 <= result_sign_s2;
-            tentative_exp_s3 <= tentative_exp_s2;
-            product_s3 <= product_s2_tiled;
-            is_special_s3 <= is_special_s2;
-            special_result_s3 <= special_result_s2;
-            special_invalid_s3 <= special_invalid_s2;
-            rm_s3 <= rm_s2;
-          end
-        end
+      STAGE3A: begin
+        // Capture LZC results into stage 3B registers
+        result_sign_s3b <= result_sign_s3;
+        tentative_exp_s3b <= tentative_exp_s3;
+        product_s3b <= product_s3;
+        product_is_zero_s3b <= product_is_zero_s3;
+        product_msb_set_s3b <= product_msb_set_s3;
+        lzc_s3b <= lzc_s3;
+        is_special_s3b <= is_special_s3;
+        special_result_s3b <= special_result_s3;
+        special_invalid_s3b <= special_invalid_s3;
+        rm_s3b <= rm_s3;
+      end
 
-        STAGE3A: begin
-          // Capture LZC results into stage 3B registers
-          result_sign_s3b <= result_sign_s3;
-          tentative_exp_s3b <= tentative_exp_s3;
-          product_s3b <= product_s3;
-          product_is_zero_s3b <= product_is_zero_s3;
-          product_msb_set_s3b <= product_msb_set_s3;
-          lzc_s3b <= lzc_s3;
-          is_special_s3b <= is_special_s3;
-          special_result_s3b <= special_result_s3;
-          special_invalid_s3b <= special_invalid_s3;
-          rm_s3b <= rm_s3;
-        end
+      STAGE3B: begin
+        // Capture stage 3B results into stage 4 registers
+        result_sign_s4 <= result_sign_s3b;
+        exp_s4 <= normalized_exp_s3b;
+        product_s4 <= normalized_product_s3b;
+        product_is_zero_s4 <= product_is_zero_s3b;
+        is_special_s4 <= is_special_s3b;
+        special_result_s4 <= special_result_s3b;
+        special_invalid_s4 <= special_invalid_s3b;
+        rm_s4 <= rm_s3b;
+      end
 
-        STAGE3B: begin
-          // Capture stage 3B results into stage 4 registers
-          result_sign_s4 <= result_sign_s3b;
-          exp_s4 <= normalized_exp_s3b;
-          product_s4 <= normalized_product_s3b;
-          product_is_zero_s4 <= product_is_zero_s3b;
-          is_special_s4 <= is_special_s3b;
-          special_result_s4 <= special_result_s3b;
-          special_invalid_s4 <= special_invalid_s3b;
-          rm_s4 <= rm_s3b;
-        end
+      STAGE4A: begin
+        // Capture subnormal handling outputs into stage 4B registers
+        mantissa_work_s4b <= mantissa_work_s4;
+        guard_work_s4b <= guard_work_s4;
+        round_work_s4b <= round_work_s4;
+        sticky_work_s4b <= sticky_work_s4;
+        exp_work_s4b <= exp_work_s4;
+      end
 
-        STAGE4A: begin
-          // Capture subnormal handling outputs into stage 4B registers
-          mantissa_work_s4b <= mantissa_work_s4;
-          guard_work_s4b <= guard_work_s4;
-          round_work_s4b <= round_work_s4;
-          sticky_work_s4b <= sticky_work_s4;
-          exp_work_s4b <= exp_work_s4;
-        end
+      STAGE4B: begin
+        // Capture round-up decision into s5 registers
+        result_sign_s5 <= result_sign_s4;
+        exp_work_s5 <= exp_work_s4b;
+        mantissa_work_s5 <= mantissa_work_s4b;
+        round_up_s5 <= round_up_s4b_comb;
+        is_inexact_s5 <= is_inexact_s4b;
+        product_is_zero_s5 <= product_is_zero_s4;
+        rm_s5 <= rm_s4;
+        is_special_s5 <= is_special_s4;
+        special_result_s5 <= special_result_s4;
+        special_invalid_s5 <= special_invalid_s4;
+      end
 
-        STAGE4B: begin
-          // Capture round-up decision into s5 registers
-          result_sign_s5 <= result_sign_s4;
-          exp_work_s5 <= exp_work_s4b;
-          mantissa_work_s5 <= mantissa_work_s4b;
-          round_up_s5 <= round_up_s4b_comb;
-          is_inexact_s5 <= is_inexact_s4b;
-          product_is_zero_s5 <= product_is_zero_s4;
-          rm_s5 <= rm_s4;
-          is_special_s5 <= is_special_s4;
-          special_result_s5 <= special_result_s4;
-          special_invalid_s5 <= special_invalid_s4;
-        end
+      STAGE5: begin
+        // Capture final result into s6 registers
+        result_s6 <= final_result_s5_comb;
+        flags_s6  <= final_flags_s5_comb;
+      end
 
-        STAGE5: begin
-          // Capture final result into s6 registers
-          result_s6 <= final_result_s5_comb;
-          flags_s6  <= final_flags_s5_comb;
-        end
+      STAGE6: begin
+        // Output already captured in s6
+      end
 
-        STAGE6: begin
-          // Output already captured in s6
-        end
-
-        default: ;
-      endcase
-    end
+      default: ;
+    endcase
   end
 
   // Next state logic

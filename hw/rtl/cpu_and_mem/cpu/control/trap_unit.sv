@@ -166,9 +166,6 @@ module trap_unit #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       exception_pending <= 1'b0;
-      exception_cause_q <= '0;
-      exception_tval_q  <= '0;
-      exception_pc_q    <= '0;
     end else if (o_trap_taken) begin
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin

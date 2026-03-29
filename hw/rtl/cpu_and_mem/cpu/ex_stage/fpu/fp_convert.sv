@@ -542,144 +542,90 @@ module fp_convert #(
   riscv_pkg::fp_flags_t flags_out;
 
   // =========================================================================
-  // State Machine and Sequential Logic
+  // State Machine Control
   // =========================================================================
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      state <= IDLE;
-      fp_operand_reg <= '0;
-      int_operand_reg <= '0;
-      operation_reg <= riscv_pkg::instr_op_e'(0);
-      rm_reg <= 3'b0;
-      // Stage 2 registers
-      fp_sign_s2 <= 1'b0;
-      fp_exp_s2 <= '0;
-      fp_mantissa_s2 <= '0;
-      fp_is_zero_s2 <= 1'b0;
-      fp_is_inf_s2 <= 1'b0;
-      fp_is_nan_s2 <= 1'b0;
-      unbiased_exp_s2 <= '0;
-      abs_int_s2 <= '0;
-      int_sign_s2 <= 1'b0;
-      int_is_zero_s2 <= 1'b0;
-      int_lzc_s2 <= '0;
-      operation_s2 <= riscv_pkg::instr_op_e'(0);
-      rm_s2 <= 3'b0;
-      // Stage 3 registers
-      fp_to_int_shifted_value_s3 <= '0;
-      fp_to_int_round_bit_s3 <= 1'b0;
-      fp_to_int_sticky_bit_s3 <= 1'b0;
-      fp_to_int_inexact_pre_s3 <= 1'b0;
-      fp_to_int_force_valid_s3 <= 1'b0;
-      fp_to_int_force_result_s3 <= '0;
-      fp_to_int_force_invalid_s3 <= 1'b0;
-      fp_to_int_force_inexact_s3 <= 1'b0;
-      fp_to_int_sign_s3 <= 1'b0;
-      fp_to_int_is_unsigned_s3 <= 1'b0;
-      rm_s3 <= 3'b0;
-      operation_s3 <= riscv_pkg::instr_op_e'(0);
-      int_to_fp_result_s3 <= '0;
-      int_to_fp_inexact_s3 <= 1'b0;
-      move_fp_result_s3 <= '0;
-      move_int_result_s3 <= '0;
-      // Stage 4 registers
-      fp_to_int_rounded_value_s4 <= '0;
-      fp_to_int_do_round_up_s4 <= 1'b0;
-      fp_to_int_shifted_value_s4 <= '0;
-      fp_to_int_inexact_pre_s4 <= 1'b0;
-      fp_to_int_force_valid_s4 <= 1'b0;
-      fp_to_int_force_result_s4 <= '0;
-      fp_to_int_force_invalid_s4 <= 1'b0;
-      fp_to_int_force_inexact_s4 <= 1'b0;
-      fp_to_int_sign_s4 <= 1'b0;
-      fp_to_int_is_unsigned_s4 <= 1'b0;
-      operation_s4 <= riscv_pkg::instr_op_e'(0);
-      int_to_fp_result_s4 <= '0;
-      int_to_fp_inexact_s4 <= 1'b0;
-      move_fp_result_s4 <= '0;
-      move_int_result_s4 <= '0;
-      // Output registers
-      fp_result_out <= '0;
-      int_result_out <= '0;
-      is_fp_to_int_out <= 1'b0;
-      flags_out <= '0;
-    end else begin
-      state <= next_state;
+    if (i_rst) state <= IDLE;
+    else state <= next_state;
+  end
 
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            fp_operand_reg <= i_fp_operand;
-            int_operand_reg <= i_int_operand;
-            operation_reg <= i_operation;
-            rm_reg <= i_rounding_mode;
-          end
+  // =========================================================================
+  // Data Pipeline Registers
+  // =========================================================================
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE: begin
+        if (i_valid) begin
+          fp_operand_reg <= i_fp_operand;
+          int_operand_reg <= i_int_operand;
+          operation_reg <= i_operation;
+          rm_reg <= i_rounding_mode;
         end
+      end
 
-        STAGE1: begin
-          // Capture stage 1 results
-          fp_sign_s2 <= fp_sign;
-          fp_exp_s2 <= fp_exp;
-          fp_mantissa_s2 <= fp_mantissa;
-          fp_is_zero_s2 <= fp_is_zero;
-          fp_is_inf_s2 <= fp_is_inf;
-          fp_is_nan_s2 <= fp_is_nan;
-          unbiased_exp_s2 <= unbiased_exp;
-          abs_int_s2 <= abs_int;
-          int_sign_s2 <= int_sign;
-          int_is_zero_s2 <= (abs_int == '0);
-          int_lzc_s2 <= int_lzc;
-          operation_s2 <= operation_reg;
-          rm_s2 <= rm_reg;
-        end
+      STAGE1: begin
+        // Capture stage 1 results
+        fp_sign_s2 <= fp_sign;
+        fp_exp_s2 <= fp_exp;
+        fp_mantissa_s2 <= fp_mantissa;
+        fp_is_zero_s2 <= fp_is_zero;
+        fp_is_inf_s2 <= fp_is_inf;
+        fp_is_nan_s2 <= fp_is_nan;
+        unbiased_exp_s2 <= unbiased_exp;
+        abs_int_s2 <= abs_int;
+        int_sign_s2 <= int_sign;
+        int_is_zero_s2 <= (abs_int == '0);
+        int_lzc_s2 <= int_lzc;
+        operation_s2 <= operation_reg;
+        rm_s2 <= rm_reg;
+      end
 
-        STAGE2: begin
-          fp_to_int_shifted_value_s3 <= fp_to_int_shifted_value_s2_comb;
-          fp_to_int_round_bit_s3 <= fp_to_int_round_bit_s2_comb;
-          fp_to_int_sticky_bit_s3 <= fp_to_int_sticky_bit_s2_comb;
-          fp_to_int_inexact_pre_s3 <= fp_to_int_inexact_pre_s2_comb;
-          fp_to_int_force_valid_s3 <= fp_to_int_force_valid_s2_comb;
-          fp_to_int_force_result_s3 <= fp_to_int_force_result_s2_comb;
-          fp_to_int_force_invalid_s3 <= fp_to_int_force_invalid_s2_comb;
-          fp_to_int_force_inexact_s3 <= fp_to_int_force_inexact_s2_comb;
-          fp_to_int_sign_s3 <= fp_sign_s2;
-          fp_to_int_is_unsigned_s3 <= is_unsigned_conv;
-          rm_s3 <= rm_s2;
-          operation_s3 <= operation_s2;
-          int_to_fp_result_s3 <= int_to_fp_result;
-          int_to_fp_inexact_s3 <= int_to_fp_inexact;
-          move_fp_result_s3 <= move_fp_result_s2_comb;
-          move_int_result_s3 <= move_int_result_s2_comb;
-        end
+      STAGE2: begin
+        fp_to_int_shifted_value_s3 <= fp_to_int_shifted_value_s2_comb;
+        fp_to_int_round_bit_s3 <= fp_to_int_round_bit_s2_comb;
+        fp_to_int_sticky_bit_s3 <= fp_to_int_sticky_bit_s2_comb;
+        fp_to_int_inexact_pre_s3 <= fp_to_int_inexact_pre_s2_comb;
+        fp_to_int_force_valid_s3 <= fp_to_int_force_valid_s2_comb;
+        fp_to_int_force_result_s3 <= fp_to_int_force_result_s2_comb;
+        fp_to_int_force_invalid_s3 <= fp_to_int_force_invalid_s2_comb;
+        fp_to_int_force_inexact_s3 <= fp_to_int_force_inexact_s2_comb;
+        fp_to_int_sign_s3 <= fp_sign_s2;
+        fp_to_int_is_unsigned_s3 <= is_unsigned_conv;
+        rm_s3 <= rm_s2;
+        operation_s3 <= operation_s2;
+        int_to_fp_result_s3 <= int_to_fp_result;
+        int_to_fp_inexact_s3 <= int_to_fp_inexact;
+        move_fp_result_s3 <= move_fp_result_s2_comb;
+        move_int_result_s3 <= move_int_result_s2_comb;
+      end
 
-        STAGE3: begin
-          fp_to_int_rounded_value_s4 <= fp_to_int_rounded_value_s3_comb;
-          fp_to_int_do_round_up_s4 <= fp_to_int_do_round_up_s3_comb;
-          fp_to_int_shifted_value_s4 <= fp_to_int_shifted_value_s3;
-          fp_to_int_inexact_pre_s4 <= fp_to_int_inexact_pre_s3;
-          fp_to_int_force_valid_s4 <= fp_to_int_force_valid_s3;
-          fp_to_int_force_result_s4 <= fp_to_int_force_result_s3;
-          fp_to_int_force_invalid_s4 <= fp_to_int_force_invalid_s3;
-          fp_to_int_force_inexact_s4 <= fp_to_int_force_inexact_s3;
-          fp_to_int_sign_s4 <= fp_to_int_sign_s3;
-          fp_to_int_is_unsigned_s4 <= fp_to_int_is_unsigned_s3;
-          operation_s4 <= operation_s3;
-          int_to_fp_result_s4 <= int_to_fp_result_s3;
-          int_to_fp_inexact_s4 <= int_to_fp_inexact_s3;
-          move_fp_result_s4 <= move_fp_result_s3;
-          move_int_result_s4 <= move_int_result_s3;
-        end
+      STAGE3: begin
+        fp_to_int_rounded_value_s4 <= fp_to_int_rounded_value_s3_comb;
+        fp_to_int_do_round_up_s4 <= fp_to_int_do_round_up_s3_comb;
+        fp_to_int_shifted_value_s4 <= fp_to_int_shifted_value_s3;
+        fp_to_int_inexact_pre_s4 <= fp_to_int_inexact_pre_s3;
+        fp_to_int_force_valid_s4 <= fp_to_int_force_valid_s3;
+        fp_to_int_force_result_s4 <= fp_to_int_force_result_s3;
+        fp_to_int_force_invalid_s4 <= fp_to_int_force_invalid_s3;
+        fp_to_int_force_inexact_s4 <= fp_to_int_force_inexact_s3;
+        fp_to_int_sign_s4 <= fp_to_int_sign_s3;
+        fp_to_int_is_unsigned_s4 <= fp_to_int_is_unsigned_s3;
+        operation_s4 <= operation_s3;
+        int_to_fp_result_s4 <= int_to_fp_result_s3;
+        int_to_fp_inexact_s4 <= int_to_fp_inexact_s3;
+        move_fp_result_s4 <= move_fp_result_s3;
+        move_int_result_s4 <= move_int_result_s3;
+      end
 
-        STAGE4: begin
-          fp_result_out <= final_fp_result_s4_comb;
-          int_result_out <= final_int_result_s4_comb;
-          is_fp_to_int_out <= final_is_fp_to_int_s4_comb;
-          flags_out <= final_flags_s4_comb;
-        end
+      STAGE4: begin
+        fp_result_out <= final_fp_result_s4_comb;
+        int_result_out <= final_int_result_s4_comb;
+        is_fp_to_int_out <= final_is_fp_to_int_s4_comb;
+        flags_out <= final_flags_s4_comb;
+      end
 
-        default: ;
-      endcase
-    end
+      default: ;
+    endcase
   end
 
   // Next state logic

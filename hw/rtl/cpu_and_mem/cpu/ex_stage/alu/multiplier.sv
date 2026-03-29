@@ -76,8 +76,7 @@ module multiplier (
 
   // Capture final sign once per operation (only one in-flight multiply is allowed).
   always_ff @(posedge i_clk) begin
-    if (i_rst) result_is_negative_reg <= 1'b0;
-    else if (i_valid_input) result_is_negative_reg <= i_operand_a[32] ^ i_operand_b[32];
+    if (i_valid_input) result_is_negative_reg <= i_operand_a[32] ^ i_operand_b[32];
   end
 
   // 33x33 tiled unsigned multiply using cascade-friendly {27x35} tiles.
@@ -99,7 +98,6 @@ module multiplier (
   // Final sign correction stage (kept registered to balance timing).
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      product_signed_reg <= '0;
       product_signed_valid_reg <= 1'b0;
     end else begin
       product_signed_valid_reg <= product_magnitude_valid;
