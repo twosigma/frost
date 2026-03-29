@@ -666,8 +666,12 @@ module tomasulo_wrapper (
     end else if (i_flush_all) begin
       sc_pending <= 1'b0;
     end else begin
-      // Set when MEM_RS issues SC
-      if (o_mem_rs_issue.valid && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
+      // Set when MEM_RS issues SC.  Gate with flush signals because
+      // the RS output valid is no longer suppressed during flush for
+      // timing closure — a phantom SC set during partial flush would
+      // leave sc_pending stuck (the flushed tag never reaches head).
+      if (o_mem_rs_issue.valid && !speculative_flush_all && !speculative_flush_en
+          && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
         sc_pending         <= 1'b1;
         sc_pending_rob_tag <= o_mem_rs_issue.rob_tag;
         sc_pending_addr    <= sq_effective_addr;

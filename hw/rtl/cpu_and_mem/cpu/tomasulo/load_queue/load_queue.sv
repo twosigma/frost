@@ -1143,10 +1143,14 @@ module load_queue #(
     if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
   end
 
-  // No address update during flush
-  always_comb begin
-    if (i_flush_all || i_flush_en) assume (!i_addr_update.valid);
-  end
+  // Address updates MAY arrive during flush (RS stage2 issues without
+  // same-cycle flush gating for timing closure).  This is safe:
+  //   - flush_all: the else-if branch resets all state; addr_update code
+  //     in the else branch is unreachable.
+  //   - flush_en: CAM matches only entries with lq_valid[i]==1; entries
+  //     whose valid is being cleared on the same edge get a harmless
+  //     address write into a dead slot.
+  // (assumption removed — was: no addr_update during flush)
 
   // No allocation when full
   always_comb begin
