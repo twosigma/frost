@@ -758,11 +758,14 @@ module store_queue #(
     if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
   end
 
-  // No address/data update during flush
-  always_comb begin
-    if (i_flush_all || i_flush_en) assume (!i_addr_update.valid);
-    if (i_flush_all || i_flush_en) assume (!i_data_update.valid);
-  end
+  // Address/data updates MAY arrive during flush (RS stage2 issues without
+  // same-cycle flush gating for timing closure).  This is safe:
+  //   - flush_all: the else-if branch resets all state; update code in the
+  //     else branch is unreachable.
+  //   - flush_en: CAM matches only entries with sq_valid[i]==1; entries
+  //     whose valid is being cleared on the same edge get a harmless
+  //     write into a dead slot.
+  // (assumption removed — was: no addr/data update during flush)
 
   // No allocation when full
   always_comb begin

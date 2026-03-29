@@ -383,15 +383,28 @@ module reservation_station #(
   assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
 
   // --- SC issue peek: reports whether stage2 holds a Store Conditional ---
-  // Now reads from the registered stage2 pipeline register, breaking the
-  // combinational path through the LUTRAM that existed before.
-  assign o_next_issue_is_sc = stage2_valid && !stage2_should_flush &&
-                              (stage2_op == riscv_pkg::SC_W);
+  // Reads from registered stage2 fields only — no combinational flush
+  // dependency so it cannot re-introduce a timing path from the flush
+  // signal through the MEM_RS i_fu_ready qualification.
+  assign o_next_issue_is_sc = stage2_valid && (stage2_op == riscv_pkg::SC_W);
 
   // --- Issue port assignment (driven from stage2 pipeline register) ---
   // Data fields are driven unconditionally from stage2 FFs.
-  // Only valid is gated — downstream consumers gate all logic on valid.
-  assign o_issue.valid = stage2_accept;
+  // Valid depends only on registered stage2_valid and the FU ready signal
+  // (itself derived from registered adapter/shim state).  The same-cycle
+  // flush is intentionally NOT checked here: removing stage2_should_flush
+  // from the output breaks the critical timing path
+  //   trap_taken → flush → stage2_should_flush → o_issue.valid → downstream
+  // which was the longest combinational chain in the design (-1.28 ns WNS).
+  // A "phantom issue" can escape during a flush cycle, but it is harmless:
+  //   - Full flush (flush_all): LQ/SQ reset all state, ignoring the update.
+  //   - Partial flush (flush_en): LQ/SQ CAM-match on rob_tag; the flushed
+  //     entry's valid bit is cleared on the same edge, so the address update
+  //     writes into a dead entry that is never observed.
+  //   - CDB results for flushed tags are discarded by the ROB/RS flush logic.
+  // The internal stage2_accept signal still checks stage2_should_flush so
+  // that the stage2 pipeline register is correctly cleared on the next edge.
+  assign o_issue.valid = stage2_valid && i_fu_ready;
   assign o_issue.rob_tag = stage2_rob_tag;
   assign o_issue.op = stage2_op;
   assign o_issue.src1_value = stage2_src1_value;
