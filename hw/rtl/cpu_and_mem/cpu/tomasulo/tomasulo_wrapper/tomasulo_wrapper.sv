@@ -313,11 +313,30 @@ module tomasulo_wrapper (
 );
 
   // ===========================================================================
-  // Internal commit bus: ROB -> RAT
+  // Internal commit bus: ROB -> RAT / SQ / SC
   // ===========================================================================
+  // commit_bus is the combinational output from the ROB.  It is exposed
+  // directly to cpu_ooo.sv (via o_commit) so that misprediction detection
+  // remains zero-cycle latency.
+  //
+  // commit_bus_q is a one-cycle pipeline register that breaks the critical
+  // timing path from ROB head_ready/commit_en through SQ/RAT to LQ.
+  // All internal consumers (RAT, SQ commit, SC logic) use the registered
+  // version.  The valid bit is cleared on full flush for safety — although
+  // overlapping pipelined commits with flush_all only occurs for non-store
+  // instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
+  riscv_pkg::reorder_buffer_commit_t commit_bus_q;
 
-  // Expose commit bus to testbench
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      commit_bus_q <= '0;
+    end else begin
+      commit_bus_q <= commit_bus;
+    end
+  end
+
+  // Expose combinational commit bus to cpu_ooo for misprediction detection
   assign o_commit = commit_bus;
 
   // ROB entry valid/done vectors: ROB -> RAT/dispatch
@@ -577,8 +596,9 @@ module tomasulo_wrapper (
   logic sq_committed_empty;
 
   // SC clear reservation: on any SC commit (success or failure clears reservation)
+  // Uses pipelined commit bus to break ROB → LQ/SQ critical path.
   logic sc_clear_reservation;
-  assign sc_clear_reservation = commit_bus.valid && commit_bus.is_sc;
+  assign sc_clear_reservation = commit_bus_q.valid && commit_bus_q.is_sc;
 
   // Reservation snoop invalidation: SQ write to reservation address
   logic reservation_snoop_invalidate;
@@ -587,8 +607,9 @@ module tomasulo_wrapper (
       (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:2] == lq_reservation_addr[riscv_pkg::XLEN-1:2]);
 
   // SC discard: failed SC invalidates its SQ entry
+  // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sc_discard;
-  assign sc_discard = commit_bus.valid && commit_bus.is_sc && commit_bus.value[0];
+  assign sc_discard = commit_bus_q.valid && commit_bus_q.is_sc && commit_bus_q.value[0];
 
   // ===========================================================================
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
@@ -847,8 +868,8 @@ module tomasulo_wrapper (
       .i_alloc_dest_reg(i_rat_alloc_dest_reg),
       .i_alloc_rob_tag (i_rat_alloc_rob_tag),
 
-      // Commit (from internal bus)
-      .i_commit(commit_bus),
+      // Commit (pipelined — breaks ROB → RAT critical path)
+      .i_commit(commit_bus_q),
 
       // Checkpoint save
       .i_checkpoint_save      (i_checkpoint_save),
@@ -1432,9 +1453,11 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Store Queue: Commit from ROB
   // ===========================================================================
+  // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus.valid &&
-                           (commit_bus.is_store || commit_bus.is_fp_store || commit_bus.is_sc) &&
+  assign sq_commit_valid = commit_bus_q.valid &&
+                           (commit_bus_q.is_store || commit_bus_q.is_fp_store ||
+                            commit_bus_q.is_sc) &&
                            !sc_discard;
 
   // ===========================================================================
@@ -1454,9 +1477,9 @@ module tomasulo_wrapper (
       // Data update (from MEM_RS issue)
       .i_data_update(sq_data_update),
 
-      // Commit (from ROB commit bus)
+      // Commit (pipelined — breaks ROB → SQ critical path)
       .i_commit_valid  (sq_commit_valid),
-      .i_commit_rob_tag(commit_bus.tag),
+      .i_commit_rob_tag(commit_bus_q.tag),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid_q),
@@ -1477,9 +1500,9 @@ module tomasulo_wrapper (
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
       .o_cache_invalidate_addr (sq_cache_invalidate_addr),
 
-      // SC discard (failed SC invalidates SQ entry)
+      // SC discard (pipelined — uses commit_bus_q)
       .i_sc_discard        (sc_discard),
-      .i_sc_discard_rob_tag(commit_bus.tag),
+      .i_sc_discard_rob_tag(commit_bus_q.tag),
 
       // ROB head tag
       .i_rob_head_tag(head_tag),
@@ -1742,21 +1765,23 @@ module tomasulo_wrapper (
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // INT commit clears RAT entry when tag matches
+      // INT commit clears RAT entry when tag matches.
+      // RAT receives commit_bus_q (1-cycle pipelined), so check $past of
+      // the registered version rather than the combinational commit_bus.
       if ($past(
-              commit_bus.valid
+              commit_bus_q.valid
           ) && $past(
-              commit_bus.dest_valid
+              commit_bus_q.dest_valid
           ) && !$past(
-              commit_bus.dest_rf
+              commit_bus_q.dest_rf
           ) && $past(
-              commit_bus.dest_reg
+              commit_bus_q.dest_reg
           ) == f_int_track && $past(
               o_int_src1.renamed
           ) && $past(
               o_int_src1.tag
           ) == $past(
-              commit_bus.tag
+              commit_bus_q.tag
           ) && !$past(
               i_flush_all
           ) && !$past(
@@ -1773,19 +1798,19 @@ module tomasulo_wrapper (
 
       // INT WAW: commit does NOT clear when tag mismatches (newer rename)
       if ($past(
-              commit_bus.valid
+              commit_bus_q.valid
           ) && $past(
-              commit_bus.dest_valid
+              commit_bus_q.dest_valid
           ) && !$past(
-              commit_bus.dest_rf
+              commit_bus_q.dest_rf
           ) && $past(
-              commit_bus.dest_reg
+              commit_bus_q.dest_reg
           ) == f_int_track && $past(
               o_int_src1.renamed
           ) && $past(
               o_int_src1.tag
           ) != $past(
-              commit_bus.tag
+              commit_bus_q.tag
           ) && !$past(
               i_flush_all
           ) && !$past(
@@ -1802,19 +1827,19 @@ module tomasulo_wrapper (
 
       // FP commit clears RAT entry when tag matches
       if ($past(
-              commit_bus.valid
+              commit_bus_q.valid
           ) && $past(
-              commit_bus.dest_valid
+              commit_bus_q.dest_valid
           ) && $past(
-              commit_bus.dest_rf
+              commit_bus_q.dest_rf
           ) && $past(
-              commit_bus.dest_reg
+              commit_bus_q.dest_reg
           ) == f_fp_track && $past(
               o_fp_src1.renamed
           ) && $past(
               o_fp_src1.tag
           ) == $past(
-              commit_bus.tag
+              commit_bus_q.tag
           ) && !$past(
               i_flush_all
           ) && !$past(
@@ -1837,6 +1862,8 @@ module tomasulo_wrapper (
   // -------------------------------------------------------------------------
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+      // RAT receives commit_bus_q, so same-cycle precedence is rename
+      // vs pipelined commit.
       if ($past(
               i_rat_alloc_valid
           ) && !$past(
@@ -1844,13 +1871,13 @@ module tomasulo_wrapper (
           ) && $past(
               i_rat_alloc_dest_reg
           ) == f_int_track && $past(
-              commit_bus.valid
+              commit_bus_q.valid
           ) && $past(
-              commit_bus.dest_valid
+              commit_bus_q.dest_valid
           ) && !$past(
-              commit_bus.dest_rf
+              commit_bus_q.dest_rf
           ) && $past(
-              commit_bus.dest_reg
+              commit_bus_q.dest_reg
           ) == f_int_track && !$past(
               i_flush_all
           ) && !$past(
