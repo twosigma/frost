@@ -270,6 +270,38 @@ module if_stage #(
                                    ras_saved_input_available_sc);
   assign prediction_used_from_buffer = prediction_used && use_instr_buffer;
 
+  // ===========================================================================
+  // RAS Input Pipeline Register (Timing Optimization)
+  // ===========================================================================
+  // Register instruction/validity before the branch_prediction_controller to
+  // break the critical path:
+  //   mispredict_recovery → flush → control_flow → buffer_select →
+  //   ras_instruction → RAS call/return detect → prediction_used → PC
+  // This was -1.027ns WNS with 16 LUT levels.  Registering here cuts ~10
+  // levels from the chain.
+  //
+  // Cost: RAS push/pop fires 1 cycle after the instruction appears.  Return
+  // predictions are 1 cycle stale.  This is a minor IPC cost; the pending
+  // prediction mechanism already handles deferred redirects.  RAS is purely
+  // speculative — mispredictions are caught at commit.
+  logic [    31:0] ras_instruction_q;
+  logic [    15:0] ras_raw_parcel_q;
+  logic            ras_is_compressed_q;
+  logic            ras_instruction_valid_q;
+  logic [XLEN-1:0] link_address_sc_q;
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      ras_instruction_valid_q <= 1'b0;
+    end else begin
+      ras_instruction_q       <= ras_instruction;
+      ras_raw_parcel_q        <= ras_raw_parcel;
+      ras_is_compressed_q     <= ras_is_compressed;
+      ras_instruction_valid_q <= ras_instruction_valid;
+      link_address_sc_q       <= link_address_sc;
+    end
+  end
+
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
@@ -304,27 +336,14 @@ module if_stage #(
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
       .i_btb_update_requires_pc_reg_handoff(i_from_ex_comb.btb_update_requires_pc_reg_handoff),
 
-      // RAS inputs (instruction for call/return detection)
-      // CRITICAL: Use saved instruction data during stall_registered. After multi-cycle
-      // stalls (load-use hazard), BRAM has advanced past the instruction we're processing.
-      // The saved values contain the correct instruction from when stall started.
-      .i_instruction(ras_instruction),
-      .i_raw_parcel(ras_raw_parcel),
-      .i_is_compressed(ras_is_compressed),
-      // Instruction validity for RAS detection depends on which predictor fired:
-      //   - BTB predicts based on PC (fetch address) BEFORE instruction arrives.
-      //     During btb_only_prediction_holdoff, the instruction is VALID (it's the branch).
-      //     RAS should be allowed to push if this instruction is a call.
-      //   - RAS predicts based on instruction content AFTER instruction arrives.
-      //     During prediction_holdoff (but NOT btb_only), the instruction is STALE.
-      //     RAS detection should be blocked to prevent spurious pushes.
-      // IMPORTANT: When using saved values (after stall), the holdoffs are stale and
-      // shouldn't affect validity. The saved instruction was valid when captured.
-      .i_instruction_valid(ras_instruction_valid),
-      // IMPORTANT: Use saved link_address when using saved instruction data. When coming
-      // out of stall, the saved instruction triggers RAS push/pop but link_address is
-      // now for the NEW instruction. Using the wrong link_address corrupts RAS.
-      .i_link_address(link_address_sc),
+      // RAS inputs (pipelined — breaks flush → RAS → prediction_used path)
+      // Registered versions of the instruction/validity signals.  See
+      // "RAS Input Pipeline Register" block above for rationale.
+      .i_instruction(ras_instruction_q),
+      .i_raw_parcel(ras_raw_parcel_q),
+      .i_is_compressed(ras_is_compressed_q),
+      .i_instruction_valid(ras_instruction_valid_q),
+      .i_link_address(link_address_sc_q),
 
       // RAS misprediction recovery (from EX stage)
       .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
