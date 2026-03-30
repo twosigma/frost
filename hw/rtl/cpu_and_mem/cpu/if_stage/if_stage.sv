@@ -84,6 +84,7 @@ module if_stage #(
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     input logic [31:0] i_instr,
+    input logic [1:0] i_instr_sideband,  // Predecode: {is_compressed_hi, is_compressed_lo}
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
     input logic i_frontend_state_flush,
@@ -158,6 +159,7 @@ module if_stage #(
   logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
+  logic [1:0] instr_buffer_sideband;  // Predecode sideband for instruction buffer
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -470,6 +472,7 @@ module if_stage #(
       .i_is_compressed(is_compressed),
       .i_is_32bit_spanning(is_32bit_spanning),
       .i_sel_nop(sel_nop),
+      .i_instr_sideband(i_instr_sideband),
 
       .o_spanning_wait_for_fetch(spanning_wait_for_fetch),
       .o_spanning_in_progress(spanning_in_progress),
@@ -485,7 +488,8 @@ module if_stage #(
       .o_use_buffer_after_spanning(use_buffer_after_spanning),
       .o_use_buffer_after_prediction(use_buffer_after_prediction),
       .o_is_compressed_saved(is_compressed_saved),
-      .o_saved_values_valid(saved_values_valid)
+      .o_saved_values_valid(saved_values_valid),
+      .o_instr_buffer_sideband(instr_buffer_sideband)
   );
 
   // ===========================================================================
@@ -510,7 +514,9 @@ module if_stage #(
       .XLEN(XLEN)
   ) instruction_aligner_inst (
       .i_instr(instr_for_aligner),
+      .i_instr_sideband(i_instr_sideband),
       .i_instr_buffer(instr_buffer),
+      .i_instr_buffer_sideband(instr_buffer_sideband),
       .i_pc_reg(pc_reg),
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),

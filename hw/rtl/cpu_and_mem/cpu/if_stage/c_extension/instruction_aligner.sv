@@ -36,9 +36,11 @@ module instruction_aligner #(
     parameter int unsigned XLEN = 32
 ) (
     // Instruction sources
-    input logic [31:0] i_instr,         // Raw instruction from memory
-    input logic [31:0] i_instr_buffer,  // Buffered instruction word
-    input logic [31:0] i_pc_reg,        // Registered PC
+    input logic [31:0] i_instr,                  // Raw instruction from memory
+    input logic [ 1:0] i_instr_sideband,         // Predecode: {is_compressed_hi, is_compressed_lo}
+    input logic [31:0] i_instr_buffer,           // Buffered instruction word
+    input logic [ 1:0] i_instr_buffer_sideband,  // Predecode sideband for buffered word
+    input logic [31:0] i_pc_reg,                 // Registered PC
 
     // C-extension state
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
@@ -129,21 +131,21 @@ module instruction_aligner #(
   assign o_raw_parcel = current_parcel;
 
   // ===========================================================================
-  // is_compressed Detection - Timing Optimized
+  // is_compressed Detection - Predecode Sideband
   // ===========================================================================
-  // TIMING OPTIMIZATION: Compute is_compressed for each parcel source in parallel,
-  // then mux the 1-bit result. This is faster than muxing 16 bits then checking 2,
-  // because:
-  //   - The 2-bit comparisons are very fast (just NAND of bits 0 and 1)
-  //   - Muxing 1 bit has less routing congestion than muxing 16 bits
-  //   - All 4 checks happen in parallel, then one 4:1 mux for the result
+  // TIMING OPTIMIZATION: Use predecode sideband bits from IMEM BRAM instead of
+  // computing is_compressed from instruction data bits.  The sideband bits are
+  // pre-computed at IMEM write time and arrive from the BRAM output register at
+  // the same Tco as instruction data — but they ARE the is_compressed answer,
+  // eliminating the combinational LUT that would otherwise check bits[1:0].
   //
-  // Instruction type: bits [1:0] == 2'b11 means 32-bit, otherwise compressed.
+  // For buffered instructions, the sideband was captured when the buffer was
+  // written (registered, so available early — not on the BRAM critical path).
   logic is_comp_instr_lo, is_comp_instr_hi, is_comp_buf_lo, is_comp_buf_hi;
-  assign is_comp_instr_lo = (i_instr[1:0] != 2'b11);
-  assign is_comp_instr_hi = (i_instr[17:16] != 2'b11);
-  assign is_comp_buf_lo   = (i_instr_buffer[1:0] != 2'b11);
-  assign is_comp_buf_hi   = (i_instr_buffer[17:16] != 2'b11);
+  assign is_comp_instr_lo = i_instr_sideband[0];
+  assign is_comp_instr_hi = i_instr_sideband[1];
+  assign is_comp_buf_lo   = i_instr_buffer_sideband[0];
+  assign is_comp_buf_hi   = i_instr_buffer_sideband[1];
 
   // 4:1 mux for the 1-bit is_compressed result
   always_comb begin

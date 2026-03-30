@@ -10,5 +10,8 @@ $(ROOT)/hw/rtl/lib/stall_capture_reg.sv
 # RISC-V OOO CPU core (Tomasulo out-of-order with all submodules)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 
+# Instruction memory with predecode sideband
+$(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
+
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv

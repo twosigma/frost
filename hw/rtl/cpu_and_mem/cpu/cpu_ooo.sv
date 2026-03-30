@@ -44,6 +44,7 @@ module cpu_ooo #(
     // Instruction memory interface
     output logic [XLEN-1:0] o_pc,
     input logic [31:0] i_instr,
+    input logic [1:0] i_instr_sideband,  // Predecode: {is_compressed_hi, is_compressed_lo}
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -356,6 +357,7 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
+      .i_instr_sideband,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
