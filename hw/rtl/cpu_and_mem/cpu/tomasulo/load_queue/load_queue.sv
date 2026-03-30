@@ -1143,6 +1143,12 @@ module load_queue #(
       lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
       lq_amo_op[alloc_target[IdxWidth-1:0]]     <= i_alloc.amo_op;
     end
+    // FLD phase advance: set phase 1 after phase 0 memory response
+    if (accept_mem_response && lq_is_fp[issued_idx] &&
+        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        !lq_fp64_phase[issued_idx]) begin
+      lq_fp64_phase[issued_idx] <= 1'b1;
+    end
   end
 
   // -----------------------------------------------------------------
@@ -1157,17 +1163,6 @@ module load_queue #(
           lq_amo_rs2[i] <= i_addr_update.amo_rs2;
         end
       end
-    end
-  end
-
-  // -----------------------------------------------------------------
-  // Per-entry data: FLD phase advance
-  // -----------------------------------------------------------------
-  always_ff @(posedge i_clk) begin
-    if (accept_mem_response && lq_is_fp[issued_idx] &&
-        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
-        !lq_fp64_phase[issued_idx]) begin
-      lq_fp64_phase[issued_idx] <= 1'b1;
     end
   end
 
