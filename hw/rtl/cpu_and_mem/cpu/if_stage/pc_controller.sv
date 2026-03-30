@@ -91,7 +91,7 @@ module pc_controller #(
     // C-extension state
     input logic i_spanning_wait_for_fetch,
     input logic i_spanning_in_progress,
-    input logic i_is_32bit_spanning,
+    input logic i_spanning_eligible,  // Registered-only spanning condition (no BRAM dep)
     input logic i_spanning_to_halfword,
     input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,  // Combinational (for spanning detection, etc.)
@@ -180,7 +180,7 @@ module pc_controller #(
       // C-extension state signals
       .i_spanning_wait_for_fetch,
       .i_spanning_in_progress,
-      .i_is_32bit_spanning,
+      .i_spanning_eligible,
       .i_spanning_to_halfword,
       .i_spanning_to_halfword_registered,
       .i_is_compressed,
