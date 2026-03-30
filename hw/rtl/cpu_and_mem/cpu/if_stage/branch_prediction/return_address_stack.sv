@@ -162,7 +162,7 @@ module return_address_stack #(
   assign ras_write_enable = !i_rst &&
                             (do_restore_push ||
                              (!i_misprediction &&
-                              ((do_pop_then_push && !i_stall) || do_push)));
+                              ((do_pop_then_push && !i_stall_registered) || do_push)));
   assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
                              (do_pop_then_push ? tos : tos_plus_one);
   assign ras_write_data = do_restore_push ? i_push_address_after_restore : i_link_address;
@@ -240,7 +240,7 @@ module return_address_stack #(
         valid_count <= i_restore_valid_count;
       end
     end else begin
-      if (do_pop_then_push && !i_stall) begin
+      if (do_pop_then_push && !i_stall_registered) begin
         // Coroutine: pop then push - TOS stays same position
         // valid_count unchanged (pop + push = net zero change)
       end else if (do_push) begin
@@ -250,7 +250,7 @@ module return_address_stack #(
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
           valid_count <= valid_count + (RAS_PTR_BITS + 1)'(1);
         end
-      end else if (do_pop && !i_stall) begin
+      end else if (do_pop && !i_stall_registered) begin
         // Pop: decrement TOS and valid_count
         tos <= tos_minus_one;
         valid_count <= valid_count - (RAS_PTR_BITS + 1)'(1);
