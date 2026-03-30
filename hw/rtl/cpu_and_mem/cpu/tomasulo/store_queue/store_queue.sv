@@ -557,19 +557,38 @@ module store_queue #(
   assign alloc_target = tail_ptr + PtrWidth'({1'b0, sq_first_free_offset});
 
   // ===========================================================================
-  // Head Advancement (combinational scan to the next live entry)
+  // Head Advancement (tree-based find-first-valid from head)
   // ===========================================================================
-  // Advance head to the oldest still-live entry. Scan the full ring rather
-  // than using tail_ptr as a hard boundary; partial flush can leave holes that
-  // alloc_target will recycle later.
+  // TIMING: Replaced O(DEPTH) serial scan with rotate → tree-priority-encode →
+  // add-back (O(log2(DEPTH)) logic levels).  The serial scan created a 16-level
+  // chain from sq_valid through the popcount-based empty check and cascaded
+  // pointer increments; this tree form cuts it to ~4-5 levels.
 
+  logic [DEPTH-1:0] sq_head_valid_rotated;
+  logic [IdxWidth-1:0] sq_head_first_valid_offset;
+  logic sq_head_first_valid_found;
+
+  // Barrel-rotate valid mask so head_ptr maps to index 0
   always_comb begin
-    head_advance_target = head_ptr;
-    for (int unsigned s = 0; s < DEPTH; s++) begin
-      if (!empty && !sq_valid[head_advance_target[IdxWidth-1:0]])
-        head_advance_target = head_advance_target + PtrWidth'(1);
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      sq_head_valid_rotated[i] = sq_valid[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
     end
   end
+
+  // Tree priority encoder: find lowest-index set bit (first valid entry)
+  always_comb begin
+    sq_head_first_valid_offset = '0;
+    sq_head_first_valid_found  = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (sq_head_valid_rotated[i] && !sq_head_first_valid_found) begin
+        sq_head_first_valid_offset = IdxWidth'(i);
+        sq_head_first_valid_found  = 1'b1;
+      end
+    end
+  end
+
+  // Add offset back to head_ptr (when empty: offset=0, head stays put)
+  assign head_advance_target = head_ptr + PtrWidth'({1'b0, sq_head_first_valid_offset});
 
   // ===========================================================================
   // Sequential Logic

@@ -367,13 +367,18 @@ module load_queue #(
   assign o_count = count;
 
   // ===========================================================================
-  // Issue Selection (combinational priority scan, head to tail)
+  // Issue Selection (parallel qualification + tree priority encoders)
   // ===========================================================================
+  // TIMING: Restructured from a single serial loop (16 logic levels due to
+  // inter-iteration dependencies through issue_mem_found/block_younger_mem) into
+  // parallel per-entry qualification masks followed by tree-based find-first-one
+  // encoders (~7-8 logic levels).
   //
   // Phase A: Oldest entry with data_valid (ready for CDB broadcast).
   //          FLD: both phases must be complete (data_valid=1).
   // Phase B: Oldest entry with addr_valid && !issued && !data_valid,
   //          ready for SQ disambiguation and potential memory issue.
+  //          MMIO/LR require ROB head; AMO also needs SQ committed-empty.
 
   // Pre-computed circular scan indices (head-relative order)
   logic [IdxWidth-1:0] scan_idx[DEPTH];
@@ -382,41 +387,86 @@ module load_queue #(
     scan_idx[j] = IdxWidth'(({{(32 - IdxWidth) {1'b0}}, head_idx} + j) % DEPTH);
   end
 
+  // Phase A: per-entry CDB readiness (parallel, no inter-entry dependency)
+  logic [DEPTH-1:0] cdb_ready_mask;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      cdb_ready_mask[i] = lq_valid[scan_idx[i]] && lq_data_valid[scan_idx[i]];
+    end
+  end
+
+  // Phase A: tree priority encoder — find oldest CDB-ready entry
   always_comb begin
     issue_cdb_found = 1'b0;
-    issue_cdb_idx = '0;
-    issue_mem_found = 1'b0;
-    issue_mem_idx = '0;
-    block_younger_mem = 1'b0;
-
+    issue_cdb_idx   = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      // Walk from head toward tail in circular order
-      if (lq_valid[scan_idx[i]]) begin
-        // Phase A: CDB broadcast candidate
-        if (!issue_cdb_found && lq_data_valid[scan_idx[i]]) begin
-          issue_cdb_found = 1'b1;
-          issue_cdb_idx   = scan_idx[i];
-        end
-        // Phase B: Memory issue candidate
-        // LR/AMO require ROB head (like MMIO); AMO also needs SQ committed-empty
-        if (!issue_mem_found && !block_younger_mem && lq_addr_valid[scan_idx[i]]
-            && !lq_issued[scan_idx[i]]
-            && !lq_data_valid[scan_idx[i]]
-            && (!lq_is_lr[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag))
-            && (!lq_is_amo[scan_idx[i]]
-                || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag && i_sq_committed_empty))
-        ) begin
-          issue_mem_found = 1'b1;
-          issue_mem_idx   = scan_idx[i];
-        end
+      if (cdb_ready_mask[i] && !issue_cdb_found) begin
+        issue_cdb_found = 1'b1;
+        issue_cdb_idx   = scan_idx[i];
+      end
+    end
+  end
 
-        // A pending older AMO must block younger memory ops until its write
-        // phase completes and the slot becomes data-valid. Otherwise a younger
-        // reload can observe the pre-AMO value even though the AMO itself is
-        // already underway.
-        if (!issue_mem_found && lq_is_amo[scan_idx[i]] && !lq_data_valid[scan_idx[i]]) begin
-          block_younger_mem = 1'b1;
-        end
+  // Phase B: per-entry memory issue eligibility (parallel).
+  // Includes MMIO check (MMIO loads only eligible at ROB head) so
+  // sq_check_capture/replace no longer need an indexed MMIO lookup.
+  logic [DEPTH-1:0] mem_eligible_mask;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      mem_eligible_mask[i] =
+          lq_valid[scan_idx[i]] &&
+          lq_addr_valid[scan_idx[i]] &&
+          !lq_issued[scan_idx[i]] &&
+          !lq_data_valid[scan_idx[i]] &&
+          (!lq_is_mmio[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
+          (!lq_is_lr[scan_idx[i]]   || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
+          (!lq_is_amo[scan_idx[i]]  ||
+           (lq_rob_tag[scan_idx[i]] == i_rob_head_tag && i_sq_committed_empty));
+    end
+  end
+
+  // AMO blocking: identify scan positions with pending (unresolved) AMOs.
+  // A pending older AMO must block younger memory ops until its write
+  // phase completes and the slot becomes data-valid.
+  logic [DEPTH-1:0] pending_amo_at;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      pending_amo_at[i] = lq_valid[scan_idx[i]] &&
+                          lq_is_amo[scan_idx[i]] &&
+                          !lq_data_valid[scan_idx[i]];
+    end
+  end
+
+  // Prefix-OR: compute "has older pending AMO" for each scan position
+  logic [DEPTH-1:0] blocked_by_amo;
+  /* verilator lint_off ALWCOMBORDER */
+  always_comb begin
+    blocked_by_amo[0] = 1'b0;
+    for (int unsigned i = 1; i < DEPTH; i++) begin
+      blocked_by_amo[i] = blocked_by_amo[i-1] | pending_amo_at[i-1];
+    end
+  end
+  /* verilator lint_on ALWCOMBORDER */
+
+  // Final Phase B mask: eligible AND not blocked by older AMO
+  logic [DEPTH-1:0] mem_issue_mask;
+  assign mem_issue_mask = mem_eligible_mask & ~blocked_by_amo;
+
+  // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
+  // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
+  logic [ReorderBufferTagWidth-1:0] issue_mem_rob_tag;
+
+  // Phase B: tree priority encoder — find oldest eligible entry
+  always_comb begin
+    issue_mem_found   = 1'b0;
+    issue_mem_idx     = '0;
+    issue_mem_rob_tag = '0;
+    block_younger_mem = 1'b0;  // kept for interface compat; unused in restructured scan
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (mem_issue_mask[i] && !issue_mem_found) begin
+        issue_mem_found   = 1'b1;
+        issue_mem_idx     = scan_idx[i];
+        issue_mem_rob_tag = lq_rob_tag[scan_idx[i]];
       end
     end
   end
@@ -436,17 +486,19 @@ module load_queue #(
        || (lq_rob_tag[sq_check_idx] == i_rob_head_tag && i_sq_committed_empty)) &&
       (!lq_is_mmio[sq_check_idx] || (lq_rob_tag[sq_check_idx] == i_rob_head_tag));
 
+  // TIMING: MMIO check folded into mem_eligible_mask (Phase B scan) so these
+  // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
+  // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
+  // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   assign sq_check_capture = !sq_check_pending && !mem_issue_pending && issue_mem_found &&
       !mem_outstanding &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
-      (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag));
+      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
   assign sq_check_replace = sq_check_pending && !mem_issue_pending && issue_mem_found &&
       !mem_outstanding &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
-      (!lq_is_mmio[issue_mem_idx] || (lq_rob_tag[issue_mem_idx] == i_rob_head_tag)) &&
       (!sq_check_entry_valid || is_younger(
-      lq_rob_tag[sq_check_idx], lq_rob_tag[issue_mem_idx], i_rob_head_tag
+      lq_rob_tag[sq_check_idx], issue_mem_rob_tag, i_rob_head_tag
   ));
 
   always_comb begin
@@ -837,19 +889,38 @@ module load_queue #(
   assign alloc_target = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
 
   // ===========================================================================
-  // Head Advancement (combinational scan to the next valid entry)
+  // Head Advancement (tree-based find-first-valid from head)
   // ===========================================================================
-  // Advance head to the oldest still-valid entry. Scan the full ring rather
-  // than treating tail_ptr as a hard boundary; partial flush can leave holes
-  // behind the oldest live entry, and alloc_target reuses them later.
+  // TIMING: Replaced O(DEPTH) serial scan with rotate → tree-priority-encode →
+  // add-back (O(log2(DEPTH)) logic levels).  The serial scan created a 16-level
+  // chain from lq_valid through the popcount-based empty check and cascaded
+  // pointer increments; this tree form cuts it to ~4-5 levels.
 
+  logic [DEPTH-1:0] lq_head_valid_rotated;
+  logic [IdxWidth-1:0] lq_head_first_valid_offset;
+  logic lq_head_first_valid_found;
+
+  // Barrel-rotate valid mask so head_ptr maps to index 0
   always_comb begin
-    head_advance_target = head_ptr;
-    for (int unsigned s = 0; s < DEPTH; s++) begin
-      if (!empty && !lq_valid[head_advance_target[IdxWidth-1:0]])
-        head_advance_target = head_advance_target + PtrWidth'(1);
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      lq_head_valid_rotated[i] = lq_valid[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
     end
   end
+
+  // Tree priority encoder: find lowest-index set bit (first valid entry)
+  always_comb begin
+    lq_head_first_valid_offset = '0;
+    lq_head_first_valid_found  = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_head_valid_rotated[i] && !lq_head_first_valid_found) begin
+        lq_head_first_valid_offset = IdxWidth'(i);
+        lq_head_first_valid_found  = 1'b1;
+      end
+    end
+  end
+
+  // Add offset back to head_ptr (when empty: offset=0, head stays put)
+  assign head_advance_target = head_ptr + PtrWidth'({1'b0, lq_head_first_valid_offset});
 
   // ===========================================================================
   // Sequential Logic
