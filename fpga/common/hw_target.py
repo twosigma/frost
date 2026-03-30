@@ -21,7 +21,6 @@ from pathlib import Path
 # Map board names to vendor info: (filter_pattern, display_name)
 # Note: X3 uses "/Xilinx/" pattern to avoid matching "xilinx_tcf" which appears in all targets
 BOARD_VENDOR_INFO = {
-    "nexys_a7": ("Digilent", "Digilent"),
     "genesys2": ("Digilent", "Digilent"),
     "x3": ("/Xilinx/", "Xilinx"),
 }
@@ -140,7 +139,7 @@ def select_target(
         remote_host: Optional remote hardware server hostname
         target_pattern: Optional pattern to filter targets (index or substring)
         list_only: If True, just list targets and return None
-        board: Optional board name to auto-filter by vendor (e.g., 'nexys_a7' filters for 'Digilent')
+        board: Optional board name to auto-filter by vendor (e.g., 'genesys2' filters for 'Digilent')
 
     Returns:
         Selected target name, or None if list_only=True

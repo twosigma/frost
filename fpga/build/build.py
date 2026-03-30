@@ -42,7 +42,6 @@ from pathlib import Path
 BOARD_CONFIG = {
     "x3": {"clock_freq": 300000000, "is_ultrascale": True},
     "genesys2": {"clock_freq": 133333333, "is_ultrascale": False},
-    "nexys_a7": {"clock_freq": 80000000, "is_ultrascale": False},
 }
 
 # Directive choices for each step
@@ -434,7 +433,7 @@ Examples:
         "board_name",
         nargs="?",
         default="x3",
-        choices=["x3", "genesys2", "nexys_a7"],
+        choices=["x3", "genesys2"],
         help="Target board (default: x3)",
     )
     parser.add_argument(

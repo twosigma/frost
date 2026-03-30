@@ -13,7 +13,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Practical performance** — 1.76 CoreMark/MHz (527 CoreMark at 300 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
-- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
+- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
 ## Features
@@ -202,8 +202,7 @@ frost/
 │   └── load_software/        # Software loading via JTAG
 └── boards/                   # Board-specific wrappers
     ├── x3/                   # Alveo X3522PV
-    ├── genesys2/             # Digilent Genesys2
-    └── nexys_a7/             # Digilent Nexys A7
+    └── genesys2/             # Digilent Genesys2
 ```
 
 ## User Guide
@@ -249,7 +248,6 @@ WAVES=1 ./tests/test_run_cocotb.py cpu
 # FPGA synthesis (Vivado)
 ./fpga/build/build.py x3                   # Alveo X3
 ./fpga/build/build.py genesys2             # Genesys2
-./fpga/build/build.py nexys_a7             # Nexys A7
 ```
 
 ### Pytest Test Coverage
@@ -287,7 +285,6 @@ Running `pytest tests/` exercises:
 |--------------------|----------------------|-----------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   |
 | Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   |
-| Digilent Nexys A7  | Artix-7 (xc7a100t)   | 80 MHz    |
 
 
 <!-- FPGA_UTILIZATION_START -->
@@ -329,23 +326,6 @@ Running `pytest tests/` exercises:
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |
-
-**Digilent Nexys A7** (Artix-7 @ 80 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 60,415 | 63,400 | 95.3% |
-|   LUT as Logic | 57,251 | 63,400 | 90.3% |
-|   LUT as Distributed RAM | 2,534 | — | — |
-|   LUT as Shift Register | 630 | — | — |
-| Slice Registers | 46,263 | 126,800 | 36.5% |
-| Block RAM Tile | 70.5 | 135 | 52.2% |
-| DSPs | 40 | 240 | 16.7% |
-| F7 Muxes | 916 | 31,700 | 2.9% |
-| F8 Muxes | 32 | 15,850 | 0.2% |
-| Bonded IOB | 4 | 210 | 1.9% |
-| MMCM | 1 | 6 | 16.7% |
-| PLL | 0 | 6 | 0.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 

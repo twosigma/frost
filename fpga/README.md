@@ -61,7 +61,6 @@ The FPGA tooling is organized into three main workflows:
 |----------|----------------------------|-------------|----------------|
 | X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | Primary target |
 | Genesys2 | Kintex-7 (xc7k325t)        | 133 MHz     | Supported      |
-| Nexys A7 | Artix-7 (xc7a100t)         | 80 MHz      | Supported      |
 
 ## Quick Start
 
@@ -105,7 +104,7 @@ Program the FPGA with the generated bitstream via JTAG.
 ```
 
 **Arguments:**
-- `board` - Target board: `x3`, `genesys2`, or `nexys_a7`
+- `board` - Target board: `x3` or `genesys2`
 - `remote_host` - (Optional) Hostname for remote FPGA programming
 - `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
 - `--list-targets` - (Optional) List available hardware targets for this board and exit
@@ -116,13 +115,13 @@ Program the FPGA with the generated bitstream via JTAG.
 ./fpga/program_bitstream/program_bitstream.py x3
 
 # List available targets for this board (filtered by vendor)
-./fpga/program_bitstream/program_bitstream.py nexys_a7 --list-targets
+./fpga/program_bitstream/program_bitstream.py genesys2 --list-targets
 
 # Select target by index (from filtered list)
-./fpga/program_bitstream/program_bitstream.py nexys_a7 --target 0
+./fpga/program_bitstream/program_bitstream.py genesys2 --target 0
 
 # Select target by serial number
-./fpga/program_bitstream/program_bitstream.py nexys_a7 --target 210299A8B4D1
+./fpga/program_bitstream/program_bitstream.py genesys2 --target 210299A8B4D1
 
 # Remote FPGA (requires Vivado Hardware Server on remote host)
 ./fpga/program_bitstream/program_bitstream.py x3 fpga-server.local
@@ -137,7 +136,7 @@ Load software into instruction memory without regenerating the bitstream. This e
 ```
 
 **Arguments:**
-- `board` - Target board: `x3`, `genesys2`, or `nexys_a7`
+- `board` - Target board: `x3` or `genesys2`
 - `app` - Application name (see table below)
 - `remote_host` - (Optional) Hostname for remote FPGA
 - `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
@@ -175,14 +174,14 @@ The script compiles the application with the correct clock frequency for the tar
 # Load hello_world on remote Genesys2
 ./fpga/load_software/load_software.py genesys2 hello_world fpga-server.local
 
-# Load FreeRTOS demo on Nexys A7
-./fpga/load_software/load_software.py nexys_a7 freertos_demo
+# Load FreeRTOS demo on Genesys2
+./fpga/load_software/load_software.py genesys2 freertos_demo
 
 # List targets for this board (doesn't require app argument)
-./fpga/load_software/load_software.py nexys_a7 --list-targets
+./fpga/load_software/load_software.py genesys2 --list-targets
 
 # Select specific target by serial number
-./fpga/load_software/load_software.py nexys_a7 hello_world --target 210299A8B4D1
+./fpga/load_software/load_software.py genesys2 hello_world --target 210299A8B4D1
 ```
 
 ## Multiple Hardware Targets
@@ -190,10 +189,10 @@ The script compiles the application with the correct clock frequency for the tar
 When multiple FPGA boards are connected to the same host, the scripts automatically detect all available hardware targets and filter them based on the board type:
 
 **Automatic vendor filtering:**
-- `nexys_a7` and `genesys2` → auto-filters for `Digilent` targets
+- `genesys2` → auto-filters for `Digilent` targets
 - `x3` → auto-filters for `Xilinx` targets
 
-This filtering applies to all operations including `--list-targets`. If you have both Digilent and Alveo boards connected, specifying `nexys_a7` will only show/select Digilent targets and `x3` will only show/select Xilinx targets.
+This filtering applies to all operations including `--list-targets`. If you have both Digilent and Alveo boards connected, specifying `genesys2` will only show/select Digilent targets and `x3` will only show/select Xilinx targets.
 
 **Selection behavior:**
 - **Single matching target**: Automatically selected without prompting
