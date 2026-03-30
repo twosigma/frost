@@ -473,15 +473,19 @@ module pc_controller #(
     end
   end
 
-  // The buffered pending-prediction payload only matters while
-  // pending_prediction_valid is set. Avoid rewriting these wide buses during
-  // redirect/clear cycles; dropping valid is enough to invalidate stale data,
-  // and it removes those payload register enables from the ROB->IF redirect cone.
+  // TIMING: Use !pending_prediction_valid as the CE instead of the
+  // combinational prediction_needs_pending.  This breaks the 11-level critical
+  // path from instruction-memory BRAM → decode → prediction_needs_pending → CE
+  // of these 64-bit buses.  The invariant is: prediction_needs_pending can only
+  // fire when pending_prediction_valid is 0 (fetch is held while a prediction is
+  // pending, so no new BTB hit can occur).  Capturing speculatively every
+  // non-stalled cycle while valid is 0 means the data is ready the instant the
+  // control block sets valid.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       pending_prediction_pc     <= '0;
       pending_prediction_target <= '0;
-    end else if (!i_stall && prediction_needs_pending) begin
+    end else if (!i_stall && !pending_prediction_valid) begin
       pending_prediction_pc     <= o_pc;
       pending_prediction_target <= i_predicted_target;
     end
