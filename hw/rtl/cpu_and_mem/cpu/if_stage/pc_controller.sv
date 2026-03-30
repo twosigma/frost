@@ -294,14 +294,17 @@ module pc_controller #(
   logic [XLEN-2:0] pending_prediction_pc_hw;
   logic [XLEN-1:0] pending_prediction_target_next_word;
   logic [XLEN-2:0] pc_reg_hw;
-  logic [XLEN-2:0] seq_next_pc_reg_hw;
   logic            halfword_target_lead_catchup;
+  logic            word_aligned_prediction_needs_pending;
+  logic            clear_pending_prediction_state;
+  logic            pending_prediction_valid_d;
+  logic            pending_prediction_allow_cross_d;
+  logic            pending_prediction_from_buffer_d;
 
   assign pending_prediction_pc_hw = pending_prediction_pc[XLEN-1:1];
   assign pending_prediction_target_next_word =
       {pending_prediction_target[XLEN-1:2], 2'b00} + riscv_pkg::PcIncrement32bit;
   assign pc_reg_hw = o_pc_reg[XLEN-1:1];
-  assign seq_next_pc_reg_hw = seq_next_pc_reg[XLEN-1:1];
 
   // TIMING OPTIMIZATION: Register seq_next_pc_reg_hw before the pending
   // prediction crossing comparison. This breaks the critical 24-level path
@@ -315,14 +318,18 @@ module pc_controller #(
       seq_next_pc_reg_hw_q <= '0;
     else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
-  // Word-aligned predicted branches that land on a halfword target still need
-  // the pending-handoff path. Without it, pc_reg can advance to the target one
-  // cycle before BRAM returns the target word, and IF seeds a spanning decode
-  // from stale upper-half bytes on loop back-edges like 0x4e44 -> 0x4dea.
+  // Lower-half BTB predictions still need the pending-handoff path even when
+  // the target is word-aligned. Using the old live
+  // (seq_next_pc_reg != o_pc) comparison here puts BRAM parcel classification
+  // back into the pending state-bit cone. Conservatively marking all
+  // pc_reg-handoff BTB predictions as pending avoids that compare; the cost is
+  // at most an extra branch-handoff bubble in cases that previously relied on
+  // the precise sequential-PC check.
+  assign word_aligned_prediction_needs_pending =
+      !o_pc[1] && !i_predicted_target[1] && i_prediction_requires_pc_reg_handoff;
   assign prediction_needs_pending =
       i_prediction_used && !i_ras_predicted &&
-      (o_pc[1] || i_predicted_target[1] ||
-       ((seq_next_pc_reg != o_pc) && i_prediction_requires_pc_reg_handoff));
+      (o_pc[1] || i_predicted_target[1] || word_aligned_prediction_needs_pending);
   // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
   // from mispredict_recovery_pending through flush_pipeline into this cone.
   // For mispredict, !i_branch_taken already kills the pending prediction.
@@ -454,23 +461,36 @@ module pc_controller #(
     end
   end
 
-  always_ff @(posedge i_clk) begin
+  assign clear_pending_prediction_state =
+      redirect_kill_pending_q || pending_prediction_target_handoff ||
+      stale_pending_prediction;
+
+  always_comb begin
+    pending_prediction_valid_d = pending_prediction_valid;
+    pending_prediction_allow_cross_d = pending_prediction_allow_cross;
+    pending_prediction_from_buffer_d = pending_prediction_from_buffer;
+
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
-      pending_prediction_valid       <= 1'b0;
-      pending_prediction_allow_cross <= 1'b0;
-      pending_prediction_from_buffer <= 1'b0;
+      pending_prediction_valid_d = 1'b0;
+      pending_prediction_allow_cross_d = 1'b0;
+      pending_prediction_from_buffer_d = 1'b0;
     end else if (!i_stall) begin
-      if (redirect_kill_pending_q || pending_prediction_target_handoff ||
-          stale_pending_prediction) begin
-        pending_prediction_valid       <= 1'b0;
-        pending_prediction_allow_cross <= 1'b0;
-        pending_prediction_from_buffer <= 1'b0;
+      if (clear_pending_prediction_state) begin
+        pending_prediction_valid_d = 1'b0;
+        pending_prediction_allow_cross_d = 1'b0;
+        pending_prediction_from_buffer_d = 1'b0;
       end else if (prediction_needs_pending) begin
-        pending_prediction_valid       <= 1'b1;
-        pending_prediction_allow_cross <= o_pc[1];
-        pending_prediction_from_buffer <= i_prediction_used_from_buffer;
+        pending_prediction_valid_d = 1'b1;
+        pending_prediction_allow_cross_d = o_pc[1];
+        pending_prediction_from_buffer_d = i_prediction_used_from_buffer;
       end
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    pending_prediction_valid <= pending_prediction_valid_d;
+    pending_prediction_allow_cross <= pending_prediction_allow_cross_d;
+    pending_prediction_from_buffer <= pending_prediction_from_buffer_d;
   end
 
   // TIMING: Use !pending_prediction_valid as the CE instead of the
