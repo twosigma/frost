@@ -221,7 +221,13 @@ module branch_prediction_controller (
   //           registered → prediction_common → sel_prediction ─ AND → prediction_used → PC
   logic prediction_common;
   logic prediction_allowed_stable;
-  assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall &&
+  // TIMING OPTIMIZATION: Use i_stall_registered to break the critical 14-level path
+  // rob_valid → commit_en → mret_start → id_valid → stall → prediction_common → RAS WE.
+  // During the first stall cycle (stall=1, stall_registered=0), a prediction may fire.
+  // This is safe: MRET/trap stalls flush the pipeline next cycle, and checkpoint restore
+  // corrects any spurious RAS push/pop. Non-trap stalls have short paths that arrive
+  // well before the clock edge regardless.
+  assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
                              !i_any_holdoff_safe &&
                              !o_prediction_holdoff &&
                              !i_spanning_wait_for_fetch &&

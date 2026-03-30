@@ -298,20 +298,54 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 61,299 | 1,029,600 | 6.0% |
-|   LUT as Logic | 58,435 | 1,029,600 | 5.7% |
-|   LUT as Distributed RAM | 2,238 | — | — |
-|   LUT as Shift Register | 626 | — | — |
-| CLB Registers | 46,011 | 2,059,200 | 2.2% |
+| CLB LUTs | 61,683 | 1,029,600 | 6.0% |
+|   LUT as Logic | 58,905 | 1,029,600 | 5.7% |
+|   LUT as Distributed RAM | 2,218 | — | — |
+|   LUT as Shift Register | 560 | — | — |
+| CLB Registers | 47,190 | 2,059,200 | 2.3% |
 | Block RAM Tile | 70.5 | 2,112 | 3.3% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 36 | 1,320 | 2.7% |
-| CARRY8 | 3,099 | 128,700 | 2.4% |
-| F7 Muxes | 981 | 514,800 | 0.2% |
-| F8 Muxes | 35 | 257,400 | 0.0% |
+| CARRY8 | 3,106 | 128,700 | 2.4% |
+| F7 Muxes | 908 | 514,800 | 0.2% |
+| F8 Muxes | 31 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
+
+**Digilent Genesys2** (Kintex-7 @ 133 MHz)
+
+| Resource | Used | Available | Util% |
+|----------|-----:|----------:|------:|
+| Slice LUTs | 60,149 | 203,800 | 29.5% |
+|   LUT as Logic | 57,120 | 203,800 | 28.0% |
+|   LUT as Distributed RAM | 2,476 | — | — |
+|   LUT as Shift Register | 553 | — | — |
+| Slice Registers | 46,374 | 407,600 | 11.4% |
+| Block RAM Tile | 70.5 | 445 | 15.8% |
+| DSPs | 40 | 840 | 4.8% |
+| F7 Muxes | 915 | 101,900 | 0.9% |
+| F8 Muxes | 32 | 50,950 | 0.1% |
+| Bonded IOB | 6 | 500 | 1.2% |
+| MMCM | 1 | 10 | 10.0% |
+| PLL | 0 | 10 | 0.0% |
+
+**Digilent Nexys A7** (Artix-7 @ 80 MHz)
+
+| Resource | Used | Available | Util% |
+|----------|-----:|----------:|------:|
+| Slice LUTs | 60,415 | 63,400 | 95.3% |
+|   LUT as Logic | 57,251 | 63,400 | 90.3% |
+|   LUT as Distributed RAM | 2,534 | — | — |
+|   LUT as Shift Register | 630 | — | — |
+| Slice Registers | 46,263 | 126,800 | 36.5% |
+| Block RAM Tile | 70.5 | 135 | 52.2% |
+| DSPs | 40 | 240 | 16.7% |
+| F7 Muxes | 916 | 31,700 | 2.9% |
+| F8 Muxes | 32 | 15,850 | 0.2% |
+| Bonded IOB | 4 | 210 | 1.9% |
+| MMCM | 1 | 6 | 16.7% |
+| PLL | 0 | 6 | 0.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 
