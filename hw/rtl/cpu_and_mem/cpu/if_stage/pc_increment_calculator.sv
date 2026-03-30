@@ -31,6 +31,11 @@
   correct result. The critical path from is_compressed to PC now only needs
   to control a mux, not feed into a CARRY8 adder chain.
 
+  For the pc_reg path, both compressed (+2) and 32-bit (+4/+0) results are
+  pre-computed using registered-only select signals. The BRAM-dependent
+  is_compressed controls only a final 2:1 mux between the pre-computed
+  outcomes, keeping the CARRY8 chains entirely off the BRAM→o_pc_reg path.
+
   Outputs:
   ========
     o_seq_next_pc     - Sequential PC for next fetch (used by final PC mux)
@@ -50,7 +55,7 @@ module pc_increment_calculator #(
     // C-extension state signals
     input logic i_spanning_wait_for_fetch,
     input logic i_spanning_in_progress,
-    input logic i_is_32bit_spanning,
+    input logic i_spanning_eligible,  // Registered-only: is_32bit_spanning without is_compressed
     input logic i_spanning_to_halfword,
     input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,
@@ -78,7 +83,7 @@ module pc_increment_calculator #(
   // Priority: sel_0 (spanning wait) > sel_2 (compressed/spanning) > default (32-bit)
   logic pc_inc_comb_sel_0, pc_inc_comb_sel_2;
   assign pc_inc_comb_sel_0 = i_spanning_wait_for_fetch;
-  assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_is_32bit_spanning || i_is_compressed;
+  assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_spanning_eligible || i_is_compressed;
 
   // Final PC increment select with priority encoding
   // Priority: sel_holdoff (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
@@ -103,7 +108,7 @@ module pc_increment_calculator #(
                         !pc_inc_sel_prediction_holdoff &&
                         !i_spanning_wait_for_fetch &&
                         (i_control_flow_to_halfword_r || i_spanning_to_halfword_registered ||
-                         i_spanning_in_progress || i_is_32bit_spanning);
+                         i_spanning_in_progress || i_spanning_eligible);
 
   // ===========================================================================
   // Parallel Adders for PC (Fetch Address)
@@ -143,35 +148,51 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // Priority: sel_0 (spanning/wait/holdoff) > sel_2 (compressed) > default (32-bit)
+  // TIMING OPTIMIZATION: Pre-compute pc_reg_normal for both possible is_compressed
+  // outcomes using only registered select signals. The parallel adders settle from
+  // registered i_pc_reg (~0.3 ns) well before BRAM data arrives (~0.9 ns).
+  // Only the final 2:1 mux uses the late-arriving BRAM-dependent is_compressed,
+  // keeping the CARRY8 chains entirely off the BRAM→o_pc_reg critical path.
+  //
   // CRITICAL: Include spanning_to_halfword_registered to hold pc_reg during the holdoff cycle.
   // During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
   // (use_buffer_after_spanning), instruction_aligner uses pc_reg[1] to select
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
-  //
-  logic pc_reg_inc_sel_0, pc_reg_inc_sel_2;
-  assign pc_reg_inc_sel_0 = i_spanning_wait_for_fetch || i_is_32bit_spanning ||
-                            i_spanning_to_halfword_registered ||
-                            i_prediction_from_buffer_holdoff;  // Hold during stale cycle
-  assign pc_reg_inc_sel_2 = !i_spanning_in_progress && !pc_reg_inc_sel_0 && i_is_compressed;
 
   logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
   assign pc_reg_plus_0 = i_pc_reg;
   assign pc_reg_plus_2 = i_pc_reg + IncC;
   assign pc_reg_plus_4 = i_pc_reg + Inc4;
 
-  // Compute pc_reg_normal (normal sequential PC_reg)
-  logic [XLEN-1:0] pc_reg_normal;
+  // Registered-only hold signal: hold pc_reg at +0 for spanning wait, holdoff cycles
+  logic pc_reg_hold;
+  assign pc_reg_hold = i_spanning_wait_for_fetch ||
+                       i_spanning_to_halfword_registered ||
+                       i_prediction_from_buffer_holdoff;
+
+  // Pre-compute result assuming instruction is compressed (is_compressed = 1):
+  //   is_32bit_spanning = spanning_eligible && !1 = 0, so hold only from pc_reg_hold.
+  //   Priority: hold (+0) > compressed && !spanning_in_progress (+2) > default (+4)
+  logic [XLEN-1:0] pc_reg_if_compressed;
   always_comb begin
-    casez ({
-      pc_reg_inc_sel_0, pc_reg_inc_sel_2
-    })
-      2'b1?:   pc_reg_normal = pc_reg_plus_0;  // spanning/wait/holdoff: +0
-      2'b01:   pc_reg_normal = pc_reg_plus_2;  // compressed: +2
-      default: pc_reg_normal = pc_reg_plus_4;  // 32-bit: +4
-    endcase
+    if (pc_reg_hold) pc_reg_if_compressed = pc_reg_plus_0;
+    else if (!i_spanning_in_progress) pc_reg_if_compressed = pc_reg_plus_2;
+    else pc_reg_if_compressed = pc_reg_plus_4;
   end
+
+  // Pre-compute result assuming instruction is 32-bit (is_compressed = 0):
+  //   is_32bit_spanning = spanning_eligible (all registered).
+  //   hold (+0) when pc_reg_hold || spanning_eligible, else default (+4).
+  //   sel_2 is always 0 when is_compressed = 0.
+  logic [XLEN-1:0] pc_reg_if_32bit;
+  assign pc_reg_if_32bit = (pc_reg_hold || i_spanning_eligible) ? pc_reg_plus_0 : pc_reg_plus_4;
+
+  // Final: select based on live is_compressed. Only this 2:1 mux is on the
+  // BRAM→o_pc_reg critical path — the CARRY8 chains settle from registered
+  // i_pc_reg well before BRAM data arrives.
+  logic [XLEN-1:0] pc_reg_normal;
+  assign pc_reg_normal = i_is_compressed ? pc_reg_if_compressed : pc_reg_if_32bit;
 
   // ===========================================================================
   // Special PC Corrections

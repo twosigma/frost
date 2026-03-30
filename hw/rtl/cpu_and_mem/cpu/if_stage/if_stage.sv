@@ -178,6 +178,7 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   // Derived Signals and Stall State
   // ---------------------------------------------------------------------------
+  logic spanning_eligible;  // Registered-only spanning condition (no BRAM dependency)
   logic is_32bit_spanning;  // 32-bit instruction spans two words
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   logic ras_instruction_valid;
@@ -218,12 +219,16 @@ module if_stage #(
   // The pending halfword-target bubble is still returning old-path BRAM data.
   // Suppress spanning detection there so a stale upper parcel cannot seed the
   // spanning FSM for the real halfword target instruction on the next cycle.
-  assign is_32bit_spanning = pc_reg[1] && !is_compressed_for_buffer &&
+  // Factor out the registered-only spanning eligibility condition.
+  // pc_increment_calculator uses this to pre-compute both compressed and 32-bit
+  // PC_reg results without BRAM dependency, selecting with live is_compressed.
+  assign spanning_eligible = pc_reg[1] &&
                              !spanning_in_progress &&
                              !pending_prediction_active &&
                              !pending_prediction_target_holdoff &&
                              !control_flow_holdoff && !reset_holdoff &&
                              !spanning_to_halfword_registered;
+  assign is_32bit_spanning = spanning_eligible && !is_compressed_for_buffer;
 
   // No stall for spanning - we output NOP and let PC advance
 
@@ -402,7 +407,7 @@ module if_stage #(
 
       .i_spanning_wait_for_fetch(spanning_wait_for_fetch),
       .i_spanning_in_progress(spanning_in_progress),
-      .i_is_32bit_spanning(is_32bit_spanning),
+      .i_spanning_eligible(spanning_eligible),
       .i_spanning_to_halfword(spanning_to_halfword),
       .i_spanning_to_halfword_registered(spanning_to_halfword_registered),
       // TIMING OPTIMIZATION: Use is_compressed_fast which matches is_compressed_for_buffer
