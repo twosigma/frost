@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Program FPGA bitstream to specified board (x3, genesys2, or nexys_a7)."""
+"""Program FPGA bitstream to specified board (x3 or genesys2)."""
 
 import argparse
 import subprocess
@@ -36,7 +36,7 @@ def main() -> None:
     )
     parser.add_argument(
         "board",
-        choices=["x3", "genesys2", "nexys_a7"],
+        choices=["x3", "genesys2"],
         help="Target board",
     )
     parser.add_argument(
@@ -61,7 +61,7 @@ def main() -> None:
         return
 
     # Select hardware target (may prompt user if multiple targets)
-    # Auto-filters by vendor based on board (e.g., nexys_a7 -> Digilent, x3 -> Xilinx)
+    # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
     selected_target = select_target(
         args.vivado_path,
         args.remote_host,

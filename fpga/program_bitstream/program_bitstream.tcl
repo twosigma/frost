@@ -24,8 +24,8 @@ set project_root [lindex $argv 0]
 set board_name [lindex $argv 1]
 set hw_target [lindex $argv 2]
 
-if { $board_name != "x3" && $board_name != "genesys2" && $board_name != "nexys_a7" } {
-    puts "Error: Invalid board '$board_name'. Must be 'x3', 'genesys2', or 'nexys_a7'"
+if { $board_name != "x3" && $board_name != "genesys2" } {
+    puts "Error: Invalid board '$board_name'. Must be 'x3' or 'genesys2'"
     exit 1
 }
 

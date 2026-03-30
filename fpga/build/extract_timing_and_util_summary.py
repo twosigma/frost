@@ -35,11 +35,6 @@ BOARD_INFO = {
         "family": "Kintex-7",
         "part": "xc7k325t",
     },
-    "nexys_a7": {
-        "name": "Digilent Nexys A7",
-        "family": "Artix-7",
-        "part": "xc7a100t",
-    },
 }
 
 # Markers for README section
@@ -266,8 +261,8 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         "",
     ]
 
-    # Order: x3 first (flagship), then genesys2, then nexys_a7
-    board_order = ["x3", "genesys2", "nexys_a7"]
+    # Order: x3 first (flagship), then genesys2
+    board_order = ["x3", "genesys2"]
 
     def fmt_used(val: Any) -> str:
         """Format a 'used' value with commas if integer, one decimal if float."""

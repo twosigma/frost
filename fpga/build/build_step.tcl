@@ -141,9 +141,9 @@ set directive [lindex $argv 2]
 set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
 
-if {$board_name ne "x3" && $board_name ne "genesys2" && $board_name ne "nexys_a7"} {
+if {$board_name ne "x3" && $board_name ne "genesys2"} {
     puts "Error: Invalid board name '$board_name'"
-    puts "Valid boards: x3, genesys2, nexys_a7"
+    puts "Valid boards: x3, genesys2"
     exit 1
 }
 
@@ -157,9 +157,6 @@ if {$board_name eq "genesys2"} {
 } elseif {$board_name eq "x3"} {
     set fpga_part_number xcux35-vsva1365-3-e
     set top_level_module_name x3_frost
-} elseif {$board_name eq "nexys_a7"} {
-    set fpga_part_number xc7a100tcsg324-1
-    set top_level_module_name nexys_a7_frost
 }
 
 set number_of_parallel_jobs 32
