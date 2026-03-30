@@ -56,9 +56,10 @@ module c_ext_state #(
     input logic [31:0] i_pc_reg,           // Registered PC
 
     // Instruction type detection (from instruction aligner)
-    input logic i_is_compressed,      // Current parcel is compressed
-    input logic i_is_32bit_spanning,  // Detected spanning this cycle
-    input logic i_sel_nop,            // IF is outputting a stale/invalid bubble this cycle
+    input logic       i_is_compressed,      // Current parcel is compressed
+    input logic       i_is_32bit_spanning,  // Detected spanning this cycle
+    input logic       i_sel_nop,            // IF is outputting a stale/invalid bubble this cycle
+    input logic [1:0] i_instr_sideband,     // Predecode sideband from IMEM BRAM
 
     // Outputs
     output logic o_spanning_wait_for_fetch,
@@ -75,7 +76,8 @@ module c_ext_state #(
     output logic o_use_buffer_after_spanning,  // Use buffer after spanning_to_halfword holdoff
     output logic o_use_buffer_after_prediction,  // Use buffer after predicted buffered instruction
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
-    output logic o_saved_values_valid  // Saved values are valid (not invalidated by control flow)
+    output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
+    output logic [1:0] o_instr_buffer_sideband  // Predecode sideband for instruction buffer
 );
 
   // ===========================================================================
@@ -98,6 +100,7 @@ module c_ext_state #(
 
   logic [31:0] effective_instr_saved;
   logic        is_compressed_saved;
+  logic [ 1:0] sideband_saved;  // Predecode sideband saved at stall start
   logic        saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
   logic        invalidate_saved_values_holdoff;
   logic        capture_valid_stall_values;
@@ -128,6 +131,7 @@ module c_ext_state #(
       // Also clear the data to prevent any stale data from persisting.
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
+      sideband_saved        <= 2'b0;
     end else if (i_stall & ~i_stall_registered) begin
       if (capture_valid_stall_values) begin
         // Save real instructions, the first-cycle spanning bubble, and the
@@ -136,13 +140,16 @@ module c_ext_state #(
         // lets the spanning FSM resume with the correct upper-half fetch.
         effective_instr_saved <= i_effective_instr;
         is_compressed_saved   <= i_is_compressed;
+        sideband_saved        <= i_instr_sideband;
       end else begin
         effective_instr_saved <= '0;
         is_compressed_saved   <= 1'b0;
+        sideband_saved        <= 2'b0;
       end
     end else if (invalidate_saved_values_holdoff) begin
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
+      sideband_saved        <= 2'b0;
     end
   end
   always_ff @(posedge i_clk) begin
@@ -180,6 +187,10 @@ module c_ext_state #(
   logic        pending_prediction_target_holdoff_needs_buffer;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
+
+  // Sideband mux: use saved sideband when restoring from stall, live BRAM sideband otherwise
+  logic [1:0] effective_sideband_for_buffer;
+  assign effective_sideband_for_buffer = use_saved_values ? sideband_saved : i_instr_sideband;
   assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
   assign preserve_lo_compressed_buffer_on_prediction =
       i_prediction_reset_state &&
@@ -420,6 +431,7 @@ module c_ext_state #(
         !o_use_buffer_after_prediction &&
         (!i_pending_prediction_active || capture_pending_prediction_buffer)) begin
       o_instr_buffer <= effective_instr_for_buffer;
+      o_instr_buffer_sideband <= effective_sideband_for_buffer;
     end
   end
 

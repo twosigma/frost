@@ -105,6 +105,7 @@ module cpu_and_mem #(
 
   // CPU interface signals
   logic [31:0] program_counter, instruction;
+  logic [1:0] instruction_sideband;  // Predecode: {is_compressed_hi, is_compressed_lo}
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
@@ -157,6 +158,7 @@ module cpu_and_mem #(
       .i_rst,
       .o_pc(program_counter),
       .i_instr(instruction),
+      .i_instr_sideband(instruction_sideband),
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
@@ -184,29 +186,31 @@ module cpu_and_mem #(
   // Memory 0: Port A = instruction programming (div4), Port B = instruction fetch (main clk)
   // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
 
-  // Memory 0: Instruction memory (uses simpler BRAM without byte enables or write-first)
+  // Memory 0: Instruction memory with predecode sideband
+  // Stores 32-bit instruction data + 2-bit is_compressed sideband per word.
+  // Sideband bits are computed at write time and arrive at the same Tco as
+  // instruction data on the fetch port, eliminating the combinational
+  // is_compressed LUT from the BRAM -> PC critical path.
   // Port A: Instruction programming only (div4 clock, write only)
   // Port B: Instruction fetch (main clock, read only)
-  tdp_bram_dc #(
-      .DATA_WIDTH(32),
+  imem_predecode #(
       .ADDR_WIDTH(MemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
-      .INIT_FILE("sw.mem")  // Software initialization file
+      .INIT_FILE("sw.mem")
   ) instruction_memory (
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
-      .i_port_b_clk(i_clk),
-      .i_port_b_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)
       .i_port_a_byte_address(i_instr_mem_addr),
       .i_port_a_write_data(i_instr_mem_wrdata),
       .i_port_a_write_enable(i_instr_mem_en),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only)
+      .i_port_b_clk(i_clk),
+      .i_port_b_enable(1'b1),
       .i_port_b_byte_address(program_counter),
-      .i_port_b_write_data('0),
-      .i_port_b_write_enable(1'b0),
-      .o_port_b_read_data(instruction)
+      .o_port_b_read_data(instruction),
+      .o_port_b_sideband(instruction_sideband)
   );
 
   // Memory 1: Data memory
