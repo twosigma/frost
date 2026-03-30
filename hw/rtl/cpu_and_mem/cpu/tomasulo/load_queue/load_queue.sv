@@ -763,6 +763,12 @@ module load_queue #(
   assign cache_fill_data = i_mem_read_data;
 
   // AMO write interface: compute new value combinationally from outstanding AMO read
+  // TIMING: Removed same-cycle AMO write fast path (accept_mem_response &&
+  // lq_is_amo) that created a BRAM-read → amo_compute → BRAM-write
+  // combinational chain (-0.424 ns, 10 logic levels through CARRY8 + LUT6).
+  // AMO writes now always go through the registered AMO_WRITE_ACTIVE path:
+  // cycle N captures amo_old_value; cycle N+1 computes and writes.
+  // Cost: +1 cycle AMO latency.
   always_comb begin
     amo_write_pending = 1'b0;
     amo_new_value = '0;
@@ -771,18 +777,10 @@ module load_queue #(
     o_amo_mem_write_data = '0;
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
-      // Maintain write request until done
       o_amo_mem_write_en = 1'b1;
       o_amo_mem_write_addr = lq_address[amo_entry_idx];
       o_amo_mem_write_data =
           amo_compute(lq_amo_op[amo_entry_idx], amo_old_value, lq_amo_rs2[amo_entry_idx]);
-    end else if (accept_mem_response && lq_is_amo[issued_idx]) begin
-      // AMO read just arrived: start write in the same cycle
-      amo_write_pending = 1'b1;
-      amo_new_value = amo_compute(lq_amo_op[issued_idx], i_mem_read_data, lq_amo_rs2[issued_idx]);
-      o_amo_mem_write_en = 1'b1;
-      o_amo_mem_write_addr = lq_address[issued_idx];
-      o_amo_mem_write_data = amo_new_value;
     end
   end
 
