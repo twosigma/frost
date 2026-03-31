@@ -292,6 +292,11 @@ module load_queue #(
   logic sq_check_entry_valid;
   logic sq_check_entry_issueable;
 
+  // TIMING: Phase 2 flag for registered SQ forwarding result. Goes high
+  // 1 cycle after o_sq_check_valid is driven so the LQ reads the SQ's
+  // registered output (not the same-cycle combinational result).
+  logic sq_check_phase2;
+
   // Staged external-memory launch. After SQ disambiguation clears a load for
   // memory, hold the exact request in a register and launch it the next cycle.
   logic mem_issue_pending;
@@ -533,9 +538,13 @@ module load_queue #(
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic flush_all_entries;
 
-  assign sq_can_issue = o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match;
+  // TIMING: sq_can_issue and sq_do_forward use sq_check_phase2 (registered
+  // SQ result available) instead of o_sq_check_valid (same-cycle combinational).
+  // sq_check_entry_issueable re-validates the entry each cycle to discard stale results.
+  assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
+      i_sq_all_older_addrs_known && !i_sq_forward.match;
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
-      && o_sq_check_valid && i_sq_forward.can_forward
+      && sq_check_phase2 && sq_check_entry_issueable && i_sq_forward.can_forward
       && !lq_is_mmio[sq_check_idx] && !lq_is_lr[sq_check_idx] && !lq_is_amo[sq_check_idx];
   assign flush_all_entries = i_flush_en &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
@@ -936,6 +945,7 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
+      sq_check_phase2           <= 1'b0;
       mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
@@ -951,6 +961,7 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
+      sq_check_phase2           <= 1'b0;
       mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
@@ -981,6 +992,7 @@ module load_queue #(
                 lq_rob_tag[sq_check_idx], i_flush_tag, i_rob_head_tag
             )))) begin
           sq_check_pending <= 1'b0;
+          sq_check_phase2  <= 1'b0;
         end
         if (mem_issue_pending && (flush_all_entries || (lq_valid[mem_issue_idx] && is_younger(
                 lq_rob_tag[mem_issue_idx], i_flush_tag, i_rob_head_tag
@@ -1018,10 +1030,15 @@ module load_queue #(
 
       if (sq_check_capture || sq_check_replace) begin
         sq_check_pending <= 1'b1;
+        sq_check_phase2  <= 1'b0;  // New candidate — wait for fresh SQ result
       end else if (sq_check_pending &&
                    (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                     stage_mem_issue)) begin
         sq_check_pending <= 1'b0;
+        sq_check_phase2  <= 1'b0;
+      end else if (o_sq_check_valid && !sq_check_phase2) begin
+        // SQ is being driven this cycle; registered result available next cycle.
+        sq_check_phase2 <= 1'b1;
       end
 
       // -----------------------------------------------------------------
