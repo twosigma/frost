@@ -371,7 +371,7 @@ async def test_forward_sw_to_lw(dut: Any) -> None:
     # LQ check: load at same address, younger rob_tag
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=store_addr, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     all_known = dut_if.read_all_older_addrs_known()
@@ -396,7 +396,7 @@ async def test_forward_no_match(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x3000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     all_known = dut_if.read_all_older_addrs_known()
@@ -422,7 +422,7 @@ async def test_forward_stall_no_addr(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     all_known = dut_if.read_all_older_addrs_known()
     assert not all_known, "Should NOT have all older addrs known"
@@ -450,7 +450,7 @@ async def test_forward_match_no_data(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match (same word address)"
@@ -470,7 +470,7 @@ async def test_forward_size_mismatch(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2001, rob_tag=5, size=MEM_SIZE_BYTE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match (same word address)"
@@ -492,7 +492,7 @@ async def test_forward_disjoint_halfwords_no_match(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2002, rob_tag=5, size=MEM_SIZE_HALF)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     all_known = dut_if.read_all_older_addrs_known()
@@ -516,7 +516,7 @@ async def test_forward_newest_wins(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=6, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -546,7 +546,7 @@ async def test_forward_fsd_to_fld(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_DOUBLE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -798,7 +798,7 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
     # Load with tag=3 (older than store tag=5, head=0)
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=3, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert not fwd.match, "Store is not older than load, should not match"
@@ -826,7 +826,7 @@ async def test_forward_fsd_overlap_plus4(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "DOUBLE store overlaps at +4"
@@ -853,7 +853,7 @@ async def test_mmio_store_no_forward(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=mmio_addr, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match MMIO store address"
@@ -881,7 +881,7 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=addr, rob_tag=6, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -975,7 +975,7 @@ async def test_forward_flw_at_fsd_base(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLW at FSD base should match"
@@ -1008,7 +1008,7 @@ async def test_forward_flw_at_fsd_plus4(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLW at FSD+4 should match"
@@ -1041,7 +1041,7 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_BYTE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LB at FSD base should match"
@@ -1279,7 +1279,7 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
     dut_if.drive_rob_head_tag(0)
     # FLD check: 64-bit load at the same address
     dut_if.drive_sq_check(addr=0x5000, rob_tag=5, size=MEM_SIZE_DOUBLE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLD at FSW address should match"
@@ -1312,7 +1312,7 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
     dut_if.drive_rob_head_tag(0)
     # LH at FSD base: sub-word load from DOUBLE store
     dut_if.drive_sq_check(addr=0x7000, rob_tag=5, size=MEM_SIZE_HALF)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LH at FSD base should match"

@@ -455,22 +455,24 @@ module store_queue #(
     end
   end
 
-  // Block 2: Drive forwarding outputs using LUTRAM data at fwd_match_idx.
-  // Separated so Verilator does not see a circular dependency through the
-  // async LUTRAM read (fwd_match_idx → sq_data_fwd_rd → output).
-  always_comb begin
-    // Default to 0 (stall) when no check active.  This is safe because the
-    // LQ only inspects the response when its own o_sq_check_valid is high.
-    // Returning 0 prevents accidental load issue during the 1-cycle pipeline
-    // fill when the registered sq_check request hasn't reached the SQ yet.
-    o_sq_all_older_addrs_known = i_sq_check_valid ? fwd_all_older_known : 1'b0;
-    o_sq_forward.match         = i_sq_check_valid ? fwd_found_match : 1'b0;
-    o_sq_forward.can_forward   = i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
-    case (fwd_extract_type)
-      2'd1:    o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
-      2'd2:    o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
-      default: o_sq_forward.data = sq_data_fwd_rd;
-    endcase
+  // Block 2: Registered forwarding outputs.
+  // TIMING: Outputs are registered to break the 12-level combinational path
+  // from SQ head_ptr through the forwarding scan to the LQ issue logic.
+  // The LQ accounts for the 1-cycle latency via sq_check_phase2.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      o_sq_all_older_addrs_known <= 1'b0;
+      o_sq_forward               <= '0;
+    end else begin
+      o_sq_all_older_addrs_known <= i_sq_check_valid ? fwd_all_older_known : 1'b0;
+      o_sq_forward.match         <= i_sq_check_valid ? fwd_found_match : 1'b0;
+      o_sq_forward.can_forward   <= i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
+      case (fwd_extract_type)
+        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
+        2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
+        default: o_sq_forward.data <= sq_data_fwd_rd;
+      endcase
+    end
   end
 
   // ===========================================================================
