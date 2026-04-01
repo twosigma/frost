@@ -99,6 +99,7 @@ module cpu_ooo #(
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
   logic branch_alloc_fire;
   logic branch_commit_fire;
+  logic branch_resolved_correct;  // branch resolved correctly at execute time
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.
@@ -125,6 +126,9 @@ module cpu_ooo #(
     else if (rob_alloc_req.alloc_valid && rob_alloc_req.is_csr) csr_in_flight <= 1'b1;
   end
 
+  // The counter is balanced at commit time (same as original) to keep the
+  // ROB / RS / LQ / SQ resource accounting correct for back-to-back branches
+  // that slip through the 1-cycle stall propagation window.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) begin
       branch_in_flight_count <= '0;
@@ -140,6 +144,30 @@ module cpu_ooo #(
   end
 
   assign branch_in_flight = (branch_in_flight_count != '0);
+
+  // Track the number of branches that have dispatched but not yet resolved.
+  // Incremented at dispatch (branch_alloc_fire), decremented at execute
+  // (branch_resolved_correct), reset on flush.  This counter is separate
+  // from branch_in_flight_count (which balances at commit) and is used
+  // solely for the prediction-disable and front-end-stall signals.
+  // When all dispatched branches have resolved, prediction can safely
+  // re-enable even though the branches haven't committed yet.
+  logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
+  logic branch_unresolved;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) begin
+      branch_unresolved_count <= '0;
+    end else begin
+      case ({
+        branch_alloc_fire, branch_resolved_correct
+      })
+        2'b10:   branch_unresolved_count <= branch_unresolved_count + 1'b1;
+        2'b01:   branch_unresolved_count <= branch_unresolved_count - 1'b1;
+        default: branch_unresolved_count <= branch_unresolved_count;
+      endcase
+    end
+  end
+  assign branch_unresolved = (branch_unresolved_count != '0);
 
   // The existing in-order front-end prediction machinery is not robust to a
   // younger predicted redirect arriving behind an older unresolved branch/jump.
@@ -163,7 +191,7 @@ module cpu_ooo #(
   // fetch run ahead and relying on a later commit-time redirect to clean it up.
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
-  assign front_end_cf_serialize_stall_comb = branch_in_flight && front_end_control_flow_pending;
+  assign front_end_cf_serialize_stall_comb = branch_unresolved && front_end_control_flow_pending;
 
   // This stall is a front-end serialization fence, not an architectural
   // requirement. Register it so the branch_in_flight + IF/PD/ID control-flow
@@ -1177,6 +1205,10 @@ module cpu_ooo #(
     branch_update.target       = branch_target_resolved;
     branch_update.mispredicted = branch_mispredicted;
   end
+
+  // Early branch resolution: signals when a branch resolves as correctly
+  // predicted.  Used to drop front_end_cf_serialize_stall early.
+  assign branch_resolved_correct = branch_update.valid && !branch_update.mispredicted;
 
   // ===========================================================================
   // Commit-Time Actions
