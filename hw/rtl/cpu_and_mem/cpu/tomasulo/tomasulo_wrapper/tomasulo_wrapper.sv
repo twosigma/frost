@@ -187,6 +187,7 @@ module tomasulo_wrapper (
     // =========================================================================
     input  logic                                    i_checkpoint_restore,
     input  logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
+    input  logic                                    i_checkpoint_restore_reclaim_all,
     output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 
@@ -309,7 +310,14 @@ module tomasulo_wrapper (
     output logic                       o_amo_mem_write_en,
     output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
     output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
-    input  logic                       i_amo_mem_write_done
+    input  logic                       i_amo_mem_write_done,
+
+    // =========================================================================
+    // Profiling Snapshot Interface
+    // =========================================================================
+    input  logic        i_perf_snapshot_capture,
+    input  logic [ 7:0] i_perf_counter_select,
+    output logic [63:0] o_perf_counter_data
 );
 
   // ===========================================================================
@@ -347,6 +355,46 @@ module tomasulo_wrapper (
     commit_bus_q_qualified.valid = commit_bus_q_valid;
   end
 
+  localparam int unsigned WrapperPerfCounterCount = 34;
+  localparam int unsigned PerfHeadWaitTotal = 0;
+  localparam int unsigned PerfHeadWaitInt = 1;
+  localparam int unsigned PerfHeadWaitBranch = 2;
+  localparam int unsigned PerfHeadWaitMul = 3;
+  localparam int unsigned PerfHeadWaitMemLoad = 4;
+  localparam int unsigned PerfHeadWaitMemStore = 5;
+  localparam int unsigned PerfHeadWaitMemAmo = 6;
+  localparam int unsigned PerfHeadWaitFp = 7;
+  localparam int unsigned PerfHeadWaitFmul = 8;
+  localparam int unsigned PerfHeadWaitFdiv = 9;
+  localparam int unsigned PerfCommitBlockedCsr = 10;
+  localparam int unsigned PerfCommitBlockedFence = 11;
+  localparam int unsigned PerfCommitBlockedWfi = 12;
+  localparam int unsigned PerfCommitBlockedMret = 13;
+  localparam int unsigned PerfCommitBlockedTrap = 14;
+  localparam int unsigned PerfIntBackpressure = 15;
+  localparam int unsigned PerfMulBackpressure = 16;
+  localparam int unsigned PerfMemResultBackpressure = 17;
+  localparam int unsigned PerfFpAddBackpressure = 18;
+  localparam int unsigned PerfFmulBackpressure = 19;
+  localparam int unsigned PerfFdivBackpressure = 20;
+  localparam int unsigned PerfMemDisambiguationWait = 21;
+  localparam int unsigned PerfSqCommittedPending = 22;
+  localparam int unsigned PerfSqMemWriteFire = 23;
+  localparam int unsigned PerfLqMemReadFire = 24;
+  localparam int unsigned PerfRobOccupancySum = 25;
+  localparam int unsigned PerfLqOccupancySum = 26;
+  localparam int unsigned PerfSqOccupancySum = 27;
+  localparam int unsigned PerfIntRsOccupancySum = 28;
+  localparam int unsigned PerfMulRsOccupancySum = 29;
+  localparam int unsigned PerfMemRsOccupancySum = 30;
+  localparam int unsigned PerfFpRsOccupancySum = 31;
+  localparam int unsigned PerfFmulRsOccupancySum = 32;
+  localparam int unsigned PerfFdivRsOccupancySum = 33;
+
+  logic [63:0] perf_live[WrapperPerfCounterCount];
+  logic [63:0] perf_snapshot[WrapperPerfCounterCount];
+  logic [63:0] perf_inc[WrapperPerfCounterCount];
+
   // Expose combinational commit bus to cpu_ooo for misprediction detection
   assign o_commit = commit_bus;
 
@@ -364,6 +412,7 @@ module tomasulo_wrapper (
 
   // Head tag for RS partial flush
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
+  riscv_pkg::rob_perf_events_t rob_perf_events;
   assign head_tag = o_head_tag;
 
   // cpu_ooo delivers misprediction recovery one cycle after the mispredicted
@@ -375,8 +424,8 @@ module tomasulo_wrapper (
   // Full flushes (trap/MRET/FENCE.I) also arrive on i_flush_all. Collapse both
   // cases into a single speculative-only clear pulse so mispredict recovery
   // does not drag the backend through extra age-compare logic.
-  logic speculative_partial_flush;
-  logic speculative_flush_all;
+  (* max_fanout = 32 *)logic speculative_partial_flush;
+  (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
   assign speculative_partial_flush = i_flush_en;
   assign speculative_flush_all = i_flush_all || speculative_partial_flush;
@@ -464,15 +513,16 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Dispatch Routing: decode rs_type to per-RS dispatch valid signals
   // ===========================================================================
-  logic       int_rs_dispatch_valid;
-  logic       mul_rs_dispatch_valid;
-  logic       mem_rs_dispatch_valid;
-  logic       fp_rs_dispatch_valid;
-  logic       fmul_rs_dispatch_valid;
-  logic       fdiv_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic int_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic mul_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic mem_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic fp_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic fmul_rs_dispatch_valid;
+  (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid;
 
-  wire  [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
-  wire        dispatch_valid = i_rs_dispatch.valid;
+  wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
+  (* max_fanout = 32 *) logic dispatch_valid;
+  assign dispatch_valid = i_rs_dispatch.valid;
 
   always_comb begin
     int_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
@@ -592,11 +642,9 @@ module tomasulo_wrapper (
   logic sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_forward;
 
-  // ---------------------------------------------------------------------------
-  // Pipeline register: LQ sq_check request → SQ
-  // Breaks the critical combinational path from mispredict_recovery/flush logic
-  // through LQ sq_check_valid → SQ forwarding scan → LQ response.
-  // ---------------------------------------------------------------------------
+  // Pipeline register: LQ sq_check request -> SQ
+  // Break the critical combinational path from the LQ candidate select into
+  // the SQ scan and back through the registered SQ result.
   logic sq_check_valid_q;
   logic [riscv_pkg::XLEN-1:0] sq_check_addr_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
@@ -846,6 +894,7 @@ module tomasulo_wrapper (
       .o_head_done    (o_head_done),
       .o_entry_valid  (rob_entry_valid),
       .o_entry_done   (rob_entry_done),
+      .o_perf_events  (rob_perf_events),
 
       // Bypass read
       .i_read_tag  (i_read_tag),
@@ -916,10 +965,11 @@ module tomasulo_wrapper (
       .i_ras_valid_count      (i_ras_valid_count),
 
       // Checkpoint restore
-      .i_checkpoint_restore   (i_checkpoint_restore),
-      .i_checkpoint_restore_id(i_checkpoint_restore_id),
-      .o_ras_tos              (o_ras_tos),
-      .o_ras_valid_count      (o_ras_valid_count),
+      .i_checkpoint_restore            (i_checkpoint_restore),
+      .i_checkpoint_restore_id         (i_checkpoint_restore_id),
+      .i_checkpoint_restore_reclaim_all(i_checkpoint_restore_reclaim_all),
+      .o_ras_tos                       (o_ras_tos),
+      .o_ras_valid_count               (o_ras_valid_count),
 
       // Checkpoint free
       .i_checkpoint_free   (i_checkpoint_free),
@@ -1656,6 +1706,76 @@ module tomasulo_wrapper (
       .i_rob_head_tag  (head_tag)
   );
 
+  // ===========================================================================
+  // Backend Profiling Counters
+  // ===========================================================================
+  always_comb begin
+    for (int i = 0; i < WrapperPerfCounterCount; i++) begin
+      perf_inc[i] = '0;
+    end
+
+    perf_inc[PerfHeadWaitTotal] = {{63{1'b0}}, rob_perf_events.head_wait_total};
+    perf_inc[PerfHeadWaitInt] = {{63{1'b0}}, rob_perf_events.head_wait_int};
+    perf_inc[PerfHeadWaitBranch] = {{63{1'b0}}, rob_perf_events.head_wait_branch};
+    perf_inc[PerfHeadWaitMul] = {{63{1'b0}}, rob_perf_events.head_wait_mul};
+    perf_inc[PerfHeadWaitMemLoad] = {{63{1'b0}}, rob_perf_events.head_wait_mem_load};
+    perf_inc[PerfHeadWaitMemStore] = {{63{1'b0}}, rob_perf_events.head_wait_mem_store};
+    perf_inc[PerfHeadWaitMemAmo] = {{63{1'b0}}, rob_perf_events.head_wait_mem_amo};
+    perf_inc[PerfHeadWaitFp] = {{63{1'b0}}, rob_perf_events.head_wait_fp};
+    perf_inc[PerfHeadWaitFmul] = {{63{1'b0}}, rob_perf_events.head_wait_fmul};
+    perf_inc[PerfHeadWaitFdiv] = {{63{1'b0}}, rob_perf_events.head_wait_fdiv};
+    perf_inc[PerfCommitBlockedCsr] = {{63{1'b0}}, rob_perf_events.commit_blocked_csr};
+    perf_inc[PerfCommitBlockedFence] = {{63{1'b0}}, rob_perf_events.commit_blocked_fence};
+    perf_inc[PerfCommitBlockedWfi] = {{63{1'b0}}, rob_perf_events.commit_blocked_wfi};
+    perf_inc[PerfCommitBlockedMret] = {{63{1'b0}}, rob_perf_events.commit_blocked_mret};
+    perf_inc[PerfCommitBlockedTrap] = {{63{1'b0}}, rob_perf_events.commit_blocked_trap};
+
+    perf_inc[PerfIntBackpressure] = {{63{1'b0}}, (!int_rs_fu_ready && !o_rs_empty)};
+    perf_inc[PerfMulBackpressure] = {{63{1'b0}}, (!mul_rs_fu_ready && !o_mul_rs_empty)};
+    perf_inc[PerfMemResultBackpressure] = {
+      {63{1'b0}}, (mem_fu_to_adapter.valid && mem_adapter_result_pending)
+    };
+    perf_inc[PerfFpAddBackpressure] = {{63{1'b0}}, (!fp_rs_fu_ready && !o_fp_rs_empty)};
+    perf_inc[PerfFmulBackpressure] = {{63{1'b0}}, (!fmul_rs_fu_ready && !o_fmul_rs_empty)};
+    perf_inc[PerfFdivBackpressure] = {{63{1'b0}}, (!fdiv_rs_fu_ready && !o_fdiv_rs_empty)};
+    perf_inc[PerfMemDisambiguationWait] = {
+      {63{1'b0}}, (sq_check_valid_q && !sq_all_older_addrs_known)
+    };
+    perf_inc[PerfSqCommittedPending] = {{63{1'b0}}, !sq_committed_empty};
+    perf_inc[PerfSqMemWriteFire] = {{63{1'b0}}, o_sq_mem_write_en};
+    perf_inc[PerfLqMemReadFire] = {{63{1'b0}}, o_lq_mem_read_en};
+    perf_inc[PerfRobOccupancySum] = {{(64 - $bits(o_rob_count)) {1'b0}}, o_rob_count};
+    perf_inc[PerfLqOccupancySum] = {{(64 - $bits(o_lq_count)) {1'b0}}, o_lq_count};
+    perf_inc[PerfSqOccupancySum] = {{(64 - $bits(o_sq_count)) {1'b0}}, o_sq_count};
+    perf_inc[PerfIntRsOccupancySum] = {{(64 - $bits(o_rs_count)) {1'b0}}, o_rs_count};
+    perf_inc[PerfMulRsOccupancySum] = {{(64 - $bits(o_mul_rs_count)) {1'b0}}, o_mul_rs_count};
+    perf_inc[PerfMemRsOccupancySum] = {{(64 - $bits(o_mem_rs_count)) {1'b0}}, o_mem_rs_count};
+    perf_inc[PerfFpRsOccupancySum] = {{(64 - $bits(o_fp_rs_count)) {1'b0}}, o_fp_rs_count};
+    perf_inc[PerfFmulRsOccupancySum] = {{(64 - $bits(o_fmul_rs_count)) {1'b0}}, o_fmul_rs_count};
+    perf_inc[PerfFdivRsOccupancySum] = {{(64 - $bits(o_fdiv_rs_count)) {1'b0}}, o_fdiv_rs_count};
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      for (int i = 0; i < WrapperPerfCounterCount; i++) begin
+        perf_live[i] <= '0;
+        perf_snapshot[i] <= '0;
+      end
+    end else begin
+      for (int i = 0; i < WrapperPerfCounterCount; i++) begin
+        perf_live[i] <= perf_live[i] + perf_inc[i];
+        if (i_perf_snapshot_capture) perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+      end
+    end
+  end
+
+  always_comb begin
+    o_perf_counter_data = '0;
+    if (i_perf_counter_select < 8'd34) begin
+      o_perf_counter_data = perf_snapshot[i_perf_counter_select[5:0]];
+    end
+  end
+
 
   // ===========================================================================
   // Formal Verification
@@ -1694,6 +1814,10 @@ module tomasulo_wrapper (
   // Checkpoint save and restore are mutually exclusive
   always_comb assume (!(i_checkpoint_save && i_checkpoint_restore));
 
+  always_comb begin
+    if (i_checkpoint_restore_reclaim_all) assume (i_checkpoint_restore);
+  end
+
   // Shadow-track checkpoint validity
   reg [riscv_pkg::NumCheckpoints-1:0] f_cp_valid;
 
@@ -1703,6 +1827,8 @@ module tomasulo_wrapper (
     if (!i_rst_n) begin
       f_cp_valid <= '0;
     end else if (i_flush_all) begin
+      f_cp_valid <= '0;
+    end else if (i_checkpoint_restore_reclaim_all) begin
       f_cp_valid <= '0;
     end else begin
       if (i_checkpoint_save) f_cp_valid[i_checkpoint_id] <= 1'b1;

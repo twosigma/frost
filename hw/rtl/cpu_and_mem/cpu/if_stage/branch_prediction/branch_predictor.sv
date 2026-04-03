@@ -17,12 +17,12 @@
 /*
  * Branch Target Buffer (BTB) - 2-Bit Saturating Counter Predictor
  *
- * A 32-entry, 2-bit direct-mapped BTB for branch prediction.
+ * A 32-entry, 2-bit direct-mapped BTB for branch prediction by default.
  * Reduces the 3-cycle branch penalty for correctly predicted taken branches.
  *
  * Design:
  * =======
- *   - 32 entries indexed by PC[6:2] (5 bits)
+ *   - 32 entries indexed by PC[6:2] (5 bits) by default
  *   - Each entry: valid (1) + tag (26 bits) + target (32) + counter (2)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - 2-bit saturating counter (bimodal predictor):
@@ -43,7 +43,7 @@
  * Operation:
  * ==========
  *   Prediction (IF stage):
- *     - Index BTB with current PC[6:2]
+ *     - Index BTB with current PC[6:2] by default
  *     - Compare tag (PC[31:7] ++ PC[1]) with stored tag
  *     - If hit && counter[1] set → predict taken, use stored target
  *     - Otherwise → predict not-taken (sequential)
@@ -86,7 +86,7 @@ module branch_predictor #(
 );
 
   // BTB parameters
-  localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;  // 32
+  localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;
   // Tag includes PC[1] to distinguish halfword-aligned addresses (important for C extension).
   // Without PC[1], addresses like 0x100 and 0x102 would alias to the same entry.
   localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 26 bits (includes PC[1])

@@ -35,6 +35,7 @@ Original Author: Shay Gal-on
 #include "coremark.h"
 
 #include "timer.h"
+#include "tomasulo_profile.h"
 
 #if VALIDATION_RUN
 volatile ee_s32 seed1_volatile = 0x3415;
@@ -77,6 +78,8 @@ volatile ee_s32 seed5_volatile = 0;
 
 /** Define Host specific (POSIX), or target specific global time variables. */
 static CORETIMETYPE start_time_val, stop_time_val;
+static tomasulo_profile_snapshot_t coremark_profile_start;
+static tomasulo_profile_snapshot_t coremark_profile_stop;
 
 /* Function : start_time
         This function will be called right before starting the timed portion of
@@ -88,6 +91,7 @@ static CORETIMETYPE start_time_val, stop_time_val;
 */
 void start_time(void)
 {
+    tomasulo_profile_take_snapshot(&coremark_profile_start);
     GETMYTIME(&start_time_val);
 }
 /* Function : stop_time
@@ -101,6 +105,7 @@ void start_time(void)
 void stop_time(void)
 {
     GETMYTIME(&stop_time_val);
+    tomasulo_profile_take_snapshot(&coremark_profile_stop);
 }
 /* Function : get_time
         Return an abstract "ticks" number that signifies time on the system.
@@ -194,6 +199,8 @@ void portable_fini(core_portable *p)
     /* Print correct 64-bit total ticks (core_main.c truncates to 32-bit) */
     ee_printf("Total 64-bit ticks : %llu\n", (unsigned long long) (stop_time_val - start_time_val));
     ee_printf("To calculate Coremark score: ITERATIONS*FPGA_CPU_CLK_FREQ/(Total 64-bit ticks)\n");
+    tomasulo_profile_print_report(
+        "CoreMark timed region", &coremark_profile_start, &coremark_profile_stop);
     if (res->err == 0) {
         ee_printf("<<PASS>>\n");
     } else {

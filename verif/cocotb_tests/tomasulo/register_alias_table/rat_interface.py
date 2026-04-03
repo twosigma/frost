@@ -232,6 +232,7 @@ class RATInterface:
         # Checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
+        self.dut.i_checkpoint_restore_reclaim_all.value = 0
 
         # Checkpoint free
         self.dut.i_checkpoint_free.value = 0
@@ -477,11 +478,14 @@ class RATInterface:
         """Drive checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 1
         self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_restore_reclaim_all.value = 0
         self._pending_checkpoint_restore = checkpoint_id & 0x3
 
     def clear_checkpoint_restore(self) -> None:
         """Clear checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 0
+        self.dut.i_checkpoint_restore_id.value = 0
+        self.dut.i_checkpoint_restore_reclaim_all.value = 0
         self._apply_pending_cycle_updates()
 
     async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int]:

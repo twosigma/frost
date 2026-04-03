@@ -688,7 +688,9 @@ async def run_until_complete(
     last_progress_retired = 0
     is_coremark_like = app_name is not None and app_name.startswith("coremark")
     progress_interval = 0
-    if is_coremark_like:
+    if os.environ.get("COCOTB_PROGRESS_INTERVAL") is not None:
+        progress_interval = int(os.environ["COCOTB_PROGRESS_INTERVAL"])
+    elif is_coremark_like:
         progress_interval = int(
             os.environ.get("COCOTB_COREMARK_PROGRESS_INTERVAL", 500_000)
         )
@@ -759,6 +761,7 @@ async def run_until_complete(
     front_end_cf_serialize_stall_sig = None
     front_end_stall_q_sig = None
     replay_after_dispatch_stall_q_sig = None
+    replay_after_serialize_stall_q_sig = None
     if_ras_ckpt_tos_sig = None
     if_ras_ckpt_vc_sig = None
     pd_ras_ckpt_tos_sig = None
@@ -827,7 +830,7 @@ async def run_until_complete(
         control_flow_trace_label = os.environ.get(
             "FROST_CONTROL_FLOW_TRACE_LABEL", f"{app_name or 'program'} trace"
         )
-    if is_coremark_like:
+    if progress_interval:
         retire_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
         )
@@ -1018,6 +1021,30 @@ async def run_until_complete(
         )
         fe_cf_pending_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.front_end_control_flow_pending"
+        )
+        dispatch_stall_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
+        )
+        if_stall_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
+        )
+        if_stall_registered_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall_registered"
+        )
+        front_end_cf_serialize_stall_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_front_end_cf_serialize_stall"
+        )
+        front_end_stall_q_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_stall_q"
+        )
+        replay_after_dispatch_stall_q_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
+        )
+        replay_after_serialize_stall_q_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_serialize_stall_q"
+        )
+        branch_in_flight_count_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_branch_in_flight_count"
         )
         btb_hit_sig = _get_signal(
             dut,
@@ -1513,6 +1540,20 @@ async def run_until_complete(
                 last_x18_commit = commit_data
             elif commit_addr == 19:
                 last_x19_commit = commit_data
+            if (
+                control_flow_trace_label is not None
+                and commit_addr == 13
+                and len(control_flow_debug_events) < control_flow_debug_limit
+            ):
+                commit_pc = _read_int(commit_pc_live_sig)
+                if in_trace_window(commit_pc):
+                    control_flow_debug_events.append(
+                        "wrx13  "
+                        f"cycle={cycle + 1} "
+                        f"data=0x{(commit_data or 0):08x} "
+                        f"commit_pc=0x{(commit_pc or 0):08x} "
+                        f"commit_v={int(bool(_read_bool(commit_valid_live_sig)))}"
+                    )
         if _read_bool(retire_sig):
             retired_count += 1
             retire_pc = _read_int(retire_pc_sig)
@@ -1774,6 +1815,23 @@ async def run_until_complete(
             and len(control_flow_debug_events) < control_flow_debug_limit
             and not retire_only_trace
         ):
+            issue_pc = _read_int(issue_pc_sig) if _read_bool(issue_valid_sig) else None
+            if in_trace_window(issue_pc):
+                control_flow_debug_events.append(
+                    "issue  "
+                    f"cycle={cycle + 1} "
+                    f"x2={last_x2_commit} "
+                    f"x5={last_x5_commit} "
+                    f"x8={last_x8_commit} "
+                    f"x9={last_x9_commit} "
+                    f"x10={last_x10_commit} "
+                    f"x11={last_x11_commit} "
+                    f"x19={last_x19_commit} "
+                    f"pc=0x{(issue_pc or 0):08x} "
+                    f"src1=0x{(_read_int(issue_src1_sig) or 0):08x} "
+                    f"src2=0x{(_read_int(issue_src2_sig) or 0):08x} "
+                    f"pred_taken={_read_bool(issue_pred_taken_sig)}"
+                )
             update_pc = _read_int(btb_update_pc_sig)
             if (
                 app_name == "ras_stress_test"
@@ -1831,6 +1889,7 @@ async def run_until_complete(
                     f"fe_ser_stall={_read_bool(front_end_cf_serialize_stall_sig)} "
                     f"stall_q={_read_bool(front_end_stall_q_sig)} "
                     f"replay_q={_read_bool(replay_after_dispatch_stall_q_sig)} "
+                    f"replay_ser_q={_read_bool(replay_after_serialize_stall_q_sig)} "
                     f"br_inflight={_read_int(branch_in_flight_count_sig)} "
                     f"cf_hold={_read_bool(if_control_flow_holdoff_sig)} "
                     f"br_taken={_read_bool(branch_taken_live_sig)} "
@@ -2083,6 +2142,28 @@ async def run_until_complete(
         if is_coremark_like and coremark_matrix_events:
             cocotb.log.error(
                 "Coremark matrix window trace:\n" + "\n".join(coremark_matrix_events)
+            )
+        if control_flow_trace_label is not None and retired_pc_hist:
+            top_retired_pcs = ", ".join(
+                f"0x{pc:08x}:{count}" for pc, count in retired_pc_hist.most_common(12)
+            )
+            cocotb.log.error(
+                f"{control_flow_trace_label} retired PC histogram (top 12): "
+                + top_retired_pcs
+            )
+        if control_flow_trace_label is not None and control_flow_debug_events:
+            cocotb.log.error(
+                f"{control_flow_trace_label} loop trace:\n"
+                + "\n".join(control_flow_debug_events)
+            )
+        if app_name == "ras_stress_test" and special_issue_events:
+            cocotb.log.error(
+                "RAS_stress_test special issue trace:\n"
+                + "\n".join(special_issue_events)
+            )
+        if app_name == "ras_stress_test" and btb_update_events:
+            cocotb.log.error(
+                "RAS_stress_test BTB update trace:\n" + "\n".join(btb_update_events)
             )
         cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
         raise AssertionError(

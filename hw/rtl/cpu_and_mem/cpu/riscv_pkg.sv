@@ -320,6 +320,12 @@ package riscv_pkg;
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
+  // Custom machine CSRs for Tomasulo performance profiling
+  localparam bit [11:0] CsrMperfSel = 12'h7C0;  // Profiling counter selector
+  localparam bit [11:0] CsrMperfCtl = 12'h7C1;  // Profiling control (bit 0 = snapshot)
+  localparam bit [11:0] CsrMperfData = 12'hFC0;  // Selected counter low 32 bits
+  localparam bit [11:0] CsrMperfDataH = 12'hFC1;  // Selected counter high 32 bits
+  localparam bit [11:0] CsrMperfCount = 12'hFC2;  // Number of profiling counters
 
   // F extension: Floating-point CSRs
   localparam bit [11:0] CsrFflags = 12'h001;  // FP exception flags (NV, DZ, OF, UF, NX)
@@ -1205,6 +1211,7 @@ package riscv_pkg;
   typedef struct packed {
     logic                    alloc_valid;       // Request Reorder Buffer allocation
     logic [XLEN-1:0]         pc;
+    rs_type_e                rs_type;
     logic                    dest_rf;
     logic [RegAddrWidth-1:0] dest_reg;
     logic                    dest_valid;
@@ -1323,6 +1330,25 @@ package riscv_pkg;
     logic is_sc;  // SC (store-conditional, checks reservation)
     logic is_compressed;  // Compressed (16-bit) instruction (for BTB update)
   } reorder_buffer_commit_t;
+
+  typedef struct packed {
+    logic rob_empty;
+    logic head_wait_total;
+    logic head_wait_int;
+    logic head_wait_branch;
+    logic head_wait_mul;
+    logic head_wait_mem_load;
+    logic head_wait_mem_store;
+    logic head_wait_mem_amo;
+    logic head_wait_fp;
+    logic head_wait_fmul;
+    logic head_wait_fdiv;
+    logic commit_blocked_csr;
+    logic commit_blocked_fence;
+    logic commit_blocked_wfi;
+    logic commit_blocked_mret;
+    logic commit_blocked_trap;
+  } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------
   // RAT Entry and Checkpoint Structures
@@ -1688,9 +1714,15 @@ package riscv_pkg;
 
   // Dispatch status (from dispatch to front-end)
   typedef struct packed {
+    logic dispatch_valid;
     logic stall;                // Stall decode (Reorder Buffer/RS/LQ/SQ full)
     logic reorder_buffer_full;
-    logic rs_full;              // Target RS is full
+    logic int_rs_full;
+    logic mul_rs_full;
+    logic mem_rs_full;
+    logic fp_rs_full;
+    logic fmul_rs_full;
+    logic fdiv_rs_full;
     logic lq_full;
     logic sq_full;
     logic checkpoint_full;      // All checkpoints in use (branch)

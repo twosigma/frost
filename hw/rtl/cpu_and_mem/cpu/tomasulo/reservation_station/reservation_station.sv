@@ -241,7 +241,7 @@ module reservation_station #(
   logic issue_fire;
 
   // Dispatch condition
-  logic dispatch_fire;
+  (* max_fanout = 32 *) logic dispatch_fire;
 
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
@@ -252,7 +252,7 @@ module reservation_station #(
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN;  // 217
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN;
 
   logic [PayloadWidth-1:0] payload_wr_data;
   logic [PayloadWidth-1:0] payload_rd_data;

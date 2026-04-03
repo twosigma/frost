@@ -806,6 +806,46 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 25b: Commit-visible forwarding when ROB head has advanced
+# ============================================================================
+@cocotb.test()
+async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
+    """A just-committed store must still block/forward a younger load.
+
+    The ROB can advance its head to the load's tag before the SQ latches the
+    store's committed bit. Forwarding must treat i_commit_valid as visible in
+    that same cycle so the load cannot issue to memory in front of the store.
+    """
+    dut_if, model = await setup(dut)
+
+    store_addr = 0x2000
+    store_data = 0x1234ABCD
+    store_tag = 3
+    load_tag = 4
+
+    await alloc_addr_data(
+        dut_if, model, rob_tag=store_tag, address=store_addr, data=store_data
+    )
+
+    dut_if.drive_rob_head_tag(load_tag)
+    dut_if.drive_commit(store_tag)
+    dut_if.drive_sq_check(addr=store_addr, rob_tag=load_tag, size=MEM_SIZE_WORD)
+    await dut_if.step()  # Wait for registered SQ forwarding output
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "The committing older store should still count as known"
+    assert fwd.match, "A just-committed older store must still match the load"
+    assert fwd.can_forward, "A just-committed older store must still forward"
+    assert fwd.data == store_data, f"Expected 0x{store_data:x}, got 0x{fwd.data:x}"
+
+    dut_if.clear_commit()
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+
+# ============================================================================
 # Test 26: FSD → LW overlap at +4 address
 # ============================================================================
 @cocotb.test()

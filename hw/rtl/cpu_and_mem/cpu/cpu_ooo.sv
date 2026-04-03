@@ -80,6 +80,45 @@ module cpu_ooo #(
   logic flush_pipeline  /* verilator isolate_assignments */;
   logic flush_for_trap;
   logic flush_for_mret;
+  riscv_pkg::dispatch_status_t dispatch_status;
+
+  localparam int unsigned PerfTopCounterCount = 20;
+  localparam int unsigned PerfWrapperCounterCount = 34;
+  localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
+  localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
+  localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);
+  localparam logic [7:0] PerfWrapperBaseSel = 8'(PerfWrapperBase);
+  localparam logic [7:0] PerfCounterCountSel = 8'(PerfCounterCount);
+  localparam int unsigned PerfDispatchFire = 0;
+  localparam int unsigned PerfDispatchStall = 1;
+  localparam int unsigned PerfFrontendBubble = 2;
+  localparam int unsigned PerfFlushRecovery = 3;
+  localparam int unsigned PerfPostFlushHoldoff = 4;
+  localparam int unsigned PerfCsrSerialize = 5;
+  localparam int unsigned PerfControlFlowSerialize = 6;
+  localparam int unsigned PerfDispatchStallRobFull = 7;
+  localparam int unsigned PerfDispatchStallIntRsFull = 8;
+  localparam int unsigned PerfDispatchStallMulRsFull = 9;
+  localparam int unsigned PerfDispatchStallMemRsFull = 10;
+  localparam int unsigned PerfDispatchStallFpRsFull = 11;
+  localparam int unsigned PerfDispatchStallFmulRsFull = 12;
+  localparam int unsigned PerfDispatchStallFdivRsFull = 13;
+  localparam int unsigned PerfDispatchStallLqFull = 14;
+  localparam int unsigned PerfDispatchStallSqFull = 15;
+  localparam int unsigned PerfDispatchStallCheckpointFull = 16;
+  localparam int unsigned PerfNoRetireNotEmpty = 17;
+  localparam int unsigned PerfRobEmpty = 18;
+  localparam int unsigned PerfPredictionDisabled = 19;
+
+  logic [63:0] perf_top_live[PerfTopCounterCount];
+  logic [63:0] perf_top_snapshot[PerfTopCounterCount];
+  logic [63:0] perf_top_inc[PerfTopCounterCount];
+  logic [7:0] perf_counter_select;
+  logic perf_snapshot_capture;
+  logic [63:0] perf_counter_data;
+  logic [31:0] perf_counter_count;
+  logic [7:0] wrapper_perf_counter_select;
+  logic [63:0] wrapper_perf_counter_data;
 
   // CSR dispatch fence: the CDB carries rs1 (write operand) for CSR ops,
   // not the CSR read result (which is only available at commit). Stall
@@ -90,16 +129,21 @@ module cpu_ooo #(
   localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
   logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
   logic front_end_control_flow_pending;
+  logic front_end_indirect_control_flow_pending;
   logic if_unpredicted_control_flow;
+  logic if_unpredicted_indirect_control_flow;
   logic pd_unpredicted_control_flow;
+  logic pd_unpredicted_indirect_control_flow;
   logic id_unpredicted_control_flow;
+  logic id_unpredicted_indirect_control_flow;
   logic front_end_prediction_fence_pending;
   logic disable_branch_prediction_ooo;
-  logic serializing_alloc_fire;
+  (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
   logic branch_alloc_fire;
   logic branch_commit_fire;
   logic branch_resolved_correct;  // branch resolved correctly at execute time
+  logic branch_unresolved_decrement;  // resolve event for unresolved counter (includes JAL issue)
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.
@@ -116,7 +160,14 @@ module cpu_ooo #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  assign branch_alloc_fire = rob_alloc_req.alloc_valid && rob_alloc_req.is_branch;
+  // Keep the debug in-flight counter aligned to branches that actually own a
+  // speculative checkpoint. Correctly predicted direct JALs can now skip
+  // checkpoint allocation entirely, so counting all is_branch allocs here would
+  // leak the debug counter until commit.
+  assign branch_alloc_fire = rob_checkpoint_valid;
+  logic branch_unresolved_alloc_fire;
+  assign branch_unresolved_alloc_fire =
+      rob_alloc_req.alloc_valid && rob_alloc_req.is_branch && !rob_alloc_req.is_jal;
   assign branch_commit_fire = correct_branch_commit_pending ||
                              (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
 
@@ -147,7 +198,7 @@ module cpu_ooo #(
 
   // Track the number of branches that have dispatched but not yet resolved.
   // Incremented at dispatch (branch_alloc_fire), decremented at execute
-  // (branch_resolved_correct), reset on flush.  This counter is separate
+  // (branch_unresolved_decrement), reset on flush.  This counter is separate
   // from branch_in_flight_count (which balances at commit) and is used
   // solely for the prediction-disable and front-end-stall signals.
   // When all dispatched branches have resolved, prediction can safely
@@ -159,7 +210,7 @@ module cpu_ooo #(
       branch_unresolved_count <= '0;
     end else begin
       case ({
-        branch_alloc_fire, branch_resolved_correct
+        branch_unresolved_alloc_fire, branch_unresolved_decrement
       })
         2'b10:   branch_unresolved_count <= branch_unresolved_count + 1'b1;
         2'b01:   branch_unresolved_count <= branch_unresolved_count - 1'b1;
@@ -186,9 +237,10 @@ module cpu_ooo #(
 
   // If an older unresolved branch/jump is still in flight, the shared
   // in-order front-end cannot safely march a younger *unpredicted*
-  // control-flow instruction through IF/PD/ID. Hold the front-end at that
-  // younger op until the older branch resolves, instead of letting wrong-path
-  // fetch run ahead and relying on a later commit-time redirect to clean it up.
+  // indirect control-flow instruction through IF/PD/ID. Direct branches/JALs
+  // already have enough predictor metadata to keep the front-end moving; the
+  // riskier case is an unresolved older branch plus a younger unpredicted
+  // indirect redirect (JALR/return).
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
   assign front_end_cf_serialize_stall_comb = branch_unresolved && front_end_control_flow_pending;
@@ -325,6 +377,7 @@ module cpu_ooo #(
   logic dbg_front_end_cf_serialize_stall  /* verilator public_flat_rd */;
   logic dbg_stall_q  /* verilator public_flat_rd */;
   logic dbg_replay_after_dispatch_stall_q  /* verilator public_flat_rd */;
+  logic dbg_replay_after_serialize_stall_q  /* verilator public_flat_rd */;
   logic [BranchInFlightCountWidth-1:0] dbg_branch_in_flight_count  /* verilator public_flat_rd */;
   logic dbg_rob_alloc_valid  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_rob_alloc_pc  /* verilator public_flat_rd */;
@@ -361,6 +414,7 @@ module cpu_ooo #(
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
   assign dbg_stall_q = stall_q;
   assign dbg_replay_after_dispatch_stall_q = replay_after_dispatch_stall_q;
+  assign dbg_replay_after_serialize_stall_q = replay_after_serialize_stall_q;
   assign dbg_branch_in_flight_count = branch_in_flight_count;
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
@@ -619,8 +673,11 @@ module cpu_ooo #(
   assign dbg_id_valid = id_valid;
 
   logic if_has_control_flow;
+  logic if_has_indirect_control_flow;
   logic pd_has_control_flow;
+  logic pd_has_indirect_control_flow;
   logic id_has_control_flow;
+  logic id_has_indirect_control_flow;
 
   function automatic logic if_stage_has_control_flow(input riscv_pkg::from_if_to_pd_t if_pkt);
     logic [2:0] c_funct3;
@@ -660,11 +717,41 @@ module cpu_ooo #(
     end
   endfunction
 
+  function automatic logic if_stage_has_indirect_control_flow(
+      input riscv_pkg::from_if_to_pd_t if_pkt);
+    logic [15:0] c_instr;
+    logic [ 1:0] c_op;
+    logic [ 3:0] c_funct4;
+    logic [4:0] c_rs1, c_rs2;
+    begin
+      if_stage_has_indirect_control_flow = 1'b0;
+      if (!if_pkt.sel_nop) begin
+        if (if_pkt.sel_compressed) begin
+          c_instr = if_pkt.effective_instr[15:0];
+          c_op = c_instr[1:0];
+          c_funct4 = c_instr[15:12];
+          c_rs1 = c_instr[11:7];
+          c_rs2 = c_instr[6:2];
+          if_stage_has_indirect_control_flow = ((c_op == 2'b10) &&
+                                                (c_rs2 == 5'b00000) &&
+                                                (c_rs1 != 5'b00000) &&
+                                                ((c_funct4 == 4'b1000) ||
+                                                 (c_funct4 == 4'b1001)));
+        end else begin
+          if_stage_has_indirect_control_flow = (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JALR);
+        end
+      end
+    end
+  endfunction
+
   assign if_has_control_flow = if_stage_has_control_flow(from_if_to_pd);
+  assign if_has_indirect_control_flow = if_stage_has_indirect_control_flow(from_if_to_pd);
   assign pd_has_control_flow = if_valid_q &&
                                ((from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) ||
                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL) ||
                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR));
+  assign pd_has_indirect_control_flow = if_valid_q &&
+                                        (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR);
   assign id_has_control_flow = pd_valid_q && (
       from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
       from_id_to_ex.instruction_operation == riscv_pkg::BNE ||
@@ -675,6 +762,8 @@ module cpu_ooo #(
       from_id_to_ex.instruction_operation == riscv_pkg::JAL ||
       from_id_to_ex.instruction_operation == riscv_pkg::JALR
   );
+  assign id_has_indirect_control_flow = pd_valid_q &&
+                                        (from_id_to_ex.instruction_operation == riscv_pkg::JALR);
 
   // Only unpredicted front-end control flow needs the extra prediction fence.
   // Once an older branch/return has already redirected fetch onto its predicted
@@ -696,15 +785,26 @@ module cpu_ooo #(
                                          from_if_to_pd.ras_predicted);
   end
   assign if_unpredicted_control_flow = if_unpredicted_control_flow_q;
+  assign if_unpredicted_indirect_control_flow = if_unpredicted_control_flow_q &&
+                                                if_has_indirect_control_flow;
   assign pd_unpredicted_control_flow = pd_has_control_flow &&
                                        !(from_pd_to_id.btb_predicted_taken ||
                                          from_pd_to_id.ras_predicted);
+  assign pd_unpredicted_indirect_control_flow = pd_has_indirect_control_flow &&
+                                                !(from_pd_to_id.btb_predicted_taken ||
+                                                  from_pd_to_id.ras_predicted);
   assign id_unpredicted_control_flow = id_has_control_flow &&
                                        !(from_id_to_ex.btb_predicted_taken ||
                                          from_id_to_ex.ras_predicted);
+  assign id_unpredicted_indirect_control_flow = id_has_indirect_control_flow &&
+                                                !(from_id_to_ex.btb_predicted_taken ||
+                                                  from_id_to_ex.ras_predicted);
   assign front_end_control_flow_pending = if_unpredicted_control_flow ||
                                           pd_unpredicted_control_flow ||
                                           id_unpredicted_control_flow;
+  assign front_end_indirect_control_flow_pending = if_unpredicted_indirect_control_flow ||
+                                                   pd_unpredicted_indirect_control_flow ||
+                                                   id_unpredicted_indirect_control_flow;
 
   // ===========================================================================
   // Tomasulo Wrapper Instance
@@ -796,6 +896,8 @@ module cpu_ooo #(
   logic lq_mem_read_valid;
   logic lq_mem_request_valid;
   logic [XLEN-1:0] lq_mem_request_addr;
+  logic lq_mem_request_fire;
+  logic [XLEN-1:0] lq_mem_request_addr_eff;
 
   // AMO memory interface
   logic amo_mem_write_en;
@@ -819,6 +921,7 @@ module cpu_ooo #(
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
+  logic checkpoint_restore_reclaim_all;
   logic [riscv_pkg::RasPtrBits-1:0] restored_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] restored_ras_valid_count;
 
@@ -945,6 +1048,7 @@ module cpu_ooo #(
       // RAT checkpoint restore
       .i_checkpoint_restore(checkpoint_restore),
       .i_checkpoint_restore_id(checkpoint_restore_id),
+      .i_checkpoint_restore_reclaim_all(checkpoint_restore_reclaim_all),
       .o_ras_tos(restored_ras_tos),
       .o_ras_valid_count(restored_ras_valid_count),
 
@@ -1031,7 +1135,12 @@ module cpu_ooo #(
       .o_amo_mem_write_en  (amo_mem_write_en),
       .o_amo_mem_write_addr(amo_mem_write_addr),
       .o_amo_mem_write_data(amo_mem_write_data),
-      .i_amo_mem_write_done(amo_mem_write_done)
+      .i_amo_mem_write_done(amo_mem_write_done),
+
+      // Profiling snapshot
+      .i_perf_snapshot_capture(perf_snapshot_capture),
+      .i_perf_counter_select (wrapper_perf_counter_select),
+      .o_perf_counter_data   (wrapper_perf_counter_data)
   );
 
   // ===========================================================================
@@ -1113,6 +1222,9 @@ module cpu_ooo #(
       // Flush
       .i_flush(flush_pipeline),
 
+      // Dispatch profiling status
+      .o_status(dispatch_status),
+
       // Stall output
       .o_stall(dispatch_stall)
   );
@@ -1142,6 +1254,10 @@ module cpu_ooo #(
 
   // Map instr_op_e → branch_taken_op_e for branch_jump_unit
   riscv_pkg::branch_taken_op_e branch_op_resolved;
+  assign lq_mem_request_fire = lq_mem_request_valid ||
+                               (lq_mem_read_en && !sq_mem_write_en && !amo_mem_write_en);
+  assign lq_mem_request_addr_eff = lq_mem_request_valid ? lq_mem_request_addr : lq_mem_read_addr;
+
   always_comb begin
     case (rs_issue_int.op)
       riscv_pkg::BEQ:                  branch_op_resolved = riscv_pkg::BREQ;
@@ -1210,6 +1326,10 @@ module cpu_ooo #(
   // predicted.  Used to drop front_end_cf_serialize_stall early.
   assign branch_resolved_correct = branch_update.valid && !branch_update.mispredicted;
 
+  // Direct JALs are architecturally resolved at dispatch/rename time and
+  // therefore never enter the unresolved-branch tracker.
+  assign branch_unresolved_decrement = branch_resolved_correct;
+
   // ===========================================================================
   // Commit-Time Actions
   // ===========================================================================
@@ -1273,12 +1393,6 @@ module cpu_ooo #(
   // ===========================================================================
   // Misprediction & Flush Controller
   // ===========================================================================
-  // On ROB commit of a mispredicted branch:
-  //   1. Flush all younger entries in ROB (flush_en + flush_tag)
-  //   2. Restore RAT from checkpoint
-  //   3. Redirect IF stage to correct target
-  //   4. Flush front-end pipeline (IF/PD/ID)
-
   logic commit_is_misprediction;
   assign commit_is_misprediction = rob_commit_comb.valid && rob_commit_comb.misprediction;
 
@@ -1359,8 +1473,9 @@ module cpu_ooo #(
     // replaying a checkpoint image, so skipping restore on calls leaves flushed
     // younger mappings for caller fall-through instructions live into the
     // callee after redirect.
-    checkpoint_restore    = mispredict_recovery_pending && mispredict_commit_q.has_checkpoint;
+    checkpoint_restore = mispredict_recovery_pending && mispredict_commit_q.has_checkpoint;
     checkpoint_restore_id = mispredict_commit_q.checkpoint_id;
+    checkpoint_restore_reclaim_all = checkpoint_restore;
   end
 
   // Checkpoint free on any branch commit (correct or mispredicted)
@@ -1460,14 +1575,16 @@ module cpu_ooo #(
       o_data_mem_wr_data        = amo_mem_write_data;
       o_data_mem_per_byte_wr_en = 4'b1111;
       amo_mem_write_done        = 1'b1;
-    end else if (lq_mem_request_valid) begin
-      // Load queue memory read
-      o_data_mem_addr        = lq_mem_request_addr;
+    end else if (lq_mem_request_fire) begin
+      // Load queue memory read. Bypass the one-entry request register when the
+      // port is already free; fall back to the queued copy only when a store
+      // or AMO held the port in the previous cycle.
+      o_data_mem_addr        = lq_mem_request_addr_eff;
       o_data_mem_read_enable = 1'b1;
       // MMIO detection
-      if (lq_mem_request_addr >= MMIO_ADDR[XLEN-1:0] &&
-          lq_mem_request_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0])) begin
-        o_mmio_load_addr  = lq_mem_request_addr;
+      if (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0] &&
+          lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0])) begin
+        o_mmio_load_addr  = lq_mem_request_addr_eff;
         o_mmio_load_valid = 1'b1;
       end
     end
@@ -1486,15 +1603,18 @@ module cpu_ooo #(
         if (!sq_mem_write_en && !amo_mem_write_en) begin
           lq_mem_request_valid <= 1'b0;
         end
-      end else if (lq_mem_read_en) begin
+      end else if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en)) begin
         lq_mem_request_valid <= 1'b1;
       end
     end
   end
 
-  // LQ memory request address capture (no reset - gated by lq_mem_request_valid)
+  // Capture the blocked load request so it can retry once the store/AMO port
+  // conflict clears. Unblocked loads bypass this register entirely.
   always_ff @(posedge i_clk) begin
-    if (lq_mem_read_en) lq_mem_request_addr <= lq_mem_read_addr;
+    if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en)) begin
+      lq_mem_request_addr <= lq_mem_read_addr;
+    end
   end
 
   // Load data always comes from external memory
@@ -1568,7 +1688,11 @@ module cpu_ooo #(
       .i_fp_flags_wb_valid(rob_commit_valid && rob_commit.has_fp_flags),
       .i_fp_flags_ma('0),
       .i_fp_flags_ma_valid(1'b0),
-      .o_frm(frm_csr)
+      .o_frm(frm_csr),
+      .o_perf_counter_select(perf_counter_select),
+      .o_perf_snapshot_capture(perf_snapshot_capture),
+      .i_perf_counter_data(perf_counter_data),
+      .i_perf_counter_count(perf_counter_count)
   );
 
   // CSR done acknowledgment — 1-cycle delay to match CSR file read latency.
@@ -1634,6 +1758,75 @@ module cpu_ooo #(
   // The ROB's serial FSM stays in TRAP_WAIT/MRET_EXEC one extra cycle.
   assign rob_trap_taken_ack = trap_taken_reg;
   assign mret_done_ack = mret_taken_reg;
+
+  // ===========================================================================
+  // Profiling Counter Aggregation
+  // ===========================================================================
+  assign wrapper_perf_counter_select =
+      ((perf_counter_select >= PerfWrapperBaseSel) && (perf_counter_select < PerfCounterCountSel)) ?
+      (perf_counter_select - PerfWrapperBaseSel) : 8'd0;
+  assign perf_counter_count = PerfCounterCount;
+
+  always_comb begin
+    for (int i = 0; i < PerfTopCounterCount; i++) begin
+      perf_top_inc[i] = '0;
+    end
+
+    perf_top_inc[PerfDispatchFire] = {{63{1'b0}}, rob_alloc_req.alloc_valid};
+    perf_top_inc[PerfDispatchStall] = {{63{1'b0}}, dispatch_status.stall};
+    perf_top_inc[PerfFrontendBubble] = {
+      {63{1'b0}},
+      (!i_rst && !flush_pipeline && (post_flush_holdoff_q == 2'd0) &&
+                      !dispatch_status.stall &&
+                      !(csr_in_flight || serializing_alloc_fire) &&
+                      !front_end_cf_serialize_stall &&
+                      !dispatch_status.dispatch_valid)
+    };
+    perf_top_inc[PerfFlushRecovery] = {{63{1'b0}}, flush_pipeline};
+    perf_top_inc[PerfPostFlushHoldoff] = {{63{1'b0}}, (post_flush_holdoff_q != 2'd0)};
+    perf_top_inc[PerfCsrSerialize] = {{63{1'b0}}, (csr_in_flight || serializing_alloc_fire)};
+    perf_top_inc[PerfControlFlowSerialize] = {{63{1'b0}}, front_end_cf_serialize_stall};
+    perf_top_inc[PerfDispatchStallRobFull] = {{63{1'b0}}, dispatch_status.reorder_buffer_full};
+    perf_top_inc[PerfDispatchStallIntRsFull] = {{63{1'b0}}, dispatch_status.int_rs_full};
+    perf_top_inc[PerfDispatchStallMulRsFull] = {{63{1'b0}}, dispatch_status.mul_rs_full};
+    perf_top_inc[PerfDispatchStallMemRsFull] = {{63{1'b0}}, dispatch_status.mem_rs_full};
+    perf_top_inc[PerfDispatchStallFpRsFull] = {{63{1'b0}}, dispatch_status.fp_rs_full};
+    perf_top_inc[PerfDispatchStallFmulRsFull] = {{63{1'b0}}, dispatch_status.fmul_rs_full};
+    perf_top_inc[PerfDispatchStallFdivRsFull] = {{63{1'b0}}, dispatch_status.fdiv_rs_full};
+    perf_top_inc[PerfDispatchStallLqFull] = {{63{1'b0}}, dispatch_status.lq_full};
+    perf_top_inc[PerfDispatchStallSqFull] = {{63{1'b0}}, dispatch_status.sq_full};
+    perf_top_inc[PerfDispatchStallCheckpointFull] = {{63{1'b0}}, dispatch_status.checkpoint_full};
+    perf_top_inc[PerfNoRetireNotEmpty] = {
+      {63{1'b0}}, (!rob_commit_comb.valid && !rob_empty && !flush_pipeline)
+    };
+    perf_top_inc[PerfRobEmpty] = {{63{1'b0}}, (rob_empty && !flush_pipeline)};
+    perf_top_inc[PerfPredictionDisabled] = {
+      {63{1'b0}}, (disable_branch_prediction_ooo && !i_disable_branch_prediction)
+    };
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i < PerfTopCounterCount; i++) begin
+        perf_top_live[i] <= '0;
+        perf_top_snapshot[i] <= '0;
+      end
+    end else begin
+      for (int i = 0; i < PerfTopCounterCount; i++) begin
+        perf_top_live[i] <= perf_top_live[i] + perf_top_inc[i];
+        if (perf_snapshot_capture) perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+      end
+    end
+  end
+
+  always_comb begin
+    perf_counter_data = '0;
+    if (perf_counter_select < PerfTopCounterCountSel) begin
+      perf_counter_data = perf_top_snapshot[perf_counter_select[4:0]];
+    end else if (perf_counter_select < PerfCounterCountSel) begin
+      perf_counter_data = wrapper_perf_counter_data;
+    end
+  end
 
   // ===========================================================================
   // Reset Done

@@ -169,6 +169,7 @@ module dispatch (
     // =========================================================================
     // Output: Stall Signal (to front-end pipeline control)
     // =========================================================================
+    output riscv_pkg::dispatch_status_t o_status,
     output logic o_stall
 );
 
@@ -715,6 +716,19 @@ module dispatch (
 
   // Stall: back-pressure when any needed resource is full
   always_comb begin
+    o_status = '0;
+    o_status.dispatch_valid = dispatch_valid;
+    o_status.reorder_buffer_full = dispatch_valid && i_rob_full;
+    o_status.int_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_INT) && i_int_rs_full;
+    o_status.mul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MUL) && i_mul_rs_full;
+    o_status.mem_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MEM) && i_mem_rs_full;
+    o_status.fp_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FP) && i_fp_rs_full;
+    o_status.fmul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FMUL) && i_fmul_rs_full;
+    o_status.fdiv_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FDIV) && i_fdiv_rs_full;
+    o_status.lq_full = dispatch_valid && need_lq && i_lq_full;
+    o_status.sq_full = dispatch_valid && need_sq && i_sq_full;
+    o_status.checkpoint_full = dispatch_valid && need_checkpoint && !i_checkpoint_available;
+
     if (!dispatch_valid) begin
       o_stall = 1'b0;
     end else begin
@@ -724,6 +738,7 @@ module dispatch (
                 (need_sq && i_sq_full) ||
                 (need_checkpoint && !i_checkpoint_available);
     end
+    o_status.stall = o_stall;
   end
 
   // Dispatch fires when valid and not stalled
@@ -868,6 +883,7 @@ module dispatch (
 
     o_rob_alloc_req.alloc_valid = dispatch_fire;
     o_rob_alloc_req.pc = i_from_id_to_ex.program_counter;
+    o_rob_alloc_req.rs_type = rs_type;
     o_rob_alloc_req.dest_rf = dest_rf;
     o_rob_alloc_req.dest_reg = dest_reg;
     o_rob_alloc_req.dest_valid = has_dest;

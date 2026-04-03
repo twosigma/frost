@@ -105,7 +105,13 @@ module csr_file #(
     input logic                 i_fp_flags_ma_valid, // Valid when FP instruction in MA stage
 
     // F extension: Rounding mode output for FPU
-    output logic [2:0] o_frm
+    output logic [2:0] o_frm,
+
+    // Tomasulo profiling counters
+    output logic [ 7:0] o_perf_counter_select,
+    output logic        o_perf_snapshot_capture,
+    input  logic [63:0] i_perf_counter_data,
+    input  logic [31:0] i_perf_counter_count
 );
 
   // ==========================================================================
@@ -155,6 +161,7 @@ module csr_file #(
   logic [XLEN-1:0] mepc;  // Exception PC
   logic [XLEN-1:0] mcause;  // Trap cause
   logic [XLEN-1:0] mtval;  // Trap value
+  logic [XLEN-1:0] perf_counter_select;
 
   // mip is read-only and directly reflects interrupt inputs
   logic [XLEN-1:0] mip;
@@ -197,6 +204,7 @@ module csr_file #(
       riscv_pkg::CsrMepc:     csr_current_value = mepc;
       riscv_pkg::CsrMcause:   csr_current_value = mcause;
       riscv_pkg::CsrMtval:    csr_current_value = mtval;
+      riscv_pkg::CsrMperfSel: csr_current_value = perf_counter_select;
       default:                csr_current_value = '0;
     endcase
   end
@@ -357,11 +365,12 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mtvec    <= 32'h0000_0000;
-      mscratch <= 32'h0000_0000;
-      mepc     <= 32'h0000_0000;
-      mcause   <= 32'h0000_0000;
-      mtval    <= 32'h0000_0000;
+      mtvec               <= 32'h0000_0000;
+      mscratch            <= 32'h0000_0000;
+      mepc                <= 32'h0000_0000;
+      mcause              <= 32'h0000_0000;
+      mtval               <= 32'h0000_0000;
+      perf_counter_select <= '0;
     end else if (i_trap_taken) begin
       // Trap entry: save state
       mepc   <= i_trap_pc;
@@ -374,6 +383,7 @@ module csr_file #(
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
         riscv_pkg::CsrMtval: mtval <= csr_new_value;
+        riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
         default: ;
       endcase
     end
@@ -443,6 +453,11 @@ module csr_file #(
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
         riscv_pkg::CsrMtval: csr_read_data_comb = mtval;
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
+        riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
+        riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
+        riscv_pkg::CsrMperfData: csr_read_data_comb = i_perf_counter_data[31:0];
+        riscv_pkg::CsrMperfDataH: csr_read_data_comb = i_perf_counter_data[63:32];
+        riscv_pkg::CsrMperfCount: csr_read_data_comb = i_perf_counter_count;
         // Machine information registers (read-only)
         riscv_pkg::CsrMhartid:
         csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
@@ -464,6 +479,10 @@ module csr_file #(
 
   assign o_csr_read_data = csr_read_data_reg;
   assign o_csr_read_data_comb = csr_read_data_comb;
+  assign o_perf_counter_select = perf_counter_select[7:0];
+  assign o_perf_snapshot_capture = i_csr_write_enable && i_csr_read_enable &&
+                                   (i_csr_address == riscv_pkg::CsrMperfCtl) &&
+                                   i_csr_write_data[0];
 
   // ===========================================================================
   // Formal Verification Properties

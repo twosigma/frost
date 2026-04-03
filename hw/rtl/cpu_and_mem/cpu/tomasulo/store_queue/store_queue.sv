@@ -369,6 +369,7 @@ module store_queue #(
     logic base_match;
     logic double_hi_match;
     logic load_double_hi;
+    logic store_committed;
     logic [3:0] store_byte_mask;
     logic [3:0] load_byte_mask;
 
@@ -377,20 +378,25 @@ module store_queue #(
     fwd_can_fwd         = 1'b0;
     fwd_match_idx       = '0;
     fwd_extract_type    = 2'd0;
-
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      idx             = scan_idx[i];
-      same_word       = 1'b0;
-      base_match      = 1'b0;
+      idx = scan_idx[i];
+      same_word = 1'b0;
+      base_match = 1'b0;
       double_hi_match = 1'b0;
-      load_double_hi  = 1'b0;
+      load_double_hi = 1'b0;
+      store_committed = 1'b0;
       store_byte_mask = 4'b0000;
-      load_byte_mask  = 4'b0000;
+      load_byte_mask = 4'b0000;
 
-      if (sq_valid[idx] && (sq_committed[idx] || is_older_than(
+      // Stores retire from the ROB before they drain from the SQ.  Keep a
+      // store visible to younger-load disambiguation in the cycle its commit
+      // arrives so the load cannot slip through the one-cycle sq_committed lag.
+      store_committed = sq_committed[idx] ||
+                        (i_commit_valid && (sq_rob_tag[idx] == i_commit_rob_tag));
+
+      if (sq_valid[idx] && (store_committed || is_older_than(
               sq_rob_tag[idx], i_sq_check_rob_tag, i_rob_head_tag
           ))) begin
-
         // Check if this older store has its address resolved
         if (!sq_addr_valid[idx]) begin
           fwd_all_older_known = 1'b0;
@@ -456,9 +462,8 @@ module store_queue #(
   end
 
   // Block 2: Registered forwarding outputs.
-  // TIMING: Outputs are registered to break the 12-level combinational path
-  // from SQ head_ptr through the forwarding scan to the LQ issue logic.
-  // The LQ accounts for the 1-cycle latency via sq_check_phase2.
+  // Keep the SQ compare/forwarding result behind a register so the LQ sees it
+  // one cycle later; this breaks the MEM_RS -> SQ scan -> LQ -> BRAM path.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       o_sq_all_older_addrs_known <= 1'b0;
