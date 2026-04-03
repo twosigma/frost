@@ -628,7 +628,12 @@ module cpu #(
       .i_fp_flags_ma_valid(from_ex_to_ma.is_fp_instruction && ~from_ex_to_ma.is_fp_load &&
                            (from_ex_to_ma.fp_regfile_write_enable || from_ex_to_ma.is_fp_to_int)),
       // F extension: Rounding mode output for FPU
-      .o_frm(frm_csr)
+      .o_frm(frm_csr),
+      // Tomasulo profiling CSRs are unused in the in-order core
+      .o_perf_counter_select(),
+      .o_perf_snapshot_capture(),
+      .i_perf_counter_data('0),
+      .i_perf_counter_count('0)
   );
 
   /*

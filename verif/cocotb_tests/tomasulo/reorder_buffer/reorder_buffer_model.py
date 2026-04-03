@@ -119,6 +119,7 @@ class AllocationRequest:
     """Allocation request from dispatch."""
 
     pc: int = 0
+    rs_type: int = 0
     dest_rf: int = 0
     dest_reg: int = 0
     dest_valid: bool = False

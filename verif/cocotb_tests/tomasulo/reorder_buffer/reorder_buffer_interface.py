@@ -39,9 +39,10 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (201 bits total, MSB to LSB):
-# [200]      alloc_valid
-# [199:168]  pc (32 bits)
+# reorder_buffer_alloc_req_t field positions (204 bits total, MSB to LSB):
+# [203]      alloc_valid
+# [202:171]  pc (32 bits)
+# [170:168]  rs_type (3 bits)
 # [167]      dest_rf
 # [166:162]  dest_reg (5 bits)
 # [161]      dest_valid
@@ -69,7 +70,7 @@ from .reorder_buffer_model import (
 # [35:33]    csr_op (3 bits)
 # [32:1]     csr_write_data (32 bits)
 # [0]        has_fp_flags
-ALLOC_REQ_WIDTH = 201
+ALLOC_REQ_WIDTH = 204
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -135,6 +136,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 5
     val |= (req.dest_rf & 1) << bit
     bit += 1
+    val |= (req.rs_type & 0x7) << bit
+    bit += 3
     val |= (req.pc & MASK32) << bit
     bit += 32
     val |= 1 << bit  # alloc_valid = 1

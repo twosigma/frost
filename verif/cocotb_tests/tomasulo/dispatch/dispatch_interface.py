@@ -382,6 +382,7 @@ def pack_instr_t(
 ROB_ALLOC_REQ_FIELDS = [
     ("alloc_valid", 1),
     ("pc", XLEN),
+    ("rs_type", 3),
     ("dest_rf", 1),
     ("dest_reg", REG_ADDR_WIDTH),
     ("dest_valid", 1),

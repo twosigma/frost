@@ -100,6 +100,7 @@ module register_alias_table (
     // =========================================================================
     input  logic                                    i_checkpoint_restore,
     input  logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
+    input  logic                                    i_checkpoint_restore_reclaim_all,
     output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 
@@ -435,6 +436,11 @@ module register_alias_table (
       checkpoint_valid <= '0;
     end else if (i_flush_all) begin
       checkpoint_valid <= '0;
+    end else if (i_checkpoint_restore_reclaim_all) begin
+      // cpu_ooo raises this only on post-commit mispredict recovery, where the
+      // restoring branch has already retired and every remaining checkpoint
+      // belongs to a younger wrong-path branch/jump.
+      checkpoint_valid <= '0;
     end else begin
       // Checkpoint save: mark slot valid
       if (i_checkpoint_save) begin
@@ -495,6 +501,12 @@ module register_alias_table (
       $error("RAT: Simultaneous checkpoint save and restore!");
     end
   end
+
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_checkpoint_restore_reclaim_all && !i_checkpoint_restore) begin
+      $error("RAT: reclaim_all asserted without checkpoint restore!");
+    end
+  end
 `endif  // FORMAL
 `endif  // SYNTHESIS
 
@@ -528,6 +540,12 @@ module register_alias_table (
   // Checkpoint save and restore not simultaneous
   always_comb begin
     assume (!(i_checkpoint_save && i_checkpoint_restore));
+  end
+
+  always_comb begin
+    if (i_checkpoint_restore_reclaim_all) begin
+      assume (i_checkpoint_restore);
+    end
   end
 
   // Checkpoint restore targets a valid checkpoint
@@ -579,6 +597,10 @@ module register_alias_table (
         p_flush_clears_int : assert (int_rat_valid == '0);
         p_flush_clears_fp : assert (fp_rat_valid == '0);
         p_flush_clears_ckpts : assert (checkpoint_valid == '0);
+      end
+
+      if ($past(i_checkpoint_restore_reclaim_all) && !$past(i_flush_all)) begin
+        p_restore_reclaims_ckpts : assert (checkpoint_valid == '0);
       end
 
       // After INT rename (non-x0), entry is valid with correct tag

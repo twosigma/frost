@@ -211,10 +211,15 @@ class TomasuloInterface:
         # RAT checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
+        self.dut.i_checkpoint_restore_reclaim_all.value = 0
 
         # RAT checkpoint free
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+
+        # Profiling inputs
+        self.dut.i_perf_snapshot_capture.value = 0
+        self.dut.i_perf_counter_select.value = 0
 
         # CSR read data (for ALU shim CSR operations)
         self.dut.i_csr_read_data.value = 0

@@ -47,8 +47,33 @@
  */
 
 #include "csr.h"
+#include "tomasulo_profile.h"
 #include "uart.h"
 #include <stdint.h>
+
+#ifndef TOMASULO_PERF_ENABLE_PROFILE
+#define TOMASULO_PERF_ENABLE_PROFILE 0
+#endif
+
+#if TOMASULO_PERF_ENABLE_PROFILE
+static tomasulo_profile_snapshot_t bench_profile_start;
+static tomasulo_profile_snapshot_t bench_profile_end;
+
+#define BENCH_PROFILE_BEGIN() tomasulo_profile_take_snapshot(&bench_profile_start)
+#define BENCH_PROFILE_END(label)                                                                   \
+    do {                                                                                           \
+        tomasulo_profile_take_snapshot(&bench_profile_end);                                        \
+        tomasulo_profile_print_brief_report((label), &bench_profile_start, &bench_profile_end);    \
+    } while (0)
+#else
+#define BENCH_PROFILE_BEGIN()                                                                      \
+    do {                                                                                           \
+    } while (0)
+#define BENCH_PROFILE_END(label)                                                                   \
+    do {                                                                                           \
+        (void) (label);                                                                            \
+    } while (0)
+#endif
 
 static void print_result(uint32_t cycles, uint32_t instrs)
 {
@@ -75,6 +100,7 @@ int main(void)
     /* Baseline for comparison: OOO cannot help here.                        */
     /* ===================================================================== */
     uart_printf("Bench 1: Dependent ADD chain (100 instrs)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 1\n"
@@ -86,6 +112,7 @@ int main(void)
                      : "t0");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 1: Dependent ADD chain");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -94,6 +121,7 @@ int main(void)
     /* IPC should be higher than Bench 1 if OOO is working.                  */
     /* ===================================================================== */
     uart_printf("Bench 2: Independent ADD chains (4x25 = 100 instrs)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 1\n"
@@ -111,6 +139,7 @@ int main(void)
                      : "t0", "t1", "t2", "t3");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 2: Independent ADD chains");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -119,6 +148,7 @@ int main(void)
     /* Multiply by 1 to keep the value stable (avoids overflow).             */
     /* ===================================================================== */
     uart_printf("Bench 3: Dependent MUL chain (50 instrs)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 3\n"
@@ -131,6 +161,7 @@ int main(void)
                      : "t0", "t1");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 3: Dependent MUL chain");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -139,6 +170,7 @@ int main(void)
     /* multiple MUL reservation stations, these can overlap.                  */
     /* ===================================================================== */
     uart_printf("Bench 4: Independent MUL chains (4x12 = 48 instrs)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 2\n"
@@ -157,6 +189,7 @@ int main(void)
                      : "t0", "t1", "t2", "t3", "t4");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 4: Independent MUL chains");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -165,6 +198,7 @@ int main(void)
     /* An OOO machine should overlap the ADD with the MUL stall.             */
     /* ===================================================================== */
     uart_printf("Bench 5: Mixed MUL+ADD (50 pairs = 100 instrs)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 1\n"
@@ -180,6 +214,7 @@ int main(void)
                      : "t0", "t1", "t2", "t3");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 5: Mixed MUL+ADD");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -190,6 +225,7 @@ int main(void)
     uart_printf("Bench 6: Load-store pairs (50 pairs = 100 instrs)\n");
     {
         volatile uint32_t mem_area[4];
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile("addi t0, zero, 1\n"
@@ -202,6 +238,7 @@ int main(void)
                          : "t0", "memory");
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 6: Load-store pairs");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -211,6 +248,7 @@ int main(void)
     /* Good prediction allows the loop body to overlap across iterations.    */
     /* ===================================================================== */
     uart_printf("Bench 7: Branch loop (200 iters, 3 instrs/iter)\n");
+    BENCH_PROFILE_BEGIN();
     c0 = rdcycle();
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 200\n"
@@ -224,6 +262,7 @@ int main(void)
                      : "t0", "t1");
     c1 = rdcycle();
     i1 = rdinstret();
+    BENCH_PROFILE_END("Bench 7: Branch loop");
     print_result(c1 - c0, i1 - i0);
 
     /* ===================================================================== */
@@ -239,6 +278,7 @@ int main(void)
     uart_printf("Bench 8: Dependent FADD.D chain (100 instrs)\n");
     {
         double accum = 1.0, incr = 0.5;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile(".rept 100\n"
@@ -248,6 +288,7 @@ int main(void)
                          : [i] "f"(incr));
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 8: Dependent FADD.D chain");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -260,6 +301,7 @@ int main(void)
     {
         double a0 = 1.0, a1 = 2.0, a2 = 3.0, a3 = 4.0;
         double inc = 0.5;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile(".rept 25\n"
@@ -272,6 +314,7 @@ int main(void)
                          : [inc] "f"(inc));
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 9: Independent FADD.D chains");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -283,6 +326,7 @@ int main(void)
     uart_printf("Bench 10: Dependent FMUL.D chain (50 instrs)\n");
     {
         double accum = 2.0, factor = 1.0;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile(".rept 50\n"
@@ -292,6 +336,7 @@ int main(void)
                          : [f] "f"(factor));
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 10: Dependent FMUL.D chain");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -303,6 +348,7 @@ int main(void)
     {
         double m0 = 1.0, m1 = 2.0, m2 = 3.0, m3 = 4.0;
         double factor = 1.0;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile(".rept 12\n"
@@ -315,6 +361,7 @@ int main(void)
                          : [f] "f"(factor));
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 11: Independent FMUL.D chains");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -326,6 +373,7 @@ int main(void)
     uart_printf("Bench 12: Dependent FMADD.D chain (50 instrs)\n");
     {
         double accum = 0.0, mul_one = 1.0, add_half = 0.5;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile(".rept 50\n"
@@ -335,6 +383,7 @@ int main(void)
                          : [m] "f"(mul_one), [c] "f"(add_half));
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 12: Dependent FMADD.D chain");
         print_result(c1 - c0, i1 - i0);
     }
 
@@ -346,6 +395,7 @@ int main(void)
     uart_printf("Bench 13: Mixed FP+INT (50 pairs = 100 instrs)\n");
     {
         double fp_acc = 1.0, fp_inc = 0.5;
+        BENCH_PROFILE_BEGIN();
         c0 = rdcycle();
         i0 = rdinstret();
         __asm__ volatile("addi t0, zero, 0\n"
@@ -359,6 +409,7 @@ int main(void)
                          : "t0", "t1");
         c1 = rdcycle();
         i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 13: Mixed FP+INT");
         print_result(c1 - c0, i1 - i0);
     }
 

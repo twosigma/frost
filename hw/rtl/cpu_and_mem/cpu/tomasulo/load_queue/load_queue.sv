@@ -273,28 +273,23 @@ module load_queue #(
   logic [IdxWidth-1:0] issue_mem_idx;
   logic block_younger_mem;
   logic issue_cdb_fire;
-  logic cdb_stage_result_flushed;
   logic cdb_stage_slot_available;
+  logic cdb_stage_result_flushed;
   riscv_pkg::fu_complete_t issue_cdb_result;
-  // Split cdb_stage_result into separate valid + data to prevent Vivado from
-  // connecting the reset net to data register R pins (struct-field multi-block
-  // assignment causes Vivado to merge reset across all bits).
   logic cdb_stage_valid;
   riscv_pkg::fu_complete_t cdb_stage_data;
 
   // Staged SQ-disambiguation candidate. This breaks the same-cycle
   // issue-scan -> SQ compare -> memory-launch loop by holding one
-  // candidate load stable while SQ resolves it.
+  // candidate load stable while SQ resolves it. Keep the candidate armed even
+  // while an older read is outstanding so the next load can launch as soon as
+  // the memory slot opens, instead of paying a fresh capture + SQ phase first.
   logic sq_check_pending;
   logic [IdxWidth-1:0] sq_check_idx;
   logic sq_check_capture;
   logic sq_check_replace;
   logic sq_check_entry_valid;
   logic sq_check_entry_issueable;
-
-  // TIMING: Phase 2 flag for registered SQ forwarding result. Goes high
-  // 1 cycle after o_sq_check_valid is driven so the LQ reads the SQ's
-  // registered output (not the same-cycle combinational result).
   logic sq_check_phase2;
 
   // Staged external-memory launch. After SQ disambiguation clears a load for
@@ -534,13 +529,11 @@ module load_queue #(
   logic sq_can_issue;
   logic sq_do_forward;
   logic stage_mem_issue;
+  logic cache_hit_fast_path;
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic flush_all_entries;
 
-  // TIMING: sq_can_issue and sq_do_forward use sq_check_phase2 (registered
-  // SQ result available) instead of o_sq_check_valid (same-cycle combinational).
-  // sq_check_entry_issueable re-validates the entry each cycle to discard stale results.
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
       i_sq_all_older_addrs_known && !i_sq_forward.match;
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
@@ -631,7 +624,6 @@ module load_queue #(
   // simple word-sized non-FP load. Subword loads and FLD stay on the memory
   // path to keep cache-hit semantics conservative around partial-word and
   // two-phase operations.
-  logic cache_hit_fast_path;
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
       && !i_flush_all && !i_flush_en
       && sq_can_issue
@@ -653,7 +645,7 @@ module load_queue #(
   assign stage_mem_issue = !i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
 
-  // Memory issue (placed after cache_hit_fast_path for Icarus compatibility)
+  // Memory issue (staged by one cycle after SQ clears the load)
   always_comb begin
     o_mem_read_en   = mem_issue_pending && !i_flush_all && !i_flush_en;
     o_mem_read_addr = mem_issue_addr;
@@ -837,12 +829,12 @@ module load_queue #(
     end
   end
 
-  assign cdb_stage_slot_available = !cdb_stage_valid || i_result_accepted;
-  assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
   assign cdb_stage_result_flushed = i_flush_en && cdb_stage_valid &&
       (flush_all_entries || is_younger(
       cdb_stage_data.tag, i_flush_tag, i_rob_head_tag
   ));
+  assign cdb_stage_slot_available = !cdb_stage_valid || i_result_accepted;
+  assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
 
   always_comb begin
     o_fu_complete = '0;
@@ -1030,14 +1022,13 @@ module load_queue #(
 
       if (sq_check_capture || sq_check_replace) begin
         sq_check_pending <= 1'b1;
-        sq_check_phase2  <= 1'b0;  // New candidate — wait for fresh SQ result
+        sq_check_phase2  <= 1'b0;
       end else if (sq_check_pending &&
                    (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                     stage_mem_issue)) begin
         sq_check_pending <= 1'b0;
         sq_check_phase2  <= 1'b0;
       end else if (o_sq_check_valid && !sq_check_phase2) begin
-        // SQ is being driven this cycle; registered result available next cycle.
         sq_check_phase2 <= 1'b1;
       end
 
@@ -1234,18 +1225,16 @@ module load_queue #(
   // -----------------------------------------------------------------
   // Internal data: CDB completion stage result
   // -----------------------------------------------------------------
-  // The .valid field acts as a control gate for o_fu_complete and
-  // cdb_stage_slot_available, so guard against spurious captures
-  // during reset / flush_all when lq_valid has not yet been cleared.
-  // Control: cdb_stage_valid (with reset) — separate from data to prevent
-  // Vivado from connecting reset to data register R pins.
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) cdb_stage_valid <= 1'b0;
-    else if (issue_cdb_fire) cdb_stage_valid <= 1'b1;
-    else if (i_result_accepted || cdb_stage_result_flushed) cdb_stage_valid <= 1'b0;
+    if (!i_rst_n || i_flush_all) begin
+      cdb_stage_valid <= 1'b0;
+    end else if (issue_cdb_fire) begin
+      cdb_stage_valid <= 1'b1;
+    end else if (i_result_accepted || cdb_stage_result_flushed) begin
+      cdb_stage_valid <= 1'b0;
+    end
   end
 
-  // Data: cdb_stage_data payload (no reset)
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire) begin
       cdb_stage_data.tag       <= issue_cdb_result.tag;

@@ -140,11 +140,12 @@ module reorder_buffer (
     output logic [riscv_pkg::ReorderBufferTagWidth:0] o_count,  // Number of valid entries
 
     // Head entry information (for external commit coordination)
-    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
-    output logic                                        o_head_valid,
-    output logic                                        o_head_done,
-    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_valid,
-    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_done,
+    output logic                        [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
+    output logic                                                               o_head_valid,
+    output logic                                                               o_head_done,
+    output logic                        [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_valid,
+    output logic                        [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_done,
+    output riscv_pkg::rob_perf_events_t                                        o_perf_events,
 
     // =========================================================================
     // Reorder Buffer Entry Read Interface (for RAT lookup of in-flight values)
@@ -249,6 +250,7 @@ module reorder_buffer (
   logic [ReorderBufferDepth-1:0] rob_is_sc;
   logic [ReorderBufferDepth-1:0] rob_is_compressed;
   logic [ReorderBufferDepth-1:0] rob_has_fp_flags;
+  riscv_pkg::rs_type_e rob_rs_type[ReorderBufferDepth];
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -295,6 +297,7 @@ module reorder_buffer (
   logic head_is_sc;
   logic head_is_compressed;
   logic head_has_fp_flags;
+  riscv_pkg::rs_type_e head_rs_type;
   // CSR fields (from RAM)
   logic [11:0] head_csr_addr;
   logic [2:0] head_csr_op;
@@ -368,6 +371,7 @@ module reorder_buffer (
   assign head_is_sc = rob_is_sc[head_idx];
   assign head_is_compressed = rob_is_compressed[head_idx];
   assign head_has_fp_flags = rob_has_fp_flags[head_idx];
+  assign head_rs_type = rob_rs_type[head_idx];
   logic head_link_is_compressed;
   assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 32'd2));
   assign head_fallthrough_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
@@ -801,6 +805,7 @@ module reorder_buffer (
     // -------------------------------------------------------------------
     if (alloc_en) begin
       rob_dest_rf[tail_idx]         <= i_alloc_req.dest_rf;
+      rob_rs_type[tail_idx]         <= i_alloc_req.rs_type;
       rob_dest_valid[tail_idx]      <= i_alloc_req.dest_valid;
       rob_is_store[tail_idx]        <= i_alloc_req.is_store;
       rob_is_fp_store[tail_idx]     <= i_alloc_req.is_fp_store;
@@ -1126,6 +1131,43 @@ module reorder_buffer (
   assign o_head_done = head_valid && head_done;
   assign o_entry_valid = rob_valid;
   assign o_entry_done = rob_done;
+
+  always_comb begin
+    o_perf_events = '0;
+
+    o_perf_events.rob_empty = empty;
+
+    if (head_valid && !head_done && !i_flush_all) begin
+      o_perf_events.head_wait_total = 1'b1;
+
+      if (head_is_branch) begin
+        o_perf_events.head_wait_branch = 1'b1;
+      end else if (head_is_amo || head_is_lr) begin
+        o_perf_events.head_wait_mem_amo = 1'b1;
+      end else if (head_is_store || head_is_fp_store || head_is_sc) begin
+        o_perf_events.head_wait_mem_store = 1'b1;
+      end else begin
+        unique case (head_rs_type)
+          riscv_pkg::RS_INT: o_perf_events.head_wait_int = 1'b1;
+          riscv_pkg::RS_MUL: o_perf_events.head_wait_mul = 1'b1;
+          riscv_pkg::RS_MEM: o_perf_events.head_wait_mem_load = 1'b1;
+          riscv_pkg::RS_FP: o_perf_events.head_wait_fp = 1'b1;
+          riscv_pkg::RS_FMUL: o_perf_events.head_wait_fmul = 1'b1;
+          riscv_pkg::RS_FDIV: o_perf_events.head_wait_fdiv = 1'b1;
+          default: ;
+        endcase
+      end
+    end
+
+    if (head_ready && commit_stall && !i_flush_all) begin
+      o_perf_events.commit_blocked_csr = head_is_csr || (serial_state == SERIAL_CSR_EXEC);
+      o_perf_events.commit_blocked_fence =
+          head_is_fence || head_is_fence_i || (serial_state == SERIAL_WAIT_SQ);
+      o_perf_events.commit_blocked_wfi = head_is_wfi || (serial_state == SERIAL_WFI_WAIT);
+      o_perf_events.commit_blocked_mret = head_is_mret || (serial_state == SERIAL_MRET_EXEC);
+      o_perf_events.commit_blocked_trap = head_exception || (serial_state == SERIAL_TRAP_WAIT);
+    end
+  end
 
   // ===========================================================================
   // Reorder Buffer Entry Read Interface (for RAT bypass)
