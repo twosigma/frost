@@ -82,7 +82,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  localparam int unsigned PerfTopCounterCount = 20;
+  localparam int unsigned PerfTopCounterCount = 23;
   localparam int unsigned PerfWrapperCounterCount = 34;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -109,6 +109,9 @@ module cpu_ooo #(
   localparam int unsigned PerfNoRetireNotEmpty = 17;
   localparam int unsigned PerfRobEmpty = 18;
   localparam int unsigned PerfPredictionDisabled = 19;
+  localparam int unsigned PerfPredictionFenceBranch = 20;
+  localparam int unsigned PerfPredictionFenceJal = 21;
+  localparam int unsigned PerfPredictionFenceIndirect = 22;
 
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
@@ -134,16 +137,23 @@ module cpu_ooo #(
   logic if_unpredicted_indirect_control_flow;
   logic pd_unpredicted_control_flow;
   logic pd_unpredicted_indirect_control_flow;
+  logic pd_unpredicted_branch;
+  logic pd_unpredicted_jal;
   logic id_unpredicted_control_flow;
   logic id_unpredicted_indirect_control_flow;
+  logic id_unpredicted_branch;
+  logic id_unpredicted_jal;
   logic front_end_prediction_fence_pending;
+  logic prediction_fence_branch;
+  logic prediction_fence_jal;
+  logic prediction_fence_indirect;
   logic disable_branch_prediction_ooo;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
   logic branch_alloc_fire;
   logic branch_commit_fire;
   logic branch_resolved_correct;  // branch resolved correctly at execute time
-  logic branch_unresolved_decrement;  // resolve event for unresolved counter (includes JAL issue)
+  logic branch_unresolved_decrement;  // resolve event for unresolved counter
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.
@@ -160,10 +170,8 @@ module cpu_ooo #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  // Keep the debug in-flight counter aligned to branches that actually own a
-  // speculative checkpoint. Correctly predicted direct JALs can now skip
-  // checkpoint allocation entirely, so counting all is_branch allocs here would
-  // leak the debug counter until commit.
+  // Keep the in-flight counter aligned to the same predicate that allocates
+  // speculative checkpoints so commit-time free/recovery bookkeeping balances.
   assign branch_alloc_fire = rob_checkpoint_valid;
   logic branch_unresolved_alloc_fire;
   assign branch_unresolved_alloc_fire =
@@ -223,15 +231,14 @@ module cpu_ooo #(
   // The existing in-order front-end prediction machinery is not robust to a
   // younger predicted redirect arriving behind an older unresolved branch/jump.
   // Suppress new predictions once an unpredicted control-flow op has advanced
-  // into PD/ID or a branch is already in flight. Do not let an IF-stage branch
-  // self-lock prediction off forever: in hot loops that creates a circular
-  // dependency where the current branch is always "unpredicted" only because
-  // prediction is already disabled.
+  // into PD/ID. Do not let an IF-stage branch self-lock prediction off
+  // forever: in hot loops that creates a circular dependency where the current
+  // branch is always "unpredicted" only because prediction is already
+  // disabled.
   assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
                                               id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
                                          front_end_prediction_fence_pending ||
-                                         branch_in_flight ||
                                          csr_in_flight ||
                                          serializing_alloc_fire;
 
@@ -243,7 +250,8 @@ module cpu_ooo #(
   // indirect redirect (JALR/return).
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
-  assign front_end_cf_serialize_stall_comb = branch_unresolved && front_end_control_flow_pending;
+  assign front_end_cf_serialize_stall_comb =
+      branch_unresolved && front_end_indirect_control_flow_pending;
 
   // This stall is a front-end serialization fence, not an architectural
   // requirement. Register it so the branch_in_flight + IF/PD/ID control-flow
@@ -793,18 +801,50 @@ module cpu_ooo #(
   assign pd_unpredicted_indirect_control_flow = pd_has_indirect_control_flow &&
                                                 !(from_pd_to_id.btb_predicted_taken ||
                                                   from_pd_to_id.ras_predicted);
+  assign pd_unpredicted_branch = pd_unpredicted_control_flow &&
+                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH);
+  assign pd_unpredicted_jal = pd_unpredicted_control_flow &&
+                              (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL);
   assign id_unpredicted_control_flow = id_has_control_flow &&
                                        !(from_id_to_ex.btb_predicted_taken ||
                                          from_id_to_ex.ras_predicted);
   assign id_unpredicted_indirect_control_flow = id_has_indirect_control_flow &&
                                                 !(from_id_to_ex.btb_predicted_taken ||
                                                   from_id_to_ex.ras_predicted);
+  assign id_unpredicted_branch = id_unpredicted_control_flow && (
+      from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BNE ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BLT ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BGE ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BLTU ||
+      from_id_to_ex.instruction_operation == riscv_pkg::BGEU
+  );
+  assign id_unpredicted_jal = id_unpredicted_control_flow &&
+                              (from_id_to_ex.instruction_operation == riscv_pkg::JAL);
   assign front_end_control_flow_pending = if_unpredicted_control_flow ||
                                           pd_unpredicted_control_flow ||
                                           id_unpredicted_control_flow;
   assign front_end_indirect_control_flow_pending = if_unpredicted_indirect_control_flow ||
                                                    pd_unpredicted_indirect_control_flow ||
                                                    id_unpredicted_indirect_control_flow;
+  always_comb begin
+    prediction_fence_branch = 1'b0;
+    prediction_fence_jal = 1'b0;
+    prediction_fence_indirect = 1'b0;
+    if (id_unpredicted_indirect_control_flow) begin
+      prediction_fence_indirect = 1'b1;
+    end else if (id_unpredicted_jal) begin
+      prediction_fence_jal = 1'b1;
+    end else if (id_unpredicted_branch) begin
+      prediction_fence_branch = 1'b1;
+    end else if (pd_unpredicted_indirect_control_flow) begin
+      prediction_fence_indirect = 1'b1;
+    end else if (pd_unpredicted_jal) begin
+      prediction_fence_jal = 1'b1;
+    end else if (pd_unpredicted_branch) begin
+      prediction_fence_branch = 1'b1;
+    end
+  end
 
   // ===========================================================================
   // Tomasulo Wrapper Instance
@@ -1803,6 +1843,9 @@ module cpu_ooo #(
     perf_top_inc[PerfPredictionDisabled] = {
       {63{1'b0}}, (disable_branch_prediction_ooo && !i_disable_branch_prediction)
     };
+    perf_top_inc[PerfPredictionFenceBranch] = {{63{1'b0}}, prediction_fence_branch};
+    perf_top_inc[PerfPredictionFenceJal] = {{63{1'b0}}, prediction_fence_jal};
+    perf_top_inc[PerfPredictionFenceIndirect] = {{63{1'b0}}, prediction_fence_indirect};
   end
 
   always_ff @(posedge i_clk) begin
