@@ -642,24 +642,6 @@ module tomasulo_wrapper (
   logic sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_forward;
 
-  // Pipeline register: LQ sq_check request -> SQ
-  // Break the critical combinational path from the LQ candidate select into
-  // the SQ scan and back through the registered SQ result.
-  logic sq_check_valid_q;
-  logic [riscv_pkg::XLEN-1:0] sq_check_addr_q;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
-  riscv_pkg::mem_size_e sq_check_size_q;
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) sq_check_valid_q <= 1'b0;
-    else sq_check_valid_q <= sq_check_valid;
-  end
-
-  always_ff @(posedge i_clk) begin
-    sq_check_addr_q    <= sq_check_addr;
-    sq_check_rob_tag_q <= sq_check_rob_tag;
-    sq_check_size_q    <= sq_check_size;
-  end
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
@@ -1576,10 +1558,10 @@ module tomasulo_wrapper (
       .i_commit_rob_tag(commit_bus_q.tag),
 
       // Store-to-load forwarding (from LQ)
-      .i_sq_check_valid          (sq_check_valid_q),
-      .i_sq_check_addr           (sq_check_addr_q),
-      .i_sq_check_rob_tag        (sq_check_rob_tag_q),
-      .i_sq_check_size           (sq_check_size_q),
+      .i_sq_check_valid          (sq_check_valid),
+      .i_sq_check_addr           (sq_check_addr),
+      .i_sq_check_rob_tag        (sq_check_rob_tag),
+      .i_sq_check_size           (sq_check_size),
       .o_sq_all_older_addrs_known(sq_all_older_addrs_known),
       .o_sq_forward              (sq_forward),
 
@@ -1739,7 +1721,7 @@ module tomasulo_wrapper (
     perf_inc[PerfFmulBackpressure] = {{63{1'b0}}, (!fmul_rs_fu_ready && !o_fmul_rs_empty)};
     perf_inc[PerfFdivBackpressure] = {{63{1'b0}}, (!fdiv_rs_fu_ready && !o_fdiv_rs_empty)};
     perf_inc[PerfMemDisambiguationWait] = {
-      {63{1'b0}}, (sq_check_valid_q && !sq_all_older_addrs_known)
+      {63{1'b0}}, (sq_check_valid && !sq_all_older_addrs_known)
     };
     perf_inc[PerfSqCommittedPending] = {{63{1'b0}}, !sq_committed_empty};
     perf_inc[PerfSqMemWriteFire] = {{63{1'b0}}, o_sq_mem_write_en};

@@ -491,11 +491,9 @@ module load_queue #(
   // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   assign sq_check_capture = !sq_check_pending && !mem_issue_pending && issue_mem_found &&
-      !mem_outstanding &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
   assign sq_check_replace = sq_check_pending && !mem_issue_pending && issue_mem_found &&
-      !mem_outstanding &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
       (!sq_check_entry_valid || is_younger(
       lq_rob_tag[sq_check_idx], issue_mem_rob_tag, i_rob_head_tag
@@ -507,8 +505,7 @@ module load_queue #(
     o_sq_check_rob_tag = '0;
     o_sq_check_size    = riscv_pkg::MEM_SIZE_WORD;
 
-    if (!i_flush_all && !i_flush_en && !mem_issue_pending && !mem_outstanding &&
-        !drop_mem_response_pending &&
+    if (!i_flush_all && !i_flush_en && !mem_issue_pending && !drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable) begin
       o_sq_check_valid   = 1'b1;
       o_sq_check_addr    = lq_address[sq_check_idx];
@@ -529,6 +526,10 @@ module load_queue #(
   logic sq_can_issue;
   logic sq_do_forward;
   logic stage_mem_issue;
+  logic launch_mem_issue;
+  logic [IdxWidth-1:0] launch_mem_issue_idx;
+  logic [XLEN-1:0] launch_mem_issue_addr;
+  riscv_pkg::mem_size_e launch_mem_issue_size;
   logic cache_hit_fast_path;
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
@@ -644,12 +645,17 @@ module load_queue #(
 
   assign stage_mem_issue = !i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
+  assign launch_mem_issue = !i_flush_all && !i_flush_en && !mem_outstanding &&
+      (stage_mem_issue || mem_issue_pending);
+  assign launch_mem_issue_idx = mem_issue_pending ? mem_issue_idx : sq_check_idx;
+  assign launch_mem_issue_addr = mem_issue_pending ? mem_issue_addr : stage_mem_issue_addr;
+  assign launch_mem_issue_size = mem_issue_pending ? mem_issue_size : stage_mem_issue_size;
 
-  // Memory issue (staged by one cycle after SQ clears the load)
+  // Memory issue: bypass the staging register when the port is already free.
   always_comb begin
-    o_mem_read_en   = mem_issue_pending && !i_flush_all && !i_flush_en;
-    o_mem_read_addr = mem_issue_addr;
-    o_mem_read_size = mem_issue_size;
+    o_mem_read_en   = launch_mem_issue;
+    o_mem_read_addr = launch_mem_issue_addr;
+    o_mem_read_size = launch_mem_issue_size;
   end
 
   // Load unit for cache hit path: feed cache data through load unit
@@ -689,9 +695,9 @@ module load_queue #(
 
     // ---------------------------------------------------------------
     // Port 0: primary (cache hit / forward / mem response)
-    //         These sources are mutually exclusive (cache hit and
-    //         forward require !mem_outstanding; mem response requires
-    //         mem_outstanding).
+    //         These sources are mutually exclusive. Cache-hit/forward can
+    //         complete while an older memory read is still outstanding;
+    //         mem response uses the outstanding slot itself.
     // ---------------------------------------------------------------
     if (i_rst_n && !i_flush_all) begin
       if (cache_hit_fast_path) begin
@@ -1047,7 +1053,7 @@ module load_queue #(
         lq_forwarded[sq_check_idx]  <= 1'b1;
       end
 
-      if (stage_mem_issue) begin
+      if (stage_mem_issue && !launch_mem_issue) begin
         mem_issue_pending <= 1'b1;
       end
 
@@ -1055,9 +1061,9 @@ module load_queue #(
       // Memory Issue: mark entry as issued, track for response routing
       // -----------------------------------------------------------------
       if (o_mem_read_en) begin
-        mem_issue_pending        <= 1'b0;
-        lq_issued[mem_issue_idx] <= 1'b1;
-        mem_outstanding          <= 1'b1;
+        mem_issue_pending               <= 1'b0;
+        lq_issued[launch_mem_issue_idx] <= 1'b1;
+        mem_outstanding                 <= 1'b1;
       end
 
       // -----------------------------------------------------------------
@@ -1199,7 +1205,7 @@ module load_queue #(
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (o_mem_read_en) begin
-      issued_idx <= mem_issue_idx;
+      issued_idx <= launch_mem_issue_idx;
     end
   end
 
