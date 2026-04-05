@@ -59,8 +59,9 @@ COMMIT_FIELDS = [
     ("fp_flags", 5),
     ("has_fp_flags", 1),
     ("misprediction", 1),
+    ("early_recovered", 1),
     ("has_checkpoint", 1),
-    ("checkpoint_id", 2),
+    ("checkpoint_id", 3),
     ("redirect_pc", 32),
     ("predicted_taken", 1),
     ("branch_taken", 1),
@@ -233,10 +234,12 @@ class RATInterface:
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
+        self.dut.i_checkpoint_reclaim_mask.value = 0
 
         # Checkpoint free
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+        self.dut.i_checkpoint_flush_free_mask.value = 0
 
         # Flush
         self.dut.i_flush_all.value = 0
@@ -268,6 +271,9 @@ class RATInterface:
         elif self._pending_checkpoint_restore is not None:
             self._shadow_rat.checkpoint_restore(self._pending_checkpoint_restore)
         else:
+            if self._pending_checkpoint_free is not None:
+                self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
+
             if self._pending_checkpoint_save is not None:
                 checkpoint_id, branch_tag, ras_tos, ras_valid_count = (
                     self._pending_checkpoint_save
@@ -275,9 +281,6 @@ class RATInterface:
                 self._shadow_rat.checkpoint_save(
                     checkpoint_id, branch_tag, ras_tos, ras_valid_count
                 )
-
-            if self._pending_checkpoint_free is not None:
-                self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
 
             if self._pending_commit is not None:
                 commit_tag, commit_dest_rf, commit_dest_reg, commit_dest_valid = (
@@ -440,12 +443,12 @@ class RATInterface:
     ) -> None:
         """Drive checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
-        self.dut.i_checkpoint_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_id.value = checkpoint_id & 0x7
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
         self._pending_checkpoint_save = (
-            checkpoint_id & 0x3,
+            checkpoint_id & 0x7,
             branch_tag & MASK_TAG,
             ras_tos & 0x7,
             ras_valid_count & 0xF,
@@ -477,9 +480,9 @@ class RATInterface:
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 1
-        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x7
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
-        self._pending_checkpoint_restore = checkpoint_id & 0x3
+        self._pending_checkpoint_restore = checkpoint_id & 0x7
 
     def clear_checkpoint_restore(self) -> None:
         """Clear checkpoint restore signals."""
@@ -507,8 +510,8 @@ class RATInterface:
     def drive_checkpoint_free(self, checkpoint_id: int) -> None:
         """Drive checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 1
-        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x3
-        self._pending_checkpoint_free = checkpoint_id & 0x3
+        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x7
+        self._pending_checkpoint_free = checkpoint_id & 0x7
 
     def clear_checkpoint_free(self) -> None:
         """Clear checkpoint free signals."""

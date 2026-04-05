@@ -28,8 +28,9 @@
  *   signal is gated per RS type.
  *
  * Internal wiring:
- *   ROB.o_commit --> commit_bus --> RAT.i_commit
- *                               --> o_commit (exposed for testbench observation)
+ *   ROB.o_commit_comb --> commit_bus --> cpu_ooo same-cycle mispredict detect
+ *   ROB.o_commit      --> o_commit   (registered testbench observation)
+ *   commit_bus_q      --> RAT.i_commit
  *   FU adapters --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
  *                                           --> all RS .i_cdb (broadcast for wakeup)
  *   cdb_arbiter.o_grant --> o_cdb_grant (back-pressure to FUs)
@@ -92,6 +93,10 @@ module tomasulo_wrapper (
     // Commit Observation (tapped from internal commit bus)
     // =========================================================================
     output riscv_pkg::reorder_buffer_commit_t o_commit,
+    output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
+    output logic                              o_commit_misprediction_raw,
+    output logic                              o_commit_correct_branch_raw,
+    output logic                              o_head_commit_misprediction_candidate,
 
     // =========================================================================
     // ROB External Coordination
@@ -138,6 +143,7 @@ module tomasulo_wrapper (
     output logic                                        o_read_done,
     output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
     output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_rob_entry_done_vec,
+    input  logic [   riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_epoch,
 
     // =========================================================================
     // Dispatch Done-Entry Bypass (generic source ports)
@@ -331,9 +337,8 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Internal commit bus: ROB -> RAT / SQ / SC
   // ===========================================================================
-  // commit_bus is the combinational output from the ROB.  It is exposed
-  // directly to cpu_ooo.sv (via o_commit) so that misprediction detection
-  // remains zero-cycle latency.
+  // commit_bus is the combinational output from the ROB. It stays on the
+  // zero-cycle control path for cpu_ooo misprediction detection.
   //
   // commit_bus_q is a one-cycle pipeline register that breaks the critical
   // timing path from ROB head_ready/commit_en through SQ/RAT to LQ.
@@ -403,8 +408,9 @@ module tomasulo_wrapper (
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
   logic [63:0] perf_inc[WrapperPerfCounterCount];
 
-  // Expose combinational commit bus to cpu_ooo for misprediction detection
-  assign o_commit = commit_bus;
+  // Expose both the raw and registered commit buses.
+  assign o_commit_comb = commit_bus;
+  assign o_commit = commit_bus_q_qualified;
 
   // ROB entry valid/done vectors: ROB -> RAT/dispatch
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;
@@ -856,8 +862,12 @@ module tomasulo_wrapper (
       .i_checkpoint_valid(i_rob_checkpoint_valid),
       .i_checkpoint_id   (i_rob_checkpoint_id),
 
-      // Commit output -> internal bus
-      .o_commit(commit_bus),
+      // Commit output -> internal bus + registered observation
+      .o_commit                             (),
+      .o_commit_comb                        (commit_bus),
+      .o_commit_misprediction_raw           (o_commit_misprediction_raw),
+      .o_commit_correct_branch_raw          (o_commit_correct_branch_raw),
+      .o_head_commit_misprediction_candidate(o_head_commit_misprediction_candidate),
 
       // External coordination
       .i_sq_empty          (o_sq_empty),
@@ -977,6 +987,8 @@ module tomasulo_wrapper (
 
       // ROB entry valid (stale rename detection)
       .i_rob_entry_valid(rob_entry_valid),
+      .i_rob_entry_epoch(i_rob_entry_epoch),
+      .i_rob_head_tag   (head_tag),
 
       // Flush
       .i_flush_all(i_flush_all),
@@ -1930,7 +1942,8 @@ module tomasulo_wrapper (
   // -------------------------------------------------------------------------
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      p_commit_output_identity : assert (o_commit == commit_bus);
+      p_commit_output_identity : assert (o_commit_comb == commit_bus);
+      p_commit_observation_identity : assert (o_commit == commit_bus_q_qualified);
       p_commit_requires_head_ready : assert (!commit_bus.valid || (o_head_valid && o_head_done));
       p_commit_tag_is_head : assert (!commit_bus.valid || (commit_bus.tag == o_head_tag));
     end

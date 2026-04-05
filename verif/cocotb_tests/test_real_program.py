@@ -755,6 +755,11 @@ async def run_until_complete(
     control_flow_trace_env = os.environ.get("FROST_CONTROL_FLOW_TRACE_RANGES")
     branch_taken_live_sig = None
     branch_target_live_sig = None
+    btb_update_sig = None
+    btb_update_pc_sig = None
+    btb_update_target_sig = None
+    btb_update_taken_sig = None
+    btb_update_compressed_sig = None
     if_control_flow_holdoff_sig = None
     if_stall_sig = None
     if_stall_registered_sig = None
@@ -780,6 +785,21 @@ async def run_until_complete(
     commit_has_checkpoint_live_sig = None
     commit_predicted_taken_live_sig = None
     commit_branch_taken_live_sig = None
+    checkpoint_save_sig = None
+    checkpoint_id_sig = None
+    checkpoint_restore_sig = None
+    checkpoint_restore_id_sig = None
+    checkpoint_free_sig = None
+    checkpoint_free_id_sig = None
+    checkpoint_in_use_sig = None
+    checkpoint_available_sig = None
+    checkpoint_alloc_id_sig = None
+    checkpoint_flush_pending_sig = None
+    early_mispredict_pending_sig = None
+    mispredict_recovery_pending_sig = None
+    correct_branch_commit_pending_sig = None
+    flush_en_live_sig = None
+    flush_tag_live_sig = None
     if_valid_live_sig = None
     pd_valid_live_sig = None
     id_valid_live_sig = None
@@ -787,6 +807,43 @@ async def run_until_complete(
     csr_in_flight_live_sig = None
     pipeline_stall_live_sig = None
     pipeline_stall_registered_live_sig = None
+    rob_full_live_sig = None
+    int_rs_full_live_sig = None
+    mul_rs_full_live_sig = None
+    mem_rs_full_live_sig = None
+    fp_rs_full_live_sig = None
+    fmul_rs_full_live_sig = None
+    fdiv_rs_full_live_sig = None
+    lq_full_live_sig = None
+    sq_full_live_sig = None
+    head_tag_live_sig = None
+    head_valid_live_sig = None
+    head_done_live_sig = None
+    head_pc_live_sig = None
+    head_is_branch_live_sig = None
+    head_is_store_live_sig = None
+    head_has_checkpoint_live_sig = None
+    checkpoint_available_live_sig = None
+    issue_valid_live_sig = None
+    issue_pc_live_sig = None
+    rs_dispatch_valid_live_sig = None
+    rs_dispatch_pc_live_sig = None
+    rs_dispatch_rob_tag_live_sig = None
+    rs_dispatch_src1_ready_live_sig = None
+    rs_dispatch_src1_tag_live_sig = None
+    rs_dispatch_src2_ready_live_sig = None
+    rs_dispatch_src2_tag_live_sig = None
+    rat_a0_valid_sig = None
+    rat_a0_tag_sig = None
+    rat_a0_commit_hit_sig = None
+    rat_a0_commit_tag_match_sig = None
+    rat_a0_alloc_hit_sig = None
+    rat_alloc_valid_sig = None
+    rat_alloc_dest_rf_sig = None
+    rat_alloc_dest_reg_sig = None
+    rat_alloc_rob_tag_sig = None
+    last_a0_alloc_pc_sig = None
+    last_a0_alloc_tag_sig = None
     rob_alloc_valid_live_sig = None
     rob_alloc_pc_live_sig = None
     rob_alloc_is_csr_live_sig = None
@@ -813,7 +870,7 @@ async def run_until_complete(
     )
     coremark_matrix_base_pc: int | None = None
     coremark_matrix_last_pc: int | None = None
-    coremark_matrix_retire_trace: list[int] = []
+    coremark_matrix_retire_trace: list[str] = []
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
         for raw_range in control_flow_trace_env.split(","):
@@ -835,7 +892,7 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
         )
         retire_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.o_commit.pc"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
         retire_mispredict_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
@@ -856,6 +913,94 @@ async def run_until_complete(
         rob_count_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.rob_count")
         dispatch_stall_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
+        )
+        head_tag_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.head_tag"
+        )
+        head_valid_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.head_valid"
+        )
+        head_done_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.head_done"
+        )
+        head_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_pc"
+        )
+        head_is_branch_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_is_branch"
+        )
+        head_is_store_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_is_store"
+        )
+        head_has_checkpoint_live_sig = _get_signal(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.head_has_checkpoint",
+        )
+        checkpoint_available_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_available"
+        )
+        issue_valid_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
+        )
+        issue_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
+        )
+        rs_dispatch_valid_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_valid"
+        )
+        rs_dispatch_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_pc"
+        )
+        rs_dispatch_rob_tag_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_rob_tag"
+        )
+        rs_dispatch_src1_ready_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src1_ready"
+        )
+        rs_dispatch_src1_tag_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src1_tag"
+        )
+        rs_dispatch_src2_ready_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src2_ready"
+        )
+        rs_dispatch_src2_tag_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rs_dispatch_src2_tag"
+        )
+        rat_a0_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_valid"
+        )
+        rat_a0_tag_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_tag"
+        )
+        rat_a0_commit_hit_sig = _get_signal(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_hit",
+        )
+        rat_a0_commit_tag_match_sig = _get_signal(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_commit_tag_match",
+        )
+        rat_a0_alloc_hit_sig = _get_signal(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rat.dbg_int_a0_alloc_hit",
+        )
+        rat_alloc_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_valid"
+        )
+        rat_alloc_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_dest_rf"
+        )
+        rat_alloc_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_dest_reg"
+        )
+        rat_alloc_rob_tag_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rat_alloc_rob_tag"
+        )
+        last_a0_alloc_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_last_a0_alloc_pc"
+        )
+        last_a0_alloc_tag_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_last_a0_alloc_tag"
         )
         branch_pred_off_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
@@ -967,10 +1112,10 @@ async def run_until_complete(
             "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
         )
         issue_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_valid"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
         )
         issue_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_pc"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
         )
         if coremark_if_check_enabled:
             coremark_matrix_expected = _load_symbol_machine_code(
@@ -1005,11 +1150,13 @@ async def run_until_complete(
             ]
             coremark_matrix_last_pc -= 1
     elif (
-        app_name in {"branch_pred_test", "ras_stress_test"} or control_flow_trace_ranges
+        app_name in {"branch_pred_test", "ras_stress_test"}
+        or control_flow_trace_ranges
+        or os.environ.get("FROST_CHECKPOINT_TRACE") == "1"
     ):
         retire_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_vld")
         retire_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_rob.o_commit.pc"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
         retire_mispredict_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
@@ -1142,28 +1289,25 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_src2_value"
         )
         issue_pred_taken_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_predicted_taken",
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_predicted_taken"
         )
         redirect_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.misprediction_redirect_pc"
         )
         btb_update_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.btb_update"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update"
         )
         btb_update_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.btb_update_pc"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_pc"
         )
         btb_update_target_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.btb_update_target",
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_target"
         )
         btb_update_taken_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.btb_update_taken"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_taken"
         )
         btb_update_compressed_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.btb_update_compressed",
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update_compressed"
         )
         if_pc_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc"
@@ -1320,6 +1464,51 @@ async def run_until_complete(
         commit_branch_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_branch_taken"
         )
+        checkpoint_save_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_save"
+        )
+        checkpoint_id_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_id"
+        )
+        checkpoint_restore_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_restore"
+        )
+        checkpoint_restore_id_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_restore_id"
+        )
+        checkpoint_free_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_free"
+        )
+        checkpoint_free_id_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_free_id"
+        )
+        checkpoint_in_use_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_in_use"
+        )
+        checkpoint_available_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_available"
+        )
+        checkpoint_alloc_id_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_alloc_id"
+        )
+        checkpoint_flush_pending_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.checkpoint_flush_pending"
+        )
+        early_mispredict_pending_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.early_mispredict_pending"
+        )
+        mispredict_recovery_pending_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.mispredict_recovery_pending"
+        )
+        correct_branch_commit_pending_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.correct_branch_commit_pending"
+        )
+        flush_en_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.flush_en"
+        )
+        flush_tag_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.flush_tag"
+        )
         commit_is_mret_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.rob_commit.is_mret"
         )
@@ -1402,6 +1591,29 @@ async def run_until_complete(
         pipeline_stall_registered_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall_registered"
         )
+        rob_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.rob_full"
+        )
+        int_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.int_rs_full"
+        )
+        mul_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.mul_rs_full"
+        )
+        mem_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.mem_rs_full"
+        )
+        fp_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.fp_rs_full"
+        )
+        fmul_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.fmul_rs_full"
+        )
+        fdiv_rs_full_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.fdiv_rs_full"
+        )
+        lq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.lq_full")
+        sq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.sq_full")
         rob_alloc_valid_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_valid"
         )
@@ -1436,6 +1648,7 @@ async def run_until_complete(
     retired_mispredicts = 0
     last_progress_mispredicts = 0
     control_flow_debug_events: list[str] = []
+    checkpoint_debug_events: list[str] = []
     special_issue_events: list[str] = []
     btb_update_events: list[str] = []
     coremark_return_events: list[str] = []
@@ -1449,6 +1662,17 @@ async def run_until_complete(
     )
     coremark_return_limit = 32
     coremark_matrix_limit = 160
+    target_pc_trace = (
+        int(os.environ["FROST_TARGET_PC_TRACE"], 0)
+        if os.environ.get("FROST_TARGET_PC_TRACE")
+        else None
+    )
+    target_pc_events: list[str] = []
+    checkpoint_trace_enabled = os.environ.get("FROST_CHECKPOINT_TRACE") == "1"
+    checkpoint_trace_limit = int(os.environ.get("FROST_CHECKPOINT_TRACE_LIMIT", "320"))
+    trace_start_cycle = int(os.environ.get("FROST_TRACE_START_CYCLE", "0"))
+    last_checkpoint_in_use = None
+    last_rat_a0_state = None
     last_x2_commit = None
     last_x5_commit = None
     last_x8_commit = None
@@ -1515,9 +1739,7 @@ async def run_until_complete(
         ):
             return
         trace_path = Path(coremark_retire_trace_path)
-        trace_path.write_text(
-            "\n".join(f"0x{pc:04x}" for pc in coremark_matrix_retire_trace) + "\n"
-        )
+        trace_path.write_text("\n".join(coremark_matrix_retire_trace) + "\n")
 
     for cycle in range(max_cycles):
         await RisingEdge(dut.i_clk)
@@ -1567,7 +1789,12 @@ async def run_until_complete(
                     and len(coremark_matrix_retire_trace) < 20000
                 ):
                     coremark_matrix_retire_trace.append(
-                        retire_pc - coremark_matrix_base_pc
+                        f"cycle={cycle + 1} "
+                        f"pc=0x{retire_pc:08x} "
+                        f"off=0x{(retire_pc - coremark_matrix_base_pc):04x} "
+                        f"mispred={int(bool(_read_bool(retire_mispredict_sig)))} "
+                        f"pred_taken={int(bool(_read_bool(commit_predicted_taken_live_sig)))} "
+                        f"branch_taken={int(bool(_read_bool(commit_branch_taken_live_sig)))}"
                     )
                 if (
                     is_coremark_like
@@ -1584,6 +1811,27 @@ async def run_until_complete(
                         )
             if _read_bool(retire_mispredict_sig):
                 retired_mispredicts += 1
+            if target_pc_trace is not None and len(target_pc_events) < 128:
+                if retire_pc == target_pc_trace:
+                    target_pc_events.append(
+                        "retire   "
+                        f"cycle={cycle + 1} pc=0x{target_pc_trace:08x} "
+                        f"mispred={_read_bool(retire_mispredict_sig)} "
+                        f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                        f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                    )
+                if (
+                    _read_bool(head_valid_live_sig)
+                    and _read_int(head_pc_live_sig) == target_pc_trace
+                ):
+                    target_pc_events.append(
+                        "head     "
+                        f"cycle={cycle + 1} pc=0x{target_pc_trace:08x} "
+                        f"done={_read_bool(head_done_live_sig)} "
+                        f"tag={_read_int(head_tag_live_sig)} "
+                        f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                        f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                    )
             if (
                 control_flow_trace_label is not None
                 and control_flow_trace_enabled
@@ -1619,6 +1867,68 @@ async def run_until_complete(
                     f"mispredict={_read_bool(retire_mispredict_sig)} "
                     f"redirect_pc=0x{(_read_int(redirect_pc_sig) or 0):08x}"
                 )
+
+        if target_pc_trace is not None and len(target_pc_events) < 128:
+            rat_a0_state = (
+                _read_bool(rat_a0_valid_sig),
+                _read_int(rat_a0_tag_sig),
+            )
+            if cycle + 1 >= trace_start_cycle and rat_a0_state != last_rat_a0_state:
+                target_pc_events.append(
+                    "a0state  "
+                    f"cycle={cycle + 1} "
+                    f"a0_valid={rat_a0_state[0]} "
+                    f"a0_tag={rat_a0_state[1]} "
+                    f"last_alloc_pc=0x{(_read_int(last_a0_alloc_pc_sig) or 0):08x} "
+                    f"last_alloc_tag={_read_int(last_a0_alloc_tag_sig)}"
+                )
+            last_rat_a0_state = rat_a0_state
+            if _read_bool(rs_dispatch_valid_live_sig):
+                dispatch_pc = _read_int(rs_dispatch_pc_live_sig)
+                if dispatch_pc == target_pc_trace:
+                    target_pc_events.append(
+                        "dispatch "
+                        f"cycle={cycle + 1} "
+                        f"pc=0x{dispatch_pc:08x} "
+                        f"rob_tag={_read_int(rs_dispatch_rob_tag_live_sig)} "
+                        f"s1_ready={_read_bool(rs_dispatch_src1_ready_live_sig)} "
+                        f"s1_tag={_read_int(rs_dispatch_src1_tag_live_sig)} "
+                        f"s2_ready={_read_bool(rs_dispatch_src2_ready_live_sig)} "
+                        f"s2_tag={_read_int(rs_dispatch_src2_tag_live_sig)} "
+                        f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                        f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                    )
+            if (
+                _read_bool(issue_valid_live_sig)
+                and _read_int(issue_pc_live_sig) == target_pc_trace
+            ):
+                target_pc_events.append(
+                    "issue    "
+                    f"cycle={cycle + 1} pc=0x{target_pc_trace:08x} "
+                    f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                    f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                )
+            if cycle + 1 >= trace_start_cycle:
+                if _read_bool(rat_a0_alloc_hit_sig):
+                    target_pc_events.append(
+                        "a0alloc  "
+                        f"cycle={cycle + 1} "
+                        f"pc=0x{(_read_int(rob_alloc_pc_live_sig) or 0):08x} "
+                        f"rat_v={_read_bool(rat_alloc_valid_sig)} "
+                        f"rat_rf={_read_bool(rat_alloc_dest_rf_sig)} "
+                        f"rat_reg={_read_int(rat_alloc_dest_reg_sig)} "
+                        f"rat_tag={_read_int(rat_alloc_rob_tag_sig)} "
+                        f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                        f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                    )
+                if _read_bool(rat_a0_commit_hit_sig):
+                    target_pc_events.append(
+                        "a0commit "
+                        f"cycle={cycle + 1} "
+                        f"tag_match={_read_bool(rat_a0_commit_tag_match_sig)} "
+                        f"a0_valid={_read_bool(rat_a0_valid_sig)} "
+                        f"a0_tag={_read_int(rat_a0_tag_sig)}"
+                    )
 
         if coremark_if_check_enabled and coremark_matrix_expected:
             if_pc = _read_int(if_pc_sig)
@@ -1809,6 +2119,45 @@ async def run_until_complete(
                 )
 
         if (
+            checkpoint_trace_enabled
+            and cycle + 1 >= trace_start_cycle
+            and len(checkpoint_debug_events) < checkpoint_trace_limit
+        ):
+            checkpoint_in_use = _read_int(checkpoint_in_use_sig)
+            checkpoint_event = (
+                _read_bool(checkpoint_save_sig)
+                or _read_bool(checkpoint_restore_sig)
+                or _read_bool(checkpoint_free_sig)
+                or (checkpoint_in_use != last_checkpoint_in_use)
+            )
+            if checkpoint_event:
+                event = (
+                    "ckpt   "
+                    f"cycle={cycle + 1} "
+                    f"in_use=0b{(checkpoint_in_use or 0):04b} "
+                    f"avail={_read_bool(checkpoint_available_sig)} "
+                    f"alloc_id={_read_int(checkpoint_alloc_id_sig)} "
+                    f"save={_read_bool(checkpoint_save_sig)} "
+                    f"save_id={_read_int(checkpoint_id_sig)} "
+                    f"restore={_read_bool(checkpoint_restore_sig)} "
+                    f"restore_id={_read_int(checkpoint_restore_id_sig)} "
+                    f"free={_read_bool(checkpoint_free_sig)} "
+                    f"free_id={_read_int(checkpoint_free_id_sig)} "
+                    f"flush_pend=0b{(_read_int(checkpoint_flush_pending_sig) or 0):04b} "
+                    f"early_recov={_read_bool(early_mispredict_pending_sig)} "
+                    f"commit_recov={_read_bool(mispredict_recovery_pending_sig)} "
+                    f"correct_commit={_read_bool(correct_branch_commit_pending_sig)} "
+                    f"flush_en={_read_bool(flush_en_live_sig)} "
+                    f"flush_tag={_read_int(flush_tag_live_sig)} "
+                    f"commit_pc=0x{(_read_int(commit_pc_live_sig) or 0):08x} "
+                    f"commit_ckpt={_read_int(commit_checkpoint_id_live_sig)} "
+                    f"commit_has_ckpt={_read_bool(commit_has_checkpoint_live_sig)}"
+                )
+                checkpoint_debug_events.append(event)
+                cocotb.log.info(event)
+            last_checkpoint_in_use = checkpoint_in_use
+
+        if (
             control_flow_trace_label is not None
             and control_flow_trace_enabled
             and ras_transition_trace_active
@@ -1833,11 +2182,7 @@ async def run_until_complete(
                     f"pred_taken={_read_bool(issue_pred_taken_sig)}"
                 )
             update_pc = _read_int(btb_update_pc_sig)
-            if (
-                app_name == "ras_stress_test"
-                and _read_bool(btb_update_sig)
-                and in_trace_window(update_pc)
-            ):
+            if _read_bool(btb_update_sig) and in_trace_window(update_pc):
                 control_flow_debug_events.append(
                     "btbupd "
                     f"cycle={cycle + 1} "
@@ -1953,6 +2298,16 @@ async def run_until_complete(
                     f"csr_in_flight={_read_bool(csr_in_flight_live_sig)} "
                     f"pipe_stall={_read_bool(pipeline_stall_live_sig)} "
                     f"pipe_stall_r={_read_bool(pipeline_stall_registered_live_sig)} "
+                    f"rob_full={_read_bool(rob_full_live_sig)} "
+                    f"int_full={_read_bool(int_rs_full_live_sig)} "
+                    f"mul_full={_read_bool(mul_rs_full_live_sig)} "
+                    f"mem_full={_read_bool(mem_rs_full_live_sig)} "
+                    f"fp_full={_read_bool(fp_rs_full_live_sig)} "
+                    f"fmul_full={_read_bool(fmul_rs_full_live_sig)} "
+                    f"fdiv_full={_read_bool(fdiv_rs_full_live_sig)} "
+                    f"lq_full={_read_bool(lq_full_live_sig)} "
+                    f"sq_full={_read_bool(sq_full_live_sig)} "
+                    f"ckpt_avail={_read_bool(checkpoint_available_sig)} "
                     f"alloc_v={_read_bool(rob_alloc_valid_live_sig)} "
                     f"alloc_pc=0x{(_read_int(rob_alloc_pc_live_sig) or 0):08x} "
                     f"alloc_csr={_read_bool(rob_alloc_is_csr_live_sig)} "
@@ -2080,6 +2435,16 @@ async def run_until_complete(
                 f"mem_wr_en=0x{(mem_wr_en or 0):x} "
                 f"sq_count={sq_count} sq_full={sq_full} "
                 f"rob_count={rob_count} dispatch_stall={dispatch_stall} "
+                f"head_tag={_read_int(head_tag_live_sig)} "
+                f"head_valid={_read_bool(head_valid_live_sig)} "
+                f"head_done={_read_bool(head_done_live_sig)} "
+                f"head_pc=0x{(_read_int(head_pc_live_sig) or 0):08x} "
+                f"head_is_branch={_read_bool(head_is_branch_live_sig)} "
+                f"head_is_store={_read_bool(head_is_store_live_sig)} "
+                f"head_has_ckpt={_read_bool(head_has_checkpoint_live_sig)} "
+                f"issue_v={_read_bool(issue_valid_live_sig)} "
+                f"issue_pc=0x{(_read_int(issue_pc_live_sig) or 0):08x} "
+                f"ckpt_avail={_read_bool(checkpoint_available_live_sig)} "
                 f"branch_pred_off={branch_pred_off} "
                 f"branch_in_flight_count={branch_in_flight_count} "
                 f"fe_cf_pending={fe_cf_pending} "
@@ -2143,6 +2508,8 @@ async def run_until_complete(
             cocotb.log.error(
                 "Coremark matrix window trace:\n" + "\n".join(coremark_matrix_events)
             )
+        if target_pc_events:
+            cocotb.log.error("Target PC trace:\n" + "\n".join(target_pc_events))
         if control_flow_trace_label is not None and retired_pc_hist:
             top_retired_pcs = ", ".join(
                 f"0x{pc:08x}:{count}" for pc, count in retired_pc_hist.most_common(12)
@@ -2156,6 +2523,8 @@ async def run_until_complete(
                 f"{control_flow_trace_label} loop trace:\n"
                 + "\n".join(control_flow_debug_events)
             )
+        if checkpoint_trace_enabled and checkpoint_debug_events:
+            cocotb.log.error("Checkpoint trace:\n" + "\n".join(checkpoint_debug_events))
         if app_name == "ras_stress_test" and special_issue_events:
             cocotb.log.error(
                 "RAS_stress_test special issue trace:\n"
@@ -2178,6 +2547,8 @@ async def run_until_complete(
             cocotb.log.error(
                 "Coremark retired PC histogram (top 12): " + top_retired_pcs
             )
+        if target_pc_events:
+            cocotb.log.error("Target PC trace:\n" + "\n".join(target_pc_events))
         if control_flow_trace_label is not None and retired_pc_hist:
             top_retired_pcs = ", ".join(
                 f"0x{pc:08x}:{count}" for pc, count in retired_pc_hist.most_common(12)
@@ -2191,6 +2562,8 @@ async def run_until_complete(
                 f"{control_flow_trace_label} loop trace:\n"
                 + "\n".join(control_flow_debug_events)
             )
+        if checkpoint_trace_enabled and checkpoint_debug_events:
+            cocotb.log.error("Checkpoint trace:\n" + "\n".join(checkpoint_debug_events))
         if app_name == "ras_stress_test" and special_issue_events:
             cocotb.log.error(
                 "RAS_stress_test special issue trace:\n"

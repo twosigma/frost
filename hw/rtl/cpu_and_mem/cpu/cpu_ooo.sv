@@ -391,6 +391,31 @@ module cpu_ooo #(
   logic [XLEN-1:0] dbg_rob_alloc_pc  /* verilator public_flat_rd */;
   logic dbg_rob_alloc_is_csr  /* verilator public_flat_rd */;
   logic dbg_rob_alloc_is_mret  /* verilator public_flat_rd */;
+  logic dbg_btb_update  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_btb_update_pc  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_btb_update_target  /* verilator public_flat_rd */;
+  logic dbg_btb_update_taken  /* verilator public_flat_rd */;
+  logic dbg_btb_update_compressed  /* verilator public_flat_rd */;
+  logic dbg_issue_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_issue_pc  /* verilator public_flat_rd */;
+  logic dbg_issue_predicted_taken  /* verilator public_flat_rd */;
+  logic dbg_rs_dispatch_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rs_dispatch_pc  /* verilator public_flat_rd */;
+  // verilog_lint: waive-start line-length
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rs_dispatch_rob_tag  /* verilator public_flat_rd */;
+  logic dbg_rs_dispatch_src1_ready  /* verilator public_flat_rd */;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rs_dispatch_src1_tag  /* verilator public_flat_rd */;
+  logic dbg_rs_dispatch_src2_ready  /* verilator public_flat_rd */;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rs_dispatch_src2_tag  /* verilator public_flat_rd */;
+`ifndef SYNTHESIS
+  logic dbg_rat_alloc_valid  /* verilator public_flat_rd */;
+  logic dbg_rat_alloc_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_rat_alloc_dest_reg  /* verilator public_flat_rd */;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rat_alloc_rob_tag  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_last_a0_alloc_pc  /* verilator public_flat_rd */;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_last_a0_alloc_tag  /* verilator public_flat_rd */;
+  // verilog_lint: waive-stop line-length
+`endif
 
   assign dbg_if_ras_predicted = from_if_to_pd.ras_predicted;
   assign dbg_pd_ras_predicted = from_pd_to_id.ras_predicted;
@@ -424,6 +449,37 @@ module cpu_ooo #(
   assign dbg_replay_after_dispatch_stall_q = replay_after_dispatch_stall_q;
   assign dbg_replay_after_serialize_stall_q = replay_after_serialize_stall_q;
   assign dbg_branch_in_flight_count = branch_in_flight_count;
+  assign dbg_btb_update = from_ex_comb_synth.btb_update;
+  assign dbg_btb_update_pc = from_ex_comb_synth.btb_update_pc;
+  assign dbg_btb_update_target = from_ex_comb_synth.btb_update_target;
+  assign dbg_btb_update_taken = from_ex_comb_synth.btb_update_taken;
+  assign dbg_btb_update_compressed = from_ex_comb_synth.btb_update_compressed;
+  assign dbg_issue_valid = rs_issue_int.valid;
+  assign dbg_issue_pc = rs_issue_int.pc;
+  assign dbg_issue_predicted_taken = rs_issue_int.predicted_taken;
+  assign dbg_rs_dispatch_valid = rs_dispatch.valid;
+  assign dbg_rs_dispatch_pc = rs_dispatch.pc;
+  assign dbg_rs_dispatch_rob_tag = rs_dispatch.rob_tag;
+  assign dbg_rs_dispatch_src1_ready = rs_dispatch.src1_ready;
+  assign dbg_rs_dispatch_src1_tag = rs_dispatch.src1_tag;
+  assign dbg_rs_dispatch_src2_ready = rs_dispatch.src2_ready;
+  assign dbg_rs_dispatch_src2_tag = rs_dispatch.src2_tag;
+`ifndef SYNTHESIS
+  assign dbg_rat_alloc_valid = rat_alloc_valid;
+  assign dbg_rat_alloc_dest_rf = rat_alloc_dest_rf;
+  assign dbg_rat_alloc_dest_reg = rat_alloc_dest_reg;
+  assign dbg_rat_alloc_rob_tag = rat_alloc_rob_tag;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      dbg_last_a0_alloc_pc  <= '0;
+      dbg_last_a0_alloc_tag <= '0;
+    end else if (rat_alloc_valid && !rat_alloc_dest_rf && (rat_alloc_dest_reg == 5'd10)) begin
+      dbg_last_a0_alloc_pc  <= rob_alloc_req.pc;
+      dbg_last_a0_alloc_tag <= rat_alloc_rob_tag;
+    end
+  end
+`endif
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
   riscv_pkg::from_ex_comb_t from_ex_comb_synth;
@@ -862,6 +918,8 @@ module cpu_ooo #(
   assign dbg_rob_alloc_is_mret = rob_alloc_req.is_mret;
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb;  // combinational from ROB
   riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered — drives CSR/regfile/bypass
+  logic rob_commit_valid;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
 
   // RAT lookup
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
@@ -870,10 +928,18 @@ module cpu_ooo #(
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
   // RAT rename
-  logic                                                           rat_alloc_valid;
-  logic                                                           rat_alloc_dest_rf;
-  logic                    [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
-  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
+  logic                                        rat_alloc_valid;
+  logic                                        rat_alloc_dest_rf;
+  logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      rob_entry_epoch <= '0;
+    end else if (rob_alloc_req.alloc_valid) begin
+      rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
+    end
+  end
 
   // RS dispatch
   riscv_pkg::rs_dispatch_t                                        rs_dispatch;
@@ -897,6 +963,9 @@ module cpu_ooo #(
 
   // Branch update
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
+  logic rob_commit_misprediction_raw;
+  logic rob_commit_correct_branch_raw;
+  logic rob_head_commit_misprediction_candidate;
 
   // Flush
   logic flush_en;
@@ -1016,30 +1085,17 @@ module cpu_ooo #(
     end
   end
 
-  // Pending free bitmap: set on partial flush, drain one per cycle via checkpoint_free
+  // Debug/visibility bitmap for the younger checkpoints targeted by the most
+  // recent partial flush.  Functional reclaim happens via
+  // checkpoint_flush_free_mask_q below; re-freeing the same IDs later can
+  // accidentally clear newly reallocated checkpoints.
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_flush_pending;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) checkpoint_flush_pending <= '0;
     else if (flush_en)
       checkpoint_flush_pending <= flush_after_head ? checkpoint_in_use
                                                    : checkpoint_younger_than_flush;
-    else if (|checkpoint_flush_pending)
-      checkpoint_flush_pending <= checkpoint_flush_pending & (checkpoint_flush_pending - 1'b1);
-  end
-
-  // Extract lowest pending bit for freeing
-  logic checkpoint_flush_free_valid;
-  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_flush_free_id;
-  always_comb begin
-    checkpoint_flush_free_valid = 1'b0;
-    checkpoint_flush_free_id = '0;
-    for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
-      if (checkpoint_flush_pending[i]) begin
-        checkpoint_flush_free_id = i[riscv_pkg::CheckpointIdWidth-1:0];
-        checkpoint_flush_free_valid = 1'b1;
-        break;
-      end
-    end
+    else checkpoint_flush_pending <= '0;
   end
 
   // LQ/SQ status
@@ -1086,7 +1142,11 @@ module cpu_ooo #(
       .i_rob_checkpoint_id(rob_checkpoint_id),
 
       // Commit
-      .o_commit(rob_commit_comb),
+      .o_commit(rob_commit),
+      .o_commit_comb(rob_commit_comb),
+      .o_commit_misprediction_raw(rob_commit_misprediction_raw),
+      .o_commit_correct_branch_raw(rob_commit_correct_branch_raw),
+      .o_head_commit_misprediction_candidate(rob_head_commit_misprediction_candidate),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1123,6 +1183,7 @@ module cpu_ooo #(
       .o_read_done(rob_read_done),
       .o_read_value(rob_read_value),
       .o_rob_entry_done_vec(rob_entry_done_dispatch),
+      .i_rob_entry_epoch(rob_entry_epoch),
       .i_bypass_tag_1(dispatch_bypass_tag_1),
       .o_bypass_value_1(dispatch_bypass_value_1),
       .i_bypass_tag_2(dispatch_bypass_tag_2),
@@ -1360,16 +1421,80 @@ module cpu_ooo #(
   // broadcast for these ops. Instead, we resolve them here and generate
   // a reorder_buffer_branch_update_t that goes to the ROB.
 
+  // The INT reservation station keeps o_issue.valid free of same-cycle flush
+  // gating for timing, so a flushed stage2 entry can still appear valid at the
+  // cpu_ooo branch-resolution input for one cycle. That is harmless for the
+  // CDB/memory paths that consume tags, but it is not harmless here: a phantom
+  // branch issue can fabricate branch_update/BTB writes using wrong-path PCs.
+  // Suppress branch/jump resolution whenever a flush is active or a commit-time
+  // misprediction is being raised in the same cycle.
+  logic suppress_branch_resolution;
+  logic branch_issue_is_flushed;
+  logic branch_issue_checkpoint_live;
+  logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
+  logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
+  logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
+  always_comb begin
+    branch_issue_checkpoint_live = 1'b1;
+    if (rs_issue_int.has_checkpoint) begin
+      // Use the registered checkpoint state here to avoid a feedback loop
+      // through execute-time checkpoint free.  The owner-tag check still
+      // filters out stale/reused checkpoint IDs.
+      branch_issue_checkpoint_live =
+          checkpoint_in_use[rs_issue_int.checkpoint_id] &&
+          (checkpoint_owner_tag[rs_issue_int.checkpoint_id] == rs_issue_int.rob_tag);
+    end
+  end
+
+  // The INT RS leaves o_issue.valid ungated for one cycle around flushes so a
+  // just-flushed stage2 entry can still appear at the branch-resolution input.
+  // Suppress only entries that are actually being flushed.  Suppressing all
+  // branch resolution during a partial recovery can drop an older surviving
+  // branch if it happens to issue in the recovery cycle, leaving its ROB entry
+  // permanently unresolved.
+  assign branch_issue_age = {1'b0, rs_issue_int.rob_tag} - {1'b0, head_tag};
+  assign early_flush_age  = {1'b0, early_mispredict_tag} - {1'b0, head_tag};
+  assign commit_flush_age = {1'b0, mispredict_commit_q.tag} - {1'b0, head_tag};
+
+  always_comb begin
+    branch_issue_is_flushed = 1'b0;
+
+    if (flush_for_trap || flush_for_mret || fence_i_flush) begin
+      branch_issue_is_flushed = rs_issue_int.valid;
+    end else if (early_mispredict_pending) begin
+      // Partial early recovery keeps only entries strictly older than the
+      // mispredicting branch.  The flush-tag branch itself has already
+      // generated recovery data and must not re-resolve.
+      branch_issue_is_flushed = rs_issue_int.valid && (branch_issue_age >= early_flush_age);
+    end else if (mispredict_recovery_pending) begin
+      // Commit-time recovery only fires when the mispredicted branch commits at
+      // the ROB head, so there are no older survivors to preserve here. Using
+      // a head-relative age compare in this cycle is incorrect because head_tag
+      // has already advanced past the mispredicting branch, which can let a
+      // just-flushed younger branch re-resolve for one cycle.
+      branch_issue_is_flushed = rs_issue_int.valid;
+    end else if (rob_head_commit_misprediction_candidate) begin
+      // Same-cycle guard for the cycle before mispredict_recovery_pending rises.
+      // A head-branch mispredict leaves no older survivors to preserve, so
+      // suppress branch resolution for this cycle without feeding branch_update
+      // back into ROB commit generation.
+      branch_issue_is_flushed = rs_issue_int.valid;
+    end
+  end
+
+  assign suppress_branch_resolution = branch_issue_is_flushed;
+
   logic is_branch_issue;
-  assign is_branch_issue = rs_issue_int.valid && (
+  assign is_branch_issue = rs_issue_int.valid && branch_issue_checkpoint_live &&
+                           !suppress_branch_resolution && (
       rs_issue_int.op == riscv_pkg::BEQ  || rs_issue_int.op == riscv_pkg::BNE  ||
       rs_issue_int.op == riscv_pkg::BLT  || rs_issue_int.op == riscv_pkg::BGE  ||
       rs_issue_int.op == riscv_pkg::BLTU || rs_issue_int.op == riscv_pkg::BGEU ||
       rs_issue_int.op == riscv_pkg::JAL  || rs_issue_int.op == riscv_pkg::JALR);
 
   logic is_jal_issue, is_jalr_issue;
-  assign is_jal_issue  = rs_issue_int.valid && (rs_issue_int.op == riscv_pkg::JAL);
-  assign is_jalr_issue = rs_issue_int.valid && (rs_issue_int.op == riscv_pkg::JALR);
+  assign is_jal_issue  = is_branch_issue && (rs_issue_int.op == riscv_pkg::JAL);
+  assign is_jalr_issue = is_branch_issue && (rs_issue_int.op == riscv_pkg::JALR);
 
   // Map instr_op_e → branch_taken_op_e for branch_jump_unit
   riscv_pkg::branch_taken_op_e branch_op_resolved;
@@ -1475,14 +1600,30 @@ module cpu_ooo #(
   logic early_mispredict_branch_taken;
   logic early_mispredict_is_cond_branch;  // conditional branch (not JALR)
 
-  // Fire when a misprediction is detected.  Block on:
+  // Fire when a word-aligned conditional-branch misprediction is detected.
+  // JALR remains on the older commit-time recovery path for now, and keep
+  // halfword-aligned conditional branches there as well: the execute-time
+  // recovery path still regresses real programs that mix compressed code with
+  // halfword-aligned branch instructions, while the common word-aligned branch
+  // case is the main CoreMark win.
+  //
+  // Block on:
   // - trap/mret/fence_i (higher priority full flushes)
   // - early_mispredict_pending (one-at-a-time; missed mispredictions fall to commit-time)
   // - mispredict_recovery_pending (commit-time recovery in progress)
+  // - a same-cycle head commit misprediction (must preserve the older branch's
+  //   recovery; otherwise the one-cycle commit-time recovery pulse can be lost
+  //   behind the younger branch's early-recovery pulse)
+  // - other unresolved branches (preserve commit-time recovery ordering when
+  //   multiple checkpointed branches are live; otherwise checkpoints can pile
+  //   up behind a repeatedly mispredicting younger branch)
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
   assign early_mispredict_fire = branch_update.valid && branch_update.mispredicted &&
-                                  rs_issue_int.has_checkpoint &&
+                                  rs_issue_int.has_checkpoint && !is_jalr_issue &&
+                                  !rs_issue_int.pc[1] &&
+                                  (branch_unresolved_count == BranchInFlightCountWidth'(1)) &&
+                                  !rob_head_commit_misprediction_candidate &&
                                   !flush_for_trap && !flush_for_mret && !fence_i_flush &&
                                   !early_mispredict_pending && !mispredict_recovery_pending;
 
@@ -1575,18 +1716,11 @@ module cpu_ooo #(
   // Register the ROB commit output to break the commit_en → CSR/regfile
   // critical path (mispredict_recovery_pending → ROB alloc → commit_en →
   // commit bus → CSR read → regfile write, 18 levels).
-  // Misprediction/branch detection uses the combinational version to avoid
-  // adding latency to flush initiation.
-  // Split valid from data to prevent Vivado from dragging reset onto payload.
-  logic rob_commit_valid;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) rob_commit_valid <= 1'b0;
-    else rob_commit_valid <= rob_commit_comb.valid;
-  end
-
-  always_ff @(posedge i_clk) begin
-    rob_commit <= rob_commit_comb;
-  end
+  // Misprediction/branch detection uses narrow raw ROB status bits to avoid
+  // adding latency to flush initiation while keeping the full commit payload
+  // off the branch-recovery timing cone.
+  // The wrapper already provides a registered observation port for commit.
+  assign rob_commit_valid = rob_commit.valid;
 
   // DEBUG: verify early recovery redirect_pc matches commit-time redirect_pc
   // (Disabled for performance — re-enable for debugging.)
@@ -1615,10 +1749,9 @@ module cpu_ooo #(
   // The same-cycle race: rob_early_recovered hasn't been written yet when
   // early_mispredict_pending first fires, so check the tag explicitly.
   logic commit_is_misprediction;
-  assign commit_is_misprediction = rob_commit_comb.valid && rob_commit_comb.misprediction &&
-                                    !rob_commit_comb.early_recovered &&
+  assign commit_is_misprediction = rob_commit_misprediction_raw &&
                                     !(early_mispredict_pending &&
-                                      rob_commit_comb.tag == early_mispredict_tag);
+                                      head_tag == early_mispredict_tag);
 
   // Register the mispredicted commit for one cycle so recovery does not sit on
   // the same combinational path as ROB commit generation.
@@ -1639,9 +1772,7 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_commit_t correct_branch_commit_q;
 
   // Correct branch: predicted correctly AND not early-recovered (which was a misprediction)
-  wire commit_is_correct_branch = rob_commit_comb.valid && rob_commit_comb.has_checkpoint &&
-                                  !rob_commit_comb.misprediction &&
-                                  !rob_commit_comb.early_recovered;
+  wire commit_is_correct_branch = rob_commit_correct_branch_raw;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) correct_branch_commit_pending <= 1'b0;
@@ -1736,7 +1867,20 @@ module cpu_ooo #(
   end
   assign checkpoint_flush_free_mask = checkpoint_flush_free_mask_q;
 
-  // Checkpoint free: early recovery, commit, or flush-time reclaim of younger slots
+  // Checkpoint free: early recovery or guarded branch commit fallback.
+  // Flush-time reclaim is handled by
+  // checkpoint_flush_free_mask one cycle after flush_en.
+  logic correct_branch_commit_checkpoint_live;
+  always_comb begin
+    correct_branch_commit_checkpoint_live = 1'b0;
+    if (correct_branch_commit_pending && correct_branch_commit_q.has_checkpoint) begin
+      correct_branch_commit_checkpoint_live =
+          checkpoint_in_use[correct_branch_commit_q.checkpoint_id] &&
+          (checkpoint_owner_tag[correct_branch_commit_q.checkpoint_id] ==
+           correct_branch_commit_q.tag);
+    end
+  end
+
   always_comb begin
     checkpoint_free    = 1'b0;
     checkpoint_free_id = '0;
@@ -1747,13 +1891,9 @@ module cpu_ooo #(
     end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = mispredict_commit_q.checkpoint_id;
-    end else if (correct_branch_commit_pending) begin
+    end else if (correct_branch_commit_checkpoint_live) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = correct_branch_commit_q.checkpoint_id;
-    end else if (checkpoint_flush_free_valid) begin
-      // Drain flushed younger branches' checkpoints (one per cycle)
-      checkpoint_free    = 1'b1;
-      checkpoint_free_id = checkpoint_flush_free_id;
     end
   end
 

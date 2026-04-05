@@ -85,6 +85,10 @@ module reorder_buffer (
     // Commit Output (to Regfiles, SQ, Trap Unit)
     // =========================================================================
     output riscv_pkg::reorder_buffer_commit_t o_commit,
+    output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
+    output logic                              o_commit_misprediction_raw,
+    output logic                              o_commit_correct_branch_raw,
+    output logic                              o_head_commit_misprediction_candidate,
 
     // =========================================================================
     // Store Queue Coordination
@@ -1024,10 +1028,20 @@ module reorder_buffer (
   assign commit_en = head_ready && !commit_stall && !i_flush_all &&
                      !flush_after_head_commit &&
                      !(commit_misprediction &&
-                       i_branch_update.valid && i_branch_update.mispredicted);
+                       i_branch_update.valid && i_branch_update.mispredicted &&
+                       (i_branch_update.tag == head_idx));
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
+  assign o_commit_misprediction_raw = commit_en && commit_misprediction && !head_early_recovered;
+  assign o_commit_correct_branch_raw = commit_en && head_has_checkpoint &&
+                                       !commit_misprediction && !head_early_recovered;
+  // Same-cycle head-mispredict indicator without the branch_update collision
+  // term. Outer control logic uses this to suppress younger branch resolution
+  // without feeding branch_update back into commit_en.
+  assign o_head_commit_misprediction_candidate =
+      head_ready && !commit_stall && !i_flush_all && !flush_after_head_commit &&
+      commit_misprediction && !head_early_recovered;
 
   // ===========================================================================
   // External Coordination Outputs
@@ -1074,28 +1088,28 @@ module reorder_buffer (
   // ===========================================================================
 
   always_comb begin
-    o_commit = '0;
+    o_commit_comb = '0;
 
     if (commit_en) begin
-      o_commit.valid = 1'b1;
-      o_commit.tag = head_idx;
-      o_commit.dest_rf = head_dest_rf;
-      o_commit.dest_reg = head_dest_reg;
-      o_commit.dest_valid = head_dest_valid;
-      o_commit.value = head_value;
-      o_commit.is_store = head_is_store;
-      o_commit.is_fp_store = head_is_fp_store;
-      o_commit.exception = head_exception;
-      o_commit.pc = head_pc;
-      o_commit.exc_cause = head_exc_cause;
-      o_commit.fp_flags = head_fp_flags;
-      o_commit.has_fp_flags = head_has_fp_flags;
+      o_commit_comb.valid = 1'b1;
+      o_commit_comb.tag = head_idx;
+      o_commit_comb.dest_rf = head_dest_rf;
+      o_commit_comb.dest_reg = head_dest_reg;
+      o_commit_comb.dest_valid = head_dest_valid;
+      o_commit_comb.value = head_value;
+      o_commit_comb.is_store = head_is_store;
+      o_commit_comb.is_fp_store = head_is_fp_store;
+      o_commit_comb.exception = head_exception;
+      o_commit_comb.pc = head_pc;
+      o_commit_comb.exc_cause = head_exc_cause;
+      o_commit_comb.fp_flags = head_fp_flags;
+      o_commit_comb.has_fp_flags = head_has_fp_flags;
 
       // Branch misprediction recovery
-      o_commit.misprediction = commit_misprediction;
-      o_commit.early_recovered = head_early_recovered;
-      o_commit.has_checkpoint = head_has_checkpoint;
-      o_commit.checkpoint_id = head_checkpoint_id;
+      o_commit_comb.misprediction = commit_misprediction;
+      o_commit_comb.early_recovered = head_early_recovered;
+      o_commit_comb.has_checkpoint = head_has_checkpoint;
+      o_commit_comb.checkpoint_id = head_checkpoint_id;
       // Redirect PC:
       // - MRET: redirect to mepc
       // - Taken branch/jump: redirect to resolved target
@@ -1104,41 +1118,48 @@ module reorder_buffer (
         // i_mepc is guaranteed stable here: the MRET handshake
         // (o_mret_start/i_mret_done) completes before commit_en asserts,
         // so the trap unit has finished updating mepc by this point.
-        o_commit.redirect_pc = i_mepc;
+        o_commit_comb.redirect_pc = i_mepc;
       end else if (head_is_branch) begin
         if (head_branch_taken) begin
-          o_commit.redirect_pc = head_branch_target;
+          o_commit_comb.redirect_pc = head_branch_target;
         end else begin
-          o_commit.redirect_pc = head_fallthrough_pc;
+          o_commit_comb.redirect_pc = head_fallthrough_pc;
         end
       end
 
       // Branch info (for BTB update and RAS restore at commit)
-      o_commit.predicted_taken = head_predicted_taken;
-      o_commit.branch_taken    = head_branch_taken;
-      o_commit.branch_target   = head_branch_target;
-      o_commit.is_branch       = head_is_branch;
-      o_commit.is_call         = head_is_call;
-      o_commit.is_return       = head_is_return;
-      o_commit.is_jal          = head_is_jal;
-      o_commit.is_jalr         = head_is_jalr;
+      o_commit_comb.predicted_taken = head_predicted_taken;
+      o_commit_comb.branch_taken    = head_branch_taken;
+      o_commit_comb.branch_target   = head_branch_target;
+      o_commit_comb.is_branch       = head_is_branch;
+      o_commit_comb.is_call         = head_is_call;
+      o_commit_comb.is_return       = head_is_return;
+      o_commit_comb.is_jal          = head_is_jal;
+      o_commit_comb.is_jalr         = head_is_jalr;
 
       // CSR info (for commit-time serialized CSR execution)
-      o_commit.csr_addr        = head_csr_addr;
-      o_commit.csr_op          = head_csr_op;
-      o_commit.csr_write_data  = head_csr_write_data;
+      o_commit_comb.csr_addr        = head_csr_addr;
+      o_commit_comb.csr_op          = head_csr_op;
+      o_commit_comb.csr_write_data  = head_csr_write_data;
 
       // Serializing instruction flags (for external units)
-      o_commit.is_csr          = head_is_csr;
-      o_commit.is_fence        = head_is_fence;
-      o_commit.is_fence_i      = head_is_fence_i;
-      o_commit.is_wfi          = head_is_wfi;
-      o_commit.is_mret         = head_is_mret;
-      o_commit.is_amo          = head_is_amo;
-      o_commit.is_lr           = head_is_lr;
-      o_commit.is_sc           = head_is_sc;
-      o_commit.is_compressed   = head_is_branch ? head_link_is_compressed : head_is_compressed;
+      o_commit_comb.is_csr          = head_is_csr;
+      o_commit_comb.is_fence        = head_is_fence;
+      o_commit_comb.is_fence_i      = head_is_fence_i;
+      o_commit_comb.is_wfi          = head_is_wfi;
+      o_commit_comb.is_mret         = head_is_mret;
+      o_commit_comb.is_amo          = head_is_amo;
+      o_commit_comb.is_lr           = head_is_lr;
+      o_commit_comb.is_sc           = head_is_sc;
+      o_commit_comb.is_compressed   = head_is_branch ? head_link_is_compressed : head_is_compressed;
     end
+  end
+
+  // Keep commit visible for a full cycle after the retiring edge so external
+  // observers can sample it after the head pointer advances.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) o_commit <= '0;
+    else o_commit <= o_commit_comb;
   end
 
   // ===========================================================================
@@ -1344,7 +1365,7 @@ module reorder_buffer (
       p_commit_requires_valid_done : assert (!commit_en || (head_valid && head_done));
 
       // commit output tag equals head_idx
-      p_commit_only_at_head : assert (!commit_en || (o_commit.tag == head_idx));
+      p_commit_only_at_head : assert (!commit_en || (o_commit_comb.tag == head_idx));
 
       // commit_stall implies !commit_en
       p_serial_stall_blocks_commit : assert (!commit_stall || !commit_en);

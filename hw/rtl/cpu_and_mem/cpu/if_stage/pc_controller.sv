@@ -295,7 +295,6 @@ module pc_controller #(
   logic [XLEN-1:0] pending_prediction_target_next_word;
   logic [XLEN-2:0] pc_reg_hw;
   logic            halfword_target_lead_catchup;
-  logic            word_aligned_prediction_needs_pending;
   logic            clear_pending_prediction_state;
   logic            pending_prediction_valid_d;
   logic            pending_prediction_allow_cross_d;
@@ -318,18 +317,17 @@ module pc_controller #(
       seq_next_pc_reg_hw_q <= '0;
     else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
-  // Lower-half BTB predictions still need the pending-handoff path even when
-  // the target is word-aligned. Using the old live
-  // (seq_next_pc_reg != o_pc) comparison here puts BRAM parcel classification
-  // back into the pending state-bit cone. Conservatively marking all
-  // pc_reg-handoff BTB predictions as pending avoids that compare; the cost is
-  // at most an extra branch-handoff bubble in cases that previously relied on
-  // the precise sequential-PC check.
-  assign word_aligned_prediction_needs_pending =
-      !o_pc[1] && !i_predicted_target[1] && i_prediction_requires_pc_reg_handoff;
+  // Lower-half, word-aligned predictions only need the pending-handoff path
+  // when pc_reg would otherwise skip over the branch PC. Treating every such
+  // prediction as pending breaks normal taken-call flow: fetch redirects to the
+  // target, but pc_reg gets forced back through a spurious pending handoff and
+  // eventually re-tags non-control-flow PCs as predicted-taken. Keep the
+  // pending path restricted to the original "pc_reg would advance past o_pc"
+  // case and leave ordinary registered handoffs alone.
   assign prediction_needs_pending =
       i_prediction_used && !i_ras_predicted &&
-      (o_pc[1] || i_predicted_target[1] || word_aligned_prediction_needs_pending);
+      (o_pc[1] || i_predicted_target[1] ||
+       ((seq_next_pc_reg != o_pc) && i_prediction_requires_pc_reg_handoff));
   // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
   // from mispredict_recovery_pending through flush_pipeline into this cone.
   // For mispredict, !i_branch_taken already kills the pending prediction.

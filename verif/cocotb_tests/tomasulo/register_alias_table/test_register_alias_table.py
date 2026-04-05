@@ -1097,7 +1097,7 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Same slot: save+free for slot 0 in same cycle -> free should win.
+    # Same slot: save+free for slot 0 in same cycle -> save wins in RTL.
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_save(checkpoint_id=0, branch_tag=1)
     dut_if.drive_checkpoint_free(checkpoint_id=0)
@@ -1105,22 +1105,18 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_checkpoint_save()
     dut_if.clear_checkpoint_free()
-    # Model equivalent: save then free in same cycle.
-    model.checkpoint_save(0, 1, 0, 0)
     model.checkpoint_free(0)
+    model.checkpoint_save(0, 1, 0, 0)
 
     assert (
         dut_if.checkpoint_available
-    ), "Checkpoint should remain available after same-slot save+free"
+    ), "Other checkpoint slots should still be available after same-slot save+free"
     assert (
-        dut_if.checkpoint_alloc_id == 0
-    ), "Slot 0 should be free when save+free target same slot"
+        dut_if.checkpoint_alloc_id == 1
+    ), "Slot 0 should remain allocated when save+free target the same slot"
 
     # Different slots: save slot 1 and free slot 0 in same cycle.
-    # Seed slot 0 valid first so free has effect.
-    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=2)
-    model.checkpoint_save(0, 2, 0, 0)
-
+    # Slot 0 is already valid from the previous save+free collision.
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_save(checkpoint_id=1, branch_tag=3)
     dut_if.drive_checkpoint_free(checkpoint_id=0)
@@ -1128,8 +1124,8 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_checkpoint_save()
     dut_if.clear_checkpoint_free()
-    model.checkpoint_save(1, 3, 0, 0)
     model.checkpoint_free(0)
+    model.checkpoint_save(1, 3, 0, 0)
 
     # Slot 0 should now be free, slot 1 should be in use, so next free is 0.
     assert (

@@ -26,7 +26,7 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
     pack_alloc_request,
     unpack_alloc_response,
     pack_branch_update,
-    unpack_commit,
+    read_commit_output,
 )
 from cocotb_tests.tomasulo.register_alias_table.rat_interface import (
     unpack_rat_lookup,
@@ -174,6 +174,8 @@ class TomasuloInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_early_recovery_en.value = 0
+        self.dut.i_early_recovery_tag.value = 0
 
         # ROB bypass read
         self.dut.i_read_tag.value = 0
@@ -212,10 +214,12 @@ class TomasuloInterface:
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
+        self.dut.i_checkpoint_reclaim_mask.value = 0
 
         # RAT checkpoint free
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+        self.dut.i_checkpoint_flush_free_mask.value = 0
 
         # Profiling inputs
         self.dut.i_perf_snapshot_capture.value = 0
@@ -405,8 +409,7 @@ class TomasuloInterface:
 
     def read_commit(self) -> dict:
         """Read and unpack commit output."""
-        val = int(self.dut.o_commit.value)
-        return unpack_commit(val)
+        return read_commit_output(self.dut)
 
     @property
     def commit_valid(self) -> bool:
@@ -552,7 +555,7 @@ class TomasuloInterface:
     ) -> None:
         """Drive RAT checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
-        self.dut.i_checkpoint_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_id.value = checkpoint_id & 0x7
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
@@ -564,7 +567,7 @@ class TomasuloInterface:
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 1
-        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x7
 
     def clear_checkpoint_restore(self) -> None:
         """Deassert checkpoint restore."""
@@ -573,7 +576,7 @@ class TomasuloInterface:
     def drive_checkpoint_free(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 1
-        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x3
+        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x7
 
     def clear_checkpoint_free(self) -> None:
         """Deassert checkpoint free."""

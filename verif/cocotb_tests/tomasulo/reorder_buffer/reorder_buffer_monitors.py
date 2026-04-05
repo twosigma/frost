@@ -30,8 +30,8 @@ from typing import Any
 
 from .reorder_buffer_model import ExpectedCommit
 from .reorder_buffer_interface import (
-    unpack_commit,
     unpack_alloc_response,
+    read_commit_output,
     ALLOC_REQ_WIDTH,
 )
 
@@ -79,15 +79,13 @@ class CommitMonitor:
         """Run the monitor continuously."""
         while True:
             await RisingEdge(self.dut.i_clk)
-            await ReadOnly()
 
             # Check if DUT is committing
             if not self.dut.i_rst_n.value:
                 continue
 
             # Unpack the commit struct (Verilator flattens packed structs)
-            commit_val = int(self.dut.o_commit.value)
-            commit = unpack_commit(commit_val)
+            commit = read_commit_output(self.dut)
 
             if commit["valid"]:
                 self.commits_seen += 1

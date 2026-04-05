@@ -57,6 +57,9 @@ FP_FLAGS_WIDTH = 5
 # fu_type_e: 3 bits
 FU_TYPE_WIDTH = 3
 
+# checkpoint_id_t: NumCheckpoints=8 -> 3 bits
+CHECKPOINT_ID_WIDTH = 3
+
 
 # =============================================================================
 # Struct Packing/Unpacking
@@ -92,12 +95,24 @@ def pack_rs_dispatch(
     csr_imm: int = 0,
     pc: int = 0,
     link_addr: int = 0,
+    has_checkpoint: bool = False,
+    checkpoint_id: int = 0,
+    is_call: bool = False,
+    is_return: bool = False,
 ) -> int:
     """Pack dispatch fields into a bit vector for driving i_dispatch."""
     val = 0
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (1 if is_return else 0) << bit
+    bit += 1
+    val |= (1 if is_call else 0) << bit
+    bit += 1
+    val |= (checkpoint_id & ((1 << CHECKPOINT_ID_WIDTH) - 1)) << bit
+    bit += CHECKPOINT_ID_WIDTH
+    val |= (1 if has_checkpoint else 0) << bit
+    bit += 1
     val |= (link_addr & MASK32) << bit
     bit += XLEN
     val |= (pc & MASK32) << bit
@@ -185,11 +200,19 @@ def pack_cdb_broadcast(
     return val
 
 
-def unpack_rs_issue(raw: int) -> dict:
+def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     """Unpack rs_issue_t from a bit vector."""
     bit = 0
-    result = {}
+    result: dict[str, int | bool] = {}
 
+    result["is_return"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["is_call"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["checkpoint_id"] = (raw >> bit) & ((1 << CHECKPOINT_ID_WIDTH) - 1)
+    bit += CHECKPOINT_ID_WIDTH
+    result["has_checkpoint"] = bool((raw >> bit) & 1)
+    bit += 1
     result["link_addr"] = (raw >> bit) & MASK32
     bit += XLEN
     result["pc"] = (raw >> bit) & MASK32

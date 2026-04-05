@@ -32,7 +32,7 @@ ROB_TAG_WIDTH = 5
 XLEN = 32
 FLEN = 64
 REG_ADDR_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 2
+CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
@@ -501,6 +501,10 @@ RS_DISPATCH_FIELDS = [
     ("csr_imm", 5),
     ("pc", XLEN),
     ("link_addr", XLEN),
+    ("has_checkpoint", 1),
+    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
+    ("is_call", 1),
+    ("is_return", 1),
 ]
 
 RS_DISPATCH_WIDTH = sum(w for _, w in RS_DISPATCH_FIELDS)

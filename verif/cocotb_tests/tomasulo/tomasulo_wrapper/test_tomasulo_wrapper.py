@@ -56,7 +56,7 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
     LookupResult,
 )
 
-NUM_CHECKPOINTS = 4
+NUM_CHECKPOINTS = 8
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +473,7 @@ async def test_branch_misprediction_recovery(dut: Any) -> None:
 
 @cocotb.test()
 async def test_multiple_branches_checkpoint_exhaustion(dut: Any) -> None:
-    """4 branches exhaust checkpoints."""
+    """All branch checkpoints can be exhausted and then recycled."""
     cocotb.log.info("=== Test: Checkpoint Exhaustion ===")
     dut_if, model = await setup_test(dut)
 

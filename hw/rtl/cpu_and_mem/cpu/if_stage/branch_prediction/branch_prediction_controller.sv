@@ -250,7 +250,12 @@ module branch_prediction_controller (
   // This is on the registered pop path (RAS always_ff), not the PC mux critical path.
   // Prevents RAS state corruption from spurious pops during spanning instructions.
   logic ras_pop_prediction_allowed;
-  assign ras_pop_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning;
+  // The first cycle of a front-end stall may still have a live BTB/RAS lookup
+  // because prediction_common uses i_stall_registered for timing.  Do not let
+  // that cycle mutate speculative RAS state: pc/o_pc_reg and prediction
+  // sideband are not advancing together, so consuming a prediction there can
+  // re-tag a later instruction with the wrong PC.
+  assign ras_pop_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning && !i_stall;
 
   return_address_stack #(
       .RAS_DEPTH(RasDepth),
@@ -310,7 +315,12 @@ module branch_prediction_controller (
   // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
   // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
-  assign prediction_used_effective = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  // Only "use" a prediction when IF can actually consume it. A prediction that
+  // fires on the first stall cycle is especially dangerous for halfword target
+  // handoff: the branch bytes can keep moving through IF while the PC/metadata
+  // bookkeeping stays behind by one instruction.
+  assign prediction_used_effective = sel_prediction && !i_stall &&
+                                     !i_branch_taken && !i_is_32bit_spanning;
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
@@ -406,8 +416,8 @@ module branch_prediction_controller (
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
   logic btb_only_prediction_effective;
-  assign btb_only_prediction_effective = btb_only_prediction && !i_branch_taken &&
-                                       !i_is_32bit_spanning;
+  assign btb_only_prediction_effective = btb_only_prediction && !i_stall &&
+                                         !i_branch_taken && !i_is_32bit_spanning;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin

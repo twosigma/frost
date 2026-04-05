@@ -119,6 +119,8 @@ module register_alias_table (
     // ROB Entry Valid Vector (for stale rename detection)
     // =========================================================================
     input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_valid,
+    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_epoch,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
 
     // =========================================================================
     // Flush All (exception)
@@ -145,13 +147,15 @@ module register_alias_table (
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned RasPtrBits = riscv_pkg::RasPtrBits;  // 3
 
-  // RAT entry width: valid (1) + tag (ReorderBufferTagWidth)
-  localparam int unsigned RatEntryWidth = 1 + ReorderBufferTagWidth;  // 6
+  // Checkpoint snapshot entry width: valid (1) + alloc generation (1) + tag.
+  // Active RAT state still stores only {valid, tag}; the generation bit is
+  // captured only in checkpoints so restore can reject recycled ROB tags.
+  localparam int unsigned RatEntryWidth = 2 + ReorderBufferTagWidth;  // 7
 
   // Checkpoint RAM data widths
-  // INT RAT snapshot: 32 entries x 6 bits = 192 bits
+  // INT RAT snapshot: 32 entries x 7 bits = 224 bits
   localparam int unsigned IntRatSnapshotWidth = NumIntRegs * RatEntryWidth;
-  // FP RAT snapshot: 32 entries x 6 bits = 192 bits
+  // FP RAT snapshot: 32 entries x 7 bits = 224 bits
   localparam int unsigned FpRatSnapshotWidth = NumFpRegs * RatEntryWidth;
   // Combined RAT snapshot for single wide RAM
   localparam int unsigned RatSnapshotWidth = IntRatSnapshotWidth + FpRatSnapshotWidth;
@@ -165,26 +169,45 @@ module register_alias_table (
 
   // INT RAT: separate valid and tag arrays
   logic [           NumIntRegs-1:0] int_rat_valid;
-  logic [ReorderBufferTagWidth-1:0] int_rat_tag      [NumIntRegs];
+  logic [ReorderBufferTagWidth-1:0] int_rat_tag   [NumIntRegs];
 
   // FP RAT: separate valid and tag arrays
   logic [            NumFpRegs-1:0] fp_rat_valid;
-  logic [ReorderBufferTagWidth-1:0] fp_rat_tag       [ NumFpRegs];
+  logic [ReorderBufferTagWidth-1:0] fp_rat_tag    [ NumFpRegs];
+
+`ifndef SYNTHESIS
+  // Targeted debug tap for x10/a0 rename state during CoreMark investigation.
+  logic dbg_int_a0_valid  /* verilator public_flat_rd */;
+  logic [ReorderBufferTagWidth-1:0] dbg_int_a0_tag  /* verilator public_flat_rd */;
+  logic dbg_int_a0_commit_hit  /* verilator public_flat_rd */;
+  logic dbg_int_a0_commit_tag_match  /* verilator public_flat_rd */;
+  logic dbg_int_a0_alloc_hit  /* verilator public_flat_rd */;
+
+  assign dbg_int_a0_valid = int_rat_valid[10];
+  assign dbg_int_a0_tag = int_rat_tag[10];
+  assign dbg_int_a0_commit_hit = i_commit.valid && i_commit.dest_valid && !i_commit.dest_rf &&
+                                 (i_commit.dest_reg == RegAddrWidth'(10));
+  assign dbg_int_a0_commit_tag_match = dbg_int_a0_commit_hit &&
+                                       int_rat_valid[10] &&
+                                       (int_rat_tag[10] == i_commit.tag);
+  assign dbg_int_a0_alloc_hit = i_alloc_valid && !i_alloc_dest_rf &&
+                                (i_alloc_dest_reg == RegAddrWidth'(10));
+`endif
 
   // ===========================================================================
   // Checkpoint Storage
   // ===========================================================================
 
   // Checkpoint valid bits (FF — need per-entry clear and bulk flush)
-  logic [       NumCheckpoints-1:0] checkpoint_valid;
+  logic [   NumCheckpoints-1:0] checkpoint_valid;
 
   // Checkpoint RAT snapshots — distributed RAM
   // Combined INT + FP snapshot (384 bits wide, 2-bit address)
-  logic                             ckpt_rat_wr_en;
-  logic [    CheckpointIdWidth-1:0] ckpt_rat_wr_addr;
-  logic [     RatSnapshotWidth-1:0] ckpt_rat_wr_data;
-  logic [    CheckpointIdWidth-1:0] ckpt_rat_rd_addr;
-  logic [     RatSnapshotWidth-1:0] ckpt_rat_rd_data;
+  logic                         ckpt_rat_wr_en;
+  logic [CheckpointIdWidth-1:0] ckpt_rat_wr_addr;
+  logic [ RatSnapshotWidth-1:0] ckpt_rat_wr_data;
+  logic [CheckpointIdWidth-1:0] ckpt_rat_rd_addr;
+  logic [ RatSnapshotWidth-1:0] ckpt_rat_rd_data;
 
   sdp_dist_ram #(
       .ADDR_WIDTH(CheckpointIdWidth),
@@ -231,16 +254,18 @@ module register_alias_table (
   assign ckpt_meta_wr_addr = i_checkpoint_id;
 
   // Pack current RAT state for checkpoint save
-  // Each entry = {valid, tag} packed into RatEntryWidth bits
+  // Each entry = {valid, alloc_epoch, tag} packed into RatEntryWidth bits
   // INT entries at [IntRatSnapshotWidth-1:0],
   // FP entries at [RatSnapshotWidth-1:IntRatSnapshotWidth]
   always_comb begin
     for (int i = 0; i < NumIntRegs; i++) begin
-      ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {int_rat_valid[i], int_rat_tag[i]};
+      ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {
+        int_rat_valid[i], i_rob_entry_epoch[int_rat_tag[i]], int_rat_tag[i]
+      };
     end
     for (int i = 0; i < NumFpRegs; i++) begin
       ckpt_rat_wr_data[IntRatSnapshotWidth+i*RatEntryWidth+:RatEntryWidth] = {
-        fp_rat_valid[i], fp_rat_tag[i]
+        fp_rat_valid[i], i_rob_entry_epoch[fp_rat_tag[i]], fp_rat_tag[i]
       };
     end
   end
@@ -254,17 +279,22 @@ module register_alias_table (
 
   // Unpack restored RAT state
   logic [           NumIntRegs-1:0] restored_int_valid;
+  logic [           NumIntRegs-1:0] restored_int_epoch;
   logic [ReorderBufferTagWidth-1:0] restored_int_tag   [NumIntRegs];
   logic [            NumFpRegs-1:0] restored_fp_valid;
+  logic [            NumFpRegs-1:0] restored_fp_epoch;
   logic [ReorderBufferTagWidth-1:0] restored_fp_tag    [ NumFpRegs];
 
   always_comb begin
     for (int i = 0; i < NumIntRegs; i++) begin
-      restored_int_valid[i] = ckpt_rat_rd_data[i*RatEntryWidth+ReorderBufferTagWidth];
+      restored_int_valid[i] = ckpt_rat_rd_data[i*RatEntryWidth+ReorderBufferTagWidth+1];
+      restored_int_epoch[i] = ckpt_rat_rd_data[i*RatEntryWidth+ReorderBufferTagWidth];
       restored_int_tag[i]   = ckpt_rat_rd_data[i*RatEntryWidth+:ReorderBufferTagWidth];
     end
     for (int i = 0; i < NumFpRegs; i++) begin
       restored_fp_valid[i] =
+          ckpt_rat_rd_data[IntRatSnapshotWidth+i*RatEntryWidth+ReorderBufferTagWidth+1];
+      restored_fp_epoch[i] =
           ckpt_rat_rd_data[IntRatSnapshotWidth+i*RatEntryWidth+ReorderBufferTagWidth];
       restored_fp_tag[i] =
           ckpt_rat_rd_data[IntRatSnapshotWidth+i*RatEntryWidth+:ReorderBufferTagWidth];
@@ -272,12 +302,32 @@ module register_alias_table (
   end
 
   // Unpack restored metadata
+  logic [ReorderBufferTagWidth-1:0] restored_branch_tag;
   logic [RasPtrBits-1:0] restored_ras_tos;
-  logic [  RasPtrBits:0] restored_ras_valid_count;
+  logic [RasPtrBits:0] restored_ras_valid_count;
 
+  assign restored_branch_tag = ckpt_meta_rd_data[0+:ReorderBufferTagWidth];
   assign restored_ras_tos = ckpt_meta_rd_data[ReorderBufferTagWidth+:RasPtrBits];
   assign restored_ras_valid_count =
       ckpt_meta_rd_data[ReorderBufferTagWidth+RasPtrBits+:(RasPtrBits+1)];
+
+  function automatic logic restored_tag_still_live(
+      input logic [ReorderBufferTagWidth-1:0] restored_tag, input logic restored_epoch);
+    logic [ReorderBufferTagWidth:0] tag_age;
+    logic [ReorderBufferTagWidth:0] branch_age;
+    begin
+      tag_age = {1'b0, restored_tag} - {1'b0, i_rob_head_tag};
+      branch_age = {1'b0, restored_branch_tag} - {1'b0, i_rob_head_tag};
+      // Snapshot entries must still refer to live producers that are strictly
+      // older than the restoring branch and match the saved allocation
+      // generation. This prevents a recycled ROB tag from being revived after
+      // wraparound.
+      restored_tag_still_live =
+          i_rob_entry_valid[restored_tag] &&
+          (i_rob_entry_epoch[restored_tag] == restored_epoch) &&
+          (tag_age < branch_age);
+    end
+  endfunction
 
   // Output restored RAS state (active during restore cycle)
   assign o_ras_tos = restored_ras_tos;
@@ -379,15 +429,20 @@ module register_alias_table (
       // misprediction recovery sets flush_all (for flush_after_head_commit)
       // alongside checkpoint_restore on the same cycle.
       // Restore the saved snapshot, but suppress any mapping whose ROB tag is
-      // no longer live. This preserves checkpoint semantics without reviving
-      // stale tags after ROB wraparound.
+      // no longer live or is not strictly older than the restoring branch.
+      // This preserves checkpoint semantics without reviving recycled tags
+      // after ROB wraparound.
       for (int i = 0; i < NumIntRegs; i++) begin
-        int_rat_valid[i] <= restored_int_valid[i] && i_rob_entry_valid[restored_int_tag[i]];
-        int_rat_tag[i]   <= restored_int_tag[i];
+        int_rat_valid[i] <= restored_int_valid[i] && restored_tag_still_live(
+            restored_int_tag[i], restored_int_epoch[i]
+        );
+        int_rat_tag[i] <= restored_int_tag[i];
       end
       for (int i = 0; i < NumFpRegs; i++) begin
-        fp_rat_valid[i] <= restored_fp_valid[i] && i_rob_entry_valid[restored_fp_tag[i]];
-        fp_rat_tag[i]   <= restored_fp_tag[i];
+        fp_rat_valid[i] <= restored_fp_valid[i] && restored_tag_still_live(
+            restored_fp_tag[i], restored_fp_epoch[i]
+        );
+        fp_rat_tag[i] <= restored_fp_tag[i];
       end
     end else if (i_flush_all) begin
       // Full flush (trap/mret/fence_i): clear all valid bits

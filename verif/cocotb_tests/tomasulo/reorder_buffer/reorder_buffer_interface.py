@@ -241,8 +241,9 @@ COMMIT_FIELDS = [
     ("fp_flags", 5),
     ("has_fp_flags", 1),
     ("misprediction", 1),
+    ("early_recovered", 1),
     ("has_checkpoint", 1),
-    ("checkpoint_id", 2),
+    ("checkpoint_id", 3),
     ("redirect_pc", 32),
     ("predicted_taken", 1),
     ("branch_taken", 1),
@@ -281,6 +282,13 @@ def unpack_commit(val: int) -> dict[str, Any]:
         raw = (val >> offset) & ((1 << width) - 1)
         result[name] = bool(raw) if width == 1 else raw
     return result
+
+
+def read_commit_output(dut: Any) -> dict[str, Any]:
+    """Read commit output as sampled on the active clock edge."""
+    if hasattr(dut, "o_commit_comb"):
+        return unpack_commit(int(dut.o_commit_comb.value))
+    return unpack_commit(int(dut.o_commit.value))
 
 
 class ReorderBufferInterface:
@@ -363,6 +371,8 @@ class ReorderBufferInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_early_recovery_en.value = 0
+        self.dut.i_early_recovery_tag.value = 0
         self.dut.i_read_tag.value = 0
 
     # =========================================================================
@@ -458,8 +468,7 @@ class ReorderBufferInterface:
 
     def read_commit(self) -> dict:
         """Read commit output signals."""
-        val = int(self.dut.o_commit.value)
-        return unpack_commit(val)
+        return read_commit_output(self.dut)
 
     @property
     def commit_valid(self) -> bool:
