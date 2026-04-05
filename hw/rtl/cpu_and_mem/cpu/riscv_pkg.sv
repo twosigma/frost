@@ -1076,8 +1076,8 @@ package riscv_pkg;
   localparam int unsigned SqDepth = 8;  // Store queue entries
 
   // Checkpoint parameters
-  localparam int unsigned NumCheckpoints = 4;  // For branch speculation recovery
-  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 2 bits
+  localparam int unsigned NumCheckpoints = 8;  // For branch speculation recovery
+  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 3 bits
 
   // Register file sizes
   localparam int unsigned NumIntRegs = 32;  // x0-x31
@@ -1301,7 +1301,8 @@ package riscv_pkg;
     fp_flags_t fp_flags;  // FP flags to accumulate
     logic has_fp_flags;  // FP flags are valid (FP compute op, not FP load)
     // Branch misprediction recovery
-    logic misprediction;  // Branch mispredicted
+    logic misprediction;  // Branch mispredicted (raw, not gated by early recovery)
+    logic early_recovered;  // Misprediction already handled by early execute-time recovery
     logic has_checkpoint;
     logic [CheckpointIdWidth-1:0] checkpoint_id;
     logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
@@ -1442,10 +1443,15 @@ package riscv_pkg;
     logic      mem_signed;  // Sign-extend on load
 
     // For CSR: address and immediate
-    logic [11:0] csr_addr;  // CSR address
-    logic [4:0] csr_imm;  // Zero-extended CSR immediate
+    logic [11:0]                  csr_addr;        // CSR address
+    logic [4:0]                   csr_imm;         // Zero-extended CSR immediate
     // Pre-computed JAL/JALR link address (PC+2 or PC+4)
-    logic [XLEN-1:0] link_addr;
+    logic [XLEN-1:0]              link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                         has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic                         is_call;
+    logic                         is_return;
   } rs_entry_t;
 
   // RS dispatch request (from dispatch unit to RS)
@@ -1486,6 +1492,11 @@ package riscv_pkg;
     logic [XLEN-1:0]                  pc;
     // Pre-computed JAL/JALR link address (PC+2 or PC+4)
     logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
   } rs_dispatch_t;
 
   // RS issue signals (from RS to functional unit)
@@ -1513,6 +1524,11 @@ package riscv_pkg;
     logic [XLEN-1:0]                  pc;
     // Pre-computed JAL/JALR link address (PC+2 or PC+4)
     logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------

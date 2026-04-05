@@ -98,17 +98,22 @@ module register_alias_table (
     // =========================================================================
     // Checkpoint Restore Interface (from flush controller on misprediction)
     // =========================================================================
-    input  logic                                    i_checkpoint_restore,
-    input  logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
-    input  logic                                    i_checkpoint_restore_reclaim_all,
-    output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
-    output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
+    input logic i_checkpoint_restore,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
+    input logic i_checkpoint_restore_reclaim_all,
+    // Which slots to free on reclaim
+    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_reclaim_mask,
+    output logic [riscv_pkg::RasPtrBits-1:0] o_ras_tos,
+    output logic [riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 
     // =========================================================================
     // Checkpoint Free Interface (from ROB on correct branch commit)
     // =========================================================================
     input logic                                    i_checkpoint_free,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
+
+    // Bulk free mask for flushed younger branches (always applies, not gated)
+    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
 
     // =========================================================================
     // ROB Entry Valid Vector (for stale rename detection)
@@ -369,11 +374,10 @@ module register_alias_table (
       // Reset: all entries not renamed
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
-    end else if (i_flush_all) begin
-      // Full flush: clear all valid bits (tags don't matter)
-      int_rat_valid <= '0;
-      fp_rat_valid  <= '0;
     end else if (i_checkpoint_restore) begin
+      // Checkpoint restore takes priority over flush_all: needed when early
+      // misprediction recovery sets flush_all (for flush_after_head_commit)
+      // alongside checkpoint_restore on the same cycle.
       // Restore the saved snapshot, but suppress any mapping whose ROB tag is
       // no longer live. This preserves checkpoint semantics without reviving
       // stale tags after ROB wraparound.
@@ -385,6 +389,10 @@ module register_alias_table (
         fp_rat_valid[i] <= restored_fp_valid[i] && i_rob_entry_valid[restored_fp_tag[i]];
         fp_rat_tag[i]   <= restored_fp_tag[i];
       end
+    end else if (i_flush_all) begin
+      // Full flush (trap/mret/fence_i): clear all valid bits
+      int_rat_valid <= '0;
+      fp_rat_valid  <= '0;
     end else begin
       // ---------------------------------------------------------------
       // Commit clear: if committing tag matches current RAT entry,
@@ -431,27 +439,28 @@ module register_alias_table (
   // Sequential Logic: Checkpoint Valid Bits
   // ===========================================================================
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      checkpoint_valid <= '0;
-    end else if (i_flush_all) begin
-      checkpoint_valid <= '0;
-    end else if (i_checkpoint_restore_reclaim_all) begin
-      // cpu_ooo raises this only on post-commit mispredict recovery, where the
-      // restoring branch has already retired and every remaining checkpoint
-      // belongs to a younger wrong-path branch/jump.
-      checkpoint_valid <= '0;
-    end else begin
-      // Checkpoint save: mark slot valid
-      if (i_checkpoint_save) begin
-        checkpoint_valid[i_checkpoint_id] <= 1'b1;
-      end
+  // Combinational pre-merge: single next-state avoids NBA priority conflicts
+  // between save, free, and bulk flush mask.
+  logic [NumCheckpoints-1:0] checkpoint_valid_next;
 
-      // Checkpoint free: mark slot invalid
-      if (i_checkpoint_free) begin
-        checkpoint_valid[i_checkpoint_free_id] <= 1'b0;
-      end
+  always_comb begin
+    if (!i_rst_n || i_flush_all) begin
+      checkpoint_valid_next = '0;
+    end else if (i_checkpoint_restore_reclaim_all) begin
+      checkpoint_valid_next = '0;
+    end else begin
+      checkpoint_valid_next = checkpoint_valid;
+      // Bulk flush clear (younger branches on misprediction)
+      checkpoint_valid_next = checkpoint_valid_next & ~i_checkpoint_flush_free_mask;
+      // Individual free (committed branch)
+      if (i_checkpoint_free) checkpoint_valid_next[i_checkpoint_free_id] = 1'b0;
+      // Save wins over all clears (new branch allocation)
+      if (i_checkpoint_save) checkpoint_valid_next[i_checkpoint_id] = 1'b1;
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    checkpoint_valid <= checkpoint_valid_next;
   end
 
   // ===========================================================================
@@ -592,10 +601,14 @@ module register_alias_table (
 
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
-      // After flush_all, all valid bits are 0
-      if ($past(i_flush_all)) begin
+      // After flush_all (without concurrent restore), all valid bits are 0.
+      // checkpoint_restore takes priority over flush_all for the active RAT,
+      // so skip the int/fp assertion when both fire simultaneously.
+      if ($past(i_flush_all) && !$past(i_checkpoint_restore)) begin
         p_flush_clears_int : assert (int_rat_valid == '0);
         p_flush_clears_fp : assert (fp_rat_valid == '0);
+      end
+      if ($past(i_flush_all)) begin
         p_flush_clears_ckpts : assert (checkpoint_valid == '0);
       end
 

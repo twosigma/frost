@@ -17,7 +17,7 @@
 /*
  * Branch Target Buffer (BTB) - 2-Bit Saturating Counter Predictor
  *
- * A 32-entry, 2-bit direct-mapped BTB for branch prediction by default.
+ * A 128-entry, 2-bit direct-mapped BTB for branch prediction by default.
  * Reduces the 3-cycle branch penalty for correctly predicted taken branches.
  *
  * Design:
@@ -62,7 +62,7 @@
  */
 module branch_predictor #(
     parameter int unsigned XLEN = 32,
-    parameter int unsigned BTB_INDEX_BITS = 5  // 32 entries
+    parameter int unsigned BTB_INDEX_BITS = 7  // 128 entries
 ) (
     input logic i_clk,
     input logic i_rst,

@@ -987,6 +987,15 @@ module dispatch (
     // PC and pre-computed link address for AUIPC/JAL/JALR handling.
     o_rs_dispatch.pc               = i_from_id_to_ex.program_counter;
     o_rs_dispatch.link_addr        = i_from_id_to_ex.link_address;
+
+    // Early misprediction recovery: checkpoint info and branch type.
+    // need_checkpoint is true for conditional branches and JALR (not JAL).
+    // When dispatch fires for a branch, a checkpoint is always available
+    // (dispatch stalls otherwise), so has_checkpoint = need_checkpoint.
+    o_rs_dispatch.has_checkpoint   = need_checkpoint;
+    o_rs_dispatch.checkpoint_id    = i_checkpoint_alloc_id;
+    o_rs_dispatch.is_call          = is_call_flag;
+    o_rs_dispatch.is_return        = is_return_flag;
   end
 
   // ===========================================================================

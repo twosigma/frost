@@ -115,6 +115,12 @@ module tomasulo_wrapper (
     input logic                                        i_flush_all,
 
     // =========================================================================
+    // Early Misprediction Recovery
+    // =========================================================================
+    input logic                                        i_early_recovery_en,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_recovery_tag,
+
+    // =========================================================================
     // ROB Status
     // =========================================================================
     output logic                                        o_fence_i_flush,
@@ -188,6 +194,8 @@ module tomasulo_wrapper (
     input  logic                                    i_checkpoint_restore,
     input  logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
     input  logic                                    i_checkpoint_restore_reclaim_all,
+    input  logic [   riscv_pkg::NumCheckpoints-1:0] i_checkpoint_reclaim_mask,
+    input  logic [   riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
     output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 
@@ -415,21 +423,25 @@ module tomasulo_wrapper (
   riscv_pkg::rob_perf_events_t rob_perf_events;
   assign head_tag = o_head_tag;
 
-  // cpu_ooo delivers misprediction recovery one cycle after the mispredicted
-  // branch committed. By then, every remaining entry in the speculative-only
-  // Tomasulo backend is younger than that retired branch, so speculative
-  // structures can treat any i_flush_en as a full clear. Keep partial flush
-  // semantics only in ROB/SQ, which may still hold architecturally older state.
+  // With early misprediction recovery, partial flushes (flush_en + flush_tag)
+  // target branches that are NOT at the ROB head. Older instructions must be
+  // preserved. Pass age-based partial flush to all speculative structures.
+  // Full flushes (trap/MRET/FENCE.I) still clear everything.
   //
-  // Full flushes (trap/MRET/FENCE.I) also arrive on i_flush_all. Collapse both
-  // cases into a single speculative-only clear pulse so mispredict recovery
-  // does not drag the backend through extra age-compare logic.
+  // flush_after_head_commit: the mispredicted branch already committed (head ==
+  // flush_tag+1), so every remaining speculative entry is younger. The is_younger
+  // age comparison wraps and misses them all. Promote to full flush so that CDB
+  // adapters, FU shims, and other structures that lack an explicit
+  // flush_after_head guard still clear correctly.
   (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
+  logic flush_after_head_commit;
+  assign flush_after_head_commit = i_flush_en && !i_early_recovery_en &&
+      (head_tag == (i_flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
   assign speculative_partial_flush = i_flush_en;
-  assign speculative_flush_all = i_flush_all || speculative_partial_flush;
-  assign speculative_flush_en = 1'b0;
+  assign speculative_flush_all = i_flush_all || flush_after_head_commit;
+  assign speculative_flush_en = i_flush_en && !flush_after_head_commit;
 
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
@@ -866,6 +878,10 @@ module tomasulo_wrapper (
       .i_flush_tag(i_flush_tag),
       .i_flush_all(i_flush_all),
 
+      // Early misprediction recovery
+      .i_early_recovery_en (i_early_recovery_en),
+      .i_early_recovery_tag(i_early_recovery_tag),
+
       // Status
       .o_fence_i_flush(o_fence_i_flush),
       .o_full         (o_rob_full),
@@ -950,6 +966,8 @@ module tomasulo_wrapper (
       .i_checkpoint_restore            (i_checkpoint_restore),
       .i_checkpoint_restore_id         (i_checkpoint_restore_id),
       .i_checkpoint_restore_reclaim_all(i_checkpoint_restore_reclaim_all),
+      .i_checkpoint_reclaim_mask       (i_checkpoint_reclaim_mask),
+      .i_checkpoint_flush_free_mask    (i_checkpoint_flush_free_mask),
       .o_ras_tos                       (o_ras_tos),
       .o_ras_valid_count               (o_ras_valid_count),
 
@@ -1444,9 +1462,10 @@ module tomasulo_wrapper (
       .i_cache_invalidate_addr (sq_cache_invalidate_addr),
 
       // Flush
-      .i_flush_en (speculative_flush_en),
+      .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(speculative_flush_all),
+      .i_early_recovery_en(i_early_recovery_en),
 
       // Status
       .o_empty(o_lq_empty),
@@ -1557,6 +1576,11 @@ module tomasulo_wrapper (
       .i_commit_valid  (sq_commit_valid),
       .i_commit_rob_tag(commit_bus_q.tag),
 
+      // Same-cycle commit guard (combinational, for flush race protection)
+      .i_commit_valid_comb  (commit_bus.valid && (commit_bus.is_store || commit_bus.is_fp_store
+                                                                      || commit_bus.is_sc)),
+      .i_commit_rob_tag_comb(commit_bus.tag),
+
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),
       .i_sq_check_addr           (sq_check_addr),
@@ -1584,9 +1608,10 @@ module tomasulo_wrapper (
       .i_rob_head_tag(head_tag),
 
       // Flush
-      .i_flush_en (i_flush_en),
+      .i_flush_en(i_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(i_flush_all),
+      .i_early_recovery_en(i_early_recovery_en),
 
       // Status
       .o_empty          (o_sq_empty),

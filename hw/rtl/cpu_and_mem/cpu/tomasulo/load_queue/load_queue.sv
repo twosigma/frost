@@ -123,6 +123,7 @@ module load_queue #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    input logic                                        i_early_recovery_en,
 
     // =========================================================================
     // L0 Cache Invalidation (from SQ, future)
@@ -540,7 +541,7 @@ module load_queue #(
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && i_sq_forward.can_forward
       && !lq_is_mmio[sq_check_idx] && !lq_is_lr[sq_check_idx] && !lq_is_amo[sq_check_idx];
-  assign flush_all_entries = i_flush_en &&
+  assign flush_all_entries = i_flush_en && !i_early_recovery_en &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Data memory has fixed 1-cycle latency in this design. If a partial flush

@@ -48,6 +48,7 @@ module cpu_tb
 
   // Internal signals (names match CPU port names for wildcard connection)
   logic [31:0] i_instr;  // Registered instruction fed to CPU (raw 32-bit for C extension)
+  logic [1:0] i_instr_sideband;  // Predecode: {is_compressed_hi, is_compressed_lo}
   logic [31:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
@@ -80,6 +81,10 @@ module cpu_tb
     pipeline_stall_from_cpu <= device_under_test.pipeline_ctrl.stall;
     // Mimic one cycle read latency of block RAM instruction memory port
     i_instr <= instruction_from_testbench;
+    // Compute sideband: {is_compressed_hi, is_compressed_lo}
+    // A halfword is compressed when its low 2 bits != 2'b11
+    i_instr_sideband[0] <= (instruction_from_testbench[1:0] != 2'b11);
+    i_instr_sideband[1] <= (instruction_from_testbench[17:16] != 2'b11);
   end
 
   // Memory addressing parameters

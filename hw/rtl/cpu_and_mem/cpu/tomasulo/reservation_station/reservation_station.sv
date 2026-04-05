@@ -91,6 +91,7 @@ module reservation_station #(
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
+  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
 
   // ===========================================================================
@@ -157,6 +158,10 @@ module reservation_station #(
   wire [4:0] dispatch_csr_imm = i_dispatch.csr_imm;
   wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
   wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
+  wire dispatch_has_checkpoint = i_dispatch.has_checkpoint;
+  wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id = i_dispatch.checkpoint_id;
+  wire dispatch_is_call = i_dispatch.is_call;
+  wire dispatch_is_return = i_dispatch.is_return;
 
   // ===========================================================================
   // Stage 2 Pipeline Register
@@ -187,6 +192,10 @@ module reservation_station #(
   logic [4:0] stage2_csr_imm;
   logic [XLEN-1:0] stage2_pc;
   logic [XLEN-1:0] stage2_link_addr;
+  logic stage2_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] stage2_checkpoint_id;
+  logic stage2_is_call;
+  logic stage2_is_return;
 
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
@@ -252,7 +261,8 @@ module reservation_station #(
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN;
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN +
+      1 + CheckpointIdWidth + 1 + 1;
 
   logic [PayloadWidth-1:0] payload_wr_data;
   logic [PayloadWidth-1:0] payload_rd_data;
@@ -270,7 +280,11 @@ module reservation_station #(
     dispatch_csr_addr,  // 12  csr_addr
     dispatch_csr_imm,  //  5  csr_imm
     dispatch_pc,  // 32  pc
-    dispatch_link_addr  // 32  link_addr
+    dispatch_link_addr,  // 32  link_addr
+    dispatch_has_checkpoint,  //  1  has_checkpoint
+    dispatch_checkpoint_id,  //  CheckpointIdWidth  checkpoint_id
+    dispatch_is_call,  //  1  is_call
+    dispatch_is_return  //  1  is_return
   };
 
   sdp_dist_ram #(
@@ -286,23 +300,28 @@ module reservation_station #(
   );
 
   // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
-  logic [    31:0] pl_op_bits;
-  logic [XLEN-1:0] pl_imm;
-  logic [     2:0] pl_rm;
-  logic [XLEN-1:0] pl_branch_target;
-  logic            pl_predicted_taken;
-  logic [XLEN-1:0] pl_predicted_target;
-  logic            pl_is_fp_mem;
-  logic [     1:0] pl_mem_size_bits;
-  logic            pl_mem_signed;
-  logic [    11:0] pl_csr_addr;
-  logic [     4:0] pl_csr_imm;
-  logic [XLEN-1:0] pl_pc;
-  logic [XLEN-1:0] pl_link_addr;
+  logic [                 31:0] pl_op_bits;
+  logic [             XLEN-1:0] pl_imm;
+  logic [                  2:0] pl_rm;
+  logic [             XLEN-1:0] pl_branch_target;
+  logic                         pl_predicted_taken;
+  logic [             XLEN-1:0] pl_predicted_target;
+  logic                         pl_is_fp_mem;
+  logic [                  1:0] pl_mem_size_bits;
+  logic                         pl_mem_signed;
+  logic [                 11:0] pl_csr_addr;
+  logic [                  4:0] pl_csr_imm;
+  logic [             XLEN-1:0] pl_pc;
+  logic [             XLEN-1:0] pl_link_addr;
+  logic                         pl_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] pl_checkpoint_id;
+  logic                         pl_is_call;
+  logic                         pl_is_return;
 
   assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
           pl_predicted_target, pl_is_fp_mem, pl_mem_size_bits, pl_mem_signed,
-          pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr} = payload_rd_data;
+          pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr,
+          pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return} = payload_rd_data;
 
   // ===========================================================================
   // Combinational Logic
@@ -423,6 +442,10 @@ module reservation_station #(
   assign o_issue.csr_imm = stage2_csr_imm;
   assign o_issue.pc = stage2_pc;
   assign o_issue.link_addr = stage2_link_addr;
+  assign o_issue.has_checkpoint = stage2_has_checkpoint;
+  assign o_issue.checkpoint_id = stage2_checkpoint_id;
+  assign o_issue.is_call = stage2_is_call;
+  assign o_issue.is_return = stage2_is_return;
 
   assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
 
@@ -450,6 +473,9 @@ module reservation_station #(
       if (i_flush_all) begin
         rs_valid <= '0;
       end else if (i_flush_en) begin
+        // Partial flush: invalidate entries younger than flush_tag.
+        // The old head==flush_tag+1 full-clear is now handled by
+        // speculative_flush_all (passed as i_flush_all) from the wrapper.
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
             rs_valid[i] <= 1'b0;
@@ -561,6 +587,10 @@ module reservation_station #(
       stage2_csr_imm          <= pl_csr_imm;
       stage2_pc               <= pl_pc;
       stage2_link_addr        <= pl_link_addr;
+      stage2_has_checkpoint   <= pl_has_checkpoint;
+      stage2_checkpoint_id    <= pl_checkpoint_id;
+      stage2_is_call          <= pl_is_call;
+      stage2_is_return        <= pl_is_return;
     end else if (stage2_accept) begin
       // Consumed by FU, no new entry ready — go empty.
       stage2_valid <= 1'b0;

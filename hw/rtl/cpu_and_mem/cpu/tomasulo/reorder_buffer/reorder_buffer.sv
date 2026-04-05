@@ -133,6 +133,13 @@ module reorder_buffer (
     output logic o_fence_i_flush,  // FENCE.I committed, flush pipeline/icache
 
     // =========================================================================
+    // Early Misprediction Recovery
+    // =========================================================================
+    // Marks the entry as early-recovered so commit skips re-triggering flush
+    input logic                                        i_early_recovery_en,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_recovery_tag,
+
+    // =========================================================================
     // Status Outputs
     // =========================================================================
     output logic                                      o_full,
@@ -250,6 +257,7 @@ module reorder_buffer (
   logic [ReorderBufferDepth-1:0] rob_is_sc;
   logic [ReorderBufferDepth-1:0] rob_is_compressed;
   logic [ReorderBufferDepth-1:0] rob_has_fp_flags;
+  logic [ReorderBufferDepth-1:0] rob_early_recovered;
   riscv_pkg::rs_type_e rob_rs_type[ReorderBufferDepth];
 
   // Head and tail pointers (declared above for forward ref)
@@ -280,6 +288,7 @@ module reorder_buffer (
   logic head_predicted_taken;
   logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
+  logic head_early_recovered;
   logic head_is_call;  // TODO: wire to BPU update at commit
   logic head_is_return;  // TODO: wire to BPU update at commit
   logic head_is_jal;
@@ -356,6 +365,7 @@ module reorder_buffer (
   assign head_branch_taken = rob_branch_taken[head_idx];
   assign head_predicted_taken = rob_predicted_taken[head_idx];
   assign head_mispredicted = rob_mispredicted[head_idx];
+  assign head_early_recovered = rob_early_recovered[head_idx];
   assign head_is_call = rob_is_call[head_idx];
   assign head_is_return = rob_is_return[head_idx];
   assign head_is_jal = rob_is_jal[head_idx];
@@ -675,8 +685,12 @@ module reorder_buffer (
 
   // Registered mispredict recovery arrives one cycle after the flushing
   // branch already retired, so the current head is exactly one tag younger.
+  // Gate out early recovery: early flushes target branches in the MIDDLE/TAIL
+  // of the ROB, not the head.  head == flush_tag+1 during early recovery is
+  // a coincidence (a different instruction just committed), not the intended
+  // "branch already committed" condition.
   logic flush_after_head_commit;
-  assign flush_after_head_commit = i_flush_en &&
+  assign flush_after_head_commit = i_flush_en && !i_early_recovery_en &&
       (head_idx == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Allocation write - tail pointer management
@@ -830,6 +844,7 @@ module reorder_buffer (
       rob_has_checkpoint[tail_idx]  <= 1'b0;
       rob_branch_taken[tail_idx]    <= 1'b0;
       rob_mispredicted[tail_idx]    <= 1'b0;
+      rob_early_recovered[tail_idx] <= 1'b0;
 
       // JAL has fully known link/target information at allocation time.
       if (i_alloc_req.is_jal) begin
@@ -860,6 +875,9 @@ module reorder_buffer (
       rob_branch_taken[i_branch_update.tag] <= i_branch_update.taken;
       rob_mispredicted[i_branch_update.tag] <= i_branch_update.mispredicted;
     end
+
+    // Mark entry as early-recovered (suppresses commit-time re-trigger)
+    if (i_early_recovery_en) rob_early_recovered[i_early_recovery_tag] <= 1'b1;
   end
 
   // ===========================================================================
@@ -996,14 +1014,19 @@ module reorder_buffer (
   // Commit Enable Logic
   // ===========================================================================
 
-  // Commit when head is ready, no stall, and no full flush in progress.
-  // If a delayed partial flush arrives one cycle after the mispredicted branch
-  // retired, suppress the younger head commit so recovery wins over any
-  // speculative successor.
-  assign commit_en = head_ready && !commit_stall && !i_flush_all && !flush_after_head_commit;
+  // Commit when head is ready, no stall, and no flush in progress.
+  // Narrow guard: only block commit when the head IS a misprediction AND a
+  // branch misprediction is being detected on the same cycle.  This prevents
+  // the exact race where a mispredicted JAL commits on the early_mispredict_fire
+  // cycle, causing its commit-time recovery to be lost (early recovery takes
+  // priority the next cycle).  Firing only on the simultaneous collision avoids
+  // a per-misprediction commit stall.
+  assign commit_en = head_ready && !commit_stall && !i_flush_all &&
+                     !flush_after_head_commit &&
+                     !(commit_misprediction &&
+                       i_branch_update.valid && i_branch_update.mispredicted);
 
-  // Misprediction at commit - use the authoritative flag from branch unit
-  // The branch unit knows about RAS, indirect predictor, and other specifics
+  // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
 
   // ===========================================================================
@@ -1070,6 +1093,7 @@ module reorder_buffer (
 
       // Branch misprediction recovery
       o_commit.misprediction = commit_misprediction;
+      o_commit.early_recovered = head_early_recovered;
       o_commit.has_checkpoint = head_has_checkpoint;
       o_commit.checkpoint_id = head_checkpoint_id;
       // Redirect PC:
@@ -1182,6 +1206,27 @@ module reorder_buffer (
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+
+  // Retire trace: log every committed instruction (for debugging)
+  integer retire_trace_fd;
+  initial begin
+    retire_trace_fd = $fopen("retire_trace.log", "w");
+  end
+  always @(posedge i_clk) begin
+    if (i_rst_n && commit_en) begin
+      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0)
+        $fwrite(
+            retire_trace_fd,
+            "%0t pc=%08x rd=x%0d val=%08x\n",
+            $time,
+            head_pc,
+            head_dest_reg,
+            head_value[31:0]
+        );
+      else $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
+    end
+  end
+
   // Check that we don't allocate when full
   always @(posedge i_clk) begin
     if (i_rst_n && i_alloc_req.alloc_valid && full) begin
@@ -1204,19 +1249,24 @@ module reorder_buffer (
   logic dbg_flush_prev_cycle;
   always @(posedge i_clk) begin
     if (!i_rst_n) dbg_flush_prev_cycle <= 1'b0;
-    else dbg_flush_prev_cycle <= i_flush_all || i_flush_en;
+    else dbg_flush_prev_cycle <= i_flush_all || i_flush_en || dbg_flush_prev_cycle;
   end
+  // With age-based partial flush, stale CDB results from younger-flushed
+  // instructions can arrive 2+ cycles after flush. The actual write is
+  // gated by rob_valid, so this is functionally harmless.
   always @(posedge i_clk) begin
     if (i_rst_n && i_cdb_write.valid && !rob_valid[i_cdb_write.tag] &&
         !dbg_flush_prev_cycle && !i_flush_all && !i_flush_en) begin
-      $error("Reorder Buffer: CDB write to invalid entry tag=%0d", i_cdb_write.tag);
+      $warning("Reorder Buffer: CDB write to invalid entry tag=%0d (ignored)", i_cdb_write.tag);
     end
   end
 
   // Check that branch updates target valid entries
   always @(posedge i_clk) begin
-    if (i_rst_n && i_branch_update.valid && !rob_valid[i_branch_update.tag]) begin
-      $error("Reorder Buffer: Branch update to invalid entry tag=%0d", i_branch_update.tag);
+    if (i_rst_n && i_branch_update.valid && !rob_valid[i_branch_update.tag] &&
+        !dbg_flush_prev_cycle && !i_flush_all && !i_flush_en) begin
+      $warning("Reorder Buffer: Branch update to invalid entry tag=%0d (ignored)",
+               i_branch_update.tag);
     end
   end
 

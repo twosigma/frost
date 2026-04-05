@@ -78,6 +78,13 @@ module store_queue #(
     input logic                                        i_commit_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
 
+    // Same-cycle commit guard: combinational commit_valid from ROB (unregistered).
+    // When ROB commit and partial flush fire on the same cycle, the registered
+    // i_commit_valid is still for the PREVIOUS cycle's commit. This signal
+    // catches stores being committed THIS cycle so they aren't lost to the flush.
+    input logic                                        i_commit_valid_comb,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb,
+
     // =========================================================================
     // Store-to-Load Forwarding (from LQ disambiguation)
     // =========================================================================
@@ -114,6 +121,7 @@ module store_queue #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    input logic                                        i_early_recovery_en,
 
     // =========================================================================
     // SC Discard (from ROB commit: failed SC invalidates its SQ entry)
@@ -529,7 +537,7 @@ module store_queue #(
   // ===========================================================================
   // Keep sparse holes after partial flush/free and search forward from tail_ptr
   // to find the next invalid slot instead of compacting the tail on flush.
-  assign flush_all_uncommitted = i_flush_en &&
+  assign flush_all_uncommitted = i_flush_en && !i_early_recovery_en &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
   // Tree-based free-entry search: find first invalid entry starting from
   // tail_ptr using rotate → tree-priority-encode → add-back, replacing
@@ -629,10 +637,25 @@ module store_queue #(
       // -----------------------------------------------------------------
       // Partial flush: invalidate UNCOMMITTED entries younger than flush_tag
       // Committed entries are never flushed (they must complete to memory).
+      //
+      // IMPORTANT: Check in-cycle commit (i_commit_valid) in addition to the
+      // registered sq_committed flag.  When ROB commit and early-recovery
+      // flush fire on the same cycle, sq_committed is still 0 (NBA hasn't
+      // taken effect), but the store IS architecturally committed and must
+      // NOT be flushed.
       // -----------------------------------------------------------------
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_committed[i] && (flush_all_uncommitted || is_younger(
+          if (sq_valid[i] && !sq_committed[i] &&
+              // Guard: don't flush a store the ROB is committing or just committed.
+              // sq_committed has a 2-cycle pipeline lag from the ROB's commit_en:
+              //   Cycle K:   ROB commit_en → commit_bus (comb)
+              //   Cycle K+1: commit_bus_q → i_commit_valid (registered)
+              //   Cycle K+2: sq_committed set (from K+1's NBA)
+              // A partial flush on K or K+1 would see sq_committed=0. Guard both:
+              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
+              !(i_commit_valid      && sq_rob_tag[i] == i_commit_rob_tag) &&
+              (flush_all_uncommitted || is_younger(
                   sq_rob_tag[i], i_flush_tag, i_rob_head_tag
               ))) begin
             sq_valid[i] <= 1'b0;
@@ -787,6 +810,24 @@ module store_queue #(
     end
   end
 `endif
+
+  // Debug: trace SQ drains + flush events (disabled for clean logs)
+  // always @(posedge i_clk) begin
+  //   if (i_rst_n && o_mem_write_en && o_mem_write_addr[31:16] == 16'h0001)
+  //     $display("[SQ_DRAIN] t=%0t addr=%08x data=%08x", $time, o_mem_write_addr, o_mem_write_data);
+  //   if (i_rst_n && i_flush_en) begin
+  //     for (int i = 0; i < DEPTH; i++) begin
+  //       if (sq_valid[i] && !sq_committed[i] &&
+  //           !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
+  //           !(i_commit_valid      && sq_rob_tag[i] == i_commit_rob_tag) &&
+  //           (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)) &&
+  //           sq_addr_valid[i] && sq_address[i][31:16] == 16'h0001)
+  //         $display("[SQ_ACTUALLY_FLUSHED] t=%0t idx=%0d tag=%0d addr=%08x flush_tag=%0d head=%0d",
+  //             $time, i, sq_rob_tag[i], sq_address[i], i_flush_tag, i_rob_head_tag);
+  //     end
+  //   end
+  // end
+
 `endif
 
 
