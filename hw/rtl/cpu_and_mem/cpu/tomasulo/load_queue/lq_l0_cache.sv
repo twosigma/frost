@@ -18,8 +18,8 @@
  * LQ L0 Data Cache
  *
  * Simplified OoO-compatible L0 data cache for the Load Queue.
- * Direct-mapped, word-aligned entries with FF-based tag+valid
- * and LUTRAM data array.
+ * Direct-mapped, word-aligned entries with FF-based valid bits and
+ * LUTRAM-backed tag/data arrays.
  *
  * The existing l0_cache.sv uses in-order pipeline types; this module
  * uses simple address/data ports suitable for the LQ's OoO issue path.
@@ -68,8 +68,9 @@ module lq_l0_cache #(
   // Storage
   // ===========================================================================
   logic [     DEPTH-1:0] valid;
-  logic [  TagWidth-1:0] tags                                                  [DEPTH];
-  logic [      XLEN-1:0] data                                                  [DEPTH];
+  logic [  TagWidth-1:0] tag_lookup_rd;
+  logic [  TagWidth-1:0] tag_inv_rd;
+  logic [      XLEN-1:0] data_lookup_rd;
 
   // ===========================================================================
   // Address decomposition
@@ -92,6 +93,47 @@ module lq_l0_cache #(
   logic                  lookup_fill_bypass;
   logic                  lookup_invalidated;
 
+  // Tags are written only on fill and read at two independent addresses
+  // (lookup and invalidate), so duplicate the simple dual-port RAM once
+  // per read port instead of keeping the tag array in flip-flops.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(TagWidth)
+  ) u_tag_lookup_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (lookup_index),
+      .i_write_data   (fill_tag),
+      .o_read_data    (tag_lookup_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(TagWidth)
+  ) u_tag_inv_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (inv_index),
+      .i_write_data   (fill_tag),
+      .o_read_data    (tag_inv_rd)
+  );
+
+  // Data has a single write port and a single lookup read port, making it
+  // an ideal fit for a small LUTRAM rather than a bank of FFs.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_data_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (lookup_index),
+      .i_write_data   (i_fill_data),
+      .o_read_data    (data_lookup_rd)
+  );
+
   // ===========================================================================
   // Combinational Lookup
   // ===========================================================================
@@ -101,9 +143,9 @@ module lq_l0_cache #(
   assign invalidate_existing_entry =
       i_invalidate_valid &&
       valid[inv_index] &&
-      (tags[inv_index] == inv_tag) &&
+      (tag_inv_rd == inv_tag) &&
       !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
-  assign lookup_hit_array = valid[lookup_index] && (tags[lookup_index] == lookup_tag);
+  assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
   assign lookup_fill_bypass =
       i_fill_valid && (fill_index == lookup_index) && (fill_tag == lookup_tag);
   assign lookup_invalidated =
@@ -111,7 +153,7 @@ module lq_l0_cache #(
   assign o_lookup_hit = !lookup_mmio &&
                         (lookup_fill_bypass || lookup_hit_array) &&
                         !lookup_invalidated;
-  assign o_lookup_data = lookup_fill_bypass ? i_fill_data : data[lookup_index];
+  assign o_lookup_data = lookup_fill_bypass ? i_fill_data : data_lookup_rd;
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
@@ -125,8 +167,6 @@ module lq_l0_cache #(
       // Fill
       if (i_fill_valid) begin
         valid[fill_index] <= 1'b1;
-        tags[fill_index]  <= fill_tag;
-        data[fill_index]  <= i_fill_data;
       end
 
       // Invalidate (single address).
@@ -172,7 +212,7 @@ module lq_l0_cache #(
   always_comb begin
     if (i_rst_n && o_lookup_hit) begin
       p_hit_implies_valid : assert (valid[lookup_index]);
-      p_hit_implies_tag_match : assert (tags[lookup_index] == lookup_tag);
+      p_hit_implies_tag_match : assert (tag_lookup_rd == lookup_tag);
     end
   end
 
