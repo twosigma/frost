@@ -192,8 +192,21 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
   logic [XLEN-1:0] lq_address[DEPTH];
   riscv_pkg::mem_size_e lq_size[DEPTH];
-  riscv_pkg::instr_op_e lq_amo_op[DEPTH];
+  logic [$bits(riscv_pkg::instr_op_e)-1:0] lq_amo_op_rd;
   logic [XLEN-1:0] lq_amo_rs2[DEPTH];
+
+  // AMO op is written once at allocation and only read back for AMO execution.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH($bits(riscv_pkg::instr_op_e))
+  ) u_lq_amo_op (
+      .i_clk,
+      .i_write_enable (i_alloc.valid && !full),
+      .i_write_address(alloc_target[IdxWidth-1:0]),
+      .i_write_data   (i_alloc.amo_op),
+      .i_read_address (amo_entry_idx),
+      .o_read_data    (lq_amo_op_rd)
+  );
 
   // Reservation register (LR/SC)
   logic reservation_valid;
@@ -787,8 +800,8 @@ module load_queue #(
     if (amo_state == AMO_WRITE_ACTIVE) begin
       o_amo_mem_write_en = 1'b1;
       o_amo_mem_write_addr = lq_address[amo_entry_idx];
-      o_amo_mem_write_data =
-          amo_compute(lq_amo_op[amo_entry_idx], amo_old_value, lq_amo_rs2[amo_entry_idx]);
+      o_amo_mem_write_data = amo_compute(riscv_pkg::instr_op_e'(lq_amo_op_rd), amo_old_value,
+                                         lq_amo_rs2[amo_entry_idx]);
     end
   end
 
@@ -1156,7 +1169,6 @@ module load_queue #(
       lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
       lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
-      lq_amo_op[alloc_target[IdxWidth-1:0]]     <= i_alloc.amo_op;
     end
     // FLD phase advance: set phase 1 after phase 0 memory response
     if (accept_mem_response && lq_is_fp[issued_idx] &&
