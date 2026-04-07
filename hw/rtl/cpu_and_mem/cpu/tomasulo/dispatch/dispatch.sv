@@ -162,9 +162,10 @@ module dispatch (
     // which are returned by the RAT+ROB bypass path.
 
     // =========================================================================
-    // Flush
+    // Flush / recovery hold
     // =========================================================================
     input logic i_flush,
+    input logic i_hold,
 
     // =========================================================================
     // Output: Stall Signal (to front-end pipeline control)
@@ -732,7 +733,8 @@ module dispatch (
     if (!dispatch_valid) begin
       o_stall = 1'b0;
     end else begin
-      o_stall = i_rob_full ||
+      o_stall = i_hold ||
+                i_rob_full ||
                 rs_full ||
                 (need_lq && i_lq_full) ||
                 (need_sq && i_sq_full) ||

@@ -121,7 +121,8 @@ module store_queue #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
-    input logic                                        i_early_recovery_en,
+    input logic                                        i_flush_after_head_commit,
+    input logic                                        i_early_recovery_flush,
 
     // =========================================================================
     // SC Discard (from ROB commit: failed SC invalidates its SQ entry)
@@ -297,20 +298,23 @@ module store_queue #(
   // Internal Signals
   // ===========================================================================
 
-  logic full;
-  logic empty;
+  logic                  full;
+  logic                  empty;
   logic [CountWidth-1:0] count;
 
   // Memory write tracking
-  logic write_outstanding;  // One outstanding write at a time
+  logic                  write_outstanding;  // One outstanding write at a time
+  logic [  IdxWidth-1:0] write_entry_idx;
+  logic                  write_completes_entry;
+  logic [      XLEN-1:0] write_invalidate_addr;
 
   // Head entry readiness
-  logic head_ready;  // Head entry committed + addr_valid + data_valid
+  logic                  head_ready;  // Head entry committed + addr_valid + data_valid
 
   // Head/tail search targets for the sparse valid-bit queue.
-  logic [PtrWidth-1:0] head_advance_target;
-  logic [PtrWidth-1:0] alloc_target;
-  logic flush_all_uncommitted;
+  logic [  PtrWidth-1:0] head_advance_target;
+  logic [  PtrWidth-1:0] alloc_target;
+  logic                  flush_all_uncommitted;
 
   // ===========================================================================
   // Count, Full, Empty
@@ -526,18 +530,14 @@ module store_queue #(
   // Invalidate the LQ's L0 cache at the written address when a store
   // completes its memory write. This prevents the LQ from serving stale data.
   assign o_cache_invalidate_valid = i_mem_write_done && write_outstanding;
-  assign o_cache_invalidate_addr  =
-      (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && sq_fp64_phase[head_idx])
-          ? (sq_address[head_idx] + 32'd4)
-          : sq_address[head_idx];
+  assign o_cache_invalidate_addr = write_invalidate_addr;
 
   // ===========================================================================
   // Allocation Search
   // ===========================================================================
   // Keep sparse holes after partial flush/free and search forward from tail_ptr
   // to find the next invalid slot instead of compacting the tail on flush.
-  assign flush_all_uncommitted = i_flush_en && !i_early_recovery_en &&
-      (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
+  assign flush_all_uncommitted = i_flush_after_head_commit;
   // Tree-based free-entry search: find first invalid entry starting from
   // tail_ptr using rotate → tree-priority-encode → add-back, replacing
   // the O(DEPTH) serial scan with O(log2(DEPTH)) logic levels.
@@ -613,22 +613,28 @@ module store_queue #(
   // -------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      sq_addr_valid     <= '0;
-      sq_data_valid     <= '0;
-      sq_committed      <= '0;
-      sq_sent           <= '0;
-      write_outstanding <= 1'b0;
+      head_ptr              <= '0;
+      tail_ptr              <= '0;
+      sq_addr_valid         <= '0;
+      sq_data_valid         <= '0;
+      sq_committed          <= '0;
+      sq_sent               <= '0;
+      write_outstanding     <= 1'b0;
+      write_entry_idx       <= '0;
+      write_completes_entry <= 1'b0;
+      write_invalidate_addr <= '0;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      sq_addr_valid     <= '0;
-      sq_data_valid     <= '0;
-      sq_committed      <= '0;
-      sq_sent           <= '0;
-      write_outstanding <= 1'b0;
+      head_ptr              <= '0;
+      tail_ptr              <= '0;
+      sq_addr_valid         <= '0;
+      sq_data_valid         <= '0;
+      sq_committed          <= '0;
+      sq_sent               <= '0;
+      write_outstanding     <= 1'b0;
+      write_entry_idx       <= '0;
+      write_completes_entry <= 1'b0;
+      write_invalidate_addr <= '0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -680,18 +686,22 @@ module store_queue #(
       // -----------------------------------------------------------------
       if (o_mem_write_en) begin
         write_outstanding <= 1'b1;
+        write_entry_idx <= head_idx;
+        write_completes_entry <= !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+                                   !sq_fp64_phase[head_idx]);
+        write_invalidate_addr <= o_mem_write_addr;
       end
 
       // -----------------------------------------------------------------
       // Memory Write Completion
       // -----------------------------------------------------------------
       if (i_mem_write_done && write_outstanding) begin
-        if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx]) begin
+        if (!write_completes_entry) begin
           // FSD phase 0 complete: advance to phase 1, allow next write
           write_outstanding <= 1'b0;
         end else begin
           // Single-phase complete or FSD phase 1 complete: free entry
-          sq_sent[head_idx] <= 1'b1;
+          sq_sent[write_entry_idx] <= 1'b1;
           write_outstanding <= 1'b0;
         end
       end
@@ -750,9 +760,8 @@ module store_queue #(
       end
 
       // Single-phase completion or FSD phase 1 completion frees the head entry.
-      if (i_mem_write_done && write_outstanding &&
-          !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx])) begin
-        sq_valid[head_idx] <= 1'b0;
+      if (i_mem_write_done && write_outstanding && write_completes_entry) begin
+        sq_valid[write_entry_idx] <= 1'b0;
       end
     end
   end
@@ -794,8 +803,8 @@ module store_queue #(
     // Memory Write Completion: FSD phase advance (data only)
     // -----------------------------------------------------------------
     if (i_mem_write_done && write_outstanding) begin
-      if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx]) begin
-        sq_fp64_phase[head_idx] <= 1'b1;
+      if (!write_completes_entry) begin
+        sq_fp64_phase[write_entry_idx] <= 1'b1;
       end
     end
 

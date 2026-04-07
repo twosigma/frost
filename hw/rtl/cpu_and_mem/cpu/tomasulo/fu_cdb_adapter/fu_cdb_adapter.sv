@@ -44,7 +44,9 @@
  *     flush / partial flush of held tag -> clear register, go IDLE
  */
 
-module fu_cdb_adapter (
+module fu_cdb_adapter #(
+    parameter bit ALLOW_GRANT_REFILL = 1'b1
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -126,7 +128,7 @@ module fu_cdb_adapter (
     end else if (i_flush || partial_flush_held) begin
       result_pending <= 1'b0;
     end else if (result_pending && i_grant) begin
-      result_pending <= i_fu_result.valid;  // back-to-back if new input, else idle
+      result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid;
     end else if (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input) begin
       result_pending <= 1'b1;
     end
@@ -134,7 +136,7 @@ module fu_cdb_adapter (
 
   // Data: held_result (no reset - gated by result_pending)
   always_ff @(posedge i_clk) begin
-    if ((result_pending && i_grant && i_fu_result.valid) ||
+    if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
         (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input)) begin
       held_result <= i_fu_result;
     end

@@ -118,10 +118,13 @@ module tomasulo_wrapper (
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    input logic                                        i_flush_after_head_commit,
+    input logic                                        i_backend_recovery_hold,
 
     // =========================================================================
     // Early Misprediction Recovery
     // =========================================================================
+    input logic                                        i_early_recovery_flush,
     input logic                                        i_early_recovery_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_recovery_tag,
 
@@ -457,22 +460,17 @@ module tomasulo_wrapper (
   // preserved. Pass age-based partial flush to all speculative structures.
   // Full flushes (trap/MRET/FENCE.I) still clear everything.
   //
-  // flush_after_head_commit: the mispredicted branch already committed (head ==
-  // flush_tag+1), so every remaining speculative entry is younger. The is_younger
-  // age comparison wraps and misses them all. Promote to full flush so that CDB
-  // adapters, FU shims, and other structures that lack an explicit
-  // flush_after_head guard still clear correctly.
+  // Commit-time mispredict recovery already tells us explicitly when the
+  // offending branch retired at the ROB head, so promote only that case to a
+  // speculative full flush without recomputing head/tag relationships here.
   (* max_fanout = 32 *)logic full_flush_all;
   (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
-  logic flush_after_head_commit;
   assign full_flush_all = i_flush_all;
-  assign flush_after_head_commit = i_flush_en && !i_early_recovery_en &&
-      (head_tag == (i_flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
   assign speculative_partial_flush = i_flush_en;
-  assign speculative_flush_all = full_flush_all || flush_after_head_commit;
-  assign speculative_flush_en = i_flush_en && !flush_after_head_commit;
+  assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
+  assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
 
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
@@ -565,7 +563,7 @@ module tomasulo_wrapper (
 
   wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
   (* max_fanout = 32 *) logic dispatch_valid;
-  assign dispatch_valid = i_rs_dispatch.valid;
+  assign dispatch_valid = i_rs_dispatch.valid && !i_backend_recovery_hold;
 
   always_comb begin
     int_rs_dispatch_valid  = dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
@@ -617,7 +615,8 @@ module tomasulo_wrapper (
   assign fmul_dispatch_dequeue = fmul_dispatch_pending_valid &&
       !fmul_rs_full_raw &&
       !speculative_flush_all &&
-      !speculative_flush_en;
+      !speculative_flush_en &&
+      !i_backend_recovery_hold;
   assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue;
   assign fmul_dispatch_pending_flushed = speculative_flush_all ||
       (speculative_flush_en &&
@@ -635,6 +634,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   // ALU Pipeline: INT_RS issue → shim → adapter → CDB arbiter slot 0
   // ===========================================================================
+  riscv_pkg::rs_issue_t    int_rs_issue_raw;  // INT_RS issue output
   riscv_pkg::rs_issue_t    int_rs_issue_w;  // INT_RS issue output
   riscv_pkg::fu_complete_t alu_shim_out;  // ALU shim → adapter
   // alu_adapter_to_arbiter declared above (forward declaration)
@@ -642,11 +642,12 @@ module tomasulo_wrapper (
   logic                    alu_fu_busy;  // always 0 for single-cycle ALU
   logic                    int_rs_fu_ready;
 
-  assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending;
+  assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending & ~i_backend_recovery_hold;
 
   // ===========================================================================
   // MUL/DIV Pipeline: MUL_RS issue → shim → adapters → CDB arbiter slots 1,2
   // ===========================================================================
+  riscv_pkg::rs_issue_t    mul_rs_issue_raw;  // MUL_RS issue output (internal)
   riscv_pkg::rs_issue_t    mul_rs_issue_w;  // MUL_RS issue output (internal)
   riscv_pkg::fu_complete_t mul_shim_out;  // shim MUL → adapter
   riscv_pkg::fu_complete_t div_shim_out;  // shim DIV → adapter
@@ -657,7 +658,8 @@ module tomasulo_wrapper (
   logic                    mul_rs_fu_ready;
 
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy
-                           & ~mul_adapter_result_pending & ~div_adapter_result_pending;
+                           & ~mul_adapter_result_pending & ~div_adapter_result_pending
+                           & ~i_backend_recovery_hold;
 
   // DIV result accepted: the adapter consumes the shim's output this cycle.
   // Either the adapter is idle and the shim presents a valid result (pass-through),
@@ -782,7 +784,7 @@ module tomasulo_wrapper (
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
                               !store_issue_fire &&
-                              (!mem_adapter_result_pending || o_cdb_grant[3]);
+                              !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -825,6 +827,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   // FP_ADD Pipeline: FP_RS issue → fp_add_shim → adapter → CDB arbiter slot 4
   // ===========================================================================
+  riscv_pkg::rs_issue_t fp_rs_issue_raw;  // FP_RS issue output (internal)
   riscv_pkg::rs_issue_t fp_rs_issue_w;  // FP_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_add_shim_out;  // shim → adapter
   // fp_add_adapter_to_arbiter declared above (forward declaration)
@@ -832,11 +835,13 @@ module tomasulo_wrapper (
   logic fp_add_busy;
   logic fp_rs_fu_ready;
 
-  assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_add_busy & ~fp_add_adapter_result_pending;
+  assign fp_rs_fu_ready = i_fp_rs_fu_ready & ~fp_add_busy &
+                          ~fp_add_adapter_result_pending & ~i_backend_recovery_hold;
 
   // ===========================================================================
   // FP_MUL Pipeline: FMUL_RS issue → fp_mul_shim → adapter → CDB arbiter slot 5
   // ===========================================================================
+  riscv_pkg::rs_issue_t    fmul_rs_issue_raw;  // FMUL_RS issue output (internal)
   riscv_pkg::rs_issue_t    fmul_rs_issue_w;  // FMUL_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_mul_shim_out;
   // fp_mul_adapter_to_arbiter declared above (forward declaration)
@@ -844,11 +849,13 @@ module tomasulo_wrapper (
   logic                    fp_mul_busy;
   logic                    fmul_rs_fu_ready;
 
-  assign fmul_rs_fu_ready = i_fmul_rs_fu_ready & ~fp_mul_busy & ~fp_mul_adapter_result_pending;
+  assign fmul_rs_fu_ready = i_fmul_rs_fu_ready & ~fp_mul_busy &
+                            ~fp_mul_adapter_result_pending & ~i_backend_recovery_hold;
 
   // ===========================================================================
   // FP_DIV Pipeline: FDIV_RS issue → fp_div_shim → adapter → CDB arbiter slot 6
   // ===========================================================================
+  riscv_pkg::rs_issue_t    fdiv_rs_issue_raw;  // FDIV_RS issue output (internal)
   riscv_pkg::rs_issue_t    fdiv_rs_issue_w;  // FDIV_RS issue output (internal)
   riscv_pkg::fu_complete_t fp_div_shim_out;
   // fp_div_adapter_to_arbiter declared above (forward declaration)
@@ -856,7 +863,31 @@ module tomasulo_wrapper (
   logic                    fp_div_busy;
   logic                    fdiv_rs_fu_ready;
 
-  assign fdiv_rs_fu_ready = i_fdiv_rs_fu_ready & ~fp_div_busy & ~fp_div_adapter_result_pending;
+  assign fdiv_rs_fu_ready = i_fdiv_rs_fu_ready & ~fp_div_busy &
+                            ~fp_div_adapter_result_pending & ~i_backend_recovery_hold;
+
+  riscv_pkg::rs_issue_t mem_rs_issue_raw;
+  riscv_pkg::rs_issue_t mem_rs_issue_w;
+
+  always_comb begin
+    int_rs_issue_w = int_rs_issue_raw;
+    if (i_backend_recovery_hold) int_rs_issue_w.valid = 1'b0;
+
+    mul_rs_issue_w = mul_rs_issue_raw;
+    if (i_backend_recovery_hold) mul_rs_issue_w.valid = 1'b0;
+
+    mem_rs_issue_w = mem_rs_issue_raw;
+    if (i_backend_recovery_hold) mem_rs_issue_w.valid = 1'b0;
+
+    fp_rs_issue_w = fp_rs_issue_raw;
+    if (i_backend_recovery_hold) fp_rs_issue_w.valid = 1'b0;
+
+    fmul_rs_issue_w = fmul_rs_issue_raw;
+    if (i_backend_recovery_hold) fmul_rs_issue_w.valid = 1'b0;
+
+    fdiv_rs_issue_w = fdiv_rs_issue_raw;
+    if (i_backend_recovery_hold) fdiv_rs_issue_w.valid = 1'b0;
+  end
 
   // FP DIV result accepted: the adapter consumes the shim's output this cycle.
   // Either the adapter is idle and the shim presents a valid result (pass-through),
@@ -909,12 +940,14 @@ module tomasulo_wrapper (
       .i_interrupt_pending (i_interrupt_pending),
 
       // Flush
-      .i_flush_en (i_flush_en),
+      .i_flush_en(i_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(full_flush_all),
+      .i_flush_after_head_commit(i_flush_after_head_commit),
 
       // Early misprediction recovery
-      .i_early_recovery_en (i_early_recovery_en),
+      .i_early_recovery_flush(i_early_recovery_flush),
+      .i_early_recovery_en(i_early_recovery_en),
       .i_early_recovery_tag(i_early_recovery_tag),
 
       // Status
@@ -1059,7 +1092,7 @@ module tomasulo_wrapper (
       .i_cdb(cdb_bus_qualified),
 
       // Issue (to internal wire for ALU shim)
-      .o_issue                (int_rs_issue_w),
+      .o_issue                (int_rs_issue_raw),
       .i_fu_ready             (int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .o_next_issue_is_sc     (),                              // unused — no SC ops in INT_RS
@@ -1095,7 +1128,7 @@ module tomasulo_wrapper (
       .i_dispatch             (mul_rs_dispatch),
       .o_full                 (mul_rs_full_w),
       .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (mul_rs_issue_w),
+      .o_issue                (mul_rs_issue_raw),
       .i_fu_ready             (mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
@@ -1122,22 +1155,25 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MemRsDepth)
   ) u_mem_rs (
-      .i_clk                  (i_clk),
-      .i_rst_n                (i_rst_n),
-      .i_dispatch             (mem_rs_dispatch),
-      .o_full                 (mem_rs_full_w),
-      .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (o_mem_rs_issue),
-      .i_fu_ready             (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc)),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(mem_rs_dispatch),
+      .o_full(mem_rs_full_w),
+      .i_cdb(cdb_bus_qualified),
+      .o_issue(mem_rs_issue_raw),
+      .i_fu_ready             (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc) &&
+                               !i_backend_recovery_hold),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (mem_rs_next_is_sc),
-      .i_flush_en             (speculative_flush_en),
-      .i_flush_tag            (i_flush_tag),
-      .i_rob_head_tag         (head_tag),
-      .i_flush_all            (speculative_flush_all),
-      .o_empty                (o_mem_rs_empty),
-      .o_count                (o_mem_rs_count)
+      .o_next_issue_is_sc(mem_rs_next_is_sc),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(o_mem_rs_empty),
+      .o_count(o_mem_rs_count)
   );
+
+  assign o_mem_rs_issue = mem_rs_issue_w;
 
   // ---------------------------------------------------------------------------
   // Resolve FRM_DYN at dispatch time (shared by all FP RS)
@@ -1164,7 +1200,7 @@ module tomasulo_wrapper (
       .i_dispatch             (fp_rs_dispatch),
       .o_full                 (fp_rs_full_w),
       .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fp_rs_issue_w),
+      .o_issue                (fp_rs_issue_raw),
       .i_fu_ready             (fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in FP_RS
@@ -1240,7 +1276,7 @@ module tomasulo_wrapper (
       .i_dispatch             (fmul_rs_dispatch_to_rs),
       .o_full                 (fmul_rs_full_raw),
       .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fmul_rs_issue_w),
+      .o_issue                (fmul_rs_issue_raw),
       .i_fu_ready             (fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                        // unused — no SC ops in FMUL_RS
@@ -1270,7 +1306,7 @@ module tomasulo_wrapper (
       .i_dispatch             (fdiv_rs_dispatch),
       .o_full                 (fdiv_rs_full_w),
       .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fdiv_rs_issue_w),
+      .o_issue                (fdiv_rs_issue_raw),
       .i_fu_ready             (fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in FDIV_RS
@@ -1472,7 +1508,7 @@ module tomasulo_wrapper (
       // AMO writes share the same external data-memory port as load reads.
       // Treat them as bus-busy so the LQ cannot issue a younger load or
       // take a stale L0-cache fast path in the AMO write-completion cycle.
-      .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en),
+      .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
@@ -1506,7 +1542,7 @@ module tomasulo_wrapper (
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(speculative_flush_all),
-      .i_early_recovery_en(i_early_recovery_en),
+      .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
       .o_empty(o_lq_empty),
@@ -1516,7 +1552,9 @@ module tomasulo_wrapper (
   // ===========================================================================
   // MEM CDB Adapter: result holding register → CDB arbiter slot 3
   // ===========================================================================
-  fu_cdb_adapter u_mem_adapter (
+  fu_cdb_adapter #(
+      .ALLOW_GRANT_REFILL(1'b0)
+  ) u_mem_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
       .i_fu_result     (mem_fu_to_adapter),
@@ -1649,7 +1687,8 @@ module tomasulo_wrapper (
       .i_flush_en(i_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(full_flush_all),
-      .i_early_recovery_en(i_early_recovery_en),
+      .i_flush_after_head_commit(i_flush_after_head_commit),
+      .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
       .o_empty          (o_sq_empty),

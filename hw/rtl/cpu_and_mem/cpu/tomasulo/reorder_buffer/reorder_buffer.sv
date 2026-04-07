@@ -132,6 +132,7 @@ module reorder_buffer (
     input logic i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,  // Flush entries after this tag
     input logic i_flush_all,  // Flush entire Reorder Buffer (exception)
+    input logic i_flush_after_head_commit,
 
     // FENCE.I triggers pipeline and icache flush after commit
     output logic o_fence_i_flush,  // FENCE.I committed, flush pipeline/icache
@@ -139,6 +140,8 @@ module reorder_buffer (
     // =========================================================================
     // Early Misprediction Recovery
     // =========================================================================
+    // Qualifies the current partial flush as an execute-time early recovery
+    input logic                                        i_early_recovery_flush,
     // Marks the entry as early-recovered so commit skips re-triggering flush
     input logic                                        i_early_recovery_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_recovery_tag,
@@ -712,15 +715,8 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth-1:0] flush_age;
   assign flush_age = i_flush_tag - head_idx;
 
-  // Registered mispredict recovery arrives one cycle after the flushing
-  // branch already retired, so the current head is exactly one tag younger.
-  // Gate out early recovery: early flushes target branches in the MIDDLE/TAIL
-  // of the ROB, not the head.  head == flush_tag+1 during early recovery is
-  // a coincidence (a different instruction just committed), not the intended
-  // "branch already committed" condition.
   logic flush_after_head_commit;
-  assign flush_after_head_commit = i_flush_en && !i_early_recovery_en &&
-      (head_idx == (i_flush_tag + ReorderBufferTagWidth'(1)));
+  assign flush_after_head_commit = i_flush_after_head_commit;
 
   // Allocation write - tail pointer management
   always_ff @(posedge i_clk) begin
@@ -915,7 +911,7 @@ module reorder_buffer (
 
     case (serial_state)
       SERIAL_IDLE: begin
-        if (head_ready && !i_flush_en && !i_flush_all) begin
+        if (head_ready && !i_early_recovery_en && !i_flush_en && !i_flush_all) begin
           // Check for serializing instructions at head
           if (head_exception) begin
             // Exception: wait for trap unit
@@ -1020,7 +1016,7 @@ module reorder_buffer (
   // cycle, causing its commit-time recovery to be lost (early recovery takes
   // priority the next cycle).  Firing only on the simultaneous collision avoids
   // a per-misprediction commit stall.
-  assign commit_en = head_ready && !commit_stall && !i_flush_all &&
+  assign commit_en = head_ready && !commit_stall && !i_early_recovery_en && !i_flush_all &&
                      !flush_after_head_commit &&
                      !(commit_misprediction &&
                        i_branch_update.valid && i_branch_update.mispredicted &&
@@ -1035,7 +1031,8 @@ module reorder_buffer (
   // term. Outer control logic uses this to suppress younger branch resolution
   // without feeding branch_update back into commit_en.
   assign o_head_commit_misprediction_candidate =
-      head_ready && !commit_stall && !i_flush_all && !flush_after_head_commit &&
+      head_ready && !commit_stall && !i_early_recovery_en &&
+      !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
 
   // ===========================================================================
@@ -1044,6 +1041,7 @@ module reorder_buffer (
 
   // CSR execution signal - asserted when entering CSR_EXEC state
   assign o_csr_start = (serial_state == SERIAL_IDLE) && head_ready &&
+                       !i_early_recovery_en &&
                        head_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
 
@@ -1052,6 +1050,7 @@ module reorder_buffer (
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
   assign o_mret_start = (serial_state == SERIAL_IDLE) && head_ready &&
+                        !i_early_recovery_en &&
                         head_is_mret && !head_exception;
 
   // Trap pending signal - asserted when exception at head.
@@ -1064,7 +1063,9 @@ module reorder_buffer (
   // gating by !i_flush_all creates an oscillating combinational loop.
   // The registered term (serial_state == SERIAL_TRAP_WAIT) sustains the signal
   // across clock edges; the combinational term provides same-cycle detection.
-  assign o_trap_pending = (serial_state == SERIAL_TRAP_WAIT) || (head_ready && head_exception);
+  assign o_trap_pending =
+      (serial_state == SERIAL_TRAP_WAIT) ||
+      (head_ready && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
 

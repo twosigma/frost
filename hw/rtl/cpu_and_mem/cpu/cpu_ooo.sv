@@ -976,8 +976,24 @@ module cpu_ooo #(
   logic flush_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   logic flush_all;
+  logic commit_recovery_flush_after_head;
   logic mispredict_recovery_pending;
-  riscv_pkg::reorder_buffer_commit_t mispredict_commit_q;
+  typedef struct packed {
+    logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
+    logic has_checkpoint;
+    logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] redirect_pc;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_call;
+    logic is_return;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } mispredict_commit_capture_t;
+  mispredict_commit_capture_t mispredict_commit_q;
   logic frontend_state_flush;
 
   // CDB
@@ -1166,12 +1182,15 @@ module cpu_ooo #(
       .i_interrupt_pending(interrupt_pending),
 
       // Flush
-      .i_flush_en (flush_en),
+      .i_flush_en(flush_en),
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
+      .i_flush_after_head_commit(commit_recovery_flush_after_head),
+      .i_backend_recovery_hold(early_backend_recovery_hold),
 
       // Early misprediction recovery
-      .i_early_recovery_en (early_recovery_en),
+      .i_early_recovery_flush(early_backend_recovery_pending),
+      .i_early_recovery_en(early_recovery_en),
       .i_early_recovery_tag(early_recovery_tag),
 
       // ROB status
@@ -1404,8 +1423,9 @@ module cpu_ooo #(
       .i_lq_full(lq_full),
       .i_sq_full(sq_full),
 
-      // Flush
+      // Flush / early-recovery hold
       .i_flush(flush_pipeline),
+      .i_hold (early_backend_recovery_hold),
 
       // Dispatch profiling status
       .o_status(dispatch_status),
@@ -1438,6 +1458,18 @@ module cpu_ooo #(
   logic branch_issue_checkpoint_live;
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
+  typedef struct packed {
+    logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
+    logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } correct_branch_commit_capture_t;
+
   logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
   always_comb begin
     branch_issue_checkpoint_live = 1'b1;
@@ -1470,6 +1502,8 @@ module cpu_ooo #(
       // Partial early recovery keeps only entries strictly older than the
       // mispredicting branch.  The flush-tag branch itself has already
       // generated recovery data and must not re-resolve.
+      branch_issue_is_flushed = rs_issue_int.valid && (branch_issue_age >= early_flush_age);
+    end else if (early_backend_recovery_pending) begin
       branch_issue_is_flushed = rs_issue_int.valid && (branch_issue_age >= early_flush_age);
     end else if (mispredict_recovery_pending) begin
       // Commit-time recovery only fires when the mispredicted branch commits at
@@ -1587,10 +1621,12 @@ module cpu_ooo #(
   // This reduces the mispredict penalty from ~15 cycles to ~2 cycles.
   //
   // Cycle N:   branch_update fires with mispredicted=1 → capture data
-  // Cycle N+1: early_mispredict_pending → flush + redirect + restore
+  // Cycle N+1: early_mispredict_pending → redirect + RAT restore + backend hold
+  // Cycle N+2: early_backend_recovery_pending → backend partial flush + hold
 
   logic early_mispredict_fire;
   logic early_mispredict_pending;
+  logic early_backend_recovery_pending;
 
   // Captured data from the mispredicting branch
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
@@ -1637,6 +1673,17 @@ module cpu_ooo #(
     else early_mispredict_pending <= early_mispredict_fire;
   end
 
+  // Delay the high-fanout backend partial flush one cycle behind the fast
+  // frontend redirect and RAT restore.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) early_backend_recovery_pending <= 1'b0;
+    else if (flush_for_trap || flush_for_mret || fence_i_flush) begin
+      early_backend_recovery_pending <= 1'b0;
+    end else begin
+      early_backend_recovery_pending <= early_mispredict_pending;
+    end
+  end
+
   // Capture recovery data on the fire cycle
   always_ff @(posedge i_clk) begin
     if (early_mispredict_fire) begin
@@ -1668,11 +1715,20 @@ module cpu_ooo #(
   end
 
 
-  // ROB early recovery signal (marks entry so commit doesn't re-trigger)
+  // Mark the branch as early-recovered before it can commit. The delayed
+  // backend flush uses a separate qualifier so speculative structures can
+  // still distinguish early recovery from commit-time flush-after-head.
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   assign early_recovery_en  = early_mispredict_pending;
   assign early_recovery_tag = early_mispredict_tag;
+
+  // Hold dispatch/issue/dequeue across both early-recovery phases. Phase 1
+  // still uses flush_pipeline to redirect and kill wrong-path frontend state;
+  // phase 2 must behave like a backpressure bubble instead of a second
+  // frontend flush so the redirected target instruction stream is preserved.
+  logic early_backend_recovery_hold;
+  assign early_backend_recovery_hold = early_mispredict_pending || early_backend_recovery_pending;
 
   // ===========================================================================
   // Commit-Time Actions
@@ -1755,26 +1811,42 @@ module cpu_ooo #(
   // early_mispredict_pending first fires, so check the tag explicitly.
   logic commit_is_misprediction;
   assign commit_is_misprediction = rob_commit_misprediction_raw &&
-                                    !(early_mispredict_pending &&
+                                    !((early_mispredict_pending ||
+                                       early_backend_recovery_pending) &&
                                       head_tag == early_mispredict_tag);
 
-  // Register the mispredicted commit for one cycle so recovery does not sit on
-  // the same combinational path as ROB commit generation.
+  // Register only the mispredict recovery fields that are consumed one cycle
+  // later. Capturing the entire commit struct here needlessly drags unrelated
+  // head metadata and payload bits onto the recovery timing cone.
   always_ff @(posedge i_clk) begin
     if (i_rst) mispredict_recovery_pending <= 1'b0;
     else mispredict_recovery_pending <= commit_is_misprediction;
   end
 
-  // Misprediction data capture (no reset - gated by mispredict_recovery_pending)
+  // Misprediction data capture (no reset - gated by commit_is_misprediction)
   always_ff @(posedge i_clk) begin
-    if (commit_is_misprediction) mispredict_commit_q <= rob_commit_comb;
+    if (commit_is_misprediction) begin
+      mispredict_commit_q.tag            <= rob_commit_comb.tag;
+      mispredict_commit_q.has_checkpoint <= rob_commit_comb.has_checkpoint;
+      mispredict_commit_q.checkpoint_id  <= rob_commit_comb.checkpoint_id;
+      mispredict_commit_q.redirect_pc    <= rob_commit_comb.redirect_pc;
+      mispredict_commit_q.pc             <= rob_commit_comb.pc;
+      mispredict_commit_q.branch_target  <= rob_commit_comb.branch_target;
+      mispredict_commit_q.branch_taken   <= rob_commit_comb.branch_taken;
+      mispredict_commit_q.is_branch      <= rob_commit_comb.is_branch;
+      mispredict_commit_q.is_call        <= rob_commit_comb.is_call;
+      mispredict_commit_q.is_return      <= rob_commit_comb.is_return;
+      mispredict_commit_q.is_jal         <= rob_commit_comb.is_jal;
+      mispredict_commit_q.is_jalr        <= rob_commit_comb.is_jalr;
+      mispredict_commit_q.is_compressed  <= rob_commit_comb.is_compressed;
+    end
   end
 
   // Register correctly-predicted branch commit for BTB update + checkpoint free.
   // Breaks the rob_exception → commit_en → BTB write critical path (same pattern
   // as mispredict_commit_q above).
   logic correct_branch_commit_pending;
-  riscv_pkg::reorder_buffer_commit_t correct_branch_commit_q;
+  correct_branch_commit_capture_t correct_branch_commit_q;
 
   // Correct branch: predicted correctly AND not early-recovered (which was a misprediction)
   wire commit_is_correct_branch = rob_commit_correct_branch_raw;
@@ -1784,18 +1856,31 @@ module cpu_ooo #(
     else correct_branch_commit_pending <= commit_is_correct_branch;
   end
 
-  // Correct branch data capture (no reset - gated by correct_branch_commit_pending)
+  // Correct branch data capture (no reset - gated by commit_is_correct_branch)
   always_ff @(posedge i_clk) begin
-    if (commit_is_correct_branch) correct_branch_commit_q <= rob_commit_comb;
+    if (commit_is_correct_branch) begin
+      correct_branch_commit_q.tag           <= rob_commit_comb.tag;
+      correct_branch_commit_q.checkpoint_id <= rob_commit_comb.checkpoint_id;
+      correct_branch_commit_q.pc            <= rob_commit_comb.pc;
+      correct_branch_commit_q.branch_target <= rob_commit_comb.branch_target;
+      correct_branch_commit_q.branch_taken  <= rob_commit_comb.branch_taken;
+      correct_branch_commit_q.is_branch     <= rob_commit_comb.is_branch;
+      correct_branch_commit_q.is_jal        <= rob_commit_comb.is_jal;
+      correct_branch_commit_q.is_jalr       <= rob_commit_comb.is_jalr;
+      correct_branch_commit_q.is_compressed <= rob_commit_comb.is_compressed;
+    end
   end
 
-  // Flush pipeline on registered misprediction recovery, trap, MRET, or FENCE.I
+  // Flush pipeline on the redirecting early-recovery phase, registered
+  // misprediction recovery, trap, MRET, or FENCE.I. The delayed backend
+  // recovery phase is a hold-only bubble, not a second frontend flush.
   always_comb begin
     // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
     // cycle after FENCE.I commits. Gate the front-end flush directly from that
     // pulse so dispatch cannot allocate into the same cycle as a full flush.
     flush_pipeline = early_mispredict_pending || mispredict_recovery_pending ||
-                     flush_for_trap || flush_for_mret || fence_i_flush;
+                     flush_for_trap ||
+                     flush_for_mret || fence_i_flush;
   end
 
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
@@ -1805,10 +1890,13 @@ module cpu_ooo #(
       fence_i_flush || trap_taken_reg || mret_taken_reg;
 
   // Tomasulo flush:
-  //   - Partial flush uses flush_en + flush_tag for misprediction recovery.
-  //   - Trap/MRET/FENCE.I use flush_all only. Keeping flush_en low on full
-  //     flushes keeps trap recovery out of the backend partial-flush age
-  //     compare logic; trap latency is unimportant, timing closure is.
+  //   - Early recovery uses flush_en + flush_tag because the mispredicted
+  //     branch is still in-flight and older survivors must be preserved.
+  //   - Commit-time misprediction recovery still emits flush_en + flush_tag,
+  //     but also raises commit_recovery_flush_after_head so the backend can
+  //     treat that case as "flush all speculative state younger than head"
+  //     without rediscovering it from head/tag compares.
+  //   - Trap/MRET/FENCE.I use flush_all only.
   always_comb begin
     flush_en  = 1'b0;
     flush_tag = '0;
@@ -1816,7 +1904,7 @@ module cpu_ooo #(
 
     if (trap_taken_reg || mret_taken_reg) begin
       flush_all = 1'b1;
-    end else if (early_mispredict_pending) begin
+    end else if (early_backend_recovery_pending) begin
       flush_en  = 1'b1;
       flush_tag = early_mispredict_tag;
     end else if (mispredict_recovery_pending) begin
@@ -1827,13 +1915,16 @@ module cpu_ooo #(
     end
   end
 
-  // flush_after_head: the mispredicted branch already committed (head ==
-  // flush_tag+1).  The ROB internally clears all entries.  The RS/LQ also
-  // detect this from their inputs and do a full speculative flush.  The
-  // checkpoint mask uses this to free ALL in-use checkpoints.
+  // Commit-time mispredict recovery is already a registered 1-cycle pulse from
+  // the retiring ROB head, so downstream speculative structures do not need to
+  // rediscover "flush after head" from head/tag arithmetic.
+  assign commit_recovery_flush_after_head = mispredict_recovery_pending;
+
+  // flush_after_head: commit-time mispredict recovery retired the offending
+  // branch at the ROB head in the previous cycle. The checkpoint mask uses
+  // this to free ALL in-use checkpoints.
   logic flush_after_head;
-  assign flush_after_head = flush_en && !early_mispredict_pending &&
-      (head_tag == (flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
+  assign flush_after_head = commit_recovery_flush_after_head;
 
   // Checkpoint restore on misprediction (early or commit-time)
   always_comb begin
@@ -1878,7 +1969,7 @@ module cpu_ooo #(
   logic correct_branch_commit_checkpoint_live;
   always_comb begin
     correct_branch_commit_checkpoint_live = 1'b0;
-    if (correct_branch_commit_pending && correct_branch_commit_q.has_checkpoint) begin
+    if (correct_branch_commit_pending) begin
       correct_branch_commit_checkpoint_live =
           checkpoint_in_use[correct_branch_commit_q.checkpoint_id] &&
           (checkpoint_owner_tag[correct_branch_commit_q.checkpoint_id] ==
@@ -1890,7 +1981,7 @@ module cpu_ooo #(
     checkpoint_free    = 1'b0;
     checkpoint_free_id = '0;
 
-    if (early_mispredict_pending && early_mispredict_has_checkpoint) begin
+    if (early_backend_recovery_pending && early_mispredict_has_checkpoint) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = early_mispredict_checkpoint_id;
     end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin

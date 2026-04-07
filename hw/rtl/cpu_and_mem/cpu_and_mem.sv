@@ -119,6 +119,9 @@ module cpu_and_mem #(
   logic [ 3:0] data_memory_byte_write_enable;
   logic        data_memory_read_enable;
   logic        mmio_read_pulse;
+  logic        fifo0_rd_pulse_q;
+  logic        fifo1_rd_pulse_q;
+  logic        uart_rx_ready_q;
 `ifndef SYNTHESIS
   logic [31:0] data_memory_store_last_addr;
   localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -287,6 +290,23 @@ module cpu_and_mem #(
     end
   end
 
+  // Register MMIO consume side effects so the load-issue cone stops at the
+  // MMIO read-data capture flops instead of reaching into peripheral storage.
+  // The load queue only allows one outstanding read, so the data sampled on
+  // mmio_read_pulse remains the architecturally visible response when the
+  // consume pulse fires on the following cycle.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fifo0_rd_pulse_q <= 1'b0;
+      fifo1_rd_pulse_q <= 1'b0;
+      uart_rx_ready_q  <= 1'b0;
+    end else begin
+      fifo0_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo0MmioAddr);
+      fifo1_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo1MmioAddr);
+      uart_rx_ready_q  <= mmio_read_pulse && (mmio_load_addr == UartRxDataMmioAddr);
+    end
+  end
+
   // Multiplexer for read data - selects between RAM and registered MMIO data
   always_comb begin
     data_memory_or_peripheral_read_data = data_memory_read_data;  // Default: use RAM data
@@ -308,13 +328,11 @@ module cpu_and_mem #(
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1MmioAddr;
 
-  // FIFO read enable generation - pulse on the executing MMIO read request.
-  assign o_fifo0_rd_en = (mmio_load_addr == Fifo0MmioAddr) && mmio_read_pulse;
-  assign o_fifo1_rd_en = (mmio_load_addr == Fifo1MmioAddr) && mmio_read_pulse;
-
-  // UART RX ready generation - pulses on load from UART RX data address
-  // This consumes the byte from the RX FIFO
-  assign o_uart_rx_ready = (mmio_load_addr == UartRxDataMmioAddr) && mmio_read_pulse;
+  // FIFO/UART consume pulses fire one cycle after the MMIO read request is
+  // accepted. The response data itself was already captured above.
+  assign o_fifo0_rd_en = fifo0_rd_pulse_q;
+  assign o_fifo1_rd_en = fifo1_rd_pulse_q;
+  assign o_uart_rx_ready = uart_rx_ready_q;
 
   // Timer register updates
   // mtime increments every clock cycle (provides wall-clock time)
