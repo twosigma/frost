@@ -615,7 +615,6 @@ module store_queue #(
     if (!i_rst_n) begin
       head_ptr          <= '0;
       tail_ptr          <= '0;
-      sq_valid          <= '0;
       sq_addr_valid     <= '0;
       sq_data_valid     <= '0;
       sq_committed      <= '0;
@@ -625,7 +624,6 @@ module store_queue #(
       // Full flush: reset control signals
       head_ptr          <= '0;
       tail_ptr          <= '0;
-      sq_valid          <= '0;
       sq_addr_valid     <= '0;
       sq_data_valid     <= '0;
       sq_committed      <= '0;
@@ -634,41 +632,9 @@ module store_queue #(
     end else begin
 
       // -----------------------------------------------------------------
-      // Partial flush: invalidate UNCOMMITTED entries younger than flush_tag
-      // Committed entries are never flushed (they must complete to memory).
-      //
-      // IMPORTANT: Check in-cycle commit (i_commit_valid) in addition to the
-      // registered sq_committed flag.  When ROB commit and early-recovery
-      // flush fire on the same cycle, sq_committed is still 0 (NBA hasn't
-      // taken effect), but the store IS architecturally committed and must
-      // NOT be flushed.
-      // -----------------------------------------------------------------
-      if (i_flush_en) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_committed[i] &&
-              // Guard: don't flush a store the ROB is committing or just committed.
-              // sq_committed has a 2-cycle pipeline lag from the ROB's commit_en:
-              //   Cycle K:   ROB commit_en → commit_bus (comb)
-              //   Cycle K+1: commit_bus_q → i_commit_valid (registered)
-              //   Cycle K+2: sq_committed set (from K+1's NBA)
-              // A partial flush on K or K+1 would see sq_committed=0. Guard both:
-              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
-              !(i_commit_valid      && sq_rob_tag[i] == i_commit_rob_tag) &&
-              (flush_all_uncommitted || is_younger(
-                  sq_rob_tag[i], i_flush_tag, i_rob_head_tag
-              ))) begin
-            sq_valid[i] <= 1'b0;
-          end
-        end
-        // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
-        // after the flush instead of compacting the tail in this cycle.
-      end
-
-      // -----------------------------------------------------------------
       // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
-        sq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
         sq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
@@ -710,18 +676,6 @@ module store_queue #(
       end
 
       // -----------------------------------------------------------------
-      // SC Discard: failed SC invalidates its uncommitted SQ entry
-      // -----------------------------------------------------------------
-      if (i_sc_discard) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
-              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
-            sq_valid[i] <= 1'b0;
-          end
-        end
-      end
-
-      // -----------------------------------------------------------------
       // Memory Write Initiation
       // -----------------------------------------------------------------
       if (o_mem_write_en) begin
@@ -737,9 +691,8 @@ module store_queue #(
           write_outstanding <= 1'b0;
         end else begin
           // Single-phase complete or FSD phase 1 complete: free entry
-          sq_valid[head_idx] <= 1'b0;
-          sq_sent[head_idx]  <= 1'b1;
-          write_outstanding  <= 1'b0;
+          sq_sent[head_idx] <= 1'b1;
+          write_outstanding <= 1'b0;
         end
       end
 
@@ -749,6 +702,59 @@ module store_queue #(
       head_ptr <= head_advance_target;
 
     end  // !flush_all
+  end
+
+  // Keep sq_valid separate so full-flush and partial-flush invalidation do not
+  // share one next-state cone with the other SQ control fields.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      sq_valid <= '0;
+    end else if (i_flush_all) begin
+      sq_valid <= '0;
+    end else begin
+      // Partial flush: invalidate UNCOMMITTED entries younger than flush_tag.
+      // Committed entries are never flushed (they must complete to memory).
+      if (i_flush_en) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && !sq_committed[i] &&
+              // Guard: don't flush a store the ROB is committing or just committed.
+              // sq_committed has a 2-cycle pipeline lag from the ROB's commit_en:
+              //   Cycle K:   ROB commit_en → commit_bus (comb)
+              //   Cycle K+1: commit_bus_q → i_commit_valid (registered)
+              //   Cycle K+2: sq_committed set (from K+1's NBA)
+              // A partial flush on K or K+1 would see sq_committed=0. Guard both:
+              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
+              !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
+              (flush_all_uncommitted || is_younger(
+                  sq_rob_tag[i], i_flush_tag, i_rob_head_tag
+              ))) begin
+            sq_valid[i] <= 1'b0;
+          end
+        end
+        // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
+        // after the flush instead of compacting the tail in this cycle.
+      end
+
+      if (i_alloc.valid && !full) begin
+        sq_valid[alloc_target[IdxWidth-1:0]] <= 1'b1;
+      end
+
+      // Failed SC invalidates its uncommitted SQ entry.
+      if (i_sc_discard) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
+              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
+            sq_valid[i] <= 1'b0;
+          end
+        end
+      end
+
+      // Single-phase completion or FSD phase 1 completion frees the head entry.
+      if (i_mem_write_done && write_outstanding &&
+          !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && !sq_fp64_phase[head_idx])) begin
+        sq_valid[head_idx] <= 1'b0;
+      end
+    end
   end
 
   // -------------------------------------------------------------------

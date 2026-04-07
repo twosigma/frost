@@ -30,14 +30,14 @@
  * Internal wiring:
  *   ROB.o_commit_comb --> commit_bus --> cpu_ooo same-cycle mispredict detect
  *   ROB.o_commit      --> o_commit   (registered testbench observation)
- *   commit_bus_q      --> RAT.i_commit
+ *   commit_bus_q      --> RAT commit-clear signals
  *   FU adapters --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
  *                                           --> all RS .i_cdb (broadcast for wakeup)
  *   cdb_arbiter.o_grant --> o_cdb_grant (back-pressure to FUs)
  *   LQ.o_sq_check --> SQ.i_sq_check (store-to-load forwarding)
  *   SQ.o_sq_forward --> LQ.i_sq_forward
  *   SQ.o_cache_invalidate --> LQ.i_cache_invalidate
- *   ROB.commit (is_store) --> SQ.i_commit
+ *   ROB.commit (store/sc subset) --> SQ commit inputs
  *   Flush --> all modules
  *   ROB.o_head_tag --> all RS/LQ/SQ .i_rob_head_tag
  */
@@ -351,6 +351,13 @@ module tomasulo_wrapper (
   // dragging the reset net onto payload register bits.
   logic commit_bus_q_valid;
   riscv_pkg::reorder_buffer_commit_t commit_bus_q;
+  logic commit_q_dest_valid;
+  logic commit_q_dest_rf;
+  logic [riscv_pkg::RegAddrWidth-1:0] commit_q_dest_reg;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] commit_q_tag;
+  logic commit_q_is_sc;
+  logic commit_q_is_store_like;
+  logic commit_q_sc_failed;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) commit_bus_q_valid <= 1'b0;
@@ -359,6 +366,13 @@ module tomasulo_wrapper (
 
   always_ff @(posedge i_clk) begin
     commit_bus_q <= commit_bus;
+    commit_q_dest_valid <= commit_bus.dest_valid;
+    commit_q_dest_rf <= commit_bus.dest_rf;
+    commit_q_dest_reg <= commit_bus.dest_reg;
+    commit_q_tag <= commit_bus.tag;
+    commit_q_is_sc <= commit_bus.is_sc;
+    commit_q_is_store_like <= commit_bus.is_store || commit_bus.is_fp_store || commit_bus.is_sc;
+    commit_q_sc_failed <= commit_bus.is_sc && commit_bus.value[0];
   end
 
   // Reconstruct commit bus with reset-qualified valid for downstream consumers
@@ -407,10 +421,19 @@ module tomasulo_wrapper (
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
   logic [63:0] perf_inc[WrapperPerfCounterCount];
+  localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
+  (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
+  (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
+  (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;
+  (* max_fanout = 768 *)logic perf_snapshot_capture_bank3;
 
   // Expose both the raw and registered commit buses.
   assign o_commit_comb = commit_bus;
   assign o_commit = commit_bus_q_qualified;
+  assign perf_snapshot_capture_bank0 = i_perf_snapshot_capture;
+  assign perf_snapshot_capture_bank1 = i_perf_snapshot_capture;
+  assign perf_snapshot_capture_bank2 = i_perf_snapshot_capture;
+  assign perf_snapshot_capture_bank3 = i_perf_snapshot_capture;
 
   // ROB entry valid/done vectors: ROB -> RAT/dispatch
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;
@@ -439,14 +462,16 @@ module tomasulo_wrapper (
   // age comparison wraps and misses them all. Promote to full flush so that CDB
   // adapters, FU shims, and other structures that lack an explicit
   // flush_after_head guard still clear correctly.
+  (* max_fanout = 32 *)logic full_flush_all;
   (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
   logic flush_after_head_commit;
+  assign full_flush_all = i_flush_all;
   assign flush_after_head_commit = i_flush_en && !i_early_recovery_en &&
       (head_tag == (i_flush_tag + riscv_pkg::ReorderBufferTagWidth'(1)));
   assign speculative_partial_flush = i_flush_en;
-  assign speculative_flush_all = i_flush_all || flush_after_head_commit;
+  assign speculative_flush_all = full_flush_all || flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !flush_after_head_commit;
 
   // ===========================================================================
@@ -676,7 +701,7 @@ module tomasulo_wrapper (
   // SC clear reservation: on any SC commit (success or failure clears reservation)
   // Uses pipelined commit bus to break ROB → LQ/SQ critical path.
   logic sc_clear_reservation;
-  assign sc_clear_reservation = commit_bus_q_valid && commit_bus_q.is_sc;
+  assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
 
   // Reservation snoop invalidation: SQ write to reservation address
   logic reservation_snoop_invalidate;
@@ -687,7 +712,7 @@ module tomasulo_wrapper (
   // SC discard: failed SC invalidates its SQ entry
   // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sc_discard;
-  assign sc_discard = commit_bus_q_valid && commit_bus_q.is_sc && commit_bus_q.value[0];
+  assign sc_discard = commit_bus_q_valid && commit_q_sc_failed;
 
   // ===========================================================================
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
@@ -886,7 +911,7 @@ module tomasulo_wrapper (
       // Flush
       .i_flush_en (i_flush_en),
       .i_flush_tag(i_flush_tag),
-      .i_flush_all(i_flush_all),
+      .i_flush_all(full_flush_all),
 
       // Early misprediction recovery
       .i_early_recovery_en (i_early_recovery_en),
@@ -962,8 +987,12 @@ module tomasulo_wrapper (
       .i_alloc_dest_reg(i_rat_alloc_dest_reg),
       .i_alloc_rob_tag (i_rat_alloc_rob_tag),
 
-      // Commit (pipelined — breaks ROB → RAT critical path)
-      .i_commit(commit_bus_q_qualified),
+      // Commit clear (pipelined — breaks ROB → RAT critical path)
+      .i_commit_valid     (commit_bus_q_valid),
+      .i_commit_dest_valid(commit_q_dest_valid),
+      .i_commit_dest_rf   (commit_q_dest_rf),
+      .i_commit_dest_reg  (commit_q_dest_reg),
+      .i_commit_tag       (commit_q_tag),
 
       // Checkpoint save
       .i_checkpoint_save      (i_checkpoint_save),
@@ -991,7 +1020,7 @@ module tomasulo_wrapper (
       .i_rob_head_tag   (head_tag),
 
       // Flush
-      .i_flush_all(i_flush_all),
+      .i_flush_all(full_flush_all),
 
       // Checkpoint availability
       .o_checkpoint_available(o_checkpoint_available),
@@ -1562,10 +1591,7 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus_q_valid &&
-                           (commit_bus_q.is_store || commit_bus_q.is_fp_store ||
-                            commit_bus_q.is_sc) &&
-                           !sc_discard;
+  assign sq_commit_valid = commit_bus_q_valid && commit_q_is_store_like && !sc_discard;
 
   // ===========================================================================
   // Store Queue Instance
@@ -1586,7 +1612,7 @@ module tomasulo_wrapper (
 
       // Commit (pipelined — breaks ROB → SQ critical path)
       .i_commit_valid  (sq_commit_valid),
-      .i_commit_rob_tag(commit_bus_q.tag),
+      .i_commit_rob_tag(commit_q_tag),
 
       // Same-cycle commit guard (combinational, for flush race protection)
       .i_commit_valid_comb  (commit_bus.valid && (commit_bus.is_store || commit_bus.is_fp_store
@@ -1614,7 +1640,7 @@ module tomasulo_wrapper (
 
       // SC discard (pipelined — uses commit_bus_q)
       .i_sc_discard        (sc_discard),
-      .i_sc_discard_rob_tag(commit_bus_q.tag),
+      .i_sc_discard_rob_tag(commit_q_tag),
 
       // ROB head tag
       .i_rob_head_tag(head_tag),
@@ -1622,7 +1648,7 @@ module tomasulo_wrapper (
       // Flush
       .i_flush_en(i_flush_en),
       .i_flush_tag(i_flush_tag),
-      .i_flush_all(i_flush_all),
+      .i_flush_all(full_flush_all),
       .i_early_recovery_en(i_early_recovery_en),
 
       // Status
@@ -1783,7 +1809,21 @@ module tomasulo_wrapper (
     end else begin
       for (int i = 0; i < WrapperPerfCounterCount; i++) begin
         perf_live[i] <= perf_live[i] + perf_inc[i];
-        if (i_perf_snapshot_capture) perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+        if (i < PerfSnapshotBankSpan) begin
+          if (perf_snapshot_capture_bank0) begin
+            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+          end
+        end else if (i < (2 * PerfSnapshotBankSpan)) begin
+          if (perf_snapshot_capture_bank1) begin
+            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+          end
+        end else if (i < (3 * PerfSnapshotBankSpan)) begin
+          if (perf_snapshot_capture_bank2) begin
+            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+          end
+        end else if (perf_snapshot_capture_bank3) begin
+          perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+        end
       end
     end
   end

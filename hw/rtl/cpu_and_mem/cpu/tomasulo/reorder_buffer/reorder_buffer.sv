@@ -758,41 +758,13 @@ module reorder_buffer (
   // -------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      // Reset control signals to invalid
-      rob_valid     <= '0;
       rob_done      <= '0;
       rob_exception <= '0;
     end else begin
       // ---------------------------------------------------------------------
-      // Flush Logic
-      // ---------------------------------------------------------------------
-      if (i_flush_all) begin
-        // Full flush: invalidate all entries
-        rob_valid <= '0;
-      end else if (i_flush_en) begin
-        if (flush_after_head_commit) begin
-          // Head-driven recovery leaves no architecturally-live entries in the
-          // ROB after the branch boundary.
-          rob_valid <= '0;
-        end else begin
-          // Partial flush: invalidate entries after flush_tag
-          for (int i = 0; i < ReorderBufferDepth; i++) begin
-            // Invalidate if entry is younger than flush point
-            if (rob_valid[i] && should_flush_entry(
-                    i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
-                )) begin
-              rob_valid[i] <= 1'b0;
-            end
-          end
-        end
-      end
-
-      // ---------------------------------------------------------------------
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
       if (alloc_en) begin
-        rob_valid[tail_idx]     <= 1'b1;
-
         // Initialize control fields for new entry
         rob_exception[tail_idx] <= 1'b0;
 
@@ -829,11 +801,41 @@ module reorder_buffer (
       if (branch_wr_en) begin
         rob_done[i_branch_update.tag] <= 1'b1;
       end
+    end
+  end
 
-      // ---------------------------------------------------------------------
-      // Commit Deallocation
-      // ---------------------------------------------------------------------
-      // Invalidate the committed entry (head pointer advanced separately)
+  // Keep rob_valid separate so full-flush does not share a single next-state
+  // cone with unrelated ROB done/exception updates.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      rob_valid <= '0;
+    end else begin
+      if (i_flush_all) begin
+        // Full flush: invalidate all entries
+        rob_valid <= '0;
+      end else if (i_flush_en) begin
+        if (flush_after_head_commit) begin
+          // Head-driven recovery leaves no architecturally-live entries in the
+          // ROB after the branch boundary.
+          rob_valid <= '0;
+        end else begin
+          // Partial flush: invalidate entries after flush_tag
+          for (int i = 0; i < ReorderBufferDepth; i++) begin
+            if (rob_valid[i] && should_flush_entry(
+                    i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
+                )) begin
+              rob_valid[i] <= 1'b0;
+            end
+          end
+        end
+      end
+
+      if (alloc_en) begin
+        rob_valid[tail_idx] <= 1'b1;
+      end
+
+      // Commit deallocation: invalidate the committed entry (head pointer
+      // advances separately).
       if (commit_en && !i_flush_all) begin
         rob_valid[head_idx] <= 1'b0;
       end

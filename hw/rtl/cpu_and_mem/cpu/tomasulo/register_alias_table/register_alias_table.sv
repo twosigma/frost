@@ -82,9 +82,11 @@ module register_alias_table (
     // =========================================================================
     // Commit Interface (from ROB commit output, synchronous)
     // =========================================================================
-    /* verilator lint_off UNUSEDSIGNAL */  // RAT uses only a few commit fields
-    input riscv_pkg::reorder_buffer_commit_t i_commit,
-    /* verilator lint_on UNUSEDSIGNAL */
+    input logic                                        i_commit_valid,
+    input logic                                        i_commit_dest_valid,
+    input logic                                        i_commit_dest_rf,
+    input logic [         riscv_pkg::RegAddrWidth-1:0] i_commit_dest_reg,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_tag,
 
     // =========================================================================
     // Checkpoint Save Interface (from Dispatch on branch allocation)
@@ -185,11 +187,11 @@ module register_alias_table (
 
   assign dbg_int_a0_valid = int_rat_valid[10];
   assign dbg_int_a0_tag = int_rat_tag[10];
-  assign dbg_int_a0_commit_hit = i_commit.valid && i_commit.dest_valid && !i_commit.dest_rf &&
-                                 (i_commit.dest_reg == RegAddrWidth'(10));
+  assign dbg_int_a0_commit_hit = i_commit_valid && i_commit_dest_valid && !i_commit_dest_rf &&
+                                 (i_commit_dest_reg == RegAddrWidth'(10));
   assign dbg_int_a0_commit_tag_match = dbg_int_a0_commit_hit &&
                                        int_rat_valid[10] &&
-                                       (int_rat_tag[10] == i_commit.tag);
+                                       (int_rat_tag[10] == i_commit_tag);
   assign dbg_int_a0_alloc_hit = i_alloc_valid && !i_alloc_dest_rf &&
                                 (i_alloc_dest_reg == RegAddrWidth'(10));
 `endif
@@ -453,19 +455,19 @@ module register_alias_table (
       // Commit clear: if committing tag matches current RAT entry,
       // clear it (arch regfile now holds the committed value)
       // ---------------------------------------------------------------
-      if (i_commit.valid && i_commit.dest_valid) begin
-        if (!i_commit.dest_rf) begin
+      if (i_commit_valid && i_commit_dest_valid) begin
+        if (!i_commit_dest_rf) begin
           // INT commit
-          if (i_commit.dest_reg != '0 &&
-              int_rat_valid[i_commit.dest_reg] &&
-              int_rat_tag[i_commit.dest_reg] == i_commit.tag) begin
-            int_rat_valid[i_commit.dest_reg] <= 1'b0;
+          if (i_commit_dest_reg != '0 &&
+              int_rat_valid[i_commit_dest_reg] &&
+              int_rat_tag[i_commit_dest_reg] == i_commit_tag) begin
+            int_rat_valid[i_commit_dest_reg] <= 1'b0;
           end
         end else begin
           // FP commit
-          if (fp_rat_valid[i_commit.dest_reg] &&
-              fp_rat_tag[i_commit.dest_reg] == i_commit.tag) begin
-            fp_rat_valid[i_commit.dest_reg] <= 1'b0;
+          if (fp_rat_valid[i_commit_dest_reg] &&
+              fp_rat_tag[i_commit_dest_reg] == i_commit_tag) begin
+            fp_rat_valid[i_commit_dest_reg] <= 1'b0;
           end
         end
       end
@@ -715,37 +717,37 @@ module register_alias_table (
 
       // Commit clears entry when tag matches (INT)
       if ($past(
-              i_commit.valid
+              i_commit_valid
           ) && $past(
-              i_commit.dest_valid
+              i_commit_dest_valid
           ) && !$past(
-              i_commit.dest_rf
+              i_commit_dest_rf
           ) && $past(
-              i_commit.dest_reg
+              i_commit_dest_reg
           ) != '0 && !$past(
               i_flush_all
           ) && !$past(
               i_checkpoint_restore
           ) && !$past(
-              i_alloc_valid && !i_alloc_dest_rf && i_alloc_dest_reg == i_commit.dest_reg
+              i_alloc_valid && !i_alloc_dest_rf && i_alloc_dest_reg == i_commit_dest_reg
           )) begin
         if ($past(
-                int_rat_valid[i_commit.dest_reg]
+                int_rat_valid[i_commit_dest_reg]
             ) && $past(
-                int_rat_tag[i_commit.dest_reg]
+                int_rat_tag[i_commit_dest_reg]
             ) == $past(
-                i_commit.tag
+                i_commit_tag
             )) begin
-          p_commit_clears_int : assert (!int_rat_valid[$past(i_commit.dest_reg)]);
+          p_commit_clears_int : assert (!int_rat_valid[$past(i_commit_dest_reg)]);
         end
         if ($past(
-                int_rat_valid[i_commit.dest_reg]
+                int_rat_valid[i_commit_dest_reg]
             ) && $past(
-                int_rat_tag[i_commit.dest_reg]
+                int_rat_tag[i_commit_dest_reg]
             ) != $past(
-                i_commit.tag
+                i_commit_tag
             )) begin
-          p_commit_preserves_int : assert (int_rat_valid[$past(i_commit.dest_reg)]);
+          p_commit_preserves_int : assert (int_rat_valid[$past(i_commit_dest_reg)]);
         end
       end
     end
@@ -767,9 +769,9 @@ module register_alias_table (
       // Simultaneous rename + commit to same register
       cover_rename_and_commit_same_reg :
       cover (
-        i_alloc_valid && i_commit.valid && i_commit.dest_valid &&
-        i_alloc_dest_rf == i_commit.dest_rf &&
-        i_alloc_dest_reg == i_commit.dest_reg
+        i_alloc_valid && i_commit_valid && i_commit_dest_valid &&
+        i_alloc_dest_rf == i_commit_dest_rf &&
+        i_alloc_dest_reg == i_commit_dest_reg
       );
 
       // All 4 checkpoints in use (exhaustion)

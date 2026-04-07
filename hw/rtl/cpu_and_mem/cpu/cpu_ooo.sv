@@ -118,6 +118,11 @@ module cpu_ooo #(
   logic [63:0] perf_top_inc[PerfTopCounterCount];
   logic [7:0] perf_counter_select;
   logic perf_snapshot_capture;
+  localparam int unsigned PerfTopSnapshotBankSpan = (PerfTopCounterCount + 3) / 4;
+  (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank0;
+  (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank1;
+  (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank2;
+  (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank3;
   logic [63:0] perf_counter_data;
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
@@ -2196,6 +2201,10 @@ module cpu_ooo #(
       ((perf_counter_select >= PerfWrapperBaseSel) && (perf_counter_select < PerfCounterCountSel)) ?
       (perf_counter_select - PerfWrapperBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
+  assign perf_top_snapshot_capture_bank0 = perf_snapshot_capture;
+  assign perf_top_snapshot_capture_bank1 = perf_snapshot_capture;
+  assign perf_top_snapshot_capture_bank2 = perf_snapshot_capture;
+  assign perf_top_snapshot_capture_bank3 = perf_snapshot_capture;
 
   always_comb begin
     for (int i = 0; i < PerfTopCounterCount; i++) begin
@@ -2247,7 +2256,21 @@ module cpu_ooo #(
     end else begin
       for (int i = 0; i < PerfTopCounterCount; i++) begin
         perf_top_live[i] <= perf_top_live[i] + perf_top_inc[i];
-        if (perf_snapshot_capture) perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+        if (i < PerfTopSnapshotBankSpan) begin
+          if (perf_top_snapshot_capture_bank0) begin
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+          end
+        end else if (i < (2 * PerfTopSnapshotBankSpan)) begin
+          if (perf_top_snapshot_capture_bank1) begin
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+          end
+        end else if (i < (3 * PerfTopSnapshotBankSpan)) begin
+          if (perf_top_snapshot_capture_bank2) begin
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+          end
+        end else if (perf_top_snapshot_capture_bank3) begin
+          perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+        end
       end
     end
   end
