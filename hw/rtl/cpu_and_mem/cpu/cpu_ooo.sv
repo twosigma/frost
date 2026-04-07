@@ -116,6 +116,7 @@ module cpu_ooo #(
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
   logic [63:0] perf_top_inc[PerfTopCounterCount];
+  logic [63:0] perf_top_inc_q[PerfTopCounterCount];
   logic [7:0] perf_counter_select;
   logic perf_snapshot_capture;
   localparam int unsigned PerfTopSnapshotBankSpan = (PerfTopCounterCount + 3) / 4;
@@ -924,6 +925,7 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb;  // combinational from ROB
   riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered — drives CSR/regfile/bypass
   logic rob_commit_valid;
+  logic rob_commit_valid_raw;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
 
   // RAT lookup
@@ -1165,6 +1167,7 @@ module cpu_ooo #(
       // Commit
       .o_commit(rob_commit),
       .o_commit_comb(rob_commit_comb),
+      .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
       .o_commit_correct_branch_raw(rob_commit_correct_branch_raw),
       .o_head_commit_misprediction_candidate(rob_head_commit_misprediction_candidate),
@@ -2341,26 +2344,28 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < PerfTopCounterCount; i++) begin
+        perf_top_inc_q[i] <= '0;
         perf_top_live[i] <= '0;
         perf_top_snapshot[i] <= '0;
       end
     end else begin
       for (int i = 0; i < PerfTopCounterCount; i++) begin
-        perf_top_live[i] <= perf_top_live[i] + perf_top_inc[i];
+        perf_top_inc_q[i] <= perf_top_inc[i];
+        perf_top_live[i]  <= perf_top_live[i] + perf_top_inc_q[i];
         if (i < PerfTopSnapshotBankSpan) begin
           if (perf_top_snapshot_capture_bank0) begin
-            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc_q[i];
           end
         end else if (i < (2 * PerfTopSnapshotBankSpan)) begin
           if (perf_top_snapshot_capture_bank1) begin
-            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc_q[i];
           end
         end else if (i < (3 * PerfTopSnapshotBankSpan)) begin
           if (perf_top_snapshot_capture_bank2) begin
-            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+            perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc_q[i];
           end
         end else if (perf_top_snapshot_capture_bank3) begin
-          perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc[i];
+          perf_top_snapshot[i] <= perf_top_live[i] + perf_top_inc_q[i];
         end
       end
     end

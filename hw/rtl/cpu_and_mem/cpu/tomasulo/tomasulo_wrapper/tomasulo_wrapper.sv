@@ -94,6 +94,7 @@ module tomasulo_wrapper (
     // =========================================================================
     output riscv_pkg::reorder_buffer_commit_t o_commit,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
+    output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
     output logic                              o_commit_correct_branch_raw,
     output logic                              o_head_commit_misprediction_candidate,
@@ -361,6 +362,8 @@ module tomasulo_wrapper (
   logic commit_q_is_sc;
   logic commit_q_is_store_like;
   logic commit_q_sc_failed;
+  logic commit_valid_raw;
+  logic commit_store_like_raw;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) commit_bus_q_valid <= 1'b0;
@@ -384,6 +387,7 @@ module tomasulo_wrapper (
     commit_bus_q_qualified       = commit_bus_q;
     commit_bus_q_qualified.valid = commit_bus_q_valid;
   end
+  assign o_commit_valid_raw = commit_valid_raw;
 
   localparam int unsigned WrapperPerfCounterCount = 34;
   localparam int unsigned PerfHeadWaitTotal = 0;
@@ -424,6 +428,7 @@ module tomasulo_wrapper (
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
   logic [63:0] perf_inc[WrapperPerfCounterCount];
+  logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
@@ -921,6 +926,8 @@ module tomasulo_wrapper (
       // Commit output -> internal bus + registered observation
       .o_commit                             (),
       .o_commit_comb                        (commit_bus),
+      .o_commit_valid_raw                   (commit_valid_raw),
+      .o_commit_store_like_raw              (commit_store_like_raw),
       .o_commit_misprediction_raw           (o_commit_misprediction_raw),
       .o_commit_correct_branch_raw          (o_commit_correct_branch_raw),
       .o_head_commit_misprediction_candidate(o_head_commit_misprediction_candidate),
@@ -1652,10 +1659,11 @@ module tomasulo_wrapper (
       .i_commit_valid  (sq_commit_valid),
       .i_commit_rob_tag(commit_q_tag),
 
-      // Same-cycle commit guard (combinational, for flush race protection)
-      .i_commit_valid_comb  (commit_bus.valid && (commit_bus.is_store || commit_bus.is_fp_store
-                                                                      || commit_bus.is_sc)),
-      .i_commit_rob_tag_comb(commit_bus.tag),
+      // Same-cycle commit guard (combinational, for flush race protection).
+      // Use the narrow raw ROB pulse instead of the wide commit bus so the
+      // SQ flush-exemption path does not inherit full commit payload logic.
+      .i_commit_valid_comb  (commit_store_like_raw),
+      .i_commit_rob_tag_comb(head_tag),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),
@@ -1842,26 +1850,28 @@ module tomasulo_wrapper (
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       for (int i = 0; i < WrapperPerfCounterCount; i++) begin
+        perf_inc_q[i] <= '0;
         perf_live[i] <= '0;
         perf_snapshot[i] <= '0;
       end
     end else begin
       for (int i = 0; i < WrapperPerfCounterCount; i++) begin
-        perf_live[i] <= perf_live[i] + perf_inc[i];
+        perf_inc_q[i] <= perf_inc[i];
+        perf_live[i]  <= perf_live[i] + perf_inc_q[i];
         if (i < PerfSnapshotBankSpan) begin
           if (perf_snapshot_capture_bank0) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
           end
         end else if (i < (2 * PerfSnapshotBankSpan)) begin
           if (perf_snapshot_capture_bank1) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
           end
         end else if (i < (3 * PerfSnapshotBankSpan)) begin
           if (perf_snapshot_capture_bank2) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
           end
         end else if (perf_snapshot_capture_bank3) begin
-          perf_snapshot[i] <= perf_live[i] + perf_inc[i];
+          perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
         end
       end
     end

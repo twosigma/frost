@@ -86,6 +86,8 @@ module reorder_buffer (
     // =========================================================================
     output riscv_pkg::reorder_buffer_commit_t o_commit,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
+    output logic                              o_commit_valid_raw,
+    output logic                              o_commit_store_like_raw,
     output logic                              o_commit_misprediction_raw,
     output logic                              o_commit_correct_branch_raw,
     output logic                              o_head_commit_misprediction_candidate,
@@ -1024,6 +1026,8 @@ module reorder_buffer (
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
+  assign o_commit_valid_raw = commit_en;
+  assign o_commit_store_like_raw = commit_en && (head_is_store || head_is_fp_store || head_is_sc);
   assign o_commit_misprediction_raw = commit_en && commit_misprediction && !head_early_recovered;
   assign o_commit_correct_branch_raw = commit_en && head_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
