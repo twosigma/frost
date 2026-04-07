@@ -441,19 +441,45 @@ module fp_div_shim (
   end
 
   // ===========================================================================
-  // Result FIFO (depth 4, register-based)
+  // Result FIFO (depth 4, FF control with LUTRAM payload)
   // ===========================================================================
-  logic [               TagW-1:0] fifo_tag                   [FifoDepth];
-  logic [               FLEN-1:0] fifo_value                 [FifoDepth];
-  logic [             FlagsW-1:0] fifo_flags                 [FifoDepth];
+  logic [               TagW-1:0] fifo_tag           [FifoDepth];
+  logic [               FLEN-1:0] fifo_value_rd;
+  logic [               FLEN-1:0] fifo_value_wr_data;
+  logic [             FlagsW-1:0] fifo_flags_rd;
+  logic [             FlagsW-1:0] fifo_flags_wr_data;
   logic [          FifoDepth-1:0] fifo_valid;
   logic [          FifoDepth-1:0] fifo_flushed;
   logic [$clog2(FifoDepth+1)-1:0] fifo_count;
   logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
   logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
 
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(FifoDepth)),
+      .DATA_WIDTH(FLEN)
+  ) u_fifo_value (
+      .i_clk,
+      .i_write_enable (fifo_push),
+      .i_write_address(fifo_wr_ptr),
+      .i_write_data   (fifo_value_wr_data),
+      .i_read_address (fifo_rd_ptr),
+      .o_read_data    (fifo_value_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(FifoDepth)),
+      .DATA_WIDTH(FlagsW)
+  ) u_fifo_flags (
+      .i_clk,
+      .i_write_enable (fifo_push),
+      .i_write_address(fifo_wr_ptr),
+      .i_write_data   (fifo_flags_wr_data),
+      .i_read_address (fifo_rd_ptr),
+      .o_read_data    (fifo_flags_rd)
+  );
+
   // Same-cycle partial flush of FIFO head
-  logic                           fifo_head_partial_flushing;
+  logic fifo_head_partial_flushing;
   assign fifo_head_partial_flushing = (fifo_count != '0) &&
       !fifo_flushed[fifo_rd_ptr] && i_flush_en &&
       is_younger(
@@ -466,6 +492,15 @@ module fp_div_shim (
   assign fifo_head_flushed = fifo_valid[fifo_rd_ptr] &&
       (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
   assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
+
+  always_comb begin
+    fifo_value_wr_data = '0;
+    fifo_flags_wr_data = '0;
+    if (fifo_push) begin
+      fifo_value_wr_data = hold_value[arbiter_sel][hold_rd[arbiter_sel]];
+      fifo_flags_wr_data = hold_flags[arbiter_sel][hold_rd[arbiter_sel]];
+    end
+  end
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -499,8 +534,6 @@ module fp_div_shim (
       // Push from arbiter (reads from rd slot of selected hold buffer)
       if (fifo_push) begin
         fifo_tag[fifo_wr_ptr]     <= hold_tag[arbiter_sel][hold_rd[arbiter_sel]];
-        fifo_value[fifo_wr_ptr]   <= hold_value[arbiter_sel][hold_rd[arbiter_sel]];
-        fifo_flags[fifo_wr_ptr]   <= hold_flags[arbiter_sel][hold_rd[arbiter_sel]];
         fifo_valid[fifo_wr_ptr]   <= 1'b1;
         fifo_flushed[fifo_wr_ptr] <= 1'b0;
         fifo_wr_ptr               <= fifo_wr_ptr + 1;
@@ -531,10 +564,10 @@ module fp_div_shim (
     if (fifo_count != '0 && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
       o_fu_complete.valid     = 1'b1;
       o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
-      o_fu_complete.value     = fifo_value[fifo_rd_ptr];
+      o_fu_complete.value     = fifo_value_rd;
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_flags[fifo_rd_ptr]);
+      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_flags_rd);
     end else begin
       o_fu_complete.valid     = 1'b0;
       o_fu_complete.tag       = '0;

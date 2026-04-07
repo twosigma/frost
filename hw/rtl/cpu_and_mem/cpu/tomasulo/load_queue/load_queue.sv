@@ -166,7 +166,7 @@ module load_queue #(
   endfunction
 
   // ===========================================================================
-  // Storage -- Circular buffer with FF-based arrays
+  // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
@@ -190,10 +190,16 @@ module load_queue #(
 
   // Per-entry multi-bit fields
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
-  logic [XLEN-1:0] lq_address[DEPTH];
-  riscv_pkg::mem_size_e lq_size[DEPTH];
   logic [$bits(riscv_pkg::instr_op_e)-1:0] lq_amo_op_rd;
-  logic [XLEN-1:0] lq_amo_rs2[DEPTH];
+  logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_sq_check_rd;
+  logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_issued_rd;
+  logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_issue_cdb_rd;
+  logic [XLEN-1:0] lq_address_sq_check_rd;
+  logic [XLEN-1:0] lq_address_issued_rd;
+  logic [XLEN-1:0] lq_address_amo_rd;
+  logic [XLEN-1:0] lq_amo_rs2_rd;
+  logic [IdxWidth-1:0] amo_entry_idx;
+  logic full;
 
   // AMO op is written once at allocation and only read back for AMO execution.
   sdp_dist_ram #(
@@ -221,7 +227,6 @@ module load_queue #(
   } amo_state_e;
   amo_state_e                              amo_state;
   logic       [    XLEN-1:0]               amo_old_value;
-  logic       [IdxWidth-1:0]               amo_entry_idx;
 
   // ===========================================================================
   // lq_data LUTRAM — split lo/hi for FLD partial-word writes
@@ -276,7 +281,6 @@ module load_queue #(
   // Internal Signals
   // ===========================================================================
 
-  logic full;
   logic empty;
   logic [CountWidth-1:0] count;
 
@@ -333,6 +337,96 @@ module load_queue #(
   // Head/tail search targets for the sparse valid-bit queue.
   logic [PtrWidth-1:0] head_advance_target;
   logic [PtrWidth-1:0] alloc_target;
+  logic lq_addr_update_we;
+  logic [IdxWidth-1:0] lq_addr_update_idx;
+
+  // lq_size is allocation-written and only read at sq_check, issued, and
+  // issue_cdb indices. Duplicate the LUTRAM to make that mapping explicit.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH($bits(riscv_pkg::mem_size_e))
+  ) u_lq_size_sq_check (
+      .i_clk,
+      .i_write_enable (i_alloc.valid && !full),
+      .i_write_address(alloc_target[IdxWidth-1:0]),
+      .i_write_data   (i_alloc.size),
+      .i_read_address (sq_check_idx),
+      .o_read_data    (lq_size_sq_check_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH($bits(riscv_pkg::mem_size_e))
+  ) u_lq_size_issued (
+      .i_clk,
+      .i_write_enable (i_alloc.valid && !full),
+      .i_write_address(alloc_target[IdxWidth-1:0]),
+      .i_write_data   (i_alloc.size),
+      .i_read_address (issued_idx),
+      .o_read_data    (lq_size_issued_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH($bits(riscv_pkg::mem_size_e))
+  ) u_lq_size_issue_cdb (
+      .i_clk,
+      .i_write_enable (i_alloc.valid && !full),
+      .i_write_address(alloc_target[IdxWidth-1:0]),
+      .i_write_data   (i_alloc.size),
+      .i_read_address (issue_cdb_idx),
+      .o_read_data    (lq_size_issue_cdb_rd)
+  );
+
+  // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
+  // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_lq_address_sq_check (
+      .i_clk,
+      .i_write_enable (lq_addr_update_we),
+      .i_write_address(lq_addr_update_idx),
+      .i_write_data   (i_addr_update.address),
+      .i_read_address (sq_check_idx),
+      .o_read_data    (lq_address_sq_check_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_lq_address_issued (
+      .i_clk,
+      .i_write_enable (lq_addr_update_we),
+      .i_write_address(lq_addr_update_idx),
+      .i_write_data   (i_addr_update.address),
+      .i_read_address (issued_idx),
+      .o_read_data    (lq_address_issued_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_lq_address_amo (
+      .i_clk,
+      .i_write_enable (lq_addr_update_we),
+      .i_write_address(lq_addr_update_idx),
+      .i_write_data   (i_addr_update.address),
+      .i_read_address (amo_entry_idx),
+      .o_read_data    (lq_address_amo_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_lq_amo_rs2 (
+      .i_clk,
+      .i_write_enable (lq_addr_update_we),
+      .i_write_address(lq_addr_update_idx),
+      .i_write_data   (i_addr_update.amo_rs2),
+      .i_read_address (amo_entry_idx),
+      .o_read_data    (lq_amo_rs2_rd)
+  );
 
   // ===========================================================================
   // AMO ALU (combinational)
@@ -379,6 +473,20 @@ module load_queue #(
   assign o_full = full;
   assign o_empty = empty;
   assign o_count = count;
+
+  always_comb begin
+    lq_addr_update_we  = 1'b0;
+    lq_addr_update_idx = '0;
+    if (i_addr_update.valid && i_rst_n && !i_flush_all) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (!lq_addr_update_we && lq_valid[i] && !lq_addr_valid[i] &&
+            lq_rob_tag[i] == i_addr_update.rob_tag) begin
+          lq_addr_update_we  = 1'b1;
+          lq_addr_update_idx = IdxWidth'(i);
+        end
+      end
+    end
+  end
 
   // ===========================================================================
   // Issue Selection (parallel qualification + tree priority encoders)
@@ -522,9 +630,9 @@ module load_queue #(
     if (!i_flush_all && !i_flush_en && !mem_issue_pending && !drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable) begin
       o_sq_check_valid   = 1'b1;
-      o_sq_check_addr    = lq_address[sq_check_idx];
+      o_sq_check_addr    = lq_address_sq_check_rd;
       o_sq_check_rob_tag = lq_rob_tag[sq_check_idx];
-      o_sq_check_size    = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
+      o_sq_check_size    = riscv_pkg::mem_size_e'(lq_size_sq_check_rd);
     end
   end
 
@@ -609,7 +717,7 @@ module load_queue #(
       .i_rst_n(i_rst_n),
 
       // Lookup: staged SQ-disambiguation candidate
-      .i_lookup_addr(sq_check_entry_valid ? lq_address[sq_check_idx] : '0),
+      .i_lookup_addr(sq_check_entry_valid ? lq_address_sq_check_rd : '0),
       .o_lookup_hit (cache_lookup_hit),
       .o_lookup_data(cache_lookup_data),
 
@@ -620,7 +728,7 @@ module load_queue #(
 
       // Invalidation (from SQ or AMO write completion)
       .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
-      .i_invalidate_addr (amo_cache_inv ? lq_address[amo_entry_idx] : i_cache_invalidate_addr),
+      .i_invalidate_addr (amo_cache_inv ? lq_address_amo_rd : i_cache_invalidate_addr),
 
       // Flush
       .i_flush_all(i_flush_all)
@@ -643,22 +751,23 @@ module load_queue #(
       && !i_flush_all && !i_flush_en
       && sq_can_issue
       && cache_lookup_hit
-      && (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_WORD)
+      && (riscv_pkg::mem_size_e'(lq_size_sq_check_rd) == riscv_pkg::MEM_SIZE_WORD)
       && !lq_is_fp[sq_check_idx]
       && !lq_is_mmio[sq_check_idx]
       && !lq_is_lr[sq_check_idx]
       && !lq_is_amo[sq_check_idx];
 
   always_comb begin
-    stage_mem_issue_addr = lq_address[sq_check_idx];
-    if (lq_is_fp[sq_check_idx] && lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+    stage_mem_issue_addr = lq_address_sq_check_rd;
+    if (lq_is_fp[sq_check_idx] &&
+        riscv_pkg::mem_size_e'(lq_size_sq_check_rd) == riscv_pkg::MEM_SIZE_DOUBLE &&
         lq_fp64_phase[sq_check_idx]) begin
-      stage_mem_issue_addr = lq_address[sq_check_idx] + 32'd4;
+      stage_mem_issue_addr = lq_address_sq_check_rd + 32'd4;
     end
   end
 
   assign stage_mem_issue = !i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path;
-  assign stage_mem_issue_size = riscv_pkg::mem_size_e'(lq_size[sq_check_idx]);
+  assign stage_mem_issue_size = riscv_pkg::mem_size_e'(lq_size_sq_check_rd);
   assign launch_mem_issue = !i_flush_all && !i_flush_en && !mem_outstanding &&
       (stage_mem_issue || mem_issue_pending);
   assign launch_mem_issue_idx = mem_issue_pending ? mem_issue_idx : sq_check_idx;
@@ -683,14 +792,14 @@ module load_queue #(
       .i_is_load_byte           (lu_cache_is_byte),
       .i_is_load_halfword       (lu_cache_is_half),
       .i_is_load_unsigned       (lu_cache_is_unsigned),
-      .i_data_memory_address    (lq_address[sq_check_idx]),
+      .i_data_memory_address    (lq_address_sq_check_rd),
       .i_data_memory_read_data  (cache_lookup_data),
       .o_data_loaded_from_memory(lu_cache_out)
   );
 
   always_comb begin
-    lu_cache_is_byte     = (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_BYTE);
-    lu_cache_is_half     = (lq_size[sq_check_idx] == riscv_pkg::MEM_SIZE_HALF);
+    lu_cache_is_byte = (riscv_pkg::mem_size_e'(lq_size_sq_check_rd) == riscv_pkg::MEM_SIZE_BYTE);
+    lu_cache_is_half = (riscv_pkg::mem_size_e'(lq_size_sq_check_rd) == riscv_pkg::MEM_SIZE_HALF);
     lu_cache_is_unsigned = !lq_sign_ext[sq_check_idx];
   end
 
@@ -731,13 +840,13 @@ module load_queue #(
         if (lq_is_amo[issued_idx]) begin
           // AMO read: don't write data yet (port 1 handles after AMO write)
         end else if (lq_is_fp[issued_idx]
-                     && lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE
+                     && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
                      && !lq_fp64_phase[issued_idx]) begin
           // FLD phase 0: write lo only
           lq_data_lo_we[0] = 1'b1;
           lq_data_lo_wd[0] = lu_data_out;
         end else if (lq_is_fp[issued_idx]
-                     && lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE
+                     && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
                      && lq_fp64_phase[issued_idx]) begin
           // FLD phase 1: write hi only
           lq_data_hi_we[0] = 1'b1;
@@ -770,11 +879,11 @@ module load_queue #(
   logic [XLEN-1:0] cache_fill_actual_addr;
   always_comb begin
     if (lq_is_fp[issued_idx] &&
-        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE &&
         lq_fp64_phase[issued_idx]) begin
-      cache_fill_actual_addr = lq_address[issued_idx] + 32'd4;
+      cache_fill_actual_addr = lq_address_issued_rd + 32'd4;
     end else begin
-      cache_fill_actual_addr = lq_address[issued_idx];
+      cache_fill_actual_addr = lq_address_issued_rd;
     end
   end
 
@@ -799,9 +908,9 @@ module load_queue #(
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
       o_amo_mem_write_en = 1'b1;
-      o_amo_mem_write_addr = lq_address[amo_entry_idx];
-      o_amo_mem_write_data = amo_compute(riscv_pkg::instr_op_e'(lq_amo_op_rd), amo_old_value,
-                                         lq_amo_rs2[amo_entry_idx]);
+      o_amo_mem_write_addr = lq_address_amo_rd;
+      o_amo_mem_write_data =
+          amo_compute(riscv_pkg::instr_op_e'(lq_amo_op_rd), amo_old_value, lq_amo_rs2_rd);
     end
   end
 
@@ -814,10 +923,10 @@ module load_queue #(
     lu_raw_data    = i_mem_read_data;
 
     if (accept_mem_response) begin
-      lu_is_byte     = (lq_size[issued_idx] == riscv_pkg::MEM_SIZE_BYTE);
-      lu_is_half     = (lq_size[issued_idx] == riscv_pkg::MEM_SIZE_HALF);
+      lu_is_byte     = (riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_BYTE);
+      lu_is_half     = (riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_HALF);
       lu_is_unsigned = !lq_sign_ext[issued_idx];
-      lu_addr        = lq_address[issued_idx];
+      lu_addr        = lq_address_issued_rd;
     end
   end
 
@@ -835,7 +944,7 @@ module load_queue #(
       issue_cdb_result.tag   = lq_rob_tag[issue_cdb_idx];
 
       if (lq_is_fp[issue_cdb_idx]) begin
-        if (lq_size[issue_cdb_idx] == riscv_pkg::MEM_SIZE_DOUBLE) begin
+        if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
           // FLD: raw 64-bit data (lo + hi from LUTRAM)
           issue_cdb_result.value = {lq_data_hi_rd, lq_data_lo_rd};
         end else begin
@@ -1032,12 +1141,8 @@ module load_queue #(
       // Address Update: CAM search for matching rob_tag (control only;
       // data signals written in dedicated no-reset always_ff blocks)
       // -----------------------------------------------------------------
-      if (i_addr_update.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (lq_valid[i] && !lq_addr_valid[i] && lq_rob_tag[i] == i_addr_update.rob_tag) begin
-            lq_addr_valid[i] <= 1'b1;
-          end
-        end
+      if (lq_addr_update_we) begin
+        lq_addr_valid[lq_addr_update_idx] <= 1'b1;
       end
 
       if (sq_check_capture || sq_check_replace) begin
@@ -1101,14 +1206,14 @@ module load_queue #(
           mem_outstanding           <= 1'b0;
           reservation_valid         <= 1'b1;
         end else if (lq_is_fp[issued_idx] &&
-            lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+            riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE &&
             !lq_fp64_phase[issued_idx]) begin
           // FLD phase 0: re-issue for phase 1;
           // lq_fp64_phase in no-reset block
           lq_issued[issued_idx] <= 1'b0;  // Re-issue for phase 1
           mem_outstanding       <= 1'b0;
         end else if (lq_is_fp[issued_idx] &&
-                     lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+                     riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE &&
                      lq_fp64_phase[issued_idx]) begin
           // FLD phase 1: data captured by LUTRAM
           lq_data_valid[issued_idx] <= 1'b1;
@@ -1164,7 +1269,6 @@ module load_queue #(
     if (i_alloc.valid && !full) begin
       lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
       lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
-      lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
       lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
@@ -1172,7 +1276,7 @@ module load_queue #(
     end
     // FLD phase advance: set phase 1 after phase 0 memory response
     if (accept_mem_response && lq_is_fp[issued_idx] &&
-        lq_size[issued_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+        riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE &&
         !lq_fp64_phase[issued_idx]) begin
       lq_fp64_phase[issued_idx] <= 1'b1;
     end
@@ -1182,14 +1286,8 @@ module load_queue #(
   // Per-entry data: address update writes
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    if (i_addr_update.valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (lq_valid[i] && !lq_addr_valid[i] && lq_rob_tag[i] == i_addr_update.rob_tag) begin
-          lq_address[i] <= i_addr_update.address;
-          lq_is_mmio[i] <= i_addr_update.is_mmio;
-          lq_amo_rs2[i] <= i_addr_update.amo_rs2;
-        end
-      end
+    if (lq_addr_update_we) begin
+      lq_is_mmio[lq_addr_update_idx] <= i_addr_update.is_mmio;
     end
   end
 
@@ -1237,7 +1335,7 @@ module load_queue #(
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && lq_is_lr[issued_idx]) begin
-      reservation_addr <= lq_address[issued_idx];
+      reservation_addr <= lq_address_issued_rd;
     end
   end
 

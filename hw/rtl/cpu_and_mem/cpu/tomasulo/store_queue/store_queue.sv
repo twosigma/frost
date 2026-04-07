@@ -223,7 +223,6 @@ module store_queue #(
   wire                  [             IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic                 [                DEPTH-1:0] sq_valid;
-  logic                 [                DEPTH-1:0] sq_is_fp;
   logic                 [                DEPTH-1:0] sq_addr_valid;
   logic                 [                DEPTH-1:0] sq_data_valid;
   logic                 [                DEPTH-1:0] sq_is_mmio;
@@ -768,7 +767,6 @@ module store_queue #(
     // -----------------------------------------------------------------
     if (i_alloc.valid && !full) begin
       sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
-      sq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
       sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;

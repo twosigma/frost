@@ -298,25 +298,39 @@ module int_muldiv_shim (
   end
 
   // ---------------------------------------------------------------------------
-  // DIV result FIFO (4 entries, register-based)
+  // DIV result FIFO (4 entries, FF control with LUTRAM payload)
   // ---------------------------------------------------------------------------
   localparam int unsigned FifoDepth = 4;
 
   // Individual flat arrays for FIFO data (Icarus compat — no struct arrays).
-  logic [               TagW-1:0] div_fifo_tag              [FifoDepth];
-  logic [    riscv_pkg::FLEN-1:0] div_fifo_value            [FifoDepth];
+  logic [               TagW-1:0] div_fifo_tag           [FifoDepth];
+  logic [    riscv_pkg::FLEN-1:0] div_fifo_value_rd;
+  logic [    riscv_pkg::FLEN-1:0] div_fifo_value_wr_data;
   logic [          FifoDepth-1:0] div_fifo_valid;
   logic [          FifoDepth-1:0] div_fifo_flushed;
   logic [$clog2(FifoDepth+1)-1:0] fifo_count;
+  logic                           fifo_push;
 
   // Write pointer and read pointer
   logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
   logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
 
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(FifoDepth)),
+      .DATA_WIDTH(riscv_pkg::FLEN)
+  ) u_div_fifo_value (
+      .i_clk,
+      .i_write_enable (fifo_push),
+      .i_write_address(fifo_wr_ptr),
+      .i_write_data   (div_fifo_value_wr_data),
+      .i_read_address (fifo_rd_ptr),
+      .o_read_data    (div_fifo_value_rd)
+  );
+
   // Divider completion: build fu_complete_t from tracker tail + divider outputs.
   // Gate on same-cycle partial flush of the tail to prevent a younger entry
   // from leaking into the FIFO before the always_ff marks it flushed.
-  logic                           div_tail_partial_flushing;
+  logic div_tail_partial_flushing;
   assign div_tail_partial_flushing = div_trk_valid[DivPipeDepth-1] && i_flush_en && is_younger(
       div_trk_tag[DivPipeDepth-1], i_flush_tag, i_rob_head_tag
   );
@@ -329,6 +343,7 @@ module int_muldiv_shim (
   // Result selection from tracker tail
   logic [31:0] div_result_32;
   assign div_result_32 = div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient;
+  assign div_fifo_value_wr_data = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, div_result_32};
 
   // Same-cycle partial flush of FIFO head: suppress output and trigger
   // auto-drain before the always_ff marks it flushed, preventing the adapter
@@ -348,7 +363,6 @@ module int_muldiv_shim (
   assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
 
   // FIFO push: divider completes with non-flushed entry
-  logic fifo_push;
   assign fifo_push = div_completing;
 
   always_ff @(posedge i_clk) begin
@@ -383,9 +397,6 @@ module int_muldiv_shim (
       // Push
       if (fifo_push) begin
         div_fifo_tag[fifo_wr_ptr] <= div_trk_tag[DivPipeDepth-1];
-        div_fifo_value[fifo_wr_ptr] <= {
-          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, div_result_32
-        };
         div_fifo_valid[fifo_wr_ptr] <= 1'b1;
         div_fifo_flushed[fifo_wr_ptr] <= 1'b0;
         fifo_wr_ptr <= fifo_wr_ptr + 1;
@@ -414,7 +425,7 @@ module int_muldiv_shim (
     if (fifo_count != '0 && !div_fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
       o_div_fu_complete.valid     = 1'b1;
       o_div_fu_complete.tag       = div_fifo_tag[fifo_rd_ptr];
-      o_div_fu_complete.value     = div_fifo_value[fifo_rd_ptr];
+      o_div_fu_complete.value     = div_fifo_value_rd;
       o_div_fu_complete.exception = 1'b0;
       o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
       o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
