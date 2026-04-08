@@ -1012,17 +1012,16 @@ module reorder_buffer (
   // ===========================================================================
 
   // Commit when head is ready, no stall, and no flush in progress.
-  // Narrow guard: only block commit when the head IS a misprediction AND a
-  // branch misprediction is being detected on the same cycle.  This prevents
-  // the exact race where a mispredicted JAL commits on the early_mispredict_fire
-  // cycle, causing its commit-time recovery to be lost (early recovery takes
-  // priority the next cycle).  Firing only on the simultaneous collision avoids
-  // a per-misprediction commit stall.
+  // The old branch_update collision guard (which delayed commit when a
+  // mispredicted branch resolved via CDB in the same cycle as commit) is
+  // removed: (a) JAL — the stated motivation — never produces branch_update
+  // (is_jal_issue is excluded); (b) for conditional branches, the
+  // rob_head_commit_misprediction_candidate check in early_mispredict_fire
+  // already blocks the early-recovery race; (c) removing the guard breaks
+  // the commit_en ↔ branch_update critical path (19 LUT levels through the
+  // CARRY8 branch-target comparison).
   assign commit_en = head_ready && !commit_stall && !i_early_recovery_en && !i_flush_all &&
-                     !flush_after_head_commit &&
-                     !(commit_misprediction &&
-                       i_branch_update.valid && i_branch_update.mispredicted &&
-                       (i_branch_update.tag == head_idx));
+                     !flush_after_head_commit;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;

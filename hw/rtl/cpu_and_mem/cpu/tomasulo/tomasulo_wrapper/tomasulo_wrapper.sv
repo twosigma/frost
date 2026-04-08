@@ -477,6 +477,7 @@ module tomasulo_wrapper (
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
 
+
   // ===========================================================================
   // CDB Arbiter: FU completions → single CDB broadcast
   // ===========================================================================
