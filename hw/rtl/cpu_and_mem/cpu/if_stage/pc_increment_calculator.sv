@@ -160,33 +160,33 @@ module pc_increment_calculator #(
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
 
-  logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
-  assign pc_reg_plus_0 = i_pc_reg;
-  assign pc_reg_plus_2 = i_pc_reg + IncC;
-  assign pc_reg_plus_4 = i_pc_reg + Inc4;
-
-  // Registered-only hold signal: hold pc_reg at +0 for spanning wait, holdoff cycles
-  logic pc_reg_hold;
-  assign pc_reg_hold = i_spanning_wait_for_fetch ||
-                       i_spanning_to_halfword_registered ||
-                       i_prediction_from_buffer_holdoff;
-
-  // Pre-compute result assuming instruction is compressed (is_compressed = 1):
-  //   is_32bit_spanning = spanning_eligible && !1 = 0, so hold only from pc_reg_hold.
-  //   Priority: hold (+0) > compressed && !spanning_in_progress (+2) > default (+4)
+  // TIMING: The pre-computed results (pc_reg_if_compressed, pc_reg_if_32bit)
+  // depend ONLY on registered inputs and settle ~0.3 ns into the cycle.  The
+  // late-arriving is_compressed (BRAM-dependent, ~0.9 ns) must only control
+  // the final 2:1 MUX, NOT feed into the CARRY8 adder chains.
+  //
+  // Without a hard module boundary, Vivado merges the adders with the
+  // downstream MUX into a single CARRY8 chain where the S-inputs depend on
+  // is_compressed — putting the entire carry chain on the BRAM→o_pc_reg path.
+  //
+  // The submodule instance with dont_touch prevents this: Vivado cannot
+  // dissolve the boundary, so the adders and registered-select MUXes stay
+  // inside the submodule while the is_compressed MUX stays outside.
   logic [XLEN-1:0] pc_reg_if_compressed;
-  always_comb begin
-    if (pc_reg_hold) pc_reg_if_compressed = pc_reg_plus_0;
-    else if (!i_spanning_in_progress) pc_reg_if_compressed = pc_reg_plus_2;
-    else pc_reg_if_compressed = pc_reg_plus_4;
-  end
-
-  // Pre-compute result assuming instruction is 32-bit (is_compressed = 0):
-  //   is_32bit_spanning = spanning_eligible (all registered).
-  //   hold (+0) when pc_reg_hold || spanning_eligible, else default (+4).
-  //   sel_2 is always 0 when is_compressed = 0.
   logic [XLEN-1:0] pc_reg_if_32bit;
-  assign pc_reg_if_32bit = (pc_reg_hold || i_spanning_eligible) ? pc_reg_plus_0 : pc_reg_plus_4;
+
+  (* dont_touch = "yes" *) pc_reg_precompute #(
+      .XLEN(XLEN)
+  ) u_pc_reg_precompute (
+      .i_pc_reg                         (i_pc_reg),
+      .i_spanning_wait_for_fetch        (i_spanning_wait_for_fetch),
+      .i_spanning_to_halfword_registered(i_spanning_to_halfword_registered),
+      .i_prediction_from_buffer_holdoff (i_prediction_from_buffer_holdoff),
+      .i_spanning_in_progress           (i_spanning_in_progress),
+      .i_spanning_eligible              (i_spanning_eligible),
+      .o_pc_reg_if_compressed           (pc_reg_if_compressed),
+      .o_pc_reg_if_32bit                (pc_reg_if_32bit)
+  );
 
   // Final: select based on live is_compressed. Only this 2:1 mux is on the
   // BRAM→o_pc_reg critical path — the CARRY8 chains settle from registered

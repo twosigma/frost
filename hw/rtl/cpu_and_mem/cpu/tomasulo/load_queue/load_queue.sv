@@ -628,18 +628,21 @@ module load_queue #(
       sq_check_rob_tag_q, issue_mem_rob_tag, i_rob_head_tag
   ));
 
+  // Always output registered check parameters regardless of valid.  The SQ
+  // gates on i_sq_check_valid at its output register (o_sq_forward.match <=
+  // i_sq_check_valid ? fwd_found_match : 1'b0), so stale values are harmless.
+  // Removing the addr/tag/size MUX breaks the cross-module timing path:
+  //   SQ sq_valid → o_mem_write_en → LQ i_mem_bus_busy → o_sq_check_valid
+  //   → addr MUX → SQ i_sq_check_addr → CARRY8 compare → o_sq_forward_reg
   always_comb begin
     o_sq_check_valid   = 1'b0;
-    o_sq_check_addr    = '0;
-    o_sq_check_rob_tag = '0;
-    o_sq_check_size    = riscv_pkg::MEM_SIZE_WORD;
+    o_sq_check_addr    = sq_check_addr_q;
+    o_sq_check_rob_tag = sq_check_rob_tag_q;
+    o_sq_check_size    = sq_check_size_q;
 
     if (!i_flush_all && !i_flush_en && !mem_issue_pending && !drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable) begin
-      o_sq_check_valid   = 1'b1;
-      o_sq_check_addr    = sq_check_addr_q;
-      o_sq_check_rob_tag = sq_check_rob_tag_q;
-      o_sq_check_size    = sq_check_size_q;
+      o_sq_check_valid = 1'b1;
     end
   end
 
@@ -773,10 +776,10 @@ module load_queue #(
     end
   end
 
-  assign stage_mem_issue = !i_flush_all && !i_flush_en && sq_can_issue && !cache_hit_fast_path;
+  assign stage_mem_issue = !i_flush_en && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
 
-  assign launch_mem_issue = !i_flush_all && !i_flush_en && !mem_outstanding &&
+  assign launch_mem_issue = !i_flush_en && !mem_outstanding &&
       (stage_mem_issue || mem_issue_pending);
   assign launch_mem_issue_idx = mem_issue_pending ? mem_issue_idx : sq_check_idx;
   assign launch_mem_issue_addr = mem_issue_pending ? mem_issue_addr : stage_mem_issue_addr;

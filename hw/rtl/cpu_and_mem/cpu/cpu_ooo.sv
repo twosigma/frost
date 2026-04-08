@@ -244,8 +244,14 @@ module cpu_ooo #(
   // disabled.
   assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
                                               id_unpredicted_control_flow;
+  // The prediction fence (front_end_prediction_fence_pending) is removed from
+  // this gate.  Disabling prediction while an unpredicted branch/JAL sits in
+  // PD/ID serialized the front-end on every cold-BTB branch, wasting ~20% of
+  // cycles.  The OOO checkpoint system already handles recovery from wrong-
+  // path speculation past unpredicted branches; checkpoint_full is < 0.1%.
+  // The separate front_end_cf_serialize_stall still protects against the
+  // dangerous case of speculating past unpredicted indirect jumps (JALR).
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
-                                         front_end_prediction_fence_pending ||
                                          csr_in_flight ||
                                          serializing_alloc_fire;
 

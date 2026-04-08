@@ -10,6 +10,9 @@
 # Control flow tracker - holdoff signal generation for stale instruction cycles
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
 
+# PC register pre-computation - adder submodule with dont_touch boundary
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
+
 # PC increment calculator - sequential PC computation with parallel adders
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
 

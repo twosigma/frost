@@ -108,11 +108,21 @@ module fu_cdb_adapter #(
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
+  // Kill adapter output on full-flush cycles.  result_pending is registered
+  // and doesn't clear until the next edge, so without this gate the CDB
+  // arbiter still sees stale valid outputs during the flush cycle.  The
+  // arbiter then generates grants that cascade into downstream FIFO
+  // management (15-level critical path from trap_taken_reg through the
+  // arbiter priority chain to fp_div_shim fifo_flushed).
   always_comb begin
-    if (result_pending && !partial_flush_held) o_fu_complete = held_result;
-    else if (!result_pending && !partial_flush_input) o_fu_complete = i_fu_result;
-    else begin
-      o_fu_complete = '0;  // suppress stale result
+    if (i_flush) begin
+      o_fu_complete = '0;
+    end else if (result_pending && !partial_flush_held) begin
+      o_fu_complete = held_result;
+    end else if (!result_pending && !partial_flush_input) begin
+      o_fu_complete = i_fu_result;
+    end else begin
+      o_fu_complete = '0;
     end
   end
 
