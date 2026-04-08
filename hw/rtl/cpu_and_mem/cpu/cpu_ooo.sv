@@ -118,6 +118,7 @@ module cpu_ooo #(
   logic [63:0] perf_top_inc[PerfTopCounterCount];
   logic [63:0] perf_top_inc_q[PerfTopCounterCount];
   logic [7:0] perf_counter_select;
+  logic [7:0] perf_counter_select_q;  // registered copy — breaks fanout-513 cone
   logic perf_snapshot_capture;
   localparam int unsigned PerfTopSnapshotBankSpan = (PerfTopCounterCount + 3) / 4;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank0;
@@ -1515,13 +1516,16 @@ module cpu_ooo #(
       // has already advanced past the mispredicting branch, which can let a
       // just-flushed younger branch re-resolve for one cycle.
       branch_issue_is_flushed = rs_issue_int.valid;
-    end else if (rob_head_commit_misprediction_candidate) begin
-      // Same-cycle guard for the cycle before mispredict_recovery_pending rises.
-      // A head-branch mispredict leaves no older survivors to preserve, so
-      // suppress branch resolution for this cycle without feeding branch_update
-      // back into ROB commit generation.
-      branch_issue_is_flushed = rs_issue_int.valid;
     end
+    // NOTE: rob_head_commit_misprediction_candidate is intentionally NOT used
+    // here to suppress branch resolution.  Routing the candidate signal through
+    // suppress_branch_resolution → is_branch_issue → branch comparison (CARRY8)
+    // → branch_update → commit_en created a 16-level combinational chain that
+    // was the WNS critical path (-0.739 ns).  Removing it is safe because:
+    //   (a) commit_en already has a direct branch_update collision guard that
+    //       delays commit when the same branch resolves and commits in one cycle;
+    //   (b) resolution writes to entries that will be flushed are harmless;
+    //   (c) early_mispredict_fire still gates on the candidate directly.
   end
 
   assign suppress_branch_resolution = branch_issue_is_flushed;
@@ -2291,9 +2295,17 @@ module cpu_ooo #(
   // ===========================================================================
   // Profiling Counter Aggregation
   // ===========================================================================
+  // Pipeline register for perf_counter_select to break the fanout-513 timing
+  // cone (perf_counter_select_reg → comparison/index decode across two modules).
+  // Adds 1-cycle read latency which is negligible for profiling counters.
+  always_ff @(posedge i_clk) begin
+    perf_counter_select_q <= perf_counter_select;
+  end
+
   assign wrapper_perf_counter_select =
-      ((perf_counter_select >= PerfWrapperBaseSel) && (perf_counter_select < PerfCounterCountSel)) ?
-      (perf_counter_select - PerfWrapperBaseSel) : 8'd0;
+      ((perf_counter_select_q >= PerfWrapperBaseSel) &&
+       (perf_counter_select_q < PerfCounterCountSel)) ?
+      (perf_counter_select_q - PerfWrapperBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
   assign perf_top_snapshot_capture_bank0 = perf_snapshot_capture;
   assign perf_top_snapshot_capture_bank1 = perf_snapshot_capture;
@@ -2373,9 +2385,9 @@ module cpu_ooo #(
 
   always_comb begin
     perf_counter_data = '0;
-    if (perf_counter_select < PerfTopCounterCountSel) begin
-      perf_counter_data = perf_top_snapshot[perf_counter_select[4:0]];
-    end else if (perf_counter_select < PerfCounterCountSel) begin
+    if (perf_counter_select_q < PerfTopCounterCountSel) begin
+      perf_counter_data = perf_top_snapshot[perf_counter_select_q[4:0]];
+    end else if (perf_counter_select_q < PerfCounterCountSel) begin
       perf_counter_data = wrapper_perf_counter_data;
     end
   end
