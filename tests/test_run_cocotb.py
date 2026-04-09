@@ -14,7 +14,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unified runner for cocotb simulations - works with pytest and standalone."""
+"""Unified runner for cocotb simulations - works with pytest and standalone.
+
+Standalone:
+    ./test_run_cocotb.py hello_world
+    ./test_run_cocotb.py reorder_buffer
+    ./test_run_cocotb.py --list-tests
+
+Pytest (all tests):
+    pytest ./test_run_cocotb.py
+
+Pytest (real program tests only):
+    pytest ./test_run_cocotb.py -k programs
+
+Pytest (tomasulo unit tests only):
+    pytest ./test_run_cocotb.py -k unit
+"""
 
 import os
 import random
@@ -271,7 +286,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
 REAL_PROGRAM_TESTS = [
     name
     for name, config in TEST_REGISTRY.items()
-    if name != "cpu" and config.include_in_pytest
+    if config.app_name is not None and config.include_in_pytest
+]
+
+UNIT_TESTS = [
+    name
+    for name, config in TEST_REGISTRY.items()
+    if config.app_name is None and config.include_in_pytest
 ]
 
 
@@ -637,6 +658,17 @@ class TestRealPrograms:
             test_real_program[hello_world]
             test_real_program[coremark]
         """
+        run_test(test_name, capsys)
+
+
+@pytest.mark.cocotb
+class TestUnitTests:
+    """Tomasulo unit tests (individual OOO components)."""
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("test_name", UNIT_TESTS)
+    def test_unit(self, test_name: str, capsys: Any) -> None:
+        """Run a Tomasulo unit test through cocotb."""
         run_test(test_name, capsys)
 
 
