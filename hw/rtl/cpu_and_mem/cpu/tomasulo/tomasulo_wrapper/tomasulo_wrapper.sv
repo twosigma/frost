@@ -1583,26 +1583,50 @@ module tomasulo_wrapper (
   end
 
   riscv_pkg::sq_alloc_req_t sq_alloc_req;
-  logic sq_alloc_addr_ready;
-  logic [riscv_pkg::XLEN-1:0] sq_alloc_effective_addr;
-  logic sq_alloc_addr_is_mmio;
-  assign sq_alloc_addr_ready = i_rs_dispatch.src1_ready;
-  assign sq_alloc_effective_addr =
-      i_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0] + i_rs_dispatch.imm;
-  assign sq_alloc_addr_is_mmio = (sq_alloc_effective_addr >= MmioBase);
   always_comb begin
     sq_alloc_req.valid   = mem_rs_dispatch_valid && sq_alloc_is_store;
     sq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
     sq_alloc_req.is_fp   = i_rs_dispatch.is_fp_mem;
     sq_alloc_req.size    = i_rs_dispatch.mem_size;
     sq_alloc_req.is_sc   = (i_rs_dispatch.op == riscv_pkg::SC_W);
-    // Publish store addresses to the SQ as soon as dispatch already has the
-    // base operand.  This lets younger loads disambiguate against common
-    // stack spills immediately instead of waiting for store data to become
-    // ready and the store to fully issue from MEM_RS.
-    sq_alloc_req.addr_valid = sq_alloc_addr_ready;
-    sq_alloc_req.address    = sq_alloc_effective_addr;
-    sq_alloc_req.is_mmio    = sq_alloc_addr_is_mmio;
+    // Address is computed in a pipelined stage (see early_addr_update below)
+    // to break the critical RAT → dispatch → 32-bit adder → SQ path.
+    sq_alloc_req.addr_valid = 1'b0;
+    sq_alloc_req.address    = '0;
+    sq_alloc_req.is_mmio    = 1'b0;
+  end
+
+  // ===========================================================================
+  // Pipelined early store address: register dispatch base+imm, compute next cycle
+  // ===========================================================================
+  // Breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8 adder → SQ
+  // critical path by deferring the 32-bit addition by one cycle.
+  logic sq_early_addr_valid_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_imm_q;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) begin
+      sq_early_addr_valid_q <= 1'b0;
+    end else begin
+      sq_early_addr_valid_q   <= sq_alloc_req.valid && !o_sq_full && i_rs_dispatch.src1_ready;
+      sq_early_addr_rob_tag_q <= i_rs_dispatch.rob_tag;
+      sq_early_addr_base_q    <= i_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0];
+      sq_early_addr_imm_q     <= i_rs_dispatch.imm;
+    end
+  end
+
+  // Adder now runs on registered inputs — off the dispatch critical path
+  logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
+  assign sq_early_effective_addr = sq_early_addr_base_q + sq_early_addr_imm_q;
+
+  riscv_pkg::sq_addr_update_t sq_early_addr_update;
+  always_comb begin
+    sq_early_addr_update.valid   = sq_early_addr_valid_q;
+    sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
+    sq_early_addr_update.address = sq_early_effective_addr;
+    sq_early_addr_update.is_mmio = (sq_early_effective_addr >= MmioBase);
   end
 
   // ===========================================================================
@@ -1657,6 +1681,9 @@ module tomasulo_wrapper (
       // Allocation (from dispatch)
       .i_alloc(sq_alloc_req),
       .o_full (o_sq_full),
+
+      // Early address update (pipelined dispatch-time base+imm)
+      .i_early_addr_update(sq_early_addr_update),
 
       // Address update (from MEM_RS issue)
       .i_addr_update(sq_addr_update),

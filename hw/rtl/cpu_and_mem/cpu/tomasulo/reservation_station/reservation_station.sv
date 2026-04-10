@@ -197,6 +197,15 @@ module reservation_station #(
   logic stage2_is_call;
   logic stage2_is_return;
 
+  // CDB bypass flags: set when an issued instruction's source was woken by
+  // same-cycle CDB bypass.  The output MUX substitutes stage2_cdb_value for
+  // these sources, breaking the timing-critical data path from CDB through
+  // the issue-select priority encoder to the stage2 register input.
+  logic stage2_src1_bypassed;
+  logic stage2_src2_bypassed;
+  logic stage2_src3_bypassed;
+  logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
+
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
   logic stage2_accept;  // Stage2 content consumed by FU this cycle
@@ -443,9 +452,11 @@ module reservation_station #(
   assign o_issue.valid = stage2_valid && i_fu_ready;
   assign o_issue.rob_tag = stage2_rob_tag;
   assign o_issue.op = stage2_op;
-  assign o_issue.src1_value = stage2_src1_value;
-  assign o_issue.src2_value = stage2_src2_value;
-  assign o_issue.src3_value = stage2_src3_value;
+  // For CDB-bypassed sources, substitute the CDB value captured at issue
+  // time.  All inputs are registered, so this MUX is off the critical path.
+  assign o_issue.src1_value = stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value;
+  assign o_issue.src2_value = stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value;
+  assign o_issue.src3_value = stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value;
   assign o_issue.imm = stage2_imm;
   assign o_issue.use_imm = stage2_use_imm;
   assign o_issue.rm = stage2_rm;
@@ -584,14 +595,19 @@ module reservation_station #(
     end else if (issue_fire) begin
       // Load stage2 from the RS entry selected by the priority encoder.
       // This covers both the empty-fill and back-to-back (accept + refill) cases.
-      // For CDB-bypassed sources, the rs_src_value hasn't been updated yet
-      // (it updates on the next posedge), so MUX in the CDB value directly.
+      // For CDB-bypassed sources, store the stale rs_src_value here and set the
+      // bypass flag; the output MUX substitutes cdb_value_q.  This breaks the
+      // timing-critical path CDB → tag match → issue select → FLEN MUX → stage2.
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_src1_value <= src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
-      stage2_src2_value <= src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
-      stage2_src3_value <= src3_cdb_bypass[issue_idx] ? i_cdb.value : rs_src3_value[issue_idx];
+      stage2_src1_value <= rs_src1_value[issue_idx];
+      stage2_src2_value <= rs_src2_value[issue_idx];
+      stage2_src3_value <= rs_src3_value[issue_idx];
+      stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
+      stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
+      stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
+      stage2_cdb_value <= i_cdb.value;
       stage2_imm <= pl_imm;
       stage2_use_imm <= rs_use_imm[issue_idx];
       stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
@@ -616,6 +632,7 @@ module reservation_station #(
     end
     // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
   end
+
 
   // ===========================================================================
   // Simulation Assertions

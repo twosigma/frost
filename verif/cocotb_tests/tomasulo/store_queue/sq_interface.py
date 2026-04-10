@@ -161,6 +161,7 @@ class SQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
+        self.dut.i_early_addr_update.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_data_update.value = 0
         self.dut.i_commit_valid.value = 0

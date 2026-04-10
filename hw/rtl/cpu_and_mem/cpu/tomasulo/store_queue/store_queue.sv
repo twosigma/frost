@@ -63,6 +63,11 @@ module store_queue #(
     output logic                     o_full,
 
     // =========================================================================
+    // Early Address Update (from pipelined dispatch-time address computation)
+    // =========================================================================
+    input riscv_pkg::sq_addr_update_t i_early_addr_update,
+
+    // =========================================================================
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
     // =========================================================================
     input riscv_pkg::sq_addr_update_t i_addr_update,
@@ -670,6 +675,18 @@ module store_queue #(
       end
 
       // -----------------------------------------------------------------
+      // Early Address Update: pipelined dispatch-time addr (control only)
+      // -----------------------------------------------------------------
+      if (i_early_addr_update.valid) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && !sq_addr_valid[i] &&
+              sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
+            sq_addr_valid[i] <= 1'b1;
+          end
+        end
+      end
+
+      // -----------------------------------------------------------------
       // Address Update: CAM search for matching rob_tag (control only)
       // -----------------------------------------------------------------
       if (i_addr_update.valid) begin
@@ -808,6 +825,18 @@ module store_queue #(
       sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
       sq_address[alloc_target[IdxWidth-1:0]]    <= i_alloc.address;
       sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= i_alloc.is_mmio;
+    end
+
+    // -----------------------------------------------------------------
+    // Early Address Update: pipelined dispatch-time addr (data only)
+    // -----------------------------------------------------------------
+    if (i_early_addr_update.valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
+          sq_address[i] <= i_early_addr_update.address;
+          sq_is_mmio[i] <= i_early_addr_update.is_mmio;
+        end
+      end
     end
 
     // -----------------------------------------------------------------
