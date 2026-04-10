@@ -1667,25 +1667,30 @@ module cpu_ooo #(
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
 
-  // Fire when a word-aligned conditional-branch misprediction is detected.
-  // JALR remains on the older commit-time recovery path for now, and keep
-  // halfword-aligned conditional branches there as well: the execute-time
-  // recovery path still regresses real programs that mix compressed code with
-  // halfword-aligned branch instructions, while the common word-aligned branch
-  // case is the main CoreMark win.
+  // Fire when a conditional-branch misprediction is detected at execute time.
+  // JALR remains on the older commit-time recovery path for now.
   //
   // Block on:
   // - an existing early-recovery phase (one-at-a-time; missed mispredictions
   //   fall to commit-time recovery)
   // - mispredict_recovery_pending (commit-time recovery in progress)
   // - fence_i_flush (registered 1-cycle full flush pulse)
-  // - other unresolved branches (preserve commit-time recovery ordering when
-  //   multiple checkpointed branches are live; otherwise checkpoints can pile
-  //   up behind a repeatedly mispredicting younger branch)
   //
   // Trap/MRET and same-cycle head-commit misprediction conflicts are masked on
   // the next cycle before redirect / checkpoint-restore / backend-flush. That
   // keeps those high-priority blockers off the wide capture-enable cone.
+  //
+  // Half-word-aligned branches are safe: the redirect PC (link_addr or
+  // branch_target) is computed at dispatch independent of alignment, the
+  // epoch-based RAT restore handles tag wraparound, and frontend_state_flush
+  // resets the C-extension alignment state machine on the redirect cycle.
+  //
+  // Multiple unresolved branches are safe: early recovery does a partial
+  // flush (keeping entries older than the mispredicting branch) and restores
+  // the branch's own checkpoint. Older branches retain their checkpoints
+  // and can resolve normally or trigger their own recovery later. The
+  // one-at-a-time guard (!early_mispredict_pending, !early_backend_recovery_
+  // pending) prevents overlapping recoveries.
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
   assign early_mispredict_capture = branch_update.valid && branch_update.mispredicted &&
@@ -1693,8 +1698,6 @@ module cpu_ooo #(
                                     !early_backend_recovery_pending;
   assign early_mispredict_fire = early_mispredict_capture &&
                                   rs_issue_int.has_checkpoint && !is_jalr_issue &&
-                                  !rs_issue_int.pc[1] &&
-                                  branch_unresolved_is_one &&
                                   !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
