@@ -361,16 +361,15 @@ async def test_cdb_wakeup_src1(dut: Any) -> None:
     assert not dut_if.issue_valid, "Should not issue (src1 not ready)"
 
     # CDB broadcast with tag 5 to wake src1
+    # CDB bypass wakeup: entry becomes ready same cycle as CDB broadcast,
+    # issue_fire loads stage2 at the next posedge (1 step, not 2).
     dut_if.drive_cdb(tag=5, value=0xDEAD)
     model.cdb_snoop(tag=5, value=0xDEAD)
 
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
-    await dut_if.step()
-
-    # Now should issue from stage2
+    # Now should issue from stage2 (CDB bypass wakeup: 1 cycle after broadcast)
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src1")
@@ -413,9 +412,7 @@ async def test_cdb_wakeup_src2(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
-    await dut_if.step()
-
+    # CDB bypass wakeup: issue appears 1 cycle after broadcast
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src2")
@@ -460,9 +457,7 @@ async def test_cdb_wakeup_src3(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
-    await dut_if.step()
-
+    # CDB bypass wakeup: issue appears 1 cycle after broadcast
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src3")
@@ -507,9 +502,7 @@ async def test_cdb_wakeup_multiple_sources(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
-    await dut_if.step()
-
+    # CDB bypass wakeup: issue appears 1 cycle after broadcast
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup both sources")
@@ -1135,14 +1128,25 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Peek what the model WOULD issue this cycle (will appear on DUT next cycle)
+        # Drive new inputs for this cycle.
+        # CDB is driven BEFORE the model peek so same-cycle CDB bypass wakeup
+        # is reflected.  Dispatch is driven AFTER the peek because newly-
+        # dispatched entries take one extra cycle to register in the DUT RS.
+        action = random.choice(["dispatch", "cdb", "idle"])
+
+        if action == "cdb" and dut_count > 0:
+            cdb_tag = random.randint(0, 31)
+            cdb_value = random.getrandbits(64)
+            dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
+            model.cdb_snoop(tag=cdb_tag, value=cdb_value)
+
+        # Peek what the model WOULD issue this cycle (will appear on DUT next
+        # cycle).  Peek AFTER CDB snoop so same-cycle CDB bypass wakeup is
+        # reflected, but BEFORE dispatch so newly-dispatched entries (which
+        # need one cycle to register) don't appear prematurely.
         model_issue_info = model.peek_issue(fu_ready=True)
         prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
         prev_model_issue_info = model_issue_info
-
-        # Drive new inputs for this cycle
-        # Gate dispatch on DUT full/count from the old registered state.
-        action = random.choice(["dispatch", "cdb", "idle"])
 
         if action == "dispatch" and not dut_full:
             rob_tag = random.randint(0, 31)
@@ -1190,12 +1194,6 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
                 imm=imm,
             )
 
-        elif action == "cdb" and dut_count > 0:
-            cdb_tag = random.randint(0, 31)
-            cdb_value = random.getrandbits(64)
-            dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
-            model.cdb_snoop(tag=cdb_tag, value=cdb_value)
-
         # Step: DUT registers inputs, issue_fire loads stage2, CDB wakeup
         await dut_if.step()
         dut_if.clear_dispatch()
@@ -1241,19 +1239,47 @@ async def test_random_with_flush(dut: Any) -> None:
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Peek what the model WOULD issue this cycle (will appear on DUT next cycle)
-        model_issue_info = model.peek_issue(fu_ready=True)
-        prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
-        prev_model_issue_info = model_issue_info
-
-        # Drive new inputs for this cycle
-        # Gate dispatch on DUT's full signal (matches RTL dispatch_fire gate)
+        # Drive new inputs for this cycle.
+        # CDB/flush is driven BEFORE the model peek so same-cycle CDB bypass
+        # wakeup is reflected.  Dispatch is driven AFTER the peek because
+        # newly-dispatched entries take one extra cycle to register in the DUT.
         action = random.choices(
             ["dispatch", "cdb", "flush_all", "partial_flush", "idle"],
             weights=[40, 30, 5, 10, 15],
         )[0]
 
         flush_applied = False
+
+        if action == "cdb" and dut_count > 0:
+            cdb_tag = random.randint(0, 31)
+            cdb_value = random.getrandbits(64)
+            dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
+            model.cdb_snoop(tag=cdb_tag, value=cdb_value)
+
+        elif action == "flush_all":
+            dut_if.drive_flush_all()
+            model.flush_all()
+            flush_applied = True
+
+        elif action == "partial_flush" and dut_count > 0:
+            flush_tag = random.randint(0, 31)
+            head_tag = random.randint(0, 31)
+            dut_if.drive_partial_flush(flush_tag=flush_tag, head_tag=head_tag)
+            model.partial_flush(flush_tag=flush_tag, head_tag=head_tag)
+            flush_applied = True
+
+        # Flush squashes any pending stage2 instruction
+        if flush_applied:
+            prev_model_issue = None
+            prev_model_issue_info = None
+
+        # Peek AFTER CDB snoop/flush but BEFORE dispatch.
+        if not flush_applied:
+            model_issue_info = model.peek_issue(fu_ready=True)
+            prev_model_issue = (
+                model_issue_info[1] if model_issue_info is not None else None
+            )
+            prev_model_issue_info = model_issue_info
 
         if action == "dispatch" and not dut_full:
             rob_tag = random.randint(0, 31)
@@ -1294,29 +1320,6 @@ async def test_random_with_flush(dut: Any) -> None:
                 use_imm=use_imm,
                 imm=imm,
             )
-
-        elif action == "cdb" and dut_count > 0:
-            cdb_tag = random.randint(0, 31)
-            cdb_value = random.getrandbits(64)
-            dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
-            model.cdb_snoop(tag=cdb_tag, value=cdb_value)
-
-        elif action == "flush_all":
-            dut_if.drive_flush_all()
-            model.flush_all()
-            flush_applied = True
-
-        elif action == "partial_flush" and dut_count > 0:
-            flush_tag = random.randint(0, 31)
-            head_tag = random.randint(0, 31)
-            dut_if.drive_partial_flush(flush_tag=flush_tag, head_tag=head_tag)
-            model.partial_flush(flush_tag=flush_tag, head_tag=head_tag)
-            flush_applied = True
-
-        # Flush squashes any pending stage2 instruction
-        if flush_applied:
-            prev_model_issue = None
-            prev_model_issue_info = None
 
         # Step: DUT registers inputs, issue_fire loads stage2, flush/CDB
         await dut_if.step()

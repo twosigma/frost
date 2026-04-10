@@ -353,16 +353,33 @@ module reservation_station #(
   // --- Dispatch fire condition ---
   assign dispatch_fire = dispatch_valid && !full && !i_flush_all && !i_flush_en;
 
+  // --- CDB bypass wakeup per entry ---
+  // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
+  // and an entry's pending source tag matches, treat that source as ready
+  // immediately (combinationally) rather than waiting for the next clock edge.
+  // This reduces dependent chain latency by 1 cycle.
+  logic [DEPTH-1:0] src1_cdb_bypass;
+  logic [DEPTH-1:0] src2_cdb_bypass;
+  logic [DEPTH-1:0] src3_cdb_bypass;
+
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
+      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+    end
+  end
+
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i] && rs_src1_ready[i]
+      entry_ready[i] = rs_valid[i] && (rs_src1_ready[i] || src1_cdb_bypass[i])
       // Even when an instruction uses an immediate, issue still
       // requires src2 to be ready if the opcode actually has a
       // second source (for example stores: base+imm address and
       // rs2 store data). Dispatch marks truly-unused src2
       // operands ready, so a plain src2_ready check is correct.
-      && rs_src2_ready[i] && rs_src3_ready[i];
+      && (rs_src2_ready[i] || src2_cdb_bypass[i]) && (rs_src3_ready[i] || src3_cdb_bypass[i]);
     end
   end
 
@@ -567,30 +584,32 @@ module reservation_station #(
     end else if (issue_fire) begin
       // Load stage2 from the RS entry selected by the priority encoder.
       // This covers both the empty-fill and back-to-back (accept + refill) cases.
-      stage2_valid            <= 1'b1;
-      stage2_rob_tag          <= rs_rob_tag[issue_idx];
-      stage2_op               <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_src1_value       <= rs_src1_value[issue_idx];
-      stage2_src2_value       <= rs_src2_value[issue_idx];
-      stage2_src3_value       <= rs_src3_value[issue_idx];
-      stage2_imm              <= pl_imm;
-      stage2_use_imm          <= rs_use_imm[issue_idx];
-      stage2_writes_cdb_hint  <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
-      stage2_rm               <= pl_rm;
-      stage2_branch_target    <= pl_branch_target;
-      stage2_predicted_taken  <= pl_predicted_taken;
+      // For CDB-bypassed sources, the rs_src_value hasn't been updated yet
+      // (it updates on the next posedge), so MUX in the CDB value directly.
+      stage2_valid <= 1'b1;
+      stage2_rob_tag <= rs_rob_tag[issue_idx];
+      stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+      stage2_src1_value <= src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
+      stage2_src2_value <= src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
+      stage2_src3_value <= src3_cdb_bypass[issue_idx] ? i_cdb.value : rs_src3_value[issue_idx];
+      stage2_imm <= pl_imm;
+      stage2_use_imm <= rs_use_imm[issue_idx];
+      stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
+      stage2_rm <= pl_rm;
+      stage2_branch_target <= pl_branch_target;
+      stage2_predicted_taken <= pl_predicted_taken;
       stage2_predicted_target <= pl_predicted_target;
-      stage2_is_fp_mem        <= pl_is_fp_mem;
-      stage2_mem_size         <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
-      stage2_mem_signed       <= pl_mem_signed;
-      stage2_csr_addr         <= pl_csr_addr;
-      stage2_csr_imm          <= pl_csr_imm;
-      stage2_pc               <= pl_pc;
-      stage2_link_addr        <= pl_link_addr;
-      stage2_has_checkpoint   <= pl_has_checkpoint;
-      stage2_checkpoint_id    <= pl_checkpoint_id;
-      stage2_is_call          <= pl_is_call;
-      stage2_is_return        <= pl_is_return;
+      stage2_is_fp_mem <= pl_is_fp_mem;
+      stage2_mem_size <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      stage2_mem_signed <= pl_mem_signed;
+      stage2_csr_addr <= pl_csr_addr;
+      stage2_csr_imm <= pl_csr_imm;
+      stage2_pc <= pl_pc;
+      stage2_link_addr <= pl_link_addr;
+      stage2_has_checkpoint <= pl_has_checkpoint;
+      stage2_checkpoint_id <= pl_checkpoint_id;
+      stage2_is_call <= pl_is_call;
+      stage2_is_return <= pl_is_return;
     end else if (stage2_accept) begin
       // Consumed by FU, no new entry ready — go empty.
       stage2_valid <= 1'b0;
