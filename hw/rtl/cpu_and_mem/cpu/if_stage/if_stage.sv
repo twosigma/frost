@@ -184,6 +184,9 @@ module if_stage #(
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   logic ras_instruction_valid;
   logic ras_instruction_valid_live;
+  (* keep = "true", max_fanout = 32 *) logic if_stage_stall;
+  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
+  (* keep = "true" *) logic pc_controller_stall;
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -204,6 +207,9 @@ module if_stage #(
   // redirect bubble in IF while still flushing PD/ID immediately.
   logic flush_for_c_ext_safe;
   assign flush_for_c_ext_safe = i_frontend_state_flush;
+  assign if_stage_stall = i_pipeline_ctrl.stall;
+  assign if_stage_stall_registered = i_pipeline_ctrl.stall_registered;
+  assign pc_controller_stall = if_stage_stall;
 
   // ===========================================================================
   // Spanning Detection
@@ -251,7 +257,7 @@ module if_stage #(
 
   // Forward declarations (moved before first use to avoid Vivado warnings)
   logic        use_saved_values;
-  assign use_saved_values = i_pipeline_ctrl.stall_registered && saved_values_valid;
+  assign use_saved_values = if_stage_stall_registered && saved_values_valid;
   logic            prediction_reset_c_ext;
   logic            sel_spanning_saved;
   logic [    15:0] raw_parcel_sc;
@@ -262,7 +268,7 @@ module if_stage #(
   logic            prediction_from_buffer_holdoff;
   logic            prediction_used_from_buffer;
 
-  assign ras_replay_inputs = i_pipeline_ctrl.stall_registered && ras_saved_input_available_sc;
+  assign ras_replay_inputs = if_stage_stall_registered && ras_saved_input_available_sc;
   assign sel_spanning_effective = ras_replay_inputs ? sel_spanning_saved : sel_spanning;
   assign ras_spanning_instr = spanning_instr_sc;
 
@@ -275,7 +281,7 @@ module if_stage #(
                                  !i_trap_ctrl.trap_taken &&
                                  !i_trap_ctrl.mret_taken &&
                                  ras_instruction_valid_sc &&
-                                 (!i_pipeline_ctrl.stall_registered ||
+                                 (!if_stage_stall_registered ||
                                    ras_saved_input_available_sc);
   assign prediction_used_from_buffer = prediction_used && use_instr_buffer;
 
@@ -318,8 +324,8 @@ module if_stage #(
       // must also block new predictions. Otherwise a younger speculative branch
       // or return can arm a pending redirect that survives long enough to fight
       // with the older instruction's eventual mispredict recovery.
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
 
@@ -393,8 +399,8 @@ module if_stage #(
   ) pc_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(pc_controller_stall),
+      .i_stall_registered(if_stage_stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
       .i_fence_i_flush(i_fence_i_flush),
@@ -455,13 +461,13 @@ module if_stage #(
   ) c_ext_state_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall(if_stage_stall),
       // TIMING OPTIMIZATION: Use flush_for_c_ext_safe instead of pipeline_ctrl.flush.
       // This uses registered trap/mret signals to break the critical path from
       // EX stage exception detection through c_ext_state to PC calculation.
       .i_flush(flush_for_c_ext_safe),
       .i_fence_i_flush(i_fence_i_flush),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall_registered(if_stage_stall_registered),
 
       .i_control_flow_holdoff(control_flow_holdoff),
       .i_any_holdoff_safe(any_holdoff_safe),
@@ -509,7 +515,7 @@ module if_stage #(
       // Clear on reset or flush - flush invalidates pre-flush state
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       prev_was_compressed_at_lo_saved <= 1'b0;
-    end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
       prev_was_compressed_at_lo_saved <= prev_was_compressed_at_lo;
     end
   end
@@ -543,7 +549,7 @@ module if_stage #(
 
       // TIMING OPTIMIZATION: Only use stall_registered (not combinational stall signals)
       // to break critical path from stall → is_compressed → PC
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall_registered(if_stage_stall_registered),
       .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
       .i_is_compressed_saved(is_compressed_saved),
       // TIMING OPTIMIZATION: Replace !flush_for_c_ext_safe with !i_fence_i_flush
@@ -607,8 +613,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(raw_parcel),
       .o_data(raw_parcel_sc)
   );
@@ -619,8 +625,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(effective_instr),
       .o_data(effective_instr_sc)
   );
@@ -631,8 +637,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(spanning_instr),
       .o_data(spanning_instr_sc)
   );
@@ -643,8 +649,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(sel_compressed),
       .o_data(sel_compressed_sc)
   );
@@ -658,8 +664,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(!sel_nop || is_32bit_spanning || spanning_wait_for_fetch),
       .o_data(ras_saved_input_available_sc)
   );
@@ -670,8 +676,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(ras_instruction_valid_live),
       .o_data(ras_instruction_valid_sc)
   );
@@ -684,7 +690,7 @@ module if_stage #(
       sel_nop_saved <= 1'b1;
       sel_spanning_saved <= 1'b0;
       spanning_first_cycle_saved <= 1'b0;
-    end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
       sel_nop_saved <= sel_nop;
       sel_spanning_saved <= sel_spanning;
       // A stall can hit on the first cycle of a halfword-spanning 32-bit
@@ -706,7 +712,7 @@ module if_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       prediction_from_buffer_holdoff <= 1'b0;
-    end else if (!i_pipeline_ctrl.stall) begin
+    end else if (!if_stage_stall) begin
       // Set when prediction happens while using buffered instruction.
       // Next cycle's instruction data will be stale and needs suppression.
       prediction_from_buffer_holdoff <= prediction_used_from_buffer;
@@ -728,7 +734,7 @@ module if_stage #(
   // halfword-spanning 32-bit instruction: that cycle is a NOP at the IF/PD
   // boundary, but replaying it is required so c_ext_state can still capture
   // the spanning first half after the stall drops.
-  assign replay_saved_if_outputs = i_pipeline_ctrl.stall_registered &&
+  assign replay_saved_if_outputs = if_stage_stall_registered &&
                                    !flush_for_c_ext_safe &&
                                    saved_values_valid &&
                                    (!sel_nop_saved || spanning_first_cycle_saved);
@@ -776,8 +782,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(instruction_pc),
       .o_data(instruction_pc_sc)
   );
@@ -788,8 +794,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(link_address),
       .o_data(link_address_sc)
   );
@@ -816,7 +822,7 @@ module if_stage #(
       // Clear control bit on flush or prediction-driven control flow change.
       // Saved data remains but is ignored when ras_predicted_saved is low.
       ras_predicted_saved <= 1'b0;
-    end else if (i_pipeline_ctrl.stall & ~i_pipeline_ctrl.stall_registered) begin
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
       ras_predicted_saved <= ras_predicted;
     end
   end
@@ -831,8 +837,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(ras_predicted_target),
       .o_data(ras_predicted_target_sc)
   );
@@ -843,8 +849,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(ras_checkpoint_tos),
       .o_data(ras_checkpoint_tos_sc)
   );
@@ -855,8 +861,8 @@ module if_stage #(
       .i_clk,
       .i_reset(1'b0),
       .i_flush(flush_for_c_ext_safe),
-      .i_stall(i_pipeline_ctrl.stall),
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
       .i_data(ras_checkpoint_valid_count),
       .o_data(ras_checkpoint_valid_count_sc)
   );
@@ -889,11 +895,11 @@ module if_stage #(
   ) prediction_metadata_tracker_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(i_pipeline_ctrl.stall),
+      .i_stall(if_stage_stall),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
       .i_prediction_holdoff(prediction_holdoff),  // Clear stale saved state on prediction
-      .i_stall_registered(i_pipeline_ctrl.stall_registered),
+      .i_stall_registered(if_stage_stall_registered),
 
       // Registered prediction from branch_prediction_controller
       .i_prediction_used_r(prediction_used_r),

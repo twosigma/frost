@@ -77,7 +77,8 @@ module cpu_ooo #(
 
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
-  logic flush_pipeline;
+  (* max_fanout = 32 *) logic flush_pipeline;
+  (* max_fanout = 32 *) logic frontend_stall;
   logic flush_for_trap;
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
@@ -220,16 +221,27 @@ module cpu_ooo #(
   // re-enable even though the branches haven't committed yet.
   logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
   logic branch_unresolved;
+  logic branch_unresolved_is_one;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) begin
-      branch_unresolved_count <= '0;
+      branch_unresolved_count  <= '0;
+      branch_unresolved_is_one <= 1'b0;
     end else begin
       case ({
         branch_unresolved_alloc_fire, branch_unresolved_decrement
       })
-        2'b10:   branch_unresolved_count <= branch_unresolved_count + 1'b1;
-        2'b01:   branch_unresolved_count <= branch_unresolved_count - 1'b1;
-        default: branch_unresolved_count <= branch_unresolved_count;
+        2'b10: begin
+          branch_unresolved_count  <= branch_unresolved_count + 1'b1;
+          branch_unresolved_is_one <= (branch_unresolved_count == '0);
+        end
+        2'b01: begin
+          branch_unresolved_count  <= branch_unresolved_count - 1'b1;
+          branch_unresolved_is_one <= (branch_unresolved_count == BranchInFlightCountWidth'(2));
+        end
+        default: begin
+          branch_unresolved_count  <= branch_unresolved_count;
+          branch_unresolved_is_one <= branch_unresolved_is_one;
+        end
       endcase
     end
   end
@@ -280,11 +292,12 @@ module cpu_ooo #(
   logic stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
+  assign frontend_stall =
+      (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
+       front_end_cf_serialize_stall) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
-    else
-      stall_q <= (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
-                  front_end_cf_serialize_stall) && !flush_pipeline;
+    else stall_q <= frontend_stall;
   end
 
   always_ff @(posedge i_clk) begin
@@ -344,8 +357,7 @@ module cpu_ooo #(
   always_comb begin
     pipeline_ctrl = '0;
     pipeline_ctrl.reset = i_rst;
-    pipeline_ctrl.stall = (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
-                           front_end_cf_serialize_stall) && !flush_pipeline;
+    pipeline_ctrl.stall = frontend_stall;
     pipeline_ctrl.stall_registered = stall_q;
     // Only true execution/backpressure stalls belong in stall_for_trap_check.
     // Front-end CSR serialization fences must not suppress IF-stage
@@ -987,7 +999,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   logic flush_all;
   logic commit_recovery_flush_after_head;
-  logic mispredict_recovery_pending;
+  (* max_fanout = 32 *) logic mispredict_recovery_pending;
   typedef struct packed {
     logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
     logic has_checkpoint;
@@ -1510,7 +1522,7 @@ module cpu_ooo #(
 
     if (flush_for_trap || flush_for_mret || fence_i_flush) begin
       branch_issue_is_flushed = rs_issue_int.valid;
-    end else if (early_mispredict_pending) begin
+    end else if (early_mispredict_active) begin
       // Partial early recovery keeps only entries strictly older than the
       // mispredicting branch.  The flush-tag branch itself has already
       // generated recovery data and must not re-resolve.
@@ -1639,22 +1651,21 @@ module cpu_ooo #(
   // Cycle N+1: early_mispredict_pending → redirect + RAT restore + backend hold
   // Cycle N+2: early_backend_recovery_pending → backend partial flush + hold
 
+  (* max_fanout = 32 *) logic early_mispredict_capture;
   logic early_mispredict_fire;
   logic early_mispredict_pending;
+  logic early_mispredict_active;
   logic early_backend_recovery_pending;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
 
   // Captured data from the mispredicting branch
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
   logic [XLEN-1:0] early_mispredict_redirect_pc;
-  logic early_mispredict_has_checkpoint;
   logic [riscv_pkg::CheckpointIdWidth-1:0] early_mispredict_checkpoint_id;
-  logic early_mispredict_is_call;
-  logic early_mispredict_is_return;
   logic early_mispredict_is_compressed;
   logic [XLEN-1:0] early_mispredict_pc;
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
-  logic early_mispredict_is_cond_branch;  // conditional branch (not JALR)
 
   // Fire when a word-aligned conditional-branch misprediction is detected.
   // JALR remains on the older commit-time recovery path for now, and keep
@@ -1664,29 +1675,37 @@ module cpu_ooo #(
   // case is the main CoreMark win.
   //
   // Block on:
-  // - trap/mret/fence_i (higher priority full flushes)
-  // - early_mispredict_pending (one-at-a-time; missed mispredictions fall to commit-time)
+  // - an existing early-recovery phase (one-at-a-time; missed mispredictions
+  //   fall to commit-time recovery)
   // - mispredict_recovery_pending (commit-time recovery in progress)
-  // - a same-cycle head commit misprediction (must preserve the older branch's
-  //   recovery; otherwise the one-cycle commit-time recovery pulse can be lost
-  //   behind the younger branch's early-recovery pulse)
+  // - fence_i_flush (registered 1-cycle full flush pulse)
   // - other unresolved branches (preserve commit-time recovery ordering when
   //   multiple checkpointed branches are live; otherwise checkpoints can pile
   //   up behind a repeatedly mispredicting younger branch)
+  //
+  // Trap/MRET and same-cycle head-commit misprediction conflicts are masked on
+  // the next cycle before redirect / checkpoint-restore / backend-flush. That
+  // keeps those high-priority blockers off the wide capture-enable cone.
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
-  assign early_mispredict_fire = branch_update.valid && branch_update.mispredicted &&
+  assign early_mispredict_capture = branch_update.valid && branch_update.mispredicted &&
+                                    !early_mispredict_pending &&
+                                    !early_backend_recovery_pending;
+  assign early_mispredict_fire = early_mispredict_capture &&
                                   rs_issue_int.has_checkpoint && !is_jalr_issue &&
                                   !rs_issue_int.pc[1] &&
-                                  (branch_unresolved_count == BranchInFlightCountWidth'(1)) &&
-                                  !rob_head_commit_misprediction_candidate &&
-                                  !flush_for_trap && !flush_for_mret && !fence_i_flush &&
-                                  !early_mispredict_pending && !mispredict_recovery_pending;
+                                  branch_unresolved_is_one &&
+                                  !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) early_mispredict_pending <= 1'b0;
     else early_mispredict_pending <= early_mispredict_fire;
   end
+
+  assign early_mispredict_active = early_mispredict_pending &&
+                                   !mispredict_recovery_pending &&
+                                   !trap_taken_reg && !mret_taken_reg &&
+                                   !fence_i_flush;
 
   // Delay the high-fanout backend partial flush one cycle behind the fast
   // frontend redirect and RAT restore.
@@ -1695,13 +1714,22 @@ module cpu_ooo #(
     else if (flush_for_trap || flush_for_mret || fence_i_flush) begin
       early_backend_recovery_pending <= 1'b0;
     end else begin
-      early_backend_recovery_pending <= early_mispredict_pending;
+      early_backend_recovery_pending <= early_mispredict_active;
+    end
+  end
+
+  // The backend partial flush already trails the fast redirect by one cycle,
+  // so re-register the flush tag locally instead of reusing the N-cycle
+  // capture register across the whole Tomasulo flush network.
+  always_ff @(posedge i_clk) begin
+    if (early_mispredict_active) begin
+      early_backend_flush_tag <= early_mispredict_tag;
     end
   end
 
   // Capture recovery data on the fire cycle
   always_ff @(posedge i_clk) begin
-    if (early_mispredict_fire) begin
+    if (early_mispredict_capture) begin
       // Debug display disabled for performance
       // $display("[EARLY_FIRE] t=%0t tag=%0d pc=0x%08x age=%0d head=%0d ckpt=%0d redirect=0x%08x taken=%0d",
       //     $time, branch_update.tag, rs_issue_int.pc, early_branch_age, head_tag,
@@ -1714,18 +1742,14 @@ module cpu_ooo #(
       early_mispredict_redirect_pc <= branch_taken_resolved ?
           branch_target_resolved : rs_issue_int.link_addr;
 
-      // Checkpoint info (from RS issue path)
-      early_mispredict_has_checkpoint <= rs_issue_int.has_checkpoint;
+      // Early recovery only fires for checkpointed conditional branches.
       early_mispredict_checkpoint_id <= rs_issue_int.checkpoint_id;
-      early_mispredict_is_call <= rs_issue_int.is_call;
-      early_mispredict_is_return <= rs_issue_int.is_return;
 
       // BTB update data
       early_mispredict_pc <= rs_issue_int.pc;
       early_mispredict_branch_target <= branch_target_resolved;
       early_mispredict_branch_taken <= branch_taken_resolved;
       early_mispredict_is_compressed <= (rs_issue_int.link_addr == rs_issue_int.pc + 32'd2);
-      early_mispredict_is_cond_branch <= !is_jalr_issue;
     end
   end
 
@@ -1735,7 +1759,7 @@ module cpu_ooo #(
   // still distinguish early recovery from commit-time flush-after-head.
   logic early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
-  assign early_recovery_en  = early_mispredict_pending;
+  assign early_recovery_en  = early_mispredict_active;
   assign early_recovery_tag = early_mispredict_tag;
 
   // Hold dispatch/issue/dequeue across both early-recovery phases. Phase 1
@@ -1743,7 +1767,7 @@ module cpu_ooo #(
   // phase 2 must behave like a backpressure bubble instead of a second
   // frontend flush so the redirected target instruction stream is preserved.
   logic early_backend_recovery_hold;
-  assign early_backend_recovery_hold = early_mispredict_pending || early_backend_recovery_pending;
+  assign early_backend_recovery_hold = early_mispredict_active || early_backend_recovery_pending;
 
   // ===========================================================================
   // Commit-Time Actions
@@ -1826,7 +1850,7 @@ module cpu_ooo #(
   // early_mispredict_pending first fires, so check the tag explicitly.
   logic commit_is_misprediction;
   assign commit_is_misprediction = rob_commit_misprediction_raw &&
-                                    !((early_mispredict_pending ||
+                                    !((early_mispredict_active ||
                                        early_backend_recovery_pending) &&
                                       head_tag == early_mispredict_tag);
 
@@ -1902,7 +1926,7 @@ module cpu_ooo #(
     // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
     // cycle after FENCE.I commits. Gate the front-end flush directly from that
     // pulse so dispatch cannot allocate into the same cycle as a full flush.
-    flush_pipeline = early_mispredict_pending || mispredict_recovery_pending ||
+    flush_pipeline = early_mispredict_active || mispredict_recovery_pending ||
                      flush_for_trap ||
                      flush_for_mret || fence_i_flush;
   end
@@ -1910,7 +1934,7 @@ module cpu_ooo #(
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
   // mispredict and FENCE.I cleanup on their existing timing.
   assign frontend_state_flush =
-      early_mispredict_pending || mispredict_recovery_pending ||
+      early_mispredict_active || mispredict_recovery_pending ||
       fence_i_flush || trap_taken_reg || mret_taken_reg;
 
   // Tomasulo flush:
@@ -1930,7 +1954,7 @@ module cpu_ooo #(
       flush_all = 1'b1;
     end else if (early_backend_recovery_pending) begin
       flush_en  = 1'b1;
-      flush_tag = early_mispredict_tag;
+      flush_tag = early_backend_flush_tag;
     end else if (mispredict_recovery_pending) begin
       flush_en  = 1'b1;
       flush_tag = mispredict_commit_q.tag;
@@ -1952,7 +1976,7 @@ module cpu_ooo #(
 
   // Checkpoint restore on misprediction (early or commit-time)
   always_comb begin
-    if (early_mispredict_pending && early_mispredict_has_checkpoint) begin
+    if (early_mispredict_active) begin
       // Early recovery: restore checkpoint only
       checkpoint_restore = 1'b1;
       checkpoint_restore_id = early_mispredict_checkpoint_id;
@@ -2005,7 +2029,7 @@ module cpu_ooo #(
     checkpoint_free    = 1'b0;
     checkpoint_free_id = '0;
 
-    if (early_backend_recovery_pending && early_mispredict_has_checkpoint) begin
+    if (early_backend_recovery_pending) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = early_mispredict_checkpoint_id;
     end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
@@ -2026,34 +2050,23 @@ module cpu_ooo #(
   always_comb begin
     from_ex_comb_synth = '0;
 
-    if (early_mispredict_pending) begin
+    if (early_mispredict_active) begin
       // Early misprediction recovery: redirect PC and update BTB
-      from_ex_comb_synth.branch_taken          = 1'b1;
-      from_ex_comb_synth.branch_target_address = early_mispredict_redirect_pc;
+      from_ex_comb_synth.branch_taken                       = 1'b1;
+      from_ex_comb_synth.branch_target_address              = early_mispredict_redirect_pc;
 
-      // BTB update for conditional branches (not JALR)
-      if (early_mispredict_is_cond_branch) begin
-        from_ex_comb_synth.btb_update                         = 1'b1;
-        from_ex_comb_synth.btb_update_pc                      = early_mispredict_pc;
-        from_ex_comb_synth.btb_update_target                  = early_mispredict_branch_target;
-        from_ex_comb_synth.btb_update_taken                   = early_mispredict_branch_taken;
-        from_ex_comb_synth.btb_update_compressed              = early_mispredict_is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
+      // Early recovery only handles checkpointed conditional branches, so the
+      // BTB update and RAS restore are unconditional on this path.
+      from_ex_comb_synth.btb_update                         = 1'b1;
+      from_ex_comb_synth.btb_update_pc                      = early_mispredict_pc;
+      from_ex_comb_synth.btb_update_target                  = early_mispredict_branch_target;
+      from_ex_comb_synth.btb_update_taken                   = early_mispredict_branch_taken;
+      from_ex_comb_synth.btb_update_compressed              = early_mispredict_is_compressed;
+      from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
 
-      // Restore RAS from checkpoint
-      if (early_mispredict_has_checkpoint) begin
-        from_ex_comb_synth.ras_misprediction       = 1'b1;
-        from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
-        from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        if (early_mispredict_is_return) begin
-          from_ex_comb_synth.ras_pop_after_restore = 1'b1;
-        end else if (early_mispredict_is_call) begin
-          from_ex_comb_synth.ras_push_after_restore = 1'b1;
-          from_ex_comb_synth.ras_push_address_after_restore = early_mispredict_pc +
-              (early_mispredict_is_compressed ? 32'd2 : 32'd4);
-        end
-      end
+      from_ex_comb_synth.ras_misprediction                  = 1'b1;
+      from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
+      from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
     end else if (mispredict_recovery_pending) begin
       // Commit-time fallback misprediction recovery
       from_ex_comb_synth.branch_taken          = 1'b1;
