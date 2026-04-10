@@ -405,6 +405,43 @@ async def test_cdb_write(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_store_complete_marks_done(dut: Any) -> None:
+    """Plain stores mark the ROB done directly without going through the CDB."""
+    cocotb.log.info("=== Test: Direct Store Completion ===")
+
+    dut_if, model = await setup_test(dut)
+
+    req = make_store_request(pc=0x1800)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    assert dut_if.count == 1, "Should have 1 entry"
+    assert (
+        int(dut.o_head_done.value) == 0
+    ), "Store should not be done immediately after allocation"
+
+    dut_if.drive_store_complete(0)
+    model.store_complete(0)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_store_complete()
+
+    assert (
+        int(dut.o_head_done.value) == 1
+    ), "Direct store completion should mark the head entry done"
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+
+    assert int(dut.o_empty.value) == 1, "Store should commit once marked done"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_in_order_commit(dut: Any) -> None:
     """Test that commits happen in order despite out-of-order completion.
 

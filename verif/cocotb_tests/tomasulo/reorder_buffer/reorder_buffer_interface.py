@@ -358,6 +358,8 @@ class ReorderBufferInterface:
         """Initialize all input signals to default values."""
         self.dut.i_alloc_req.value = 0
         self.dut.i_cdb_write.value = 0
+        self.dut.i_store_complete_valid.value = 0
+        self.dut.i_store_complete_tag.value = 0
         self.dut.i_branch_update.value = 0
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
@@ -420,6 +422,24 @@ class ReorderBufferInterface:
     def clear_cdb_write(self) -> None:
         """Clear CDB write."""
         self.dut.i_cdb_write.value = 0
+
+    def drive_store_complete(self, tag: int) -> None:
+        """Drive direct store-complete pulse. Call on falling edge."""
+        self.dut.i_store_complete_valid.value = 1
+        self.dut.i_store_complete_tag.value = tag
+
+    def clear_store_complete(self) -> None:
+        """Clear direct store-complete pulse."""
+        self.dut.i_store_complete_valid.value = 0
+        self.dut.i_store_complete_tag.value = 0
+
+    async def store_complete(self, tag: int) -> None:
+        """Perform direct store-complete transaction."""
+        await FallingEdge(self.clock)
+        self.drive_store_complete(tag)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_store_complete()
 
     async def cdb_write(self, write: CDBWrite) -> None:
         """Perform CDB write transaction."""

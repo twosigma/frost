@@ -749,6 +749,8 @@ module tomasulo_wrapper (
   logic sc_can_fire;
   logic sc_success;
   logic sc_fu_complete_valid;
+  logic store_issue_fire;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
 
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
   assign sc_success = lq_reservation_valid
@@ -767,29 +769,20 @@ module tomasulo_wrapper (
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W is excluded — it has its own completion path above.
-  logic store_issue_fire;
   assign store_issue_fire = o_mem_rs_issue.valid && sq_issue_is_store &&
                             (o_mem_rs_issue.op != riscv_pkg::SC_W);
+  assign store_complete_tag = o_mem_rs_issue.rob_tag;
 
-  riscv_pkg::fu_complete_t store_fu_complete;
-  always_comb begin
-    store_fu_complete       = '0;
-    store_fu_complete.valid = store_issue_fire;
-    store_fu_complete.tag   = o_mem_rs_issue.rob_tag;
-    // Stores have no destination register; value is don't-care
-  end
-
-  // MUX: SC > store > LQ for MEM adapter input
+  // MUX: SC > LQ for MEM adapter input. Plain stores mark the ROB done
+  // directly and do not need to occupy the shared MEM adapter/CDB slot.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
     if (sc_fu_complete.valid) mem_fu_to_adapter = sc_fu_complete;
-    else if (store_fu_complete.valid) mem_fu_to_adapter = store_fu_complete;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
-                              !store_issue_fire &&
                               !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
@@ -916,6 +909,8 @@ module tomasulo_wrapper (
 
       // CDB (from arbiter)
       .i_cdb_write(cdb_write_from_arbiter),
+      .i_store_complete_valid(store_issue_fire),
+      .i_store_complete_tag(store_complete_tag),
 
       // Branch
       .i_branch_update(i_branch_update),
@@ -1100,10 +1095,10 @@ module tomasulo_wrapper (
       .i_cdb(cdb_bus_qualified),
 
       // Issue (to internal wire for ALU shim)
-      .o_issue                (int_rs_issue_raw),
-      .i_fu_ready             (int_rs_fu_ready),
+      .o_issue(int_rs_issue_raw),
+      .i_fu_ready(int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
-      .o_next_issue_is_sc     (),                              // unused — no SC ops in INT_RS
+      .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
 
       // Flush (shared with ROB)
       .i_flush_en    (speculative_flush_en),
@@ -1520,8 +1515,7 @@ module tomasulo_wrapper (
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
-                                store_issue_fire),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
@@ -1589,12 +1583,26 @@ module tomasulo_wrapper (
   end
 
   riscv_pkg::sq_alloc_req_t sq_alloc_req;
+  logic sq_alloc_addr_ready;
+  logic [riscv_pkg::XLEN-1:0] sq_alloc_effective_addr;
+  logic sq_alloc_addr_is_mmio;
+  assign sq_alloc_addr_ready = i_rs_dispatch.src1_ready;
+  assign sq_alloc_effective_addr =
+      i_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0] + i_rs_dispatch.imm;
+  assign sq_alloc_addr_is_mmio = (sq_alloc_effective_addr >= MmioBase);
   always_comb begin
     sq_alloc_req.valid   = mem_rs_dispatch_valid && sq_alloc_is_store;
     sq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
     sq_alloc_req.is_fp   = i_rs_dispatch.is_fp_mem;
     sq_alloc_req.size    = i_rs_dispatch.mem_size;
     sq_alloc_req.is_sc   = (i_rs_dispatch.op == riscv_pkg::SC_W);
+    // Publish store addresses to the SQ as soon as dispatch already has the
+    // base operand.  This lets younger loads disambiguate against common
+    // stack spills immediately instead of waiting for store data to become
+    // ready and the store to fully issue from MEM_RS.
+    sq_alloc_req.addr_valid = sq_alloc_addr_ready;
+    sq_alloc_req.address    = sq_alloc_effective_addr;
+    sq_alloc_req.is_mmio    = sq_alloc_addr_is_mmio;
   end
 
   // ===========================================================================

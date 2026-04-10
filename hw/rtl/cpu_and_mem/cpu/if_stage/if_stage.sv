@@ -89,6 +89,7 @@ module if_stage #(
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
     input logic i_frontend_state_flush,
     input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - plumbed to pc_controller
+    input logic [XLEN-1:0] i_fence_i_target,
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
     output logic [XLEN-1:0] o_pc,
@@ -397,6 +398,7 @@ module if_stage #(
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
       .i_fence_i_flush(i_fence_i_flush),
+      .i_fence_i_target(i_fence_i_target),
 
       .i_branch_taken (i_from_ex_comb.branch_taken),
       .i_branch_target(i_from_ex_comb.branch_target_address),

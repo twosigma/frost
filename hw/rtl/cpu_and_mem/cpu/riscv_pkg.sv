@@ -1601,7 +1601,10 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     logic                             is_fp;
     mem_size_e                        size;
-    logic                             is_sc;    // Store-conditional
+    logic                             is_sc;       // Store-conditional
+    logic                             addr_valid;  // Address already known at dispatch
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
   } sq_alloc_req_t;
 
   // SQ address update (from address calculation)

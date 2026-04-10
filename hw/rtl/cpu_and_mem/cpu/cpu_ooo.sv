@@ -521,6 +521,7 @@ module cpu_ooo #(
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
       .i_fence_i_flush(fence_i_flush),
+      .i_fence_i_target(fence_i_target_pc),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd)
@@ -1014,6 +1015,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
+  logic [XLEN-1:0] fence_i_target_pc;
 
   // CSR coordination
   logic csr_start, csr_done_ack;
@@ -1852,6 +1854,15 @@ module cpu_ooo #(
       mispredict_commit_q.is_jal         <= rob_commit_comb.is_jal;
       mispredict_commit_q.is_jalr        <= rob_commit_comb.is_jalr;
       mispredict_commit_q.is_compressed  <= rob_commit_comb.is_compressed;
+    end
+  end
+
+  // FENCE.I commits before its flush pulse reaches IF. Capture the precise
+  // fallthrough PC so the front-end can restart from the architectural next
+  // instruction instead of from speculative fetch state that was already ahead.
+  always_ff @(posedge i_clk) begin
+    if (rob_commit_comb.valid && rob_commit_comb.is_fence_i) begin
+      fence_i_target_pc <= rob_commit_comb.pc + (rob_commit_comb.is_compressed ? 32'd2 : 32'd4);
     end
   end
 

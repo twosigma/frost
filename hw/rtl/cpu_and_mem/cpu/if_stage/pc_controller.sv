@@ -78,6 +78,7 @@ module pc_controller #(
     input logic i_stall_registered,
     input logic i_flush,  // Pipeline flush - block state updates from garbage instructions
     input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - for pending prediction kill
+    input logic [XLEN-1:0] i_fence_i_target,
 
     // Branch/Jump from EX stage (includes JAL, JALR, and all conditional branches)
     input logic            i_branch_taken,
@@ -142,6 +143,7 @@ module pc_controller #(
       .i_reset,
       .i_stall,
       .i_flush,
+      .i_fence_i_flush,
       // Control flow sources
       .i_trap_taken,
       .i_mret_taken,
@@ -516,6 +518,7 @@ module pc_controller #(
   always_comb begin
     if (i_reset) next_pc = '0;
     else if (trap_or_mret) next_pc = i_trap_target;
+    else if (i_fence_i_flush) next_pc = i_fence_i_target;
     else if (i_stall) next_pc = o_pc;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_prediction_used) next_pc = i_predicted_target;
@@ -566,6 +569,7 @@ module pc_controller #(
   always_comb begin
     if (i_reset) next_pc_reg = '0;
     else if (trap_or_mret) next_pc_reg = i_trap_target;
+    else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
     else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
     // After a non-cross pending handoff, the first target cycle is a bubble

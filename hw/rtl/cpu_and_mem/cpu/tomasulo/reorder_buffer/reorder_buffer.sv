@@ -68,6 +68,11 @@ module reorder_buffer (
     // For non-branch results (ALU, MUL, DIV, MEM, FP)
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
 
+    // Direct non-CDB completion for plain stores. Stores do not need wakeup or
+    // a CDB value broadcast; the ROB only needs to know the entry is done.
+    input logic                                        i_store_complete_valid,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_store_complete_tag,
+
     // =========================================================================
     // Branch Update Interface (from Branch Unit)
     // =========================================================================
@@ -273,7 +278,9 @@ module reorder_buffer (
   logic head_is_fp_store;
   logic head_is_branch;
   logic head_branch_taken;
-  logic [XLEN-1:0] head_branch_target;  // from RAM
+  logic [XLEN-1:0] head_branch_target;
+  logic [XLEN-1:0] head_branch_target_jal;  // JAL target written at allocation
+  logic [XLEN-1:0] head_branch_target_resolved;  // branch/JALR target written at resolution
   logic head_predicted_taken;
   logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
@@ -376,6 +383,7 @@ module reorder_buffer (
     head_rs_type_bits
   } = head_meta_rd_data;
   assign head_rs_type = riscv_pkg::rs_type_e'(head_rs_type_bits);
+  assign head_branch_target = head_is_jal ? head_branch_target_jal : head_branch_target_resolved;
   logic head_link_is_compressed;
   assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 32'd2));
   assign head_fallthrough_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
@@ -651,18 +659,33 @@ module reorder_buffer (
       .o_read_data    (head_fp_flags)
   );
 
-  // rob_branch_target: 2 write ports (alloc + branch update), 1 read port (head)
-  mwp_dist_ram #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_branch_target (
+  // Branch target storage only needs one writer per producer class:
+  // JAL writes its architectural target at allocation, while conditional
+  // branches/JALR write their resolved target on branch update. Split the
+  // field across two single-write memories and select at the head instead of
+  // paying the timing cost of a 2-write-port LVT RAM here.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_rob_branch_target_jal (
       .i_clk,
-      .i_write_enable ({branch_wr_en, alloc_en}),
-      .i_write_address({i_branch_update.tag, tail_idx}),
-      .i_write_data   ({i_branch_update.target, alloc_branch_target_data}),
+      .i_write_enable (alloc_en && i_alloc_req.is_jal),
+      .i_write_address(tail_idx),
+      .i_write_data   (alloc_branch_target_data),
       .i_read_address (head_idx),
-      .o_read_data    (head_branch_target)
+      .o_read_data    (head_branch_target_jal)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(ReorderBufferTagWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_rob_branch_target_resolved (
+      .i_clk,
+      .i_write_enable (branch_wr_en),
+      .i_write_address(i_branch_update.tag),
+      .i_write_data   (i_branch_update.target),
+      .i_read_address (head_idx),
+      .o_read_data    (head_branch_target_resolved)
   );
 
   // CSR address RAM (12-bit, written at allocation)
@@ -791,6 +814,13 @@ module reorder_buffer (
       if (cdb_state_wr_en) begin
         rob_done[i_cdb_write.tag]      <= 1'b1;
         rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
+      end
+
+      // ---------------------------------------------------------------------
+      // Direct store completion (mark plain store entry done)
+      // ---------------------------------------------------------------------
+      if (i_store_complete_valid && !i_flush_all && rob_valid[i_store_complete_tag]) begin
+        rob_done[i_store_complete_tag] <= 1'b1;
       end
 
       // ---------------------------------------------------------------------

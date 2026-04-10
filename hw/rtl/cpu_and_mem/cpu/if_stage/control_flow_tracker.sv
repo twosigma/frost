@@ -47,6 +47,7 @@ module control_flow_tracker #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,
+    input logic i_fence_i_flush,
 
     // Control flow sources
     input logic            i_trap_taken,
@@ -75,8 +76,12 @@ module control_flow_tracker #(
   // ===========================================================================
   // Detect any control flow change this cycle (branches, traps, predictions)
 
+  // FENCE.I performs a full front-end flush without an explicit redirect
+  // target. Treat its registered flush pulse as a control-flow event so the
+  // IF holdoff machinery suppresses stale in-flight fetch data for one cycle
+  // before the post-fence sequential stream resumes.
   assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
-                                 i_prediction_used;
+                                 i_prediction_used || i_fence_i_flush;
 
   // ===========================================================================
   // Holdoff Registers

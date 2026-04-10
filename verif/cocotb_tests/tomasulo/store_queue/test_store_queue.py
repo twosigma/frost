@@ -145,6 +145,34 @@ async def test_alloc_single(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 2b: Allocate with address already known
+# ============================================================================
+@cocotb.test()
+async def test_alloc_with_initial_address(dut: Any) -> None:
+    """Dispatch-time address capture should remove the need for addr_update."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc(
+        rob_tag=6,
+        size=MEM_SIZE_WORD,
+        addr_valid=True,
+        address=0x1040,
+    )
+    model.alloc(6, False, MEM_SIZE_WORD, addr_valid=True, address=0x1040)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_data_update(6, 0x11223344)
+    model.data_update(6, 0x11223344)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    write_req = await commit_and_write(dut_if, model, rob_tag=6)
+    assert write_req.addr == 0x1040
+    assert write_req.data == 0x11223344
+
+
+# ============================================================================
 # Test 3: Allocate to full
 # ============================================================================
 @cocotb.test()

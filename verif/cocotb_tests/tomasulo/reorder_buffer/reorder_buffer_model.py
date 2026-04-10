@@ -418,6 +418,18 @@ class ReorderBufferModel:
         entry.exc_cause = write.exc_cause
         entry.fp_flags = write.fp_flags
 
+    def store_complete(self, tag: int) -> None:
+        """Handle direct plain-store completion."""
+        entry = self.entries[tag & self.tag_mask]
+
+        if not entry.valid:
+            raise ValueError(f"Store completion to invalid entry {tag}")
+
+        if entry.done:
+            return
+
+        entry.done = True
+
     # =========================================================================
     # Branch Update
     # =========================================================================

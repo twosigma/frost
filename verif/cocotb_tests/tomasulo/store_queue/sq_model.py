@@ -169,7 +169,16 @@ class SQModel:
         """Return whether the store queue is empty."""
         return self.count == 0
 
-    def alloc(self, rob_tag: int, is_fp: bool, size: int, is_sc: bool = False) -> bool:
+    def alloc(
+        self,
+        rob_tag: int,
+        is_fp: bool,
+        size: int,
+        is_sc: bool = False,
+        addr_valid: bool = False,
+        address: int = 0,
+        is_mmio: bool = False,
+    ) -> bool:
         """Allocate a new entry at the next invalid slot. Returns True if successful."""
         if self.full:
             return False
@@ -183,12 +192,12 @@ class SQModel:
         e.valid = True
         e.rob_tag = rob_tag & MASK_TAG
         e.is_fp = is_fp
-        e.addr_valid = False
-        e.address = 0
+        e.addr_valid = addr_valid
+        e.address = address & MASK32
         e.data_valid = False
         e.data = 0
         e.size = size
-        e.is_mmio = False
+        e.is_mmio = is_mmio
         e.fp64_phase = 0
         e.committed = False
         e.sent = False

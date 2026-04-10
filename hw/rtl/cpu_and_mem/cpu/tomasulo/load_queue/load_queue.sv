@@ -583,6 +583,31 @@ module load_queue #(
   logic [DEPTH-1:0] mem_issue_mask;
   assign mem_issue_mask = mem_eligible_mask & ~blocked_by_amo;
 
+  // The sparse queue can reuse reclaimed holes after flushes, so physical
+  // queue order is not always identical to ROB age.  To avoid starving the
+  // oldest architectural load behind a younger blocked entry, explicitly
+  // prioritize an eligible ROB-head load over the normal physical-order scan.
+  logic head_mem_issue_found;
+  logic [IdxWidth-1:0] head_mem_issue_idx;
+  always_comb begin
+    head_mem_issue_found = 1'b0;
+    head_mem_issue_idx   = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (!head_mem_issue_found &&
+          lq_valid[i] &&
+          (lq_rob_tag[i] == i_rob_head_tag) &&
+          lq_addr_valid[i] &&
+          !lq_issued[i] &&
+          !lq_data_valid[i] &&
+          !lq_is_mmio[i] &&
+          !lq_is_lr[i] &&
+          (!lq_is_amo[i] || i_sq_committed_empty)) begin
+        head_mem_issue_found = 1'b1;
+        head_mem_issue_idx   = IdxWidth'(i);
+      end
+    end
+  end
+
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
   logic [ReorderBufferTagWidth-1:0] issue_mem_rob_tag;
@@ -593,11 +618,17 @@ module load_queue #(
     issue_mem_idx     = '0;
     issue_mem_rob_tag = '0;
     block_younger_mem = 1'b0;  // kept for interface compat; unused in restructured scan
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (mem_issue_mask[i] && !issue_mem_found) begin
-        issue_mem_found   = 1'b1;
-        issue_mem_idx     = scan_idx[i];
-        issue_mem_rob_tag = lq_rob_tag[scan_idx[i]];
+    if (head_mem_issue_found) begin
+      issue_mem_found   = 1'b1;
+      issue_mem_idx     = head_mem_issue_idx;
+      issue_mem_rob_tag = i_rob_head_tag;
+    end else begin
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (mem_issue_mask[i] && !issue_mem_found) begin
+          issue_mem_found   = 1'b1;
+          issue_mem_idx     = scan_idx[i];
+          issue_mem_rob_tag = lq_rob_tag[scan_idx[i]];
+        end
       end
     end
   end

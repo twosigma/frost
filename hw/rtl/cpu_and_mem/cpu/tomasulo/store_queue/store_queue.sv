@@ -662,7 +662,7 @@ module store_queue #(
       // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
       if (i_alloc.valid && !full) begin
-        sq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
+        sq_addr_valid[alloc_target[IdxWidth-1:0]] <= i_alloc.addr_valid;
         sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
         sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
@@ -806,6 +806,8 @@ module store_queue #(
       sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
+      sq_address[alloc_target[IdxWidth-1:0]]    <= i_alloc.address;
+      sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= i_alloc.is_mmio;
     end
 
     // -----------------------------------------------------------------
