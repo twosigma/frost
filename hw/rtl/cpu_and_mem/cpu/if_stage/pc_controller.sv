@@ -193,6 +193,7 @@ module pc_controller #(
       .i_spanning_to_halfword_registered,
       .i_is_compressed,
       .i_is_compressed_for_pc,
+      .i_sel_nop,
 
       // Holdoff and control signals
       .i_any_holdoff_safe(o_any_holdoff_safe),
@@ -210,40 +211,12 @@ module pc_controller #(
   );
 
   // ===========================================================================
-  // Mid-32bit Correction Detection
+  // Mid-32bit Correction Detection — DISABLED with 64-bit fetch
   // ===========================================================================
-  // Detect when we've landed in the middle of a 32-bit instruction
-
-  logic prev_was_32bit;
-
-  // Use o_any_holdoff_safe to break timing path. Also clear during flush
-  // to prevent garbage instructions from corrupting this state.
-  //
-  // CRITICAL: Clear prev_was_32bit on both i_prediction_used AND i_sel_prediction_r.
-  // - i_prediction_used = 1 in cycle N (when prediction fires)
-  // - i_sel_prediction_r = 1 in cycle N+1 (when o_pc_reg is about to update to target)
-  //
-  // We need i_sel_prediction_r because:
-  // - Cycle N: i_prediction_used=1, clear prev_was_32bit
-  // - Cycle N+1: i_prediction_used=0 (blocked by !o_pc[1] since o_pc=target), but
-  //   prev_was_32bit could be SET by the branch instruction being processed
-  // - If we don't clear in cycle N+1, prev_was_32bit carries stale state to cycle N+2
-  // - In cycle N+2: o_pc_reg=target, prev_was_32bit=1 (stale), causes incorrect NOP
-  //
-  // Likewise, sel_nop bubbles can carry stale bytes from a previous path. Treat
-  // them as non-instructions here so the mid-32bit correction logic cannot fire
-  // on a real halfword PC like 0x316e using stale 32-bit history from 0x317c.
-  always_ff @(posedge i_clk) begin
-    if (i_reset || o_any_holdoff_safe || i_flush || i_prediction_used || i_pd_redirect ||
-        i_sel_prediction_r || i_sel_nop || pending_prediction_target_holdoff_q)
-      prev_was_32bit <= 1'b0;
-    else if (!i_stall)
-      prev_was_32bit <= !i_is_compressed && !i_spanning_in_progress && !i_spanning_wait_for_fetch;
-  end
-
-  assign o_mid_32bit_correction = prev_was_32bit && o_pc_reg[1] &&
-                                  !i_spanning_in_progress && !i_spanning_wait_for_fetch &&
-                                  !pending_prediction_target_holdoff_q;
+  // With 64-bit fetch, 32-bit instructions at PC[1]=1 are assembled
+  // immediately from both words.  There is no "landing in the middle" of a
+  // 32-bit instruction, so the mid-32bit correction is never needed.
+  assign o_mid_32bit_correction = 1'b0;
 
   // ===========================================================================
   // Final PC Selection - Priority-Encoded Muxes

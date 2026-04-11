@@ -104,8 +104,10 @@ module cpu_and_mem #(
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
   // CPU interface signals
-  logic [31:0] program_counter, instruction;
-  logic [1:0] instruction_sideband;  // Predecode: {is_compressed_hi, is_compressed_lo}
+  logic [31:0] program_counter;
+  logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
+  logic [ 3:0] instruction_sideband;  // Predecode: {next_sb[1:0], current_sb[1:0]}
+  logic        instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
@@ -162,6 +164,7 @@ module cpu_and_mem #(
       .o_pc(program_counter),
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
+      .i_instr_bank_sel_r(instruction_bank_sel_r),
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
@@ -214,7 +217,8 @@ module cpu_and_mem #(
       .i_port_b_enable(1'b1),
       .i_port_b_byte_address(program_counter),
       .o_port_b_read_data(instruction),
-      .o_port_b_sideband(instruction_sideband)
+      .o_port_b_sideband(instruction_sideband),
+      .o_port_b_bank_sel_r(instruction_bank_sel_r)
   );
 
   // Memory 1: Data memory
@@ -239,7 +243,7 @@ module cpu_and_mem #(
       .i_port_b_byte_write_enable(data_memory_byte_write_enable & {4{~data_memory_write_is_mmio}}),
       .o_port_b_read_data(data_memory_read_data)
   );
-  assign o_instr_mem_rddata = instruction;
+  assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
   logic [3:0] data_memory_byte_write_enable_registered;

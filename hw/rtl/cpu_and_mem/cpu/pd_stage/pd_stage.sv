@@ -24,7 +24,7 @@
 
   Key operations:
   - RVC decompression (16-bit to 32-bit instruction expansion)
-  - Instruction selection muxing (NOP, spanning, compressed, or aligned)
+  - Instruction selection muxing (NOP, compressed, or aligned; spanning is pre-assembled in IF)
   - Early source register extraction for forwarding/hazard timing
 
   The decompressed/selected instruction is registered and passed to ID stage,
@@ -73,8 +73,7 @@ module pd_stage #(
   logic [31:0] instruction_non_nop;
 
   always_comb begin
-    if (i_from_if_to_pd.sel_spanning) instruction_non_nop = i_from_if_to_pd.spanning_instr;
-    else if (i_from_if_to_pd.sel_compressed) instruction_non_nop = decompressed_instr;
+    if (i_from_if_to_pd.sel_compressed) instruction_non_nop = decompressed_instr;
     else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 
@@ -90,7 +89,7 @@ module pd_stage #(
   // detection. This runs from registered values and feeds into registered outputs.
   //
   // For compressed instructions, extract from the decompressed instruction output.
-  // For 32-bit instructions, extract from effective_instr (spanning or aligned).
+  // For 32-bit instructions, extract from effective_instr (spanning is pre-assembled in IF).
   // For NOP, source registers are x0.
   //
   // This is simpler than the reverted approach that extracted in IF stage because:

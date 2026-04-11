@@ -43,8 +43,9 @@ module cpu_ooo #(
     input logic i_rst,
     // Instruction memory interface
     output logic [XLEN-1:0] o_pc,
-    input logic [31:0] i_instr,
-    input logic [1:0] i_instr_sideband,  // Predecode: {is_compressed_hi, is_compressed_lo}
+    input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
+    input logic [3:0] i_instr_sideband,  // Predecode: {next_sb[1:0], current_sb[1:0]}
+    input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -531,6 +532,7 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_sideband,
+      .i_instr_bank_sel_r,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),

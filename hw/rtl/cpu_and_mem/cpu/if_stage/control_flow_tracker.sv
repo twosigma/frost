@@ -111,10 +111,8 @@ module control_flow_tracker #(
   // any_holdoff: All sources (includes combinational control_flow_change)
   // any_holdoff_safe: Only registered sources (breaks timing from branch_taken)
 
-  assign o_any_holdoff = o_control_flow_change || o_control_flow_holdoff ||
-                         o_reset_holdoff || i_spanning_to_halfword_registered;
-  assign o_any_holdoff_safe = o_control_flow_holdoff || o_reset_holdoff ||
-                              i_spanning_to_halfword_registered;
+  assign o_any_holdoff = o_control_flow_change || o_control_flow_holdoff || o_reset_holdoff;
+  assign o_any_holdoff_safe = o_control_flow_holdoff || o_reset_holdoff;
 
   // ===========================================================================
   // Halfword-Aligned Control Flow Detection

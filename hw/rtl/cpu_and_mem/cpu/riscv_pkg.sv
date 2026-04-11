@@ -498,18 +498,17 @@ package riscv_pkg;
   localparam int unsigned RasPtrBits = $clog2(RasDepth);
 
   // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage
-  // IF outputs raw/partially processed data; PD performs decompression for better timing
+  // IF outputs raw/partially processed data; PD performs decompression for better timing.
+  // With 64-bit fetch, spanning instructions are assembled immediately in IF — no
+  // sel_spanning or spanning_instr fields are needed.
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     // Raw 16-bit parcel for decompression (compressed instructions)
     logic [15:0] raw_parcel;
     // Selection signals for final instruction mux (computed in IF, used in PD)
     logic sel_nop;
-    logic sel_spanning;
     logic sel_compressed;  // True if raw_parcel is a compressed instruction
-    // Pre-assembled spanning instruction (32-bit from spanning buffer)
-    instr_t spanning_instr;
-    // Effective 32-bit instruction word (for aligned 32-bit case)
+    // Effective 32-bit instruction word (aligned or spanning-assembled)
     instr_t effective_instr;
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;

@@ -58,22 +58,19 @@ module pc_reg_precompute #(
 
   // Hold pc_reg at +0 for spanning wait, holdoff cycles
   logic pc_reg_hold;
-  assign pc_reg_hold = i_spanning_wait_for_fetch ||
-                       i_spanning_to_halfword_registered ||
-                       i_prediction_from_buffer_holdoff;
+  assign pc_reg_hold = i_prediction_from_buffer_holdoff;
 
   // Result assuming instruction is compressed (is_compressed = 1):
   //   is_32bit_spanning = spanning_eligible && !1 = 0, so hold only from pc_reg_hold.
   //   Priority: hold (+0) > compressed && !spanning_in_progress (+2) > default (+4)
   always_comb begin
     if (pc_reg_hold) o_pc_reg_if_compressed = pc_reg_plus_0;
-    else if (!i_spanning_in_progress) o_pc_reg_if_compressed = pc_reg_plus_2;
-    else o_pc_reg_if_compressed = pc_reg_plus_4;
+    else o_pc_reg_if_compressed = pc_reg_plus_2;
   end
 
   // Result assuming instruction is 32-bit (is_compressed = 0):
   //   is_32bit_spanning = spanning_eligible (all registered).
   //   hold (+0) when pc_reg_hold || spanning_eligible, else default (+4).
-  assign o_pc_reg_if_32bit = (pc_reg_hold || i_spanning_eligible) ? pc_reg_plus_0 : pc_reg_plus_4;
+  assign o_pc_reg_if_32bit = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_4;
 
 endmodule : pc_reg_precompute
