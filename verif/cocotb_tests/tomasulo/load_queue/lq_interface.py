@@ -206,6 +206,7 @@ class LQInterface:
         self.dut.i_cache_invalidate_addr.value = 0
         self.dut.i_sc_clear_reservation.value = 0
         self.dut.i_reservation_snoop_invalidate.value = 0
+        self.dut.i_sq_empty.value = 0
         self.dut.i_sq_committed_empty.value = 1
         self.dut.i_amo_mem_write_done.value = 0
 
@@ -270,6 +271,10 @@ class LQInterface:
     def drive_sq_all_older_known(self, val: bool = True) -> None:
         """Drive i_sq_all_older_addrs_known."""
         self.dut.i_sq_all_older_addrs_known.value = 1 if val else 0
+
+    def drive_sq_empty(self, val: bool = True) -> None:
+        """Drive store-queue empty signal."""
+        self.dut.i_sq_empty.value = 1 if val else 0
 
     def drive_sq_forward(
         self,

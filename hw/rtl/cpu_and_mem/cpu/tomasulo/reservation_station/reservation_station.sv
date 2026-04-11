@@ -42,7 +42,8 @@
 
 module reservation_station #(
     parameter int unsigned DEPTH = 8,
-    parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0
+    parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
+    parameter bit BYPASS_STAGE2 = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -210,6 +211,9 @@ module reservation_station #(
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
   logic stage2_accept;  // Stage2 content consumed by FU this cycle
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed — RS may load it
+  riscv_pkg::rs_issue_t bypass_issue;
+  logic bypass_issue_writes_cdb_hint;
+  logic bypass_next_issue_is_sc;
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -406,12 +410,13 @@ module reservation_station #(
 
   // --- Stage 2 control ---
   // Flush squash: stage2 holds an instruction younger than the flush boundary.
-  assign stage2_should_flush = stage2_valid && (i_flush_all || (i_flush_en && should_flush_entry(
+  assign stage2_should_flush = !BYPASS_STAGE2 && stage2_valid && (i_flush_all ||
+      (i_flush_en && should_flush_entry(
       stage2_rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
   // Stage2 content consumed by downstream FU this cycle (one-shot pulse).
-  assign stage2_accept = stage2_valid && i_fu_ready && !stage2_should_flush;
+  assign stage2_accept = !BYPASS_STAGE2 && stage2_valid && i_fu_ready && !stage2_should_flush;
 
   // RS may load stage2 when it is empty or being consumed this cycle.
   assign can_issue_to_stage2 = !stage2_valid || stage2_accept;
@@ -425,13 +430,49 @@ module reservation_station #(
   // ready scan above still sees pre-flush state combinationally in the same
   // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
   // misprediction/trap flush cycle.
-  assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
+  assign issue_fire = any_ready && i_fu_ready &&
+                      (BYPASS_STAGE2 || can_issue_to_stage2) &&
+                      !i_flush_all && !i_flush_en;
 
-  // --- SC issue peek: reports whether stage2 holds a Store Conditional ---
-  // Reads from registered stage2 fields only — no combinational flush
-  // dependency so it cannot re-introduce a timing path from the flush
-  // signal through the MEM_RS i_fu_ready qualification.
-  assign o_next_issue_is_sc = stage2_valid && (stage2_op == riscv_pkg::SC_W);
+  always_comb begin
+    bypass_issue                 = '0;
+    bypass_issue_writes_cdb_hint = 1'b0;
+    if (BYPASS_STAGE2) begin
+      bypass_issue.valid = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
+      bypass_issue.rob_tag = rs_rob_tag[issue_idx];
+      bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
+      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
+      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
+      bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value : rs_src3_value[issue_idx];
+      bypass_issue.imm = pl_imm;
+      bypass_issue.use_imm = rs_use_imm[issue_idx];
+      bypass_issue.rm = pl_rm;
+      bypass_issue.branch_target = pl_branch_target;
+      bypass_issue.predicted_taken = pl_predicted_taken;
+      bypass_issue.predicted_target = pl_predicted_target;
+      bypass_issue.is_fp_mem = pl_is_fp_mem;
+      bypass_issue.mem_size = riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      bypass_issue.mem_signed = pl_mem_signed;
+      bypass_issue.csr_addr = pl_csr_addr;
+      bypass_issue.csr_imm = pl_csr_imm;
+      bypass_issue.pc = pl_pc;
+      bypass_issue.link_addr = pl_link_addr;
+      bypass_issue.has_checkpoint = pl_has_checkpoint;
+      bypass_issue.checkpoint_id = pl_checkpoint_id;
+      bypass_issue.is_call = pl_is_call;
+      bypass_issue.is_return = pl_is_return;
+      bypass_issue_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ?
+                                      rs_writes_cdb_hint[issue_idx] : 1'b0;
+    end
+  end
+
+  // --- SC issue peek ---
+  // The generic RS reads this from stage2. MEM_RS can opt into the direct
+  // issue path and peek the ready entry combinationally instead.
+  assign bypass_next_issue_is_sc = BYPASS_STAGE2 && any_ready &&
+                                   (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+  assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
+                                            : (stage2_valid && (stage2_op == riscv_pkg::SC_W));
 
   // --- Issue port assignment (driven from stage2 pipeline register) ---
   // Data fields are driven unconditionally from stage2 FFs.
@@ -449,33 +490,40 @@ module reservation_station #(
   //   - CDB results for flushed tags are discarded by the ROB/RS flush logic.
   // The internal stage2_accept signal still checks stage2_should_flush so
   // that the stage2 pipeline register is correctly cleared on the next edge.
-  assign o_issue.valid = stage2_valid && i_fu_ready;
-  assign o_issue.rob_tag = stage2_rob_tag;
-  assign o_issue.op = stage2_op;
+  assign o_issue.valid = BYPASS_STAGE2 ? bypass_issue.valid : (stage2_valid && i_fu_ready);
+  assign o_issue.rob_tag = BYPASS_STAGE2 ? bypass_issue.rob_tag : stage2_rob_tag;
+  assign o_issue.op = BYPASS_STAGE2 ? bypass_issue.op : stage2_op;
   // For CDB-bypassed sources, substitute the CDB value captured at issue
   // time.  All inputs are registered, so this MUX is off the critical path.
-  assign o_issue.src1_value = stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value;
-  assign o_issue.src2_value = stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value;
-  assign o_issue.src3_value = stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value;
-  assign o_issue.imm = stage2_imm;
-  assign o_issue.use_imm = stage2_use_imm;
-  assign o_issue.rm = stage2_rm;
-  assign o_issue.branch_target = stage2_branch_target;
-  assign o_issue.predicted_taken = stage2_predicted_taken;
-  assign o_issue.predicted_target = stage2_predicted_target;
-  assign o_issue.is_fp_mem = stage2_is_fp_mem;
-  assign o_issue.mem_size = stage2_mem_size;
-  assign o_issue.mem_signed = stage2_mem_signed;
-  assign o_issue.csr_addr = stage2_csr_addr;
-  assign o_issue.csr_imm = stage2_csr_imm;
-  assign o_issue.pc = stage2_pc;
-  assign o_issue.link_addr = stage2_link_addr;
-  assign o_issue.has_checkpoint = stage2_has_checkpoint;
-  assign o_issue.checkpoint_id = stage2_checkpoint_id;
-  assign o_issue.is_call = stage2_is_call;
-  assign o_issue.is_return = stage2_is_return;
+  assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
+                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
+  assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
+                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
+  assign o_issue.src3_value = BYPASS_STAGE2 ? bypass_issue.src3_value
+                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value);
+  assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
+  assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
+  assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
+  assign o_issue.branch_target = BYPASS_STAGE2 ? bypass_issue.branch_target : stage2_branch_target;
+  assign o_issue.predicted_taken = BYPASS_STAGE2 ? bypass_issue.predicted_taken :
+                                                   stage2_predicted_taken;
+  assign o_issue.predicted_target = BYPASS_STAGE2 ? bypass_issue.predicted_target :
+                                                    stage2_predicted_target;
+  assign o_issue.is_fp_mem = BYPASS_STAGE2 ? bypass_issue.is_fp_mem : stage2_is_fp_mem;
+  assign o_issue.mem_size = BYPASS_STAGE2 ? bypass_issue.mem_size : stage2_mem_size;
+  assign o_issue.mem_signed = BYPASS_STAGE2 ? bypass_issue.mem_signed : stage2_mem_signed;
+  assign o_issue.csr_addr = BYPASS_STAGE2 ? bypass_issue.csr_addr : stage2_csr_addr;
+  assign o_issue.csr_imm = BYPASS_STAGE2 ? bypass_issue.csr_imm : stage2_csr_imm;
+  assign o_issue.pc = BYPASS_STAGE2 ? bypass_issue.pc : stage2_pc;
+  assign o_issue.link_addr = BYPASS_STAGE2 ? bypass_issue.link_addr : stage2_link_addr;
+  assign o_issue.has_checkpoint = BYPASS_STAGE2 ? bypass_issue.has_checkpoint :
+                                                  stage2_has_checkpoint;
+  assign o_issue.checkpoint_id = BYPASS_STAGE2 ? bypass_issue.checkpoint_id : stage2_checkpoint_id;
+  assign o_issue.is_call = BYPASS_STAGE2 ? bypass_issue.is_call : stage2_is_call;
+  assign o_issue.is_return = BYPASS_STAGE2 ? bypass_issue.is_return : stage2_is_return;
 
-  assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
+  assign o_issue_writes_cdb_hint = BYPASS_STAGE2 ? bypass_issue_writes_cdb_hint
+                                                 : stage2_writes_cdb_hint;
 
   // --- Status outputs ---
   assign o_full = full;
@@ -587,6 +635,8 @@ module reservation_station #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
+      stage2_valid <= 1'b0;
+    end else if (BYPASS_STAGE2) begin
       stage2_valid <= 1'b0;
     end else if (stage2_should_flush) begin
       // Flush squash: clear stage2. No refill is possible here because
@@ -731,7 +781,7 @@ module reservation_station #(
 
   // Stage2 output valid implies stage2 is occupied
   always_comb begin
-    if (i_rst_n && o_issue.valid) begin
+    if (i_rst_n && o_issue.valid && !BYPASS_STAGE2) begin
       p_stage2_output_coherent : assert (stage2_valid);
     end
   end
@@ -824,13 +874,14 @@ module reservation_station #(
              && dispatch_src1_tag == i_cdb.tag);
 
       // Stage2 back-to-back: consumed and refilled in the same cycle
-      cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
+      if (!BYPASS_STAGE2) cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
 
       // Stage2 flush squash
-      cover_stage2_flush : cover (stage2_should_flush);
+      if (!BYPASS_STAGE2) cover_stage2_flush : cover (stage2_should_flush);
 
       // Stage2 blocked (FU not ready)
-      cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
+      if (!BYPASS_STAGE2)
+        cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
     end
   end
 

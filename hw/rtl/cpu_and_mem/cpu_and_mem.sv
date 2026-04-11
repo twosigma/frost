@@ -180,9 +180,10 @@ module cpu_and_mem #(
       .i_disable_branch_prediction(1'b0)
   );
 
-  logic is_mmio;
-  assign is_mmio = (data_memory_address >= MmioAddr)
-                 && (data_memory_address < (MmioAddr + MmioSizeBytes));
+  logic data_memory_write_is_mmio;
+  assign data_memory_write_is_mmio = (|data_memory_byte_write_enable)
+                                  && (data_memory_address >= MmioAddr)
+                                  && (data_memory_address < (MmioAddr + MmioSizeBytes));
 
   // Dual memory architecture with separate instruction and data memories
   // Both memories receive instruction writes (fan out) on Port A (div4 clock)
@@ -235,7 +236,7 @@ module cpu_and_mem #(
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(data_memory_address),
       .i_port_b_write_data(data_memory_write_data),
-      .i_port_b_byte_write_enable(data_memory_byte_write_enable & {4{~is_mmio}}),
+      .i_port_b_byte_write_enable(data_memory_byte_write_enable & {4{~data_memory_write_is_mmio}}),
       .o_port_b_read_data(data_memory_read_data)
   );
   assign o_instr_mem_rddata = instruction;

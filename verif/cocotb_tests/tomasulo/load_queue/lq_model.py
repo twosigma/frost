@@ -302,12 +302,28 @@ class LQModel:
             if e.valid:
                 if cdb_idx is None and e.data_valid:
                     cdb_idx = idx
-                if (
-                    mem_idx is None
-                    and e.addr_valid
-                    and not e.issued
-                    and not e.data_valid
-                ):
+        # Match the RTL head_mem_issue shortcut: a regular load at the ROB head
+        # can bypass the normal physical-order scan so it does not starve behind
+        # a younger blocked entry after sparse-hole reuse.
+        for idx, e in enumerate(self.entries):
+            if (
+                e.valid
+                and e.rob_tag == (rob_head_tag & MASK_TAG)
+                and e.addr_valid
+                and not e.issued
+                and not e.data_valid
+                and not e.is_mmio
+                and not e.is_lr
+                and (not e.is_amo or sq_committed_empty)
+            ):
+                mem_idx = idx
+                break
+
+        if mem_idx is None:
+            for i in range(self.depth):
+                idx = (self.head_idx + i) % self.depth
+                e = self.entries[idx]
+                if e.valid and e.addr_valid and not e.issued and not e.data_valid:
                     # LR/AMO gating
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
@@ -316,6 +332,7 @@ class LQModel:
                     ):
                         continue
                     mem_idx = idx
+                    break
         return cdb_idx, mem_idx
 
     def get_sq_check(

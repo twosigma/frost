@@ -709,12 +709,50 @@ async def test_back_to_back_loads(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 21: Empty SQ skips the SQ query round-trip
+# ============================================================================
+@cocotb.test()
+async def test_empty_sq_skips_disambiguation_query(dut: Any) -> None:
+    """When the SQ is empty, a staged load should issue without an SQ query."""
+    dut_if, model = await setup(dut)
+
+    await alloc_and_addr(dut_if, model, rob_tag=22, address=0xA100)
+
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    await Timer(1, unit="ns")
+    assert not dut_if.read_sq_check()["valid"], "Empty SQ should skip the SQ query"
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req[
+        "en"
+    ], "Load should issue once the staged empty-SQ candidate reaches phase 2"
+    assert mem_req["addr"] == 0xA100
+
+    await dut_if.step()
+    dut_if.drive_mem_response(0x1234_5678)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut_if.drive_sq_empty(False)
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Load should complete after the memory response"
+    assert result.tag == 22
+    assert result.value == 0x1234_5678
+
+    await accept_fu_complete(dut_if)
+
+
+# ============================================================================
 # Test 21: Constrained random
 # ============================================================================
 @cocotb.test()
 async def test_constrained_random(dut: Any) -> None:
     """Randomized alloc/addr/forward/mem/flush over many cycles."""
     dut_if, model = await setup(dut)
+    dut_if.drive_sq_empty(True)
 
     rng = random.Random(cocotb.RANDOM_SEED)
     num_cycles = 200
@@ -1015,7 +1053,108 @@ async def test_cache_miss_fills_cache(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 27: MMIO address always misses cache
+# Test 27: Warm-cache LBU uses the fast path
+# ============================================================================
+@cocotb.test()
+async def test_cache_hit_lbu_uses_fast_path(dut: Any) -> None:
+    """Warm-cache LBU should complete without issuing a memory read."""
+    dut_if, model = await setup(dut)
+
+    base_addr = 0x2400
+    raw_word = 0x80FE_AA55
+
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=base_addr)
+    result = await complete_load_no_forward(dut_if, model, mem_data=raw_word)
+    assert result.valid and result.value == raw_word
+    await dut_if.step()
+
+    await alloc_and_addr(
+        dut_if,
+        model,
+        rob_tag=6,
+        address=base_addr + 1,
+        size=MEM_SIZE_BYTE,
+        sign_ext=False,
+    )
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    result, used_fast_path = await complete_load_fast_path_or_memory(
+        dut_if,
+        model,
+        mem_data=raw_word,
+        expected_addr=base_addr + 1,
+    )
+    assert result.valid, "Warm-cache LBU should complete"
+    assert result.tag == 6
+    assert result.value == 0xAA
+    assert used_fast_path, "Warm-cache LBU should bypass memory"
+
+
+# ============================================================================
+# Test 28: Warm-cache LH/LHU use the fast path
+# ============================================================================
+@cocotb.test()
+async def test_cache_hit_halfword_uses_fast_path(dut: Any) -> None:
+    """Warm-cache LH and LHU should complete without issuing a memory read."""
+    dut_if, model = await setup(dut)
+
+    base_addr = 0x2800
+    raw_word = 0x8001_7F22
+
+    await alloc_and_addr(dut_if, model, rob_tag=7, address=base_addr)
+    result = await complete_load_no_forward(dut_if, model, mem_data=raw_word)
+    assert result.valid and result.value == raw_word
+    await dut_if.step()
+
+    await alloc_and_addr(
+        dut_if,
+        model,
+        rob_tag=0,
+        address=base_addr + 2,
+        size=MEM_SIZE_HALF,
+        sign_ext=True,
+    )
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    result, used_fast_path = await complete_load_fast_path_or_memory(
+        dut_if,
+        model,
+        mem_data=raw_word,
+        expected_addr=base_addr + 2,
+    )
+    assert result.valid, "Warm-cache LH should complete"
+    assert result.tag == 0
+    assert result.value == 0xFFFF_8001
+    assert used_fast_path, "Warm-cache LH should bypass memory"
+    await dut_if.step()
+
+    await alloc_and_addr(
+        dut_if,
+        model,
+        rob_tag=1,
+        address=base_addr + 2,
+        size=MEM_SIZE_HALF,
+        sign_ext=False,
+    )
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    result, used_fast_path = await complete_load_fast_path_or_memory(
+        dut_if,
+        model,
+        mem_data=raw_word,
+        expected_addr=base_addr + 2,
+    )
+    assert result.valid, "Warm-cache LHU should complete"
+    assert result.tag == 1
+    assert result.value == 0x8001
+    assert used_fast_path, "Warm-cache LHU should bypass memory"
+
+
+# ============================================================================
+# Test 29: MMIO address always misses cache
 # ============================================================================
 @cocotb.test()
 async def test_cache_mmio_bypass(dut: Any) -> None:
@@ -1041,7 +1180,7 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 28: FLD fills both cache words, subsequent LW hits correct addresses
+# Test 30: FLD fills both cache words, subsequent LW hits correct addresses
 # ============================================================================
 @cocotb.test()
 async def test_fld_cache_fill_both_words(dut: Any) -> None:

@@ -47,7 +47,7 @@
 
 module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
-    parameter bit ENABLE_L0_FAST_PATH = 1'b0,
+    parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0
 ) (
     input logic i_clk,
@@ -105,8 +105,9 @@ module load_queue #(
     input  logic                       i_reservation_snoop_invalidate,
 
     // =========================================================================
-    // SQ Committed-Empty (for LR/AMO issue gating)
+    // SQ empty / committed-empty (for issue gating)
     // =========================================================================
+    input logic i_sq_empty,
     input logic i_sq_committed_empty,
 
     // =========================================================================
@@ -313,6 +314,7 @@ module load_queue #(
   logic sq_check_fp64_phase_q;
   logic sq_check_is_lr_q;
   logic sq_check_is_amo_q;
+  logic sq_check_no_older_store_q;
   logic sq_check_capture;
   logic sq_check_replace;
   logic sq_check_entry_valid;
@@ -672,7 +674,8 @@ module load_queue #(
     o_sq_check_size    = sq_check_size_q;
 
     if (!i_flush_all && !i_flush_en && !mem_issue_pending && !drop_mem_response_pending &&
-        !i_mem_bus_busy && sq_check_entry_issueable) begin
+        !i_mem_bus_busy && sq_check_entry_issueable &&
+        !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
     end
   end
@@ -697,11 +700,13 @@ module load_queue #(
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic flush_all_entries;
-
+  logic sq_no_older_store;
+  assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
-      i_sq_all_older_addrs_known && !i_sq_forward.match;
+      (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
-      && sq_check_phase2 && sq_check_entry_issueable && i_sq_forward.can_forward
+      && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
+      i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
@@ -785,18 +790,18 @@ module load_queue #(
 
   // Cache-hit fast path signal: Phase B candidate hits L0 cache, SQ
   // disambiguation confirms no conflicting store, and the consumer is a
-  // simple word-sized non-FP load. Subword loads and FLD stay on the memory
-  // path to keep cache-hit semantics conservative around partial-word and
-  // two-phase operations.
+  // cache-safe load. Integer byte/half/word loads can reuse the cached raw
+  // word through the local load_unit. FLW can also reuse the cached word
+  // directly. FLD remains on the memory path because it is a two-phase
+  // operation on the 32-bit data bus.
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
       && !i_flush_all && !i_flush_en
       && sq_can_issue
       && cache_lookup_hit
-      && (sq_check_size_q == riscv_pkg::MEM_SIZE_WORD)
-      && !sq_check_is_fp_q
       && !sq_check_is_mmio_q
       && !sq_check_is_lr_q
-      && !sq_check_is_amo_q;
+      && !sq_check_is_amo_q
+      && (!sq_check_is_fp_q || (sq_check_size_q == riscv_pkg::MEM_SIZE_WORD));
 
   always_comb begin
     stage_mem_issue_addr = sq_check_addr_q;
@@ -1108,6 +1113,7 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
+      sq_check_no_older_store_q <= 1'b0;
       sq_check_phase2           <= 1'b0;
       mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
@@ -1124,6 +1130,7 @@ module load_queue #(
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
       sq_check_pending          <= 1'b0;
+      sq_check_no_older_store_q <= 1'b0;
       sq_check_phase2           <= 1'b0;
       mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
@@ -1154,8 +1161,9 @@ module load_queue #(
         if (sq_check_pending && (flush_all_entries || is_younger(
                 sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
             ))) begin
-          sq_check_pending <= 1'b0;
-          sq_check_phase2  <= 1'b0;
+          sq_check_pending          <= 1'b0;
+          sq_check_no_older_store_q <= 1'b0;
+          sq_check_phase2           <= 1'b0;
         end
         if (mem_issue_pending && (flush_all_entries || (lq_valid[mem_issue_idx] && is_younger(
                 lq_rob_tag[mem_issue_idx], i_flush_tag, i_rob_head_tag
@@ -1188,13 +1196,17 @@ module load_queue #(
       end
 
       if (sq_check_capture || sq_check_replace) begin
-        sq_check_pending <= 1'b1;
-        sq_check_phase2  <= 1'b0;
+        sq_check_pending          <= 1'b1;
+        sq_check_no_older_store_q <= i_sq_empty;
+        sq_check_phase2           <= i_sq_empty;
       end else if (sq_check_pending &&
                    (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                     stage_mem_issue)) begin
-        sq_check_pending <= 1'b0;
-        sq_check_phase2  <= 1'b0;
+        sq_check_pending          <= 1'b0;
+        sq_check_no_older_store_q <= 1'b0;
+        sq_check_phase2           <= 1'b0;
+      end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
+        sq_check_phase2 <= 1'b1;
       end else if (o_sq_check_valid && !sq_check_phase2) begin
         sq_check_phase2 <= 1'b1;
       end

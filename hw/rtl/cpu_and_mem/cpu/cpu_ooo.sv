@@ -1707,7 +1707,7 @@ module cpu_ooo #(
                                   !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) early_mispredict_pending <= 1'b0;
+    if (i_rst || flush_all) early_mispredict_pending <= 1'b0;
     else early_mispredict_pending <= early_mispredict_fire;
   end
 
@@ -1867,7 +1867,7 @@ module cpu_ooo #(
   // later. Capturing the entire commit struct here needlessly drags unrelated
   // head metadata and payload bits onto the recovery timing cone.
   always_ff @(posedge i_clk) begin
-    if (i_rst) mispredict_recovery_pending <= 1'b0;
+    if (i_rst || flush_all) mispredict_recovery_pending <= 1'b0;
     else mispredict_recovery_pending <= commit_is_misprediction;
   end
 
@@ -1909,7 +1909,7 @@ module cpu_ooo #(
   wire commit_is_correct_branch = rob_commit_correct_branch_raw;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) correct_branch_commit_pending <= 1'b0;
+    if (i_rst || flush_all) correct_branch_commit_pending <= 1'b0;
     else correct_branch_commit_pending <= commit_is_correct_branch;
   end
 
@@ -1985,7 +1985,11 @@ module cpu_ooo #(
 
   // Checkpoint restore on misprediction (early or commit-time)
   always_comb begin
-    if (early_mispredict_active) begin
+    if (flush_all) begin
+      checkpoint_restore = 1'b0;
+      checkpoint_restore_id = '0;
+      checkpoint_restore_reclaim_all = 1'b0;
+    end else if (early_mispredict_active) begin
       // Early recovery: restore checkpoint only
       checkpoint_restore = 1'b1;
       checkpoint_restore_id = early_mispredict_checkpoint_id;
@@ -2038,7 +2042,10 @@ module cpu_ooo #(
     checkpoint_free    = 1'b0;
     checkpoint_free_id = '0;
 
-    if (early_backend_recovery_pending) begin
+    if (flush_all) begin
+      checkpoint_free    = 1'b0;
+      checkpoint_free_id = '0;
+    end else if (early_backend_recovery_pending) begin
       checkpoint_free    = 1'b1;
       checkpoint_free_id = early_mispredict_checkpoint_id;
     end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
@@ -2126,40 +2133,29 @@ module cpu_ooo #(
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
   always_comb begin
-    o_data_mem_addr           = '0;
-    o_data_mem_wr_data        = '0;
-    o_data_mem_per_byte_wr_en = '0;
-    o_data_mem_read_enable    = 1'b0;
-    o_mmio_load_addr          = '0;
-    o_mmio_load_valid         = 1'b0;
-    sq_mem_write_done_comb    = 1'b0;
-    amo_mem_write_done        = 1'b0;
+    // Load queue memory read. Bypass the one-entry request register when the
+    // port is already free; fall back to the queued copy only when a store
+    // or AMO held the port in the previous cycle.
+    o_data_mem_read_enable = !sq_mem_write_en && !amo_mem_write_en &&
+                             (lq_mem_request_valid || lq_mem_read_en);
 
-    if (sq_mem_write_en) begin
-      // Store queue memory write
-      o_data_mem_addr           = sq_mem_write_addr;
-      o_data_mem_wr_data        = sq_mem_write_data;
-      o_data_mem_per_byte_wr_en = sq_mem_write_byte_en;
-      sq_mem_write_done_comb    = 1'b1;  // Single-cycle write
-    end else if (amo_mem_write_en) begin
-      // AMO memory write
-      o_data_mem_addr           = amo_mem_write_addr;
-      o_data_mem_wr_data        = amo_mem_write_data;
-      o_data_mem_per_byte_wr_en = 4'b1111;
-      amo_mem_write_done        = 1'b1;
-    end else if (lq_mem_request_fire) begin
-      // Load queue memory read. Bypass the one-entry request register when the
-      // port is already free; fall back to the queued copy only when a store
-      // or AMO held the port in the previous cycle.
-      o_data_mem_addr        = lq_mem_request_addr_eff;
-      o_data_mem_read_enable = 1'b1;
-      // MMIO detection
-      if (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0] &&
-          lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0])) begin
-        o_mmio_load_addr  = lq_mem_request_addr_eff;
-        o_mmio_load_valid = 1'b1;
-      end
-    end
+    o_data_mem_addr = sq_mem_write_en ? sq_mem_write_addr :
+                      amo_mem_write_en ? amo_mem_write_addr :
+                      o_data_mem_read_enable ? lq_mem_request_addr_eff : '0;
+
+    o_data_mem_wr_data = sq_mem_write_en ? sq_mem_write_data :
+                         amo_mem_write_en ? amo_mem_write_data : '0;
+    o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
+                                amo_mem_write_en ? 4'b1111 : 4'b0000;
+
+    sq_mem_write_done_comb = sq_mem_write_en;
+    amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
+
+    o_mmio_load_addr = lq_mem_request_addr_eff;
+    o_mmio_load_valid = o_data_mem_read_enable &&
+                        (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0]) &&
+                        (lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] +
+                                                   MMIO_SIZE_BYTES[XLEN-1:0]));
   end
 
   // SQ write done: register to align with write_outstanding in the SQ

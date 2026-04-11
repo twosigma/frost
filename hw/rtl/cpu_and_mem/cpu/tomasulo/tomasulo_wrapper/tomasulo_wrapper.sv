@@ -1156,7 +1156,8 @@ module tomasulo_wrapper (
   end
 
   reservation_station #(
-      .DEPTH(riscv_pkg::MemRsDepth)
+      .DEPTH(riscv_pkg::MemRsDepth),
+      .BYPASS_STAGE2(1'b0)
   ) u_mem_rs (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
@@ -1527,7 +1528,8 @@ module tomasulo_wrapper (
       .i_sc_clear_reservation        (sc_clear_reservation),
       .i_reservation_snoop_invalidate(reservation_snoop_invalidate),
 
-      // SQ committed-empty (for LR/AMO issue gating)
+      // SQ empty / committed-empty (for issue gating)
+      .i_sq_empty(o_sq_empty),
       .i_sq_committed_empty(sq_committed_empty),
 
       // AMO memory write interface
