@@ -171,7 +171,6 @@ module pd_stage #(
   // ===========================================================================
   // Register all outputs to ID stage with stall and flush support.
 
-
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       // On reset, insert NOP into pipeline

@@ -204,8 +204,9 @@ module cpu_ooo #(
       case ({
         branch_alloc_fire, branch_commit_fire
       })
-        2'b10:   branch_in_flight_count <= branch_in_flight_count + 1'b1;
-        2'b01:   branch_in_flight_count <= branch_in_flight_count - 1'b1;
+        2'b10: branch_in_flight_count <= branch_in_flight_count + 1'b1;
+        2'b01:
+        if (branch_in_flight_count != '0) branch_in_flight_count <= branch_in_flight_count - 1'b1;
         default: branch_in_flight_count <= branch_in_flight_count;
       endcase
     end
@@ -236,8 +237,10 @@ module cpu_ooo #(
           branch_unresolved_is_one <= (branch_unresolved_count == '0);
         end
         2'b01: begin
-          branch_unresolved_count  <= branch_unresolved_count - 1'b1;
-          branch_unresolved_is_one <= (branch_unresolved_count == BranchInFlightCountWidth'(2));
+          if (branch_unresolved_count != '0) begin
+            branch_unresolved_count  <= branch_unresolved_count - 1'b1;
+            branch_unresolved_is_one <= (branch_unresolved_count == BranchInFlightCountWidth'(2));
+          end
         end
         default: begin
           branch_unresolved_count  <= branch_unresolved_count;
@@ -2086,12 +2089,15 @@ module cpu_ooo #(
       from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
       from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
     end else if (mispredict_recovery_pending) begin
-      // Commit-time fallback misprediction recovery
+      // Commit-time fallback misprediction recovery.
       from_ex_comb_synth.branch_taken          = 1'b1;
       from_ex_comb_synth.branch_target_address = mispredict_commit_q.redirect_pc;
 
-      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jal &&
-          !mispredict_commit_q.is_jalr) begin
+      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
+        // BTB update for conditional branches AND JAL. Previously JAL was
+        // excluded, causing every execution of a BTB-cold JAL to mispredict
+        // (~6500 total in CoreMark). Including JAL trains the BTB so only
+        // the first execution of each unique JAL site mispredicts (~100).
         from_ex_comb_synth.btb_update                         = 1'b1;
         from_ex_comb_synth.btb_update_pc                      = mispredict_commit_q.pc;
         from_ex_comb_synth.btb_update_target                  = mispredict_commit_q.branch_target;
@@ -2124,6 +2130,7 @@ module cpu_ooo #(
         from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q.is_compressed;
         from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
+
     end
   end
 
