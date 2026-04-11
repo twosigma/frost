@@ -374,6 +374,8 @@ module cpu_ooo #(
   // ===========================================================================
   riscv_pkg::from_if_to_pd_t from_if_to_pd;
   riscv_pkg::from_pd_to_id_t from_pd_to_id;
+  logic pd_redirect;
+  logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
 
   // Temporary debug mirrors for cocotb control-flow tracing.
@@ -535,6 +537,8 @@ module cpu_ooo #(
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
+      .i_pd_redirect(pd_redirect),
+      .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd)
   );
@@ -549,7 +553,9 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_if_to_pd(from_if_to_pd),
-      .o_from_pd_to_id(from_pd_to_id)
+      .o_from_pd_to_id(from_pd_to_id),
+      .o_pd_redirect(pd_redirect),
+      .o_pd_redirect_target(pd_redirect_target)
   );
 
   // ===========================================================================

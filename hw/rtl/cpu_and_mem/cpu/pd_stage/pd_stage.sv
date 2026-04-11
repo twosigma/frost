@@ -39,7 +39,10 @@ module pd_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
-    output riscv_pkg::from_pd_to_id_t o_from_pd_to_id
+    output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
+    // Backward-branch-taken static heuristic: PD redirect to IF
+    output logic o_pd_redirect,
+    output logic [XLEN-1:0] o_pd_redirect_target
 );
 
   // ===========================================================================
@@ -105,6 +108,66 @@ module pd_stage #(
   assign fp_source_reg_3 = final_instruction[31:27];
 
   // ===========================================================================
+  // Backward-Branch-Taken Static Heuristic
+  // ===========================================================================
+  // Detect backward conditional branches that the BTB missed. Predict them as
+  // taken and redirect IF to the computed target. This saves ~4-5 cycles vs
+  // waiting for EX-stage misprediction recovery on cold-start BTB misses.
+  //
+  // After decompression, ALL conditional branches (including C.BEQZ/C.BNEZ)
+  // have B-type format with opcode 7'b1100011 and sign bit at bit[31].
+
+  // B-type immediate extraction from the decompressed instruction
+  logic [XLEN-1:0] pd_imm_b;
+  assign pd_imm_b = {
+    {19{final_instruction[31]}},  // sign-extend bits [31:13]
+    final_instruction[31],  // imm[12]
+    final_instruction[7],  // imm[11]
+    final_instruction[30:25],  // imm[10:5]
+    final_instruction[11:8],  // imm[4:1]
+    1'b0  // imm[0] always zero
+  };
+
+  logic [XLEN-1:0] pd_backward_target;
+  assign pd_backward_target = i_from_if_to_pd.program_counter + pd_imm_b;
+
+  logic pd_backward_branch;
+  assign pd_backward_branch =
+      (final_instruction[6:0] == riscv_pkg::OPC_BRANCH) &&  // conditional branch
+      final_instruction[31] &&  // backward (negative offset)
+      !i_from_if_to_pd.btb_predicted_taken &&  // BTB didn't predict
+      !i_from_if_to_pd.ras_predicted &&  // RAS didn't predict
+      !i_from_if_to_pd.sel_nop &&  // not a bubble
+      !pd_redirect_r;  // not already redirecting
+  // pd_redirect_r suppression is critical: when the registered redirect fires,
+  // the wrong-path instruction in PD could look like a backward branch. Without
+  // this guard, a spurious second redirect fires and its holdoff cycle squashes
+  // the real target instruction arriving from BRAM.
+
+  // Redirect output to IF — REGISTERED for timing.
+  // Registering eliminates the cross-module combinational path (32-bit adder +
+  // routing from PD to IF's PC mux) that caused a ~1ns timing regression.
+  // Cost: 2 bubble cycles instead of 1 per redirect. The extra bubble is the
+  // wrong-path instruction that enters PD before the registered redirect fires;
+  // it is squashed by forcing NOP into the PD→ID register (see pd_redirect_r
+  // usage below).
+  logic pd_redirect_r;
+  logic [XLEN-1:0] pd_redirect_target_r;
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_r <= 1'b0;
+    else if (!i_pipeline_ctrl.stall) pd_redirect_r <= pd_backward_branch;
+    // Hold during stall (implicit)
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.stall) pd_redirect_target_r <= pd_backward_target;
+  end
+
+  assign o_pd_redirect = pd_redirect_r;
+  assign o_pd_redirect_target = pd_redirect_target_r;
+
+  // ===========================================================================
   // Pipeline Register: PD → ID
   // ===========================================================================
   // Register all outputs to ID stage with stall and flush support.
@@ -130,26 +193,39 @@ module pd_stage #(
       o_from_pd_to_id.ras_checkpoint_tos         <= '0;
       o_from_pd_to_id.ras_checkpoint_valid_count <= '0;
     end else if (~i_pipeline_ctrl.stall) begin
-      // When flushing, insert NOP; otherwise pass values from decompression
-      o_from_pd_to_id.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : final_instruction;
+      // When flushing or when the registered PD redirect fires (squashing the
+      // wrong-path instruction that entered PD one cycle after detection),
+      // insert NOP; otherwise pass values from decompression.
+      //
+      // pd_redirect_r is a registered signal (no timing concern in this mux).
+      o_from_pd_to_id.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                      riscv_pkg::NOP : final_instruction;
       o_from_pd_to_id.program_counter <= i_from_if_to_pd.program_counter;
       o_from_pd_to_id.link_address <= i_from_if_to_pd.link_address;
       // Early source registers for forwarding/hazard timing
-      o_from_pd_to_id.source_reg_1_early <= i_pipeline_ctrl.flush ? 5'd0 : source_reg_1;
-      o_from_pd_to_id.source_reg_2_early <= i_pipeline_ctrl.flush ? 5'd0 : source_reg_2;
-      o_from_pd_to_id.fp_source_reg_3_early <= i_pipeline_ctrl.flush ? 5'd0 : fp_source_reg_3;
+      o_from_pd_to_id.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                             5'd0 : source_reg_1;
+      o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                             5'd0 : source_reg_2;
+      o_from_pd_to_id.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                                5'd0 : fp_source_reg_3;
       // Illegal compressed indication is only valid when compressed decode path is selected.
-      o_from_pd_to_id.illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+      o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                              (!i_from_if_to_pd.sel_nop &&
                                               i_from_if_to_pd.sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
-      // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_pd_to_id.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_if_to_pd.btb_hit;
-      o_from_pd_to_id.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              i_from_if_to_pd.btb_predicted_taken;
-      o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
-      // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_pd_to_id.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_if_to_pd.ras_predicted;
+      // Branch prediction metadata - clear on flush/pd_redirect
+      // Override with backward-branch heuristic when BTB missed a backward branch
+      o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                  (pd_backward_branch ? 1'b1 : i_from_if_to_pd.btb_hit);
+      o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                              (pd_backward_branch ? 1'b1 :
+                                               i_from_if_to_pd.btb_predicted_taken);
+      o_from_pd_to_id.btb_predicted_target <= pd_backward_branch ? pd_backward_target :
+                                               i_from_if_to_pd.btb_predicted_target;
+      // RAS prediction metadata - clear on flush/pd_redirect
+      o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                        i_from_if_to_pd.ras_predicted;
       o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;

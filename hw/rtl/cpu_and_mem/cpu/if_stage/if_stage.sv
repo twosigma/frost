@@ -92,6 +92,9 @@ module if_stage #(
     input logic [XLEN-1:0] i_fence_i_target,
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
+    // PD backward-branch heuristic redirect (from pd_stage)
+    input logic i_pd_redirect,
+    input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd
 );
@@ -196,6 +199,12 @@ module if_stage #(
   // C-extension state updates are already protected by flush checks in c_ext_state.
   logic [31:0] instr_for_aligner;
   assign instr_for_aligner = i_instr;
+  // NOTE: i_pd_redirect is intentionally NOT included here to avoid a
+  // timing-critical cross-module path (pd_redirect → disable → prediction_used
+  // → pc mux = 14+ LUT levels).  Instead, if BTB fires on the wrong-path
+  // instruction during a PD redirect cycle, the side-effects are cleaned up
+  // with registered signals: redirect_kill_pending_q kills pending predictions,
+  // and pd_redirect_q overrides prediction_holdoff in sel_nop.
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
       i_pipeline_ctrl.flush || i_frontend_state_flush;
@@ -409,6 +418,9 @@ module if_stage #(
       .i_branch_taken (i_from_ex_comb.branch_taken),
       .i_branch_target(i_from_ex_comb.branch_target_address),
 
+      .i_pd_redirect(i_pd_redirect),
+      .i_pd_redirect_target(i_pd_redirect_target),
+
       .i_trap_taken (i_trap_ctrl.trap_taken),
       .i_mret_taken (i_trap_ctrl.mret_taken),
       .i_trap_target(i_trap_ctrl.trap_target),
@@ -579,6 +591,17 @@ module if_stage #(
   // RAS prediction stale cycle: only when prediction came from RAS (not BTB-only).
   assign ras_prediction_holdoff = prediction_holdoff && !btb_only_prediction_holdoff;
 
+  // Registered PD redirect: used to override the !prediction_holdoff exemption
+  // in sel_nop below.  When PD redirect fires AND BTB simultaneously predicts
+  // the wrong-path instruction, prediction_holdoff would otherwise prevent
+  // sel_nop from squashing the stale BRAM data in the holdoff cycle.
+  // This registered signal is NOT on the critical path (FF output → 1 OR gate).
+  logic pd_redirect_q;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
+    else pd_redirect_q <= i_pd_redirect;
+  end
+
   // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
   // moved to the new PC but the returned word still belongs to the old path.
   // Word-aligned redirects are not exempt: they can still pair a correct new
@@ -588,11 +611,15 @@ module if_stage #(
   // both to the generic control-flow holdoff and to pending halfword-prediction
   // holdoff in pc_controller: the cycle after a BTB redirect is when the
   // predicted branch instruction itself arrives from BRAM.
+  //
+  // pd_redirect_q overrides the !prediction_holdoff exemption: when a PD
+  // redirect caused the holdoff, the arriving BRAM data is stale even if a
+  // spurious wrong-path BTB hit set prediction_holdoff.
   assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
-                   (control_flow_holdoff && !prediction_holdoff);
+                   (control_flow_holdoff && (!prediction_holdoff || pd_redirect_q));
 
   // ===========================================================================
   // Stall State Registers

@@ -22,7 +22,7 @@
  *
  * Design:
  * =======
- *   - 32 entries indexed by PC[6:2] (5 bits) by default
+ *   - 128 entries indexed by PC[8:2] (7 bits) by default
  *   - Each entry: valid (1) + tag (26 bits) + target (32) + counter (2)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - 2-bit saturating counter (bimodal predictor):

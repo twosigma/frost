@@ -84,6 +84,10 @@ module pc_controller #(
     input logic            i_branch_taken,
     input logic [XLEN-1:0] i_branch_target,
 
+    // PD backward-branch heuristic redirect (from pd_stage)
+    input logic            i_pd_redirect,
+    input logic [XLEN-1:0] i_pd_redirect_target,
+
     // Trap control
     input logic            i_trap_taken,
     input logic            i_mret_taken,
@@ -148,6 +152,8 @@ module pc_controller #(
       .i_trap_taken,
       .i_mret_taken,
       .i_branch_taken,
+      .i_pd_redirect,
+      .i_pd_redirect_target,
       .i_prediction_used,
       .i_branch_target,
       .i_trap_target,
@@ -228,8 +234,8 @@ module pc_controller #(
   // them as non-instructions here so the mid-32bit correction logic cannot fire
   // on a real halfword PC like 0x316e using stale 32-bit history from 0x317c.
   always_ff @(posedge i_clk) begin
-    if (i_reset || o_any_holdoff_safe || i_flush || i_prediction_used || i_sel_prediction_r ||
-        i_sel_nop || pending_prediction_target_holdoff_q)
+    if (i_reset || o_any_holdoff_safe || i_flush || i_prediction_used || i_pd_redirect ||
+        i_sel_prediction_r || i_sel_nop || pending_prediction_target_holdoff_q)
       prev_was_32bit <= 1'b0;
     else if (!i_stall)
       prev_was_32bit <= !i_is_compressed && !i_spanning_in_progress && !i_spanning_wait_for_fetch;
@@ -266,8 +272,15 @@ module pc_controller #(
   // is about to cross from the lower halfword to the pending branch PC, land on
   // the branch PC first so IF still emits the predicted control-flow
   // instruction itself before advancing pc_reg to the target.
+  // Suppress sel_prediction_r when any redirect killed the pending state last
+  // cycle (redirect_kill_pending_q).  This prevents a wrong-path BTB prediction
+  // that fired simultaneously with a PD redirect from advancing pc_reg to the
+  // wrong target.  For branch_taken/trap/mret, sel_prediction_r is already
+  // harmless (higher-priority mux entries override it), but suppressing it is
+  // cleaner and strictly safer.
   logic sel_prediction_r;
-  assign sel_prediction_r = !i_reset && i_sel_prediction_r && !pending_prediction_valid;
+  assign sel_prediction_r = !i_reset && i_sel_prediction_r &&
+                            !pending_prediction_valid && !redirect_kill_pending_q;
 
   logic            pending_prediction_valid;
   logic [XLEN-1:0] pending_prediction_pc;
@@ -315,7 +328,7 @@ module pc_controller #(
   // redirect_kill_pending_q handle delayed crossing detection gracefully.
   logic [XLEN-2:0] seq_next_pc_reg_hw_q;
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_branch_taken || i_trap_taken || i_mret_taken)
+    if (i_reset || i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
       seq_next_pc_reg_hw_q <= '0;
     else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
@@ -419,7 +432,7 @@ module pc_controller #(
       (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
       pending_prediction_target_holdoff_q <= 1'b0;
     end else if (!i_stall) begin
       // Keep exactly one target bubble after the pending handoff. With fetch
@@ -435,7 +448,7 @@ module pc_controller #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
       pending_prediction_target_holdoff_prev_q <= 1'b0;
     end else if (!i_stall) begin
       pending_prediction_target_holdoff_prev_q <= pending_prediction_target_holdoff_q;
@@ -444,11 +457,13 @@ module pc_controller #(
 
   always_ff @(posedge i_clk) begin
     if (i_reset) redirect_kill_pending_q <= 1'b0;
-    else redirect_kill_pending_q <= i_flush || i_branch_taken || i_trap_taken || i_mret_taken;
+    else
+      redirect_kill_pending_q <= i_flush || i_branch_taken || i_pd_redirect ||
+                                     i_trap_taken || i_mret_taken;
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
       pending_prediction_pc_ready_q <= 1'b0;
     end else if (!i_stall) begin
       if (redirect_kill_pending_q || pending_prediction_target_handoff ||
@@ -470,7 +485,7 @@ module pc_controller #(
     pending_prediction_allow_cross_d = pending_prediction_allow_cross;
     pending_prediction_from_buffer_d = pending_prediction_from_buffer;
 
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
       pending_prediction_valid_d = 1'b0;
       pending_prediction_allow_cross_d = 1'b0;
       pending_prediction_from_buffer_d = 1'b0;
@@ -521,6 +536,7 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc = i_fence_i_target;
     else if (i_stall) next_pc = o_pc;
     else if (i_branch_taken) next_pc = i_branch_target;
+    else if (i_pd_redirect) next_pc = i_pd_redirect_target;
     else if (i_prediction_used) next_pc = i_predicted_target;
     // During the target-holdoff bubble, keep fetch at most one word ahead of
     // the still-held target PC. Letting it run farther ahead makes pc_reg pick
@@ -572,6 +588,7 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
     else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
+    else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next

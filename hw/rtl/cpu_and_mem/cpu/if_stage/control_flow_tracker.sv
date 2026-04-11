@@ -53,7 +53,9 @@ module control_flow_tracker #(
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic            i_branch_taken,
-    input logic            i_prediction_used,  // BTB prediction used this cycle
+    input logic            i_pd_redirect,         // PD backward-branch heuristic redirect
+    input logic [XLEN-1:0] i_pd_redirect_target,
+    input logic            i_prediction_used,     // BTB prediction used this cycle
     input logic [XLEN-1:0] i_branch_target,
     input logic [XLEN-1:0] i_trap_target,
     input logic [XLEN-1:0] i_predicted_target,
@@ -81,7 +83,7 @@ module control_flow_tracker #(
   // IF holdoff machinery suppresses stale in-flight fetch data for one cycle
   // before the post-fence sequential stream resumes.
   assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
-                                 i_prediction_used || i_fence_i_flush;
+                                 i_pd_redirect || i_prediction_used || i_fence_i_flush;
 
   // ===========================================================================
   // Holdoff Registers
@@ -124,6 +126,7 @@ module control_flow_tracker #(
     (i_branch_taken && i_branch_target[1]) ||
     (i_trap_taken && i_trap_target[1]) ||
     (i_mret_taken && i_trap_target[1]) ||
+    (i_pd_redirect && i_pd_redirect_target[1]) ||
     (i_prediction_used && i_predicted_target[1]);
 
   always_ff @(posedge i_clk) begin
