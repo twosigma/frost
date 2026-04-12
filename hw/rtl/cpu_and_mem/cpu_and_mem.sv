@@ -119,6 +119,11 @@ module cpu_and_mem #(
   logic [31:0] data_memory_read_data;  // From RAM only
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
   logic [ 3:0] data_memory_byte_write_enable;
+  // MMIO-pre-masked copy routed straight to the BRAM WEA pins. Generated in
+  // cpu_ooo using the SQ/AMO-side registered is_mmio flags so the BRAM
+  // write-enable no longer depends on the late combinational
+  // data_memory_address-range test.
+  logic [ 3:0] data_memory_bram_byte_write_enable;
   logic        data_memory_read_enable;
   logic        mmio_read_pulse;
   logic        fifo0_rd_pulse_q;
@@ -168,6 +173,7 @@ module cpu_and_mem #(
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
+      .o_data_mem_bram_byte_wr_en(data_memory_bram_byte_write_enable),
       .o_data_mem_read_enable(data_memory_read_enable),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
@@ -183,10 +189,10 @@ module cpu_and_mem #(
       .i_disable_branch_prediction(1'b0)
   );
 
-  logic data_memory_write_is_mmio;
-  assign data_memory_write_is_mmio = (|data_memory_byte_write_enable)
-                                  && (data_memory_address >= MmioAddr)
-                                  && (data_memory_address < (MmioAddr + MmioSizeBytes));
+  // MMIO mask now lives in cpu_ooo at the SQ/AMO source; the BRAM consumes
+  // data_memory_bram_byte_write_enable directly. The old address-range check
+  // pulled the full data_memory_address mux (and therefore the LQ issue
+  // cone) onto the BRAM WEA pin (-1.045 ns WNS path).
 
   // Dual memory architecture with separate instruction and data memories
   // Both memories receive instruction writes (fan out) on Port A (div4 clock)
@@ -240,7 +246,7 @@ module cpu_and_mem #(
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(data_memory_address),
       .i_port_b_write_data(data_memory_write_data),
-      .i_port_b_byte_write_enable(data_memory_byte_write_enable & {4{~data_memory_write_is_mmio}}),
+      .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
       .o_port_b_read_data(data_memory_read_data)
   );
   assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback

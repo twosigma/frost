@@ -33,6 +33,7 @@ module cpu_tb
     output logic [31:0] o_data_mem_addr,
     output logic [31:0] o_data_mem_wr_data,
     output logic [3:0] o_data_mem_per_byte_wr_en,
+    output logic [3:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
 
     // Control signals
@@ -105,10 +106,11 @@ module cpu_tb
       .i_port_a_write_data('0),
       .i_port_a_byte_write_enable('0),
       .o_port_a_read_data(  /*not connected*/),
-      // Port B: CPU data memory access
+      // Port B: CPU data memory access. Use the BRAM-specific byte-write-enable
+      // so the testbench mirrors the production MMIO-pre-mask behavior.
       .i_port_b_byte_address(o_data_mem_addr),
       .i_port_b_write_data(o_data_mem_wr_data),
-      .i_port_b_byte_write_enable(o_data_mem_per_byte_wr_en),
+      .i_port_b_byte_write_enable(o_data_mem_bram_byte_wr_en),
       .o_port_b_read_data(i_data_mem_rd_data)
   );
 

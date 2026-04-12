@@ -51,6 +51,13 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_data_mem_addr,
     output logic [XLEN-1:0] o_data_mem_wr_data,
     output logic [3:0] o_data_mem_per_byte_wr_en,
+    // BRAM-only byte-write-enable. Identical to o_data_mem_per_byte_wr_en
+    // except MMIO-targeted stores are masked out at the SQ/AMO source using
+    // their registered is_mmio flag. Breaks the issued_idx → WEA timing path
+    // by keeping the address-range MMIO check out of the BRAM write-enable
+    // combinational cone. Peripherals still consume the unmasked signal so
+    // MMIO writes remain visible to UART/FIFO/timer logic.
+    output logic [3:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
     output logic o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
@@ -1054,6 +1061,7 @@ module cpu_ooo #(
   logic sq_mem_write_en;
   logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
   logic [3:0] sq_mem_write_byte_en;
+  logic sq_mem_write_is_mmio;
   logic sq_mem_write_done, sq_mem_write_done_comb;
 
   logic lq_mem_read_en;
@@ -1353,6 +1361,7 @@ module cpu_ooo #(
       .o_sq_mem_write_addr(sq_mem_write_addr),
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
+      .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
       .i_sq_mem_write_done(sq_mem_write_done),
 
       // Load queue memory interface
@@ -2141,6 +2150,16 @@ module cpu_ooo #(
   // Priority: SQ writes > queued LQ reads > AMO writes
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
+  // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
+  // range comparison. AMOs on MMIO are undefined by spec but we preserve the
+  // pre-existing "zero the BRAM write-enable" safety so a stray AMO cannot
+  // corrupt an aliased BRAM word. Kept local so the dependency on
+  // amo_mem_write_addr never reaches the SQ-only path.
+  logic amo_mem_write_is_mmio;
+  assign amo_mem_write_is_mmio =
+      (amo_mem_write_addr >= MMIO_ADDR[XLEN-1:0]) &&
+      (amo_mem_write_addr <  (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
+
   always_comb begin
     // Load queue memory read. Bypass the one-entry request register when the
     // port is already free; fall back to the queued copy only when a store
@@ -2154,8 +2173,19 @@ module cpu_ooo #(
 
     o_data_mem_wr_data = sq_mem_write_en ? sq_mem_write_data :
                          amo_mem_write_en ? amo_mem_write_data : '0;
+    // Unmasked byte-write-enable for peripherals (UART/FIFO/timer). MMIO
+    // writes must remain visible here so the registered shadow in cpu_and_mem
+    // can dispatch them on the next cycle.
     o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
                                 amo_mem_write_en ? 4'b1111 : 4'b0000;
+    // BRAM-specific byte-write-enable: MMIO-targeted stores are pre-masked at
+    // the SQ/AMO source using registered is_mmio flags. Keeping this check
+    // out of cpu_and_mem (where the old address-range test pulled in the full
+    // data_memory_address mux) breaks the -1.045 ns issued_idx_reg →
+    // data_memory/WEA path reported post-synthesis.
+    o_data_mem_bram_byte_wr_en =
+        (sq_mem_write_en && !sq_mem_write_is_mmio) ? sq_mem_write_byte_en :
+        (amo_mem_write_en && !amo_mem_write_is_mmio) ? 4'b1111 : 4'b0000;
 
     sq_mem_write_done_comb = sq_mem_write_en;
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
@@ -2326,8 +2356,19 @@ module cpu_ooo #(
       .o_stall_for_wfi()  // WFI stall handled at ROB head
   );
 
-  assign flush_for_trap = trap_taken;
-  assign flush_for_mret = mret_taken;
+  // Use the registered trap/mret pulses when driving the front-end flush so
+  // flush_pipeline no longer rides on the combinational
+  //   rob_valid[head_idx] → commit_en → trap_unit → trap_taken
+  // cone. The ROB-side flush_all already consumes trap_taken_reg /
+  // mret_taken_reg (see the flush_en block), so the front-end flush now
+  // aligns with the backend's one-cycle-late full-flush pulse rather than
+  // leading it. Trap handling pays an extra cycle of frontend squash, which
+  // is negligible for non-exception workloads (CoreMark, ISA tests, normal
+  // programs) and stays behind the already-registered trap_target_reg /
+  // rob_trap_taken_ack handshake. Breaks the -0.982 ns rob_valid_reg[27] →
+  // pd_stage btb_predicted_target critical path.
+  assign flush_for_trap = trap_taken_reg;
+  assign flush_for_mret = mret_taken_reg;
 
   // Acknowledge trap/mret to ROB using REGISTERED versions to break the
   // combinational feedback: rob_valid → o_mret_start → trap_unit →

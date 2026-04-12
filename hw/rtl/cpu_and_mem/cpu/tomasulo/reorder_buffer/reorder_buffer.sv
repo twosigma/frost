@@ -247,7 +247,12 @@ module reorder_buffer (
 
   // Reorder Buffer storage — 1-bit packed vectors remain in FFs for
   // per-entry flush/reset.  Multi-bit fields are in distributed RAM below.
-  logic [ReorderBufferDepth-1:0] rob_valid;
+  // rob_valid broadcasts to the RAT rename muxes, per-RS CDB wake, and
+  // cpu_ooo flush/commit control. Post-synth shows bit[27] at ~80 fanout
+  // driving an 18-level cone into the pd_stage BTB register. Force Vivado
+  // to replicate each bit before the net exceeds 32 loads so the commit/
+  // flush broadcast no longer rides on a single per-bit driver.
+  (* max_fanout = 32 *) logic [ReorderBufferDepth-1:0] rob_valid;
   logic [ReorderBufferDepth-1:0] rob_done;
   logic [ReorderBufferDepth-1:0] rob_exception;
   logic [ReorderBufferDepth-1:0] rob_branch_taken;

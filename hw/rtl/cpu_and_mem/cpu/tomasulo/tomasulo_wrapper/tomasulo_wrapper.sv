@@ -297,6 +297,7 @@ module tomasulo_wrapper (
     output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
     output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_data,
     output logic [                3:0] o_sq_mem_write_byte_en,
+    output logic                       o_sq_mem_write_is_mmio,
     input  logic                       i_sq_mem_write_done,
 
     // =========================================================================
@@ -525,7 +526,10 @@ module tomasulo_wrapper (
   // Grants stay combinational (back to adapters); only the broadcast fanout
   // to RS snoop + ROB CDB-write is registered.
   // Split valid from data to prevent Vivado from dragging reset onto payload.
-  logic cdb_bus_valid;
+  // max_fanout forces replication across the RS snoop / ROB-write consumers —
+  // the high-fanout report (609 loads) showed this net being one of the top
+  // drivers into the flush-recovery cone that failed timing at -0.947 ns.
+  (* max_fanout = 32 *) logic cdb_bus_valid;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_valid <= 1'b0;
@@ -1716,6 +1720,7 @@ module tomasulo_wrapper (
       .o_mem_write_addr   (o_sq_mem_write_addr),
       .o_mem_write_data   (o_sq_mem_write_data),
       .o_mem_write_byte_en(o_sq_mem_write_byte_en),
+      .o_mem_write_is_mmio(o_sq_mem_write_is_mmio),
       .i_mem_write_done   (i_sq_mem_write_done),
 
       // L0 cache invalidation (to LQ)

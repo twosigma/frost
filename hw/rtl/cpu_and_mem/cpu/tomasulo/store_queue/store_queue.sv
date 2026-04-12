@@ -107,6 +107,11 @@ module store_queue #(
     output logic [riscv_pkg::XLEN-1:0] o_mem_write_addr,
     output logic [riscv_pkg::XLEN-1:0] o_mem_write_data,
     output logic [                3:0] o_mem_write_byte_en,
+    // Registered MMIO flag for the current head entry. Consumers at the
+    // top level use this to gate the BRAM byte-write-enable at the SQ source
+    // rather than recomputing an address-range check combinationally on the
+    // muxed data memory address (which drags the LQ issue cone onto WEA).
+    output logic                       o_mem_write_is_mmio,
     input  logic                       i_mem_write_done,
 
     // =========================================================================
@@ -532,6 +537,7 @@ module store_queue #(
     o_mem_write_addr    = '0;
     o_mem_write_data    = '0;
     o_mem_write_byte_en = '0;
+    o_mem_write_is_mmio = 1'b0;
 
     if (head_ready && !write_outstanding) begin
       o_mem_write_en = 1'b1;
@@ -547,6 +553,7 @@ module store_queue #(
                                         sq_fp64_phase[head_idx]);
       o_mem_write_byte_en =
           gen_byte_en(o_mem_write_addr[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
+      o_mem_write_is_mmio = sq_is_mmio[head_idx];
     end
   end
 
