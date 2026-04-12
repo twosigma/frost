@@ -328,8 +328,14 @@ module load_queue #(
   logic [XLEN-1:0] mem_issue_addr;
   riscv_pkg::mem_size_e mem_issue_size;
 
-  // Memory issued entry tracking
-  logic mem_outstanding;  // One outstanding read at a time
+  // Memory issued entry tracking. With BRAM 1-cycle latency the response
+  // arrives exactly one cycle after o_mem_read_en is asserted, so a single
+  // register pipeline (mem_outstanding + issued_idx) is sufficient even when
+  // back-to-back loads are issued every cycle. mem_outstanding is high in the
+  // cycle a response is expected; issued_idx names the entry that owns it.
+  // The launch path overrides the response-side clear so a same-cycle
+  // launch+response keeps mem_outstanding asserted into the next cycle.
+  logic mem_outstanding;
   logic [IdxWidth-1:0] issued_idx;  // Which entry is awaiting mem response
   logic drop_mem_response_pending;  // Drop the next 1-cycle-latency response after flush
 
@@ -540,6 +546,19 @@ module load_queue #(
     end
   end
 
+  // Mask of entries already claimed by the sq_check / mem_issue staging
+  // registers. With back-to-back issue enabled, sq_check_capture can fire
+  // in the same cycle that the previous candidate launches, so the priority
+  // encoder must avoid re-picking the entry already held in sq_check_idx
+  // (or the staged copy in mem_issue_idx) before lq_issued becomes visible.
+  logic [DEPTH-1:0] in_flight_mask;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      in_flight_mask[i] = (sq_check_pending  && (sq_check_idx  == IdxWidth'(i))) ||
+                          (mem_issue_pending && (mem_issue_idx == IdxWidth'(i)));
+    end
+  end
+
   // Phase B: per-entry memory issue eligibility (parallel).
   // Includes MMIO check (MMIO loads only eligible at ROB head) so
   // sq_check_capture/replace no longer need an indexed MMIO lookup.
@@ -551,6 +570,7 @@ module load_queue #(
           lq_addr_valid[scan_idx[i]] &&
           !lq_issued[scan_idx[i]] &&
           !lq_data_valid[scan_idx[i]] &&
+          !in_flight_mask[scan_idx[i]] &&
           (!lq_is_mmio[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
           (!lq_is_lr[scan_idx[i]]   || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
           (!lq_is_amo[scan_idx[i]]  ||
@@ -601,6 +621,7 @@ module load_queue #(
           lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
+          !in_flight_mask[i] &&
           !lq_is_mmio[i] &&
           !lq_is_lr[i] &&
           (!lq_is_amo[i] || i_sq_committed_empty)) begin
@@ -648,11 +669,22 @@ module load_queue #(
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
 
+  // sq_check_will_clear: the currently-pending sq_check entry will retire at
+  // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
+  // true the slot is free for a new candidate the same cycle, enabling a
+  // back-to-back capture stream that pairs with the relaxed launch_mem_issue
+  // gate so the LQ can issue 1 load/cycle in steady state. The launch_mem_issue
+  // term mirrors the corresponding clearing branch in the always_ff below.
+  logic sq_check_will_clear;
+  assign sq_check_will_clear = sq_check_pending &&
+      (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward || launch_mem_issue);
+
   // TIMING: MMIO check folded into mem_eligible_mask (Phase B scan) so these
   // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
   // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
-  assign sq_check_capture = !sq_check_pending && !mem_issue_pending && issue_mem_found &&
+  assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
+      !mem_issue_pending && issue_mem_found &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
   assign sq_check_replace = sq_check_pending && !mem_issue_pending && issue_mem_found &&
@@ -815,7 +847,16 @@ module load_queue #(
   assign stage_mem_issue = !i_flush_en && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
 
-  assign launch_mem_issue = !i_flush_en && !mem_outstanding &&
+  // PERF: Removed the !mem_outstanding gate so the LQ can launch a new load
+  // every cycle (BRAM has 1-cycle latency, so the response from the previous
+  // launch arrives the same cycle the new launch is driven). The bus_busy
+  // gate replaces it: it ensures the launch reaches the data-memory port
+  // immediately rather than being queued in cpu_ooo's lq_mem_request_valid
+  // hold register, which is single-deep and would conflict with back-to-back
+  // launches. Loses the rare overlap of one queued launch with a SQ write,
+  // but that path was 4.4% of cycles in the baseline profile vs. doubling
+  // the steady-state load issue rate.
+  assign launch_mem_issue = !i_flush_en && !i_mem_bus_busy &&
       (stage_mem_issue || mem_issue_pending);
   assign launch_mem_issue_idx = mem_issue_pending ? mem_issue_idx : sq_check_idx;
   assign launch_mem_issue_addr = mem_issue_pending ? mem_issue_addr : stage_mem_issue_addr;
@@ -864,59 +905,68 @@ module load_queue #(
     lq_data_hi_wd   = '0;
 
     // ---------------------------------------------------------------
-    // Port 0: primary (cache hit / forward / mem response)
-    //         These sources are mutually exclusive. Cache-hit/forward can
-    //         complete while an older memory read is still outstanding;
-    //         mem response uses the outstanding slot itself.
+    // Port 0: dedicated to memory response.
+    //         With back-to-back launches enabled, mem response can fire
+    //         every cycle. It owns its own port so a same-cycle cache hit
+    //         (or SQ forward) on a different entry cannot clobber the
+    //         response data via if-else priority.
     // ---------------------------------------------------------------
-    if (i_rst_n && !i_flush_all) begin
-      if (cache_hit_fast_path) begin
-        lq_data_lo_we[0]   = 1'b1;
-        lq_data_hi_we[0]   = 1'b1;
-        lq_data_wr_addr[0] = sq_check_idx;
-        lq_data_lo_wd[0]   = sq_check_is_fp_q ? cache_lookup_data : lu_cache_out;
-        lq_data_hi_wd[0]   = '0;
-      end else if (sq_do_forward) begin
-        lq_data_lo_we[0]   = 1'b1;
-        lq_data_hi_we[0]   = 1'b1;
-        lq_data_wr_addr[0] = sq_check_idx;
-        lq_data_lo_wd[0]   = i_sq_forward.data[XLEN-1:0];
-        lq_data_hi_wd[0]   = i_sq_forward.data[FLEN-1:XLEN];
-      end else if (accept_mem_response) begin
-        lq_data_wr_addr[0] = issued_idx;
-        if (lq_is_amo[issued_idx]) begin
-          // AMO read: don't write data yet (port 1 handles after AMO write)
-        end else if (lq_is_fp[issued_idx]
-                     && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
-                     && !lq_fp64_phase[issued_idx]) begin
-          // FLD phase 0: write lo only
-          lq_data_lo_we[0] = 1'b1;
-          lq_data_lo_wd[0] = lu_data_out;
-        end else if (lq_is_fp[issued_idx]
-                     && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
-                     && lq_fp64_phase[issued_idx]) begin
-          // FLD phase 1: write hi only
-          lq_data_hi_we[0] = 1'b1;
-          lq_data_hi_wd[0] = i_mem_read_data;
-        end else begin
-          // LR / Non-FLD: write lo, clear hi
-          lq_data_lo_we[0] = 1'b1;
-          lq_data_hi_we[0] = 1'b1;
-          lq_data_lo_wd[0] = lu_data_out;
-          lq_data_hi_wd[0] = '0;
-        end
+    if (i_rst_n && !i_flush_all && accept_mem_response) begin
+      lq_data_wr_addr[0] = issued_idx;
+      if (lq_is_amo[issued_idx]) begin
+        // AMO read: don't write data yet (port 1 handles after AMO write)
+      end else if (lq_is_fp[issued_idx]
+                   && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
+                   && !lq_fp64_phase[issued_idx]) begin
+        // FLD phase 0: write lo only
+        lq_data_lo_we[0] = 1'b1;
+        lq_data_lo_wd[0] = lu_data_out;
+      end else if (lq_is_fp[issued_idx]
+                   && riscv_pkg::mem_size_e'(lq_size_issued_rd) == riscv_pkg::MEM_SIZE_DOUBLE
+                   && lq_fp64_phase[issued_idx]) begin
+        // FLD phase 1: write hi only
+        lq_data_hi_we[0] = 1'b1;
+        lq_data_hi_wd[0] = i_mem_read_data;
+      end else begin
+        // LR / Non-FLD: write lo, clear hi
+        lq_data_lo_we[0] = 1'b1;
+        lq_data_hi_we[0] = 1'b1;
+        lq_data_lo_wd[0] = lu_data_out;
+        lq_data_hi_wd[0] = '0;
       end
     end
 
     // ---------------------------------------------------------------
-    // Port 1: AMO write completion (can overlap with port 0)
+    // Port 1: cache hit / SQ forward / AMO write completion.
+    //         These three sources are mutually exclusive in time:
+    //           - cache_hit and sq_forward each require sq_check_pending
+    //             on a non-AMO entry. While amo_state == AMO_WRITE_ACTIVE
+    //             the blocked_by_amo prefix-OR keeps the LQ from staging
+    //             any other entry, so the AMO write completion never
+    //             collides with cache_hit or sq_forward.
+    //           - cache_hit requires sq_no_older_store while sq_forward
+    //             requires the opposite, so they cannot fire together.
     // ---------------------------------------------------------------
-    if (i_rst_n && !i_flush_all && amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-      lq_data_lo_we[1]   = 1'b1;
-      lq_data_hi_we[1]   = 1'b1;
-      lq_data_wr_addr[1] = amo_entry_idx;
-      lq_data_lo_wd[1]   = amo_old_value;
-      lq_data_hi_wd[1]   = '0;
+    if (i_rst_n && !i_flush_all) begin
+      if (cache_hit_fast_path) begin
+        lq_data_lo_we[1]   = 1'b1;
+        lq_data_hi_we[1]   = 1'b1;
+        lq_data_wr_addr[1] = sq_check_idx;
+        lq_data_lo_wd[1]   = sq_check_is_fp_q ? cache_lookup_data : lu_cache_out;
+        lq_data_hi_wd[1]   = '0;
+      end else if (sq_do_forward) begin
+        lq_data_lo_we[1]   = 1'b1;
+        lq_data_hi_we[1]   = 1'b1;
+        lq_data_wr_addr[1] = sq_check_idx;
+        lq_data_lo_wd[1]   = i_sq_forward.data[XLEN-1:0];
+        lq_data_hi_wd[1]   = i_sq_forward.data[FLEN-1:XLEN];
+      end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
+        lq_data_lo_we[1]   = 1'b1;
+        lq_data_hi_we[1]   = 1'b1;
+        lq_data_wr_addr[1] = amo_entry_idx;
+        lq_data_lo_wd[1]   = amo_old_value;
+        lq_data_hi_wd[1]   = '0;
+      end
     end
   end
 
@@ -1201,7 +1251,10 @@ module load_queue #(
         sq_check_phase2           <= i_sq_empty;
       end else if (sq_check_pending &&
                    (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-                    stage_mem_issue)) begin
+                    launch_mem_issue)) begin
+        // launch_mem_issue (was stage_mem_issue) ensures the slot is held
+        // through bus_busy stalls so the staged candidate is not lost when
+        // stage_mem_issue fires but the launch is gated this cycle.
         sq_check_pending          <= 1'b0;
         sq_check_no_older_store_q <= 1'b0;
         sq_check_phase2           <= 1'b0;
@@ -1231,19 +1284,13 @@ module load_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Memory Issue: mark entry as issued, track for response routing
-      // -----------------------------------------------------------------
-      if (o_mem_read_en) begin
-        mem_issue_pending               <= 1'b0;
-        lq_issued[launch_mem_issue_idx] <= 1'b1;
-        mem_outstanding                 <= 1'b1;
-      end
-
-      // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
       // -----------------------------------------------------------------
       // Stale response drain: partial flushes can kill an outstanding load one
       // cycle before the data returns. Drop that response explicitly.
+      // ORDERING: this block runs BEFORE the o_mem_read_en block so a same-
+      // cycle launch+response (back-to-back issue) lets the launch override
+      // mem_outstanding<=1 instead of being clobbered to 0 by the response.
       if (drop_mem_response_now) begin
         mem_outstanding <= 1'b0;
         drop_mem_response_pending <= 1'b0;
@@ -1277,6 +1324,20 @@ module load_queue #(
           lq_data_valid[issued_idx] <= 1'b1;
           mem_outstanding           <= 1'b0;
         end
+      end
+
+      // -----------------------------------------------------------------
+      // Memory Issue: mark entry as issued, track for response routing
+      // -----------------------------------------------------------------
+      // Placed AFTER the response block so a same-cycle launch+response
+      // (back-to-back issue) sets mem_outstanding=1 (override) and updates
+      // issued_idx to point at the freshly-launched entry for next cycle's
+      // response. Different lq_issued indices on launch vs. response keep
+      // their bit-level writes independent.
+      if (o_mem_read_en) begin
+        mem_issue_pending               <= 1'b0;
+        lq_issued[launch_mem_issue_idx] <= 1'b1;
+        mem_outstanding                 <= 1'b1;
       end
 
       // -----------------------------------------------------------------
@@ -1523,14 +1584,14 @@ module load_queue #(
   // No memory issue without addr_valid
   always_comb begin
     if (i_rst_n && o_mem_read_en) begin
-      p_no_mem_issue_without_addr : assert (lq_addr_valid[mem_issue_idx]);
+      p_no_mem_issue_without_addr : assert (lq_addr_valid[launch_mem_issue_idx]);
     end
   end
 
   // No memory issue for already-issued entries
   always_comb begin
     if (i_rst_n && o_mem_read_en) begin
-      p_no_mem_issue_when_issued : assert (!lq_issued[mem_issue_idx]);
+      p_no_mem_issue_when_issued : assert (!lq_issued[launch_mem_issue_idx]);
     end
   end
 
