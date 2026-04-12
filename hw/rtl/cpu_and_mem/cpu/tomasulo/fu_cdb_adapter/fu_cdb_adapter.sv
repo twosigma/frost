@@ -26,11 +26,11 @@
  *     issues while a result is waiting for CDB access.
  *   - Zero-latency pass-through when the arbiter grants on the same cycle
  *     the FU result arrives (combinational path from input to output).
- *   - Pipeline flush support: `i_flush` (full) discards any held result.
- *     `i_flush_en` (partial) discards held results whose tag is younger
- *     than `i_flush_tag` (relative to `i_rob_head_tag`).  The output mux
- *     is also gated combinationally so that a same-cycle pass-through of
- *     a younger result is suppressed before reaching the CDB arbiter.
+ *   - Pipeline flush support: `i_flush` (full) discards any held result on
+ *     the next edge. `i_flush_en` (partial) discards held results whose tag
+ *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`). Same-cycle
+ *     pass-through of a younger partial-flush result is still suppressed here;
+ *     speculative full-flush CDB suppression is handled once at the arbiter.
  *
  * State machine (1 bit: result_pending):
  *
@@ -108,16 +108,12 @@ module fu_cdb_adapter #(
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
-  // Kill adapter output on full-flush cycles.  result_pending is registered
-  // and doesn't clear until the next edge, so without this gate the CDB
-  // arbiter still sees stale valid outputs during the flush cycle.  The
-  // arbiter then generates grants that cascade into downstream FIFO
-  // management (15-level critical path from trap_taken_reg through the
-  // arbiter priority chain to fp_div_shim fifo_flushed).
+  // Same-cycle partial flush of a younger pass-through result must still be
+  // suppressed locally. Full-flush kill is centralized at the CDB arbiter so
+  // this one-deep adapter doesn't have to carry that signal through its
+  // output/held-result control cone.
   always_comb begin
-    if (i_flush) begin
-      o_fu_complete = '0;
-    end else if (result_pending && !partial_flush_held) begin
+    if (result_pending && !partial_flush_held) begin
       o_fu_complete = held_result;
     end else if (!result_pending && !partial_flush_input) begin
       o_fu_complete = i_fu_result;
@@ -145,9 +141,13 @@ module fu_cdb_adapter #(
   end
 
   // Data: held_result (no reset - gated by result_pending)
+  // Writing the pass-through payload even on same-cycle grant/flush is safe:
+  // result_pending is the only visibility bit, so any stale idle payload stays
+  // dormant until the next pending capture overwrites it. This keeps grant and
+  // full-flush off the wide held_result control cone.
   always_ff @(posedge i_clk) begin
     if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
-        (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input)) begin
+        (!result_pending && i_fu_result.valid)) begin
       held_result <= i_fu_result;
     end
   end

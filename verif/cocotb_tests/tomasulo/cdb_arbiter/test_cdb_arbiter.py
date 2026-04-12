@@ -141,7 +141,32 @@ async def test_reset_no_output(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: Only ALU valid → ALU result broadcast, ALU granted
+# Test 2: kill suppresses broadcast and grants even with valid inputs
+# ============================================================================
+@cocotb.test()
+async def test_kill_blocks_output_and_grants(dut: Any) -> None:
+    """i_kill forces invalid output and zero grants."""
+    dut_if, _ = await setup(dut)
+
+    dut_if.drive_fu_complete(FU_FP_DIV, tag=7, value=0x1234)
+    dut_if.drive_fu_complete(FU_ALU, tag=3, value=0x5678)
+    dut_if.set_kill(True)
+    await Timer(1, unit="ns")
+
+    cdb = dut_if.read_cdb_output()
+    grants = dut_if.read_grant()
+
+    assert not cdb.valid, "CDB should be invalid while i_kill is asserted"
+    assert (
+        grants == [False] * NUM_FUS
+    ), f"All grants should be 0 under kill, got {grants}"
+
+    dut_if.set_kill(False)
+    dut_if.clear_all_fu_completes()
+
+
+# ============================================================================
+# Test 3: Only ALU valid → ALU result broadcast, ALU granted
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_alu(dut: Any) -> None:
@@ -165,7 +190,7 @@ async def test_single_fu_alu(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: Each FU type alone → correct broadcast and fu_type
+# Test 4: Each FU type alone → correct broadcast and fu_type
 # ============================================================================
 @cocotb.test()
 async def test_single_fu_each(dut: Any) -> None:
@@ -209,7 +234,7 @@ async def test_single_fu_each(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: FP_DIV + ALU → FP_DIV wins
+# Test 5: FP_DIV + ALU → FP_DIV wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_fp_div_over_alu(dut: Any) -> None:
@@ -236,7 +261,7 @@ async def test_priority_fp_div_over_alu(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: DIV + MUL → DIV wins
+# Test 6: DIV + MUL → DIV wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_div_over_mul(dut: Any) -> None:

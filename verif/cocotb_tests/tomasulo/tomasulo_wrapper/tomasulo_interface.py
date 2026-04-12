@@ -174,6 +174,9 @@ class TomasuloInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_flush_after_head_commit.value = 0
+        self.dut.i_backend_recovery_hold.value = 0
+        self.dut.i_early_recovery_flush.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
 

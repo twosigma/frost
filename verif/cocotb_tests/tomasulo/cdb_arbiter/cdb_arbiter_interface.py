@@ -115,6 +115,7 @@ class CdbArbiterInterface:
     async def reset_dut(self, cycles: int = 5) -> None:
         """Reset the DUT and init all inputs."""
         self.clear_all_fu_completes()
+        self.dut.i_kill.value = 0
         self.dut.i_rst_n.value = 0
 
         for _ in range(cycles):
@@ -169,6 +170,10 @@ class CdbArbiterInterface:
         """Clear all FU completion slots."""
         for i in range(NUM_FUS):
             self._get_fu_signal(i).value = 0
+
+    def set_kill(self, value: bool) -> None:
+        """Drive the arbiter-wide kill input."""
+        self.dut.i_kill.value = int(value)
 
     def read_cdb_output(self) -> CdbBroadcast:
         """Read the CDB broadcast output."""

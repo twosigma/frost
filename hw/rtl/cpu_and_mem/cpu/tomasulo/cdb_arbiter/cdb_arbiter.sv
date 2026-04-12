@@ -50,6 +50,9 @@ module cdb_arbiter (
     input riscv_pkg::fu_complete_t i_fu_complete_5,  // FP_MUL
     input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
 
+    // Suppress CDB broadcast/grants during speculative full-flush recovery.
+    input logic i_kill,
+
     // CDB broadcast output (to RS wakeup + ROB write)
     output riscv_pkg::cdb_broadcast_t o_cdb,
 
@@ -88,7 +91,12 @@ module cdb_arbiter (
     winner_data = '0;
     o_grant     = '0;
 
-    if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
+    if (i_kill) begin
+      found       = 1'b0;
+      winner_idx  = 3'd0;
+      winner_data = '0;
+      o_grant     = '0;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
       found                         = 1'b1;
       winner_idx                    = riscv_pkg::FU_FP_DIV;
       winner_data                   = i_fu_complete[riscv_pkg::FU_FP_DIV];
@@ -164,6 +172,12 @@ module cdb_arbiter (
   // At most one FU granted per cycle
   always_comb begin
     p_grant_at_most_one : assert ($onehot0(o_grant));
+  end
+
+  always_comb begin
+    if (i_kill) begin
+      p_kill_blocks_cdb : assert (!o_cdb.valid && o_grant == '0);
+    end
   end
 
   // Grant and CDB valid are equivalent

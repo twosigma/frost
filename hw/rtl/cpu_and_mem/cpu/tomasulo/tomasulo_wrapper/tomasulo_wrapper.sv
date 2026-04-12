@@ -473,10 +473,14 @@ module tomasulo_wrapper (
   (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
+  // Keep the CDB kill as a small, local copy so speculative full-flush does
+  // not have to route back through every adapter output-valid cone.
+  (* keep = "true" *)logic cdb_kill;
   assign full_flush_all = i_flush_all;
   assign speculative_partial_flush = i_flush_en;
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
+  assign cdb_kill = speculative_flush_all;
 
 
   // ===========================================================================
@@ -518,6 +522,7 @@ module tomasulo_wrapper (
       .i_fu_complete_4(cdb_arb_in[4]),
       .i_fu_complete_5(cdb_arb_in[5]),
       .i_fu_complete_6(cdb_arb_in[6]),
+      .i_kill         (cdb_kill),
       .o_cdb          (cdb_bus_comb),
       .o_grant        (o_cdb_grant)
   );
@@ -676,8 +681,9 @@ module tomasulo_wrapper (
   // or the adapter is pending, gets granted, and the shim presents a new valid result.
   logic div_result_accepted;
   assign div_result_accepted =
-      (!div_adapter_result_pending && div_shim_out.valid) ||
-      (div_adapter_result_pending && o_cdb_grant[2] && div_shim_out.valid);
+      !speculative_flush_all &&
+      ((!div_adapter_result_pending && div_shim_out.valid) ||
+      (div_adapter_result_pending && o_cdb_grant[2] && div_shim_out.valid));
 
   // ===========================================================================
   // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
@@ -759,7 +765,8 @@ module tomasulo_wrapper (
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
-  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending;
+  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending &&
+                                !speculative_flush_all;
 
   // SC fu_complete generation
   riscv_pkg::fu_complete_t sc_fu_complete;
@@ -785,7 +792,8 @@ module tomasulo_wrapper (
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
-  assign lq_result_accepted = lq_fu_complete.valid &&
+  assign lq_result_accepted = !speculative_flush_all &&
+                              lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
                               !mem_adapter_result_pending;
 
@@ -897,8 +905,9 @@ module tomasulo_wrapper (
   // or the adapter is pending, gets granted, and the shim presents a new valid result.
   logic fp_div_result_accepted;
   assign fp_div_result_accepted =
-      (!fp_div_adapter_result_pending && fp_div_shim_out.valid) ||
-      (fp_div_adapter_result_pending && o_cdb_grant[6] && fp_div_shim_out.valid);
+      !speculative_flush_all &&
+      ((!fp_div_adapter_result_pending && fp_div_shim_out.valid) ||
+      (fp_div_adapter_result_pending && o_cdb_grant[6] && fp_div_shim_out.valid));
 
   // ===========================================================================
   // Reorder Buffer Instance
