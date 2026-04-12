@@ -1,42 +1,23 @@
 # CDB Arbiter
 
-Priority-based multiplexer that selects one functional unit completion per cycle
-for broadcast on the Common Data Bus (CDB).
+A purely combinational fixed-priority arbiter that picks one
+functional unit completion per cycle for broadcast on the Common
+Data Bus. Seven inputs, one winner per cycle, no internal state.
 
-## Overview
+The priority order is longest-latency first, on the principle that a
+unit which has already waited 30 cycles for a result shouldn't get
+pushed any further by losing arbitration to a single-cycle ALU op:
 
-The CDB arbiter receives completion requests from all 7 functional units and
-grants the CDB to exactly one per cycle using fixed-priority arbitration.
-Longer-latency FUs get higher priority to avoid further stalling.
+```
+FP_DIV  >  DIV  >  FP_MUL  >  MUL  >  FP_ADD  >  MEM  >  ALU
+```
 
-## Interface
+Losers are held in their per-FU `fu_cdb_adapter` and re-presented
+the next cycle. The deeply-pipelined units (DIV, FDIV) have
+additional internal result FIFOs to absorb multi-cycle contention.
 
-| Port | Dir | Width | Description |
-|------|-----|-------|-------------|
-| `i_clk` | in | 1 | Clock (for formal only) |
-| `i_rst_n` | in | 1 | Reset (for formal only) |
-| `i_fu_complete[7]` | in | 7×81 | FU completion requests |
-| `o_cdb` | out | 84 | CDB broadcast (to RS + ROB) |
-| `o_grant[6:0]` | out | 7 | Per-FU grant signals |
-
-## Priority Order
-
-| Priority | FU Type | Latency |
-|----------|---------|---------|
-| 1 (highest) | FP_DIV | ~32-35 cycles |
-| 2 | DIV | 17 cycles |
-| 3 | FP_MUL | ~8-9 cycles |
-| 4 | MUL | 4 cycles |
-| 5 | FP_ADD | ~4-5 cycles |
-| 6 | MEM | variable |
-| 7 (lowest) | ALU | combinational |
-
-## Verification
-
-- **Formal**: BMC (depth 4) + cover (depth 8) via `formal/cdb_arbiter.sby`
-- **Cocotb**: 16 unit tests in `verif/cocotb_tests/tomasulo/cdb_arbiter/`
-
-## Files
-
-- `cdb_arbiter.sv` — RTL + formal assertions
-- `cdb_arbiter.f` — filelist
+The whole module is small enough to formally verify exhaustively
+under SymbiYosys: the `` `ifdef FORMAL `` block proves the priority
+order, that at most one FU is granted per cycle, that the broadcast
+fields all match the granted FU, and that the cover properties
+exercise every grant target and contention scenario.
