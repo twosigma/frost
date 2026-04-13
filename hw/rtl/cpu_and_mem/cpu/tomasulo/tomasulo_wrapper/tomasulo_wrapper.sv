@@ -788,17 +788,37 @@ module tomasulo_wrapper (
                             (o_mem_rs_issue.op != riscv_pkg::SC_W);
   assign store_complete_tag = o_mem_rs_issue.rob_tag;
 
+  // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
+  // The combinational chain
+  //   fence_i_committed_reg → speculative_flush_all → sc_fu_complete_valid
+  //     → mem_fu_to_adapter → MEM adapter bypass → cdb_arb_in[3]
+  //     → cdb_bus_reg[tag][3]
+  // was the post-IntRsDepth-bump worst-violating path (-0.710 ns WNS). SC is
+  // rare (LR/SC atomic sequences only; 0 in CoreMark), so the resulting
+  // 1-cycle delay on SC CDB broadcast is negligible. Plain loads still get
+  // the fast combinational path via lq_fu_complete.
+  riscv_pkg::fu_complete_t sc_fu_complete_reg;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all) sc_fu_complete_reg <= '0;
+    else sc_fu_complete_reg <= sc_fu_complete;
+  end
+
   // MUX: SC > LQ for MEM adapter input. Plain stores mark the ROB done
   // directly and do not need to occupy the shared MEM adapter/CDB slot.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
-    if (sc_fu_complete.valid) mem_fu_to_adapter = sc_fu_complete;
+    if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
+  // LQ is blocked from firing whenever an SC is about to broadcast on MEM:
+  //   - sc_fu_complete_valid (combinational): SC arming this cycle; its
+  //     registered copy will own the adapter next cycle.
+  //   - sc_fu_complete_reg.valid: SC is owning the adapter this cycle.
   assign lq_result_accepted = !speculative_flush_all &&
                               lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
+                              !sc_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
@@ -1533,7 +1553,8 @@ module tomasulo_wrapper (
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
+                                sc_fu_complete_reg.valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
