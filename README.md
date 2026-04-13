@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
-- **Practical performance** — 2.14 CoreMark/MHz (643 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Practical performance** — 2.18 CoreMark/MHz (654 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
@@ -305,17 +305,17 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 77,405 | 1,029,600 | 7.5% |
-|   LUT as Logic | 65,468 | 1,029,600 | 6.4% |
+| CLB LUTs | 77,044 | 1,029,600 | 7.5% |
+|   LUT as Logic | 65,107 | 1,029,600 | 6.3% |
 |   LUT as Distributed RAM | 11,356 | — | — |
 |   LUT as Shift Register | 581 | — | — |
-| CLB Registers | 54,698 | 2,059,200 | 2.7% |
+| CLB Registers | 54,931 | 2,059,200 | 2.7% |
 | Block RAM Tile | 53.5 | 2,112 | 2.5% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 36 | 1,320 | 2.7% |
-| CARRY8 | 4,035 | 128,700 | 3.1% |
-| F7 Muxes | 6,251 | 514,800 | 1.2% |
-| F8 Muxes | 2,455 | 257,400 | 0.9% |
+| CARRY8 | 4,067 | 128,700 | 3.2% |
+| F7 Muxes | 6,303 | 514,800 | 1.2% |
+| F8 Muxes | 2,451 | 257,400 | 0.9% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |

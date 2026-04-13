@@ -136,7 +136,13 @@ module load_queue #(
     // Status
     // =========================================================================
     output logic                       o_empty,
-    output logic [$clog2(DEPTH+1)-1:0] o_count
+    output logic [$clog2(DEPTH+1)-1:0] o_count,
+
+    // =========================================================================
+    // L0 Cache Profile Pulses (one cycle each, for perf counters)
+    // =========================================================================
+    output logic o_l0_hit,  // L0 cache fast-path completion
+    output logic o_l0_fill  // L0 cache fill from memory response
 );
 
   // ===========================================================================
@@ -321,12 +327,14 @@ module load_queue #(
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
 
-  // Staged external-memory launch. After SQ disambiguation clears a load for
-  // memory, hold the exact request in a register and launch it the next cycle.
-  logic mem_issue_pending;
-  logic [IdxWidth-1:0] mem_issue_idx;
-  logic [XLEN-1:0] mem_issue_addr;
-  riscv_pkg::mem_size_e mem_issue_size;
+  // (mem_issue_pending / mem_issue_idx / mem_issue_addr / mem_issue_size were
+  // a second-deep staging register for the launch path. With sq_check_pending
+  // now held through bus_busy stalls via the launch_mem_issue clearing
+  // condition, that staging is redundant — sq_check_idx / sq_check_addr_q /
+  // sq_check_size_q already hold the exact request stably across the stall.
+  // Removing them shrinks the address-mux LUT cone feeding the data-memory
+  // BRAM ADDR pin and recovers the timing budget the back-to-back changes
+  // had eaten on x3.)
 
   // Memory issued entry tracking. With BRAM 1-cycle latency the response
   // arrives exactly one cycle after o_mem_read_en is asserted, so a single
@@ -546,16 +554,15 @@ module load_queue #(
     end
   end
 
-  // Mask of entries already claimed by the sq_check / mem_issue staging
-  // registers. With back-to-back issue enabled, sq_check_capture can fire
-  // in the same cycle that the previous candidate launches, so the priority
-  // encoder must avoid re-picking the entry already held in sq_check_idx
-  // (or the staged copy in mem_issue_idx) before lq_issued becomes visible.
+  // Mask of the entry already claimed by the sq_check staging register.
+  // With back-to-back issue enabled, sq_check_capture can fire in the same
+  // cycle that the previous candidate launches, so the priority encoder must
+  // avoid re-picking the entry already held in sq_check_idx before
+  // lq_issued becomes visible.
   logic [DEPTH-1:0] in_flight_mask;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      in_flight_mask[i] = (sq_check_pending  && (sq_check_idx  == IdxWidth'(i))) ||
-                          (mem_issue_pending && (mem_issue_idx == IdxWidth'(i)));
+      in_flight_mask[i] = sq_check_pending && (sq_check_idx == IdxWidth'(i));
     end
   end
 
@@ -684,10 +691,10 @@ module load_queue #(
   // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
-      !mem_issue_pending && issue_mem_found &&
+      issue_mem_found &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
-  assign sq_check_replace = sq_check_pending && !mem_issue_pending && issue_mem_found &&
+  assign sq_check_replace = sq_check_pending && issue_mem_found &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
       (!sq_check_entry_valid || is_younger(
       sq_check_rob_tag_q, issue_mem_rob_tag, i_rob_head_tag
@@ -705,7 +712,7 @@ module load_queue #(
     o_sq_check_rob_tag = sq_check_rob_tag_q;
     o_sq_check_size    = sq_check_size_q;
 
-    if (!i_flush_all && !i_flush_en && !mem_issue_pending && !drop_mem_response_pending &&
+    if (!i_flush_all && !i_flush_en && !drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
@@ -856,11 +863,18 @@ module load_queue #(
   // launches. Loses the rare overlap of one queued launch with a SQ write,
   // but that path was 4.4% of cycles in the baseline profile vs. doubling
   // the steady-state load issue rate.
-  assign launch_mem_issue = !i_flush_en && !i_mem_bus_busy &&
-      (stage_mem_issue || mem_issue_pending);
-  assign launch_mem_issue_idx = mem_issue_pending ? mem_issue_idx : sq_check_idx;
-  assign launch_mem_issue_addr = mem_issue_pending ? mem_issue_addr : stage_mem_issue_addr;
-  assign launch_mem_issue_size = mem_issue_pending ? mem_issue_size : stage_mem_issue_size;
+  //
+  // TIMING: launch_mem_issue_idx/addr/size now read sq_check_idx /
+  // stage_mem_issue_addr / stage_mem_issue_size directly. The previous
+  // mem_issue_pending mux fed into the data-memory BRAM ADDR cone and was
+  // the dominant -0.911 ns timing-failing path on x3. sq_check_pending
+  // already holds the staged candidate stably across bus_busy stalls
+  // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
+  // so the mem_issue_pending second-deep stage is redundant.
+  assign launch_mem_issue = !i_flush_en && !i_mem_bus_busy && stage_mem_issue;
+  assign launch_mem_issue_idx = sq_check_idx;
+  assign launch_mem_issue_addr = stage_mem_issue_addr;
+  assign launch_mem_issue_size = stage_mem_issue_size;
 
   // Memory issue: bypass the staging register when the port is already free.
   always_comb begin
@@ -988,6 +1002,10 @@ module load_queue #(
       && !lq_is_mmio[issued_idx] && !lq_is_lr[issued_idx] && !lq_is_amo[issued_idx];
   assign cache_fill_addr = cache_fill_actual_addr;
   assign cache_fill_data = i_mem_read_data;
+
+  // L0 cache profile pulses (one cycle when the event fires)
+  assign o_l0_hit = cache_hit_fast_path;
+  assign o_l0_fill = cache_fill_valid;
 
   // AMO write interface: compute new value combinationally from outstanding AMO read
   // TIMING: Removed same-cycle AMO write fast path (accept_mem_response &&
@@ -1165,7 +1183,6 @@ module load_queue #(
       sq_check_pending          <= 1'b0;
       sq_check_no_older_store_q <= 1'b0;
       sq_check_phase2           <= 1'b0;
-      mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
@@ -1182,7 +1199,6 @@ module load_queue #(
       sq_check_pending          <= 1'b0;
       sq_check_no_older_store_q <= 1'b0;
       sq_check_phase2           <= 1'b0;
-      mem_issue_pending         <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else begin
@@ -1214,11 +1230,6 @@ module load_queue #(
           sq_check_pending          <= 1'b0;
           sq_check_no_older_store_q <= 1'b0;
           sq_check_phase2           <= 1'b0;
-        end
-        if (mem_issue_pending && (flush_all_entries || (lq_valid[mem_issue_idx] && is_younger(
-                lq_rob_tag[mem_issue_idx], i_flush_tag, i_rob_head_tag
-            )))) begin
-          mem_issue_pending <= 1'b0;
         end
         // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
         // after the flush instead of compacting the tail in this cycle.
@@ -1279,10 +1290,6 @@ module load_queue #(
         lq_forwarded[sq_check_idx]  <= 1'b1;
       end
 
-      if (stage_mem_issue && !launch_mem_issue) begin
-        mem_issue_pending <= 1'b1;
-      end
-
       // -----------------------------------------------------------------
       // Memory Response: capture data from memory bus
       // -----------------------------------------------------------------
@@ -1335,7 +1342,6 @@ module load_queue #(
       // response. Different lq_issued indices on launch vs. response keep
       // their bit-level writes independent.
       if (o_mem_read_en) begin
-        mem_issue_pending               <= 1'b0;
         lq_issued[launch_mem_issue_idx] <= 1'b1;
         mem_outstanding                 <= 1'b1;
       end
@@ -1373,9 +1379,9 @@ module load_queue #(
   // ===========================================================================
   // These signals are pure data payloads whose consumers are already gated by
   // control-valid bits (lq_valid, lq_addr_valid, lq_data_valid, sq_check_pending,
-  // mem_issue_pending, mem_outstanding, reservation_valid, amo_state, etc.)
-  // that ARE reset.  Keeping data FFs out of the reset tree saves area, power,
-  // and fanout on the reset net.
+  // mem_outstanding, reservation_valid, amo_state, etc.) that ARE reset.
+  // Keeping data FFs out of the reset tree saves area, power, and fanout on
+  // the reset net.
 
   // -----------------------------------------------------------------
   // Per-entry data: allocation writes
@@ -1421,17 +1427,6 @@ module load_queue #(
       sq_check_fp64_phase_q <= lq_fp64_phase[issue_mem_idx];
       sq_check_is_lr_q      <= lq_is_lr[issue_mem_idx];
       sq_check_is_amo_q     <= lq_is_amo[issue_mem_idx];
-    end
-  end
-
-  // -----------------------------------------------------------------
-  // Internal data: staged memory issue request
-  // -----------------------------------------------------------------
-  always_ff @(posedge i_clk) begin
-    if (stage_mem_issue) begin
-      mem_issue_idx  <= sq_check_idx;
-      mem_issue_addr <= stage_mem_issue_addr;
-      mem_issue_size <= stage_mem_issue_size;
     end
   end
 

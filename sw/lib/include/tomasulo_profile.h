@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 57U
+#define TOMASULO_PROFILE_COUNTER_COUNT 59U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -82,6 +82,8 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_FP_RS_OCCUPANCY_SUM = 54,
     TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM = 55,
     TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 56,
+    TOMASULO_PERF_LQ_L0_HIT = 57,
+    TOMASULO_PERF_LQ_L0_FILL = 58,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -602,6 +604,21 @@ static inline void tomasulo_profile_print_report(const char *label,
         "SQ writes", tomasulo_profile_delta(start, end, TOMASULO_PERF_SQ_MEM_WRITE_FIRE), cycles);
     tomasulo_profile_print_metric(
         "LQ reads", tomasulo_profile_delta(start, end, TOMASULO_PERF_LQ_MEM_READ_FIRE), cycles);
+    tomasulo_profile_print_metric(
+        "L0 cache hit", tomasulo_profile_delta(start, end, TOMASULO_PERF_LQ_L0_HIT), cycles);
+    tomasulo_profile_print_metric(
+        "L0 cache fill", tomasulo_profile_delta(start, end, TOMASULO_PERF_LQ_L0_FILL), cycles);
+    {
+        uint64_t l0_hits = tomasulo_profile_delta(start, end, TOMASULO_PERF_LQ_L0_HIT);
+        uint64_t lq_reads = tomasulo_profile_delta(start, end, TOMASULO_PERF_LQ_MEM_READ_FIRE);
+        uint64_t load_completions = l0_hits + lq_reads;
+        if (load_completions > 0U) {
+            uint32_t hit_rate_x10 = tomasulo_profile_ratio_scaled(l0_hits, load_completions, 1000U);
+            uart_printf("  L0 hit rate (hits / (hits + reads)): %lu.%01lu%%\n",
+                        (unsigned long) (hit_rate_x10 / 10U),
+                        (unsigned long) (hit_rate_x10 % 10U));
+        }
+    }
 
     uart_printf("  Average occupancies:\n");
     tomasulo_profile_print_average(

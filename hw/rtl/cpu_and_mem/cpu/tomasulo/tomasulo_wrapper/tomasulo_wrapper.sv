@@ -390,7 +390,7 @@ module tomasulo_wrapper (
   end
   assign o_commit_valid_raw = commit_valid_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 34;
+  localparam int unsigned WrapperPerfCounterCount = 36;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -425,6 +425,8 @@ module tomasulo_wrapper (
   localparam int unsigned PerfFpRsOccupancySum = 31;
   localparam int unsigned PerfFmulRsOccupancySum = 32;
   localparam int unsigned PerfFdivRsOccupancySum = 33;
+  localparam int unsigned PerfLqL0Hit = 34;
+  localparam int unsigned PerfLqL0Fill = 35;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -692,6 +694,8 @@ module tomasulo_wrapper (
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
   logic lq_result_accepted;
+  logic lq_l0_hit;  // LQ L0 cache fast-path completion (perf counter)
+  logic lq_l0_fill;  // LQ L0 cache fill from memory response (perf counter)
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -1563,7 +1567,11 @@ module tomasulo_wrapper (
 
       // Status
       .o_empty(o_lq_empty),
-      .o_count(o_lq_count)
+      .o_count(o_lq_count),
+
+      // L0 cache profile pulses
+      .o_l0_hit (lq_l0_hit),
+      .o_l0_fill(lq_l0_fill)
   );
 
   // ===========================================================================
@@ -1897,6 +1905,8 @@ module tomasulo_wrapper (
     perf_inc[PerfFpRsOccupancySum] = {{(64 - $bits(o_fp_rs_count)) {1'b0}}, o_fp_rs_count};
     perf_inc[PerfFmulRsOccupancySum] = {{(64 - $bits(o_fmul_rs_count)) {1'b0}}, o_fmul_rs_count};
     perf_inc[PerfFdivRsOccupancySum] = {{(64 - $bits(o_fdiv_rs_count)) {1'b0}}, o_fdiv_rs_count};
+    perf_inc[PerfLqL0Hit] = {{63{1'b0}}, lq_l0_hit};
+    perf_inc[PerfLqL0Fill] = {{63{1'b0}}, lq_l0_fill};
   end
 
   always_ff @(posedge i_clk) begin
@@ -1931,7 +1941,7 @@ module tomasulo_wrapper (
 
   always_comb begin
     o_perf_counter_data = '0;
-    if (i_perf_counter_select < 8'd34) begin
+    if (i_perf_counter_select < 8'd36) begin
       o_perf_counter_data = perf_snapshot[i_perf_counter_select[5:0]];
     end
   end
