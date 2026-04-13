@@ -236,9 +236,9 @@ module tomasulo_wrapper (
     // =========================================================================
     // RS Status (INT_RS)
     // =========================================================================
-    output logic       o_int_rs_full,
-    output logic       o_rs_empty,
-    output logic [3:0] o_rs_count,
+    output logic                                       o_int_rs_full,
+    output logic                                       o_rs_empty,
+    output logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] o_rs_count,
 
     // =========================================================================
     // MUL_RS (Integer multiply/divide, depth 4)

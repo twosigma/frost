@@ -1063,7 +1063,7 @@ package riscv_pkg;
   );  // 5 bits for 32-entry Reorder Buffer
 
   // Reservation Station depths (per RS type)
-  localparam int unsigned IntRsDepth = 8;  // Integer ALU operations
+  localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
   localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj

@@ -1166,7 +1166,7 @@ module cpu_ooo #(
   logic [$clog2(riscv_pkg::LqDepth+1)-1:0] lq_count;
   logic [$clog2(riscv_pkg::SqDepth+1)-1:0] sq_count;
   logic rs_empty;
-  logic [3:0] rs_count;
+  logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] rs_count;
 
   // FRM CSR
   logic [2:0] frm_csr;
