@@ -146,14 +146,25 @@ module lq_l0_cache #(
       (tag_inv_rd == inv_tag) &&
       !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
   assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
-  assign lookup_fill_bypass =
-      i_fill_valid && (fill_index == lookup_index) && (fill_tag == lookup_tag);
+  // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be combined
+  // into o_lookup_hit. That created a long combinational chain
+  //   i_flush_en (← mispredict_recovery_pending) → accept_mem_response
+  //   → cache_fill_valid → lookup_fill_bypass → o_lookup_hit
+  //   → cache_hit_fast_path → o_mem_read_en → o_mmio_load_valid (wrapper FIFO)
+  //   → data_memory ADDRARDADDR
+  // that became the new -0.944 ns critical path after the issued_idx →
+  // lq_*_rd cone was removed. The bypass only helps the (rare) case where a
+  // load is staged for lookup the exact cycle its address is being filled by
+  // a sibling load's response; in every other case the LUTRAM is already
+  // updated by next cycle and the normal lookup_hit_array path wins. Drop
+  // the bypass term so o_lookup_hit depends only on registered signals
+  // (sq_check_addr_q, valid[], tag LUTRAM, i_invalidate_valid). Cost: a
+  // missed bypass forces one extra memory cycle for the same-cycle case.
+  assign lookup_fill_bypass = 1'b0;
   assign lookup_invalidated =
       i_invalidate_valid && (inv_index == lookup_index) && (inv_tag == lookup_tag);
-  assign o_lookup_hit = !lookup_mmio &&
-                        (lookup_fill_bypass || lookup_hit_array) &&
-                        !lookup_invalidated;
-  assign o_lookup_data = lookup_fill_bypass ? i_fill_data : data_lookup_rd;
+  assign o_lookup_hit = !lookup_mmio && lookup_hit_array && !lookup_invalidated;
+  assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
