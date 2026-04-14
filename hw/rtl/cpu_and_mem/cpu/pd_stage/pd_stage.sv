@@ -212,15 +212,24 @@ module pd_stage #(
                                              (!i_from_if_to_pd.sel_nop &&
                                               i_from_if_to_pd.sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
-      // Branch prediction metadata - clear on flush/pd_redirect
-      // Override with backward-branch heuristic when BTB missed a backward branch
+      // Branch prediction metadata - clear on flush/pd_redirect.
+      //
+      // TIMING: the pd_backward_branch heuristic override (mark cold backward
+      // branches as predicted-taken with the +imm target) used to be applied
+      // here. That created a long combinational chain
+      //   BRAM out → c_ext_state mux → assembled_instr → final_instruction
+      //   → pd_imm_b → +PC carry chain → o_from_pd_to_id_reg[btb_predicted_target]/D
+      // which became the worst path (-0.469 ns) once the LQ → data_memory cone
+      // closed. The o_from_pd_to_id register now passes the BTB metadata through
+      // unchanged; id_stage applies the override on its consumer side using the
+      // already-registered pd_redirect_r / pd_redirect_target_r outputs (the same
+      // signals that drive the IF redirect). Both override sources are FF
+      // outputs there, so the mux is a fast LUT instead of a 12-level cone.
       o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                  (pd_backward_branch ? 1'b1 : i_from_if_to_pd.btb_hit);
+                                  i_from_if_to_pd.btb_hit;
       o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                              (pd_backward_branch ? 1'b1 :
-                                               i_from_if_to_pd.btb_predicted_taken);
-      o_from_pd_to_id.btb_predicted_target <= pd_backward_branch ? pd_backward_target :
-                                               i_from_if_to_pd.btb_predicted_target;
+                                              i_from_if_to_pd.btb_predicted_taken;
+      o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
       // RAS prediction metadata - clear on flush/pd_redirect
       o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                         i_from_if_to_pd.ras_predicted;

@@ -729,6 +729,8 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_pd_to_id(from_pd_to_id),
+      .i_pd_redirect(pd_redirect),
+      .i_pd_redirect_target(pd_redirect_target),
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),

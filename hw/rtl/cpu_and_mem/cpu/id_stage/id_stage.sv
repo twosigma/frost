@@ -38,11 +38,29 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
+    // Cold-backward-branch override from pd_stage. Both signals are FF outputs
+    // of pd_stage (the same registers that drive the IF redirect). Applying the
+    // override here instead of inside pd_stage's o_from_pd_to_id register keeps
+    // the long pd_backward_target combinational chain off the worst path.
+    input logic i_pd_redirect,
+    input logic [XLEN-1:0] i_pd_redirect_target,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex
 );
+
+  // Effective BTB metadata after applying the cold-backward-branch override.
+  // i_pd_redirect is high in the cycle the just-detected backward branch reaches
+  // id_stage (it tracks pd_backward_branch through the same stall/flush gates as
+  // o_from_pd_to_id), so the override naturally aligns with the branch instruction.
+  logic [XLEN-1:0] effective_btb_predicted_target;
+  logic            effective_btb_hit;
+  logic            effective_btb_predicted_taken;
+  assign effective_btb_predicted_target = i_pd_redirect ? i_pd_redirect_target :
+                                          i_from_pd_to_id.btb_predicted_target;
+  assign effective_btb_hit = i_pd_redirect | i_from_pd_to_id.btb_hit;
+  assign effective_btb_predicted_taken = i_pd_redirect | i_from_pd_to_id.btb_predicted_taken;
 
   // Internal signals for decoded instruction information
   riscv_pkg::instr_t instruction;
@@ -162,7 +180,7 @@ module id_stage #(
       .i_immediate_b_type(immediate_b_type),
       .i_immediate_j_type(immediate_j_type),
       .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
-      .i_btb_predicted_target(i_from_pd_to_id.btb_predicted_target),
+      .i_btb_predicted_target(effective_btb_predicted_target),
       .i_is_jal(is_jal_direct),
       // Pre-computed target outputs
       .o_branch_target_precomputed(branch_target_precomputed),
@@ -426,10 +444,10 @@ module id_stage #(
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
       // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.btb_hit;
+      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              i_from_pd_to_id.btb_predicted_taken;
-      o_from_id_to_ex.btb_predicted_target <= i_from_pd_to_id.btb_predicted_target;
+                                              effective_btb_predicted_taken;
+      o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
       // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
       o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
       o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
