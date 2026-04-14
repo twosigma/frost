@@ -514,6 +514,13 @@ module tomasulo_wrapper (
     cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
   end
 
+  // Pre-kill grant vector from the arbiter — doesn't depend on cdb_kill, so
+  // muldiv shim's pop decision (which back-propagates to the FIFO register
+  // cone) doesn't drag speculative_flush_all into a 17-level combinational
+  // path. During kill the shim is clearing its FIFO via i_flush anyway, so
+  // popping a would-grant entry is a no-op at the same edge.
+  logic [riscv_pkg::NumFus-1:0] o_cdb_grant_raw;
+
   cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
       .i_rst_n        (i_rst_n),
@@ -526,7 +533,8 @@ module tomasulo_wrapper (
       .i_fu_complete_6(cdb_arb_in[6]),
       .i_kill         (cdb_kill),
       .o_cdb          (cdb_bus_comb),
-      .o_grant        (o_cdb_grant)
+      .o_grant        (o_cdb_grant),
+      .o_grant_raw    (o_cdb_grant_raw)
   );
 
   // Pipeline register: break the CDB arbiter → RS/ROB wakeup critical path.
@@ -674,18 +682,29 @@ module tomasulo_wrapper (
   logic                    muldiv_busy;
   logic                    mul_rs_fu_ready;
 
-  assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy
-                           & ~mul_adapter_result_pending & ~div_adapter_result_pending
-                           & ~i_backend_recovery_hold;
+  // Pipelined MUL + DIV: back-pressure is governed by muldiv_busy (credit-based
+  // FIFO occupancy in the shim). Adapter-pending bits no longer gate new issues,
+  // since the shim FIFOs absorb transient CDB stalls.
+  assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy & ~i_backend_recovery_hold;
 
-  // DIV result accepted: the adapter consumes the shim's output this cycle.
+  // MUL / DIV result accepted: the adapter consumes the shim's output this cycle.
   // Either the adapter is idle and the shim presents a valid result (pass-through),
   // or the adapter is pending, gets granted, and the shim presents a new valid result.
+  //
+  // Uses o_cdb_grant_raw (pre-kill version) instead of o_cdb_grant to keep
+  // cdb_kill / speculative_flush_all off the shim's fifo-pop → fifo-register
+  // combinational cone. During a full flush the shim's own i_flush priority
+  // mux clears the FIFO regardless of whether pop fires, so popping a
+  // would-be-granted entry is harmless — it gets cleared at the same edge.
+  logic mul_result_accepted;
+  assign mul_result_accepted =
+      (!mul_adapter_result_pending && mul_shim_out.valid) ||
+      (mul_adapter_result_pending && o_cdb_grant_raw[1] && mul_shim_out.valid);
+
   logic div_result_accepted;
   assign div_result_accepted =
-      !speculative_flush_all &&
-      ((!div_adapter_result_pending && div_shim_out.valid) ||
-      (div_adapter_result_pending && o_cdb_grant[2] && div_shim_out.valid));
+      (!div_adapter_result_pending && div_shim_out.valid) ||
+      (div_adapter_result_pending && o_cdb_grant_raw[2] && div_shim_out.valid);
 
   // ===========================================================================
   // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
@@ -1407,6 +1426,7 @@ module tomasulo_wrapper (
       .i_flush_en       (speculative_flush_en),
       .i_flush_tag      (i_flush_tag),
       .i_rob_head_tag   (head_tag),
+      .i_mul_accepted   (mul_result_accepted),
       .i_div_accepted   (div_result_accepted)
   );
 

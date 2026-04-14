@@ -57,7 +57,16 @@ module cdb_arbiter (
     output riscv_pkg::cdb_broadcast_t o_cdb,
 
     // Per-FU grant signals (back-pressure: FU can clear result when granted)
-    output logic [riscv_pkg::NumFus-1:0] o_grant
+    output logic [riscv_pkg::NumFus-1:0] o_grant,
+
+    // Pre-kill grant vector. Identical to o_grant when !i_kill; during kill,
+    // still reflects the priority-encoder result (not zero). Used by shims
+    // that need a flush-independent "would be granted" signal for pop
+    // decisions — during kill the shim is clearing its own FIFO via i_flush,
+    // so popping a "would-grant" entry is harmless (cleared at same edge).
+    // Keeps the cdb_kill → shim→fifo_regs combinational cone off the
+    // critical path.
+    output logic [riscv_pkg::NumFus-1:0] o_grant_raw
 );
 
   // Build internal array from individual ports
@@ -89,54 +98,59 @@ module cdb_arbiter (
     found       = 1'b0;
     winner_idx  = 3'd0;
     winner_data = '0;
-    o_grant     = '0;
+    o_grant_raw = '0;
 
-    if (i_kill) begin
-      found       = 1'b0;
-      winner_idx  = 3'd0;
-      winner_data = '0;
-      o_grant     = '0;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_DIV;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_DIV];
-      o_grant[riscv_pkg::FU_FP_DIV] = 1'b1;
+    if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_DIV;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_DIV];
+      o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_DIV;
-      winner_data                = i_fu_complete[riscv_pkg::FU_DIV];
-      o_grant[riscv_pkg::FU_DIV] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_DIV;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_DIV];
+      o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_MUL;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_MUL];
-      o_grant[riscv_pkg::FU_FP_MUL] = 1'b1;
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_MUL;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_MUL];
+      o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_MUL].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MUL;
-      winner_data                = i_fu_complete[riscv_pkg::FU_MUL];
-      o_grant[riscv_pkg::FU_MUL] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_MUL;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_MUL];
+      o_grant_raw[riscv_pkg::FU_MUL] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_ADD;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_ADD];
-      o_grant[riscv_pkg::FU_FP_ADD] = 1'b1;
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_ADD;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_ADD];
+      o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_MEM].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MEM;
-      winner_data                = i_fu_complete[riscv_pkg::FU_MEM];
-      o_grant[riscv_pkg::FU_MEM] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_MEM;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_MEM];
+      o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_ALU].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_ALU;
-      winner_data                = i_fu_complete[riscv_pkg::FU_ALU];
-      o_grant[riscv_pkg::FU_ALU] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_ALU;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_ALU];
+      o_grant_raw[riscv_pkg::FU_ALU] = 1'b1;
     end
   end
 
-  // Pack CDB output
+  // Kill-gated grant: suppress CDB broadcast and adapter grant when in
+  // speculative full-flush recovery. o_grant_raw is the pre-kill version.
   always_comb begin
-    o_cdb.valid     = found;
+    if (i_kill) begin
+      o_grant = '0;
+    end else begin
+      o_grant = o_grant_raw;
+    end
+  end
+
+  // Pack CDB output. Suppressed during kill (speculative full-flush).
+  always_comb begin
+    o_cdb.valid     = found && !i_kill;
     o_cdb.tag       = winner_data.tag;
     o_cdb.value     = winner_data.value;
     o_cdb.exception = winner_data.exception;
