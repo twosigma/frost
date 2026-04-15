@@ -88,6 +88,19 @@ module register_alias_table (
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_commit_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_tag,
 
+    // Widen-commit slot 2: second simultaneous retire from the same cycle.
+    // Only valid when the ROB's 2-wide gate fires.  Slot 2 cannot coincide
+    // with mispredict/serial-op recovery, so the only RAT operation it
+    // drives is "clear the tag if it still matches."  When both slots
+    // write the same architectural register, the newer-producer tag (slot
+    // 2) is the one currently held in the RAT by construction, so slot 1
+    // will naturally miss on the tag compare and slot 2 will clear.
+    input logic                                        i_commit_valid_2,
+    input logic                                        i_commit_dest_valid_2,
+    input logic                                        i_commit_dest_rf_2,
+    input logic [         riscv_pkg::RegAddrWidth-1:0] i_commit_dest_reg_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_tag_2,
+
     // =========================================================================
     // Checkpoint Save Interface (from Dispatch on branch allocation)
     // =========================================================================
@@ -468,6 +481,27 @@ module register_alias_table (
           if (fp_rat_valid[i_commit_dest_reg] &&
               fp_rat_tag[i_commit_dest_reg] == i_commit_tag) begin
             fp_rat_valid[i_commit_dest_reg] <= 1'b0;
+          end
+        end
+      end
+
+      // ---------------------------------------------------------------
+      // Widen-commit slot 2: same clear logic for the head+1 retire.
+      // By construction only one of slot 1 / slot 2 can match a given
+      // RAT entry's tag in a 2-wide cycle (the RAT holds the newest
+      // producer, which is slot 2 if both slots target the same reg).
+      // ---------------------------------------------------------------
+      if (i_commit_valid_2 && i_commit_dest_valid_2) begin
+        if (!i_commit_dest_rf_2) begin
+          if (i_commit_dest_reg_2 != '0 &&
+              int_rat_valid[i_commit_dest_reg_2] &&
+              int_rat_tag[i_commit_dest_reg_2] == i_commit_tag_2) begin
+            int_rat_valid[i_commit_dest_reg_2] <= 1'b0;
+          end
+        end else begin
+          if (fp_rat_valid[i_commit_dest_reg_2] &&
+              fp_rat_tag[i_commit_dest_reg_2] == i_commit_tag_2) begin
+            fp_rat_valid[i_commit_dest_reg_2] <= 1'b0;
           end
         end
       end

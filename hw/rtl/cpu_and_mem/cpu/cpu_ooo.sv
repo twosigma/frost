@@ -92,7 +92,7 @@ module cpu_ooo #(
   riscv_pkg::dispatch_status_t dispatch_status;
 
   localparam int unsigned PerfTopCounterCount = 23;
-  localparam int unsigned PerfWrapperCounterCount = 40;
+  localparam int unsigned PerfWrapperCounterCount = 42;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);
@@ -574,24 +574,35 @@ module cpu_ooo #(
   // Register Files (read in ID, write from ROB commit)
   // ===========================================================================
 
-  // Integer register file
-  logic                      [4*XLEN-1:0] int_rf_read_data;
-  logic                                   int_rf_write_enable;
-  logic                      [       4:0] int_rf_write_addr;
-  logic                      [  XLEN-1:0] int_rf_write_data;
-  logic                                   int_rf_wb_bypass_id_rs1;
-  logic                                   int_rf_wb_bypass_id_rs2;
-  logic                                   int_rf_wb_bypass_dispatch_rs1;
-  logic                                   int_rf_wb_bypass_dispatch_rs2;
-  logic                      [  XLEN-1:0] int_rf_dispatch_rs1_data;
-  logic                      [  XLEN-1:0] int_rf_dispatch_rs2_data;
+  // FP width — declared ahead of any INT-side logic that references FpW
+  // when packing the slot-1/slot-2 write ports into the regfile arrays.
+  localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  riscv_pkg::rf_to_fwd_t                  rf_to_fwd;
-  riscv_pkg::from_ma_to_wb_t              from_ma_to_wb_commit;
+  // Integer register file.  Widen-commit drives the regfile with 2
+  // independent write ports: port 0 = slot 1 (rob_commit), port 1 =
+  // slot 2 (rob_commit_2).  The mwp_dist_ram LVT steers reads to the
+  // highest-numbered port (slot 2) when both ports write the same
+  // address — matching program order since slot 2 has tag T+1 > slot 1
+  // has tag T.
+  localparam int unsigned IntRfWrPorts = 2;
+  logic                      [           4*XLEN-1:0] int_rf_read_data;
+  logic                      [     IntRfWrPorts-1:0] int_rf_write_enable;
+  logic                      [   IntRfWrPorts*5-1:0] int_rf_write_addr;
+  logic                      [IntRfWrPorts*XLEN-1:0] int_rf_write_data;
+  logic                                              int_rf_wb_bypass_id_rs1;
+  logic                                              int_rf_wb_bypass_id_rs2;
+  logic                                              int_rf_wb_bypass_dispatch_rs1;
+  logic                                              int_rf_wb_bypass_dispatch_rs2;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs2_data;
+
+  riscv_pkg::rf_to_fwd_t                             rf_to_fwd;
+  riscv_pkg::from_ma_to_wb_t                         from_ma_to_wb_commit;
 
   generic_regfile #(
       .DATA_WIDTH(XLEN),
       .NUM_READ_PORTS(4),
+      .NUM_WRITE_PORTS(IntRfWrPorts),
       .HARDWIRE_ZERO(1)
   ) regfile_inst (
       .i_clk,
@@ -608,60 +619,86 @@ module cpu_ooo #(
       .o_read_data(int_rf_read_data)
   );
 
-  assign int_rf_wb_bypass_id_rs1 = int_rf_write_enable &&
-                                   |int_rf_write_addr &&
-                                   (int_rf_write_addr == from_pd_to_id.source_reg_1_early);
-  assign int_rf_wb_bypass_id_rs2 = int_rf_write_enable &&
-                                   |int_rf_write_addr &&
-                                   (int_rf_write_addr == from_pd_to_id.source_reg_2_early);
-  assign int_rf_wb_bypass_dispatch_rs1 = int_rf_write_enable &&
-                                         |int_rf_write_addr &&
-                                         (int_rf_write_addr ==
-                                          from_id_to_ex.instruction.source_reg_1);
-  assign int_rf_wb_bypass_dispatch_rs2 = int_rf_write_enable &&
-                                         |int_rf_write_addr &&
-                                         (int_rf_write_addr ==
-                                          from_id_to_ex.instruction.source_reg_2);
+  // Widen-commit bypass: check both write ports (slot 1 = port 0,
+  // slot 2 = port 1).  Priority: port 1 > port 0 (newer tag wins on
+  // same-address conflict, matching the regfile LVT priority).
+  //
+  // Both ports write the regfile at the same edge, so the bypass is a
+  // straightforward same-cycle compare and no cross-cycle tracking is
+  // needed.
+  logic int_hit_id_rs1_p1, int_hit_id_rs1_p0;
+  logic int_hit_id_rs2_p1, int_hit_id_rs2_p0;
+  logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
+  logic int_hit_dp_rs2_p1, int_hit_dp_rs2_p0;
 
-  // Bypass data for ID/dispatch: use rob_commit.value directly (fast path).
-  // For CSR commits, int_rf_write_data includes the slow csr_read_data_comb
-  // path (16 logic levels through exception FSM + CSR file).  But CSR commits
-  // never coincide with active dispatch/ID consumption because csr_in_flight
-  // stalls the entire front-end pipeline, so using rob_commit.value here is
-  // functionally safe and eliminates the critical path.
-  logic [XLEN-1:0] int_rf_commit_bypass_data;
-  assign int_rf_commit_bypass_data = rob_commit.value[XLEN-1:0];
+  assign int_hit_id_rs1_p1 = port1_int_we && |port1_int_addr &&
+                             (port1_int_addr == from_pd_to_id.source_reg_1_early);
+  assign int_hit_id_rs1_p0 = port0_int_we && |port0_int_addr &&
+                             (port0_int_addr == from_pd_to_id.source_reg_1_early);
 
-  assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_rf_commit_bypass_data :
+  assign int_hit_id_rs2_p1 = port1_int_we && |port1_int_addr &&
+                             (port1_int_addr == from_pd_to_id.source_reg_2_early);
+  assign int_hit_id_rs2_p0 = port0_int_we && |port0_int_addr &&
+                             (port0_int_addr == from_pd_to_id.source_reg_2_early);
+
+  assign int_hit_dp_rs1_p1 = port1_int_we && |port1_int_addr &&
+                             (port1_int_addr == from_id_to_ex.instruction.source_reg_1);
+  assign int_hit_dp_rs1_p0 = port0_int_we && |port0_int_addr &&
+                             (port0_int_addr == from_id_to_ex.instruction.source_reg_1);
+
+  assign int_hit_dp_rs2_p1 = port1_int_we && |port1_int_addr &&
+                             (port1_int_addr == from_id_to_ex.instruction.source_reg_2);
+  assign int_hit_dp_rs2_p0 = port0_int_we && |port0_int_addr &&
+                             (port0_int_addr == from_id_to_ex.instruction.source_reg_2);
+
+  assign int_rf_wb_bypass_id_rs1 = int_hit_id_rs1_p1 || int_hit_id_rs1_p0;
+  assign int_rf_wb_bypass_id_rs2 = int_hit_id_rs2_p1 || int_hit_id_rs2_p0;
+  assign int_rf_wb_bypass_dispatch_rs1 = int_hit_dp_rs1_p1 || int_hit_dp_rs1_p0;
+  assign int_rf_wb_bypass_dispatch_rs2 = int_hit_dp_rs2_p1 || int_hit_dp_rs2_p0;
+
+  logic [XLEN-1:0] int_bypass_data_id_rs1;
+  logic [XLEN-1:0] int_bypass_data_id_rs2;
+  logic [XLEN-1:0] int_bypass_data_dp_rs1;
+  logic [XLEN-1:0] int_bypass_data_dp_rs2;
+
+  assign int_bypass_data_id_rs1 = int_hit_id_rs1_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_id_rs2 = int_hit_id_rs2_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs1 = int_hit_dp_rs1_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs2 = int_hit_dp_rs2_p1 ? port1_int_data : port0_int_data;
+
+  assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_bypass_data_id_rs1 :
                                        int_rf_read_data[XLEN-1:0];
-  assign rf_to_fwd.source_reg_2_data = int_rf_wb_bypass_id_rs2 ? int_rf_commit_bypass_data :
+  assign rf_to_fwd.source_reg_2_data = int_rf_wb_bypass_id_rs2 ? int_bypass_data_id_rs2 :
                                        int_rf_read_data[2*XLEN-1:XLEN];
-  assign int_rf_dispatch_rs1_data = int_rf_wb_bypass_dispatch_rs1 ? int_rf_commit_bypass_data :
-                                    int_rf_read_data[3*XLEN-1:2*XLEN];
-  assign int_rf_dispatch_rs2_data = int_rf_wb_bypass_dispatch_rs2 ? int_rf_commit_bypass_data :
-                                    int_rf_read_data[4*XLEN-1:3*XLEN];
+  assign int_rf_dispatch_rs1_data    = int_rf_wb_bypass_dispatch_rs1 ? int_bypass_data_dp_rs1 :
+                                       int_rf_read_data[3*XLEN-1:2*XLEN];
+  assign int_rf_dispatch_rs2_data    = int_rf_wb_bypass_dispatch_rs2 ? int_bypass_data_dp_rs2 :
+                                       int_rf_read_data[4*XLEN-1:3*XLEN];
 
-  // FP register file
-  localparam int unsigned FpW = riscv_pkg::FpWidth;
-  logic                     [6*FpW-1:0] fp_rf_read_data;
-  logic                                 fp_rf_write_enable;
-  logic                     [      4:0] fp_rf_write_addr;
-  logic                     [  FpW-1:0] fp_rf_write_data;
-  logic                                 fp_rf_wb_bypass_id_rs1;
-  logic                                 fp_rf_wb_bypass_id_rs2;
-  logic                                 fp_rf_wb_bypass_id_rs3;
-  logic                                 fp_rf_wb_bypass_dispatch_rs1;
-  logic                                 fp_rf_wb_bypass_dispatch_rs2;
-  logic                                 fp_rf_wb_bypass_dispatch_rs3;
-  logic                     [  FpW-1:0] fp_rf_dispatch_rs1_data;
-  logic                     [  FpW-1:0] fp_rf_dispatch_rs2_data;
-  logic                     [  FpW-1:0] fp_rf_dispatch_rs3_data;
+  // FP register file.  Same 2-write-port topology as the INT regfile for
+  // widen-commit.  FpW is declared up near the INT regfile for forward-
+  // reference reasons (INT port0_fp_data uses it for sizing).
+  localparam int unsigned FpRfWrPorts = 2;
+  logic                     [          6*FpW-1:0] fp_rf_read_data;
+  logic                     [    FpRfWrPorts-1:0] fp_rf_write_enable;
+  logic                     [  FpRfWrPorts*5-1:0] fp_rf_write_addr;
+  logic                     [FpRfWrPorts*FpW-1:0] fp_rf_write_data;
+  logic                                           fp_rf_wb_bypass_id_rs1;
+  logic                                           fp_rf_wb_bypass_id_rs2;
+  logic                                           fp_rf_wb_bypass_id_rs3;
+  logic                                           fp_rf_wb_bypass_dispatch_rs1;
+  logic                                           fp_rf_wb_bypass_dispatch_rs2;
+  logic                                           fp_rf_wb_bypass_dispatch_rs3;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs3_data;
 
-  riscv_pkg::fp_rf_to_fwd_t             fp_rf_to_fwd;
+  riscv_pkg::fp_rf_to_fwd_t                       fp_rf_to_fwd;
 
   generic_regfile #(
       .DATA_WIDTH(FpW),
       .NUM_READ_PORTS(6),
+      .NUM_WRITE_PORTS(FpRfWrPorts),
       .HARDWIRE_ZERO(0)
   ) fp_regfile_inst (
       .i_clk,
@@ -680,32 +717,56 @@ module cpu_ooo #(
       .o_read_data(fp_rf_read_data)
   );
 
-  assign fp_rf_wb_bypass_id_rs1 = fp_rf_write_enable &&
-                                  (fp_rf_write_addr == from_pd_to_id.source_reg_1_early);
-  assign fp_rf_wb_bypass_id_rs2 = fp_rf_write_enable &&
-                                  (fp_rf_write_addr == from_pd_to_id.source_reg_2_early);
-  assign fp_rf_wb_bypass_id_rs3 = fp_rf_write_enable &&
-                                  (fp_rf_write_addr == from_pd_to_id.fp_source_reg_3_early);
-  assign fp_rf_wb_bypass_dispatch_rs1 = fp_rf_write_enable &&
-                                        (fp_rf_write_addr ==
-                                         from_id_to_ex.instruction.source_reg_1);
-  assign fp_rf_wb_bypass_dispatch_rs2 = fp_rf_write_enable &&
-                                        (fp_rf_write_addr ==
-                                         from_id_to_ex.instruction.source_reg_2);
-  assign fp_rf_wb_bypass_dispatch_rs3 = fp_rf_write_enable &&
-                                        (fp_rf_write_addr == from_id_to_ex.instruction.funct7[6:2]);
+  // FP widen-commit bypass: parallel 2-port structure to the INT bypass.
+  logic fp_hit_id_rs1_p1, fp_hit_id_rs1_p0;
+  logic fp_hit_id_rs2_p1, fp_hit_id_rs2_p0;
+  logic fp_hit_id_rs3_p1, fp_hit_id_rs3_p0;
+  logic fp_hit_dp_rs1_p1, fp_hit_dp_rs1_p0;
+  logic fp_hit_dp_rs2_p1, fp_hit_dp_rs2_p0;
+  logic fp_hit_dp_rs3_p1, fp_hit_dp_rs3_p0;
 
-  assign fp_rf_to_fwd.fp_source_reg_1_data = fp_rf_wb_bypass_id_rs1 ? fp_rf_write_data :
+  assign fp_hit_id_rs1_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.source_reg_1_early);
+  assign fp_hit_id_rs1_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.source_reg_1_early);
+  assign fp_hit_id_rs2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.source_reg_2_early);
+  assign fp_hit_id_rs2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.source_reg_2_early);
+  assign fp_hit_id_rs3_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.fp_source_reg_3_early);
+  assign fp_hit_id_rs3_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.fp_source_reg_3_early);
+
+  assign fp_hit_dp_rs1_p1 = port1_fp_we && (port1_fp_addr==from_id_to_ex.instruction.source_reg_1);
+  assign fp_hit_dp_rs1_p0 = port0_fp_we && (port0_fp_addr==from_id_to_ex.instruction.source_reg_1);
+  assign fp_hit_dp_rs2_p1 = port1_fp_we && (port1_fp_addr==from_id_to_ex.instruction.source_reg_2);
+  assign fp_hit_dp_rs2_p0 = port0_fp_we && (port0_fp_addr==from_id_to_ex.instruction.source_reg_2);
+  assign fp_hit_dp_rs3_p1 = port1_fp_we && (port1_fp_addr == from_id_to_ex.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs3_p0 = port0_fp_we && (port0_fp_addr == from_id_to_ex.instruction.funct7[6:2]);
+
+  assign fp_rf_wb_bypass_id_rs1 = fp_hit_id_rs1_p1 || fp_hit_id_rs1_p0;
+  assign fp_rf_wb_bypass_id_rs2 = fp_hit_id_rs2_p1 || fp_hit_id_rs2_p0;
+  assign fp_rf_wb_bypass_id_rs3 = fp_hit_id_rs3_p1 || fp_hit_id_rs3_p0;
+  assign fp_rf_wb_bypass_dispatch_rs1 = fp_hit_dp_rs1_p1 || fp_hit_dp_rs1_p0;
+  assign fp_rf_wb_bypass_dispatch_rs2 = fp_hit_dp_rs2_p1 || fp_hit_dp_rs2_p0;
+  assign fp_rf_wb_bypass_dispatch_rs3 = fp_hit_dp_rs3_p1 || fp_hit_dp_rs3_p0;
+
+  logic [FpW-1:0] fp_bypass_data_id_rs1, fp_bypass_data_id_rs2, fp_bypass_data_id_rs3;
+  logic [FpW-1:0] fp_bypass_data_dp_rs1, fp_bypass_data_dp_rs2, fp_bypass_data_dp_rs3;
+
+  assign fp_bypass_data_id_rs1 = fp_hit_id_rs1_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_id_rs2 = fp_hit_id_rs2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_id_rs3 = fp_hit_id_rs3_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs1 = fp_hit_dp_rs1_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs2 = fp_hit_dp_rs2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs3 = fp_hit_dp_rs3_p1 ? port1_fp_data : port0_fp_data;
+
+  assign fp_rf_to_fwd.fp_source_reg_1_data = fp_rf_wb_bypass_id_rs1 ? fp_bypass_data_id_rs1 :
                                              fp_rf_read_data[FpW-1:0];
-  assign fp_rf_to_fwd.fp_source_reg_2_data = fp_rf_wb_bypass_id_rs2 ? fp_rf_write_data :
+  assign fp_rf_to_fwd.fp_source_reg_2_data = fp_rf_wb_bypass_id_rs2 ? fp_bypass_data_id_rs2 :
                                              fp_rf_read_data[2*FpW-1:FpW];
-  assign fp_rf_to_fwd.fp_source_reg_3_data = fp_rf_wb_bypass_id_rs3 ? fp_rf_write_data :
+  assign fp_rf_to_fwd.fp_source_reg_3_data = fp_rf_wb_bypass_id_rs3 ? fp_bypass_data_id_rs3 :
                                              fp_rf_read_data[3*FpW-1:2*FpW];
-  assign fp_rf_dispatch_rs1_data = fp_rf_wb_bypass_dispatch_rs1 ? fp_rf_write_data :
+  assign fp_rf_dispatch_rs1_data = fp_rf_wb_bypass_dispatch_rs1 ? fp_bypass_data_dp_rs1 :
                                    fp_rf_read_data[4*FpW-1:3*FpW];
-  assign fp_rf_dispatch_rs2_data = fp_rf_wb_bypass_dispatch_rs2 ? fp_rf_write_data :
+  assign fp_rf_dispatch_rs2_data = fp_rf_wb_bypass_dispatch_rs2 ? fp_bypass_data_dp_rs2 :
                                    fp_rf_read_data[5*FpW-1:4*FpW];
-  assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_rf_write_data :
+  assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_bypass_data_dp_rs3 :
                                    fp_rf_read_data[6*FpW-1:5*FpW];
 
   // ===========================================================================
@@ -714,13 +775,22 @@ module cpu_ooo #(
   // ROB commit writes are architectural WB for the OOO core. Decode still needs
   // same-cycle bypass when it reads a source register that is being committed.
   always_comb begin
+    // id_stage has its own in-module wb_bypass that fires on matches
+    // against `instruction.dest_reg` using this struct's regfile_write_*
+    // fields.  That bypass only covers ONE source (the primary port
+    // write) and would return stale data when cpu_ooo's 3-source
+    // priority chain picks an auxiliary source (slot 2 or displaced
+    // slot 1) over the primary.  Force the WE fields low here so
+    // id_stage's bypass never fires and falls through to
+    // i_rf_to_id.source_reg_*_data — which is already the fully-resolved
+    // 3-source bypass result computed in this file.
     from_ma_to_wb_commit                         = '0;
-    from_ma_to_wb_commit.regfile_write_enable    = int_rf_write_enable;
-    from_ma_to_wb_commit.regfile_write_data      = int_rf_write_data;
-    from_ma_to_wb_commit.instruction.dest_reg    = int_rf_write_addr;
-    from_ma_to_wb_commit.fp_regfile_write_enable = fp_rf_write_enable;
-    from_ma_to_wb_commit.fp_dest_reg             = fp_rf_write_addr;
-    from_ma_to_wb_commit.fp_regfile_write_data   = fp_rf_write_data;
+    from_ma_to_wb_commit.regfile_write_enable    = 1'b0;
+    from_ma_to_wb_commit.regfile_write_data      = '0;
+    from_ma_to_wb_commit.instruction.dest_reg    = '0;
+    from_ma_to_wb_commit.fp_regfile_write_enable = 1'b0;
+    from_ma_to_wb_commit.fp_dest_reg             = '0;
+    from_ma_to_wb_commit.fp_regfile_write_data   = '0;
   end
 
   id_stage #(
@@ -966,6 +1036,21 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered — drives CSR/regfile/bypass
   logic rob_commit_valid;
   logic rob_commit_valid_raw;
+
+  // Widen-commit slot 2 — populated by the ROB when commit_2_fire fires.
+  // With the 2-write-port regfile there is no FIFO or back-pressure: both
+  // slot 1 (rob_commit) and slot 2 (rob_commit_2) write the regfile in
+  // the same cycle via independent ports.  widen_commit_ok is thus
+  // permanently asserted (the ROB still uses the gate plumbing so the
+  // signal path stays symmetric with the earlier FIFO approach).
+  riscv_pkg::reorder_buffer_commit_t rob_commit_comb_2;
+  riscv_pkg::reorder_buffer_commit_t rob_commit_2;
+  logic rob_commit_2_valid_raw;
+  logic rob_commit_2_store_like_raw;
+  logic rob_commit_2_valid;
+  assign rob_commit_2_valid = rob_commit_2.valid;
+  logic widen_commit_ok;
+  assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
 
   // RAT lookup
@@ -1213,6 +1298,14 @@ module cpu_ooo #(
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
       .o_commit_correct_branch_raw(rob_commit_correct_branch_raw),
       .o_head_commit_misprediction_candidate(rob_head_commit_misprediction_candidate),
+
+      // Widen-commit slot 2 observation + back-pressure to the ROB's
+      // commit_2_fire gate from the pending-write FIFO.
+      .o_commit_2               (rob_commit_2),
+      .o_commit_comb_2          (rob_commit_comb_2),
+      .o_commit_2_valid_raw     (rob_commit_2_valid_raw),
+      .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
+      .i_widen_commit_ok        (widen_commit_ok),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1799,38 +1892,104 @@ module cpu_ooo #(
   // ===========================================================================
 
   // --- Regfile writes from ROB commit ---
-  // CSR instructions use o_csr_read_data_comb (combinational, same cycle) so
-  // the rd write can happen on the same commit cycle as non-CSR instructions.
+  // Widen-commit drives two independent write ports per regfile:
+  //   port 0 = rob_commit (slot 1)
+  //   port 1 = rob_commit_2 (slot 2)
+  // Both retire in the same cycle when commit_2_fire fired.  The
+  // mwp_dist_ram LVT steers reads to port 1 when both ports write the
+  // same address — matching program order since slot 2 has the newer tag.
+  //
+  // CSR instructions still go through port 0 (slot 1) with the
+  // csr_read_data_comb fast-path; CSR commits are 1-wide only by the ROB
+  // hazard gate, so no slot 2 coincides with a CSR commit.
+  logic            port0_int_we;
+  logic [     4:0] port0_int_addr;
+  logic [XLEN-1:0] port0_int_data;
+  logic            port0_fp_we;
+  logic [     4:0] port0_fp_addr;
+  logic [ FpW-1:0] port0_fp_data;
+  logic            port1_int_we;
+  logic [     4:0] port1_int_addr;
+  logic [XLEN-1:0] port1_int_data;
+  logic            port1_fp_we;
+  logic [     4:0] port1_fp_addr;
+  logic [ FpW-1:0] port1_fp_data;
+
   always_comb begin
-    int_rf_write_enable = 1'b0;
-    int_rf_write_addr   = '0;
-    int_rf_write_data   = '0;
-    fp_rf_write_enable  = 1'b0;
-    fp_rf_write_addr    = '0;
-    fp_rf_write_data    = '0;
+    port0_int_we   = 1'b0;
+    port0_int_addr = '0;
+    port0_int_data = '0;
+    port0_fp_we    = 1'b0;
+    port0_fp_addr  = '0;
+    port0_fp_data  = '0;
 
     if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception) begin
       if (rob_commit.is_csr) begin
-        // CSR: write old CSR value (combinational read) to rd
-        int_rf_write_enable = 1'b1;
-        int_rf_write_addr   = rob_commit.dest_reg;
-        int_rf_write_data   = csr_read_data_comb;
+        port0_int_we   = 1'b1;
+        port0_int_addr = rob_commit.dest_reg;
+        port0_int_data = csr_read_data_comb;
       end else if (rob_commit.dest_rf == 1'b0) begin
-        // INT destination
-        int_rf_write_enable = 1'b1;
-        int_rf_write_addr   = rob_commit.dest_reg;
-        int_rf_write_data   = rob_commit.value[XLEN-1:0];
+        port0_int_we   = 1'b1;
+        port0_int_addr = rob_commit.dest_reg;
+        port0_int_data = rob_commit.value[XLEN-1:0];
       end else begin
-        // FP destination
-        fp_rf_write_enable = 1'b1;
-        fp_rf_write_addr   = rob_commit.dest_reg;
-        fp_rf_write_data   = rob_commit.value;
+        port0_fp_we   = 1'b1;
+        port0_fp_addr = rob_commit.dest_reg;
+        port0_fp_data = rob_commit.value;
       end
     end
   end
 
+  always_comb begin
+    port1_int_we   = 1'b0;
+    port1_int_addr = '0;
+    port1_int_data = '0;
+    port1_fp_we    = 1'b0;
+    port1_fp_addr  = '0;
+    port1_fp_data  = '0;
+
+    // Slot 2 can never take an exception, be a CSR, or be serial (all
+    // excluded by the ROB hazard gate).  Only the INT/FP dest case applies.
+    if (rob_commit_2.valid && rob_commit_2.dest_valid) begin
+      if (rob_commit_2.dest_rf == 1'b0) begin
+        port1_int_we   = 1'b1;
+        port1_int_addr = rob_commit_2.dest_reg;
+        port1_int_data = rob_commit_2.value[XLEN-1:0];
+      end else begin
+        port1_fp_we   = 1'b1;
+        port1_fp_addr = rob_commit_2.dest_reg;
+        port1_fp_data = rob_commit_2.value;
+      end
+    end
+  end
+
+  // Pack the per-port signals into the regfile instantiation's array
+  // inputs.  LVT priority: highest-numbered port wins on same-address
+  // conflicts, so slot 2 (port 1) correctly overrides slot 1 (port 0)
+  // when they happen to target the same architectural register.
+  assign int_rf_write_enable = {port1_int_we, port0_int_we};
+  assign int_rf_write_addr   = {port1_int_addr, port0_int_addr};
+  assign int_rf_write_data   = {port1_int_data, port0_int_data};
+  assign fp_rf_write_enable  = {port1_fp_we, port0_fp_we};
+  assign fp_rf_write_addr    = {port1_fp_addr, port0_fp_addr};
+  assign fp_rf_write_data    = {port1_fp_data, port0_fp_data};
+
   // --- Instruction retire signal ---
   assign o_vld = rob_commit_valid && !rob_commit.exception;
+
+  // Instret increments 1 or 2 per cycle based on widen-commit retirement.
+  // Slot 2 can never take an exception (the 2-wide gate excludes them),
+  // so its retire condition is simply "slot 2 valid".
+  logic [1:0] instruction_retired_count;
+  always_comb begin
+    instruction_retired_count = 2'd0;
+    if (rob_commit_valid && !rob_commit.exception && !trap_taken) begin
+      instruction_retired_count = 2'd1;
+      if (rob_commit_2.valid) begin
+        instruction_retired_count = 2'd2;
+      end
+    end
+  end
 
   // --- PC validity ---
   assign o_pc_vld = o_vld;
@@ -2278,7 +2437,7 @@ module cpu_ooo #(
       .i_csr_write_enable(csr_commit_fire),
       .o_csr_read_data(csr_read_data),
       .o_csr_read_data_comb(csr_read_data_comb),
-      .i_instruction_retired(o_vld && !trap_taken),
+      .i_instruction_retired_count(instruction_retired_count),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),

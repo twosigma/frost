@@ -1357,6 +1357,17 @@ package riscv_pkg;
     // to get "done-queue stacking up behind a stalled head" — cycles where
     // widen-commit is building up work for later bursts.
     logic head_plus_one_done;
+    // Fires when the full 2-wide commit gate would fire: commit_en high,
+    // head+1 valid+done, and both head and head+1 pass the hazard
+    // exclusions (serial ops, branches on head+1, FENCE.I, exceptions,
+    // AMO/LR/SC, and head-mispredicting-branches). Tighter upper bound on
+    // the actual widen-commit fire rate than head_and_next_done.
+    logic commit_2_opportunity;
+    // Actual widen-commit fire rate: opportunity ANDed with the master
+    // enable and the cpu_ooo pending-write FIFO back-pressure term.  The
+    // difference between commit_2_opportunity and commit_2_fire_actual
+    // is the "throttled by FIFO pressure" fraction.
+    logic commit_2_fire_actual;
   } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------

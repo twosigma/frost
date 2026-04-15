@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 63U
+#define TOMASULO_PROFILE_COUNTER_COUNT 65U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -88,6 +88,8 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_WAIT_LOAD_OUTSTANDING = 60,
     TOMASULO_PERF_HEAD_WAIT_LOAD_NO_OUTSTANDING = 61,
     TOMASULO_PERF_HEAD_PLUS_ONE_DONE = 62,
+    TOMASULO_PERF_COMMIT_2_OPPORTUNITY = 63,
+    TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL = 64,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -639,6 +641,14 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Head+1 done (ungated)",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_PLUS_ONE_DONE),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen-commit 2-wide gate",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_OPPORTUNITY),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen-commit 2-wide fired",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL),
         cycles);
 
     uart_printf("  Average occupancies:\n");

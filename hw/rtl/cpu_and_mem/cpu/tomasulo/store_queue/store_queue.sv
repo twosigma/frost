@@ -90,6 +90,15 @@ module store_queue #(
     input logic                                        i_commit_valid_comb,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb,
 
+    // Widen-commit slot 2: second simultaneous store retire.  Slot 2 is
+    // mutually exclusive with SC/AMO/LR/fence by the ROB hazard gate, so
+    // the SC-discard path is not shared with slot 2.  Both a registered
+    // and a combinational variant are plumbed in parallel to slot 1.
+    input logic                                        i_commit_valid_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_2,
+    input logic                                        i_commit_valid_comb_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb_2,
+
     // =========================================================================
     // Store-to-Load Forwarding (from LQ disambiguation)
     // =========================================================================
@@ -418,7 +427,10 @@ module store_queue #(
       // Stores retire from the ROB before they drain from the SQ.  Keep a
       // store visible to younger-load disambiguation in the cycle its commit
       // arrives so the load cannot slip through the one-cycle sq_committed lag.
-      store_committed = sq_committed[i] || (i_commit_valid && (sq_rob_tag[i] == i_commit_rob_tag));
+      // Widen-commit extends the same guard to slot 2.
+      store_committed = sq_committed[i] ||
+                        (i_commit_valid && (sq_rob_tag[i] == i_commit_rob_tag)) ||
+                        (i_commit_valid_2 && (sq_rob_tag[i] == i_commit_rob_tag_2));
       older_store = sq_valid[i] && (store_committed || (fwd_entry_age[i] < fwd_load_age));
 
       if (older_store) begin
@@ -726,6 +738,18 @@ module store_queue #(
         end
       end
 
+      // Widen-commit slot 2: mark a second store as committed in the same
+      // cycle.  The two loops are independent — each slot scans the whole
+      // SQ and marks the entry whose rob_tag matches.  Slot 2 cannot be an
+      // SC by construction, so no SC-discard interaction.
+      if (i_commit_valid_2) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && !sq_committed[i] && sq_rob_tag[i] == i_commit_rob_tag_2) begin
+            sq_committed[i] <= 1'b1;
+          end
+        end
+      end
+
       // -----------------------------------------------------------------
       // Memory Write Initiation
       // -----------------------------------------------------------------
@@ -777,9 +801,12 @@ module store_queue #(
               //   Cycle K:   ROB commit_en → commit_bus (comb)
               //   Cycle K+1: commit_bus_q → i_commit_valid (registered)
               //   Cycle K+2: sq_committed set (from K+1's NBA)
-              // A partial flush on K or K+1 would see sq_committed=0. Guard both:
+              // A partial flush on K or K+1 would see sq_committed=0. Guard both,
+              // and extend the same guard to widen-commit slot 2.
               !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
+              !(i_commit_valid_comb_2 && sq_rob_tag[i] == i_commit_rob_tag_comb_2) &&
               !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
+              !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
               (flush_all_uncommitted || is_younger(
                   sq_rob_tag[i], i_flush_tag, i_rob_head_tag
               ))) begin

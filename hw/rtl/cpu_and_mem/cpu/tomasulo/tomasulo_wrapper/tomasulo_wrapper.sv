@@ -99,6 +99,16 @@ module tomasulo_wrapper (
     output logic                              o_commit_correct_branch_raw,
     output logic                              o_head_commit_misprediction_candidate,
 
+    // Widen-commit slot 2 observation (head+1).  Non-null only when the
+    // 2-wide gate inside the ROB fires; otherwise valid bits are low and
+    // payload is '0.  These ports exist so cpu_ooo (and future external
+    // consumers) can wire up slot-2 retire logic — step 2 does not yet
+    // connect any consumer to them.
+    output riscv_pkg::reorder_buffer_commit_t o_commit_2,
+    output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
+    output logic                              o_commit_2_valid_raw,
+    output logic                              o_commit_2_store_like_raw,
+
     // =========================================================================
     // ROB External Coordination
     // =========================================================================
@@ -112,6 +122,12 @@ module tomasulo_wrapper (
     input  logic                                        i_mret_done,
     input  logic                  [riscv_pkg::XLEN-1:0] i_mepc,
     input  logic                                        i_interrupt_pending,
+
+    // Widen-commit back-pressure: asserted when cpu_ooo's pending-write
+    // FIFO has room for a slot-2 regfile write this cycle.  Driven from
+    // a registered pending_write state so the ROB can OR it into the
+    // commit_2_fire gate without creating a combinational loop.
+    input logic i_widen_commit_ok,
 
     // =========================================================================
     // Flush
@@ -366,6 +382,22 @@ module tomasulo_wrapper (
   logic commit_valid_raw;
   logic commit_store_like_raw;
 
+  // Widen-commit slot 2 parallel to commit_bus / commit_bus_q.  Slot 2 is
+  // never SC/AMO/LR by construction (excluded by the ROB hazard gate), so
+  // we only need the retire/store-like fields a cpu_ooo regfile-write +
+  // SQ-release consumer uses.  Like commit_bus_q, split the valid bit out
+  // so the reset cone does not touch the payload register bits.
+  riscv_pkg::reorder_buffer_commit_t commit_bus_2;
+  riscv_pkg::reorder_buffer_commit_t commit_bus_2_q;
+  logic commit_bus_2_q_valid;
+  logic commit_q_2_dest_valid;
+  logic commit_q_2_dest_rf;
+  logic [riscv_pkg::RegAddrWidth-1:0] commit_q_2_dest_reg;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] commit_q_2_tag;
+  logic commit_q_2_is_store_like;
+  logic commit_2_valid_raw;
+  logic commit_2_store_like_raw;
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) commit_bus_q_valid <= 1'b0;
     else commit_bus_q_valid <= commit_bus.valid;
@@ -382,6 +414,22 @@ module tomasulo_wrapper (
     commit_q_sc_failed <= commit_bus.is_sc && commit_bus.value[0];
   end
 
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) commit_bus_2_q_valid <= 1'b0;
+    else commit_bus_2_q_valid <= commit_bus_2.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    commit_bus_2_q <= commit_bus_2;
+    commit_q_2_dest_valid <= commit_bus_2.dest_valid;
+    commit_q_2_dest_rf <= commit_bus_2.dest_rf;
+    commit_q_2_dest_reg <= commit_bus_2.dest_reg;
+    commit_q_2_tag <= commit_bus_2.tag;
+    // Slot 2 excludes SC by construction, so "store_like" collapses to
+    // is_store | is_fp_store — the SC discard path is not reachable.
+    commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
+  end
+
   // Reconstruct commit bus with reset-qualified valid for downstream consumers
   riscv_pkg::reorder_buffer_commit_t commit_bus_q_qualified;
   always_comb begin
@@ -390,7 +438,17 @@ module tomasulo_wrapper (
   end
   assign o_commit_valid_raw = commit_valid_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 40;
+  // Same trick for slot 2: expose a reset-qualified view of the registered
+  // slot-2 commit for cpu_ooo's step-5 consumer.
+  riscv_pkg::reorder_buffer_commit_t commit_bus_2_q_qualified;
+  always_comb begin
+    commit_bus_2_q_qualified       = commit_bus_2_q;
+    commit_bus_2_q_qualified.valid = commit_bus_2_q_valid;
+  end
+  assign o_commit_2_valid_raw      = commit_2_valid_raw;
+  assign o_commit_2_store_like_raw = commit_2_store_like_raw;
+
+  localparam int unsigned WrapperPerfCounterCount = 42;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -442,6 +500,16 @@ module tomasulo_wrapper (
   // high. Subtract PerfHeadAndNextDone to see drain-behind-stalled-head
   // opportunity (ROB has done entries stacking behind a waiting head).
   localparam int unsigned PerfHeadPlusOneDone = 39;
+  // Diagnostic: widen-commit fire-rate predictor. Tighter than
+  // PerfHeadAndNextDone because the hazard gate (serial ops, head+1 branches,
+  // FENCE.I, exceptions, AMO/LR/SC, head-mispredict) is already applied.
+  // This is the opportunity upper bound.
+  localparam int unsigned PerfCommit2Opportunity = 40;
+  // Diagnostic: ACTUAL widen-commit fire count.  commit_2_opportunity
+  // ANDed with the master enable and the cpu_ooo pending-write FIFO
+  // back-pressure.  The gap between opportunity and fire_actual is the
+  // fraction blocked by FIFO pressure.
+  localparam int unsigned PerfCommit2FireActual = 41;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -454,8 +522,10 @@ module tomasulo_wrapper (
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank3;
 
   // Expose both the raw and registered commit buses.
-  assign o_commit_comb = commit_bus;
-  assign o_commit = commit_bus_q_qualified;
+  assign o_commit_comb               = commit_bus;
+  assign o_commit                    = commit_bus_q_qualified;
+  assign o_commit_comb_2             = commit_bus_2;
+  assign o_commit_2                  = commit_bus_2_q_qualified;
   assign perf_snapshot_capture_bank0 = i_perf_snapshot_capture;
   assign perf_snapshot_capture_bank1 = i_perf_snapshot_capture;
   assign perf_snapshot_capture_bank2 = i_perf_snapshot_capture;
@@ -1000,6 +1070,16 @@ module tomasulo_wrapper (
       .o_commit_correct_branch_raw          (o_commit_correct_branch_raw),
       .o_head_commit_misprediction_candidate(o_head_commit_misprediction_candidate),
 
+      // Widen-commit slot 2 — tapped into a parallel commit_bus_2 / _q
+      // pair.  Registered observation goes to o_commit_2, and the
+      // combinational view is exposed as o_commit_comb_2 for the same-cycle
+      // path cpu_ooo consumes.
+      .o_commit_2               (),
+      .o_commit_comb_2          (commit_bus_2),
+      .o_commit_2_valid_raw     (commit_2_valid_raw),
+      .o_commit_2_store_like_raw(commit_2_store_like_raw),
+      .i_widen_commit_ok        (i_widen_commit_ok),
+
       // External coordination
       .i_sq_empty          (o_sq_empty),
       .i_sq_committed_empty(sq_committed_empty),
@@ -1101,6 +1181,13 @@ module tomasulo_wrapper (
       .i_commit_dest_rf   (commit_q_dest_rf),
       .i_commit_dest_reg  (commit_q_dest_reg),
       .i_commit_tag       (commit_q_tag),
+
+      // Widen-commit slot 2 retire — identical pipelined pattern.
+      .i_commit_valid_2     (commit_bus_2_q_valid),
+      .i_commit_dest_valid_2(commit_q_2_dest_valid),
+      .i_commit_dest_rf_2   (commit_q_2_dest_rf),
+      .i_commit_dest_reg_2  (commit_q_2_dest_reg),
+      .i_commit_tag_2       (commit_q_2_tag),
 
       // Checkpoint save
       .i_checkpoint_save      (i_checkpoint_save),
@@ -1751,6 +1838,10 @@ module tomasulo_wrapper (
   // Uses pipelined commit bus to break ROB → SQ critical path.
   logic sq_commit_valid;
   assign sq_commit_valid = commit_bus_q_valid && commit_q_is_store_like && !sc_discard;
+  // Widen-commit slot 2: a second simultaneous store retire.  Slot 2 can
+  // never be an SC, so no sc_discard gate.
+  logic sq_commit_valid_2;
+  assign sq_commit_valid_2 = commit_bus_2_q_valid && commit_q_2_is_store_like;
 
   // ===========================================================================
   // Store Queue Instance
@@ -1776,11 +1867,23 @@ module tomasulo_wrapper (
       .i_commit_valid  (sq_commit_valid),
       .i_commit_rob_tag(commit_q_tag),
 
+      // Widen-commit slot 2 retire, pipelined the same way.  commit_q_2_tag
+      // is the head+1 tag when 2-wide commit fires and zero otherwise.
+      .i_commit_valid_2  (sq_commit_valid_2),
+      .i_commit_rob_tag_2(commit_q_2_tag),
+
       // Same-cycle commit guard (combinational, for flush race protection).
       // Use the narrow raw ROB pulse instead of the wide commit bus so the
       // SQ flush-exemption path does not inherit full commit payload logic.
       .i_commit_valid_comb  (commit_store_like_raw),
       .i_commit_rob_tag_comb(head_tag),
+
+      // Widen-commit slot 2 same-cycle guard.  Slot 2's head+1 tag is
+      // head_tag+1 when commit_2_fire is asserted, but since slot 2 is
+      // ROB-gated on commit_2_store_like_raw we can use that directly.
+      // The tag passed here must match what the ROB would retire as slot 2.
+      .i_commit_valid_comb_2  (commit_2_store_like_raw),
+      .i_commit_rob_tag_comb_2(head_tag + 1'b1),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),
@@ -1973,6 +2076,8 @@ module tomasulo_wrapper (
       {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding)
     };
     perf_inc[PerfHeadPlusOneDone] = {{63{1'b0}}, rob_perf_events.head_plus_one_done};
+    perf_inc[PerfCommit2Opportunity] = {{63{1'b0}}, rob_perf_events.commit_2_opportunity};
+    perf_inc[PerfCommit2FireActual] = {{63{1'b0}}, rob_perf_events.commit_2_fire_actual};
   end
 
   always_ff @(posedge i_clk) begin
@@ -2163,6 +2268,11 @@ module tomasulo_wrapper (
       p_commit_observation_identity : assert (o_commit == commit_bus_q_qualified);
       p_commit_requires_head_ready : assert (!commit_bus.valid || (o_head_valid && o_head_done));
       p_commit_tag_is_head : assert (!commit_bus.valid || (commit_bus.tag == o_head_tag));
+      // Slot 2 identity + subordination to slot 1: slot 2 can only be
+      // valid when slot 1 is also valid (2-wide never fires alone).
+      p_commit_2_output_identity : assert (o_commit_comb_2 == commit_bus_2);
+      p_commit_2_observation_identity : assert (o_commit_2 == commit_bus_2_q_qualified);
+      p_commit_2_implies_commit_1 : assert (!commit_bus_2.valid || commit_bus.valid);
     end
   end
 

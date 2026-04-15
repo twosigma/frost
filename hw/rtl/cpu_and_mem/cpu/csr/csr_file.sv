@@ -62,8 +62,10 @@ module csr_file #(
     output logic [XLEN-1:0] o_csr_read_data,      // CSR read value (registered, 1-cycle latency)
     output logic [XLEN-1:0] o_csr_read_data_comb, // CSR read value (combinational, same cycle)
 
-    // Instruction retire signal (active when instruction commits)
-    input logic i_instruction_retired,
+    // Instruction retire count: 0, 1, or 2 per cycle.  For widen-commit
+    // the OOO core can retire two entries in a single cycle; the instret
+    // counter must increment by the retire count.
+    input logic [1:0] i_instruction_retired_count,
 
     // Interrupt pending inputs (directly from peripherals)
     input riscv_pkg::interrupt_t i_interrupts,
@@ -239,8 +241,8 @@ module csr_file #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       instret_counter <= 64'd0;
-    end else if (i_instruction_retired) begin
-      instret_counter <= instret_counter + 64'd1;
+    end else begin
+      instret_counter <= instret_counter + 64'(i_instruction_retired_count);
     end
   end
 
@@ -528,15 +530,9 @@ module csr_file #(
       // Cycle counter increments every cycle (not in reset).
       p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
 
-      // Instret increments on retire.
-      if ($past(i_instruction_retired)) begin
-        p_instret_increments : assert (instret_counter == $past(instret_counter) + 64'd1);
-      end
-
-      // Instret stable when no retire and no reset.
-      if ($past(!i_instruction_retired)) begin
-        p_instret_stable : assert (instret_counter == $past(instret_counter));
-      end
+      // Instret increments by the retire count (0, 1, or 2 per cycle).
+      p_instret_increments :
+      assert (instret_counter == $past(instret_counter) + 64'($past(i_instruction_retired_count)));
 
       // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.
