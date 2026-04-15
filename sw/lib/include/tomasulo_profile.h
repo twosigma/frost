@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 59U
+#define TOMASULO_PROFILE_COUNTER_COUNT 63U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -84,6 +84,10 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 56,
     TOMASULO_PERF_LQ_L0_HIT = 57,
     TOMASULO_PERF_LQ_L0_FILL = 58,
+    TOMASULO_PERF_HEAD_AND_NEXT_DONE = 59,
+    TOMASULO_PERF_HEAD_WAIT_LOAD_OUTSTANDING = 60,
+    TOMASULO_PERF_HEAD_WAIT_LOAD_NO_OUTSTANDING = 61,
+    TOMASULO_PERF_HEAD_PLUS_ONE_DONE = 62,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -619,6 +623,23 @@ static inline void tomasulo_profile_print_report(const char *label,
                         (unsigned long) (hit_rate_x10 % 10U));
         }
     }
+    uart_printf("  Diagnostic counters:\n");
+    tomasulo_profile_print_metric(
+        "Head+next both done",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_AND_NEXT_DONE),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head wait load, mem in flight",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_LOAD_OUTSTANDING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head wait load, no mem in flight",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_LOAD_NO_OUTSTANDING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head+1 done (ungated)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_PLUS_ONE_DONE),
+        cycles);
 
     uart_printf("  Average occupancies:\n");
     tomasulo_profile_print_average(

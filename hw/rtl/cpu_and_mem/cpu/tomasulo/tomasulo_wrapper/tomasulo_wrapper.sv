@@ -390,7 +390,7 @@ module tomasulo_wrapper (
   end
   assign o_commit_valid_raw = commit_valid_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 36;
+  localparam int unsigned WrapperPerfCounterCount = 40;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -427,6 +427,21 @@ module tomasulo_wrapper (
   localparam int unsigned PerfFdivRsOccupancySum = 33;
   localparam int unsigned PerfLqL0Hit = 34;
   localparam int unsigned PerfLqL0Fill = 35;
+  // Diagnostic: widen-commit viability. Fires when single-wide commit is
+  // retiring head and the next ROB entry would also have been retirable.
+  localparam int unsigned PerfHeadAndNextDone = 36;
+  // Diagnostic: head_wait_mem_load partition. A head load waiting while
+  // the LQ has a memory response in flight (real cache miss latency).
+  localparam int unsigned PerfHeadWaitLoadOutstanding = 37;
+  // Diagnostic: head_wait_mem_load partition. A head load waiting while no
+  // mem response is in flight (stuck on SQ disambig, issue-ready, or L0
+  // arbitration). This is the bucket widen-commit / LQ issue fixes could
+  // attack; straight latency reduction cannot.
+  localparam int unsigned PerfHeadWaitLoadNoOutstanding = 38;
+  // Diagnostic: ungated "head+1 done" — fires whether or not commit_en is
+  // high. Subtract PerfHeadAndNextDone to see drain-behind-stalled-head
+  // opportunity (ROB has done entries stacking behind a waiting head).
+  localparam int unsigned PerfHeadPlusOneDone = 39;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -715,6 +730,7 @@ module tomasulo_wrapper (
   logic lq_result_accepted;
   logic lq_l0_hit;  // LQ L0 cache fast-path completion (perf counter)
   logic lq_l0_fill;  // LQ L0 cache fill from memory response (perf counter)
+  logic lq_mem_outstanding;  // LQ has a memory response in flight (perf counter)
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -1611,8 +1627,9 @@ module tomasulo_wrapper (
       .o_count(o_lq_count),
 
       // L0 cache profile pulses
-      .o_l0_hit (lq_l0_hit),
-      .o_l0_fill(lq_l0_fill)
+      .o_l0_hit(lq_l0_hit),
+      .o_l0_fill(lq_l0_fill),
+      .o_mem_outstanding(lq_mem_outstanding)
   );
 
   // ===========================================================================
@@ -1948,6 +1965,14 @@ module tomasulo_wrapper (
     perf_inc[PerfFdivRsOccupancySum] = {{(64 - $bits(o_fdiv_rs_count)) {1'b0}}, o_fdiv_rs_count};
     perf_inc[PerfLqL0Hit] = {{63{1'b0}}, lq_l0_hit};
     perf_inc[PerfLqL0Fill] = {{63{1'b0}}, lq_l0_fill};
+    perf_inc[PerfHeadAndNextDone] = {{63{1'b0}}, rob_perf_events.head_and_next_done};
+    perf_inc[PerfHeadWaitLoadOutstanding] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && lq_mem_outstanding)
+    };
+    perf_inc[PerfHeadWaitLoadNoOutstanding] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding)
+    };
+    perf_inc[PerfHeadPlusOneDone] = {{63{1'b0}}, rob_perf_events.head_plus_one_done};
   end
 
   always_ff @(posedge i_clk) begin
@@ -1982,7 +2007,7 @@ module tomasulo_wrapper (
 
   always_comb begin
     o_perf_counter_data = '0;
-    if (i_perf_counter_select < 8'd36) begin
+    if (i_perf_counter_select < 8'(WrapperPerfCounterCount)) begin
       o_perf_counter_data = perf_snapshot[i_perf_counter_select[5:0]];
     end
   end

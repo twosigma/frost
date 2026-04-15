@@ -1348,6 +1348,15 @@ package riscv_pkg;
     logic commit_blocked_wfi;
     logic commit_blocked_mret;
     logic commit_blocked_trap;
+    // Fires on cycles where commit_en is high AND the entry immediately
+    // behind head is also valid+done. Upper bound on the fraction of cycles
+    // a 2-wide commit would actually retire a second instruction.
+    logic head_and_next_done;
+    // Fires whenever the entry immediately behind head is valid+done,
+    // regardless of whether head is committing. Subtract head_and_next_done
+    // to get "done-queue stacking up behind a stalled head" — cycles where
+    // widen-commit is building up work for later bursts.
+    logic head_plus_one_done;
   } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------

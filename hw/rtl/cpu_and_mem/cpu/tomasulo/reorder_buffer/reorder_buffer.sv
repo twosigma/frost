@@ -1211,6 +1211,14 @@ module reorder_buffer (
   assign o_entry_valid = rob_valid;
   assign o_entry_done = rob_done;
 
+  // Widen-commit diagnostic: compute whether the entry immediately behind
+  // the head is also valid and done, so an extra commit slot would have
+  // work to do this cycle.
+  logic [ReorderBufferTagWidth-1:0] head_next_idx;
+  logic head_next_valid_done;
+  assign head_next_idx = head_idx + 1'b1;
+  assign head_next_valid_done = rob_valid[head_next_idx] && rob_done[head_next_idx];
+
   always_comb begin
     o_perf_events = '0;
 
@@ -1246,6 +1254,17 @@ module reorder_buffer (
       o_perf_events.commit_blocked_mret = head_is_mret || (serial_state == SERIAL_MRET_EXEC);
       o_perf_events.commit_blocked_trap = head_exception || (serial_state == SERIAL_TRAP_WAIT);
     end
+
+    // Widen-commit viability: single-wide commit is firing this cycle AND
+    // the next ROB entry would also be ready to retire. This is an upper
+    // bound — the actual win is slightly lower because head+1 being a
+    // serial op (CSR/fence/trap) or a mispredicting branch would still
+    // force commit to stay 1-wide on that cycle.
+    o_perf_events.head_and_next_done = commit_en && head_next_valid_done;
+    // Ungated version: the entry behind head is done whether or not commit
+    // is firing this cycle. Subtract head_and_next_done to see how often
+    // the ROB is sitting on a done entry behind a stalled head.
+    o_perf_events.head_plus_one_done = head_next_valid_done && !i_flush_all;
   end
 
   // ===========================================================================

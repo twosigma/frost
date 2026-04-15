@@ -142,7 +142,8 @@ module load_queue #(
     // L0 Cache Profile Pulses (one cycle each, for perf counters)
     // =========================================================================
     output logic o_l0_hit,  // L0 cache fast-path completion
-    output logic o_l0_fill  // L0 cache fill from memory response
+    output logic o_l0_fill,  // L0 cache fill from memory response
+    output logic o_mem_outstanding  // LQ has a memory response in flight
 );
 
   // ===========================================================================
@@ -996,6 +997,9 @@ module load_queue #(
   // L0 cache profile pulses (one cycle when the event fires)
   assign o_l0_hit = cache_hit_fast_path;
   assign o_l0_fill = cache_fill_valid;
+  // Diagnostic: expose mem_outstanding so the wrapper can partition head
+  // wait cycles into "load in flight" vs "load stuck on something else".
+  assign o_mem_outstanding = mem_outstanding;
 
   // AMO write interface: compute new value combinationally from outstanding AMO read
   // TIMING: Removed same-cycle AMO write fast path (accept_mem_response &&
