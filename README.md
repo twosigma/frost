@@ -9,8 +9,8 @@ An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tom
 There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
-- **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
-- **Practical performance** — 2.28 CoreMark/MHz (683 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
+- **Solid performance** — 2.43 CoreMark/MHz (728 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
@@ -305,17 +305,17 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 79,778 | 1,029,600 | 7.8% |
-|   LUT as Logic | 67,610 | 1,029,600 | 6.6% |
+| CLB LUTs | 80,243 | 1,029,600 | 7.8% |
+|   LUT as Logic | 68,075 | 1,029,600 | 6.6% |
 |   LUT as Distributed RAM | 11,584 | — | — |
 |   LUT as Shift Register | 584 | — | — |
-| CLB Registers | 56,378 | 2,059,200 | 2.7% |
+| CLB Registers | 57,006 | 2,059,200 | 2.8% |
 | Block RAM Tile | 53.5 | 2,112 | 2.5% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,134 | 128,700 | 3.2% |
-| F7 Muxes | 6,263 | 514,800 | 1.2% |
-| F8 Muxes | 2,355 | 257,400 | 0.9% |
+| CARRY8 | 4,214 | 128,700 | 3.3% |
+| F7 Muxes | 6,301 | 514,800 | 1.2% |
+| F8 Muxes | 2,390 | 257,400 | 0.9% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |

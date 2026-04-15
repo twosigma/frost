@@ -448,7 +448,7 @@ module tomasulo_wrapper (
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 42;
+  localparam int unsigned WrapperPerfCounterCount = 47;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -510,6 +510,22 @@ module tomasulo_wrapper (
   // back-pressure.  The gap between opportunity and fire_actual is the
   // fraction blocked by FIFO pressure.
   localparam int unsigned PerfCommit2FireActual = 41;
+  // Head-load sub-bucket split of head_wait_load_no_outstanding (the 27.7%
+  // bucket post widen-commit).  Each sub-counter fires inside the parent
+  // bucket so the four should roughly sum to head_wait_load_no_outstanding.
+  //   AddrPending   : head load in LQ with address not yet computed
+  //                   (rs1/MEM_RS dep chain)
+  //   SqDisambig    : in LQ with address, blocked by SQ address disambig
+  //   BusBlocked    : in LQ with address, blocked by bus / arbitration
+  //                   (not SQ disambig)
+  //   CdbWait       : in LQ with data ready, waiting for cdb_stage capture
+  //   PostLq        : LQ entry already freed, CDB pipeline draining to ROB
+  //                   (cdb_stage -> mem_adapter -> cdb_arbiter -> rob_done)
+  localparam int unsigned PerfHeadLoadAddrPending = 42;
+  localparam int unsigned PerfHeadLoadSqDisambig = 43;
+  localparam int unsigned PerfHeadLoadBusBlocked = 44;
+  localparam int unsigned PerfHeadLoadCdbWait = 45;
+  localparam int unsigned PerfHeadLoadPostLq = 46;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -801,6 +817,12 @@ module tomasulo_wrapper (
   logic lq_l0_hit;  // LQ L0 cache fast-path completion (perf counter)
   logic lq_l0_fill;  // LQ L0 cache fill from memory response (perf counter)
   logic lq_mem_outstanding;  // LQ has a memory response in flight (perf counter)
+  // Head-load sub-bucket state (from LQ, split head_wait_load_no_outstanding)
+  logic lq_head_load_addr_pending;
+  logic lq_head_load_sq_disambig;
+  logic lq_head_load_bus_blocked;
+  logic lq_head_load_cdb_wait;
+  logic lq_head_load_post_lq;
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -1716,7 +1738,14 @@ module tomasulo_wrapper (
       // L0 cache profile pulses
       .o_l0_hit(lq_l0_hit),
       .o_l0_fill(lq_l0_fill),
-      .o_mem_outstanding(lq_mem_outstanding)
+      .o_mem_outstanding(lq_mem_outstanding),
+
+      // Head-load sub-bucket diagnostics
+      .o_head_load_addr_pending(lq_head_load_addr_pending),
+      .o_head_load_sq_disambig (lq_head_load_sq_disambig),
+      .o_head_load_bus_blocked (lq_head_load_bus_blocked),
+      .o_head_load_cdb_wait    (lq_head_load_cdb_wait),
+      .o_head_load_post_lq     (lq_head_load_post_lq)
   );
 
   // ===========================================================================
@@ -2078,6 +2107,28 @@ module tomasulo_wrapper (
     perf_inc[PerfHeadPlusOneDone] = {{63{1'b0}}, rob_perf_events.head_plus_one_done};
     perf_inc[PerfCommit2Opportunity] = {{63{1'b0}}, rob_perf_events.commit_2_opportunity};
     perf_inc[PerfCommit2FireActual] = {{63{1'b0}}, rob_perf_events.commit_2_fire_actual};
+    // Head-load sub-buckets: gate with parent head_wait_mem_load && !mem_outstanding
+    // so they split head_wait_load_no_outstanding exactly.
+    perf_inc[PerfHeadLoadAddrPending] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_addr_pending)
+    };
+    perf_inc[PerfHeadLoadSqDisambig] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_sq_disambig)
+    };
+    perf_inc[PerfHeadLoadBusBlocked] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bus_blocked)
+    };
+    perf_inc[PerfHeadLoadCdbWait] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_cdb_wait)
+    };
+    perf_inc[PerfHeadLoadPostLq] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_post_lq)
+    };
   end
 
   always_ff @(posedge i_clk) begin

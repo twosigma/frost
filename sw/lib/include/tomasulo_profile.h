@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 65U
+#define TOMASULO_PROFILE_COUNTER_COUNT 70U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -90,6 +90,11 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_PLUS_ONE_DONE = 62,
     TOMASULO_PERF_COMMIT_2_OPPORTUNITY = 63,
     TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL = 64,
+    TOMASULO_PERF_HEAD_LOAD_ADDR_PENDING = 65,
+    TOMASULO_PERF_HEAD_LOAD_SQ_DISAMBIG = 66,
+    TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 67,
+    TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 68,
+    TOMASULO_PERF_HEAD_LOAD_POST_LQ = 69,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -649,6 +654,26 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Widen-commit 2-wide fired",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load addr pending (rs1/MEM_RS)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_ADDR_PENDING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load SQ disambig blocked",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_SQ_DISAMBIG),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus/arb blocked",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load waiting CDB slot",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_CDB_WAIT),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load CDB pipeline drain (LQ freed)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_POST_LQ),
         cycles);
 
     uart_printf("  Average occupancies:\n");

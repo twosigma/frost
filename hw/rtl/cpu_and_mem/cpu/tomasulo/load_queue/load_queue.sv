@@ -143,7 +143,19 @@ module load_queue #(
     // =========================================================================
     output logic o_l0_hit,  // L0 cache fast-path completion
     output logic o_l0_fill,  // L0 cache fill from memory response
-    output logic o_mem_outstanding  // LQ has a memory response in flight
+    output logic o_mem_outstanding,  // LQ has a memory response in flight
+
+    // =========================================================================
+    // Head-load sub-bucket diagnostics (split head_wait_load_no_outstanding)
+    // =========================================================================
+    // Combinational indicators describing the state of the LQ entry matching
+    // i_rob_head_tag (if any). Mutually exclusive — wrapper ANDs each with
+    // (head_wait_mem_load && !mem_outstanding) to get the sub-bucket counters.
+    output logic o_head_load_addr_pending,  // matches head_tag, addr not yet computed
+    output logic o_head_load_sq_disambig,   // ready, blocked on SQ disambig
+    output logic o_head_load_bus_blocked,   // ready, blocked on bus / arbitration / pipeline
+    output logic o_head_load_cdb_wait,      // data ready in LQ, waiting to enter cdb_stage
+    output logic o_head_load_post_lq        // LQ entry already freed, CDB pipeline to ROB
 );
 
   // ===========================================================================
@@ -630,6 +642,64 @@ module load_queue #(
     end
   end
 
+  // ===========================================================================
+  // Head-load sub-bucket diagnostics
+  // ===========================================================================
+  // Locate the LQ entry whose rob_tag matches the ROB head (if any) and
+  // describe its state.  tomasulo_wrapper gates each output with the parent
+  // `head_wait_mem_load && !mem_outstanding` signal so these only fire during
+  // the 27.7% bucket — here we just reflect the LQ-internal state.
+  logic head_entry_found;
+  logic [IdxWidth-1:0] head_entry_idx;
+  always_comb begin
+    head_entry_found = 1'b0;
+    head_entry_idx   = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (!head_entry_found && lq_valid[i] && (lq_rob_tag[i] == i_rob_head_tag)) begin
+        head_entry_found = 1'b1;
+        head_entry_idx   = IdxWidth'(i);
+      end
+    end
+  end
+
+  logic head_entry_addr_valid;
+  logic head_entry_issued;
+  logic head_entry_data_valid;
+  assign head_entry_addr_valid = head_entry_found && lq_addr_valid[head_entry_idx];
+  assign head_entry_issued     = head_entry_found && lq_issued[head_entry_idx];
+  assign head_entry_data_valid = head_entry_found && lq_data_valid[head_entry_idx];
+
+  // SQ disambig is blocking the head load when the staged sq_check candidate
+  // points at the head entry AND the SQ has unresolved older stores.  The
+  // check is against the *registered* sq_check state so this lags the raw
+  // issue_mem_found path by one cycle — consistent with how the load would
+  // actually progress through the machine.
+  logic head_sq_disambig_blocker;
+  assign head_sq_disambig_blocker = sq_check_pending &&
+                                    (sq_check_rob_tag_q == i_rob_head_tag) &&
+                                    o_sq_check_valid &&
+                                    !i_sq_all_older_addrs_known;
+
+  logic head_sq_disambig_hit;
+  assign head_sq_disambig_hit  = head_entry_found && head_entry_addr_valid &&
+                                 !head_entry_data_valid && !head_entry_issued &&
+                                 head_sq_disambig_blocker;
+
+  assign o_head_load_addr_pending = head_entry_found && !head_entry_addr_valid;
+  assign o_head_load_sq_disambig = head_sq_disambig_hit;
+  // "bus blocked" = address is resolved and the data isn't ready yet, but the
+  // blocker is NOT an SQ disambig.  Covers bus-busy stalls, pre-sq_check
+  // staging cycles, AMO/SQ-committed blockers, and drop-response edge cases.
+  assign o_head_load_bus_blocked  = head_entry_found && head_entry_addr_valid &&
+                                    !head_entry_data_valid && !head_sq_disambig_hit;
+  assign o_head_load_cdb_wait = head_entry_found && head_entry_data_valid;
+  // "post-LQ" = head load is still !done in ROB but its LQ entry has already
+  // been freed (issue_cdb_fire clears lq_valid the cycle cdb_stage captures
+  // the result).  Covers the 2-3 cycles between LQ free and rob_done going
+  // high: cdb_stage -> mem_adapter -> cdb_arbiter -> rob_done.  This is a
+  // pure pipeline drain — shortening it requires collapsing the CDB path.
+  assign o_head_load_post_lq = !head_entry_found;
+
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
   logic [ReorderBufferTagWidth-1:0] issue_mem_rob_tag;
@@ -1082,10 +1152,71 @@ module load_queue #(
     end
   end
 
+  // ===========================================================================
+  // Completion Fast-Path Bypass
+  // ===========================================================================
+  // Skip the data_valid -> issue_cdb_fire -> cdb_stage capture chain on cycles
+  // where a mem response or L0 cache hit completes a load AND cdb_stage is
+  // otherwise idle.  Drives cdb_stage directly from the response-side formatted
+  // result, shaving one head-wait cycle per eligible load.  Falls back to the
+  // standard data_valid path when cdb_stage is busy or when an older entry is
+  // already firing through issue_cdb_fire.  AMOs (need write phase) and FLDs
+  // (two-phase, phase-1 value needs LUTRAM lo read) stay on the standard path.
+  logic resp_bypass_ok;
+  logic resp_bypass_fire;
+  logic cache_hit_bypass_fire;
+  logic bypass_fire;
+  logic [IdxWidth-1:0] bypass_idx;
+  logic [ReorderBufferTagWidth-1:0] bypass_tag;
+  logic [FLEN-1:0] bypass_value;
+  logic [FLEN-1:0] resp_bypass_value;
+  logic [FLEN-1:0] cache_hit_bypass_value;
+
+  assign resp_bypass_ok =
+      accept_mem_response && !issued_is_amo &&
+      !(issued_is_fp && (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE));
+
+  assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
+                            resp_bypass_ok && !i_flush_en && !i_flush_all;
+
+  // cache_hit_fast_path is already flush-gated at its own assign.
+  assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
+                                 !resp_bypass_fire && cache_hit_fast_path;
+
+  assign bypass_fire = resp_bypass_fire || cache_hit_bypass_fire;
+
+  // Mirror issue_cdb_result formatting, but sourced from the response-side
+  // signals (lu_data_out / lu_cache_out / raw word) instead of the LUTRAM.
+  always_comb begin
+    if (issued_is_fp) begin
+      // FLW: NaN-box raw 32-bit word
+      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out};
+    end else begin
+      // INT / LR: zero-extend byte/half/word extracted value
+      resp_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_data_out};
+    end
+  end
+
+  always_comb begin
+    if (sq_check_is_fp_q) begin
+      // FLW from L0: NaN-box raw cache data (L0 fast path gates out FLD)
+      cache_hit_bypass_value = {32'hFFFF_FFFF, cache_lookup_data};
+    end else begin
+      // INT from L0: cache-path load_unit already did byte/half extract
+      cache_hit_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_cache_out};
+    end
+  end
+
+  assign bypass_idx     = resp_bypass_fire ? issued_idx : sq_check_idx;
+  assign bypass_tag     = resp_bypass_fire ? issued_rob_tag : sq_check_rob_tag_q;
+  assign bypass_value   = resp_bypass_fire ? resp_bypass_value : cache_hit_bypass_value;
+
   // Entry freeing: once the result is captured into the stage, the queue slot
-  // can be released. The staged copy now owns the completion payload.
-  assign free_entry_en  = issue_cdb_fire;
-  assign free_entry_idx = issue_cdb_idx;
+  // can be released. The staged copy now owns the completion payload.  The
+  // bypass path frees the entry the same cycle it completes (no intervening
+  // data_valid state).
+  assign free_entry_en  = issue_cdb_fire || bypass_fire;
+  assign free_entry_idx = issue_cdb_fire ? issue_cdb_idx : bypass_idx;
 
   // ===========================================================================
   // Allocation Search
@@ -1272,7 +1403,10 @@ module load_queue #(
       // -----------------------------------------------------------------
       // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
       // -----------------------------------------------------------------
-      if (cache_hit_fast_path) begin
+      // Skip the data_valid step when the completion bypass captured the
+      // cache hit directly into cdb_stage — the entry is already freed via
+      // free_entry_en.
+      if (cache_hit_fast_path && !cache_hit_bypass_fire) begin
         lq_data_valid[sq_check_idx] <= 1'b1;
       end
 
@@ -1296,34 +1430,28 @@ module load_queue #(
         mem_outstanding <= 1'b0;
         drop_mem_response_pending <= 1'b0;
       end else if (accept_mem_response) begin
+        mem_outstanding <= 1'b0;
         if (issued_is_amo) begin
           // AMO: start write phase (don't set data_valid yet);
           // data signals (amo_old_value, amo_entry_idx) in no-reset block
-          amo_state       <= AMO_WRITE_ACTIVE;
-          mem_outstanding <= 1'b0;
-        end else if (issued_is_lr) begin
-          // LR: data captured by LUTRAM write logic;
-          // reservation_addr in no-reset block
-          lq_data_valid[issued_idx] <= 1'b1;
-          mem_outstanding           <= 1'b0;
-          reservation_valid         <= 1'b1;
+          amo_state <= AMO_WRITE_ACTIVE;
         end else if (issued_is_fp &&
             riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
             !issued_fp64_phase) begin
           // FLD phase 0: re-issue for phase 1;
           // lq_fp64_phase in no-reset block
           lq_issued[issued_idx] <= 1'b0;  // Re-issue for phase 1
-          mem_outstanding       <= 1'b0;
-        end else if (issued_is_fp &&
-                     riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
-                     issued_fp64_phase) begin
-          // FLD phase 1: data captured by LUTRAM
-          lq_data_valid[issued_idx] <= 1'b1;
-          mem_outstanding           <= 1'b0;
         end else begin
-          // Non-FLD: data captured by LUTRAM
-          lq_data_valid[issued_idx] <= 1'b1;
-          mem_outstanding           <= 1'b0;
+          // Non-AMO, non-FLD-phase-0 (LR, FLW, INT load, FLD phase 1):
+          // the completion bypass may have captured this result directly
+          // into cdb_stage the same cycle via resp_bypass_fire.  In that
+          // case skip the data_valid/LUTRAM write — free_entry_en releases
+          // the slot.  LR still arms reservation_valid either way.
+          if (issued_is_lr) reservation_valid <= 1'b1;
+          if (!resp_bypass_fire) begin
+            // Standard path: let the priority encoder pick next cycle.
+            lq_data_valid[issued_idx] <= 1'b1;
+          end
         end
       end
 
@@ -1473,7 +1601,7 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       cdb_stage_valid <= 1'b0;
-    end else if (issue_cdb_fire) begin
+    end else if (issue_cdb_fire || bypass_fire) begin
       cdb_stage_valid <= 1'b1;
     end else if (i_result_accepted || cdb_stage_result_flushed) begin
       cdb_stage_valid <= 1'b0;
@@ -1487,6 +1615,12 @@ module load_queue #(
       cdb_stage_data.exception <= issue_cdb_result.exception;
       cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
       cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
+    end else if (bypass_fire) begin
+      cdb_stage_data.tag       <= bypass_tag;
+      cdb_stage_data.value     <= bypass_value;
+      cdb_stage_data.exception <= 1'b0;
+      cdb_stage_data.exc_cause <= '0;
+      cdb_stage_data.fp_flags  <= '0;
     end
   end
 
