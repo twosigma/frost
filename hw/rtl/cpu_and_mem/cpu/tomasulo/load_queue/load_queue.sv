@@ -155,7 +155,21 @@ module load_queue #(
     output logic o_head_load_sq_disambig,   // ready, blocked on SQ disambig
     output logic o_head_load_bus_blocked,   // ready, blocked on bus / arbitration / pipeline
     output logic o_head_load_cdb_wait,      // data ready in LQ, waiting to enter cdb_stage
-    output logic o_head_load_post_lq        // LQ entry already freed, CDB pipeline to ROB
+    output logic o_head_load_post_lq,       // LQ entry already freed, CDB pipeline to ROB
+
+    // =========================================================================
+    // Bus-blocked sub-bucket diagnostics
+    // =========================================================================
+    // Split `o_head_load_bus_blocked` (the 7.7% remainder bucket) into
+    // mutually exclusive sub-causes, picked in priority order so each cycle
+    // contributes to exactly one counter.  All five are gated externally by
+    // the same `head_wait_mem_load && !mem_outstanding` term the parent
+    // counter uses, so the sum across sub-buckets equals `bus_blocked`.
+    output logic o_head_load_bb_issued,    // head has been issued, waiting for response
+    output logic o_head_load_bb_bus_busy,  // i_mem_bus_busy = 1
+    output logic o_head_load_bb_amo,       // older AMO pending (blocked_by_amo prefix OR)
+    output logic o_head_load_bb_sq_wait,   // in sq_check stage but !sq_check_phase2
+    output logic o_head_load_bb_staging    // catch-all (pre-sq_check capture, drop-pending, etc.)
 );
 
   // ===========================================================================
@@ -699,6 +713,59 @@ module load_queue #(
   // high: cdb_stage -> mem_adapter -> cdb_arbiter -> rob_done.  This is a
   // pure pipeline drain — shortening it requires collapsing the CDB path.
   assign o_head_load_post_lq = !head_entry_found;
+
+  // -------------------------------------------------------------------------
+  // Bus-blocked sub-bucket classification
+  // -------------------------------------------------------------------------
+  // Priority-ordered (mutually exclusive per cycle):
+  //   1. issued   — head already launched, waiting for mem response but
+  //                 mem_outstanding=0 (happens in the edge window where the
+  //                 response was accepted but lq_valid hasn't been cleared)
+  //   2. bus_busy — i_mem_bus_busy = 1 (SQ/AMO write or backend recovery hold)
+  //   3. amo      — older valid AMO in the LQ with !data_valid
+  //                 (any_pending_amo is an approximation: we don't check the
+  //                 precise scan order, but in practice an AMO older than
+  //                 the head load is the only reason it would block).  This
+  //                 also catches the SQ-committed-empty gate for AMOs at head.
+  //   4. sq_wait  — entry is currently staged in sq_check but !sq_check_phase2
+  //                 (sq_check_phase2 takes a cycle to arm after the SQ sees
+  //                 an empty committed queue).
+  //   5. staging  — everything else (one-cycle addr_valid → sq_check_capture
+  //                 delay, drop_mem_response_pending, sq-committed-empty gate
+  //                 on non-AMO MMIO loads, etc.)
+
+  logic head_entry_bb_base;
+  assign head_entry_bb_base = head_entry_found && head_entry_addr_valid &&
+                              !head_entry_data_valid && !head_sq_disambig_hit;
+
+  // Approximation: any pending (valid, AMO, not data-valid) LQ entry.  In
+  // practice the AMO would be older than the head load — if it were younger
+  // the head load would have already issued.  Good enough for a diagnostic.
+  logic any_pending_amo;
+  always_comb begin
+    any_pending_amo = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i]) begin
+        any_pending_amo = 1'b1;
+      end
+    end
+  end
+
+  logic head_entry_in_sq_wait;
+  assign head_entry_in_sq_wait = sq_check_pending &&
+                                 (sq_check_idx == head_entry_idx) &&
+                                 !sq_check_phase2;
+
+  assign o_head_load_bb_issued = head_entry_bb_base && head_entry_issued;
+  assign o_head_load_bb_bus_busy = head_entry_bb_base && !head_entry_issued && i_mem_bus_busy;
+  assign o_head_load_bb_amo      = head_entry_bb_base && !head_entry_issued &&
+                                   !i_mem_bus_busy && any_pending_amo;
+  assign o_head_load_bb_sq_wait  = head_entry_bb_base && !head_entry_issued &&
+                                   !i_mem_bus_busy && !any_pending_amo &&
+                                   head_entry_in_sq_wait;
+  assign o_head_load_bb_staging  = head_entry_bb_base && !head_entry_issued &&
+                                   !i_mem_bus_busy && !any_pending_amo &&
+                                   !head_entry_in_sq_wait;
 
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])

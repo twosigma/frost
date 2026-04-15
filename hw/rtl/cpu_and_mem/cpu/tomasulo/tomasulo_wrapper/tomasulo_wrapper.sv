@@ -448,7 +448,7 @@ module tomasulo_wrapper (
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 47;
+  localparam int unsigned WrapperPerfCounterCount = 52;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -526,6 +526,17 @@ module tomasulo_wrapper (
   localparam int unsigned PerfHeadLoadBusBlocked = 44;
   localparam int unsigned PerfHeadLoadCdbWait = 45;
   localparam int unsigned PerfHeadLoadPostLq = 46;
+  //   BusBlocked sub-buckets (mutually exclusive partition of bus_blocked):
+  //   BbIssued   : head already launched, waiting for response (edge case)
+  //   BbBusBusy  : i_mem_bus_busy (SQ write / AMO write / backend recovery)
+  //   BbAmo      : older AMO pending (blocks younger loads via prefix-OR)
+  //   BbSqWait   : in sq_check but !sq_check_phase2 (one-cycle phase2 delay)
+  //   BbStaging  : remainder (pre-sq_check capture stage, drop-response, etc.)
+  localparam int unsigned PerfHeadLoadBbIssued = 47;
+  localparam int unsigned PerfHeadLoadBbBusBusy = 48;
+  localparam int unsigned PerfHeadLoadBbAmo = 49;
+  localparam int unsigned PerfHeadLoadBbSqWait = 50;
+  localparam int unsigned PerfHeadLoadBbStaging = 51;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -823,6 +834,12 @@ module tomasulo_wrapper (
   logic lq_head_load_bus_blocked;
   logic lq_head_load_cdb_wait;
   logic lq_head_load_post_lq;
+  // bus_blocked sub-buckets (mutually exclusive partition of bus_blocked)
+  logic lq_head_load_bb_issued;
+  logic lq_head_load_bb_bus_busy;
+  logic lq_head_load_bb_amo;
+  logic lq_head_load_bb_sq_wait;
+  logic lq_head_load_bb_staging;
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -1745,7 +1762,14 @@ module tomasulo_wrapper (
       .o_head_load_sq_disambig (lq_head_load_sq_disambig),
       .o_head_load_bus_blocked (lq_head_load_bus_blocked),
       .o_head_load_cdb_wait    (lq_head_load_cdb_wait),
-      .o_head_load_post_lq     (lq_head_load_post_lq)
+      .o_head_load_post_lq     (lq_head_load_post_lq),
+
+      // bus_blocked sub-bucket decomposition
+      .o_head_load_bb_issued  (lq_head_load_bb_issued),
+      .o_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
+      .o_head_load_bb_amo     (lq_head_load_bb_amo),
+      .o_head_load_bb_sq_wait (lq_head_load_bb_sq_wait),
+      .o_head_load_bb_staging (lq_head_load_bb_staging)
   );
 
   // ===========================================================================
@@ -2128,6 +2152,26 @@ module tomasulo_wrapper (
     perf_inc[PerfHeadLoadPostLq] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_post_lq)
+    };
+    // bus_blocked sub-buckets: same gating as parent bus_blocked bucket.
+    perf_inc[PerfHeadLoadBbIssued] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_issued)
+    };
+    perf_inc[PerfHeadLoadBbBusBusy] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_bus_busy)
+    };
+    perf_inc[PerfHeadLoadBbAmo] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_amo)
+    };
+    perf_inc[PerfHeadLoadBbSqWait] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_sq_wait)
+    };
+    perf_inc[PerfHeadLoadBbStaging] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
     };
   end
 

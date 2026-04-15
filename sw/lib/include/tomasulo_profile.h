@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 70U
+#define TOMASULO_PROFILE_COUNTER_COUNT 75U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -95,6 +95,11 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 67,
     TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 68,
     TOMASULO_PERF_HEAD_LOAD_POST_LQ = 69,
+    TOMASULO_PERF_HEAD_LOAD_BB_ISSUED = 70,
+    TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY = 71,
+    TOMASULO_PERF_HEAD_LOAD_BB_AMO = 72,
+    TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 73,
+    TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 74,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -674,6 +679,26 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Head load CDB pipeline drain (LQ freed)",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_POST_LQ),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus-blocked: issued (post-launch)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_ISSUED),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus-blocked: bus_busy",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus-blocked: AMO blocked",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_AMO),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus-blocked: SQ phase2 wait",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head load bus-blocked: staging/misc",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STAGING),
         cycles);
 
     uart_printf("  Average occupancies:\n");
