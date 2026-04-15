@@ -1368,6 +1368,26 @@ package riscv_pkg;
     // difference between commit_2_opportunity and commit_2_fire_actual
     // is the "throttled by FIFO pressure" fraction.
     logic commit_2_fire_actual;
+    // Widen-commit blocker decomposition. These four events partition the
+    // gap between head_and_next_done (commit firing and head+1 ready to
+    // retire) and commit_2_opportunity (actually fires 2-wide). Each event
+    // is gated on commit_en && head_next_valid_done, so their sum equals
+    // (head_and_next_done - commit_2_opportunity).
+    //
+    //   HeadSerial      : head itself is a serial op or mispredicting
+    //                     branch (head_ok_2wide = 0).
+    //   NextSerial      : head is plain, head+1 is serial (CSR / fence /
+    //                     fence_i / WFI / MRET / AMO / LR / SC /
+    //                     exception) — not a branch.
+    //   NextBranchMispred : head+1 is a branch that will flush.
+    //   NextBranchCorrect : head+1 is a correctly-predicted branch (taken
+    //                       or not-taken). This is the most promising
+    //                       attack candidate — no flush is needed, just
+    //                       BTB/RAS update from slot-2.
+    logic commit_2_blocked_head_serial;
+    logic commit_2_blocked_next_serial;
+    logic commit_2_blocked_next_branch_mispred;
+    logic commit_2_blocked_next_branch_correct;
   } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------

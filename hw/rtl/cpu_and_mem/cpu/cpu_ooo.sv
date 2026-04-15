@@ -92,7 +92,7 @@ module cpu_ooo #(
   riscv_pkg::dispatch_status_t dispatch_status;
 
   localparam int unsigned PerfTopCounterCount = 23;
-  localparam int unsigned PerfWrapperCounterCount = 52;
+  localparam int unsigned PerfWrapperCounterCount = 60;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);

@@ -448,7 +448,7 @@ module tomasulo_wrapper (
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 52;
+  localparam int unsigned WrapperPerfCounterCount = 60;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -537,6 +537,27 @@ module tomasulo_wrapper (
   localparam int unsigned PerfHeadLoadBbAmo = 49;
   localparam int unsigned PerfHeadLoadBbSqWait = 50;
   localparam int unsigned PerfHeadLoadBbStaging = 51;
+  // head_wait_int decomposition (partitions head_wait_int exactly):
+  //   OperandWait      : INT_RS has head's entry, some source operand not ready
+  //                      (dep chain shadow — a producer is still in flight)
+  //   RsReadyNotIssued : INT_RS has head's entry, all operands ready, but it
+  //                      hasn't been selected (fu_ready blocked, or lower RS
+  //                      idx took priority)
+  //   Stage2           : past RS, parked in the INT_RS stage2 register
+  //                      (fu_ready blocked or in-flight-cycle of ALU)
+  //   PostRs           : past RS and stage2, draining through shim/adapter/
+  //                      cdb_arbiter/cdb_bus_reg on its way to rob_done
+  localparam int unsigned PerfHeadIntOperandWait = 52;
+  localparam int unsigned PerfHeadIntRsReadyNotIssued = 53;
+  localparam int unsigned PerfHeadIntStage2 = 54;
+  localparam int unsigned PerfHeadIntPostRs = 55;
+  // Widen-commit blocker decomposition. Sum of these four equals
+  // (head_and_next_done - commit_2_opportunity) — the "hazard gap" where
+  // commit is firing 1-wide even though head+1 is also done.
+  localparam int unsigned PerfCommit2BlockedHeadSerial = 56;
+  localparam int unsigned PerfCommit2BlockedNextSerial = 57;
+  localparam int unsigned PerfCommit2BlockedNextBranchMispred = 58;
+  localparam int unsigned PerfCommit2BlockedNextBranchCorrect = 59;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -1273,6 +1294,12 @@ module tomasulo_wrapper (
   // INT_RS dispatch with routed valid
   riscv_pkg::rs_dispatch_t int_rs_dispatch;
   logic                    int_rs_issue_writes_cdb_hint;
+  // Head-wait diagnostic observation from INT_RS (combinational scan of
+  // rs_valid/rs_rob_tag against head_tag). Used to decompose head_wait_int
+  // into sub-buckets: operand_wait / rs_ready_not_issued / stage2 / post_rs.
+  logic                    int_rs_head_in_rs;
+  logic                    int_rs_head_rs_ready;
+  logic                    int_rs_head_in_stage2;
   always_comb begin
     int_rs_dispatch       = i_rs_dispatch;
     int_rs_dispatch.valid = int_rs_dispatch_valid;
@@ -1306,7 +1333,13 @@ module tomasulo_wrapper (
 
       // Status
       .o_empty(o_rs_empty),
-      .o_count(o_rs_count)
+      .o_count(o_rs_count),
+
+      // Head-wait diagnostic (only the INT_RS drives real counters)
+      .i_head_query_tag      (head_tag),
+      .o_head_query_in_rs    (int_rs_head_in_rs),
+      .o_head_query_rs_ready (int_rs_head_rs_ready),
+      .o_head_query_in_stage2(int_rs_head_in_stage2)
   );
 
   // Observation port: expose INT_RS issue for testbench
@@ -1338,7 +1371,11 @@ module tomasulo_wrapper (
       .i_rob_head_tag         (head_tag),
       .i_flush_all            (speculative_flush_all),
       .o_empty                (o_mul_rs_empty),
-      .o_count                (o_mul_rs_count)
+      .o_count                (o_mul_rs_count),
+      .i_head_query_tag       (head_tag),
+      .o_head_query_in_rs     (),
+      .o_head_query_rs_ready  (),
+      .o_head_query_in_stage2 ()
   );
 
   // Observation port: expose MUL_RS issue for testbench
@@ -1372,7 +1409,11 @@ module tomasulo_wrapper (
       .i_rob_head_tag(head_tag),
       .i_flush_all(speculative_flush_all),
       .o_empty(o_mem_rs_empty),
-      .o_count(o_mem_rs_count)
+      .o_count(o_mem_rs_count),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2()
   );
 
   assign o_mem_rs_issue = mem_rs_issue_w;
@@ -1411,7 +1452,11 @@ module tomasulo_wrapper (
       .i_rob_head_tag         (head_tag),
       .i_flush_all            (speculative_flush_all),
       .o_empty                (o_fp_rs_empty),
-      .o_count                (o_fp_rs_count)
+      .o_count                (o_fp_rs_count),
+      .i_head_query_tag       (head_tag),
+      .o_head_query_in_rs     (),
+      .o_head_query_rs_ready  (),
+      .o_head_query_in_stage2 ()
   );
 
   // ---------------------------------------------------------------------------
@@ -1487,7 +1532,11 @@ module tomasulo_wrapper (
       .i_rob_head_tag         (head_tag),
       .i_flush_all            (speculative_flush_all),
       .o_empty                (fmul_rs_empty_raw),
-      .o_count                (fmul_rs_count_raw)
+      .o_count                (fmul_rs_count_raw),
+      .i_head_query_tag       (head_tag),
+      .o_head_query_in_rs     (),
+      .o_head_query_rs_ready  (),
+      .o_head_query_in_stage2 ()
   );
 
   // ---------------------------------------------------------------------------
@@ -1517,7 +1566,11 @@ module tomasulo_wrapper (
       .i_rob_head_tag         (head_tag),
       .i_flush_all            (speculative_flush_all),
       .o_empty                (o_fdiv_rs_empty),
-      .o_count                (o_fdiv_rs_count)
+      .o_count                (o_fdiv_rs_count),
+      .i_head_query_tag       (head_tag),
+      .o_head_query_in_rs     (),
+      .o_head_query_rs_ready  (),
+      .o_head_query_in_stage2 ()
   );
 
   // Observation ports: expose FP RS issue for testbench
@@ -2172,6 +2225,36 @@ module tomasulo_wrapper (
     perf_inc[PerfHeadLoadBbStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
+    };
+    // head_wait_int decomposition — mutually exclusive partition of the
+    // parent bucket. Gated on rob_perf_events.head_wait_int so all four
+    // sub-counters sum (to within scan latency) to head_wait_int.
+    perf_inc[PerfHeadIntOperandWait] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_int && int_rs_head_in_rs && !int_rs_head_rs_ready)
+    };
+    perf_inc[PerfHeadIntRsReadyNotIssued] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_int && int_rs_head_in_rs && int_rs_head_rs_ready)
+    };
+    perf_inc[PerfHeadIntStage2] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_int && !int_rs_head_in_rs && int_rs_head_in_stage2)
+    };
+    perf_inc[PerfHeadIntPostRs] = {
+      {63{1'b0}}, (rob_perf_events.head_wait_int && !int_rs_head_in_rs && !int_rs_head_in_stage2)
+    };
+    // Widen-commit blocker decomposition — all four are gated in the ROB
+    // on (commit_en && head_next_valid_done), so their sum equals the gap
+    // between head_and_next_done and commit_2_opportunity.
+    perf_inc[PerfCommit2BlockedHeadSerial] = {
+      {63{1'b0}}, rob_perf_events.commit_2_blocked_head_serial
+    };
+    perf_inc[PerfCommit2BlockedNextSerial] = {
+      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_serial
+    };
+    perf_inc[PerfCommit2BlockedNextBranchMispred] = {
+      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_branch_mispred
+    };
+    perf_inc[PerfCommit2BlockedNextBranchCorrect] = {
+      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_branch_correct
     };
   end
 

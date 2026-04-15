@@ -83,7 +83,19 @@ module reservation_station #(
     // Status / Debug
     // =========================================================================
     output logic                       o_empty,
-    output logic [$clog2(DEPTH+1)-1:0] o_count
+    output logic [$clog2(DEPTH+1)-1:0] o_count,
+
+    // =========================================================================
+    // Head-wait diagnostic observation (combinational, for perf counters)
+    // =========================================================================
+    // Given a query rob_tag (typically the ROB head tag), expose whether this
+    // RS currently holds that tag and what state it is in. Used to decompose
+    // head_wait_int into sub-buckets at the wrapper level. Drives no
+    // functional logic; synthesis optimizes these away if unconnected.
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_query_tag,
+    output logic                                        o_head_query_in_rs,
+    output logic                                        o_head_query_rs_ready,
+    output logic                                        o_head_query_in_stage2
 );
 
   // ===========================================================================
@@ -407,6 +419,21 @@ module reservation_station #(
       end
     end
   end
+
+  // --- Head-wait diagnostic observation ---
+  // Scan for an entry whose rob_tag matches the query tag. At most one entry
+  // can match by construction (each in-flight rob_tag is unique).
+  logic [DEPTH-1:0] head_query_match;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      head_query_match[i] = rs_valid[i] && (rs_rob_tag[i] == i_head_query_tag);
+    end
+  end
+  assign o_head_query_in_rs = |head_query_match;
+  assign o_head_query_rs_ready = |(head_query_match & entry_ready);
+  // BYPASS_STAGE2: stage2_valid is forced to 0, so the match never fires.
+  assign o_head_query_in_stage2 = !BYPASS_STAGE2 && stage2_valid &&
+                                   (stage2_rob_tag == i_head_query_tag);
 
   // --- Stage 2 control ---
   // Flush squash: stage2 holds an instruction younger than the flush boundary.

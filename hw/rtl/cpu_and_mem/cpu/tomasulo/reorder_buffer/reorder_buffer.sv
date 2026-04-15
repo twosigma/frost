@@ -1658,11 +1658,11 @@ module reorder_buffer (
     // bound — the actual win is slightly lower because head+1 being a
     // serial op (CSR/fence/trap) or a mispredicting branch would still
     // force commit to stay 1-wide on that cycle.
-    o_perf_events.head_and_next_done   = commit_en && head_next_valid_done;
+    o_perf_events.head_and_next_done = commit_en && head_next_valid_done;
     // Ungated version: the entry behind head is done whether or not commit
     // is firing this cycle. Subtract head_and_next_done to see how often
     // the ROB is sitting on a done entry behind a stalled head.
-    o_perf_events.head_plus_one_done   = head_next_valid_done && !i_flush_all;
+    o_perf_events.head_plus_one_done = head_next_valid_done && !i_flush_all;
     // Widen-commit fire-rate predictor: tighter than head_and_next_done
     // because the hazard gate (serial ops, head+1 branches, FENCE.I,
     // exceptions, AMO/LR/SC, head-mispredicting-branches) is already
@@ -1672,6 +1672,22 @@ module reorder_buffer (
     // rob_valid clear actually use.
     o_perf_events.commit_2_opportunity = commit_2_gate;
     o_perf_events.commit_2_fire_actual = commit_2_fire;
+
+    // Widen-commit blocker decomposition. Gated on commit_en &&
+    // head_next_valid_done so these only fire on cycles where head_and_
+    // next_done is also 1 — the sum equals head_and_next_done -
+    // commit_2_opportunity (the hazard-blocked gap).
+    o_perf_events.commit_2_blocked_head_serial =
+        commit_en && head_next_valid_done && !head_ok_2wide;
+    o_perf_events.commit_2_blocked_next_serial =
+        commit_en && head_next_valid_done && head_ok_2wide &&
+        !head_next_ok_2wide && !head_next_is_branch;
+    o_perf_events.commit_2_blocked_next_branch_mispred =
+        commit_en && head_next_valid_done && head_ok_2wide &&
+        head_next_is_branch && head_next_mispredicted;
+    o_perf_events.commit_2_blocked_next_branch_correct =
+        commit_en && head_next_valid_done && head_ok_2wide &&
+        head_next_is_branch && !head_next_mispredicted;
   end
 
   // ===========================================================================

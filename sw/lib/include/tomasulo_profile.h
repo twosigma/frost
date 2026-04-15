@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 75U
+#define TOMASULO_PROFILE_COUNTER_COUNT 83U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -100,6 +100,14 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_LOAD_BB_AMO = 72,
     TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 73,
     TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 74,
+    TOMASULO_PERF_HEAD_INT_OPERAND_WAIT = 75,
+    TOMASULO_PERF_HEAD_INT_RS_READY_NOT_ISSUED = 76,
+    TOMASULO_PERF_HEAD_INT_STAGE2 = 77,
+    TOMASULO_PERF_HEAD_INT_POST_RS = 78,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_HEAD_SERIAL = 79,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 80,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 81,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 82,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -699,6 +707,37 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Head load bus-blocked: staging/misc",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STAGING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head INT: operand wait (in RS, src not ready)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_INT_OPERAND_WAIT),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Head INT: RS ready, not issued",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_INT_RS_READY_NOT_ISSUED),
+        cycles);
+    tomasulo_profile_print_metric("Head INT: parked in stage2",
+                                  tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_INT_STAGE2),
+                                  cycles);
+    tomasulo_profile_print_metric(
+        "Head INT: post-RS CDB drain",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_INT_POST_RS),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen blocked: head serial/mispred",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_BLOCKED_HEAD_SERIAL),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen blocked: head+1 serial",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen blocked: head+1 branch (mispred)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED),
+        cycles);
+    tomasulo_profile_print_metric(
+        "Widen blocked: head+1 branch (correct)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT),
         cycles);
 
     uart_printf("  Average occupancies:\n");
