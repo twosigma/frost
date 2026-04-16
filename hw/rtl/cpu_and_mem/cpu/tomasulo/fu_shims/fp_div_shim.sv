@@ -539,10 +539,13 @@ module fp_div_shim (
         fifo_wr_ptr               <= fifo_wr_ptr + 1;
       end
 
-      // Pop
+      // Pop — advance rd_ptr only. fifo_valid / fifo_flushed stay set; they
+      // are only consulted gated by fifo_count (authoritative occupancy) and
+      // get overwritten on the next push to this slot, so clearing them here
+      // would only drag i_div_accepted (which depends on the arbiter grant
+      // through mispredict_recovery_pending → flush cone) into the fifo
+      // register cone.
       if (fifo_pop) begin
-        fifo_valid[fifo_rd_ptr] <= 1'b0;
-        fifo_flushed[fifo_rd_ptr] <= 1'b0;
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end
 

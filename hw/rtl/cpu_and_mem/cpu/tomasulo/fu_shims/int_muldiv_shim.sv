@@ -335,10 +335,12 @@ module int_muldiv_shim (
         mul_fifo_wr_ptr <= mul_fifo_wr_ptr + 1;
       end
 
-      // Pop
+      // Pop — advance rd_ptr only. mul_fifo_valid / mul_fifo_flushed stay
+      // set; they are only consulted gated by mul_fifo_count (authoritative
+      // occupancy) and get overwritten on the next push to this slot, so
+      // clearing them here would only drag i_mul_accepted (which depends on
+      // the cross-FU arbiter grant cone) into the fifo register next-state.
       if (mul_fifo_pop) begin
-        mul_fifo_valid[mul_fifo_rd_ptr] <= 1'b0;
-        mul_fifo_flushed[mul_fifo_rd_ptr] <= 1'b0;
         mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
       end
 
@@ -567,10 +569,12 @@ module int_muldiv_shim (
         fifo_wr_ptr <= fifo_wr_ptr + 1;
       end
 
-      // Pop
+      // Pop — advance rd_ptr only. div_fifo_valid / div_fifo_flushed stay
+      // set; they are only consulted gated by fifo_count (authoritative
+      // occupancy) and get overwritten on the next push to this slot, so
+      // clearing them here would only drag i_div_accepted (which depends on
+      // the cross-FU arbiter grant cone) into the fifo register next-state.
       if (fifo_pop) begin
-        div_fifo_valid[fifo_rd_ptr] <= 1'b0;
-        div_fifo_flushed[fifo_rd_ptr] <= 1'b0;
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end
 
