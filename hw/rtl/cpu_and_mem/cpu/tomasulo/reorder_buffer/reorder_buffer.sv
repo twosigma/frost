@@ -536,8 +536,58 @@ module reorder_buffer (
       !head_next_is_lr && !head_next_is_sc &&
       !head_next_exception && !head_next_is_branch;
 
+  // Same-cycle CDB bypass for head / head+1.  rob_done / rob_value /
+  // rob_fp_flags update at the clock edge from i_cdb_write; without a bypass
+  // the head can't commit until the cycle after the CDB write lands, leaving
+  // ~1 cycle of drain on every FU completion.  Forward i_cdb_write directly
+  // when it targets the head (or head+1) tag so commit fires the same cycle
+  // the arbiter broadcasts.  Excluded cases (exception, branch/JAL/JALR,
+  // CSR, FENCE, FENCE.I, WFI, MRET) fall through to the existing
+  // branch_update / serial / trap paths — the bypass only shortcircuits
+  // ordinary completions, which dominate the CoreMark head-wait buckets.
+  //
+  // An analogous bypass for i_store_complete_valid was tried and dropped:
+  // cutting the store-drain reduced head_wait_mem_store but pushed the
+  // bubble into SQ-drain / load-disambig, netting essentially zero cycles.
+  //
+  // i_flush_all is already on the downstream commit_en gate, so the bypass
+  // doesn't need to recheck it here — leaving it off keeps the ROB's
+  // full_flush_all cone (the current -0.495 ns critical path) off the
+  // commit-side bypass path.
+  logic head_cdb_match;
+  logic head_cdb_bypass;
+  logic head_next_cdb_match;
+  logic head_next_cdb_bypass;
+
+  assign head_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_idx);
+  assign head_cdb_bypass = head_cdb_match && !i_cdb_write.exception &&
+      !head_is_branch && !head_is_csr && !head_is_fence && !head_is_fence_i &&
+      !head_is_wfi && !head_is_mret;
+
+  assign head_next_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_next_idx);
+  // head_next_cdb_bypass is gated further by head_next_ok_2wide at its only
+  // consumer (commit_2_gate), so the bypass itself only needs the exception
+  // exclusion to cover the trap path.
+  assign head_next_cdb_bypass = head_next_cdb_match && !i_cdb_write.exception;
+
+  logic head_done_eff;
+  logic head_next_done_eff;
+  assign head_done_eff = head_done || head_cdb_bypass;
+  assign head_next_done_eff = head_next_done || head_next_cdb_bypass;
+
+  // Value / fp_flags forwarding only applies to the CDB bypass (stores don't
+  // write these fields).
+  logic [FLEN-1:0] head_value_eff;
+  riscv_pkg::fp_flags_t head_fp_flags_eff;
+  logic [FLEN-1:0] head_next_value_eff;
+  riscv_pkg::fp_flags_t head_next_fp_flags_eff;
+  assign head_value_eff = head_cdb_bypass ? i_cdb_write.value : head_value;
+  assign head_fp_flags_eff = head_cdb_bypass ? i_cdb_write.fp_flags : head_fp_flags;
+  assign head_next_value_eff = head_next_cdb_bypass ? i_cdb_write.value : head_next_value;
+  assign head_next_fp_flags_eff = head_next_cdb_bypass ? i_cdb_write.fp_flags : head_next_fp_flags;
+
   // Head is ready to potentially commit
-  assign head_ready = head_valid && head_done;
+  assign head_ready = head_valid && head_done_eff;
 
   // 2-wide commit gate.  commit_2_gate is the "opportunity" signal — it
   // fires whenever the ROB could theoretically retire two entries this
@@ -546,7 +596,7 @@ module reorder_buffer (
   // even when widen-commit is gated off.  commit_2_fire is what the
   // output / retire logic actually acts on — it ANDs the opportunity with
   // the master enable and the cpu_ooo pending-write FIFO back-pressure.
-  assign commit_2_gate = commit_en && head_next_valid && head_next_done &&
+  assign commit_2_gate = commit_en && head_next_valid && head_next_done_eff &&
                          head_ok_2wide && head_next_ok_2wide;
   logic commit_2_fire;
   assign commit_2_fire = commit_2_gate && EnableWidenCommit && i_widen_commit_ok;
@@ -1464,13 +1514,13 @@ module reorder_buffer (
       o_commit_comb.dest_rf = head_dest_rf;
       o_commit_comb.dest_reg = head_dest_reg;
       o_commit_comb.dest_valid = head_dest_valid;
-      o_commit_comb.value = head_value;
+      o_commit_comb.value = head_value_eff;
       o_commit_comb.is_store = head_is_store;
       o_commit_comb.is_fp_store = head_is_fp_store;
       o_commit_comb.exception = head_exception;
       o_commit_comb.pc = head_pc;
       o_commit_comb.exc_cause = head_exc_cause;
-      o_commit_comb.fp_flags = head_fp_flags;
+      o_commit_comb.fp_flags = head_fp_flags_eff;
       o_commit_comb.has_fp_flags = head_has_fp_flags;
 
       // Branch misprediction recovery
@@ -1547,13 +1597,13 @@ module reorder_buffer (
       o_commit_comb_2.dest_rf         = head_next_dest_rf;
       o_commit_comb_2.dest_reg        = head_next_dest_reg;
       o_commit_comb_2.dest_valid      = head_next_dest_valid;
-      o_commit_comb_2.value           = head_next_value;
+      o_commit_comb_2.value           = head_next_value_eff;
       o_commit_comb_2.is_store        = head_next_is_store;
       o_commit_comb_2.is_fp_store     = head_next_is_fp_store;
       o_commit_comb_2.exception       = 1'b0;  // gate excludes exceptions
       o_commit_comb_2.pc              = head_next_pc;
       o_commit_comb_2.exc_cause       = '0;
-      o_commit_comb_2.fp_flags        = head_next_fp_flags;
+      o_commit_comb_2.fp_flags        = head_next_fp_flags_eff;
       o_commit_comb_2.has_fp_flags    = head_next_has_fp_flags;
       // Slot 2 is never a branch, never mispredicts, never has a checkpoint,
       // never redirects PC.  early_recovered carried for RAT consistency.
@@ -1606,7 +1656,7 @@ module reorder_buffer (
   // Head entry information for external coordination
   assign o_head_tag = head_idx;
   assign o_head_valid = head_valid;
-  assign o_head_done = head_valid && head_done;
+  assign o_head_done = head_valid && head_done_eff;
   assign o_entry_valid = rob_valid;
   assign o_entry_done = rob_done;
 
@@ -1615,14 +1665,14 @@ module reorder_buffer (
   // work to do this cycle. head_next_idx is declared with the other
   // head_next_* signals near the top of the module.
   logic head_next_valid_done;
-  assign head_next_valid_done = head_next_valid && head_next_done;
+  assign head_next_valid_done = head_next_valid && head_next_done_eff;
 
   always_comb begin
     o_perf_events = '0;
 
     o_perf_events.rob_empty = empty;
 
-    if (head_valid && !head_done && !i_flush_all) begin
+    if (head_valid && !head_done_eff && !i_flush_all) begin
       o_perf_events.head_wait_total = 1'b1;
 
       if (head_is_branch) begin
@@ -1718,7 +1768,7 @@ module reorder_buffer (
             $time,
             head_pc,
             head_dest_reg,
-            head_value[31:0]
+            head_value_eff[31:0]
         );
       else $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
     end
@@ -1837,8 +1887,10 @@ module reorder_buffer (
       // alloc_en implies !full
       p_alloc_not_when_full : assert (!alloc_en || !full);
 
-      // commit_en implies head_valid && head_done
-      p_commit_requires_valid_done : assert (!commit_en || (head_valid && head_done));
+      // commit_en implies head_valid && head_done_eff (head_done_eff folds in the
+      // same-cycle CDB bypass: when commit fires from a CDB write arriving this
+      // cycle, the stored rob_done is still 0 until the next clock edge).
+      p_commit_requires_valid_done : assert (!commit_en || (head_valid && head_done_eff));
 
       // commit output tag equals head_idx
       p_commit_only_at_head : assert (!commit_en || (o_commit_comb.tag == head_idx));
