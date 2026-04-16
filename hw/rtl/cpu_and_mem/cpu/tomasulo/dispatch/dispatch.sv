@@ -704,10 +704,10 @@ module dispatch (
   logic need_lq, need_sq;
   assign need_lq = is_load_flag || is_fp_load_flag ||
                    i_from_id_to_ex.is_lr ||
-                   i_from_id_to_ex.is_amo_instruction;
-  assign need_sq = is_store_flag || is_fp_store_flag ||
-                   i_from_id_to_ex.is_sc ||
-                   (i_from_id_to_ex.is_amo_instruction && !i_from_id_to_ex.is_lr);
+                   (i_from_id_to_ex.is_amo_instruction &&
+                    !i_from_id_to_ex.is_lr &&
+                    !i_from_id_to_ex.is_sc);
+  assign need_sq = is_store_flag || is_fp_store_flag || i_from_id_to_ex.is_sc;
 
   logic need_checkpoint;
   assign need_checkpoint = is_branch_flag;
@@ -979,6 +979,8 @@ module dispatch (
 
     // Memory info
     o_rs_dispatch.is_fp_mem        = is_fp_load_flag || is_fp_store_flag;
+    o_rs_dispatch.mem_needs_lq     = need_lq;
+    o_rs_dispatch.mem_needs_sq     = need_sq;
     o_rs_dispatch.mem_size         = mem_size;
     o_rs_dispatch.mem_signed       = mem_signed;
 

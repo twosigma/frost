@@ -949,7 +949,7 @@ module tomasulo_wrapper (
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W is excluded — it has its own completion path above.
-  assign store_issue_fire = o_mem_rs_issue.valid && sq_issue_is_store &&
+  assign store_issue_fire = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
                             (o_mem_rs_issue.op != riscv_pkg::SC_W);
   assign store_complete_tag = o_mem_rs_issue.rob_tag;
 
@@ -1324,6 +1324,8 @@ module tomasulo_wrapper (
       .i_fu_ready(int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
 
       // Flush (shared with ROB)
       .i_flush_en    (speculative_flush_en),
@@ -1366,6 +1368,8 @@ module tomasulo_wrapper (
       .i_fu_ready             (mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
+      .o_pre_issue_rob_tag    (),
+      .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
       .i_flush_tag            (i_flush_tag),
       .i_rob_head_tag         (head_tag),
@@ -1404,6 +1408,8 @@ module tomasulo_wrapper (
                                !i_backend_recovery_hold),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
+      .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
+      .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_rob_head_tag(head_tag),
@@ -1415,6 +1421,9 @@ module tomasulo_wrapper (
       .o_head_query_rs_ready(),
       .o_head_query_in_stage2()
   );
+
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
+  logic                                        mem_rs_pre_issue_needs_lq;
 
   assign o_mem_rs_issue = mem_rs_issue_w;
 
@@ -1447,6 +1456,8 @@ module tomasulo_wrapper (
       .i_fu_ready             (fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in FP_RS
+      .o_pre_issue_rob_tag    (),
+      .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
       .i_flush_tag            (i_flush_tag),
       .i_rob_head_tag         (head_tag),
@@ -1527,6 +1538,8 @@ module tomasulo_wrapper (
       .i_fu_ready             (fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                        // unused — no SC ops in FMUL_RS
+      .o_pre_issue_rob_tag    (),
+      .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
       .i_flush_tag            (i_flush_tag),
       .i_rob_head_tag         (head_tag),
@@ -1561,6 +1574,8 @@ module tomasulo_wrapper (
       .i_fu_ready             (fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in FDIV_RS
+      .o_pre_issue_rob_tag    (),
+      .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
       .i_flush_tag            (i_flush_tag),
       .i_rob_head_tag         (head_tag),
@@ -1660,26 +1675,9 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Load Queue: Allocation from Dispatch
   // ===========================================================================
-  // Determine if the dispatched MEM_RS instruction is a load
-  logic lq_alloc_is_load;
-  always_comb begin
-    case (i_rs_dispatch.op)
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LR_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
-      riscv_pkg::AMOAND_W,  riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W,  riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
-      lq_alloc_is_load = 1'b1;
-      default: lq_alloc_is_load = 1'b0;
-    endcase
-  end
-
   riscv_pkg::lq_alloc_req_t lq_alloc_req;
   always_comb begin
-    lq_alloc_req.valid = mem_rs_dispatch_valid && lq_alloc_is_load;
+    lq_alloc_req.valid = mem_rs_dispatch_valid && i_rs_dispatch.mem_needs_lq;
     lq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
     lq_alloc_req.is_fp = i_rs_dispatch.is_fp_mem;
     lq_alloc_req.size = i_rs_dispatch.mem_size;
@@ -1700,22 +1698,6 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
-  logic lq_issue_is_load;
-  always_comb begin
-    case (o_mem_rs_issue.op)
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::LR_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
-      riscv_pkg::AMOAND_W,  riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W,  riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
-      lq_issue_is_load = 1'b1;
-      default: lq_issue_is_load = 1'b0;
-    endcase
-  end
-
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
   assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
@@ -1726,7 +1708,7 @@ module tomasulo_wrapper (
 
   riscv_pkg::lq_addr_update_t lq_addr_update;
   always_comb begin
-    lq_addr_update.valid   = o_mem_rs_issue.valid && lq_issue_is_load;
+    lq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_lq;
     lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     lq_addr_update.address = lq_effective_addr;
     lq_addr_update.is_mmio = lq_addr_is_mmio;
@@ -1746,6 +1728,10 @@ module tomasulo_wrapper (
 
       // Address update (from MEM_RS issue)
       .i_addr_update(lq_addr_update),
+
+      // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update)
+      .i_pre_issue_rob_tag (mem_rs_pre_issue_rob_tag),
+      .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
 
       // SQ disambiguation (internal wiring to store_queue)
       .o_sq_check_valid          (sq_check_valid),
@@ -1846,19 +1832,9 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Store Queue: Allocation from Dispatch
   // ===========================================================================
-  // Determine if the dispatched MEM_RS instruction is a store
-  logic sq_alloc_is_store;
-  always_comb begin
-    case (i_rs_dispatch.op)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W:
-      sq_alloc_is_store = 1'b1;
-      default: sq_alloc_is_store = 1'b0;
-    endcase
-  end
-
   riscv_pkg::sq_alloc_req_t sq_alloc_req;
   always_comb begin
-    sq_alloc_req.valid   = mem_rs_dispatch_valid && sq_alloc_is_store;
+    sq_alloc_req.valid   = mem_rs_dispatch_valid && i_rs_dispatch.mem_needs_sq;
     sq_alloc_req.rob_tag = i_rs_dispatch.rob_tag;
     sq_alloc_req.is_fp   = i_rs_dispatch.is_fp_mem;
     sq_alloc_req.size    = i_rs_dispatch.mem_size;
@@ -1906,15 +1882,6 @@ module tomasulo_wrapper (
   // ===========================================================================
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
-  logic sq_issue_is_store;
-  always_comb begin
-    case (o_mem_rs_issue.op)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W:
-      sq_issue_is_store = 1'b1;
-      default: sq_issue_is_store = 1'b0;
-    endcase
-  end
-
   // Effective address: base (src1) + immediate (declared above near SC pending)
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
@@ -1924,7 +1891,7 @@ module tomasulo_wrapper (
 
   riscv_pkg::sq_addr_update_t sq_addr_update;
   always_comb begin
-    sq_addr_update.valid   = o_mem_rs_issue.valid && sq_issue_is_store;
+    sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq;
     sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     sq_addr_update.address = sq_effective_addr;
     sq_addr_update.is_mmio = sq_addr_is_mmio;
@@ -1933,7 +1900,7 @@ module tomasulo_wrapper (
   // Data update: store data from src2_value
   riscv_pkg::sq_data_update_t sq_data_update;
   always_comb begin
-    sq_data_update.valid   = o_mem_rs_issue.valid && sq_issue_is_store;
+    sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq;
     sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
     sq_data_update.data    = o_mem_rs_issue.src2_value;
   end
@@ -2390,12 +2357,12 @@ module tomasulo_wrapper (
 
   // No MEM_RS load dispatch when LQ is full
   always_comb begin
-    if (o_lq_full && lq_alloc_is_load) assume (!mem_rs_dispatch_valid);
+    if (o_lq_full && i_rs_dispatch.mem_needs_lq) assume (!mem_rs_dispatch_valid);
   end
 
   // No MEM_RS store dispatch when SQ is full
   always_comb begin
-    if (o_sq_full && sq_alloc_is_store) assume (!mem_rs_dispatch_valid);
+    if (o_sq_full && i_rs_dispatch.mem_needs_sq) assume (!mem_rs_dispatch_valid);
   end
 
   // LQ memory response only after read was issued

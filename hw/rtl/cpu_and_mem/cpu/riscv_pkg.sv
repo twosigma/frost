@@ -1522,6 +1522,8 @@ package riscv_pkg;
     logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
     // Memory info
     logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
     mem_size_e                        mem_size;
     logic                             mem_signed;
     // CSR info
@@ -1554,6 +1556,8 @@ package riscv_pkg;
     logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
     // Memory info (for MEM_RS)
     logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
     mem_size_e                        mem_size;
     logic                             mem_signed;
     // CSR info

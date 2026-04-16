@@ -72,6 +72,15 @@ module reservation_station #(
     output logic o_next_issue_is_sc,
 
     // =========================================================================
+    // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS with
+    // BYPASS_STAGE2=0, these expose the rob_tag and mem_needs_lq of the
+    // entry being captured into stage2 this cycle, so the LQ can pre-compute
+    // the addr_update CAM match and register it before the issue fires.
+    // =========================================================================
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
+    output logic                                        o_pre_issue_needs_lq,
+
+    // =========================================================================
     // Flush Control
     // =========================================================================
     input logic                                        i_flush_en,
@@ -164,6 +173,8 @@ module reservation_station #(
   wire dispatch_predicted_taken = i_dispatch.predicted_taken;
   wire [XLEN-1:0] dispatch_predicted_target = i_dispatch.predicted_target;
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
+  wire dispatch_mem_needs_lq = i_dispatch.mem_needs_lq;
+  wire dispatch_mem_needs_sq = i_dispatch.mem_needs_sq;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = i_dispatch.mem_size;
   wire dispatch_mem_signed = i_dispatch.mem_signed;
@@ -199,6 +210,8 @@ module reservation_station #(
   logic stage2_predicted_taken;
   logic [XLEN-1:0] stage2_predicted_target;
   logic stage2_is_fp_mem;
+  logic stage2_mem_needs_lq;
+  logic stage2_mem_needs_sq;
   riscv_pkg::mem_size_e stage2_mem_size;
   logic stage2_mem_signed;
   logic [11:0] stage2_csr_addr;
@@ -286,7 +299,7 @@ module reservation_station #(
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN +
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 1 + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN +
       1 + CheckpointIdWidth + 1 + 1;
 
   logic [PayloadWidth-1:0] payload_wr_data;
@@ -300,6 +313,8 @@ module reservation_station #(
     dispatch_predicted_taken,  //  1  predicted_taken
     dispatch_predicted_target,  // 32  predicted_target
     dispatch_is_fp_mem,  //  1  is_fp_mem
+    dispatch_mem_needs_lq,  //  1  mem_needs_lq
+    dispatch_mem_needs_sq,  //  1  mem_needs_sq
     2'(dispatch_mem_size),  //  2  mem_size
     dispatch_mem_signed,  //  1  mem_signed
     dispatch_csr_addr,  // 12  csr_addr
@@ -332,6 +347,8 @@ module reservation_station #(
   logic                         pl_predicted_taken;
   logic [             XLEN-1:0] pl_predicted_target;
   logic                         pl_is_fp_mem;
+  logic                         pl_mem_needs_lq;
+  logic                         pl_mem_needs_sq;
   logic [                  1:0] pl_mem_size_bits;
   logic                         pl_mem_signed;
   logic [                 11:0] pl_csr_addr;
@@ -344,7 +361,8 @@ module reservation_station #(
   logic                         pl_is_return;
 
   assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
-          pl_predicted_target, pl_is_fp_mem, pl_mem_size_bits, pl_mem_signed,
+          pl_predicted_target, pl_is_fp_mem, pl_mem_needs_lq, pl_mem_needs_sq,
+          pl_mem_size_bits, pl_mem_signed,
           pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr,
           pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return} = payload_rd_data;
 
@@ -478,6 +496,8 @@ module reservation_station #(
       bypass_issue.predicted_taken = pl_predicted_taken;
       bypass_issue.predicted_target = pl_predicted_target;
       bypass_issue.is_fp_mem = pl_is_fp_mem;
+      bypass_issue.mem_needs_lq = pl_mem_needs_lq;
+      bypass_issue.mem_needs_sq = pl_mem_needs_sq;
       bypass_issue.mem_size = riscv_pkg::mem_size_e'(pl_mem_size_bits);
       bypass_issue.mem_signed = pl_mem_signed;
       bypass_issue.csr_addr = pl_csr_addr;
@@ -500,6 +520,13 @@ module reservation_station #(
                                    (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
   assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
                                             : (stage2_valid && (stage2_op == riscv_pkg::SC_W));
+
+  // Pre-issue look-ahead: expose the selected entry's rob_tag and
+  // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
+  // can register a CAM pre-match and avoid a 5-level combinational chain
+  // at issue time (T).
+  assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
+  assign o_pre_issue_needs_lq = issue_fire && pl_mem_needs_lq;
 
   // --- Issue port assignment (driven from stage2 pipeline register) ---
   // Data fields are driven unconditionally from stage2 FFs.
@@ -537,6 +564,8 @@ module reservation_station #(
   assign o_issue.predicted_target = BYPASS_STAGE2 ? bypass_issue.predicted_target :
                                                     stage2_predicted_target;
   assign o_issue.is_fp_mem = BYPASS_STAGE2 ? bypass_issue.is_fp_mem : stage2_is_fp_mem;
+  assign o_issue.mem_needs_lq = BYPASS_STAGE2 ? bypass_issue.mem_needs_lq : stage2_mem_needs_lq;
+  assign o_issue.mem_needs_sq = BYPASS_STAGE2 ? bypass_issue.mem_needs_sq : stage2_mem_needs_sq;
   assign o_issue.mem_size = BYPASS_STAGE2 ? bypass_issue.mem_size : stage2_mem_size;
   assign o_issue.mem_signed = BYPASS_STAGE2 ? bypass_issue.mem_signed : stage2_mem_signed;
   assign o_issue.csr_addr = BYPASS_STAGE2 ? bypass_issue.csr_addr : stage2_csr_addr;
@@ -693,6 +722,8 @@ module reservation_station #(
       stage2_predicted_taken <= pl_predicted_taken;
       stage2_predicted_target <= pl_predicted_target;
       stage2_is_fp_mem <= pl_is_fp_mem;
+      stage2_mem_needs_lq <= pl_mem_needs_lq;
+      stage2_mem_needs_sq <= pl_mem_needs_sq;
       stage2_mem_size <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
       stage2_mem_signed <= pl_mem_signed;
       stage2_csr_addr <= pl_csr_addr;

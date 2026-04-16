@@ -64,6 +64,12 @@ module load_queue #(
     // =========================================================================
     input riscv_pkg::lq_addr_update_t i_addr_update,
 
+    // Pre-issue look-ahead from MEM_RS (1 cycle before i_addr_update fires).
+    // Used to pre-compute the addr_update CAM match and register it, so
+    // entry_addr_valid_now is only 2 LUT levels deep at issue time.
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tag,
+    input logic                                        i_pre_issue_needs_lq,
+
     // =========================================================================
     // Store Queue Disambiguation (combinational handshake)
     // =========================================================================
@@ -404,6 +410,7 @@ module load_queue #(
   // Head/tail search targets for the sparse valid-bit queue.
   logic [PtrWidth-1:0] head_advance_target;
   logic [PtrWidth-1:0] alloc_target;
+  logic [DEPTH-1:0] lq_addr_update_match;
   logic lq_addr_update_we;
   logic [IdxWidth-1:0] lq_addr_update_idx;
 
@@ -517,17 +524,68 @@ module load_queue #(
   assign o_empty = empty;
   assign o_count = count;
 
+  // ---------------------------------------------------------------------------
+  // Address-update CAM match: current-cycle (for flop writes) and
+  // pre-computed registered version (for the same-cycle issue bypass).
+  //
+  // TIMING: The issue scan + sq_check_capture path had a 16-level
+  // combinational chain when lq_addr_update_match was computed live at
+  // issue time.  The pre-match registers the CAM result one cycle early
+  // using the MEM_RS pre-issue look-ahead (rob_tag + needs_lq available
+  // at T-1, before stage2 fires at T).  At T, entry_addr_valid_now is
+  // only 2 LUT levels deep: registered pre-match AND'd with the actual
+  // issue valid, OR'd with the registered lq_addr_valid.
+  // ---------------------------------------------------------------------------
+
+  // Current-cycle match: used for lq_addr_valid / lq_address flop writes.
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      lq_addr_update_match[i] = i_addr_update.valid &&
+                                lq_valid[i] &&
+                                !lq_addr_valid[i] &&
+                                (lq_rob_tag[i] == i_addr_update.rob_tag);
+    end
+  end
+
   always_comb begin
     lq_addr_update_we  = 1'b0;
     lq_addr_update_idx = '0;
-    if (i_addr_update.valid && i_rst_n && !i_flush_all) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (!lq_addr_update_we && lq_valid[i] && !lq_addr_valid[i] &&
-            lq_rob_tag[i] == i_addr_update.rob_tag) begin
-          lq_addr_update_we  = 1'b1;
-          lq_addr_update_idx = IdxWidth'(i);
-        end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_addr_update_match[i]) begin
+        lq_addr_update_we  = 1'b1;
+        lq_addr_update_idx = IdxWidth'(i);
       end
+    end
+  end
+
+  // Pre-computed CAM match: registered 1 cycle early from MEM_RS look-ahead.
+  logic [DEPTH-1:0] addr_update_pre_match;
+  logic [DEPTH-1:0] addr_update_pre_match_q;
+
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      addr_update_pre_match[i] = i_pre_issue_needs_lq &&
+                                 lq_valid[i] &&
+                                 !lq_addr_valid[i] &&
+                                 (lq_rob_tag[i] == i_pre_issue_rob_tag);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) addr_update_pre_match_q <= '0;
+    else addr_update_pre_match_q <= addr_update_pre_match;
+  end
+
+  // Same-cycle addr bypass: uses the REGISTERED pre-match gated by the
+  // actual issue valid (2 LUT levels from flops).
+  logic [DEPTH-1:0] entry_addr_valid_now;
+  logic [DEPTH-1:0] entry_is_mmio_now;
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      entry_addr_valid_now[i] = lq_addr_valid[i] ||
+                                (addr_update_pre_match_q[i] && i_addr_update.valid);
+      entry_is_mmio_now[i] = (addr_update_pre_match_q[i] && i_addr_update.valid) ?
+                             i_addr_update.is_mmio : lq_is_mmio[i];
     end
   end
 
@@ -592,11 +650,11 @@ module load_queue #(
     for (int unsigned i = 0; i < DEPTH; i++) begin
       mem_eligible_mask[i] =
           lq_valid[scan_idx[i]] &&
-          lq_addr_valid[scan_idx[i]] &&
+          entry_addr_valid_now[scan_idx[i]] &&
           !lq_issued[scan_idx[i]] &&
           !lq_data_valid[scan_idx[i]] &&
           !in_flight_mask[scan_idx[i]] &&
-          (!lq_is_mmio[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
+          (!entry_is_mmio_now[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
           (!lq_is_lr[scan_idx[i]]   || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
           (!lq_is_amo[scan_idx[i]]  ||
            (lq_rob_tag[scan_idx[i]] == i_rob_head_tag && i_sq_committed_empty));
@@ -643,11 +701,11 @@ module load_queue #(
       if (!head_mem_issue_found &&
           lq_valid[i] &&
           (lq_rob_tag[i] == i_rob_head_tag) &&
-          lq_addr_valid[i] &&
+          entry_addr_valid_now[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          !lq_is_mmio[i] &&
+          !entry_is_mmio_now[i] &&
           !lq_is_lr[i] &&
           (!lq_is_amo[i] || i_sq_committed_empty)) begin
         head_mem_issue_found = 1'b1;
@@ -679,7 +737,7 @@ module load_queue #(
   logic head_entry_addr_valid;
   logic head_entry_issued;
   logic head_entry_data_valid;
-  assign head_entry_addr_valid = head_entry_found && lq_addr_valid[head_entry_idx];
+  assign head_entry_addr_valid = head_entry_found && entry_addr_valid_now[head_entry_idx];
   assign head_entry_issued     = head_entry_found && lq_issued[head_entry_idx];
   assign head_entry_data_valid = head_entry_found && lq_data_valid[head_entry_idx];
 
@@ -1604,18 +1662,22 @@ module load_queue #(
   // -----------------------------------------------------------------
   // Internal data: SQ check candidate index
   // -----------------------------------------------------------------
+  logic issue_mem_uses_addr_update;
+  assign issue_mem_uses_addr_update = addr_update_pre_match_q[issue_mem_idx] && i_addr_update.valid;
   always_ff @(posedge i_clk) begin
     if (sq_check_capture || sq_check_replace) begin
-      sq_check_idx          <= issue_mem_idx;
-      sq_check_rob_tag_q    <= issue_mem_rob_tag;
-      sq_check_addr_q       <= lq_address_issue_mem_rd;
-      sq_check_size_q       <= riscv_pkg::mem_size_e'(lq_size_issue_mem_rd);
-      sq_check_is_fp_q      <= lq_is_fp[issue_mem_idx];
-      sq_check_sign_ext_q   <= lq_sign_ext[issue_mem_idx];
-      sq_check_is_mmio_q    <= lq_is_mmio[issue_mem_idx];
+      sq_check_idx <= issue_mem_idx;
+      sq_check_rob_tag_q <= issue_mem_rob_tag;
+      sq_check_addr_q       <= issue_mem_uses_addr_update ? i_addr_update.address
+                                                          : lq_address_issue_mem_rd;
+      sq_check_size_q <= riscv_pkg::mem_size_e'(lq_size_issue_mem_rd);
+      sq_check_is_fp_q <= lq_is_fp[issue_mem_idx];
+      sq_check_sign_ext_q <= lq_sign_ext[issue_mem_idx];
+      sq_check_is_mmio_q    <= issue_mem_uses_addr_update ? i_addr_update.is_mmio
+                                                          : lq_is_mmio[issue_mem_idx];
       sq_check_fp64_phase_q <= lq_fp64_phase[issue_mem_idx];
-      sq_check_is_lr_q      <= lq_is_lr[issue_mem_idx];
-      sq_check_is_amo_q     <= lq_is_amo[issue_mem_idx];
+      sq_check_is_lr_q <= lq_is_lr[issue_mem_idx];
+      sq_check_is_amo_q <= lq_is_amo[issue_mem_idx];
     end
   end
 

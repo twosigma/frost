@@ -134,7 +134,8 @@ module cpu_ooo #(
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank1;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank2;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank3;
-  logic [63:0] perf_counter_data;
+  logic [63:0] perf_counter_data_comb;
+  logic [63:0] perf_counter_data_q;
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
   logic [63:0] wrapper_perf_counter_data;
@@ -2459,7 +2460,7 @@ module cpu_ooo #(
       .o_frm(frm_csr),
       .o_perf_counter_select(perf_counter_select),
       .o_perf_snapshot_capture(perf_snapshot_capture),
-      .i_perf_counter_data(perf_counter_data),
+      .i_perf_counter_data(perf_counter_data_q),
       .i_perf_counter_count(perf_counter_count)
   );
 
@@ -2630,11 +2631,22 @@ module cpu_ooo #(
   end
 
   always_comb begin
-    perf_counter_data = '0;
+    perf_counter_data_comb = '0;
     if (perf_counter_select_q < PerfTopCounterCountSel) begin
-      perf_counter_data = perf_top_snapshot[perf_counter_select_q[4:0]];
+      perf_counter_data_comb = perf_top_snapshot[perf_counter_select_q[4:0]];
     end else if (perf_counter_select_q < PerfCounterCountSel) begin
-      perf_counter_data = wrapper_perf_counter_data;
+      perf_counter_data_comb = wrapper_perf_counter_data;
+    end
+  end
+
+  // Performance counters are debug-facing CSRs, so a second register stage is
+  // acceptable here. It breaks the remaining selector -> perf-data -> CSR read
+  // -> rename/dispatch fanout cone without affecting CoreMark/ISA execution.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_counter_data_q <= '0;
+    end else begin
+      perf_counter_data_q <= perf_counter_data_comb;
     end
   end
 

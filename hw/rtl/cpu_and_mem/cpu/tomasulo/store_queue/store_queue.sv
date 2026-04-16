@@ -539,33 +539,73 @@ module store_queue #(
   // ===========================================================================
   // Head entry writes to memory when committed, addr_valid, data_valid.
   // One outstanding write at a time. FSD uses two phases.
+  //
+  // TIMING: The write interface is registered to break the head_ptr →
+  // head_ready → o_mem_write_en combinational cone that was the critical
+  // path (-1.059 ns WNS).  head_ready feeds the combinational next-state
+  // of a pipeline register; the actual o_mem_write_en output is a flop.
+  // This adds one cycle to each committed-store drain (2 → 3 cycles per
+  // store) but the SQ's write_outstanding already serialises drains, and
+  // SQ-full dispatch stalls are < 0.2% in CoreMark.
 
   assign head_ready = sq_valid[head_idx] && sq_committed[head_idx] &&
                       sq_addr_valid[head_idx] && sq_data_valid[head_idx] &&
                       !sq_sent[head_idx];
 
-  always_comb begin
-    o_mem_write_en      = 1'b0;
-    o_mem_write_addr    = '0;
-    o_mem_write_data    = '0;
-    o_mem_write_byte_en = '0;
-    o_mem_write_is_mmio = 1'b0;
+  logic                       mem_write_fire_next;
+  logic [riscv_pkg::XLEN-1:0] mem_write_addr_next;
+  logic [riscv_pkg::XLEN-1:0] mem_write_data_next;
+  logic [                3:0] mem_write_byte_en_next;
+  logic                       mem_write_is_mmio_next;
 
-    if (head_ready && !write_outstanding) begin
-      o_mem_write_en = 1'b1;
+  always_comb begin
+    mem_write_fire_next    = 1'b0;
+    mem_write_addr_next    = '0;
+    mem_write_data_next    = '0;
+    mem_write_byte_en_next = '0;
+    mem_write_is_mmio_next = 1'b0;
+
+    if (head_ready && !write_outstanding && !o_mem_write_en) begin
+      mem_write_fire_next = 1'b1;
 
       // FSD phase 1: write upper word at addr+4
       if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && sq_fp64_phase[head_idx]) begin
-        o_mem_write_addr = sq_address[head_idx] + 32'd4;
+        mem_write_addr_next = sq_address[head_idx] + 32'd4;
       end else begin
-        o_mem_write_addr = sq_address[head_idx];
+        mem_write_addr_next = sq_address[head_idx];
       end
 
-      o_mem_write_data = gen_write_data(sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[head_idx]),
-                                        sq_fp64_phase[head_idx]);
-      o_mem_write_byte_en =
-          gen_byte_en(o_mem_write_addr[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
-      o_mem_write_is_mmio = sq_is_mmio[head_idx];
+      mem_write_data_next = gen_write_data(
+          sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[head_idx]), sq_fp64_phase[head_idx]);
+      mem_write_byte_en_next =
+          gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
+      mem_write_is_mmio_next = sq_is_mmio[head_idx];
+    end
+  end
+
+  // Staging register for write_entry_idx and write_completes_entry, captured
+  // alongside the write interface so they stay aligned with o_mem_write_en.
+  logic [IdxWidth-1:0] mem_write_entry_idx_stg;
+  logic                mem_write_completes_stg;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      o_mem_write_en      <= 1'b0;
+      o_mem_write_addr    <= '0;
+      o_mem_write_data    <= '0;
+      o_mem_write_byte_en <= '0;
+      o_mem_write_is_mmio <= 1'b0;
+    end else begin
+      o_mem_write_en      <= mem_write_fire_next;
+      o_mem_write_addr    <= mem_write_addr_next;
+      o_mem_write_data    <= mem_write_data_next;
+      o_mem_write_byte_en <= mem_write_byte_en_next;
+      o_mem_write_is_mmio <= mem_write_is_mmio_next;
+    end
+    if (mem_write_fire_next) begin
+      mem_write_entry_idx_stg <= head_idx;
+      mem_write_completes_stg <= !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
+                                   !sq_fp64_phase[head_idx]);
     end
   end
 
@@ -751,13 +791,14 @@ module store_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Memory Write Initiation
+      // Memory Write Initiation (from registered write interface)
       // -----------------------------------------------------------------
+      // o_mem_write_en is now a registered output; use the staging
+      // registers captured alongside it for entry_idx and completes_entry.
       if (o_mem_write_en) begin
         write_outstanding <= 1'b1;
-        write_entry_idx <= head_idx;
-        write_completes_entry <= !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
-                                   !sq_fp64_phase[head_idx]);
+        write_entry_idx <= mem_write_entry_idx_stg;
+        write_completes_entry <= mem_write_completes_stg;
         write_invalidate_addr <= o_mem_write_addr;
       end
 
