@@ -1788,6 +1788,13 @@ package riscv_pkg;
     logic lq_full;
     logic sq_full;
     logic checkpoint_full;      // All checkpoints in use (branch)
+    // Slot-1 perf taps (2-wide dispatch).  Both gate-independent so a gate=1
+    // run still surfaces pair density / per-cycle RS pressure.  slot-1 fire
+    // itself is read directly off rob_alloc_req_2.alloc_valid in cpu_ooo —
+    // exposing it through here would create a Verilator UNOPTFLAT loop
+    // (slot1_fire → dispatch_fire → o_stall → ...).
+    logic slot1_opportunity;    // dispatch_valid + slot-0 pair-eligible + slot-1 INT-safe
+    logic slot1_blocked;        // opportunity present, INT_RS or ROB-2 has no room
   } dispatch_status_t;
 
   // ---------------------------------------------------------------------------

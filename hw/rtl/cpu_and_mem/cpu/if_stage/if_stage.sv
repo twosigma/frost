@@ -934,13 +934,28 @@ module if_stage #(
   // int_rs_full_for_2/full check is rs_type-gated to handle that case.
   wire slot0_is_pair_candidate = (slot0_opcode_raw == 7'b0010011) ||  // OP-IMM
   (slot0_opcode_raw == 7'b0110111) ||  // LUI
-  (slot0_opcode_raw == 7'b0010111);  // AUIPC
+  (slot0_opcode_raw == 7'b0010111) ||  // AUIPC
+  (slot0_opcode_raw == 7'b0110011);  // OP R-type (incl. MUL/DIV → MUL_RS)
   wire slot1_is_int_safe =
       (slot1_opcode_raw == 7'b0010011 &&
        slot1_next_word_fetched[14:12] != 3'b001 &&  // exclude SLLI/B-ext/CLZ/CTZ
   slot1_next_word_fetched[14:12] != 3'b101) ||  // exclude SRLI/SRAI/B-ext
   (slot1_opcode_raw == 7'b0110111) ||  // LUI
   (slot1_opcode_raw == 7'b0010111);  // AUIPC
+
+  // The 64-bit frontend keeps roughly a one-word fetch lead. After consuming
+  // two full 32-bit words via slot-1 (+8 total PC advance), the next cycle's
+  // BRAM output can still be one pair behind. A one-cycle cooldown after a
+  // real slot-1 PC advance avoids decoding stale fetch data as a second
+  // back-to-back pair.
+  logic slot1_recent_advance;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      slot1_recent_advance <= 1'b0;
+    end else if (!if_stage_stall) begin
+      slot1_recent_advance <= slot1_pc_advance;
+    end
+  end
 
   logic slot1_emit_32bit;
   // Require (i_instr_bank_sel_r == pc_reg[2]) — the aligner's "same parity"
@@ -951,12 +966,21 @@ module if_stage #(
   // corrupting slot-1's instruction bits.  Slot-0 handles the diff-parity
   // case via the aligner's buffer; slot-1 has no buffer and must wait for
   // the aligned fetch.
+  //
+  // Also require the normal one-word fetch lead (pc == pc_reg + 4). After a
+  // compressed-history sequence the 64-bit frontend can momentarily shrink the
+  // lead to +2 halfwords while still presenting slot-0 correctly. Emitting
+  // slot-1 in that state consumes two 32-bit words, but the next BRAM
+  // response is still based on fetch word floor(pc), so slot-0 at pc+8 reuses
+  // the old word(pc_reg) as stale decode.
   assign slot1_emit_32bit = !sel_nop && !use_instr_buffer && !replay_saved_if_outputs &&
                             !is_compressed &&        // slot-0 is 32-bit
       !pc_reg[1] &&  // pc_reg word-aligned
+      !pc_reg[2] &&  // slot-0 must be lower 32b word of the 64b fetch line
+      (pc == (pc_reg + 32'd4)) &&  // require full-word fetch lead
       !(i_instr_bank_sel_r ^ pc_reg[2]) &&  // aligner normal ordering
       (slot1_next_word_fetched[1:0] == 2'b11) &&  // slot-1 is 32-bit
-      slot0_is_pair_candidate && slot1_is_int_safe;
+      slot0_is_pair_candidate && slot1_is_int_safe && !slot1_recent_advance;
 
   // MUST match dispatch.sv's SlotOneScaffoldingDisable — flipped together
   // as a pair.  When 1'b1, slot-1 never actually fires at dispatch and PC

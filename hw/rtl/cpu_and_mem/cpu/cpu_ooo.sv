@@ -91,7 +91,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  localparam int unsigned PerfTopCounterCount = 23;
+  localparam int unsigned PerfTopCounterCount = 26;
   localparam int unsigned PerfWrapperCounterCount = 60;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -121,6 +121,13 @@ module cpu_ooo #(
   localparam int unsigned PerfPredictionFenceBranch = 20;
   localparam int unsigned PerfPredictionFenceJal = 21;
   localparam int unsigned PerfPredictionFenceIndirect = 22;
+  // Slot-1 (2-wide dispatch) counters.  Fire is gate-dependent (0 under
+  // SlotOneScaffoldingDisable=1); opportunity/blocked are gate-independent
+  // so a gate=1 baseline still surfaces pair density for upper-bound
+  // estimation.
+  localparam int unsigned PerfSlot1Fire = 23;
+  localparam int unsigned PerfSlot1Opportunity = 24;
+  localparam int unsigned PerfSlot1Blocked = 25;
 
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
@@ -2715,6 +2722,12 @@ module cpu_ooo #(
     perf_top_inc[PerfPredictionFenceBranch] = {{63{1'b0}}, prediction_fence_branch};
     perf_top_inc[PerfPredictionFenceJal] = {{63{1'b0}}, prediction_fence_jal};
     perf_top_inc[PerfPredictionFenceIndirect] = {{63{1'b0}}, prediction_fence_indirect};
+    // slot-1 fire = rob_alloc_req_2.alloc_valid (read direct, not through
+    // dispatch_status, to avoid an UNOPTFLAT loop — see dispatch.sv perf
+    // tap comment).  Gate-dependent: 0 under SlotOneScaffoldingDisable=1.
+    perf_top_inc[PerfSlot1Fire] = {{63{1'b0}}, rob_alloc_req_2.alloc_valid};
+    perf_top_inc[PerfSlot1Opportunity] = {{63{1'b0}}, dispatch_status.slot1_opportunity};
+    perf_top_inc[PerfSlot1Blocked] = {{63{1'b0}}, dispatch_status.slot1_blocked};
   end
 
   always_ff @(posedge i_clk) begin

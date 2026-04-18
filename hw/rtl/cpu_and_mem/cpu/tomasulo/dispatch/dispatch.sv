@@ -792,6 +792,19 @@ module dispatch (
                 slot1_resource_stall;
     end
     o_status.stall = o_stall;
+
+    // Slot-1 perf taps.  Use dispatch_valid (not dispatch_fire) so the
+    // dependency chain doesn't loop back through o_stall (which is being
+    // written in this same always_comb) — Verilator would flag UNOPTFLAT.
+    // Semantic: opportunity/blocked count even when slot-0 is stalled,
+    // which is the "would have paired if not for stall" measurement.
+    // Both are gate-independent so a gate=1 baseline still surfaces pair
+    // density and per-cycle RS pressure.  slot-1 fire is read directly
+    // off rob_alloc_req_2.alloc_valid in cpu_ooo for the same UNOPTFLAT
+    // reason.
+    o_status.slot1_opportunity = dispatch_valid && slot0_can_pair && slot1_can_fire_raw;
+    o_status.slot1_blocked     = dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
+                                 !slot1_int_rs_room_ok;
   end
 
   // Dispatch fires when valid and not stalled
