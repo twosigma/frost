@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 90U
+#define TOMASULO_PROFILE_COUNTER_COUNT 93U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -122,6 +122,9 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 87,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 88,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 89,
+    TOMASULO_PERF_HEAD_LOAD_BB_STG_CAPTURE = 90,
+    TOMASULO_PERF_HEAD_LOAD_BB_STG_LAUNCH = 91,
+    TOMASULO_PERF_HEAD_LOAD_BB_STG_OTHER = 92,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -753,6 +756,18 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Head load bus-blocked: staging/misc",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STAGING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: capture cycle (sq_check_capture for head)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STG_CAPTURE),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: launch cycle (o_mem_read_en for head)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STG_LAUNCH),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: other (true idle / edge cases)",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STG_OTHER),
         cycles);
     tomasulo_profile_print_metric(
         "Head INT: operand wait (in RS, src not ready)",

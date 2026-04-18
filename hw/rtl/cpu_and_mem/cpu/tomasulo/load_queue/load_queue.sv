@@ -175,7 +175,17 @@ module load_queue #(
     output logic o_head_load_bb_bus_busy,  // i_mem_bus_busy = 1
     output logic o_head_load_bb_amo,       // older AMO pending (blocked_by_amo prefix OR)
     output logic o_head_load_bb_sq_wait,   // in sq_check stage but !sq_check_phase2
-    output logic o_head_load_bb_staging    // catch-all (pre-sq_check capture, drop-pending, etc.)
+    output logic o_head_load_bb_staging,   // catch-all (pre-sq_check capture, drop-pending, etc.)
+
+    // bb_staging sub-decomposition (partition of bb_staging): classifies
+    // whether the cycle is "useful work in flight" (capture or launch firing
+    // for the head entry) vs. a truly idle stall.  Same-cycle addr bypass
+    // makes the pre-capture cycle definitionally a capture-cycle; launch
+    // cycle is the one where o_mem_read_en fires before mem_outstanding
+    // latches.  Sum of the three equals bb_staging.
+    output logic o_head_load_bb_stg_capture,  // sq_check_capture fires for head entry
+    output logic o_head_load_bb_stg_launch,   // launch_mem_issue fires for head entry
+    output logic o_head_load_bb_stg_other     // bb_staging remainder (truly idle or other edge)
 );
 
   // ===========================================================================
@@ -824,6 +834,22 @@ module load_queue #(
   assign o_head_load_bb_staging  = head_entry_bb_base && !head_entry_issued &&
                                    !i_mem_bus_busy && !any_pending_amo &&
                                    !head_entry_in_sq_wait;
+
+  // bb_staging partition: classify each bb_staging cycle as useful-work
+  // (capture or launch firing for the head entry) vs. other.  Priority-
+  // ordered (capture > launch > other) so every cycle counts once.  Both
+  // "useful work" cycles are definitionally in bb_staging because their
+  // gating terms (!mem_outstanding for launch, !head_entry_issued for
+  // both) hold through end-of-cycle register updates.
+  logic head_capture_this_cycle;
+  logic head_launch_this_cycle;
+  assign head_capture_this_cycle = sq_check_capture && (issue_mem_idx == head_entry_idx);
+  assign head_launch_this_cycle = launch_mem_issue && (sq_check_idx == head_entry_idx);
+  assign o_head_load_bb_stg_capture = o_head_load_bb_staging && head_capture_this_cycle;
+  assign o_head_load_bb_stg_launch  = o_head_load_bb_staging && !head_capture_this_cycle &&
+                                      head_launch_this_cycle;
+  assign o_head_load_bb_stg_other   = o_head_load_bb_staging && !head_capture_this_cycle &&
+                                      !head_launch_this_cycle;
 
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])

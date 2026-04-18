@@ -481,7 +481,7 @@ module tomasulo_wrapper (
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 60;
+  localparam int unsigned WrapperPerfCounterCount = 63;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -591,6 +591,18 @@ module tomasulo_wrapper (
   localparam int unsigned PerfCommit2BlockedNextSerial = 57;
   localparam int unsigned PerfCommit2BlockedNextBranchMispred = 58;
   localparam int unsigned PerfCommit2BlockedNextBranchCorrect = 59;
+  // bb_staging partition: splits the opaque bb_staging catch-all into
+  // "useful work in flight" (capture or launch firing for head this cycle)
+  // vs. truly idle remainder.  Sum of the three equals PerfHeadLoadBbStaging.
+  //   StgCapture : sq_check_capture fires for head entry this cycle
+  //                (post-addr-bypass this is definitionally the capture cycle)
+  //   StgLaunch  : launch_mem_issue (o_mem_read_en) fires for head this cycle
+  //                (mem_outstanding hasn't latched yet — inherent 1 cycle)
+  //   StgOther   : bb_staging remainder — truly idle (drop-response pending,
+  //                cache_hit_fast_path/sq_do_forward same cycle, etc.)
+  localparam int unsigned PerfHeadLoadBbStgCapture = 60;
+  localparam int unsigned PerfHeadLoadBbStgLaunch = 61;
+  localparam int unsigned PerfHeadLoadBbStgOther = 62;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -897,6 +909,9 @@ module tomasulo_wrapper (
   logic lq_head_load_bb_amo;
   logic lq_head_load_bb_sq_wait;
   logic lq_head_load_bb_staging;
+  logic lq_head_load_bb_stg_capture;
+  logic lq_head_load_bb_stg_launch;
+  logic lq_head_load_bb_stg_other;
 
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
@@ -1914,11 +1929,14 @@ module tomasulo_wrapper (
       .o_head_load_post_lq     (lq_head_load_post_lq),
 
       // bus_blocked sub-bucket decomposition
-      .o_head_load_bb_issued  (lq_head_load_bb_issued),
-      .o_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
-      .o_head_load_bb_amo     (lq_head_load_bb_amo),
-      .o_head_load_bb_sq_wait (lq_head_load_bb_sq_wait),
-      .o_head_load_bb_staging (lq_head_load_bb_staging)
+      .o_head_load_bb_issued     (lq_head_load_bb_issued),
+      .o_head_load_bb_bus_busy   (lq_head_load_bb_bus_busy),
+      .o_head_load_bb_amo        (lq_head_load_bb_amo),
+      .o_head_load_bb_sq_wait    (lq_head_load_bb_sq_wait),
+      .o_head_load_bb_staging    (lq_head_load_bb_staging),
+      .o_head_load_bb_stg_capture(lq_head_load_bb_stg_capture),
+      .o_head_load_bb_stg_launch (lq_head_load_bb_stg_launch),
+      .o_head_load_bb_stg_other  (lq_head_load_bb_stg_other)
   );
 
   // ===========================================================================
@@ -2302,6 +2320,19 @@ module tomasulo_wrapper (
     perf_inc[PerfHeadLoadBbStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
+    };
+    // bb_staging partition: capture cycle / launch cycle / true idle.
+    perf_inc[PerfHeadLoadBbStgCapture] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_stg_capture)
+    };
+    perf_inc[PerfHeadLoadBbStgLaunch] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_stg_launch)
+    };
+    perf_inc[PerfHeadLoadBbStgOther] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_stg_other)
     };
     // head_wait_int decomposition — mutually exclusive partition of the
     // parent bucket. Gated on rob_perf_events.head_wait_int so all four
