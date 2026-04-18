@@ -50,11 +50,21 @@ module register_alias_table (
     // =========================================================================
     // Source Lookup Interface (combinational reads, from Dispatch)
     // =========================================================================
-    // INT source lookups
+    // INT source lookups (slot 0)
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr,
     output riscv_pkg::rat_lookup_t                               o_int_src1,
     output riscv_pkg::rat_lookup_t                               o_int_src2,
+
+    // INT source lookups (slot 1, for 2-wide dispatch). These include an
+    // intra-pair RAW bypass: if slot-0 allocates a producer tag to one of
+    // slot-1's source registers this cycle, the lookup returns slot-0's
+    // new ROB tag instead of the stale RAT entry. Slot-1 is INT-only in
+    // v0, so no FP slot-1 reads exist yet.
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src1_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src2_2,
 
     // FP source lookups
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src1_addr,
@@ -67,6 +77,13 @@ module register_alias_table (
     // Regfile read data (from register files, for value passthrough)
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1,
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2,
+    // Slot-1 INT regfile read data. The INT regfile still has only two
+    // read ports today; these inputs are tied to '0 at the RAT instance.
+    // Slot-1 addrs are '0 (x0 → returns 0 unconditionally) until the
+    // producer is widened, so the value field of o_int_src*_2 is
+    // never consumed through the "not renamed" path in practice.
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1_2,
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2_2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data1,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data3,
@@ -78,6 +95,16 @@ module register_alias_table (
     input logic                                        i_alloc_dest_rf,   // 0=INT, 1=FP
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag,
+
+    // Slot-1 rename write. Fires only when slot-0 also fires (program
+    // order). When both slots write the same arch reg, slot-1's tag wins
+    // via NBA last-assignment ordering in the always_ff below. alloc_rob_tag_2
+    // is sourced from the ROB's o_alloc_resp_2.alloc_tag (tail_idx + 1 when
+    // slot-0 fires).
+    input logic                                        i_alloc_valid_2,
+    input logic                                        i_alloc_dest_rf_2,
+    input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag_2,
 
     // =========================================================================
     // Commit Interface (from ROB commit output, synchronous)
@@ -403,6 +430,64 @@ module register_alias_table (
     end
   end
 
+  // -------------------------------------------------------------------------
+  // Slot-1 INT source lookups (for 2-wide dispatch).
+  //
+  // Intra-pair RAW bypass: if slot-0 allocates a producer for an INT arch
+  // reg this cycle and slot-1 reads that same reg, the lookup forwards
+  // slot-0's new ROB tag combinationally instead of the (stale) RAT entry.
+  // Without this, slot-1 would wake on a tag that hasn't been renamed yet,
+  // so same-cycle RAW pairs would break.
+  //
+  // Slot-1 regfile data ports (i_int_regfile_data*_2) are tied to '0 at the
+  // RAT instance until the INT regfile is widened. Slot-1 is inert in the
+  // current scaffolding (addrs = '0 → x0 returns 0 directly), so this is
+  // dead-path padding today.
+  // -------------------------------------------------------------------------
+  // INT source 1 (slot 1)
+  always_comb begin
+    logic slot0_int_alloc_match_src1_2;
+    slot0_int_alloc_match_src1_2 = i_alloc_valid && !i_alloc_dest_rf &&
+                                   (i_alloc_dest_reg != '0) &&
+                                   (i_alloc_dest_reg == i_int_src1_addr_2);
+    if (i_int_src1_addr_2 == '0) begin
+      o_int_src1_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
+    end else if (slot0_int_alloc_match_src1_2) begin
+      o_int_src1_2 = {1'b1, i_alloc_rob_tag, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}};
+    end else if (int_rat_valid[i_int_src1_addr_2] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr_2]]) begin
+      o_int_src1_2 = {
+        1'b1, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
+      };
+    end else begin
+      o_int_src1_2 = {
+        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
+      };
+    end
+  end
+
+  // INT source 2 (slot 1)
+  always_comb begin
+    logic slot0_int_alloc_match_src2_2;
+    slot0_int_alloc_match_src2_2 = i_alloc_valid && !i_alloc_dest_rf &&
+                                   (i_alloc_dest_reg != '0) &&
+                                   (i_alloc_dest_reg == i_int_src2_addr_2);
+    if (i_int_src2_addr_2 == '0) begin
+      o_int_src2_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
+    end else if (slot0_int_alloc_match_src2_2) begin
+      o_int_src2_2 = {1'b1, i_alloc_rob_tag, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}};
+    end else if (int_rat_valid[i_int_src2_addr_2] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr_2]]) begin
+      o_int_src2_2 = {
+        1'b1, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
+      };
+    end else begin
+      o_int_src2_2 = {
+        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
+      };
+    end
+  end
+
   // FP source 1
   always_comb begin
     if (fp_rat_valid[i_fp_src1_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr]]) begin
@@ -521,6 +606,26 @@ module register_alias_table (
           // FP rename
           fp_rat_valid[i_alloc_dest_reg] <= 1'b1;
           fp_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
+        end
+      end
+
+      // ---------------------------------------------------------------
+      // Slot-1 rename write (2-wide dispatch). Ordered after slot-0 so
+      // that NBA last-assignment semantics make slot-1 win when both
+      // slots target the same arch reg (slot-1 is the newer producer
+      // in program order). Fires only when slot-0 also fires, enforced
+      // by the dispatch-side gate (i_alloc_valid_2 is always '0 in the
+      // scaffolding state).
+      // ---------------------------------------------------------------
+      if (i_alloc_valid_2) begin
+        if (!i_alloc_dest_rf_2) begin
+          if (i_alloc_dest_reg_2 != '0) begin
+            int_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+            int_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
+          end
+        end else begin
+          fp_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+          fp_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
         end
       end
     end

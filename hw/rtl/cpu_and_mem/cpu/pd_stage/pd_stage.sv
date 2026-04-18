@@ -39,7 +39,15 @@ module pd_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
+    // Slot-1 input for 2-wide dispatch. Producer ties to '0 today; PD
+    // forwards '0 downstream in o_from_pd_to_id_2 until real slot-1
+    // decompression lands.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
+    /* verilator lint_on UNUSEDSIGNAL */
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
+    // Slot-1 output to ID. '0 today.
+    output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // Backward-branch-taken static heuristic: PD redirect to IF
     output logic o_pd_redirect,
     output logic [XLEN-1:0] o_pd_redirect_target
@@ -62,6 +70,22 @@ module pd_stage #(
       .o_illegal(decomp_illegal)
   );
 
+  // Slot-1 RVC decompressor for 2-wide dispatch.  Runs in parallel to
+  // slot-0's decompressor from registered IF outputs; adds no dependency
+  // on the slot-0 path.  When IF drives i_from_if_to_pd_2.sel_nop=1
+  // (the common case today), the raw_parcel is zero → decomp output is
+  // harmless garbage that slot-1's mux forces to NOP below.
+  logic [31:0] decompressed_instr_2;
+  logic        decomp_is_compressed_2;
+  logic        decomp_illegal_2;
+
+  rvc_decompressor decompressor_inst_2 (
+      .i_instr_compressed(i_from_if_to_pd_2.raw_parcel),
+      .o_instr_expanded(decompressed_instr_2),
+      .o_is_compressed(decomp_is_compressed_2),
+      .o_illegal(decomp_illegal_2)
+  );
+
   // ===========================================================================
   // Final Instruction Selection
   // ===========================================================================
@@ -80,6 +104,18 @@ module pd_stage #(
   always_comb begin
     if (i_from_if_to_pd.sel_nop) final_instruction = riscv_pkg::NOP;
     else final_instruction = instruction_non_nop;
+  end
+
+  // Slot-1 instruction selection: mirrors slot-0.
+  logic [31:0] final_instruction_2;
+  logic [31:0] instruction_non_nop_2;
+  always_comb begin
+    if (i_from_if_to_pd_2.sel_compressed) instruction_non_nop_2 = decompressed_instr_2;
+    else instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
+  end
+  always_comb begin
+    if (i_from_if_to_pd_2.sel_nop) final_instruction_2 = riscv_pkg::NOP;
+    else final_instruction_2 = instruction_non_nop_2;
   end
 
   // ===========================================================================
@@ -105,6 +141,14 @@ module pd_stage #(
   assign source_reg_2 = final_instruction[24:20];
   // F extension: rs3 for FMA is in bits [31:27] (R4-type format)
   assign fp_source_reg_3 = final_instruction[31:27];
+
+  // Slot-1 source register extraction (same bit positions).
+  logic [4:0] source_reg_1_2;
+  logic [4:0] source_reg_2_2;
+  logic [4:0] fp_source_reg_3_2;
+  assign source_reg_1_2    = final_instruction_2[19:15];
+  assign source_reg_2_2    = final_instruction_2[24:20];
+  assign fp_source_reg_3_2 = final_instruction_2[31:27];
 
   // ===========================================================================
   // Backward-Branch-Taken Static Heuristic
@@ -165,6 +209,47 @@ module pd_stage #(
 
   assign o_pd_redirect = pd_redirect_r;
   assign o_pd_redirect_target = pd_redirect_target_r;
+
+  // ===========================================================================
+  // Slot-1 Pipeline Register: PD → ID (for 2-wide dispatch)
+  // ===========================================================================
+  // Mirrors the slot-0 pipeline register, driving a separate
+  // o_from_pd_to_id_2.  Slot-1 is forced to NOP/invalid when:
+  //   - pipeline flush is asserted
+  //   - slot-0's pd_redirect_r fires (slot-1 comes from the same fetch
+  //     cycle as the wrong-path slot-0, so it's squashed together)
+  //   - IF signalled sel_nop (slot-1 slot wasn't extractable this cycle)
+  // BTB/RAS metadata is tied to '0 — dispatch's slot-1 gate serializes on
+  // branches in v0, so slot-1 never participates in prediction.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_pd_to_id_2             <= '0;
+      o_from_pd_to_id_2.instruction <= riscv_pkg::NOP;
+    end else if (~i_pipeline_ctrl.stall) begin
+      if (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop) begin
+        o_from_pd_to_id_2             <= '0;
+        o_from_pd_to_id_2.instruction <= riscv_pkg::NOP;
+      end else begin
+        o_from_pd_to_id_2.instruction <= final_instruction_2;
+        o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
+        o_from_pd_to_id_2.link_address <= i_from_if_to_pd_2.link_address;
+        o_from_pd_to_id_2.source_reg_1_early <= source_reg_1_2;
+        o_from_pd_to_id_2.source_reg_2_early <= source_reg_2_2;
+        o_from_pd_to_id_2.fp_source_reg_3_early <= fp_source_reg_3_2;
+        o_from_pd_to_id_2.illegal_instruction        <=
+            (!i_from_if_to_pd_2.sel_nop &&
+             i_from_if_to_pd_2.sel_compressed &&
+             decomp_is_compressed_2 && decomp_illegal_2);
+        o_from_pd_to_id_2.btb_hit <= 1'b0;
+        o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
+        o_from_pd_to_id_2.btb_predicted_target <= '0;
+        o_from_pd_to_id_2.ras_predicted <= 1'b0;
+        o_from_pd_to_id_2.ras_predicted_target <= '0;
+        o_from_pd_to_id_2.ras_checkpoint_tos <= '0;
+        o_from_pd_to_id_2.ras_checkpoint_valid_count <= '0;
+      end
+    end
+  end
 
   // ===========================================================================
   // Pipeline Register: PD → ID

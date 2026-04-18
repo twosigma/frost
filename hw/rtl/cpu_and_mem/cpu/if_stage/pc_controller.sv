@@ -115,6 +115,12 @@ module pc_controller #(
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     input logic i_sel_nop,
+    // 2-wide dispatch: asserted when IF is emitting a non-NOP slot-1 this
+    // cycle AND the slot-1 scaffolding gate is released.  Adds +4 to the
+    // sequential PC / PC_reg advance so the same PC is not re-fetched as
+    // slot-0 next cycle.  Zero when the gate is asserted, preserving the
+    // 1-wide baseline exactly.
+    input logic i_slot1_advance_pc,
 
     // Outputs
     output logic [XLEN-1:0] o_pc,
@@ -543,7 +549,7 @@ module pc_controller #(
       next_pc = seq_next_pc + riscv_pkg::PcIncrementCompressed;
     else if (hold_pending_prediction_fetch_pc_mux)
       next_pc = pending_prediction_allow_cross ? pending_prediction_target : pending_prediction_pc;
-    else next_pc = seq_next_pc;
+    else next_pc = seq_next_pc + (i_slot1_advance_pc ? 32'd4 : 32'd0);
   end
 
   // For next_pc_reg, use the REGISTERED prediction handoff for both BTB and
@@ -573,7 +579,7 @@ module pc_controller #(
     else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
     else if (pending_prediction_target_handoff_pc_mux) next_pc_reg = pending_prediction_target;
     else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
-    else next_pc_reg = seq_next_pc_reg;
+    else next_pc_reg = seq_next_pc_reg + (i_slot1_advance_pc ? 32'd4 : 32'd0);
   end
 
   // PC registers

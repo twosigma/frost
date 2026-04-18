@@ -38,6 +38,10 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
+    // Slot-1 input for 2-wide dispatch. Producer (PD) ties to '0 today.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
+    /* verilator lint_on UNUSEDSIGNAL */
     // Cold-backward-branch override from pd_stage. Both signals are FF outputs
     // of pd_stage (the same registers that drive the IF redirect). Applying the
     // override here instead of inside pd_stage's o_from_pd_to_id register keeps
@@ -47,7 +51,9 @@ module id_stage #(
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
-    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
+    // Slot-1 output to dispatch. '0 today.
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
 );
 
   // Effective BTB metadata after applying the cold-backward-branch override.
@@ -498,6 +504,186 @@ module id_stage #(
       o_from_id_to_ex.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed;
       o_from_id_to_ex.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed;
       o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
+    end
+  end
+
+  // ===========================================================================
+  // Slot-1 Decoding for 2-wide Dispatch
+  // ===========================================================================
+  // Parallel decode path: separate instr_decoder / immediate_decoder /
+  // instruction_type_decoder instances consume i_from_pd_to_id_2 and feed
+  // o_from_id_to_ex_2.  branch_target_precompute is NOT duplicated —
+  // slot-1 is INT-only with no branch prediction in v0, so pre-computed
+  // branch/JAL targets are never consumed.  FP and BTB/RAS fields stay
+  // '0 for the same reason.  source_reg_*_data stays '0 here; the INT
+  // regfile widens to 4 read ports at the gate-flip step.
+
+  riscv_pkg::instr_t instruction_2;
+  riscv_pkg::instr_op_e instruction_operation_2;
+  riscv_pkg::branch_taken_op_e branch_operation_2;
+  riscv_pkg::store_op_e store_operation_2;
+  logic decoder_illegal_2;
+
+  assign instruction_2 = i_from_pd_to_id_2.instruction;
+
+  instr_decoder instr_decoder_inst_2 (
+      .i_instr(instruction_2),
+      .o_instr_op(instruction_operation_2),
+      .o_store_op(store_operation_2),
+      .o_branch_taken_op(branch_operation_2),
+      .o_illegal(decoder_illegal_2)
+  );
+
+  logic is_illegal_instruction_2;
+  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
+
+  logic [XLEN-1:0] immediate_i_type_2, immediate_s_type_2, immediate_b_type_2;
+  logic [XLEN-1:0] immediate_u_type_2, immediate_j_type_2;
+  immediate_decoder #(
+      .XLEN(XLEN)
+  ) immediate_decoder_inst_2 (
+      .i_instruction(instruction_2),
+      .o_immediate_i_type(immediate_i_type_2),
+      .o_immediate_s_type(immediate_s_type_2),
+      .o_immediate_b_type(immediate_b_type_2),
+      .o_immediate_u_type(immediate_u_type_2),
+      .o_immediate_j_type(immediate_j_type_2)
+  );
+
+  logic is_load_instruction_2, is_load_byte_direct_2;
+  logic is_load_halfword_direct_2, is_load_unsigned_direct_2;
+  logic is_multiply_direct_2, is_divide_direct_2;
+  logic is_csr_instruction_2;
+  logic [11:0] csr_address_2;
+  logic [4:0] csr_imm_2;
+  logic is_amo_instruction_2, is_lr_2, is_sc_2;
+  logic is_ecall_2, is_ebreak_2, is_mret_2, is_wfi_2;
+  logic is_jal_direct_2, is_jalr_direct_2;
+  logic is_ras_return_precomputed_2, is_ras_call_precomputed_2;
+
+  instruction_type_decoder #(
+      .XLEN(XLEN)
+  ) instruction_type_decoder_inst_2 (
+      .i_instruction(instruction_2),
+      .i_immediate_i_type(immediate_i_type_2),
+      .o_is_load_instruction(is_load_instruction_2),
+      .o_is_load_byte(is_load_byte_direct_2),
+      .o_is_load_halfword(is_load_halfword_direct_2),
+      .o_is_load_unsigned(is_load_unsigned_direct_2),
+      .o_is_multiply(is_multiply_direct_2),
+      .o_is_divide(is_divide_direct_2),
+      .o_is_csr_instruction(is_csr_instruction_2),
+      .o_csr_address(csr_address_2),
+      .o_csr_imm(csr_imm_2),
+      .o_is_amo_instruction(is_amo_instruction_2),
+      .o_is_lr(is_lr_2),
+      .o_is_sc(is_sc_2),
+      .o_is_ecall(is_ecall_2),
+      .o_is_ebreak(is_ebreak_2),
+      .o_is_mret(is_mret_2),
+      .o_is_wfi(is_wfi_2),
+      .o_is_jal(is_jal_direct_2),
+      .o_is_jalr(is_jalr_direct_2),
+      .o_is_ras_return(is_ras_return_precomputed_2),
+      .o_is_ras_call(is_ras_call_precomputed_2)
+  );
+
+  // Slot-1 x0 check flags (for dispatch's source-read path).
+  logic source_reg_1_is_x0_2, source_reg_2_is_x0_2;
+  assign source_reg_1_is_x0_2 = (i_from_pd_to_id_2.source_reg_1_early == 5'd0);
+  assign source_reg_2_is_x0_2 = (i_from_pd_to_id_2.source_reg_2_early == 5'd0);
+
+  // Slot-1 FP flags. Consumed by dispatch's rs_type router — keeping them
+  // accurate means dispatch can distinguish INT from FP instructions
+  // even though the slot-1 gate only fires for INT in v0.
+  logic is_fp_load_direct_2, is_fp_store_direct_2;
+  logic is_fp_load_double_direct_2, is_fp_store_double_direct_2;
+  logic is_fp_compute_direct_2, is_fp_fma_direct_2, is_fp_instruction_direct_2;
+  assign is_fp_load_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                               ((instruction_2.funct3 == 3'b010) ||
+                                (instruction_2.funct3 == 3'b011));
+  assign is_fp_store_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
+                                ((instruction_2.funct3 == 3'b010) ||
+                                 (instruction_2.funct3 == 3'b011));
+  assign is_fp_load_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                                      (instruction_2.funct3 == 3'b011);
+  assign is_fp_store_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
+                                       (instruction_2.funct3 == 3'b011);
+  assign is_fp_compute_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_FP;
+  assign is_fp_fma_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_FMADD) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FMSUB) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FNMSUB) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FNMADD);
+  assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
+                                      is_fp_compute_direct_2 | is_fp_fma_direct_2;
+
+  // Slot-1 pipeline register. Fields not driven below default to '0 via
+  // the whole-struct NBA at the top of each branch; specific overrides
+  // follow.  SystemVerilog NBA ordering lets later sub-field writes
+  // override the earlier whole-struct '0 at the same clock edge.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_id_to_ex_2                       <= '0;
+      o_from_id_to_ex_2.instruction           <= riscv_pkg::NOP;
+      o_from_id_to_ex_2.instruction_operation <= riscv_pkg::ADDI;
+      o_from_id_to_ex_2.branch_operation      <= riscv_pkg::NULL;
+      o_from_id_to_ex_2.store_operation       <= riscv_pkg::STN;
+      o_from_id_to_ex_2.source_reg_1_is_x0    <= 1'b1;
+      o_from_id_to_ex_2.source_reg_2_is_x0    <= 1'b1;
+    end else if (~i_pipeline_ctrl.stall) begin
+      if (i_pipeline_ctrl.flush) begin
+        o_from_id_to_ex_2                       <= '0;
+        o_from_id_to_ex_2.instruction           <= riscv_pkg::NOP;
+        o_from_id_to_ex_2.instruction_operation <= riscv_pkg::ADDI;
+        o_from_id_to_ex_2.branch_operation      <= riscv_pkg::NULL;
+        o_from_id_to_ex_2.store_operation       <= riscv_pkg::STN;
+        o_from_id_to_ex_2.source_reg_1_is_x0    <= 1'b1;
+        o_from_id_to_ex_2.source_reg_2_is_x0    <= 1'b1;
+      end else begin
+        // Populated slot-1 decode bundle. source_reg_*_data and FP reg data
+        // stay '0 (regfile widening deferred); BTB/RAS and branch target
+        // precompute fields stay '0 (slot-1 never predicted / never branch).
+        o_from_id_to_ex_2                           <= '0;
+        o_from_id_to_ex_2.instruction               <= instruction_2;
+        o_from_id_to_ex_2.instruction_operation     <= instruction_operation_2;
+        o_from_id_to_ex_2.program_counter           <= i_from_pd_to_id_2.program_counter;
+        o_from_id_to_ex_2.link_address              <= i_from_pd_to_id_2.link_address;
+        o_from_id_to_ex_2.immediate_i_type          <= immediate_i_type_2;
+        o_from_id_to_ex_2.immediate_s_type          <= immediate_s_type_2;
+        o_from_id_to_ex_2.immediate_b_type          <= immediate_b_type_2;
+        o_from_id_to_ex_2.immediate_u_type          <= immediate_u_type_2;
+        o_from_id_to_ex_2.immediate_j_type          <= immediate_j_type_2;
+        o_from_id_to_ex_2.branch_operation          <= branch_operation_2;
+        o_from_id_to_ex_2.store_operation           <= store_operation_2;
+        o_from_id_to_ex_2.is_load_instruction       <= is_load_instruction_2;
+        o_from_id_to_ex_2.is_load_byte              <= is_load_byte_direct_2;
+        o_from_id_to_ex_2.is_load_halfword          <= is_load_halfword_direct_2;
+        o_from_id_to_ex_2.is_load_unsigned          <= is_load_unsigned_direct_2;
+        o_from_id_to_ex_2.is_multiply               <= is_multiply_direct_2;
+        o_from_id_to_ex_2.is_divide                 <= is_divide_direct_2;
+        o_from_id_to_ex_2.is_csr_instruction        <= is_csr_instruction_2;
+        o_from_id_to_ex_2.csr_address               <= csr_address_2;
+        o_from_id_to_ex_2.csr_imm                   <= csr_imm_2;
+        o_from_id_to_ex_2.is_amo_instruction        <= is_amo_instruction_2;
+        o_from_id_to_ex_2.is_lr                     <= is_lr_2;
+        o_from_id_to_ex_2.is_sc                     <= is_sc_2;
+        o_from_id_to_ex_2.is_mret                   <= is_mret_2;
+        o_from_id_to_ex_2.is_wfi                    <= is_wfi_2;
+        o_from_id_to_ex_2.is_ecall                  <= is_ecall_2;
+        o_from_id_to_ex_2.is_ebreak                 <= is_ebreak_2;
+        o_from_id_to_ex_2.is_illegal_instruction    <= is_illegal_instruction_2;
+        o_from_id_to_ex_2.is_jump_and_link          <= is_jal_direct_2;
+        o_from_id_to_ex_2.is_jump_and_link_register <= is_jalr_direct_2;
+        o_from_id_to_ex_2.source_reg_1_is_x0        <= source_reg_1_is_x0_2;
+        o_from_id_to_ex_2.source_reg_2_is_x0        <= source_reg_2_is_x0_2;
+        // FP flags populated for correct rs_type routing downstream.
+        o_from_id_to_ex_2.is_fp_instruction         <= is_fp_instruction_direct_2;
+        o_from_id_to_ex_2.is_fp_load                <= is_fp_load_direct_2;
+        o_from_id_to_ex_2.is_fp_store               <= is_fp_store_direct_2;
+        o_from_id_to_ex_2.is_fp_load_double         <= is_fp_load_double_direct_2;
+        o_from_id_to_ex_2.is_fp_store_double        <= is_fp_store_double_direct_2;
+        o_from_id_to_ex_2.is_fp_compute             <= is_fp_compute_direct_2 | is_fp_fma_direct_2;
+      end
     end
   end
 

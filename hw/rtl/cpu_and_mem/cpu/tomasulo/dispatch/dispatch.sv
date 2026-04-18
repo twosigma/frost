@@ -58,7 +58,13 @@ module dispatch (
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex,
-    input logic                      i_valid,          // Instruction is valid (not flushed/bubbled)
+    // Slot-1 decoded instruction for 2-wide dispatch. Producer (ID) ties
+    // to '0 today; dispatch does not consume this yet — slot-1 output
+    // signals stay '0 until the dispatch body widens and the gate flips.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
+    /* verilator lint_on UNUSEDSIGNAL */
+    input logic i_valid,  // Instruction is valid (not flushed/bubbled)
 
     // Source register addresses (from PD early extraction, registered in ID)
     // These are used for RAT lookup timing optimization
@@ -75,7 +81,15 @@ module dispatch (
     // ROB Allocation Interface (to/from tomasulo_wrapper)
     // =========================================================================
     output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req,
+    // Slot-2 alloc scaffolding for 2-wide dispatch. Always '0.
+    output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req_2,
     input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp,
+    // Slot-2 alloc response. Used today to wire o_rat_alloc_rob_tag_2 so
+    // the RAT sees the correct slot-1 tag the moment the dispatch side
+    // starts firing slot-1. Other fields unused for now.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp_2,
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // =========================================================================
     // RAT Source Lookups (combinational, from tomasulo_wrapper)
@@ -86,6 +100,10 @@ module dispatch (
     output logic [riscv_pkg::RegAddrWidth-1:0] o_fp_src1_addr,
     output logic [riscv_pkg::RegAddrWidth-1:0] o_fp_src2_addr,
     output logic [riscv_pkg::RegAddrWidth-1:0] o_fp_src3_addr,
+    // Slot-2 INT source addrs (2-wide dispatch scaffolding). Always '0
+    // until the dispatch path is widened.
+    output logic [riscv_pkg::RegAddrWidth-1:0] o_int_src1_addr_2,
+    output logic [riscv_pkg::RegAddrWidth-1:0] o_int_src2_addr_2,
 
     // Lookup results from tomasulo_wrapper
     input riscv_pkg::rat_lookup_t i_int_src1,
@@ -93,14 +111,29 @@ module dispatch (
     input riscv_pkg::rat_lookup_t i_fp_src1,
     input riscv_pkg::rat_lookup_t i_fp_src2,
     input riscv_pkg::rat_lookup_t i_fp_src3,
+    // Slot-2 INT lookup results. Not consumed yet (no rs_dispatch_2
+    // construction) but plumbed so the RAT's intra-pair RAW bypass path
+    // compiles and synthesizes in place.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::rat_lookup_t i_int_src1_2,
+    input riscv_pkg::rat_lookup_t i_int_src2_2,
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // =========================================================================
     // RAT Rename (to tomasulo_wrapper — write dest mapping)
     // =========================================================================
     output logic                                        o_rat_alloc_valid,
-    output logic                                        o_rat_alloc_dest_rf,   // 0=INT, 1=FP
+    output logic                                        o_rat_alloc_dest_rf,     // 0=INT, 1=FP
     output logic [         riscv_pkg::RegAddrWidth-1:0] o_rat_alloc_dest_reg,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_rat_alloc_rob_tag,
+    // Slot-2 RAT rename (2-wide dispatch scaffolding). Only o_rat_alloc_rob_tag_2
+    // is non-trivial — it mirrors the ROB's slot-1 tag so the RAT's
+    // intra-pair bypass wires up cleanly. The valid/dest_rf/dest_reg
+    // fields stay '0 until the dispatch side actually produces slot-1.
+    output logic                                        o_rat_alloc_valid_2,
+    output logic                                        o_rat_alloc_dest_rf_2,
+    output logic [         riscv_pkg::RegAddrWidth-1:0] o_rat_alloc_dest_reg_2,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_rat_alloc_rob_tag_2,
 
     // =========================================================================
     // ROB Done-Entry Bypass (generic source ports)
@@ -112,11 +145,18 @@ module dispatch (
     input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_2,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_3,
     input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_3,
+    // Slot-1 done-entry bypass (src1 → _4, src2 → _5). INT-only in v0.
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_4,
+    input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_4,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_5,
+    input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_5,
 
     // =========================================================================
     // RS Dispatch (to tomasulo_wrapper)
     // =========================================================================
     output riscv_pkg::rs_dispatch_t o_rs_dispatch,
+    // Slot-2 dispatch scaffolding (commit A). Always '0.
+    output riscv_pkg::rs_dispatch_t o_rs_dispatch_2,
 
     // =========================================================================
     // Checkpoint Management (to/from tomasulo_wrapper)
@@ -145,6 +185,10 @@ module dispatch (
     // =========================================================================
     input logic i_rob_full,
     input logic i_int_rs_full,
+    // Asserted when INT_RS has fewer than 2 free entries.  Slot-1 is
+    // INT-only in v0, so this guards slot-1's ROB alloc from stranding
+    // when the RS can't actually accept a second dispatch this cycle.
+    input logic i_int_rs_full_for_2,
     input logic i_mul_rs_full,
     input logic i_mem_rs_full,
     input logic i_fp_rs_full,
@@ -687,6 +731,12 @@ module dispatch (
   // Stall Logic
   // ===========================================================================
 
+  // Forward declaration: assigned down near the slot-1 dispatch block once
+  // slot0_can_pair / slot1_can_fire_raw are in scope.  Included in o_stall
+  // so IF's backpressure holds when slot-1 is emitted (PC has already
+  // advanced past it) but INT_RS or ROB can't accept slot-1 this cycle.
+  logic slot1_resource_stall;
+
   logic rs_full;
   always_comb begin
     case (rs_type)
@@ -738,7 +788,8 @@ module dispatch (
                 rs_full ||
                 (need_lq && i_lq_full) ||
                 (need_sq && i_sq_full) ||
-                (need_checkpoint && !i_checkpoint_available);
+                (need_checkpoint && !i_checkpoint_available) ||
+                slot1_resource_stall;
     end
     o_status.stall = o_stall;
   end
@@ -1021,6 +1072,286 @@ module dispatch (
     // ROB checkpoint recording (separate from RAT checkpoint)
     o_rob_checkpoint_valid  = o_checkpoint_save;
     o_rob_checkpoint_id     = i_checkpoint_alloc_id;
+  end
+
+  // ===========================================================================
+  // Slot-1 Dispatch Construction for 2-wide Dispatch (INT-only scope)
+  // ===========================================================================
+  // Builds the slot-1 outputs from i_from_id_to_ex_2.  Slot-1 only fires
+  // for plain INT ops — branches, JAL/JALR, stores, loads, CSR, AMO,
+  // MRET/WFI, ECALL/EBREAK, and FP ops all force slot-1 to stay invalid.
+  // Slot-0 conditions similarly block slot-1 from firing on the same
+  // cycle as a branch / serializing op.
+  //
+  // Slot-1 source-value fields use the RAT slot-1 lookup outputs
+  // (i_int_src*_2), which already include the intra-pair RAW bypass
+  // from the RAT.  Non-renamed slot-1 sources currently return '0 for
+  // value (the INT regfile is still 2-port); this is incorrect, but
+  // slot-1 never actually fires in this commit because the scaffolding
+  // disable below forces its valid bit to 0.  The gate-flip commit
+  // widens the regfile and releases the disable.
+  //
+  // Scaffolding disable: RE-ASSERTED after a gate-release run hung the
+  // core (head_done never rose past rob_count=28, ~1500 instructions
+  // retired before the stall).  Storage widenings are in place but a
+  // slot-1 path bug causes a functional hang — debugging needed before
+  // flipping this again.
+  localparam logic SlotOneScaffoldingDisable = 1'b1;
+
+  // Slot-1 decoded-op aliases.
+  riscv_pkg::instr_op_e op_2;
+  assign op_2 = i_from_id_to_ex_2.instruction_operation;
+
+  // Slot-1 rs_type (INT-only filter — other types force invalid via the
+  // gate below, so a mismatch here is harmless).
+  riscv_pkg::rs_type_e rs_type_2;
+  always_comb begin
+    case (op_2)
+      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
+      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
+      riscv_pkg::SRL, riscv_pkg::SRA,
+      riscv_pkg::SLT, riscv_pkg::SLTU,
+      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
+      riscv_pkg::XORI, riscv_pkg::SLTI,
+      riscv_pkg::SLTIU, riscv_pkg::SLLI,
+      riscv_pkg::SRLI, riscv_pkg::SRAI,
+      riscv_pkg::LUI, riscv_pkg::AUIPC:
+      rs_type_2 = riscv_pkg::RS_INT;
+      default: rs_type_2 = riscv_pkg::RS_NONE;
+    endcase
+  end
+
+  // Slot-1 dest reg resolution (INT only — FP / branches / stores can't
+  // fire slot-1 in v0).
+  logic                               has_dest_2;
+  logic [riscv_pkg::RegAddrWidth-1:0] dest_reg_2;
+  assign dest_reg_2 = i_from_id_to_ex_2.instruction.dest_reg;
+  assign has_dest_2 = (dest_reg_2 != 5'b0) && (rs_type_2 == riscv_pkg::RS_INT);
+
+  // Slot-1 immediate (I-type + U-type cover the INT ops that use imm).
+  logic [riscv_pkg::XLEN-1:0] imm_2;
+  logic                       use_imm_2;
+  always_comb begin
+    use_imm_2 = 1'b0;
+    imm_2     = '0;
+    case (op_2)
+      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
+      riscv_pkg::XORI, riscv_pkg::SLTI,
+      riscv_pkg::SLTIU, riscv_pkg::SLLI,
+      riscv_pkg::SRLI, riscv_pkg::SRAI: begin
+        use_imm_2 = 1'b1;
+        imm_2     = i_from_id_to_ex_2.immediate_i_type;
+      end
+      riscv_pkg::LUI, riscv_pkg::AUIPC: begin
+        use_imm_2 = 1'b1;
+        imm_2     = i_from_id_to_ex_2.immediate_u_type;
+      end
+      default: begin
+        use_imm_2 = 1'b0;
+        imm_2     = '0;
+      end
+    endcase
+  end
+
+  // Slot-0 eligibility to pair with slot-1: must not be a branch, JAL/JALR,
+  // CSR, fence/fence.i, WFI, MRET, ECALL/EBREAK, AMO/LR/SC, illegal, FP, or
+  // a LOAD/STORE (which consumes an LQ/SQ slot and whose completion timing
+  // differs from slot-1's INT path).  All of these either serialize, take a
+  // checkpoint, need a queue slot slot-1 didn't account for, or can trap —
+  // any of which would make slot-1 wrong-path or mis-accounted.
+  logic slot0_can_pair;
+  assign slot0_can_pair = !i_from_id_to_ex.is_jump_and_link &&
+                          !i_from_id_to_ex.is_jump_and_link_register &&
+                          (i_from_id_to_ex.branch_operation == riscv_pkg::NULL) &&
+                          !i_from_id_to_ex.is_csr_instruction &&
+                          !i_from_id_to_ex.is_amo_instruction &&
+                          !i_from_id_to_ex.is_lr &&
+                          !i_from_id_to_ex.is_sc &&
+                          !i_from_id_to_ex.is_mret &&
+                          !i_from_id_to_ex.is_wfi &&
+                          !i_from_id_to_ex.is_ecall &&
+                          !i_from_id_to_ex.is_ebreak &&
+                          !i_from_id_to_ex.is_illegal_instruction &&
+                          !i_from_id_to_ex.is_fp_instruction &&
+                          !is_load_flag && !is_fp_load_flag &&
+                          !is_store_flag && !is_fp_store_flag;
+
+  // Slot-1 eligibility: plain INT op, no branch/serial/FP/mem.  Slot-1
+  // NOP (instruction == NOP) is also rejected — NOPs shouldn't allocate
+  // a ROB entry for no useful work.
+  logic slot1_can_fire_raw;
+  assign slot1_can_fire_raw =
+      (rs_type_2 == riscv_pkg::RS_INT) &&
+      (i_from_id_to_ex_2.branch_operation == riscv_pkg::NULL) &&
+      !i_from_id_to_ex_2.is_jump_and_link &&
+      !i_from_id_to_ex_2.is_jump_and_link_register &&
+      !i_from_id_to_ex_2.is_csr_instruction &&
+      !i_from_id_to_ex_2.is_amo_instruction &&
+      !i_from_id_to_ex_2.is_lr &&
+      !i_from_id_to_ex_2.is_sc &&
+      !i_from_id_to_ex_2.is_mret &&
+      !i_from_id_to_ex_2.is_wfi &&
+      !i_from_id_to_ex_2.is_ecall &&
+      !i_from_id_to_ex_2.is_ebreak &&
+      !i_from_id_to_ex_2.is_illegal_instruction &&
+      !i_from_id_to_ex_2.is_fp_instruction &&
+      (i_from_id_to_ex_2.instruction != riscv_pkg::NOP);
+
+  // Composite fire gate: slot-0 must be firing, slot-0 must be pairable,
+  // slot-1 must itself be fireable, INT_RS must have room for slot-1,
+  // and the scaffolding disable must be released.  The INT_RS check is
+  // conditioned on slot-0's target RS: when slot-0 also lands in INT_RS
+  // (OP-IMM / OP / LUI / AUIPC) we need 2 free slots (full_for_2); when
+  // slot-0 goes elsewhere (e.g., MUL_RS) slot-1 alone only needs 1 free
+  // slot (see reservation_station.sv:472 — slot-1 falls back to free_idx
+  // + !full when slot-0 doesn't dispatch into the same RS).  The overly-
+  // strict full_for_2 check suppressed valid pairs behind non-INT slot-0s.
+  logic slot1_int_rs_room_ok;
+  assign slot1_int_rs_room_ok = (rs_type == riscv_pkg::RS_INT) ?
+                                !i_int_rs_full_for_2 : !i_int_rs_full;
+  logic slot1_fire;
+  assign slot1_fire = dispatch_fire && slot0_can_pair && slot1_can_fire_raw &&
+                      slot1_int_rs_room_ok &&
+                      !SlotOneScaffoldingDisable;
+
+  // Backpressure when IF has already committed to slot-1 (PC +4 advance)
+  // but a downstream structure can't accept slot-1 this cycle.  The IF
+  // opcode pre-decode ensures slot0_can_pair / slot1_can_fire_raw are
+  // both true whenever slot-1 was emitted (and PC advanced), so this
+  // check fires exactly in the "resource full" drop scenario.  Pulling
+  // this into o_stall backpressures IF and holds PC until space frees.
+  // Mirrors slot1_fire's rs_type-gated INT_RS check.
+  logic slot1_int_rs_stall;
+  assign slot1_int_rs_stall = (rs_type == riscv_pkg::RS_INT) ? i_int_rs_full_for_2 : i_int_rs_full;
+  assign slot1_resource_stall = slot0_can_pair && slot1_can_fire_raw &&
+                                (slot1_int_rs_stall || i_rob_alloc_resp_2.full) &&
+                                !SlotOneScaffoldingDisable;
+
+  // Slot-1 source addrs drive the RAT slot-1 read ports.
+  assign o_int_src1_addr_2 = i_from_id_to_ex_2.instruction.source_reg_1;
+  assign o_int_src2_addr_2 = i_from_id_to_ex_2.instruction.source_reg_2;
+
+  // Slot-1 done-entry bypass.  The RAT slot-1 lookup returns
+  // renamed=1/tag=X for in-flight producers; when that entry has
+  // already retired its result (i_rob_entry_done[X]=1), the ROB's
+  // value-RAM read through i_bypass_value_4/_5 holds the up-to-date
+  // value.  Without this, slot-1 would dispatch to the RS with
+  // src_ready=0 / src_tag=X and stall waiting for a CDB broadcast that
+  // already happened — the instruction never wakes and the ROB fills.
+  // Bypass tag outputs are driven combinationally so the ROB read
+  // settles in time for the same-cycle dispatch bundle.
+  assign o_bypass_tag_4 = i_int_src1_2.tag;
+  assign o_bypass_tag_5 = i_int_src2_2.tag;
+
+  logic src1_2_renamed, src1_2_done;
+  logic src2_2_renamed, src2_2_done;
+  assign src1_2_renamed = i_int_src1_2.renamed;
+  assign src2_2_renamed = i_int_src2_2.renamed;
+  // Intra-pair RAW produces renamed=1, tag=<slot-0's fresh alloc tag>.  In that
+  // cycle, rob_done[tag] is stale (slot-0's alloc NBA clears it next edge), so
+  // a recycled ROB slot whose prior occupant retired would falsely report done=1
+  // and feed the RS stale bypass data.  Block the done-bypass when slot-1's tag
+  // matches slot-0's fresh alloc tag — slot-1 then sits waiting for slot-0's
+  // CDB broadcast on the normal Tomasulo path.
+  logic src1_2_intra_pair, src2_2_intra_pair;
+  assign src1_2_intra_pair = src1_2_renamed && (i_int_src1_2.tag == i_rob_alloc_resp.alloc_tag);
+  assign src2_2_intra_pair = src2_2_renamed && (i_int_src2_2.tag == i_rob_alloc_resp.alloc_tag);
+  assign src1_2_done = src1_2_renamed && !src1_2_intra_pair && i_rob_entry_done[i_int_src1_2.tag];
+  assign src2_2_done = src2_2_renamed && !src2_2_intra_pair && i_rob_entry_done[i_int_src2_2.tag];
+
+  // Which architectural sources does slot-1's op actually consume?  The RS
+  // only issues when src1_ready && src2_ready && src3_ready, so dispatch
+  // MUST force src*_ready=1 for slots the op ignores — otherwise an unused
+  // source's rs-field encoding can still RAT-match a renamed register
+  // (e.g., ADDI's rs2-bits happen to name `ra` after a JAL), leaving the
+  // RS entry pinned forever on a tag it never needed.  Mirrors slot-0's
+  // uses_int_rs{1,2} gating.
+  logic uses_int_rs1_2, uses_int_rs2_2;
+  always_comb begin
+    case (op_2)
+      // R-type: rs1 + rs2
+      riscv_pkg::ADD,  riscv_pkg::SUB,  riscv_pkg::AND,
+      riscv_pkg::OR,   riscv_pkg::XOR,  riscv_pkg::SLL,
+      riscv_pkg::SRL,  riscv_pkg::SRA,
+      riscv_pkg::SLT,  riscv_pkg::SLTU: begin
+        uses_int_rs1_2 = 1'b1;
+        uses_int_rs2_2 = 1'b1;
+      end
+      // I-type: rs1 + imm
+      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
+      riscv_pkg::XORI, riscv_pkg::SLTI, riscv_pkg::SLTIU,
+      riscv_pkg::SLLI, riscv_pkg::SRLI, riscv_pkg::SRAI: begin
+        uses_int_rs1_2 = 1'b1;
+        uses_int_rs2_2 = 1'b0;
+      end
+      // U-type (LUI/AUIPC) and anything else: no int sources
+      default: begin
+        uses_int_rs1_2 = 1'b0;
+        uses_int_rs2_2 = 1'b0;
+      end
+    endcase
+  end
+
+  // Slot-1 RAT rename (only writes the INT mapping for slot-1's rd).
+  assign o_rat_alloc_valid_2 = slot1_fire && has_dest_2;
+  assign o_rat_alloc_dest_rf_2 = 1'b0;  // INT only in v0
+  assign o_rat_alloc_dest_reg_2 = dest_reg_2;
+  // o_rat_alloc_rob_tag_2 already driven from i_rob_alloc_resp_2.alloc_tag
+  // below (kept separate so the ROB tag is valid even before slot-1 fires).
+  assign o_rat_alloc_rob_tag_2 = i_rob_alloc_resp_2.alloc_tag;
+
+  // Slot-1 ROB allocation request.  Minimal INT-op subset: all the
+  // serializing/branch/mem/FP flags stay '0 by construction.
+  always_comb begin
+    o_rob_alloc_req_2               = '0;
+    o_rob_alloc_req_2.alloc_valid   = slot1_fire;
+    o_rob_alloc_req_2.pc            = i_from_id_to_ex_2.program_counter;
+    o_rob_alloc_req_2.rs_type       = riscv_pkg::RS_INT;
+    o_rob_alloc_req_2.dest_rf       = 1'b0;
+    o_rob_alloc_req_2.dest_reg      = dest_reg_2;
+    o_rob_alloc_req_2.dest_valid    = has_dest_2;
+    o_rob_alloc_req_2.link_addr     = i_from_id_to_ex_2.link_address;
+    // Slot-1 is not compressed in v0 (IF only emits 32-bit slot-1).
+    o_rob_alloc_req_2.is_compressed = 1'b0;
+  end
+
+  // Slot-1 RS dispatch bundle.
+  always_comb begin
+    o_rs_dispatch_2         = '0;
+    o_rs_dispatch_2.valid   = slot1_fire;
+    o_rs_dispatch_2.rs_type = riscv_pkg::RS_INT;
+    o_rs_dispatch_2.rob_tag = i_rob_alloc_resp_2.alloc_tag;
+    o_rs_dispatch_2.op      = op_2;
+    // Sources from the RAT slot-1 lookup (intra-pair RAW bypass already
+    // resolved inside the RAT).  If renamed but the producer is already
+    // retired (done-entry), forward the ROB value-RAM read; otherwise
+    // dispatch with src_ready reflecting the rename state and let the RS
+    // wake on the CDB if still pending.  Unused srcs (e.g., src2 on ADDI)
+    // are forced ready=1 tag='0 value='0 so the RS issue check passes.
+    if (uses_int_rs1_2) begin
+      o_rs_dispatch_2.src1_ready = !src1_2_renamed || src1_2_done;
+      o_rs_dispatch_2.src1_tag   = i_int_src1_2.tag;
+      o_rs_dispatch_2.src1_value = src1_2_done ? i_bypass_value_4 : i_int_src1_2.value;
+    end else begin
+      o_rs_dispatch_2.src1_ready = 1'b1;
+      o_rs_dispatch_2.src1_tag   = '0;
+      o_rs_dispatch_2.src1_value = '0;
+    end
+    if (uses_int_rs2_2) begin
+      o_rs_dispatch_2.src2_ready = !src2_2_renamed || src2_2_done;
+      o_rs_dispatch_2.src2_tag   = i_int_src2_2.tag;
+      o_rs_dispatch_2.src2_value = src2_2_done ? i_bypass_value_5 : i_int_src2_2.value;
+    end else begin
+      o_rs_dispatch_2.src2_ready = 1'b1;
+      o_rs_dispatch_2.src2_tag   = '0;
+      o_rs_dispatch_2.src2_value = '0;
+    end
+    o_rs_dispatch_2.src3_ready = 1'b1;  // INT has no src3
+    o_rs_dispatch_2.imm        = imm_2;
+    o_rs_dispatch_2.use_imm    = use_imm_2;
+    o_rs_dispatch_2.pc         = i_from_id_to_ex_2.program_counter;
+    // Branch / memory / CSR / FP / checkpoint / call / return fields all
+    // remain '0 — v0 slot-1 gate excludes every case that would set them.
   end
 
 endmodule : dispatch

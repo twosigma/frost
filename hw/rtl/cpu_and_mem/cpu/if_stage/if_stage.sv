@@ -97,7 +97,12 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
-    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
+    // Slot-1 output for 2-wide dispatch. Tied to '0 today (real slot-1
+    // parcel extraction from the 64-bit fetch is deferred); downstream
+    // widenings accept this but the zero payload means slot-1 never
+    // propagates a real instruction until the frontend is widened.
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2
 );
 
   // ===========================================================================
@@ -395,6 +400,7 @@ module if_stage #(
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_sel_nop(sel_nop),
+      .i_slot1_advance_pc(slot1_pc_advance),
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
@@ -881,5 +887,100 @@ module if_stage #(
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
+
+  // ===========================================================================
+  // Slot-1 parcel extraction for 2-wide dispatch
+  // ===========================================================================
+  // Minimal viable widening: emit slot-1 only when slot-0 is an aligned
+  // 32-bit instruction (pc_reg[1]=0, is_compressed=0) AND slot-1 at
+  // pc_reg+4 is also 32-bit (its low 2 bits == 2'b11).  Slot-1 bytes sit
+  // in the upper half of the 64-bit fetch (accounting for the fetch-word
+  // swap).  All other cases emit sel_nop=1 so slot-1 is a harmless
+  // NOP/invalid that downstream stages treat as empty.
+  //
+  // Slot-0 being a branch/serial op does NOT need to gate here: dispatch's
+  // slot-1 firing gate (added at the gate-flip step) suppresses slot-1
+  // whenever slot-0 is non-INT / branch / serializing.  Slot-1 may
+  // propagate wrong-path through PD/ID but will never allocate.
+  //
+  // Holdoffs and flushes are handled by inheriting slot-0's sel_nop
+  // conditions via !sel_nop && !use_instr_buffer && !replay_saved_if_outputs.
+  logic [31:0] slot1_next_word_fetched;
+  assign slot1_next_word_fetched = (i_instr_bank_sel_r ^ pc_reg[2]) ?
+      i_instr[31:0] : i_instr[63:32];
+
+  // Opcode pre-decode (from raw 32-bit bits) gates slot-1 emission.  IF
+  // only emits slot-1 when both slot-0 and slot-1 are pairable INT opcodes
+  // — dispatch's slot-1 fire would drop any other combination, but that
+  // drop can't be recovered since the PC has already advanced past
+  // slot-1.  Gating here ensures we only advance PC by 8 when slot-1 is
+  // guaranteed-fireable by opcode.
+  //
+  // Slot-0 "pairable": OP-IMM, OP, LUI, AUIPC, LOAD, STORE (excludes
+  // BRANCH/JAL/JALR/SYSTEM/FENCE/AMO/FP — those can trap, serialize, or
+  // redirect so slot-1 at pc+4 may be wrong-path).
+  // Slot-1 "INT-safe": OP-IMM, OP with funct7[0]=0, LUI, AUIPC (excludes
+  // MUL/DIV which target MUL_RS and aren't wired for slot-1 in v0).
+  wire [6:0] slot0_opcode_raw = effective_instr[6:0];
+  wire [6:0] slot1_opcode_raw = slot1_next_word_fetched[6:0];
+  wire [6:0] slot1_funct7_raw = slot1_next_word_fetched[31:25];
+  // Slot-0 candidates: opcodes that dispatch's slot0_can_pair will accept.
+  // MUST match dispatch.sv's slot0_can_pair set — IF commits PC+8 when it
+  // emits slot-1, so if dispatch later drops the pair slot-1 is silently
+  // lost.  LOAD/STORE excluded because dispatch excludes them (LQ/SQ slot
+  // accounting mismatch + trap risk); BRANCH/JAL/JALR/SYSTEM/FENCE/AMO
+  // excluded because they serialize, redirect, or can trap.  OP R-type
+  // (including MUL/DIV, which targets MUL_RS) is allowed — slot1_fire's
+  // int_rs_full_for_2/full check is rs_type-gated to handle that case.
+  wire slot0_is_pair_candidate = (slot0_opcode_raw == 7'b0010011) ||  // OP-IMM
+  (slot0_opcode_raw == 7'b0110111) ||  // LUI
+  (slot0_opcode_raw == 7'b0010111);  // AUIPC
+  wire slot1_is_int_safe =
+      (slot1_opcode_raw == 7'b0010011 &&
+       slot1_next_word_fetched[14:12] != 3'b001 &&  // exclude SLLI/B-ext/CLZ/CTZ
+  slot1_next_word_fetched[14:12] != 3'b101) ||  // exclude SRLI/SRAI/B-ext
+  (slot1_opcode_raw == 7'b0110111) ||  // LUI
+  (slot1_opcode_raw == 7'b0010111);  // AUIPC
+
+  logic slot1_emit_32bit;
+  // Require (i_instr_bank_sel_r == pc_reg[2]) — the aligner's "same parity"
+  // case where word(pc_reg) is at i_instr[31:0] and word(pc_reg+4) is at
+  // i_instr[63:32].  In the "diff parity" case the fetch is 1 word off and
+  // slot-1's word is NOT in the current i_instr; slot1_next_word_fetched
+  // returns i_instr[31:0] = word(pc_reg - 4) which is one pair behind,
+  // corrupting slot-1's instruction bits.  Slot-0 handles the diff-parity
+  // case via the aligner's buffer; slot-1 has no buffer and must wait for
+  // the aligned fetch.
+  assign slot1_emit_32bit = !sel_nop && !use_instr_buffer && !replay_saved_if_outputs &&
+                            !is_compressed &&        // slot-0 is 32-bit
+      !pc_reg[1] &&  // pc_reg word-aligned
+      !(i_instr_bank_sel_r ^ pc_reg[2]) &&  // aligner normal ordering
+      (slot1_next_word_fetched[1:0] == 2'b11) &&  // slot-1 is 32-bit
+      slot0_is_pair_candidate && slot1_is_int_safe;
+
+  // MUST match dispatch.sv's SlotOneScaffoldingDisable — flipped together
+  // as a pair.  When 1'b1, slot-1 never actually fires at dispatch and PC
+  // must continue to advance by slot-0's length (sequential 1-wide).  When
+  // 1'b0, slot-1 fires and PC advances by +4 more whenever slot-1 is
+  // emitted.  Keeping the IF signal separate from the emit-to-downstream
+  // path preserves scaffolding neutrality with the gate asserted.
+  localparam logic SlotOneScaffoldingDisable = 1'b1;
+  logic slot1_pc_advance;
+  assign slot1_pc_advance = slot1_emit_32bit && !SlotOneScaffoldingDisable;
+
+  always_comb begin
+    o_from_if_to_pd_2         = '0;
+    o_from_if_to_pd_2.sel_nop = 1'b1;
+    if (slot1_emit_32bit) begin
+      o_from_if_to_pd_2.sel_nop         = 1'b0;
+      o_from_if_to_pd_2.sel_compressed  = 1'b0;
+      o_from_if_to_pd_2.raw_parcel      = slot1_next_word_fetched[15:0];
+      o_from_if_to_pd_2.effective_instr = slot1_next_word_fetched;
+      o_from_if_to_pd_2.program_counter = pc_reg + 32'd4;
+      o_from_if_to_pd_2.link_address    = pc_reg + 32'd8;
+      // Slot-1 BTB/RAS metadata intentionally '0: dispatch's slot-1 gate
+      // serializes on branches, so slot-1 is never a branch in v0.
+    end
+  end
 
 endmodule : if_stage

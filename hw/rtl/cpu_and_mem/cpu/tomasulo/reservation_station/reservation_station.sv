@@ -52,7 +52,16 @@ module reservation_station #(
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
     input riscv_pkg::rs_dispatch_t i_dispatch,
+    // Slot-2 dispatch scaffolding for 2-wide. Producer drives valid=0 today;
+    // RS body does not consume this yet.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::rs_dispatch_t i_dispatch_2,
+    /* verilator lint_on UNUSEDSIGNAL */
     output logic o_full,
+    // Asserted when the RS has fewer than 2 free entries — used by the
+    // dispatch side to gate slot-1 allocation so the ROB doesn't strand
+    // a slot-1 entry here that has no backing RS slot.
+    output logic o_full_for_2,
 
     // =========================================================================
     // CDB Snoop / Wakeup
@@ -187,6 +196,25 @@ module reservation_station #(
   wire dispatch_is_call = i_dispatch.is_call;
   wire dispatch_is_return = i_dispatch.is_return;
 
+  // Slot-1 dispatch field aliases for 2-wide dispatch. Only the subset
+  // that participates in the FF-state allocation is mirrored here — the
+  // payload LUTRAM widens in a later step (stale-payload hazard is
+  // latent because slot-1 never fires until the dispatch gate flips).
+  wire dispatch_valid_1 = i_dispatch_2.valid;
+  wire [ReorderBufferTagWidth-1:0] dispatch_rob_tag_1 = i_dispatch_2.rob_tag;
+  wire dispatch_src1_ready_1 = i_dispatch_2.src1_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src1_tag_1 = i_dispatch_2.src1_tag;
+  wire [FLEN-1:0] dispatch_src1_value_1 = i_dispatch_2.src1_value;
+  wire dispatch_src2_ready_1 = i_dispatch_2.src2_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src2_tag_1 = i_dispatch_2.src2_tag;
+  wire [FLEN-1:0] dispatch_src2_value_1 = i_dispatch_2.src2_value;
+  wire dispatch_src3_ready_1 = i_dispatch_2.src3_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag_1 = i_dispatch_2.src3_tag;
+  wire [FLEN-1:0] dispatch_src3_value_1 = i_dispatch_2.src3_value;
+  wire dispatch_use_imm_1 = i_dispatch_2.use_imm;
+  riscv_pkg::instr_op_e dispatch_op_1;
+  assign dispatch_op_1 = i_dispatch_2.op;
+
   // ===========================================================================
   // Stage 2 Pipeline Register
   // ===========================================================================
@@ -277,9 +305,12 @@ module reservation_station #(
   logic empty;
   logic [CountWidth-1:0] count;
 
-  // Free entry selection
+  // Free entry selection (slot 0 and slot 1 for 2-wide dispatch)
   logic [$clog2(DEPTH)-1:0] free_idx;
   logic free_found;
+  logic [$clog2(DEPTH)-1:0] free_idx_1;
+  logic free_found_1;
+  logic full_for_2;
 
   // Issue selection
   logic [DEPTH-1:0] entry_ready;
@@ -287,8 +318,9 @@ module reservation_station #(
   logic any_ready;
   logic issue_fire;
 
-  // Dispatch condition
+  // Dispatch condition (slot 0 and slot 1 for 2-wide dispatch)
   (* max_fanout = 32 *) logic dispatch_fire;
+  logic dispatch_fire_1;
 
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
@@ -303,6 +335,7 @@ module reservation_station #(
       1 + CheckpointIdWidth + 1 + 1;
 
   logic [PayloadWidth-1:0] payload_wr_data;
+  logic [PayloadWidth-1:0] payload_wr_data_1;  // slot-1 payload
   logic [PayloadWidth-1:0] payload_rd_data;
 
   assign payload_wr_data = {
@@ -327,15 +360,47 @@ module reservation_station #(
     dispatch_is_return  //  1  is_return
   };
 
-  sdp_dist_ram #(
+  // Slot-1 payload: v0 slot-1 is INT-only, plain op (no branch/jump/mem/CSR),
+  // so most fields are '0.  The RS issue path still reads these fields via
+  // payload_rd_data, and the slot-1 entry only issues on INT ops where
+  // these fields are irrelevant at the functional level (zero defaults
+  // are safe).
+  assign payload_wr_data_1 = {
+    32'(dispatch_op_1),  // 32  op
+    i_dispatch_2.imm,  // 32  imm
+    3'b0,  //  3  rm (INT)
+    {riscv_pkg::XLEN{1'b0}},  // 32  branch_target
+    1'b0,  //  1  predicted_taken
+    {riscv_pkg::XLEN{1'b0}},  // 32  predicted_target
+    1'b0,  //  1  is_fp_mem
+    1'b0,  //  1  mem_needs_lq
+    1'b0,  //  1  mem_needs_sq
+    2'b0,  //  2  mem_size
+    1'b0,  //  1  mem_signed
+    12'b0,  // 12  csr_addr
+    5'b0,  //  5  csr_imm
+    i_dispatch_2.pc,  // 32  pc
+    {riscv_pkg::XLEN{1'b0}},  // 32  link_addr
+    1'b0,  //  1  has_checkpoint
+    {CheckpointIdWidth{1'b0}},  //  CheckpointIdWidth
+    1'b0,  //  1  is_call
+    1'b0  //  1  is_return
+  };
+
+  mwp_dist_ram #(
       .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(PayloadWidth)
+      .DATA_WIDTH(PayloadWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_payload_ram (
       .i_clk,
-      .i_write_enable (dispatch_fire),
-      .i_write_address(free_idx),
+      // Port 0: slot-0 (existing). Port 1: slot-1 (for 2-wide dispatch).
+      // Highest-indexed port wins on same-addr conflict; slot1_alloc_idx
+      // is free_idx_1 when slot-0 also fires here (guaranteed !=free_idx)
+      // or free_idx otherwise (slot-0 inactive → no conflict).
+      .i_write_enable ({dispatch_fire_1, dispatch_fire}),
+      .i_write_address({slot1_alloc_idx, free_idx}),
+      .i_write_data   ({payload_wr_data_1, payload_wr_data}),
       .i_read_address (issue_idx),
-      .i_write_data   (payload_wr_data),
       .o_read_data    (payload_rd_data)
   );
 
@@ -378,23 +443,49 @@ module reservation_station #(
     end
   end
 
-  assign full  = (count == CountWidth'(DEPTH));
+  assign full = (count == CountWidth'(DEPTH));
   assign empty = (count == '0);
+  // Full-for-2: one or zero entries remaining, so slot-1 cannot also fit.
+  // Widened to match the count width to avoid WIDTHEXPAND warnings.
+  assign full_for_2 = (count >= CountWidth'(DEPTH - 1));
 
-  // --- Free entry selection (priority encoder: lowest free index) ---
+  // --- Free entry selection (dual priority encoder: lowest + second-lowest) ---
   always_comb begin
-    free_idx   = '0;
-    free_found = 1'b0;
+    free_idx     = '0;
+    free_found   = 1'b0;
+    free_idx_1   = '0;
+    free_found_1 = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
-      if (!rs_valid[i] && !free_found) begin
-        free_idx   = $clog2(DEPTH)'(i);
-        free_found = 1'b1;
+      if (!rs_valid[i]) begin
+        if (!free_found) begin
+          free_idx   = $clog2(DEPTH)'(i);
+          free_found = 1'b1;
+        end else if (!free_found_1) begin
+          free_idx_1   = $clog2(DEPTH)'(i);
+          free_found_1 = 1'b1;
+        end
       end
     end
   end
 
   // --- Dispatch fire condition ---
+  // Slot-0 fires when valid AND this RS has a free slot.
+  // Slot-1 fires when valid AND this RS has space for it.  Slot-1 may
+  // target this RS even when slot-0 does NOT (e.g., slot-0 is MUL/MEM but
+  // slot-1 is INT) — in that case the global dispatch has already allocated
+  // an ROB entry, so slot-1 MUST enter the RS or it stalls the ROB forever.
+  // When slot-0 fires here, slot-1 uses free_idx_1 (second-lowest) and
+  // requires !full_for_2 (2 slots).  When slot-0 is elsewhere, slot-1
+  // uses free_idx (lowest) and only needs !full (1 slot).
   assign dispatch_fire = dispatch_valid && !full && !i_flush_all && !i_flush_en;
+  assign dispatch_fire_1 = dispatch_valid_1 && !i_flush_all && !i_flush_en &&
+                           (dispatch_fire ?
+                                (!full_for_2 && free_found_1) :
+                                (!full && free_found));
+  // Effective slot-1 write index: free_idx_1 when slot-0 also fires here,
+  // else free_idx (the lowest free slot).
+  logic [$clog2(DEPTH)-1:0] slot1_alloc_idx;
+  assign slot1_alloc_idx = dispatch_fire ? free_idx_1 : free_idx;
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
@@ -583,6 +674,7 @@ module reservation_station #(
 
   // --- Status outputs ---
   assign o_full = full;
+  assign o_full_for_2 = full_for_2;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -630,6 +722,24 @@ module reservation_station #(
               (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag);
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
+
+        // Slot-1 alloc (control FFs).  slot1_alloc_idx is free_idx_1 when
+        // slot-0 also fires here (guaranteed != free_idx), or free_idx
+        // when slot-0 goes elsewhere (no conflict since slot-0 doesn't
+        // write here).
+        if (dispatch_fire_1) begin
+          rs_valid[slot1_alloc_idx] <= 1'b1;
+          if (TRACK_INT_WRITEBACK_HINT)
+            rs_writes_cdb_hint[slot1_alloc_idx] <= int_rs_writes_cdb(dispatch_op_1);
+
+          rs_src1_ready[slot1_alloc_idx] <= dispatch_src1_ready_1 ||
+              (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag);
+          rs_src2_ready[slot1_alloc_idx] <= dispatch_src2_ready_1 ||
+              (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag);
+          rs_src3_ready[slot1_alloc_idx] <= dispatch_src3_ready_1 ||
+              (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag);
+          rs_use_imm[slot1_alloc_idx] <= dispatch_use_imm_1;
+        end
       end
 
       // CDB snoop wakeup (control: ready bits only)
@@ -669,6 +779,26 @@ module reservation_station #(
       if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
         rs_src3_value[free_idx] <= i_cdb.value;
       else rs_src3_value[free_idx] <= dispatch_src3_value;
+    end
+
+    // Slot-1 alloc (data FFs). Written at slot1_alloc_idx (see above).
+    if (dispatch_fire_1) begin
+      rs_rob_tag[slot1_alloc_idx]  <= dispatch_rob_tag_1;
+
+      rs_src1_tag[slot1_alloc_idx] <= dispatch_src1_tag_1;
+      if (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag)
+        rs_src1_value[slot1_alloc_idx] <= i_cdb.value;
+      else rs_src1_value[slot1_alloc_idx] <= dispatch_src1_value_1;
+
+      rs_src2_tag[slot1_alloc_idx] <= dispatch_src2_tag_1;
+      if (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag)
+        rs_src2_value[slot1_alloc_idx] <= i_cdb.value;
+      else rs_src2_value[slot1_alloc_idx] <= dispatch_src2_value_1;
+
+      rs_src3_tag[slot1_alloc_idx] <= dispatch_src3_tag_1;
+      if (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag)
+        rs_src3_value[slot1_alloc_idx] <= i_cdb.value;
+      else rs_src3_value[slot1_alloc_idx] <= dispatch_src3_value_1;
     end
 
     // CDB snoop wakeup (data: capture values)

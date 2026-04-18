@@ -385,10 +385,17 @@ module cpu_ooo #(
   // Inter-stage signals
   // ===========================================================================
   riscv_pkg::from_if_to_pd_t from_if_to_pd;
+  // Slot-1 frontend plumbing for 2-wide dispatch. Producers tie these to
+  // '0 today; the downstream widenings consume them but ignore the
+  // zeroed payload. Real slot-1 extraction from the 64-bit fetch lands
+  // alongside the dispatch-side gate flip.
+  riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
   riscv_pkg::from_pd_to_id_t from_pd_to_id;
+  riscv_pkg::from_pd_to_id_t from_pd_to_id_2;
   logic pd_redirect;
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
+  riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
 
   // Temporary debug mirrors for cocotb control-flow tracing.
   logic dbg_if_ras_predicted  /* verilator public_flat_rd */;
@@ -553,7 +560,8 @@ module cpu_ooo #(
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
-      .o_from_if_to_pd(from_if_to_pd)
+      .o_from_if_to_pd(from_if_to_pd),
+      .o_from_if_to_pd_2(from_if_to_pd_2)
   );
 
   // ===========================================================================
@@ -566,7 +574,9 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_if_to_pd(from_if_to_pd),
+      .i_from_if_to_pd_2(from_if_to_pd_2),
       .o_from_pd_to_id(from_pd_to_id),
+      .o_from_pd_to_id_2(from_pd_to_id_2),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_target(pd_redirect_target)
   );
@@ -586,7 +596,7 @@ module cpu_ooo #(
   // address — matching program order since slot 2 has tag T+1 > slot 1
   // has tag T.
   localparam int unsigned IntRfWrPorts = 2;
-  logic                      [           4*XLEN-1:0] int_rf_read_data;
+  logic                      [           6*XLEN-1:0] int_rf_read_data;
   logic                      [     IntRfWrPorts-1:0] int_rf_write_enable;
   logic                      [   IntRfWrPorts*5-1:0] int_rf_write_addr;
   logic                      [IntRfWrPorts*XLEN-1:0] int_rf_write_data;
@@ -594,15 +604,26 @@ module cpu_ooo #(
   logic                                              int_rf_wb_bypass_id_rs2;
   logic                                              int_rf_wb_bypass_dispatch_rs1;
   logic                                              int_rf_wb_bypass_dispatch_rs2;
+  logic                                              int_rf_wb_bypass_dispatch_rs1_2;
+  logic                                              int_rf_wb_bypass_dispatch_rs2_2;
   logic                      [             XLEN-1:0] int_rf_dispatch_rs1_data;
   logic                      [             XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs1_data_2;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs2_data_2;
 
   riscv_pkg::rf_to_fwd_t                             rf_to_fwd;
   riscv_pkg::from_ma_to_wb_t                         from_ma_to_wb_commit;
 
+  // INT regfile widened to 6 read ports for 2-wide dispatch:
+  //   port 0: from_pd_to_id.source_reg_1_early (ID-stage early read)
+  //   port 1: from_pd_to_id.source_reg_2_early
+  //   port 2: from_id_to_ex.instruction.source_reg_1 (slot-0 dispatch read)
+  //   port 3: from_id_to_ex.instruction.source_reg_2
+  //   port 4: from_id_to_ex_2.instruction.source_reg_1 (slot-1 dispatch read)
+  //   port 5: from_id_to_ex_2.instruction.source_reg_2
   generic_regfile #(
       .DATA_WIDTH(XLEN),
-      .NUM_READ_PORTS(4),
+      .NUM_READ_PORTS(6),
       .NUM_WRITE_PORTS(IntRfWrPorts),
       .HARDWIRE_ZERO(1)
   ) regfile_inst (
@@ -612,6 +633,8 @@ module cpu_ooo #(
       .i_write_data(int_rf_write_data),
       .i_stall(1'b0),  // OOO: commit writes must not be blocked by front-end stall
       .i_read_addr({
+        from_id_to_ex_2.instruction.source_reg_2,
+        from_id_to_ex_2.instruction.source_reg_1,
         from_id_to_ex.instruction.source_reg_2,
         from_id_to_ex.instruction.source_reg_1,
         from_pd_to_id.source_reg_2_early,
@@ -631,6 +654,8 @@ module cpu_ooo #(
   logic int_hit_id_rs2_p1, int_hit_id_rs2_p0;
   logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
   logic int_hit_dp_rs2_p1, int_hit_dp_rs2_p0;
+  logic int_hit_dp_rs1_p1_2, int_hit_dp_rs1_p0_2;
+  logic int_hit_dp_rs2_p1_2, int_hit_dp_rs2_p0_2;
 
   assign int_hit_id_rs1_p1 = port1_int_we && |port1_int_addr &&
                              (port1_int_addr == from_pd_to_id.source_reg_1_early);
@@ -652,20 +677,36 @@ module cpu_ooo #(
   assign int_hit_dp_rs2_p0 = port0_int_we && |port0_int_addr &&
                              (port0_int_addr == from_id_to_ex.instruction.source_reg_2);
 
+  assign int_hit_dp_rs1_p1_2 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign int_hit_dp_rs1_p0_2 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_1);
+
+  assign int_hit_dp_rs2_p1_2 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign int_hit_dp_rs2_p0_2 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_2);
+
   assign int_rf_wb_bypass_id_rs1 = int_hit_id_rs1_p1 || int_hit_id_rs1_p0;
   assign int_rf_wb_bypass_id_rs2 = int_hit_id_rs2_p1 || int_hit_id_rs2_p0;
   assign int_rf_wb_bypass_dispatch_rs1 = int_hit_dp_rs1_p1 || int_hit_dp_rs1_p0;
   assign int_rf_wb_bypass_dispatch_rs2 = int_hit_dp_rs2_p1 || int_hit_dp_rs2_p0;
+  assign int_rf_wb_bypass_dispatch_rs1_2 = int_hit_dp_rs1_p1_2 || int_hit_dp_rs1_p0_2;
+  assign int_rf_wb_bypass_dispatch_rs2_2 = int_hit_dp_rs2_p1_2 || int_hit_dp_rs2_p0_2;
 
   logic [XLEN-1:0] int_bypass_data_id_rs1;
   logic [XLEN-1:0] int_bypass_data_id_rs2;
   logic [XLEN-1:0] int_bypass_data_dp_rs1;
   logic [XLEN-1:0] int_bypass_data_dp_rs2;
+  logic [XLEN-1:0] int_bypass_data_dp_rs1_2;
+  logic [XLEN-1:0] int_bypass_data_dp_rs2_2;
 
   assign int_bypass_data_id_rs1 = int_hit_id_rs1_p1 ? port1_int_data : port0_int_data;
   assign int_bypass_data_id_rs2 = int_hit_id_rs2_p1 ? port1_int_data : port0_int_data;
   assign int_bypass_data_dp_rs1 = int_hit_dp_rs1_p1 ? port1_int_data : port0_int_data;
   assign int_bypass_data_dp_rs2 = int_hit_dp_rs2_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs1_2 = int_hit_dp_rs1_p1_2 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs2_2 = int_hit_dp_rs2_p1_2 ? port1_int_data : port0_int_data;
 
   assign rf_to_fwd.source_reg_1_data = int_rf_wb_bypass_id_rs1 ? int_bypass_data_id_rs1 :
                                        int_rf_read_data[XLEN-1:0];
@@ -675,6 +716,10 @@ module cpu_ooo #(
                                        int_rf_read_data[3*XLEN-1:2*XLEN];
   assign int_rf_dispatch_rs2_data    = int_rf_wb_bypass_dispatch_rs2 ? int_bypass_data_dp_rs2 :
                                        int_rf_read_data[4*XLEN-1:3*XLEN];
+  assign int_rf_dispatch_rs1_data_2  = int_rf_wb_bypass_dispatch_rs1_2 ? int_bypass_data_dp_rs1_2 :
+                                       int_rf_read_data[5*XLEN-1:4*XLEN];
+  assign int_rf_dispatch_rs2_data_2  = int_rf_wb_bypass_dispatch_rs2_2 ? int_bypass_data_dp_rs2_2 :
+                                       int_rf_read_data[6*XLEN-1:5*XLEN];
 
   // FP register file.  Same 2-write-port topology as the INT regfile for
   // widen-commit.  FpW is declared up near the INT regfile for forward-
@@ -800,12 +845,14 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_pd_to_id(from_pd_to_id),
+      .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
-      .o_from_id_to_ex(from_id_to_ex)
+      .o_from_id_to_ex(from_id_to_ex),
+      .o_from_id_to_ex_2(from_id_to_ex_2)
   );
 
   // ===========================================================================
@@ -1028,7 +1075,15 @@ module cpu_ooo #(
 
   // ROB interface
   riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req;
+  // Slot-2 alloc scaffolding for 2-wide dispatch. Driven to '0 by the
+  // dispatch module today; subsequent steps widen the consumers.
+  riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req_2;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp;
+  // Slot-2 alloc response from the ROB. Consumed by dispatch to drive
+  // rat_alloc_rob_tag_2 (slot-1's RAT write tag); other fields unused
+  // until slot-1 actually fires, but the lint pragma stays local to the
+  // dispatch port that doesn't read those fields.
+  riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
   assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
   assign dbg_rob_alloc_pc = rob_alloc_req.pc;
   assign dbg_rob_alloc_is_csr = rob_alloc_req.is_csr;
@@ -1056,8 +1111,12 @@ module cpu_ooo #(
 
   // RAT lookup
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
+  // Slot-1 INT source addrs / lookups (2-wide dispatch scaffolding).
+  logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
   riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
+  // Slot-1 INT lookup results (2-wide dispatch scaffolding).
+  riscv_pkg::rat_lookup_t int_src1_lookup_2, int_src2_lookup_2;
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
   // RAT rename
@@ -1065,17 +1124,34 @@ module cpu_ooo #(
   logic                                        rat_alloc_dest_rf;
   logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
+  // Slot-1 RAT rename (2-wide dispatch scaffolding).
+  logic                                        rat_alloc_valid_2;
+  logic                                        rat_alloc_dest_rf_2;
+  logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg_2;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag_2;
 
+  // Epoch toggles on every allocation so a recycled tag carries a new
+  // generation bit.  The RAT checkpoint-restore liveness check
+  // (restored_tag_still_live) compares the saved epoch against the current
+  // rob_entry_epoch to reject a revived tag after wraparound.  Slot-1 must
+  // toggle its own tag or a mispredict recovery can revive a dead mapping.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       rob_entry_epoch <= '0;
-    end else if (rob_alloc_req.alloc_valid) begin
-      rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
+    end else begin
+      if (rob_alloc_req.alloc_valid) begin
+        rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
+      end
+      if (rob_alloc_req_2.alloc_valid) begin
+        rob_entry_epoch[rob_alloc_resp_2.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp_2.alloc_tag];
+      end
     end
   end
 
   // RS dispatch
   riscv_pkg::rs_dispatch_t                                        rs_dispatch;
+  // Slot-2 dispatch scaffolding for 2-wide (commit A). Driven to '0 today.
+  riscv_pkg::rs_dispatch_t                                        rs_dispatch_2;
 
   // Checkpoint
   logic                                                           checkpoint_available;
@@ -1091,6 +1167,7 @@ module cpu_ooo #(
   // Resource status
   logic rob_full, rob_empty;
   logic int_rs_full, mul_rs_full, mem_rs_full;
+  logic int_rs_full_for_2;
   logic fp_rs_full, fmul_rs_full, fdiv_rs_full;
   logic lq_full, sq_full;
 
@@ -1180,6 +1257,9 @@ module cpu_ooo #(
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
   logic [riscv_pkg::FLEN-1:0]
       dispatch_bypass_value_1, dispatch_bypass_value_2, dispatch_bypass_value_3;
+  // Slot-1 dispatch done-entry bypass (src1 → _4, src2 → _5).
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dispatch_bypass_tag_4, dispatch_bypass_tag_5;
+  logic [riscv_pkg::FLEN-1:0] dispatch_bypass_value_4, dispatch_bypass_value_5;
 
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
@@ -1279,8 +1359,10 @@ module cpu_ooo #(
       .i_fu_complete_6('0),
 
       // ROB allocation
-      .i_alloc_req (rob_alloc_req),
-      .o_alloc_resp(rob_alloc_resp),
+      .i_alloc_req   (rob_alloc_req),
+      .i_alloc_req_2 (rob_alloc_req_2),
+      .o_alloc_resp  (rob_alloc_resp),
+      .o_alloc_resp_2(rob_alloc_resp_2),
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -1353,12 +1435,21 @@ module cpu_ooo #(
       .o_bypass_value_2(dispatch_bypass_value_2),
       .i_bypass_tag_3(dispatch_bypass_tag_3),
       .o_bypass_value_3(dispatch_bypass_value_3),
+      .i_bypass_tag_4(dispatch_bypass_tag_4),
+      .o_bypass_value_4(dispatch_bypass_value_4),
+      .i_bypass_tag_5(dispatch_bypass_tag_5),
+      .o_bypass_value_5(dispatch_bypass_value_5),
 
       // RAT source lookups
       .i_int_src1_addr(int_src1_addr),
       .i_int_src2_addr(int_src2_addr),
       .o_int_src1(int_src1_lookup),
       .o_int_src2(int_src2_lookup),
+      // Slot-1 INT lookups (2-wide dispatch scaffolding)
+      .i_int_src1_addr_2(int_src1_addr_2),
+      .i_int_src2_addr_2(int_src2_addr_2),
+      .o_int_src1_2(int_src1_lookup_2),
+      .o_int_src2_2(int_src2_lookup_2),
       .i_fp_src1_addr(fp_src1_addr),
       .i_fp_src2_addr(fp_src2_addr),
       .i_fp_src3_addr(fp_src3_addr),
@@ -1369,15 +1460,22 @@ module cpu_ooo #(
       // RAT regfile data
       .i_int_regfile_data1(int_rf_dispatch_rs1_data),
       .i_int_regfile_data2(int_rf_dispatch_rs2_data),
-      .i_fp_regfile_data1 (fp_rf_dispatch_rs1_data),
-      .i_fp_regfile_data2 (fp_rf_dispatch_rs2_data),
-      .i_fp_regfile_data3 (fp_rf_dispatch_rs3_data),
+      .i_int_regfile_data1_2(int_rf_dispatch_rs1_data_2),
+      .i_int_regfile_data2_2(int_rf_dispatch_rs2_data_2),
+      .i_fp_regfile_data1(fp_rf_dispatch_rs1_data),
+      .i_fp_regfile_data2(fp_rf_dispatch_rs2_data),
+      .i_fp_regfile_data3(fp_rf_dispatch_rs3_data),
 
       // RAT rename
       .i_rat_alloc_valid(rat_alloc_valid),
       .i_rat_alloc_dest_rf(rat_alloc_dest_rf),
       .i_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .i_rat_alloc_rob_tag(rat_alloc_rob_tag),
+      // Slot-1 RAT rename (2-wide dispatch scaffolding)
+      .i_rat_alloc_valid_2(rat_alloc_valid_2),
+      .i_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
+      .i_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
+      .i_rat_alloc_rob_tag_2(rat_alloc_rob_tag_2),
 
       // RAT checkpoint save
       .i_checkpoint_save(checkpoint_save),
@@ -1405,12 +1503,14 @@ module cpu_ooo #(
 
       // RS dispatch
       .i_rs_dispatch(rs_dispatch),
+      .i_rs_dispatch_2(rs_dispatch_2),
       .o_rs_full(),
 
       // RS issue + status (INT_RS)
       .o_rs_issue(rs_issue_int),
       .i_rs_fu_ready(1'b1),
       .o_int_rs_full(int_rs_full),
+      .o_int_rs_full_for_2(int_rs_full_for_2),
       .o_rs_empty(rs_empty),
       .o_rs_count(rs_count),
 
@@ -1496,6 +1596,7 @@ module cpu_ooo #(
       .i_rst_n(rst_n),
 
       .i_from_id_to_ex(from_id_to_ex),
+      .i_from_id_to_ex_2(from_id_to_ex_2),
       .i_valid(id_valid),
 
       .i_rs1_addr(from_id_to_ex.instruction.source_reg_1),
@@ -1505,27 +1606,37 @@ module cpu_ooo #(
       .i_frm_csr(frm_csr),
 
       // ROB
-      .o_rob_alloc_req (rob_alloc_req),
+      .o_rob_alloc_req(rob_alloc_req),
+      .o_rob_alloc_req_2(rob_alloc_req_2),
       .i_rob_alloc_resp(rob_alloc_resp),
+      .i_rob_alloc_resp_2(rob_alloc_resp_2),
 
       // RAT lookups
       .o_int_src1_addr(int_src1_addr),
       .o_int_src2_addr(int_src2_addr),
-      .o_fp_src1_addr (fp_src1_addr),
-      .o_fp_src2_addr (fp_src2_addr),
-      .o_fp_src3_addr (fp_src3_addr),
+      .o_int_src1_addr_2(int_src1_addr_2),
+      .o_int_src2_addr_2(int_src2_addr_2),
+      .o_fp_src1_addr(fp_src1_addr),
+      .o_fp_src2_addr(fp_src2_addr),
+      .o_fp_src3_addr(fp_src3_addr),
 
       .i_int_src1(int_src1_lookup),
       .i_int_src2(int_src2_lookup),
-      .i_fp_src1 (fp_src1_lookup),
-      .i_fp_src2 (fp_src2_lookup),
-      .i_fp_src3 (fp_src3_lookup),
+      .i_int_src1_2(int_src1_lookup_2),
+      .i_int_src2_2(int_src2_lookup_2),
+      .i_fp_src1(fp_src1_lookup),
+      .i_fp_src2(fp_src2_lookup),
+      .i_fp_src3(fp_src3_lookup),
 
       // RAT rename
       .o_rat_alloc_valid(rat_alloc_valid),
+      .o_rat_alloc_valid_2(rat_alloc_valid_2),
       .o_rat_alloc_dest_rf(rat_alloc_dest_rf),
+      .o_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
+      .o_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
+      .o_rat_alloc_rob_tag_2(rat_alloc_rob_tag_2),
 
       // ROB done-entry bypass
       .i_rob_entry_done(rob_entry_done_dispatch),
@@ -1535,9 +1646,14 @@ module cpu_ooo #(
       .i_bypass_value_2(dispatch_bypass_value_2),
       .o_bypass_tag_3  (dispatch_bypass_tag_3),
       .i_bypass_value_3(dispatch_bypass_value_3),
+      .o_bypass_tag_4  (dispatch_bypass_tag_4),
+      .i_bypass_value_4(dispatch_bypass_value_4),
+      .o_bypass_tag_5  (dispatch_bypass_tag_5),
+      .i_bypass_value_5(dispatch_bypass_value_5),
 
       // RS dispatch
-      .o_rs_dispatch(rs_dispatch),
+      .o_rs_dispatch  (rs_dispatch),
+      .o_rs_dispatch_2(rs_dispatch_2),
 
       // Checkpoint management
       .i_checkpoint_available(checkpoint_available),
@@ -1555,6 +1671,7 @@ module cpu_ooo #(
       // Resource status
       .i_rob_full(rob_full),
       .i_int_rs_full(int_rs_full),
+      .i_int_rs_full_for_2(int_rs_full_for_2),
       .i_mul_rs_full(mul_rs_full),
       .i_mem_rs_full(mem_rs_full),
       .i_fp_rs_full(fp_rs_full),
