@@ -1777,7 +1777,7 @@ package riscv_pkg;
   // Dispatch status (from dispatch to front-end)
   typedef struct packed {
     logic dispatch_valid;
-    logic stall;                // Stall decode (Reorder Buffer/RS/LQ/SQ full)
+    logic stall;                    // Stall decode (Reorder Buffer/RS/LQ/SQ full)
     logic reorder_buffer_full;
     logic int_rs_full;
     logic mul_rs_full;
@@ -1787,14 +1787,21 @@ package riscv_pkg;
     logic fdiv_rs_full;
     logic lq_full;
     logic sq_full;
-    logic checkpoint_full;      // All checkpoints in use (branch)
+    logic checkpoint_full;          // All checkpoints in use (branch)
     // Slot-1 perf taps (2-wide dispatch).  Both gate-independent so a gate=1
     // run still surfaces pair density / per-cycle RS pressure.  slot-1 fire
     // itself is read directly off rob_alloc_req_2.alloc_valid in cpu_ooo —
     // exposing it through here would create a Verilator UNOPTFLAT loop
     // (slot1_fire → dispatch_fire → o_stall → ...).
-    logic slot1_opportunity;    // dispatch_valid + slot-0 pair-eligible + slot-1 INT-safe
-    logic slot1_blocked;        // opportunity present, INT_RS or ROB-2 has no room
+    logic slot1_opportunity;        // dispatch_valid + slot-0 pair-eligible + slot-1 INT-safe
+    logic slot1_blocked;            // opportunity present, INT_RS or ROB-2 has no room
+    // Slot-1 stall sub-buckets — decompose slot1_blocked by which resource
+    // was the bottleneck.  Gate-independent (same conditioning as
+    // slot1_blocked) so gate=1 still surfaces the would-be-overhead mix.
+    // Mutually exclusive: slot1_blocked == _int_rs_only + _rob2_only + _both.
+    logic slot1_stall_int_rs_only;  // INT_RS-full-for-2 only; ROB-2 has room
+    logic slot1_stall_rob2_only;    // ROB-2 full only; INT_RS has room
+    logic slot1_stall_both;         // both INT_RS-full-for-2 and ROB-2 full
   } dispatch_status_t;
 
   // ---------------------------------------------------------------------------

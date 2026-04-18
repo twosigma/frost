@@ -803,8 +803,22 @@ module dispatch (
     // off rob_alloc_req_2.alloc_valid in cpu_ooo for the same UNOPTFLAT
     // reason.
     o_status.slot1_opportunity = dispatch_valid && slot0_can_pair && slot1_can_fire_raw;
-    o_status.slot1_blocked     = dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
-                                 !slot1_int_rs_room_ok;
+    // slot1_blocked: opportunity present, at least one slot-1 resource full.
+    // Matches slot1_resource_stall's condition set sans the gate — i.e., the
+    // total cycles gate=0 would stall the pair on resource pressure.  The
+    // three sub-buckets below decompose this into {INT_RS only, ROB-2 only,
+    // both}; their sum equals slot1_blocked.
+    o_status.slot1_blocked = dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
+                             (slot1_int_rs_stall || i_rob_alloc_resp_2.full);
+    o_status.slot1_stall_int_rs_only =
+        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
+        slot1_int_rs_stall && !i_rob_alloc_resp_2.full;
+    o_status.slot1_stall_rob2_only =
+        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
+        !slot1_int_rs_stall && i_rob_alloc_resp_2.full;
+    o_status.slot1_stall_both =
+        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
+        slot1_int_rs_stall && i_rob_alloc_resp_2.full;
   end
 
   // Dispatch fires when valid and not stalled

@@ -91,7 +91,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  localparam int unsigned PerfTopCounterCount = 26;
+  localparam int unsigned PerfTopCounterCount = 30;
   localparam int unsigned PerfWrapperCounterCount = 60;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -128,6 +128,16 @@ module cpu_ooo #(
   localparam int unsigned PerfSlot1Fire = 23;
   localparam int unsigned PerfSlot1Opportunity = 24;
   localparam int unsigned PerfSlot1Blocked = 25;
+  // Slot-1 stall sub-buckets (gate-indep).  Sum equals PerfSlot1Blocked.
+  localparam int unsigned PerfSlot1StallIntRsOnly = 26;
+  localparam int unsigned PerfSlot1StallRob2Only = 27;
+  localparam int unsigned PerfSlot1StallBoth = 28;
+  // Pair-lost: slot-0 dispatched + slot-1 opportunity present + slot-1 didn't
+  // fire.  At gate=1 this ≈ opportunity ∩ dispatch_fire (slot-1 scaffolding
+  // off).  At gate=0 this should be ~0: slot1_resource_stall backpressures
+  // slot-0 too, so slot-0 can't dispatch when slot-1 is blocked.  A non-zero
+  // value at gate=0 would flag a correctness issue.
+  localparam int unsigned PerfSlot1PairLost = 29;
 
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
@@ -2728,6 +2738,19 @@ module cpu_ooo #(
     perf_top_inc[PerfSlot1Fire] = {{63{1'b0}}, rob_alloc_req_2.alloc_valid};
     perf_top_inc[PerfSlot1Opportunity] = {{63{1'b0}}, dispatch_status.slot1_opportunity};
     perf_top_inc[PerfSlot1Blocked] = {{63{1'b0}}, dispatch_status.slot1_blocked};
+    perf_top_inc[PerfSlot1StallIntRsOnly] = {{63{1'b0}}, dispatch_status.slot1_stall_int_rs_only};
+    perf_top_inc[PerfSlot1StallRob2Only] = {{63{1'b0}}, dispatch_status.slot1_stall_rob2_only};
+    perf_top_inc[PerfSlot1StallBoth] = {{63{1'b0}}, dispatch_status.slot1_stall_both};
+    // Pair-lost uses rob_alloc_req_{_,_2}.alloc_valid (computed outside the
+    // dispatch always_comb) instead of reading dispatch_fire / slot1_fire
+    // through dispatch_status — reading those through o_status would create
+    // the UNOPTFLAT loop documented at PerfSlot1Fire above.
+    perf_top_inc[PerfSlot1PairLost] = {
+      {63{1'b0}},
+      (rob_alloc_req.alloc_valid &&
+       dispatch_status.slot1_opportunity &&
+       !rob_alloc_req_2.alloc_valid)
+    };
   end
 
   always_ff @(posedge i_clk) begin
