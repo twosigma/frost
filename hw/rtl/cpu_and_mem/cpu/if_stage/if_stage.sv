@@ -102,7 +102,19 @@ module if_stage #(
     // parcel extraction from the 64-bit fetch is deferred); downstream
     // widenings accept this but the zero payload means slot-1 never
     // propagates a real instruction until the frontend is widened.
-    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
+
+    // Front-end bubble sub-cause taps: priority-ordered partition of
+    // sel_nop for profiling.  Excludes i_pipeline_ctrl.flush and
+    // reset_holdoff (already filtered by the Front-end bubble outer gate
+    // in cpu_ooo.sv).  Each tap is priority-masked so exactly one fires
+    // per sel_nop cycle among these five; sum (plus the remainder counted
+    // in cpu_ooo) equals PerfFrontendBubble within rounding.
+    output logic o_bubble_cause_c_ext_flush,  // flush_for_c_ext_safe
+    output logic o_bubble_cause_align,        // sel_nop_align
+    output logic o_bubble_cause_pred_target,  // pending_prediction_target_holdoff
+    output logic o_bubble_cause_pred_fetch,   // pending_prediction_fetch_holdoff (guarded)
+    output logic o_bubble_cause_cf_holdoff    // control_flow_holdoff (guarded)
 );
 
   // ===========================================================================
@@ -554,6 +566,31 @@ module if_stage #(
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff && (!prediction_holdoff || pd_redirect_q));
+
+  // Front-end bubble sub-cause partition: priority-ordered masks that
+  // attribute a sel_nop cycle to the most specific cause.  i_pipeline_ctrl
+  // .flush and reset_holdoff are deliberately not included because they are
+  // already filtered by the outer Front-end bubble gate in cpu_ooo.sv; any
+  // residual (e.g. brief post-reset holdoff) falls into the remainder bucket
+  // computed at the top level.  The priority order favors specific causes
+  // (prediction holdoffs) over the generic control_flow_holdoff catch-all.
+  logic bubble_cause_pred_fetch_raw;
+  logic bubble_cause_cf_holdoff_raw;
+  assign bubble_cause_pred_fetch_raw = pending_prediction_fetch_holdoff && !prediction_holdoff;
+  assign bubble_cause_cf_holdoff_raw = control_flow_holdoff && (!prediction_holdoff ||
+                                                                 pd_redirect_q);
+
+  assign o_bubble_cause_c_ext_flush = flush_for_c_ext_safe;
+  assign o_bubble_cause_align = !flush_for_c_ext_safe && sel_nop_align;
+  assign o_bubble_cause_pred_target = !flush_for_c_ext_safe && !sel_nop_align &&
+                                      pending_prediction_target_holdoff;
+  assign o_bubble_cause_pred_fetch  = !flush_for_c_ext_safe && !sel_nop_align &&
+                                      !pending_prediction_target_holdoff &&
+                                      bubble_cause_pred_fetch_raw;
+  assign o_bubble_cause_cf_holdoff  = !flush_for_c_ext_safe && !sel_nop_align &&
+                                      !pending_prediction_target_holdoff &&
+                                      !bubble_cause_pred_fetch_raw &&
+                                      bubble_cause_cf_holdoff_raw;
 
   // ===========================================================================
   // Stall State Registers

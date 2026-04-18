@@ -91,7 +91,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  localparam int unsigned PerfTopCounterCount = 30;
+  localparam int unsigned PerfTopCounterCount = 36;
   localparam int unsigned PerfWrapperCounterCount = 63;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -138,6 +138,18 @@ module cpu_ooo #(
   // slot-0 too, so slot-0 can't dispatch when slot-1 is blocked.  A non-zero
   // value at gate=0 would flag a correctness issue.
   localparam int unsigned PerfSlot1PairLost = 29;
+  // Front-end bubble sub-cause decomposition.  Sum (30..35) equals
+  // PerfFrontendBubble within rounding: each sub-counter applies the same
+  // outer gate as PerfFrontendBubble plus a priority-masked sel_nop cause
+  // sourced from if_stage.  "Other" captures bubble cycles where no tracked
+  // sel_nop cause fires (expected to cover reset_holdoff residue and any
+  // PD/ID-side dispatch_valid=0 not driven by IF sel_nop).
+  localparam int unsigned PerfFrontendBubbleCExtFlush = 30;
+  localparam int unsigned PerfFrontendBubbleAlign = 31;
+  localparam int unsigned PerfFrontendBubblePredTarget = 32;
+  localparam int unsigned PerfFrontendBubblePredFetch = 33;
+  localparam int unsigned PerfFrontendBubbleCfHoldoff = 34;
+  localparam int unsigned PerfFrontendBubbleOther = 35;
 
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
@@ -560,6 +572,31 @@ module cpu_ooo #(
   // Stage 1: Instruction Fetch (IF) — UNCHANGED
   // ===========================================================================
 
+  // Front-end bubble sub-cause taps sourced from IF.  Priority-masked so
+  // exactly one of the five is asserted per sel_nop cycle (excluding the
+  // outer-gate-filtered flush/reset cases).  Combined with a remainder bucket
+  // below, the counters partition PerfFrontendBubble.
+  //
+  // These combinational taps reflect IF's sel_nop cause at the CURRENT cycle,
+  // but PerfFrontendBubble fires at dispatch — two register stages downstream
+  // (IF→PD→ID→dispatch).  The *_q2 signals below advance the taps through
+  // the same pipeline chain as the valid tracker (if_valid_q → pd_valid_q)
+  // so sub-counter increments align with the dispatch cycle whose bubble
+  // they explain.
+  logic if_bubble_cause_c_ext_flush;
+  logic if_bubble_cause_align;
+  logic if_bubble_cause_pred_target;
+  logic if_bubble_cause_pred_fetch;
+  logic if_bubble_cause_cf_holdoff;
+  logic if_bubble_cause_c_ext_flush_q1, if_bubble_cause_c_ext_flush_q2;
+  logic if_bubble_cause_align_q1, if_bubble_cause_align_q2;
+  logic if_bubble_cause_pred_target_q1, if_bubble_cause_pred_target_q2;
+  logic if_bubble_cause_pred_fetch_q1, if_bubble_cause_pred_fetch_q2;
+  logic if_bubble_cause_cf_holdoff_q1, if_bubble_cause_cf_holdoff_q2;
+  // Shared outer gate for PerfFrontendBubble and its six sub-counters so the
+  // decomposition is guaranteed to partition the parent counter.
+  logic frontend_bubble_active;
+
   if_stage #(
       .XLEN(XLEN)
   ) if_stage_inst (
@@ -578,7 +615,12 @@ module cpu_ooo #(
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
-      .o_from_if_to_pd_2(from_if_to_pd_2)
+      .o_from_if_to_pd_2(from_if_to_pd_2),
+      .o_bubble_cause_c_ext_flush(if_bubble_cause_c_ext_flush),
+      .o_bubble_cause_align(if_bubble_cause_align),
+      .o_bubble_cause_pred_target(if_bubble_cause_pred_target),
+      .o_bubble_cause_pred_fetch(if_bubble_cause_pred_fetch),
+      .o_bubble_cause_cf_holdoff(if_bubble_cause_cf_holdoff)
   );
 
   // ===========================================================================
@@ -897,6 +939,37 @@ module cpu_ooo #(
     end else if (!pipeline_ctrl.stall) begin
       if_valid_q <= !from_if_to_pd.sel_nop && (post_flush_holdoff_q == 2'd0);
       pd_valid_q <= if_valid_q;
+    end
+  end
+
+  // Advance the Front-end bubble sub-cause taps through the same IF→PD→ID
+  // pipeline as if_valid_q/pd_valid_q.  This aligns each sub-counter with
+  // the dispatch-side cycle it explains (sel_nop at IF cycle T drives
+  // dispatch_valid=0 at T+2).  Cleared on flush/reset and held under stall
+  // to match the valid tracker exactly.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || pipeline_ctrl.flush) begin
+      if_bubble_cause_c_ext_flush_q1 <= 1'b0;
+      if_bubble_cause_c_ext_flush_q2 <= 1'b0;
+      if_bubble_cause_align_q1       <= 1'b0;
+      if_bubble_cause_align_q2       <= 1'b0;
+      if_bubble_cause_pred_target_q1 <= 1'b0;
+      if_bubble_cause_pred_target_q2 <= 1'b0;
+      if_bubble_cause_pred_fetch_q1  <= 1'b0;
+      if_bubble_cause_pred_fetch_q2  <= 1'b0;
+      if_bubble_cause_cf_holdoff_q1  <= 1'b0;
+      if_bubble_cause_cf_holdoff_q2  <= 1'b0;
+    end else if (!pipeline_ctrl.stall) begin
+      if_bubble_cause_c_ext_flush_q1 <= if_bubble_cause_c_ext_flush;
+      if_bubble_cause_c_ext_flush_q2 <= if_bubble_cause_c_ext_flush_q1;
+      if_bubble_cause_align_q1       <= if_bubble_cause_align;
+      if_bubble_cause_align_q2       <= if_bubble_cause_align_q1;
+      if_bubble_cause_pred_target_q1 <= if_bubble_cause_pred_target;
+      if_bubble_cause_pred_target_q2 <= if_bubble_cause_pred_target_q1;
+      if_bubble_cause_pred_fetch_q1  <= if_bubble_cause_pred_fetch;
+      if_bubble_cause_pred_fetch_q2  <= if_bubble_cause_pred_fetch_q1;
+      if_bubble_cause_cf_holdoff_q1  <= if_bubble_cause_cf_holdoff;
+      if_bubble_cause_cf_holdoff_q2  <= if_bubble_cause_cf_holdoff_q1;
     end
   end
 
@@ -2693,6 +2766,13 @@ module cpu_ooo #(
   assign perf_top_snapshot_capture_bank2 = perf_snapshot_capture;
   assign perf_top_snapshot_capture_bank3 = perf_snapshot_capture;
 
+  assign frontend_bubble_active = !i_rst && !flush_pipeline &&
+                                  (post_flush_holdoff_q == 2'd0) &&
+                                  !dispatch_status.stall &&
+                                  !(csr_in_flight || serializing_alloc_fire) &&
+                                  !front_end_cf_serialize_stall &&
+                                  !dispatch_status.dispatch_valid;
+
   always_comb begin
     for (int i = 0; i < PerfTopCounterCount; i++) begin
       perf_top_inc[i] = '0;
@@ -2700,13 +2780,32 @@ module cpu_ooo #(
 
     perf_top_inc[PerfDispatchFire] = {{63{1'b0}}, rob_alloc_req.alloc_valid};
     perf_top_inc[PerfDispatchStall] = {{63{1'b0}}, dispatch_status.stall};
-    perf_top_inc[PerfFrontendBubble] = {
+    // Front-end bubble shares an outer gate between the main counter and the
+    // six sub-cause counters.  Sub-counters further mask with a priority-
+    // ordered sel_nop-cause tap from IF; "Other" catches residual cycles
+    // (reset_holdoff brief pulses, PD/ID-side drops).  Sum of the six equals
+    // PerfFrontendBubble.
+    perf_top_inc[PerfFrontendBubble] = {{63{1'b0}}, frontend_bubble_active};
+    perf_top_inc[PerfFrontendBubbleCExtFlush] = {
+      {63{1'b0}}, frontend_bubble_active && if_bubble_cause_c_ext_flush_q2
+    };
+    perf_top_inc[PerfFrontendBubbleAlign] = {
+      {63{1'b0}}, frontend_bubble_active && if_bubble_cause_align_q2
+    };
+    perf_top_inc[PerfFrontendBubblePredTarget] = {
+      {63{1'b0}}, frontend_bubble_active && if_bubble_cause_pred_target_q2
+    };
+    perf_top_inc[PerfFrontendBubblePredFetch] = {
+      {63{1'b0}}, frontend_bubble_active && if_bubble_cause_pred_fetch_q2
+    };
+    perf_top_inc[PerfFrontendBubbleCfHoldoff] = {
+      {63{1'b0}}, frontend_bubble_active && if_bubble_cause_cf_holdoff_q2
+    };
+    perf_top_inc[PerfFrontendBubbleOther] = {
       {63{1'b0}},
-      (!i_rst && !flush_pipeline && (post_flush_holdoff_q == 2'd0) &&
-                      !dispatch_status.stall &&
-                      !(csr_in_flight || serializing_alloc_fire) &&
-                      !front_end_cf_serialize_stall &&
-                      !dispatch_status.dispatch_valid)
+      frontend_bubble_active && !if_bubble_cause_c_ext_flush_q2 && !if_bubble_cause_align_q2 &&
+          !if_bubble_cause_pred_target_q2 && !if_bubble_cause_pred_fetch_q2 &&
+          !if_bubble_cause_cf_holdoff_q2
     };
     perf_top_inc[PerfFlushRecovery] = {{63{1'b0}}, flush_pipeline};
     perf_top_inc[PerfPostFlushHoldoff] = {{63{1'b0}}, (post_flush_holdoff_q != 2'd0)};
@@ -2786,7 +2885,7 @@ module cpu_ooo #(
   always_comb begin
     perf_counter_data_comb = '0;
     if (perf_counter_select_q < PerfTopCounterCountSel) begin
-      perf_counter_data_comb = perf_top_snapshot[perf_counter_select_q[4:0]];
+      perf_counter_data_comb = perf_top_snapshot[perf_counter_select_q[5:0]];
     end else if (perf_counter_select_q < PerfCounterCountSel) begin
       perf_counter_data_comb = wrapper_perf_counter_data;
     end
