@@ -91,7 +91,7 @@ module cpu_ooo #(
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
 
-  localparam int unsigned PerfTopCounterCount = 36;
+  localparam int unsigned PerfTopCounterCount = 41;
   localparam int unsigned PerfWrapperCounterCount = 63;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -150,6 +150,31 @@ module cpu_ooo #(
   localparam int unsigned PerfFrontendBubblePredFetch = 33;
   localparam int unsigned PerfFrontendBubbleCfHoldoff = 34;
   localparam int unsigned PerfFrontendBubbleOther = 35;
+  // Second-level decomposition of PerfFrontendBubbleOther (bubble cycles with
+  // no tracked IF sel_nop cause at _q2).  Priority order:
+  //   pd_invalid  : pd_valid_q=0 — pipeline valid chain cleared (post-flush
+  //                 refill tail after post_flush_holdoff drops, or other
+  //                 IF-side invalidation my _q2 chain missed).
+  //   stall_tail  : stall_q=1 && no replay flag — 1-cycle residue after
+  //                 dispatch_status.stall (combinational) drops but stall_q
+  //                 (registered) hasn't yet.
+  //   id_illegal  : from_id_to_ex.is_illegal_instruction — ID detected
+  //                 illegal instr; rare in Coremark.
+  //   id_nop      : from_id_to_ex.instruction == NOP with pd_valid_q=1 —
+  //                 PD-side NOP injection that bypassed the IF sel_nop path.
+  //                 Most likely source is pd_stage's wrong-path squash
+  //                 (pd_redirect_r overwrites the instruction register with
+  //                 NOP the cycle after a registered PD backward-branch
+  //                 redirect fires; see pd_stage.sv:284).  Also covers
+  //                 program-encoded NOP (addi x0,x0,0) in the binary, but
+  //                 optimized Coremark has essentially none of those.
+  //   rest        : residual — anything else (should be ~0).
+  // Sum of these five equals PerfFrontendBubbleOther.
+  localparam int unsigned PerfFrontendBubbleOtherPdInvalid = 36;
+  localparam int unsigned PerfFrontendBubbleOtherStallTail = 37;
+  localparam int unsigned PerfFrontendBubbleOtherIdIllegal = 38;
+  localparam int unsigned PerfFrontendBubbleOtherIdNop = 39;
+  localparam int unsigned PerfFrontendBubbleOtherRest = 40;
 
   logic [63:0] perf_top_live[PerfTopCounterCount];
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
@@ -596,6 +621,12 @@ module cpu_ooo #(
   // Shared outer gate for PerfFrontendBubble and its six sub-counters so the
   // decomposition is guaranteed to partition the parent counter.
   logic frontend_bubble_active;
+  // Gates for the second-level decomposition of PerfFrontendBubbleOther.
+  // bubble_other_active tracks the same cycles counted by Other (the parent
+  // counter with no tracked _q2 sel_nop cause); bubble_other_stall_tail_mask
+  // factors the priority-2 sub-bucket (stall_q residue without replay).
+  logic bubble_other_active;
+  logic bubble_other_stall_tail_mask;
 
   if_stage #(
       .XLEN(XLEN)
@@ -2773,6 +2804,13 @@ module cpu_ooo #(
                                   !front_end_cf_serialize_stall &&
                                   !dispatch_status.dispatch_valid;
 
+  assign bubble_other_active = frontend_bubble_active &&
+                               !if_bubble_cause_c_ext_flush_q2 && !if_bubble_cause_align_q2 &&
+                               !if_bubble_cause_pred_target_q2 && !if_bubble_cause_pred_fetch_q2 &&
+                               !if_bubble_cause_cf_holdoff_q2;
+  assign bubble_other_stall_tail_mask = stall_q && !replay_after_dispatch_stall_q &&
+                                        !replay_after_serialize_stall_q;
+
   always_comb begin
     for (int i = 0; i < PerfTopCounterCount; i++) begin
       perf_top_inc[i] = '0;
@@ -2801,11 +2839,32 @@ module cpu_ooo #(
     perf_top_inc[PerfFrontendBubbleCfHoldoff] = {
       {63{1'b0}}, frontend_bubble_active && if_bubble_cause_cf_holdoff_q2
     };
-    perf_top_inc[PerfFrontendBubbleOther] = {
+    perf_top_inc[PerfFrontendBubbleOther] = {{63{1'b0}}, bubble_other_active};
+    // PerfFrontendBubbleOther second-level decomposition.  Priority-ordered
+    // so each cycle contributes to exactly one sub-bucket; sum equals
+    // PerfFrontendBubbleOther.
+    perf_top_inc[PerfFrontendBubbleOtherPdInvalid] = {
+      {63{1'b0}}, bubble_other_active && !pd_valid_q
+    };
+    perf_top_inc[PerfFrontendBubbleOtherStallTail] = {
+      {63{1'b0}}, bubble_other_active && pd_valid_q && bubble_other_stall_tail_mask
+    };
+    perf_top_inc[PerfFrontendBubbleOtherIdIllegal] = {
       {63{1'b0}},
-      frontend_bubble_active && !if_bubble_cause_c_ext_flush_q2 && !if_bubble_cause_align_q2 &&
-          !if_bubble_cause_pred_target_q2 && !if_bubble_cause_pred_fetch_q2 &&
-          !if_bubble_cause_cf_holdoff_q2
+      bubble_other_active && pd_valid_q && !bubble_other_stall_tail_mask &&
+          from_id_to_ex.is_illegal_instruction
+    };
+    perf_top_inc[PerfFrontendBubbleOtherIdNop] = {
+      {63{1'b0}},
+      bubble_other_active && pd_valid_q && !bubble_other_stall_tail_mask &&
+          !from_id_to_ex.is_illegal_instruction &&
+          (from_id_to_ex.instruction == riscv_pkg::NOP)
+    };
+    perf_top_inc[PerfFrontendBubbleOtherRest] = {
+      {63{1'b0}},
+      bubble_other_active && pd_valid_q && !bubble_other_stall_tail_mask &&
+          !from_id_to_ex.is_illegal_instruction &&
+          (from_id_to_ex.instruction != riscv_pkg::NOP)
     };
     perf_top_inc[PerfFlushRecovery] = {{63{1'b0}}, flush_pipeline};
     perf_top_inc[PerfPostFlushHoldoff] = {{63{1'b0}}, (post_flush_holdoff_q != 2'd0)};
