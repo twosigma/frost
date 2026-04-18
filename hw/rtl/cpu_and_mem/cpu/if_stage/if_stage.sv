@@ -98,10 +98,7 @@ module if_stage #(
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
-    // Slot-1 output for 2-wide dispatch. Tied to '0 today (real slot-1
-    // parcel extraction from the 64-bit fetch is deferred); downstream
-    // widenings accept this but the zero payload means slot-1 never
-    // propagates a real instruction until the frontend is widened.
+    // Slot-1 output for 2-wide dispatch.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
 
     // Front-end bubble sub-cause taps: priority-ordered partition of
@@ -167,7 +164,7 @@ module if_stage #(
   // C-Extension State Interface (c_ext_state)
   // ---------------------------------------------------------------------------
   logic [31:0] instr_buffer;  // Buffered instruction for stall recovery
-  logic [31:0] next_word_buffer;  // Next word captured alongside buffer (for spanning)
+  logic [31:0] next_word_buffer;  // Next word captured alongside buffer (for packet assembly)
   logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
@@ -194,9 +191,112 @@ module if_stage #(
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   logic ras_instruction_valid;
   logic ras_instruction_valid_live;
+  logic slot1_emit;
+  logic slot1_is_compressed;
+  logic [XLEN-1:0] slot1_pc_advance;
   (* keep = "true", max_fanout = 32 *) logic if_stage_stall;
   (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
   (* keep = "true" *) logic pc_controller_stall;
+
+  // Conservative compressed-op filter for pairing. IF must not advance the PC
+  // past slot-1 unless dispatch will accept both instructions.
+  function automatic logic slot_pair_safe_compressed(input logic [15:0] instr16);
+    logic [2:0] funct3;
+    logic [4:0] rd_rs1;
+    logic [4:0] rs2;
+    begin
+      funct3 = instr16[15:13];
+      rd_rs1 = instr16[11:7];
+      rs2    = instr16[6:2];
+      slot_pair_safe_compressed = 1'b0;
+
+      unique case (instr16[1:0])
+        2'b00: begin
+          // C.ADDI4SPN
+          slot_pair_safe_compressed = (funct3 == 3'b000) && (instr16[12:5] != 8'b0);
+        end
+        2'b01: begin
+          unique case (funct3)
+            3'b000:  slot_pair_safe_compressed = 1'b1;  // C.NOP / C.ADDI
+            3'b010:  slot_pair_safe_compressed = 1'b1;  // C.LI
+            3'b011: begin
+              // C.ADDI16SP / C.LUI. Require non-zero immediate; C.LUI also
+              // excludes x0/x2.
+              if (rd_rs1 == 5'd2) slot_pair_safe_compressed = ({instr16[12], instr16[6:2]} != 6'b0);
+              else
+                slot_pair_safe_compressed = (rd_rs1 != 5'd0) &&
+                                               (rd_rs1 != 5'd2) &&
+                                               ({instr16[12], instr16[6:2]} != 6'b0);
+            end
+            3'b100: begin
+              unique case (instr16[11:10])
+                2'b00, 2'b01, 2'b10: slot_pair_safe_compressed = 1'b1;  // C.SRLI/SRAI/ANDI
+                2'b11: slot_pair_safe_compressed = !instr16[12];  // C.SUB/XOR/OR/AND only
+                default: slot_pair_safe_compressed = 1'b0;
+              endcase
+            end
+            default: slot_pair_safe_compressed = 1'b0;
+          endcase
+        end
+        2'b10: begin
+          unique case (funct3)
+            3'b000:  slot_pair_safe_compressed = 1'b1;  // C.SLLI
+            3'b100:  slot_pair_safe_compressed = (rs2 != 5'd0);  // C.MV / C.ADD
+            default: slot_pair_safe_compressed = 1'b0;
+          endcase
+        end
+        default: slot_pair_safe_compressed = 1'b0;
+      endcase
+    end
+  endfunction
+
+  function automatic logic slot0_pair_safe_32(input logic [31:0] instr32);
+    begin
+      unique case (instr32[6:0])
+        riscv_pkg::OPC_OP_IMM, riscv_pkg::OPC_LUI, riscv_pkg::OPC_AUIPC, riscv_pkg::OPC_OP:
+        slot0_pair_safe_32 = 1'b1;
+        default: slot0_pair_safe_32 = 1'b0;
+      endcase
+    end
+  endfunction
+
+  function automatic logic slot1_pair_safe_32(input logic [31:0] instr32);
+    logic [6:0] funct7;
+    logic [2:0] funct3;
+    begin
+      funct7 = instr32[31:25];
+      funct3 = instr32[14:12];
+      slot1_pair_safe_32 = 1'b0;
+
+      unique case (instr32[6:0])
+        riscv_pkg::OPC_LUI, riscv_pkg::OPC_AUIPC: slot1_pair_safe_32 = 1'b1;
+        riscv_pkg::OPC_OP_IMM: begin
+          unique case (funct3)
+            3'b000, 3'b010, 3'b011, 3'b100, 3'b110, 3'b111: slot1_pair_safe_32 = 1'b1;
+            3'b001: slot1_pair_safe_32 = (funct7 == 7'b0000000);  // SLLI
+            3'b101:
+            slot1_pair_safe_32 = (funct7 == 7'b0000000) ||  // SRLI
+            (funct7 == 7'b0100000);  // SRAI
+            default: slot1_pair_safe_32 = 1'b0;
+          endcase
+        end
+        riscv_pkg::OPC_OP: begin
+          unique case (funct3)
+            3'b000:
+            slot1_pair_safe_32 = (funct7 == 7'b0000000) ||  // ADD
+            (funct7 == 7'b0100000);  // SUB
+            3'b001, 3'b010, 3'b011, 3'b100, 3'b110, 3'b111:
+            slot1_pair_safe_32 = (funct7 == 7'b0000000);
+            3'b101:
+            slot1_pair_safe_32 = (funct7 == 7'b0000000) ||  // SRL
+            (funct7 == 7'b0100000);  // SRA
+            default: slot1_pair_safe_32 = 1'b0;
+          endcase
+        end
+        default: slot1_pair_safe_32 = 1'b0;
+      endcase
+    end
+  endfunction
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -412,7 +512,7 @@ module if_stage #(
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_sel_nop(sel_nop),
-      .i_slot1_advance_pc(slot1_pc_advance),
+      .i_slot1_pc_advance_bytes(slot1_pc_advance),
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
@@ -455,6 +555,7 @@ module if_stage #(
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
+      .i_slot1_advance_skips_buffer_use((slot1_pc_advance != '0) && is_compressed && !pc_reg[1]),
 
       .i_effective_instr(effective_instr),
       // Always pass i_instr[63:32] as the next word — this is correct when
@@ -928,28 +1029,22 @@ module if_stage #(
   // ===========================================================================
   // Slot-1 parcel extraction for 2-wide dispatch
   // ===========================================================================
-  // Minimal viable widening: emit slot-1 only when slot-0 is an aligned
-  // 32-bit instruction (pc_reg[1]=0, is_compressed=0) AND slot-1 at
-  // pc_reg+4 is also 32-bit (its low 2 bits == 2'b11).  Slot-1 bytes sit
-  // in the upper half of the 64-bit fetch (accounting for the fetch-word
-  // swap).  All other cases emit sel_nop=1 so slot-1 is a harmless
-  // NOP/invalid that downstream stages treat as empty.
+  // Build a two-instruction packet from the current 32-bit word plus the
+  // following word when available. This recovers compressed pair cases
+  // without changing the 64-bit IMEM interface:
+  //   - C + C
+  //   - C + 32 when the second instruction still fits in the 64-bit window
+  //   - 32 + C
+  //   - 32 + 32 when both instructions fit in the 64-bit window
   //
-  // Slot-0 being a branch/serial op does NOT need to gate here: dispatch's
-  // slot-1 firing gate (added at the gate-flip step) suppresses slot-1
-  // whenever slot-0 is non-INT / branch / serializing.  Slot-1 may
-  // propagate wrong-path through PD/ID but will never allocate.
-  //
-  // Holdoffs and flushes are handled by inheriting slot-0's sel_nop
-  // conditions via !sel_nop && !use_instr_buffer && !replay_saved_if_outputs.
-  //
-  // Slot-1 fetch buffer mirrors the aligner's `i_instr_buffer` for slot-1's
-  // next-word selection.  BRAM's upper half (i_instr[63:32]) is word(pc_reg+4)
-  // only when the fetch parity matches pc_reg and the fetch lead is the normal
-  // one-word lead.  A register captures that live upper half together with
-  // its target address tag whenever the capture conditions hold; on later
-  // cycles where the live upper half does not correspond to the current
-  // pc_reg+4 but the buffer's tag still does, slot-1 reads from the buffer.
+  // Slot-1 fetch buffer mirrors the aligner's `i_instr_buffer` for the
+  // packet's next-word selection. BRAM's upper half (i_instr[63:32]) is
+  // word(pc_reg+4) only when the fetch parity matches pc_reg and the fetch
+  // lead is the normal one-word lead. A register captures that live upper
+  // half together with its target address tag whenever the capture conditions
+  // hold; on later cycles where the live upper half does not correspond to
+  // the current pc_reg+4 but the buffer's tag still does, the packetizer
+  // reads the next word from the buffer.
   logic live_next_word_ok;
   assign live_next_word_ok = !(i_instr_bank_sel_r ^ pc_reg[2]) && (pc == (pc_reg + 32'd4));
   logic [31:0] live_next_word;
@@ -981,93 +1076,97 @@ module if_stage #(
                                                         32'h0;
   assign slot1_next_word_available = live_next_word_ok || slot1_buf_hit;
 
-  // Opcode pre-decode (from raw 32-bit bits) gates slot-1 emission.  IF
-  // only emits slot-1 when both slot-0 and slot-1 are pairable INT opcodes
-  // — dispatch's slot-1 fire would drop any other combination, but that
-  // drop can't be recovered since the PC has already advanced past
-  // slot-1.  Gating here ensures we only advance PC by 8 when slot-1 is
-  // guaranteed-fireable by opcode.
-  //
-  // Slot-0 "pairable": OP-IMM, OP, LUI, AUIPC, LOAD, STORE (excludes
-  // BRANCH/JAL/JALR/SYSTEM/FENCE/AMO/FP — those can trap, serialize, or
-  // redirect so slot-1 at pc+4 may be wrong-path).
-  // Slot-1 "INT-safe": OP-IMM, OP with funct7[0]=0, LUI, AUIPC (excludes
-  // MUL/DIV which target MUL_RS and aren't wired for slot-1 in v0).
-  wire [6:0] slot0_opcode_raw = effective_instr[6:0];
-  wire [6:0] slot1_opcode_raw = slot1_next_word_fetched[6:0];
-  wire [6:0] slot1_funct7_raw = slot1_next_word_fetched[31:25];
-  // Slot-0 candidates: opcodes that dispatch's slot0_can_pair will accept.
-  // MUST match dispatch.sv's slot0_can_pair set — IF commits PC+8 when it
-  // emits slot-1, so if dispatch later drops the pair slot-1 is silently
-  // lost.  LOAD/STORE excluded because dispatch excludes them (LQ/SQ slot
-  // accounting mismatch + trap risk); BRANCH/JAL/JALR/SYSTEM/FENCE/AMO
-  // excluded because they serialize, redirect, or can trap.  OP R-type
-  // (including MUL/DIV, which targets MUL_RS) is allowed — slot1_fire's
-  // int_rs_full_for_2/full check is rs_type-gated to handle that case.
-  wire slot0_is_pair_candidate = (slot0_opcode_raw == 7'b0010011) ||  // OP-IMM
-  (slot0_opcode_raw == 7'b0110111) ||  // LUI
-  (slot0_opcode_raw == 7'b0010111) ||  // AUIPC
-  (slot0_opcode_raw == 7'b0110011);  // OP R-type (incl. MUL/DIV → MUL_RS)
-  wire slot1_is_int_safe =
-      (slot1_opcode_raw == 7'b0010011 &&
-       slot1_next_word_fetched[14:12] != 3'b001 &&  // exclude SLLI/B-ext/CLZ/CTZ
-  slot1_next_word_fetched[14:12] != 3'b101) ||  // exclude SRLI/SRAI/B-ext
-  (slot1_opcode_raw == 7'b0110111) ||  // LUI
-  (slot1_opcode_raw == 7'b0010111);  // AUIPC
+  logic [    63:0] slot_pair_window;
+  logic [     2:0] slot1_byte_offset;
+  logic [    15:0] slot1_raw_parcel;
+  logic [    31:0] slot1_effective_instr;
+  logic            slot1_has_2b;
+  logic            slot1_has_4b;
+  logic            slot0_is_pair_candidate;
+  logic            slot1_is_int_safe;
+  logic [XLEN-1:0] slot0_pc_increment;
+  logic [XLEN-1:0] slot1_pc_increment;
 
-  // The 64-bit frontend keeps roughly a one-word fetch lead. After consuming
-  // two full 32-bit words via slot-1 (+8 total PC advance), the next cycle's
-  // BRAM output can still be one pair behind. A one-cycle cooldown after a
-  // real slot-1 PC advance avoids decoding stale fetch data as a second
+  assign slot_pair_window = {slot1_next_word_fetched, effective_instr};
+  assign slot0_pc_increment = is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                              riscv_pkg::PcIncrement32bit;
+  assign slot1_byte_offset = (pc_reg[1] ? 3'd2 : 3'd0) + (is_compressed ? 3'd2 : 3'd4);
+  assign slot1_has_2b = (slot1_byte_offset <= 3'd2) || slot1_next_word_available;
+  assign slot1_has_4b = (slot1_byte_offset <= 3'd4) && slot1_next_word_available;
+
+  always_comb begin
+    slot1_raw_parcel      = 16'h0;
+    slot1_effective_instr = 32'h0;
+    unique case (slot1_byte_offset)
+      3'd2: begin
+        slot1_raw_parcel      = slot_pair_window[31:16];
+        slot1_effective_instr = {slot_pair_window[47:32], slot_pair_window[31:16]};
+      end
+      3'd4: begin
+        slot1_raw_parcel      = slot_pair_window[47:32];
+        slot1_effective_instr = {slot_pair_window[63:48], slot_pair_window[47:32]};
+      end
+      3'd6: begin
+        slot1_raw_parcel      = slot_pair_window[63:48];
+        slot1_effective_instr = 32'h0;
+      end
+      default: begin
+        slot1_raw_parcel      = 16'h0;
+        slot1_effective_instr = 32'h0;
+      end
+    endcase
+  end
+
+  assign slot0_is_pair_candidate = is_compressed ? slot_pair_safe_compressed(
+      raw_parcel
+  ) : slot0_pair_safe_32(
+      assembled_instr
+  );
+  assign slot1_is_compressed = slot1_has_2b && (slot1_raw_parcel[1:0] != 2'b11);
+  assign slot1_is_int_safe = slot1_is_compressed ? slot_pair_safe_compressed(
+      slot1_raw_parcel
+  ) : (slot1_has_4b && slot1_pair_safe_32(
+      slot1_effective_instr
+  ));
+  assign slot1_pc_increment = slot1_is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                    riscv_pkg::PcIncrement32bit;
+
+  // The 64-bit frontend keeps roughly a one-word fetch lead. After any real
+  // slot-1 PC advance, the next cycle's BRAM output can still be one packet
+  // behind. A one-cycle cooldown avoids decoding stale data as a second
   // back-to-back pair.
   logic slot1_recent_advance;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       slot1_recent_advance <= 1'b0;
     end else if (!if_stage_stall) begin
-      slot1_recent_advance <= slot1_pc_advance;
+      slot1_recent_advance <= (slot1_pc_advance != '0);
     end
   end
 
-  logic slot1_emit_32bit;
-  // Slot-1 fires when slot1_next_word_available — either the live BRAM
-  // upper half reliably carries word(pc_reg+4) (same-parity aligner window
-  // with the normal one-word fetch lead) or the fetch buffer still holds
-  // it from an earlier capture.  The buffer recovers firing in
-  // diff-parity / shrunk-lead cycles where the live BRAM upper half would
-  // otherwise be stale.
-  //
-  // The fetch-line guard `!pc_reg[2]` is not required: BRAM's swap mux
-  // already reads from the adjacent 64-bit line (even_read_addr = half_addr
-  // + 1 when F[2]=1), so slot-0 at the odd word and slot-1 at the following
-  // even word of the next line are both valid when `live_next_word_ok`.
-  assign slot1_emit_32bit = !sel_nop && !use_instr_buffer && !replay_saved_if_outputs &&
-                            !is_compressed &&  // slot-0 is 32-bit
-      !pc_reg[1] &&  // pc_reg word-aligned
-      slot1_next_word_available &&  // live BRAM upper half or buffer hit
-      (slot1_next_word_fetched[1:0] == 2'b11) &&  // slot-1 is 32-bit
-      slot0_is_pair_candidate && slot1_is_int_safe && !slot1_recent_advance;
+  assign slot1_emit = !sel_nop && !replay_saved_if_outputs &&
+                      slot0_is_pair_candidate && slot1_is_int_safe &&
+                      !slot1_recent_advance;
 
   // MUST match dispatch.sv's SlotOneScaffoldingDisable — flipped together
   // as a pair.  When 1'b1, slot-1 never actually fires at dispatch and PC
   // must continue to advance by slot-0's length (sequential 1-wide).  When
-  // 1'b0, slot-1 fires and PC advances by +4 more whenever slot-1 is
-  // emitted.  Keeping the IF signal separate from the emit-to-downstream
-  // path preserves scaffolding neutrality with the gate asserted.
+  // 1'b0, slot-1 fires and PC advances by slot-1's actual length (+2 or +4).
+  // Keeping the IF signal separate from the emit-to-downstream path preserves
+  // scaffolding neutrality with the gate asserted.
   localparam logic SlotOneScaffoldingDisable = 1'b1;
-  logic slot1_pc_advance;
-  assign slot1_pc_advance = slot1_emit_32bit && !SlotOneScaffoldingDisable;
+  assign slot1_pc_advance = (slot1_emit && !SlotOneScaffoldingDisable) ? slot1_pc_increment : '0;
 
   always_comb begin
     o_from_if_to_pd_2         = '0;
     o_from_if_to_pd_2.sel_nop = 1'b1;
-    if (slot1_emit_32bit) begin
+    if (slot1_emit) begin
       o_from_if_to_pd_2.sel_nop         = 1'b0;
-      o_from_if_to_pd_2.sel_compressed  = 1'b0;
-      o_from_if_to_pd_2.raw_parcel      = slot1_next_word_fetched[15:0];
-      o_from_if_to_pd_2.effective_instr = slot1_next_word_fetched;
-      o_from_if_to_pd_2.program_counter = pc_reg + 32'd4;
-      o_from_if_to_pd_2.link_address    = pc_reg + 32'd8;
+      o_from_if_to_pd_2.sel_compressed  = slot1_is_compressed;
+      o_from_if_to_pd_2.raw_parcel      = slot1_raw_parcel;
+      o_from_if_to_pd_2.effective_instr = slot1_effective_instr;
+      o_from_if_to_pd_2.program_counter = pc_reg + slot0_pc_increment;
+      o_from_if_to_pd_2.link_address    = pc_reg + slot0_pc_increment + slot1_pc_increment;
       // Slot-1 BTB/RAS metadata intentionally '0: dispatch's slot-1 gate
       // serializes on branches, so slot-1 is never a branch in v0.
     end

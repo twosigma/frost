@@ -48,6 +48,7 @@ module c_ext_state #(
     input logic i_pending_prediction_target_handoff,  // Old-path control-flow op just redirected
     input logic i_pending_prediction_target_holdoff,  // Bubble while halfword branch PC catches up
     input logic i_prediction_from_buffer_holdoff,  // Need buffered old-path word next cycle
+    input logic i_slot1_advance_skips_buffer_use,  // Slot-1 consumed buffered hi half / next word
 
     // Instruction data
     input logic [31:0] i_effective_instr,     // Current effective instruction word
@@ -272,7 +273,8 @@ module c_ext_state #(
                  !i_prediction_from_buffer_holdoff &&
                  !o_use_buffer_after_prediction &&
                  !i_pending_prediction_active) begin
-      o_prev_was_compressed_at_lo <= is_compressed_for_buffer && !i_pc_reg[1];
+      o_prev_was_compressed_at_lo <= is_compressed_for_buffer && !i_pc_reg[1] &&
+                                     !i_slot1_advance_skips_buffer_use;
     end
   end
 
