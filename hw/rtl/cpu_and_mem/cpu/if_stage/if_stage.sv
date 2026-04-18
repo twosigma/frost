@@ -905,9 +905,44 @@ module if_stage #(
   //
   // Holdoffs and flushes are handled by inheriting slot-0's sel_nop
   // conditions via !sel_nop && !use_instr_buffer && !replay_saved_if_outputs.
+  //
+  // Slot-1 fetch buffer mirrors the aligner's `i_instr_buffer` for slot-1's
+  // next-word selection.  BRAM's upper half (i_instr[63:32]) is word(pc_reg+4)
+  // only when the fetch parity matches pc_reg and the fetch lead is the normal
+  // one-word lead.  A register captures that live upper half together with
+  // its target address tag whenever the capture conditions hold; on later
+  // cycles where the live upper half does not correspond to the current
+  // pc_reg+4 but the buffer's tag still does, slot-1 reads from the buffer.
+  logic live_next_word_ok;
+  assign live_next_word_ok = !(i_instr_bank_sel_r ^ pc_reg[2]) && (pc == (pc_reg + 32'd4));
+  logic [31:0] live_next_word;
+  assign live_next_word = i_instr[63:32];
+
+  logic [31:0] slot1_next_word_buf;
+  logic [29:0] slot1_next_word_buf_tag;  // word-aligned [31:2] of (pc_reg+4)
+  logic        slot1_next_word_buf_valid;
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      slot1_next_word_buf_valid <= 1'b0;
+    end else if (!if_stage_stall && live_next_word_ok &&
+                 !sel_nop && !use_instr_buffer && !replay_saved_if_outputs) begin
+      slot1_next_word_buf       <= live_next_word;
+      slot1_next_word_buf_tag   <= pc_reg[31:2] + 30'd1;
+      slot1_next_word_buf_valid <= 1'b1;
+    end
+  end
+
+  logic slot1_buf_hit;
+  assign slot1_buf_hit = slot1_next_word_buf_valid &&
+                         (slot1_next_word_buf_tag == (pc_reg[31:2] + 30'd1));
+
   logic [31:0] slot1_next_word_fetched;
-  assign slot1_next_word_fetched = (i_instr_bank_sel_r ^ pc_reg[2]) ?
-      i_instr[31:0] : i_instr[63:32];
+  logic        slot1_next_word_available;
+  assign slot1_next_word_fetched  = live_next_word_ok ? live_next_word     :
+                                    slot1_buf_hit     ? slot1_next_word_buf :
+                                                        32'h0;
+  assign slot1_next_word_available = live_next_word_ok || slot1_buf_hit;
 
   // Opcode pre-decode (from raw 32-bit bits) gates slot-1 emission.  IF
   // only emits slot-1 when both slot-0 and slot-1 are pairable INT opcodes
@@ -958,27 +993,21 @@ module if_stage #(
   end
 
   logic slot1_emit_32bit;
-  // Require (i_instr_bank_sel_r == pc_reg[2]) — the aligner's "same parity"
-  // case where word(pc_reg) is at i_instr[31:0] and word(pc_reg+4) is at
-  // i_instr[63:32].  In the "diff parity" case the fetch is 1 word off and
-  // slot-1's word is NOT in the current i_instr; slot1_next_word_fetched
-  // returns i_instr[31:0] = word(pc_reg - 4) which is one pair behind,
-  // corrupting slot-1's instruction bits.  Slot-0 handles the diff-parity
-  // case via the aligner's buffer; slot-1 has no buffer and must wait for
-  // the aligned fetch.
+  // Slot-1 fires when slot1_next_word_available — either the live BRAM
+  // upper half reliably carries word(pc_reg+4) (same-parity aligner window
+  // with the normal one-word fetch lead) or the fetch buffer still holds
+  // it from an earlier capture.  The buffer recovers firing in
+  // diff-parity / shrunk-lead cycles where the live BRAM upper half would
+  // otherwise be stale.
   //
-  // Also require the normal one-word fetch lead (pc == pc_reg + 4). After a
-  // compressed-history sequence the 64-bit frontend can momentarily shrink the
-  // lead to +2 halfwords while still presenting slot-0 correctly. Emitting
-  // slot-1 in that state consumes two 32-bit words, but the next BRAM
-  // response is still based on fetch word floor(pc), so slot-0 at pc+8 reuses
-  // the old word(pc_reg) as stale decode.
+  // The fetch-line guard `!pc_reg[2]` is not required: BRAM's swap mux
+  // already reads from the adjacent 64-bit line (even_read_addr = half_addr
+  // + 1 when F[2]=1), so slot-0 at the odd word and slot-1 at the following
+  // even word of the next line are both valid when `live_next_word_ok`.
   assign slot1_emit_32bit = !sel_nop && !use_instr_buffer && !replay_saved_if_outputs &&
-                            !is_compressed &&        // slot-0 is 32-bit
+                            !is_compressed &&  // slot-0 is 32-bit
       !pc_reg[1] &&  // pc_reg word-aligned
-      !pc_reg[2] &&  // slot-0 must be lower 32b word of the 64b fetch line
-      (pc == (pc_reg + 32'd4)) &&  // require full-word fetch lead
-      !(i_instr_bank_sel_r ^ pc_reg[2]) &&  // aligner normal ordering
+      slot1_next_word_available &&  // live BRAM upper half or buffer hit
       (slot1_next_word_fetched[1:0] == 2'b11) &&  // slot-1 is 32-bit
       slot0_is_pair_candidate && slot1_is_int_safe && !slot1_recent_advance;
 
