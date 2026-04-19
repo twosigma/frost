@@ -481,6 +481,16 @@ module tomasulo_wrapper (
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
+  // ---------------------------------------------------------------------------
+  // Dual-ALU / dual-CDB "fast-path" gate
+  // ---------------------------------------------------------------------------
+  // Enables the 2nd int_alu_shim + 2nd CDB broadcast lane.  Analogous to the
+  // SlotOneScaffoldingDisable pattern used for 2-wide dispatch: the
+  // infrastructure is built gated-off so gate=0 is bit-for-bit equivalent to
+  // the current 1-ALU/1-CDB baseline.  Flip to 1'b1 after the gate=0 checks
+  // pass to measure CoreMark uplift.
+  localparam logic EnableAluFastPath = 1'b1;
+
   localparam int unsigned WrapperPerfCounterCount = 63;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
@@ -850,6 +860,28 @@ module tomasulo_wrapper (
 
   assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending & ~i_backend_recovery_hold;
 
+  // Fast-path (2nd ALU) issue + completion wiring. The 2nd shim is a combinational
+  // replica of u_alu_shim driven by INT_RS's 2nd issue port. Its result is
+  // registered into cdb_fast_path_bus (mirroring the main CDB pipeline) and
+  // broadcast directly to the ROB and RS snoops, bypassing the main arbiter.
+  riscv_pkg::rs_issue_t                 int_rs_issue_raw_2;
+  riscv_pkg::rs_issue_t                 int_rs_issue_w_2;
+  logic                                 int_rs_issue_2_writes_cdb_hint;
+  riscv_pkg::fu_complete_t              alu_shim_out_2;
+  logic                                 alu_fu_busy_2;  // unused (always 0)
+  logic                                 int_rs_fu_ready_2;
+  riscv_pkg::cdb_broadcast_t            cdb_fast_path_comb;
+  riscv_pkg::cdb_broadcast_t            cdb_fast_path_bus;
+  logic                                 cdb_fast_path_valid;
+  riscv_pkg::cdb_broadcast_t            cdb_fast_path_qualified;
+  riscv_pkg::reorder_buffer_cdb_write_t cdb_fast_path_write;
+
+  // The 2nd ALU is combinational and has no adapter/FIFO of its own, so its
+  // FU-ready is purely the gate: when EnableAluFastPath=0 the 2nd issue port
+  // stays quiescent (o_issue_2.valid=0), its shim feeds '0, and the registered
+  // fast-path bus holds valid=0 every cycle.
+  assign int_rs_fu_ready_2 = EnableAluFastPath & ~i_backend_recovery_hold;
+
   // ===========================================================================
   // MUL/DIV Pipeline: MUL_RS issue → shim → adapters → CDB arbiter slots 1,2
   // ===========================================================================
@@ -1124,6 +1156,9 @@ module tomasulo_wrapper (
     int_rs_issue_w = int_rs_issue_raw;
     if (i_backend_recovery_hold) int_rs_issue_w.valid = 1'b0;
 
+    int_rs_issue_w_2 = int_rs_issue_raw_2;
+    if (i_backend_recovery_hold) int_rs_issue_w_2.valid = 1'b0;
+
     mul_rs_issue_w = mul_rs_issue_raw;
     if (i_backend_recovery_hold) mul_rs_issue_w.valid = 1'b0;
 
@@ -1164,6 +1199,9 @@ module tomasulo_wrapper (
 
       // CDB (from arbiter)
       .i_cdb_write(cdb_write_from_arbiter),
+      // ALU fast-path CDB (bypasses arbiter). Held at valid=0 when
+      // EnableAluFastPath=0.
+      .i_cdb_fast_path(cdb_fast_path_write),
       .i_store_complete_valid(store_issue_fire),
       .i_store_complete_tag(store_complete_tag),
 
@@ -1389,7 +1427,8 @@ module tomasulo_wrapper (
 
   reservation_station #(
       .DEPTH(riscv_pkg::IntRsDepth),
-      .TRACK_INT_WRITEBACK_HINT(1'b1)
+      .TRACK_INT_WRITEBACK_HINT(1'b1),
+      .ENABLE_ISSUE_2(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -1400,13 +1439,17 @@ module tomasulo_wrapper (
       .o_full      (int_rs_full_w),
       .o_full_for_2(int_rs_full_for_2_w),
 
-      // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus_qualified),
+      // CDB snoop (main arbiter + fast-path 2nd lane)
+      .i_cdb  (cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
 
       // Issue (to internal wire for ALU shim)
       .o_issue(int_rs_issue_raw),
       .i_fu_ready(int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .o_issue_2(int_rs_issue_raw_2),
+      .i_fu_ready_2(int_rs_fu_ready_2),
+      .o_issue_2_writes_cdb_hint(int_rs_issue_2_writes_cdb_hint),
       .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
       .o_pre_issue_rob_tag(),
       .o_pre_issue_needs_lq(),
@@ -1450,29 +1493,33 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth)
   ) u_mul_rs (
-      .i_clk                  (i_clk),
-      .i_rst_n                (i_rst_n),
-      .i_dispatch             (mul_rs_dispatch),
-      .i_dispatch_2           (mul_rs_dispatch_2),
-      .o_full                 (mul_rs_full_w),
-      .o_full_for_2           (),                       // v0: slot-1 never targets MUL_RS
-      .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (mul_rs_issue_raw),
-      .i_fu_ready             (mul_rs_fu_ready),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(mul_rs_dispatch),
+      .i_dispatch_2(mul_rs_dispatch_2),
+      .o_full(mul_rs_full_w),
+      .o_full_for_2(),  // v0: slot-1 never targets MUL_RS
+      .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
+      .o_issue(mul_rs_issue_raw),
+      .i_fu_ready(mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
-      .o_pre_issue_rob_tag    (),
-      .o_pre_issue_needs_lq   (),
-      .i_flush_en             (speculative_flush_en),
-      .i_flush_tag            (i_flush_tag),
-      .i_rob_head_tag         (head_tag),
-      .i_flush_all            (speculative_flush_all),
-      .o_empty                (o_mul_rs_empty),
-      .o_count                (o_mul_rs_count),
-      .i_head_query_tag       (head_tag),
-      .o_head_query_in_rs     (),
-      .o_head_query_rs_ready  (),
-      .o_head_query_in_stage2 ()
+      .o_issue_2(),  // unused — only INT_RS issues fast-path
+      .i_fu_ready_2(1'b0),
+      .o_issue_2_writes_cdb_hint(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in MUL_RS
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(o_mul_rs_empty),
+      .o_count(o_mul_rs_count),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2()
   );
 
   // Observation port: expose MUL_RS issue for testbench
@@ -1505,10 +1552,14 @@ module tomasulo_wrapper (
       .o_full(mem_rs_full_w),
       .o_full_for_2(),  // v0: slot-1 never targets MEM_RS
       .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
       .o_issue(mem_rs_issue_raw),
       .i_fu_ready             (i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc) &&
                                !i_backend_recovery_hold),
       .o_issue_writes_cdb_hint(),
+      .o_issue_2(),  // unused — only INT_RS issues fast-path
+      .i_fu_ready_2(1'b0),
+      .o_issue_2_writes_cdb_hint(),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
       .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
@@ -1555,29 +1606,33 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth)
   ) u_fp_rs (
-      .i_clk                  (i_clk),
-      .i_rst_n                (i_rst_n),
-      .i_dispatch             (fp_rs_dispatch),
-      .i_dispatch_2           (fp_rs_dispatch_2),
-      .o_full                 (fp_rs_full_w),
-      .o_full_for_2           (),                       // v0: slot-1 never targets FP_RS
-      .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fp_rs_issue_raw),
-      .i_fu_ready             (fp_rs_fu_ready),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(fp_rs_dispatch),
+      .i_dispatch_2(fp_rs_dispatch_2),
+      .o_full(fp_rs_full_w),
+      .o_full_for_2(),  // v0: slot-1 never targets FP_RS
+      .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
+      .o_issue(fp_rs_issue_raw),
+      .i_fu_ready(fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                       // unused — no SC ops in FP_RS
-      .o_pre_issue_rob_tag    (),
-      .o_pre_issue_needs_lq   (),
-      .i_flush_en             (speculative_flush_en),
-      .i_flush_tag            (i_flush_tag),
-      .i_rob_head_tag         (head_tag),
-      .i_flush_all            (speculative_flush_all),
-      .o_empty                (o_fp_rs_empty),
-      .o_count                (o_fp_rs_count),
-      .i_head_query_tag       (head_tag),
-      .o_head_query_in_rs     (),
-      .o_head_query_rs_ready  (),
-      .o_head_query_in_stage2 ()
+      .o_issue_2(),  // unused — only INT_RS issues fast-path
+      .i_fu_ready_2(1'b0),
+      .o_issue_2_writes_cdb_hint(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in FP_RS
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(o_fp_rs_empty),
+      .o_count(o_fp_rs_count),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2()
   );
 
   // ---------------------------------------------------------------------------
@@ -1639,33 +1694,37 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth)
   ) u_fmul_rs (
-      .i_clk                  (i_clk),
-      .i_rst_n                (i_rst_n),
-      .i_dispatch             (fmul_rs_dispatch_to_rs),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(fmul_rs_dispatch_to_rs),
       // FMUL is buffered via fmul_dispatch_pending, so a 2-wide slot-1
       // dispatch would need parallel buffering.  Out-of-scope for v0
       // (slot-1 is INT-only, never targets FMUL_RS); hard-tie to '0 so
       // the 2-wide RS alloc logic stays inert for this instance.
-      .i_dispatch_2           ('0),
-      .o_full                 (fmul_rs_full_raw),
-      .o_full_for_2           (),                        // v0: slot-1 never targets FMUL_RS
-      .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fmul_rs_issue_raw),
-      .i_fu_ready             (fmul_rs_fu_ready),
+      .i_dispatch_2('0),
+      .o_full(fmul_rs_full_raw),
+      .o_full_for_2(),  // v0: slot-1 never targets FMUL_RS
+      .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
+      .o_issue(fmul_rs_issue_raw),
+      .i_fu_ready(fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                        // unused — no SC ops in FMUL_RS
-      .o_pre_issue_rob_tag    (),
-      .o_pre_issue_needs_lq   (),
-      .i_flush_en             (speculative_flush_en),
-      .i_flush_tag            (i_flush_tag),
-      .i_rob_head_tag         (head_tag),
-      .i_flush_all            (speculative_flush_all),
-      .o_empty                (fmul_rs_empty_raw),
-      .o_count                (fmul_rs_count_raw),
-      .i_head_query_tag       (head_tag),
-      .o_head_query_in_rs     (),
-      .o_head_query_rs_ready  (),
-      .o_head_query_in_stage2 ()
+      .o_issue_2(),  // unused — only INT_RS issues fast-path
+      .i_fu_ready_2(1'b0),
+      .o_issue_2_writes_cdb_hint(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in FMUL_RS
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(fmul_rs_empty_raw),
+      .o_count(fmul_rs_count_raw),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2()
   );
 
   // ---------------------------------------------------------------------------
@@ -1688,29 +1747,33 @@ module tomasulo_wrapper (
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth)
   ) u_fdiv_rs (
-      .i_clk                  (i_clk),
-      .i_rst_n                (i_rst_n),
-      .i_dispatch             (fdiv_rs_dispatch),
-      .i_dispatch_2           (fdiv_rs_dispatch_2),
-      .o_full                 (fdiv_rs_full_w),
-      .o_full_for_2           (),                       // v0: slot-1 never targets FDIV_RS
-      .i_cdb                  (cdb_bus_qualified),
-      .o_issue                (fdiv_rs_issue_raw),
-      .i_fu_ready             (fdiv_rs_fu_ready),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(fdiv_rs_dispatch),
+      .i_dispatch_2(fdiv_rs_dispatch_2),
+      .o_full(fdiv_rs_full_w),
+      .o_full_for_2(),  // v0: slot-1 never targets FDIV_RS
+      .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_fast_path_qualified),
+      .o_issue(fdiv_rs_issue_raw),
+      .i_fu_ready(fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                       // unused — no SC ops in FDIV_RS
-      .o_pre_issue_rob_tag    (),
-      .o_pre_issue_needs_lq   (),
-      .i_flush_en             (speculative_flush_en),
-      .i_flush_tag            (i_flush_tag),
-      .i_rob_head_tag         (head_tag),
-      .i_flush_all            (speculative_flush_all),
-      .o_empty                (o_fdiv_rs_empty),
-      .o_count                (o_fdiv_rs_count),
-      .i_head_query_tag       (head_tag),
-      .o_head_query_in_rs     (),
-      .o_head_query_rs_ready  (),
-      .o_head_query_in_stage2 ()
+      .o_issue_2(),  // unused — only INT_RS issues fast-path
+      .i_fu_ready_2(1'b0),
+      .o_issue_2_writes_cdb_hint(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in FDIV_RS
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(o_fdiv_rs_empty),
+      .o_count(o_fdiv_rs_count),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2()
   );
 
   // Observation ports: expose FP RS issue for testbench
@@ -1746,6 +1809,58 @@ module tomasulo_wrapper (
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
+
+  // ===========================================================================
+  // ALU Fast Path: INT_RS issue_2 → 2nd ALU shim → dedicated CDB (bypass arbiter)
+  // ===========================================================================
+  // The 2nd ALU has no adapter — the ALU is single-cycle and the fast-path CDB
+  // is dedicated to ALU results, so there is never back-pressure on this path.
+  // The shim's fu_complete is packed into cdb_broadcast_t and registered into
+  // cdb_fast_path_bus (mirroring the main CDB's pipeline register), giving the
+  // same 1-cycle latency from issue to ROB/RS wakeup as the main path.
+  int_alu_shim u_alu_shim_2 (
+      .i_clk                  (i_clk),
+      .i_rst_n                (i_rst_n),
+      .i_rs_issue             (int_rs_issue_w_2),
+      .i_issue_writes_cdb_hint(int_rs_issue_2_writes_cdb_hint),
+      .i_csr_read_data        (i_csr_read_data),
+      .o_fu_complete          (alu_shim_out_2),
+      .o_fu_busy              (alu_fu_busy_2)
+  );
+
+  always_comb begin
+    cdb_fast_path_comb           = '0;
+    cdb_fast_path_comb.valid     = EnableAluFastPath && alu_shim_out_2.valid && !cdb_kill;
+    cdb_fast_path_comb.tag       = alu_shim_out_2.tag;
+    cdb_fast_path_comb.value     = alu_shim_out_2.value;
+    cdb_fast_path_comb.exception = alu_shim_out_2.exception;
+    cdb_fast_path_comb.exc_cause = alu_shim_out_2.exc_cause;
+    cdb_fast_path_comb.fp_flags  = alu_shim_out_2.fp_flags;
+    cdb_fast_path_comb.fu_type   = riscv_pkg::FU_ALU;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_fast_path_valid <= 1'b0;
+    else cdb_fast_path_valid <= cdb_fast_path_comb.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
+    cdb_fast_path_bus <= cdb_fast_path_comb;
+  end
+
+  always_comb begin
+    cdb_fast_path_qualified       = cdb_fast_path_bus;
+    cdb_fast_path_qualified.valid = cdb_fast_path_valid;
+  end
+
+  always_comb begin
+    cdb_fast_path_write.valid     = cdb_fast_path_valid;
+    cdb_fast_path_write.tag       = cdb_fast_path_bus.tag;
+    cdb_fast_path_write.value     = cdb_fast_path_bus.value;
+    cdb_fast_path_write.exception = cdb_fast_path_bus.exception;
+    cdb_fast_path_write.exc_cause = cdb_fast_path_bus.exc_cause;
+    cdb_fast_path_write.fp_flags  = cdb_fast_path_bus.fp_flags;
+  end
 
   // ===========================================================================
   // MUL/DIV Shim: translate rs_issue_t → multiplier/divider → fu_complete_t

@@ -43,7 +43,15 @@
 module reservation_station #(
     parameter int unsigned DEPTH = 8,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
-    parameter bit BYPASS_STAGE2 = 1'b0
+    parameter bit BYPASS_STAGE2 = 1'b0,
+    // Enable a second combinational issue port that picks the 2nd-oldest-ready
+    // fast-path-eligible entry. The 2nd port reads the RS entry arrays and
+    // payload RAM at issue_idx_2 combinationally and ALWAYS skips stage2 — so
+    // it can coexist with BYPASS_STAGE2=0 on the main port. Turning it on
+    // adds a combinational path from RS entry arrays → 2nd priority encoder
+    // → 2nd payload RAM read → 2nd shim → CDB register; gate this off when
+    // timing budget doesn't allow.
+    parameter bit ENABLE_ISSUE_2 = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -67,6 +75,11 @@ module reservation_station #(
     // CDB Snoop / Wakeup
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
+    // Second CDB snoop lane — drives same-cycle operand wakeup for the ALU
+    // fast path. Producer holds valid=0 when EnableAluFastPath=0.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::cdb_broadcast_t i_cdb_2,
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // =========================================================================
     // Issue Interface (to Functional Unit)
@@ -74,6 +87,13 @@ module reservation_station #(
     output riscv_pkg::rs_issue_t o_issue,
     input  logic                 i_fu_ready,
     output logic                 o_issue_writes_cdb_hint,
+
+    // Second (fast-path) issue port. Consumer holds i_fu_ready_2=0 when
+    // EnableAluFastPath=0; with ENABLE_ISSUE_2=0 the outputs are tied to '0
+    // so non-INT RS instances don't pay any area for this port.
+    output riscv_pkg::rs_issue_t o_issue_2,
+    input  logic                 i_fu_ready_2,
+    output logic                 o_issue_2_writes_cdb_hint,
 
     // =========================================================================
     // SC Issue Peek (combinational, independent of i_fu_ready)
@@ -153,6 +173,41 @@ module reservation_station #(
         riscv_pkg::BGEU:
         int_rs_writes_cdb = 1'b0;
         default: int_rs_writes_cdb = 1'b1;
+      endcase
+    end
+  endfunction
+
+  // Fast-path (2nd ALU) eligibility. The 2nd ALU writes directly to the ROB's
+  // rob_done/rob_value FFs and RAMs without going through the main CDB arbiter,
+  // branch_update path, or cpu_ooo serial-commit machinery. Ops that require any
+  // of those paths must stay on the main issue port:
+  //   - Branches: need branch_update (but writes_cdb_hint=0 already excludes).
+  //   - JALR: needs branch_update for target resolution.
+  //   - JAL never enters INT_RS (RS_NONE).
+  //   - CSR: writes CDB value used by RAT-bypass reads; excluded conservatively
+  //          because its commit-side serialization assumes the main-path timing.
+  //   - ECALL/EBREAK: generate exceptions; keep on the main path so the single
+  //                   exception cone stays where the ROB flush logic expects.
+  function automatic logic int_rs_fast_path_eligible(input riscv_pkg::instr_op_e op);
+    begin
+      case (op)
+        riscv_pkg::BEQ,
+        riscv_pkg::BNE,
+        riscv_pkg::BLT,
+        riscv_pkg::BGE,
+        riscv_pkg::BLTU,
+        riscv_pkg::BGEU,
+        riscv_pkg::JALR,
+        riscv_pkg::CSRRW,
+        riscv_pkg::CSRRS,
+        riscv_pkg::CSRRC,
+        riscv_pkg::CSRRWI,
+        riscv_pkg::CSRRSI,
+        riscv_pkg::CSRRCI,
+        riscv_pkg::ECALL,
+        riscv_pkg::EBREAK:
+        int_rs_fast_path_eligible = 1'b0;
+        default: int_rs_fast_path_eligible = 1'b1;
       endcase
     end
   endfunction
@@ -259,6 +314,13 @@ module reservation_station #(
   logic stage2_src2_bypassed;
   logic stage2_src3_bypassed;
   logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
+  // Analogous flags/value for the 2nd CDB lane (ALU fast path). The producer
+  // holds i_cdb_2.valid=0 when EnableAluFastPath=0, so the bypass flags stay
+  // quiescent and stage2_cdb2_value never gets captured with meaningful data.
+  logic stage2_src1_bypassed_2;
+  logic stage2_src2_bypassed_2;
+  logic stage2_src3_bypassed_2;
+  logic [FLEN-1:0] stage2_cdb2_value;
 
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
@@ -284,6 +346,9 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
   logic [DEPTH-1:0] rs_writes_cdb_hint;
+  // Fast-path eligibility per entry. Only meaningful when ENABLE_ISSUE_2=1.
+  // Set at dispatch based on the dispatched op; stays '0 for non-INT RS.
+  logic [DEPTH-1:0] rs_fast_path_eligible;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
@@ -317,6 +382,13 @@ module reservation_station #(
   logic [$clog2(DEPTH)-1:0] issue_idx;
   logic any_ready;
   logic issue_fire;
+
+  // 2nd-port (fast-path) issue selection. Declared here so the payload RAM's
+  // 2nd read port can reference issue_idx_2.
+  logic [DEPTH-1:0] entry_ready_2;
+  logic [$clog2(DEPTH)-1:0] issue_idx_2;
+  logic any_ready_2;
+  logic issue_fire_2;
 
   // Dispatch condition (slot 0 and slot 1 for 2-wide dispatch)
   (* max_fanout = 32 *) logic dispatch_fire;
@@ -403,6 +475,28 @@ module reservation_station #(
       .i_read_address (issue_idx),
       .o_read_data    (payload_rd_data)
   );
+
+  // Second read port for the fast-path issue. Shared writes with the main
+  // payload RAM; distinct read address (issue_idx_2). When ENABLE_ISSUE_2=0
+  // the read data is unused and synth strips this bank.
+  logic [PayloadWidth-1:0] payload_rd_data_2;
+
+  if (ENABLE_ISSUE_2) begin : g_payload_ram_2
+    mwp_dist_ram #(
+        .ADDR_WIDTH($clog2(DEPTH)),
+        .DATA_WIDTH(PayloadWidth),
+        .NUM_WRITE_PORTS(2)
+    ) u_payload_ram_2 (
+        .i_clk,
+        .i_write_enable ({dispatch_fire_1, dispatch_fire}),
+        .i_write_address({slot1_alloc_idx, free_idx}),
+        .i_write_data   ({payload_wr_data_1, payload_wr_data}),
+        .i_read_address (issue_idx_2),
+        .o_read_data    (payload_rd_data_2)
+    );
+  end else begin : g_no_payload_ram_2
+    assign payload_rd_data_2 = '0;
+  end
 
   // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
   logic [                 31:0] pl_op_bits;
@@ -492,28 +586,52 @@ module reservation_station #(
   // and an entry's pending source tag matches, treat that source as ready
   // immediately (combinationally) rather than waiting for the next clock edge.
   // This reduces dependent chain latency by 1 cycle.
+  //
+  // Two snoop lanes: the main CDB (i_cdb) plus the ALU fast-path (i_cdb_2).
+  // The producer holds i_cdb_2.valid=0 when EnableAluFastPath=0, so synth
+  // collapses the 2nd lane when the fast path is gated off.
   logic [DEPTH-1:0] src1_cdb_bypass;
   logic [DEPTH-1:0] src2_cdb_bypass;
   logic [DEPTH-1:0] src3_cdb_bypass;
+  logic [DEPTH-1:0] src1_cdb2_bypass;
+  logic [DEPTH-1:0] src2_cdb2_bypass;
+  logic [DEPTH-1:0] src3_cdb2_bypass;
+  // Which lane to MUX the value from when the source is CDB-bypassed into
+  // stage1 issue. i_cdb_2 takes precedence only when it (and not i_cdb) is
+  // the matcher; on simultaneous matches of the same tag on both lanes the
+  // values are identical (same producer cannot broadcast to two tags) so the
+  // choice is benign — pick i_cdb for synthesis stability.
+  logic [DEPTH-1:0] src1_match_cdb2_only;
+  logic [DEPTH-1:0] src2_match_cdb2_only;
+  logic [DEPTH-1:0] src3_match_cdb2_only;
 
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
       src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
       src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+      src1_cdb2_bypass[i] = i_cdb_2.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb_2.tag;
+      src2_cdb2_bypass[i] = i_cdb_2.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb_2.tag;
+      src3_cdb2_bypass[i] = i_cdb_2.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb_2.tag;
+      src1_match_cdb2_only[i] = src1_cdb2_bypass[i] && !src1_cdb_bypass[i];
+      src2_match_cdb2_only[i] = src2_cdb2_bypass[i] && !src2_cdb_bypass[i];
+      src3_match_cdb2_only[i] = src3_cdb2_bypass[i] && !src3_cdb_bypass[i];
     end
   end
 
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i] && (rs_src1_ready[i] || src1_cdb_bypass[i])
+      entry_ready[i] =
+          rs_valid[i] &&
+          (rs_src1_ready[i] || src1_cdb_bypass[i] || src1_cdb2_bypass[i]) &&
       // Even when an instruction uses an immediate, issue still
       // requires src2 to be ready if the opcode actually has a
       // second source (for example stores: base+imm address and
       // rs2 store data). Dispatch marks truly-unused src2
       // operands ready, so a plain src2_ready check is correct.
-      && (rs_src2_ready[i] || src2_cdb_bypass[i]) && (rs_src3_ready[i] || src3_cdb_bypass[i]);
+      (rs_src2_ready[i] || src2_cdb_bypass[i] || src2_cdb2_bypass[i]) &&
+          (rs_src3_ready[i] || src3_cdb_bypass[i] || src3_cdb2_bypass[i]);
     end
   end
 
@@ -528,6 +646,34 @@ module reservation_station #(
       end
     end
   end
+
+  // --- 2nd issue selection (fast-path priority encoder) ---
+  // Picks the 2nd-lowest ready entry that is fast-path eligible and distinct
+  // from the 1st issue pick. When ENABLE_ISSUE_2=0 these signals collapse to
+  // constants and synth optimizes the logic away. (entry_ready_2 / issue_idx_2
+  // / any_ready_2 / issue_fire_2 declared in the Internal Signals section.)
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      entry_ready_2[i] = ENABLE_ISSUE_2 && entry_ready[i] && rs_fast_path_eligible[i] &&
+          ($clog2(DEPTH)'(i) != issue_idx);
+    end
+  end
+
+  always_comb begin
+    issue_idx_2 = '0;
+    any_ready_2 = 1'b0;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (entry_ready_2[i] && !any_ready_2) begin
+        issue_idx_2 = $clog2(DEPTH)'(i);
+        any_ready_2 = 1'b1;
+      end
+    end
+  end
+
+  // 2nd-port fire gated by the FU-2 ready signal (held at 0 when the gate is
+  // off) and by the same flush squash used for port 1.
+  assign issue_fire_2 = ENABLE_ISSUE_2 && any_ready_2 && i_fu_ready_2 &&
+                        !i_flush_all && !i_flush_en;
 
   // --- Head-wait diagnostic observation ---
   // Scan for an entry whose rob_tag matches the query tag. At most one entry
@@ -577,9 +723,15 @@ module reservation_station #(
       bypass_issue.valid = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
       bypass_issue.rob_tag = rs_rob_tag[issue_idx];
       bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
-      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
-      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
-      bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value : rs_src3_value[issue_idx];
+      bypass_issue.src1_value = src1_match_cdb2_only[issue_idx] ? i_cdb_2.value :
+                                src1_cdb_bypass[issue_idx]      ? i_cdb.value   :
+                                                                  rs_src1_value[issue_idx];
+      bypass_issue.src2_value = src2_match_cdb2_only[issue_idx] ? i_cdb_2.value :
+                                src2_cdb_bypass[issue_idx]      ? i_cdb.value   :
+                                                                  rs_src2_value[issue_idx];
+      bypass_issue.src3_value = src3_match_cdb2_only[issue_idx] ? i_cdb_2.value :
+                                src3_cdb_bypass[issue_idx]      ? i_cdb.value   :
+                                                                  rs_src3_value[issue_idx];
       bypass_issue.imm = pl_imm;
       bypass_issue.use_imm = rs_use_imm[issue_idx];
       bypass_issue.rm = pl_rm;
@@ -601,6 +753,70 @@ module reservation_station #(
       bypass_issue.is_return = pl_is_return;
       bypass_issue_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ?
                                       rs_writes_cdb_hint[issue_idx] : 1'b0;
+    end
+  end
+
+  // --- 2nd issue (fast-path) output construction ---
+  // Only the subset of payload fields relevant to plain INT ALU ops is unpacked
+  // here. The fast-path eligibility filter guarantees every entry picked by
+  // issue_idx_2 is an ALU-only op (no branch/jump/CSR/ECALL/EBREAK), so fields
+  // like branch_target / link_addr / csr_* are either unused by the ALU or
+  // architecturally zero and safe to drive as '0. When ENABLE_ISSUE_2=0 this
+  // output is held at '0 and synth collapses the rest.
+  logic [                 31:0] pl2_op_bits;
+  logic [             XLEN-1:0] pl2_imm;
+  logic [             XLEN-1:0] pl2_pc;
+  // Fields below are read only to avoid 'X propagation in simulation; they are
+  // not consumed by the ALU for fast-path-eligible ops.
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic [                  2:0] pl2_rm;
+  logic [             XLEN-1:0] pl2_branch_target;
+  logic                         pl2_predicted_taken;
+  logic [             XLEN-1:0] pl2_predicted_target;
+  logic                         pl2_is_fp_mem;
+  logic                         pl2_mem_needs_lq;
+  logic                         pl2_mem_needs_sq;
+  logic [                  1:0] pl2_mem_size_bits;
+  logic                         pl2_mem_signed;
+  logic [                 11:0] pl2_csr_addr;
+  logic [                  4:0] pl2_csr_imm;
+  logic [             XLEN-1:0] pl2_link_addr;
+  logic                         pl2_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] pl2_checkpoint_id;
+  logic                         pl2_is_call;
+  logic                         pl2_is_return;
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  assign {pl2_op_bits, pl2_imm, pl2_rm, pl2_branch_target, pl2_predicted_taken,
+          pl2_predicted_target, pl2_is_fp_mem, pl2_mem_needs_lq, pl2_mem_needs_sq,
+          pl2_mem_size_bits, pl2_mem_signed,
+          pl2_csr_addr, pl2_csr_imm, pl2_pc, pl2_link_addr,
+          pl2_has_checkpoint, pl2_checkpoint_id, pl2_is_call,
+          pl2_is_return} = payload_rd_data_2;
+
+  riscv_pkg::rs_issue_t bypass_issue_2;
+  logic                 bypass_issue_2_writes_cdb_hint;
+
+  always_comb begin
+    bypass_issue_2                 = '0;
+    bypass_issue_2_writes_cdb_hint = 1'b0;
+    if (ENABLE_ISSUE_2) begin
+      bypass_issue_2.valid = issue_fire_2;
+      bypass_issue_2.rob_tag = rs_rob_tag[issue_idx_2];
+      bypass_issue_2.op = riscv_pkg::instr_op_e'(pl2_op_bits);
+      bypass_issue_2.src1_value  = src1_match_cdb2_only[issue_idx_2] ? i_cdb_2.value :
+                                   src1_cdb_bypass[issue_idx_2]      ? i_cdb.value   :
+                                                                       rs_src1_value[issue_idx_2];
+      bypass_issue_2.src2_value  = src2_match_cdb2_only[issue_idx_2] ? i_cdb_2.value :
+                                   src2_cdb_bypass[issue_idx_2]      ? i_cdb.value   :
+                                                                       rs_src2_value[issue_idx_2];
+      // src3 is unused for fast-path-eligible ops (FMA only); leave 0 to save a MUX.
+      bypass_issue_2.imm = pl2_imm;
+      bypass_issue_2.use_imm = rs_use_imm[issue_idx_2];
+      bypass_issue_2.pc = pl2_pc;
+      // link_addr unused for fast-path ops (JAL/JALR excluded), leave '0.
+      bypass_issue_2_writes_cdb_hint = TRACK_INT_WRITEBACK_HINT ?
+                                       rs_writes_cdb_hint[issue_idx_2] : 1'b0;
     end
   end
 
@@ -640,12 +856,19 @@ module reservation_station #(
   assign o_issue.op = BYPASS_STAGE2 ? bypass_issue.op : stage2_op;
   // For CDB-bypassed sources, substitute the CDB value captured at issue
   // time.  All inputs are registered, so this MUX is off the critical path.
+  // Priority: main CDB bypass > fast-path bypass > stage2 FF value.
   assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
-                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
+                              : (stage2_src1_bypassed   ? stage2_cdb_value  :
+                                 stage2_src1_bypassed_2 ? stage2_cdb2_value :
+                                                          stage2_src1_value);
   assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
-                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
+                              : (stage2_src2_bypassed   ? stage2_cdb_value  :
+                                 stage2_src2_bypassed_2 ? stage2_cdb2_value :
+                                                          stage2_src2_value);
   assign o_issue.src3_value = BYPASS_STAGE2 ? bypass_issue.src3_value
-                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value);
+                              : (stage2_src3_bypassed   ? stage2_cdb_value  :
+                                 stage2_src3_bypassed_2 ? stage2_cdb2_value :
+                                                          stage2_src3_value);
   assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
   assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
   assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
@@ -672,6 +895,13 @@ module reservation_station #(
   assign o_issue_writes_cdb_hint = BYPASS_STAGE2 ? bypass_issue_writes_cdb_hint
                                                  : stage2_writes_cdb_hint;
 
+  // --- 2nd issue port output ---
+  // The fast-path port is combinational (BYPASS_STAGE2=1 required) and
+  // un-pipelined. When ENABLE_ISSUE_2=0 bypass_issue_2 is '0 and the output
+  // stays quiescent.
+  assign o_issue_2 = bypass_issue_2;
+  assign o_issue_2_writes_cdb_hint = bypass_issue_2_writes_cdb_hint;
+
   // --- Status outputs ---
   assign o_full = full;
   assign o_full_for_2 = full_for_2;
@@ -685,12 +915,13 @@ module reservation_station #(
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      rs_valid           <= '0;
-      rs_src1_ready      <= '0;
-      rs_src2_ready      <= '0;
-      rs_src3_ready      <= '0;
-      rs_use_imm         <= '0;
-      rs_writes_cdb_hint <= '0;
+      rs_valid              <= '0;
+      rs_src1_ready         <= '0;
+      rs_src2_ready         <= '0;
+      rs_src3_ready         <= '0;
+      rs_use_imm            <= '0;
+      rs_writes_cdb_hint    <= '0;
+      rs_fast_path_eligible <= '0;
     end else begin
 
       // Flush logic (highest priority for rs_valid)
@@ -707,19 +938,27 @@ module reservation_station #(
         end
       end else begin
         if (issue_fire) rs_valid[issue_idx] <= 1'b0;
+        // 2nd (fast-path) issue clear. issue_fire_2 is 0 when ENABLE_ISSUE_2=0
+        // or when the fast-path FU-ready is held low by the gate.
+        if (issue_fire_2) rs_valid[issue_idx_2] <= 1'b0;
 
         if (dispatch_fire) begin
           rs_valid[free_idx] <= 1'b1;
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
+          if (ENABLE_ISSUE_2)
+            rs_fast_path_eligible[free_idx] <= int_rs_fast_path_eligible(dispatch_op);
 
-          // Source ready bits (dispatch + CDB bypass)
+          // Source ready bits (dispatch + CDB bypass, either lane).
           rs_src1_ready[free_idx] <= dispatch_src1_ready ||
-              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag);
+              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
+              (!dispatch_src1_ready && i_cdb_2.valid && dispatch_src1_tag == i_cdb_2.tag);
           rs_src2_ready[free_idx] <= dispatch_src2_ready ||
-              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag);
+              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
+              (!dispatch_src2_ready && i_cdb_2.valid && dispatch_src2_tag == i_cdb_2.tag);
           rs_src3_ready[free_idx] <= dispatch_src3_ready ||
-              (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag);
+              (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
+              (!dispatch_src3_ready && i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag);
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
 
@@ -731,25 +970,38 @@ module reservation_station #(
           rs_valid[slot1_alloc_idx] <= 1'b1;
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[slot1_alloc_idx] <= int_rs_writes_cdb(dispatch_op_1);
+          if (ENABLE_ISSUE_2)
+            rs_fast_path_eligible[slot1_alloc_idx] <= int_rs_fast_path_eligible(dispatch_op_1);
 
           rs_src1_ready[slot1_alloc_idx] <= dispatch_src1_ready_1 ||
-              (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag);
+              (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag) ||
+              (!dispatch_src1_ready_1 && i_cdb_2.valid && dispatch_src1_tag_1 == i_cdb_2.tag);
           rs_src2_ready[slot1_alloc_idx] <= dispatch_src2_ready_1 ||
-              (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag);
+              (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag) ||
+              (!dispatch_src2_ready_1 && i_cdb_2.valid && dispatch_src2_tag_1 == i_cdb_2.tag);
           rs_src3_ready[slot1_alloc_idx] <= dispatch_src3_ready_1 ||
-              (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag);
+              (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag) ||
+              (!dispatch_src3_ready_1 && i_cdb_2.valid && dispatch_src3_tag_1 == i_cdb_2.tag);
           rs_use_imm[slot1_alloc_idx] <= dispatch_use_imm_1;
         end
       end
 
-      // CDB snoop wakeup (control: ready bits only)
-      if (i_cdb.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (rs_valid[i]) begin
-            if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_ready[i] <= 1'b1;
-            if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_ready[i] <= 1'b1;
-            if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_ready[i] <= 1'b1;
-          end
+      // CDB snoop wakeup (control: ready bits only). Both lanes wake ready
+      // bits; the data-snoop block below mirrors this for source values.
+      for (int i = 0; i < DEPTH; i++) begin
+        if (rs_valid[i]) begin
+          if (!rs_src1_ready[i] &&
+              ((i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) ||
+               (i_cdb_2.valid && rs_src1_tag[i] == i_cdb_2.tag)))
+            rs_src1_ready[i] <= 1'b1;
+          if (!rs_src2_ready[i] &&
+              ((i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) ||
+               (i_cdb_2.valid && rs_src2_tag[i] == i_cdb_2.tag)))
+            rs_src2_ready[i] <= 1'b1;
+          if (!rs_src3_ready[i] &&
+              ((i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) ||
+               (i_cdb_2.valid && rs_src3_tag[i] == i_cdb_2.tag)))
+            rs_src3_ready[i] <= 1'b1;
         end
       end
 
@@ -758,7 +1010,9 @@ module reservation_station #(
 
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
-    // Dispatch: capture tags and values at free index
+    // Dispatch: capture tags and values at free index. On a same-cycle CDB
+    // bypass, prefer i_cdb over i_cdb_2 when both match (values identical for
+    // the same tag, so the priority is benign); fall through to dispatch value.
     if (dispatch_fire) begin
       rs_rob_tag[free_idx]  <= dispatch_rob_tag;
 
@@ -766,18 +1020,24 @@ module reservation_station #(
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
       if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag)
         rs_src1_value[free_idx] <= i_cdb.value;
+      else if (!dispatch_src1_ready && i_cdb_2.valid && dispatch_src1_tag == i_cdb_2.tag)
+        rs_src1_value[free_idx] <= i_cdb_2.value;
       else rs_src1_value[free_idx] <= dispatch_src1_value;
 
       // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
       if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag)
         rs_src2_value[free_idx] <= i_cdb.value;
+      else if (!dispatch_src2_ready && i_cdb_2.valid && dispatch_src2_tag == i_cdb_2.tag)
+        rs_src2_value[free_idx] <= i_cdb_2.value;
       else rs_src2_value[free_idx] <= dispatch_src2_value;
 
       // Source 3
       rs_src3_tag[free_idx] <= dispatch_src3_tag;
       if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
         rs_src3_value[free_idx] <= i_cdb.value;
+      else if (!dispatch_src3_ready && i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag)
+        rs_src3_value[free_idx] <= i_cdb_2.value;
       else rs_src3_value[free_idx] <= dispatch_src3_value;
     end
 
@@ -788,27 +1048,41 @@ module reservation_station #(
       rs_src1_tag[slot1_alloc_idx] <= dispatch_src1_tag_1;
       if (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag)
         rs_src1_value[slot1_alloc_idx] <= i_cdb.value;
+      else if (!dispatch_src1_ready_1 && i_cdb_2.valid && dispatch_src1_tag_1 == i_cdb_2.tag)
+        rs_src1_value[slot1_alloc_idx] <= i_cdb_2.value;
       else rs_src1_value[slot1_alloc_idx] <= dispatch_src1_value_1;
 
       rs_src2_tag[slot1_alloc_idx] <= dispatch_src2_tag_1;
       if (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag)
         rs_src2_value[slot1_alloc_idx] <= i_cdb.value;
+      else if (!dispatch_src2_ready_1 && i_cdb_2.valid && dispatch_src2_tag_1 == i_cdb_2.tag)
+        rs_src2_value[slot1_alloc_idx] <= i_cdb_2.value;
       else rs_src2_value[slot1_alloc_idx] <= dispatch_src2_value_1;
 
       rs_src3_tag[slot1_alloc_idx] <= dispatch_src3_tag_1;
       if (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag)
         rs_src3_value[slot1_alloc_idx] <= i_cdb.value;
+      else if (!dispatch_src3_ready_1 && i_cdb_2.valid && dispatch_src3_tag_1 == i_cdb_2.tag)
+        rs_src3_value[slot1_alloc_idx] <= i_cdb_2.value;
       else rs_src3_value[slot1_alloc_idx] <= dispatch_src3_value_1;
     end
 
-    // CDB snoop wakeup (data: capture values)
-    if (i_cdb.valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (rs_valid[i]) begin
-          if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_value[i] <= i_cdb.value;
-          if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_value[i] <= i_cdb.value;
-          if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_value[i] <= i_cdb.value;
-        end
+    // CDB snoop wakeup (data: capture values). Writes from either lane; on
+    // simultaneous same-tag match the main lane wins (same value anyway).
+    for (int i = 0; i < DEPTH; i++) begin
+      if (rs_valid[i]) begin
+        if (!rs_src1_ready[i] && i_cdb.valid && rs_src1_tag[i] == i_cdb.tag)
+          rs_src1_value[i] <= i_cdb.value;
+        else if (!rs_src1_ready[i] && i_cdb_2.valid && rs_src1_tag[i] == i_cdb_2.tag)
+          rs_src1_value[i] <= i_cdb_2.value;
+        if (!rs_src2_ready[i] && i_cdb.valid && rs_src2_tag[i] == i_cdb.tag)
+          rs_src2_value[i] <= i_cdb.value;
+        else if (!rs_src2_ready[i] && i_cdb_2.valid && rs_src2_tag[i] == i_cdb_2.tag)
+          rs_src2_value[i] <= i_cdb_2.value;
+        if (!rs_src3_ready[i] && i_cdb.valid && rs_src3_tag[i] == i_cdb.tag)
+          rs_src3_value[i] <= i_cdb.value;
+        else if (!rs_src3_ready[i] && i_cdb_2.valid && rs_src3_tag[i] == i_cdb_2.tag)
+          rs_src3_value[i] <= i_cdb_2.value;
       end
     end
   end
@@ -844,6 +1118,13 @@ module reservation_station #(
       stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
       stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
       stage2_cdb_value <= i_cdb.value;
+      // 2nd-lane bypass capture: when only i_cdb_2 matches the source, route
+      // i_cdb_2.value through stage2_cdb2_value and flag src*_bypassed_2 for
+      // the output MUX. Held at 0 when i_cdb_2.valid=0.
+      stage2_src1_bypassed_2 <= src1_match_cdb2_only[issue_idx];
+      stage2_src2_bypassed_2 <= src2_match_cdb2_only[issue_idx];
+      stage2_src3_bypassed_2 <= src3_match_cdb2_only[issue_idx];
+      stage2_cdb2_value <= i_cdb_2.value;
       stage2_imm <= pl_imm;
       stage2_use_imm <= rs_use_imm[issue_idx];
       stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;

@@ -82,6 +82,16 @@ module reorder_buffer (
     // For non-branch results (ALU, MUL, DIV, MEM, FP)
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
 
+    // Dedicated CDB write for the ALU fast path (2nd ALU). Writes the same
+    // set of ROB fields (rob_done, value, exception, exc_cause, fp_flags) at
+    // its own tag, in parallel with i_cdb_write. By construction the two
+    // ports never target the same tag on the same cycle: each tag is owned
+    // by a single FU instance and the 1st/2nd ALU pick distinct ready entries.
+    // Held at valid=0 when EnableAluFastPath=0.
+    /* verilator lint_off UNUSEDSIGNAL */
+    input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_fast_path,
+    /* verilator lint_on UNUSEDSIGNAL */
+
     // Direct non-CDB completion for plain stores. Stores do not need wakeup or
     // a CDB value broadcast; the ROB only needs to know the entry is done.
     input logic                                        i_store_complete_valid,
@@ -576,6 +586,12 @@ module reorder_buffer (
   logic head_cdb_bypass;
   logic head_next_cdb_match;
   logic head_next_cdb_bypass;
+  // Fast-path companions: the 2nd ALU can complete the head or head+1 tag
+  // just like the main CDB. Held at 0 when gate=0.
+  logic head_fp_match;
+  logic head_fp_bypass;
+  logic head_next_fp_match;
+  logic head_next_fp_bypass;
 
   assign head_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_idx);
   assign head_cdb_bypass = head_cdb_match && !i_cdb_write.exception &&
@@ -588,21 +604,42 @@ module reorder_buffer (
   // exclusion to cover the trap path.
   assign head_next_cdb_bypass = head_next_cdb_match && !i_cdb_write.exception;
 
+  assign head_fp_match = i_cdb_fast_path.valid && (i_cdb_fast_path.tag == head_idx);
+  // Fast-path-eligible ops exclude branches/CSR/fence/WFI/MRET by the RS
+  // filter, so we only need the exception guard here to mirror the main
+  // bypass.  Held at 0 when gate=0 (valid=0).
+  assign head_fp_bypass = head_fp_match && !i_cdb_fast_path.exception &&
+      !head_is_branch && !head_is_csr && !head_is_fence && !head_is_fence_i &&
+      !head_is_wfi && !head_is_mret;
+
+  assign head_next_fp_match = i_cdb_fast_path.valid && (i_cdb_fast_path.tag == head_next_idx);
+  assign head_next_fp_bypass = head_next_fp_match && !i_cdb_fast_path.exception;
+
   logic head_done_eff;
   logic head_next_done_eff;
-  assign head_done_eff = head_done || head_cdb_bypass;
-  assign head_next_done_eff = head_next_done || head_next_cdb_bypass;
+  assign head_done_eff = head_done || head_cdb_bypass || head_fp_bypass;
+  assign head_next_done_eff = head_next_done || head_next_cdb_bypass || head_next_fp_bypass;
 
   // Value / fp_flags forwarding only applies to the CDB bypass (stores don't
-  // write these fields).
+  // write these fields).  Priority: main CDB > fast-path > FF-backed — values
+  // are identical for the same tag (each tag is owned by one FU) so the
+  // choice is benign.
   logic [FLEN-1:0] head_value_eff;
   riscv_pkg::fp_flags_t head_fp_flags_eff;
   logic [FLEN-1:0] head_next_value_eff;
   riscv_pkg::fp_flags_t head_next_fp_flags_eff;
-  assign head_value_eff = head_cdb_bypass ? i_cdb_write.value : head_value;
-  assign head_fp_flags_eff = head_cdb_bypass ? i_cdb_write.fp_flags : head_fp_flags;
-  assign head_next_value_eff = head_next_cdb_bypass ? i_cdb_write.value : head_next_value;
-  assign head_next_fp_flags_eff = head_next_cdb_bypass ? i_cdb_write.fp_flags : head_next_fp_flags;
+  assign head_value_eff = head_cdb_bypass ? i_cdb_write.value :
+                          head_fp_bypass  ? i_cdb_fast_path.value :
+                                            head_value;
+  assign head_fp_flags_eff = head_cdb_bypass ? i_cdb_write.fp_flags :
+                             head_fp_bypass  ? i_cdb_fast_path.fp_flags :
+                                               head_fp_flags;
+  assign head_next_value_eff = head_next_cdb_bypass ? i_cdb_write.value :
+                               head_next_fp_bypass  ? i_cdb_fast_path.value :
+                                                      head_next_value;
+  assign head_next_fp_flags_eff = head_next_cdb_bypass ? i_cdb_write.fp_flags :
+                                  head_next_fp_bypass  ? i_cdb_fast_path.fp_flags :
+                                                         head_next_fp_flags;
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done_eff;
@@ -649,6 +686,14 @@ module reorder_buffer (
   logic cdb_state_wr_en;
   assign cdb_ram_wr_en   = i_cdb_write.valid && !i_flush_all;
   assign cdb_state_wr_en = cdb_ram_wr_en && rob_valid[i_cdb_write.tag];
+
+  // ALU fast-path CDB write (2nd ALU). Same semantics as cdb_*_wr_en above.
+  // Held at valid=0 by the producer when EnableAluFastPath=0, so synth
+  // collapses the extra RAM write port and the FF mux on rob_done.
+  logic cdb_fp_ram_wr_en;
+  logic cdb_fp_state_wr_en;
+  assign cdb_fp_ram_wr_en   = i_cdb_fast_path.valid && !i_flush_all;
+  assign cdb_fp_state_wr_en = cdb_fp_ram_wr_en && rob_valid[i_cdb_fast_path.tag];
 
   logic branch_wr_en;
   assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
@@ -907,79 +952,91 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_head (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_value)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(head_idx),
+      .o_read_data(head_value)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_head_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_value)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_value)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_rat (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_read_tag),
-      .o_read_data    (o_read_value)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_read_tag),
+      .o_read_data(o_read_value)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_bypass_tag_1),
-      .o_read_data    (o_bypass_value_1)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_bypass_tag_1),
+      .o_read_data(o_bypass_value_1)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_bypass_tag_2),
-      .o_read_data    (o_bypass_value_2)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_bypass_tag_2),
+      .o_read_data(o_bypass_value_2)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_bypass_tag_3),
-      .o_read_data    (o_bypass_value_3)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_bypass_tag_3),
+      .o_read_data(o_bypass_value_3)
   );
 
   // Slot-1 dispatch bypass reads: src1/src2 done-entry values for the
@@ -988,120 +1045,138 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_4 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_bypass_tag_4),
-      .o_read_data    (o_bypass_value_4)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_bypass_tag_4),
+      .o_read_data(o_bypass_value_4)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_5 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_bypass_tag_5),
-      .o_read_data    (o_bypass_value_5)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_bypass_tag_5),
+      .o_read_data(o_bypass_value_5)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_1),
-      .o_read_data    (o_fmul_pending_bypass_value_1)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_fmul_pending_bypass_tag_1),
+      .o_read_data(o_fmul_pending_bypass_value_1)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_2),
-      .o_read_data    (o_fmul_pending_bypass_value_2)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_fmul_pending_bypass_tag_2),
+      .o_read_data(o_fmul_pending_bypass_value_2)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_1, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_3),
-      .o_read_data    (o_fmul_pending_bypass_value_3)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.value, i_cdb_write.value, alloc_value_data_1, alloc_value_data
+      }),
+      .i_read_address(i_fmul_pending_bypass_tag_3),
+      .o_read_data(o_fmul_pending_bypass_value_3)
   );
 
   // rob_exc_cause: 3 write ports (slot-0 alloc, slot-1 alloc, CDB), read (head)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_exc_cause)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+      }),
+      .i_read_address(head_idx),
+      .o_read_data(head_exc_cause)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_exc_cause)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+      }),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_exc_cause)
   );
 
   // rob_fp_flags: 3 write ports (slot-0 alloc '0, slot-1 alloc '0, CDB)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_fp_flags)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+      }),
+      .i_read_address(head_idx),
+      .o_read_data(head_fp_flags)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_1, alloc_en}),
-      .i_write_address({i_cdb_write.tag, slot1_tail_idx, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_fp_flags)
+      .i_write_enable({cdb_fp_ram_wr_en, cdb_ram_wr_en, alloc_en_1, alloc_en}),
+      .i_write_address({i_cdb_fast_path.tag, i_cdb_write.tag, slot1_tail_idx, tail_idx}),
+      .i_write_data({
+        i_cdb_fast_path.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+      }),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_fp_flags)
   );
 
   // Branch target storage only needs one writer per producer class:
@@ -1350,6 +1425,15 @@ module reorder_buffer (
       if (cdb_state_wr_en) begin
         rob_done[i_cdb_write.tag]      <= 1'b1;
         rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
+      end
+
+      // ---------------------------------------------------------------------
+      // ALU fast-path CDB write (2nd ALU).  Different tag from i_cdb_write
+      // by construction; no conflict.  Held at valid=0 when gate=0.
+      // ---------------------------------------------------------------------
+      if (cdb_fp_state_wr_en) begin
+        rob_done[i_cdb_fast_path.tag]      <= 1'b1;
+        rob_exception[i_cdb_fast_path.tag] <= i_cdb_fast_path.exception;
       end
 
       // ---------------------------------------------------------------------
