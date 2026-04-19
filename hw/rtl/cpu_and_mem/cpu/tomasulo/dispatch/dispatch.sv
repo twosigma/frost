@@ -1114,16 +1114,15 @@ module dispatch (
   // (i_int_src*_2), which already include the intra-pair RAW bypass
   // from the RAT.  Non-renamed slot-1 sources currently return '0 for
   // value (the INT regfile is still 2-port); this is incorrect, but
-  // slot-1 never actually fires in this commit because the scaffolding
-  // disable below forces its valid bit to 0.  The gate-flip commit
-  // widens the regfile and releases the disable.
+  // slot-1 never actually fires when the scaffolding disable below is
+  // asserted; flipping it releases slot-1 dispatch end-to-end.
   //
-  // Scaffolding disable: RE-ASSERTED after a gate-release run hung the
-  // core (head_done never rose past rob_count=28, ~1500 instructions
-  // retired before the stall).  Storage widenings are in place but a
-  // slot-1 path bug causes a functional hang — debugging needed before
-  // flipping this again.
-  localparam logic SlotOneScaffoldingDisable = 1'b1;
+  // The prior gate-release hang (post-CoreMark uart_printf prologue: head
+  // store waiting on a CDB broadcast of a tag whose ROB entry had been
+  // reallocated to a later store) was traced to stale RAT entries and
+  // fixed in register_alias_table.sv via an allocation-time stale-tag
+  // scrub.  Both CoreMark runs now pass at gate=0.
+  localparam logic SlotOneScaffoldingDisable = 1'b0;
 
   // Slot-1 decoded-op aliases.
   riscv_pkg::instr_op_e op_2;

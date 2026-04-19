@@ -1154,7 +1154,7 @@ module if_stage #(
   // 1'b0, slot-1 fires and PC advances by slot-1's actual length (+2 or +4).
   // Keeping the IF signal separate from the emit-to-downstream path preserves
   // scaffolding neutrality with the gate asserted.
-  localparam logic SlotOneScaffoldingDisable = 1'b1;
+  localparam logic SlotOneScaffoldingDisable = 1'b0;
   assign slot1_pc_advance = (slot1_emit && !SlotOneScaffoldingDisable) ? slot1_pc_increment : '0;
 
   always_comb begin

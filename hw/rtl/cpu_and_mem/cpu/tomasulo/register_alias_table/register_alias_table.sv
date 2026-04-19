@@ -209,12 +209,14 @@ module register_alias_table (
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
   // ===========================================================================
 
-  // INT RAT: separate valid and tag arrays
+  // INT RAT: separate valid / alloc-epoch / tag arrays.
   logic [           NumIntRegs-1:0] int_rat_valid;
+  logic [           NumIntRegs-1:0] int_rat_epoch;
   logic [ReorderBufferTagWidth-1:0] int_rat_tag   [NumIntRegs];
 
-  // FP RAT: separate valid and tag arrays
+  // FP RAT: separate valid / alloc-epoch / tag arrays.
   logic [            NumFpRegs-1:0] fp_rat_valid;
+  logic [            NumFpRegs-1:0] fp_rat_epoch;
   logic [ReorderBufferTagWidth-1:0] fp_rat_tag    [ NumFpRegs];
 
 `ifndef SYNTHESIS
@@ -302,12 +304,12 @@ module register_alias_table (
   always_comb begin
     for (int i = 0; i < NumIntRegs; i++) begin
       ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {
-        int_rat_valid[i], i_rob_entry_epoch[int_rat_tag[i]], int_rat_tag[i]
+        int_rat_valid[i], int_rat_epoch[i], int_rat_tag[i]
       };
     end
     for (int i = 0; i < NumFpRegs; i++) begin
       ckpt_rat_wr_data[IntRatSnapshotWidth+i*RatEntryWidth+:RatEntryWidth] = {
-        fp_rat_valid[i], i_rob_entry_epoch[fp_rat_tag[i]], fp_rat_tag[i]
+        fp_rat_valid[i], fp_rat_epoch[i], fp_rat_tag[i]
       };
     end
   end
@@ -401,7 +403,9 @@ module register_alias_table (
       // x0 hardwired to zero
       o_int_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
     end else if (int_rat_valid[i_int_src1_addr] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr]]) begin
+                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr]] &&
+                 (int_rat_epoch[i_int_src1_addr] ==
+                  i_rob_entry_epoch[int_rat_tag[i_int_src1_addr]])) begin
       // Renamed to an in-flight ROB entry. Dispatch resolves done-entry
       // bypass uniformly for INT and FP sources.
       o_int_src1 = {
@@ -419,7 +423,9 @@ module register_alias_table (
     if (i_int_src2_addr == '0) begin
       o_int_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
     end else if (int_rat_valid[i_int_src2_addr] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr]]) begin
+                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr]] &&
+                 (int_rat_epoch[i_int_src2_addr] ==
+                  i_rob_entry_epoch[int_rat_tag[i_int_src2_addr]])) begin
       o_int_src2 = {
         1'b1, int_rat_tag[i_int_src2_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
       };
@@ -455,7 +461,9 @@ module register_alias_table (
     end else if (slot0_int_alloc_match_src1_2) begin
       o_int_src1_2 = {1'b1, i_alloc_rob_tag, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}};
     end else if (int_rat_valid[i_int_src1_addr_2] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr_2]]) begin
+                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr_2]] &&
+                 (int_rat_epoch[i_int_src1_addr_2] ==
+                  i_rob_entry_epoch[int_rat_tag[i_int_src1_addr_2]])) begin
       o_int_src1_2 = {
         1'b1, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
       };
@@ -477,7 +485,9 @@ module register_alias_table (
     end else if (slot0_int_alloc_match_src2_2) begin
       o_int_src2_2 = {1'b1, i_alloc_rob_tag, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}};
     end else if (int_rat_valid[i_int_src2_addr_2] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr_2]]) begin
+                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr_2]] &&
+                 (int_rat_epoch[i_int_src2_addr_2] ==
+                  i_rob_entry_epoch[int_rat_tag[i_int_src2_addr_2]])) begin
       o_int_src2_2 = {
         1'b1, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
       };
@@ -490,7 +500,9 @@ module register_alias_table (
 
   // FP source 1
   always_comb begin
-    if (fp_rat_valid[i_fp_src1_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr]]) begin
+    if (fp_rat_valid[i_fp_src1_addr] &&
+        i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr]] &&
+        (fp_rat_epoch[i_fp_src1_addr] == i_rob_entry_epoch[fp_rat_tag[i_fp_src1_addr]])) begin
       o_fp_src1 = {1'b1, fp_rat_tag[i_fp_src1_addr], i_fp_regfile_data1};
     end else begin
       o_fp_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data1};
@@ -499,7 +511,9 @@ module register_alias_table (
 
   // FP source 2
   always_comb begin
-    if (fp_rat_valid[i_fp_src2_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr]]) begin
+    if (fp_rat_valid[i_fp_src2_addr] &&
+        i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr]] &&
+        (fp_rat_epoch[i_fp_src2_addr] == i_rob_entry_epoch[fp_rat_tag[i_fp_src2_addr]])) begin
       o_fp_src2 = {1'b1, fp_rat_tag[i_fp_src2_addr], i_fp_regfile_data2};
     end else begin
       o_fp_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data2};
@@ -508,7 +522,9 @@ module register_alias_table (
 
   // FP source 3 (for FMA)
   always_comb begin
-    if (fp_rat_valid[i_fp_src3_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr]]) begin
+    if (fp_rat_valid[i_fp_src3_addr] &&
+        i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr]] &&
+        (fp_rat_epoch[i_fp_src3_addr] == i_rob_entry_epoch[fp_rat_tag[i_fp_src3_addr]])) begin
       o_fp_src3 = {1'b1, fp_rat_tag[i_fp_src3_addr], i_fp_regfile_data3};
     end else begin
       o_fp_src3 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3};
@@ -523,7 +539,9 @@ module register_alias_table (
     if (!i_rst_n) begin
       // Reset: all entries not renamed
       int_rat_valid <= '0;
+      int_rat_epoch <= '0;
       fp_rat_valid  <= '0;
+      fp_rat_epoch  <= '0;
     end else if (i_checkpoint_restore) begin
       // Checkpoint restore takes priority over flush_all: needed when early
       // misprediction recovery sets flush_all (for flush_after_head_commit)
@@ -536,12 +554,14 @@ module register_alias_table (
         int_rat_valid[i] <= restored_int_valid[i] && restored_tag_still_live(
             restored_int_tag[i], restored_int_epoch[i]
         );
+        int_rat_epoch[i] <= restored_int_epoch[i];
         int_rat_tag[i] <= restored_int_tag[i];
       end
       for (int i = 0; i < NumFpRegs; i++) begin
         fp_rat_valid[i] <= restored_fp_valid[i] && restored_tag_still_live(
             restored_fp_tag[i], restored_fp_epoch[i]
         );
+        fp_rat_epoch[i] <= restored_fp_epoch[i];
         fp_rat_tag[i] <= restored_fp_tag[i];
       end
     end else if (i_flush_all) begin
@@ -600,11 +620,13 @@ module register_alias_table (
           // INT rename (x0 writes are ignored)
           if (i_alloc_dest_reg != '0) begin
             int_rat_valid[i_alloc_dest_reg] <= 1'b1;
+            int_rat_epoch[i_alloc_dest_reg] <= ~i_rob_entry_epoch[i_alloc_rob_tag];
             int_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
           end
         end else begin
           // FP rename
           fp_rat_valid[i_alloc_dest_reg] <= 1'b1;
+          fp_rat_epoch[i_alloc_dest_reg] <= ~i_rob_entry_epoch[i_alloc_rob_tag];
           fp_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
         end
       end
@@ -621,10 +643,12 @@ module register_alias_table (
         if (!i_alloc_dest_rf_2) begin
           if (i_alloc_dest_reg_2 != '0) begin
             int_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+            int_rat_epoch[i_alloc_dest_reg_2] <= ~i_rob_entry_epoch[i_alloc_rob_tag_2];
             int_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
           end
         end else begin
           fp_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+          fp_rat_epoch[i_alloc_dest_reg_2] <= ~i_rob_entry_epoch[i_alloc_rob_tag_2];
           fp_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
         end
       end
