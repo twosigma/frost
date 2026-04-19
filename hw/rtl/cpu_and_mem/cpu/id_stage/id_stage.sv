@@ -112,6 +112,16 @@ module id_stage #(
 
   assign instruction = i_from_pd_to_id.instruction;
 
+  // Slot-0 architectural NOPs still consume fetch bandwidth and advance the
+  // PC, but they must not suppress a useful slot-1 instruction. When slot-0
+  // is a real NOP and slot-1 is populated, collapse slot-1 into slot-0 so
+  // the backend's single-slot valid tracking still sees the real instruction.
+  logic collapse_slot1_to_slot0;
+  assign collapse_slot1_to_slot0 =
+      !i_pipeline_ctrl.flush &&
+      (instruction == riscv_pkg::NOP) &&
+      (i_from_pd_to_id_2.instruction != riscv_pkg::NOP);
+
   // ===========================================================================
   // Submodule Instantiations
   // ===========================================================================
@@ -409,101 +419,172 @@ module id_stage #(
       o_from_id_to_ex.fp_source_reg_2_data         <= '0;
       o_from_id_to_ex.fp_source_reg_3_data         <= '0;
     end else if (~i_pipeline_ctrl.stall) begin
-      // When pipeline is not stalled, pass decoded instruction to Execute stage
-      // If flushing (e.g., due to branch), insert NOP instead
-      o_from_id_to_ex.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
-      o_from_id_to_ex.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
-                                                                       instruction_operation;
-      o_from_id_to_ex.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
-      // Determine load size and sign extension - use direct decode for timing
-      o_from_id_to_ex.is_load_byte <= i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct;
-      o_from_id_to_ex.is_load_halfword <= i_pipeline_ctrl.flush ? 1'b0 : is_load_halfword_direct;
-      o_from_id_to_ex.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
-      // Check if this is a multiply operation (M extension) - use direct decode
-      o_from_id_to_ex.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct;
-      // Check if this is a divide/remainder operation (M extension) - use direct decode
-      o_from_id_to_ex.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct;
-      o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
-      o_from_id_to_ex.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
-                                                                  branch_operation;
-      o_from_id_to_ex.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
-      o_from_id_to_ex.is_jump_and_link <= i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
-      o_from_id_to_ex.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
-      // CSR instruction fields (Zicsr extension)
-      o_from_id_to_ex.is_csr_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
-      o_from_id_to_ex.csr_address <= csr_address;
-      o_from_id_to_ex.csr_imm <= csr_imm;
-      // A extension (atomics)
-      o_from_id_to_ex.is_amo_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
-      o_from_id_to_ex.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr;
-      o_from_id_to_ex.is_sc <= i_pipeline_ctrl.flush ? 1'b0 : is_sc;
-      // Privileged instructions (trap handling)
-      o_from_id_to_ex.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : is_mret;
-      o_from_id_to_ex.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
-      o_from_id_to_ex.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
-      o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
-      o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
-                                                is_illegal_instruction;
-      // Pre-computed link address from IF stage
-      o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
-      // Pre-computed branch/jump targets (computed here, used by EX stage)
-      o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
-      o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
-      // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
-      o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              effective_btb_predicted_taken;
-      o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
-      // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
-      o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
-      o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
-      // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
-      // These remove comparisons from the EX stage critical path
-      o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
-      o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
-      // Pre-computed expected rs1 for RAS verification (removes JALR adder from critical path)
-      o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
-      // TIMING OPTIMIZATION: Pre-computed BTB verification
-      // For non-JALR: target comparison done in ID stage (no forwarding dependency)
-      // For JALR: use btb_expected_rs1 in EX stage (same algebraic transformation as RAS)
-      o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              btb_correct_non_jalr_precomputed;
-      o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
-      // F extension - clear on flush
-      o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
-      o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
-      o_from_id_to_ex.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
-      o_from_id_to_ex.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_double_direct;
-      o_from_id_to_ex.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
-                                            is_fp_store_double_direct;
-      o_from_id_to_ex.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
-                                       (is_fp_compute_direct | is_fp_fma_direct);
-      o_from_id_to_ex.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :
-                                            is_pipelined_fp_op_direct;
-      o_from_id_to_ex.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct;
-      o_from_id_to_ex.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct;
-      o_from_id_to_ex.fp_rm <= fp_rm_direct;
+      if (collapse_slot1_to_slot0) begin
+        o_from_id_to_ex.instruction                  <= instruction_2;
+        o_from_id_to_ex.instruction_operation        <= instruction_operation_2;
+        o_from_id_to_ex.is_load_instruction          <= is_load_instruction_2;
+        o_from_id_to_ex.is_load_byte                 <= is_load_byte_direct_2;
+        o_from_id_to_ex.is_load_halfword             <= is_load_halfword_direct_2;
+        o_from_id_to_ex.is_load_unsigned             <= is_load_unsigned_direct_2;
+        o_from_id_to_ex.is_multiply                  <= is_multiply_direct_2;
+        o_from_id_to_ex.is_divide                    <= is_divide_direct_2;
+        o_from_id_to_ex.program_counter              <= i_from_pd_to_id_2.program_counter;
+        o_from_id_to_ex.branch_operation             <= branch_operation_2;
+        o_from_id_to_ex.store_operation              <= store_operation_2;
+        o_from_id_to_ex.is_jump_and_link             <= is_jal_direct_2;
+        o_from_id_to_ex.is_jump_and_link_register    <= is_jalr_direct_2;
+        o_from_id_to_ex.is_csr_instruction           <= is_csr_instruction_2;
+        o_from_id_to_ex.csr_address                  <= csr_address_2;
+        o_from_id_to_ex.csr_imm                      <= csr_imm_2;
+        o_from_id_to_ex.is_amo_instruction           <= is_amo_instruction_2;
+        o_from_id_to_ex.is_lr                        <= is_lr_2;
+        o_from_id_to_ex.is_sc                        <= is_sc_2;
+        o_from_id_to_ex.is_mret                      <= is_mret_2;
+        o_from_id_to_ex.is_wfi                       <= is_wfi_2;
+        o_from_id_to_ex.is_ecall                     <= is_ecall_2;
+        o_from_id_to_ex.is_ebreak                    <= is_ebreak_2;
+        o_from_id_to_ex.is_illegal_instruction       <= is_illegal_instruction_2;
+        o_from_id_to_ex.link_address                 <= i_from_pd_to_id_2.link_address;
+        o_from_id_to_ex.branch_target_precomputed    <= '0;
+        o_from_id_to_ex.jal_target_precomputed       <= '0;
+        o_from_id_to_ex.btb_hit                      <= 1'b0;
+        o_from_id_to_ex.btb_predicted_taken          <= 1'b0;
+        o_from_id_to_ex.btb_predicted_target         <= '0;
+        o_from_id_to_ex.ras_predicted                <= 1'b0;
+        o_from_id_to_ex.ras_predicted_target         <= '0;
+        o_from_id_to_ex.ras_checkpoint_tos           <= '0;
+        o_from_id_to_ex.ras_checkpoint_valid_count   <= '0;
+        o_from_id_to_ex.is_ras_return                <= 1'b0;
+        o_from_id_to_ex.is_ras_call                  <= 1'b0;
+        o_from_id_to_ex.ras_predicted_target_nonzero <= 1'b0;
+        o_from_id_to_ex.ras_expected_rs1             <= '0;
+        o_from_id_to_ex.btb_correct_non_jalr         <= 1'b0;
+        o_from_id_to_ex.btb_expected_rs1             <= '0;
+        o_from_id_to_ex.is_fp_instruction            <= is_fp_instruction_direct_2;
+        o_from_id_to_ex.is_fp_load                   <= is_fp_load_direct_2;
+        o_from_id_to_ex.is_fp_store                  <= is_fp_store_direct_2;
+        o_from_id_to_ex.is_fp_load_double            <= is_fp_load_double_direct_2;
+        o_from_id_to_ex.is_fp_store_double           <= is_fp_store_double_direct_2;
+        o_from_id_to_ex.is_fp_compute                <= is_fp_compute_direct_2 | is_fp_fma_direct_2;
+        o_from_id_to_ex.is_pipelined_fp_op           <= 1'b0;
+        o_from_id_to_ex.is_fp_to_int                 <= 1'b0;
+        o_from_id_to_ex.is_int_to_fp                 <= 1'b0;
+        o_from_id_to_ex.fp_rm                        <= 3'b0;
+      end else begin
+        // When pipeline is not stalled, pass decoded instruction to Execute stage
+        // If flushing (e.g., due to branch), insert NOP instead
+        o_from_id_to_ex.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
+        o_from_id_to_ex.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                         instruction_operation;
+        o_from_id_to_ex.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
+        // Determine load size and sign extension - use direct decode for timing
+        o_from_id_to_ex.is_load_byte <= i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct;
+        o_from_id_to_ex.is_load_halfword <= i_pipeline_ctrl.flush ? 1'b0 : is_load_halfword_direct;
+        o_from_id_to_ex.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
+        // Check if this is a multiply operation (M extension) - use direct decode
+        o_from_id_to_ex.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct;
+        // Check if this is a divide/remainder operation (M extension) - use direct decode
+        o_from_id_to_ex.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct;
+        o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
+        o_from_id_to_ex.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
+                                                                    branch_operation;
+        o_from_id_to_ex.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
+        o_from_id_to_ex.is_jump_and_link <= i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
+        o_from_id_to_ex.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
+        // CSR instruction fields (Zicsr extension)
+        o_from_id_to_ex.is_csr_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
+        o_from_id_to_ex.csr_address <= csr_address;
+        o_from_id_to_ex.csr_imm <= csr_imm;
+        // A extension (atomics)
+        o_from_id_to_ex.is_amo_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
+        o_from_id_to_ex.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr;
+        o_from_id_to_ex.is_sc <= i_pipeline_ctrl.flush ? 1'b0 : is_sc;
+        // Privileged instructions (trap handling)
+        o_from_id_to_ex.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : is_mret;
+        o_from_id_to_ex.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
+        o_from_id_to_ex.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
+        o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
+        o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                  is_illegal_instruction;
+        // Pre-computed link address from IF stage
+        o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
+        // Pre-computed branch/jump targets (computed here, used by EX stage)
+        o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
+        o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
+        // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
+        o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
+        o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                effective_btb_predicted_taken;
+        o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
+        // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
+        o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 :
+                                         i_from_pd_to_id.ras_predicted;
+        o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
+        o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
+        o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+        // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
+        // These remove comparisons from the EX stage critical path
+        o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
+        o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
+        o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
+        // Pre-computed expected rs1 for RAS verification (removes JALR adder from critical path)
+        o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
+        // TIMING OPTIMIZATION: Pre-computed BTB verification
+        // For non-JALR: target comparison done in ID stage (no forwarding dependency)
+        // For JALR: use btb_expected_rs1 in EX stage (same algebraic transformation as RAS)
+        o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                btb_correct_non_jalr_precomputed;
+        o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
+        // F extension - clear on flush
+        o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                             is_fp_instruction_direct;
+        o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
+        o_from_id_to_ex.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
+        o_from_id_to_ex.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 :
+                                             is_fp_load_double_direct;
+        o_from_id_to_ex.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              is_fp_store_double_direct;
+        o_from_id_to_ex.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
+                                         (is_fp_compute_direct | is_fp_fma_direct);
+        o_from_id_to_ex.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              is_pipelined_fp_op_direct;
+        o_from_id_to_ex.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct;
+        o_from_id_to_ex.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct;
+        o_from_id_to_ex.fp_rm <= fp_rm_direct;
+      end
     end
     // Pass immediate values and regfile data (datapath, not affected by reset - only by stall)
     if (~i_pipeline_ctrl.stall) begin
-      o_from_id_to_ex.immediate_u_type <= immediate_u_type;
-      o_from_id_to_ex.immediate_s_type <= immediate_s_type;
-      o_from_id_to_ex.immediate_i_type <= immediate_i_type;
-      o_from_id_to_ex.immediate_b_type <= immediate_b_type;
-      o_from_id_to_ex.immediate_j_type <= immediate_j_type;
-      // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
-      o_from_id_to_ex.source_reg_1_data <= source_reg_1_data_bypassed;
-      o_from_id_to_ex.source_reg_2_data <= source_reg_2_data_bypassed;
-      // Pre-computed x0 check flags (timing optimization for forwarding unit)
-      o_from_id_to_ex.source_reg_1_is_x0 <= source_reg_1_is_x0;
-      o_from_id_to_ex.source_reg_2_is_x0 <= source_reg_2_is_x0;
-      // F extension: FP register file read data (with WB bypass)
-      o_from_id_to_ex.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed;
-      o_from_id_to_ex.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed;
-      o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
+      if (collapse_slot1_to_slot0) begin
+        o_from_id_to_ex.immediate_u_type <= immediate_u_type_2;
+        o_from_id_to_ex.immediate_s_type <= immediate_s_type_2;
+        o_from_id_to_ex.immediate_i_type <= immediate_i_type_2;
+        o_from_id_to_ex.immediate_b_type <= immediate_b_type_2;
+        o_from_id_to_ex.immediate_j_type <= immediate_j_type_2;
+        o_from_id_to_ex.source_reg_1_data <= '0;
+        o_from_id_to_ex.source_reg_2_data <= '0;
+        o_from_id_to_ex.source_reg_1_is_x0 <= source_reg_1_is_x0_2;
+        o_from_id_to_ex.source_reg_2_is_x0 <= source_reg_2_is_x0_2;
+        o_from_id_to_ex.fp_source_reg_1_data <= '0;
+        o_from_id_to_ex.fp_source_reg_2_data <= '0;
+        o_from_id_to_ex.fp_source_reg_3_data <= '0;
+      end else begin
+        o_from_id_to_ex.immediate_u_type <= immediate_u_type;
+        o_from_id_to_ex.immediate_s_type <= immediate_s_type;
+        o_from_id_to_ex.immediate_i_type <= immediate_i_type;
+        o_from_id_to_ex.immediate_b_type <= immediate_b_type;
+        o_from_id_to_ex.immediate_j_type <= immediate_j_type;
+        // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
+        o_from_id_to_ex.source_reg_1_data <= source_reg_1_data_bypassed;
+        o_from_id_to_ex.source_reg_2_data <= source_reg_2_data_bypassed;
+        // Pre-computed x0 check flags (timing optimization for forwarding unit)
+        o_from_id_to_ex.source_reg_1_is_x0 <= source_reg_1_is_x0;
+        o_from_id_to_ex.source_reg_2_is_x0 <= source_reg_2_is_x0;
+        // F extension: FP register file read data (with WB bypass)
+        o_from_id_to_ex.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed;
+        o_from_id_to_ex.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed;
+        o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
+      end
     end
   end
 
@@ -631,7 +712,7 @@ module id_stage #(
       o_from_id_to_ex_2.source_reg_1_is_x0    <= 1'b1;
       o_from_id_to_ex_2.source_reg_2_is_x0    <= 1'b1;
     end else if (~i_pipeline_ctrl.stall) begin
-      if (i_pipeline_ctrl.flush) begin
+      if (i_pipeline_ctrl.flush || collapse_slot1_to_slot0) begin
         o_from_id_to_ex_2                       <= '0;
         o_from_id_to_ex_2.instruction           <= riscv_pkg::NOP;
         o_from_id_to_ex_2.instruction_operation <= riscv_pkg::ADDI;
