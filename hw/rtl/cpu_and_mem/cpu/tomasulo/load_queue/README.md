@@ -35,6 +35,54 @@ lines on commit (the SQ pulses an invalidate back to the LQ), which
 keeps the cache coherent without needing a write-through path of its
 own.
 
+Two things the cache intentionally *doesn't* do:
+
+- **No flush on branch mispredict.** The L0 holds only architectural
+  state (committed stores invalidate, loads fill with memory's view),
+  so there's nothing speculative to throw away. Leaving cached lines
+  hot across mispredict recovery roughly doubles the steady-state hit
+  rate on CoreMark (36.5% → 72.4%).
+- **No same-cycle fill → lookup bypass.** Forwarding the in-flight
+  fill into a same-cycle lookup dragged the back-end flush cone into
+  `data_memory`'s write-enable path. A same-cycle hit on the just-filled
+  line becomes a one-cycle-delayed hit instead; the LUTRAM is current
+  next cycle regardless.
+
+## Issue and completion bypasses
+
+Two bypass paths shave a cycle each off the load critical latency:
+
+- **Same-cycle `addr_valid` bypass.** MEM_RS emits a pre-issue
+  look-ahead one cycle before the real issue (`o_pre_issue_rob_tag` +
+  `o_pre_issue_needs_lq`); the LQ pre-registers the CAM match against
+  that tag so the entry appears addr-valid the same cycle MEM_RS issues
+  (`entry_addr_valid_now`). Removes the flop between RS issue and SQ
+  disambiguation.
+- **`cdb_stage` completion bypass.** On a memory response or L0
+  fast-path hit, the LQ writes `cdb_stage` directly from the response /
+  cache data path instead of routing through `lq_data_valid` + a
+  priority encoder. The entry frees and the CDB broadcast arms the
+  same cycle. AMO and FLD stay on the standard path.
+
+## Back-to-back issue
+
+In steady state the LQ issues one load per cycle: `launch_mem_issue`
+is gated only by `i_mem_bus_busy` (not the previous launch's
+`mem_outstanding`). Making this work without dropping results required
+five coupled pieces — the priority encoder masks out the entries
+already in-flight, SQ-check capture fires the same cycle the previous
+candidate launches, and `lq_data` port 0 is reserved for the memory
+response while port 1 handles cache hits / SQ forwards / AMO writes
+(they can't collide on the same port anymore).
+
+## Issued-entry snapshot
+
+The response handler reads from a flat snapshot of the issued load's
+attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / fp64_phase /
+rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
+`issued_idx`. Removing the `lq_*[issued_idx]` read path takes the LQ
+entry array out of the `data_memory` address cone.
+
 ## Atomics
 
 The LR reservation register lives in the LQ. LR sets it on
@@ -50,10 +98,24 @@ can interleave.
 Hybrid FF + LUTRAM. Control fields and the address need parallel
 CAM-style scan (for tag match on address update, oldest-first issue
 selection, partial flush invalidation), so they stay in flip-flops.
-The 64-bit data payload lives in distributed RAM with two write
-ports (one for the cache-hit / forward / memory-response path, one
-for AMO completion) and is split lo/hi to support FLD's two-phase
-fills.
+The 64-bit data payload lives in distributed RAM split lo/hi (to
+support FLD's two-phase fills), each half in a 2-write-port LUTRAM:
+port 0 is reserved for memory response, port 1 handles cache hits,
+SQ forwards, and AMO write-completion. The split lets a memory
+response for the previously-issued load and a cache hit on the
+newly-captured load land in the same cycle without colliding.
+
+## Performance counters
+
+The LQ emits pulses for the wrapper's performance counters so the
+head-load wait bucket — historically a large fraction of CoreMark
+idle time — can be attributed. L0 hits and fills are counted
+directly; the head-load wait is split into five sub-buckets
+(`addr_pending`, `sq_disambig`, `bus_blocked`, `cdb_wait`, `post_lq`)
+and the `bus_blocked` bucket is further split into five mutually
+exclusive causes (`bb_issued`, `bb_bus_busy`, `bb_amo`, `bb_sq_wait`,
+`bb_staging`). The wrapper parent counter `head_wait_mem_load` is
+still live alongside the decomposition.
 
 ## Verification
 

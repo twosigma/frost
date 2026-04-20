@@ -113,15 +113,20 @@ FP_DIV  >  DIV  >  FP_MUL  >  MUL  >  FP_ADD  >  MEM  >  ALU
 ```
 
 Losers latch their result in a one-deep `fu_cdb_adapter` and
-re-present it next cycle. Deeply pipelined units (DIV, FDIV) also
+re-present it next cycle. Pipelined units (MUL, DIV, FDIV) also
 have internal result FIFOs with credit-based back-pressure to absorb
 multi-cycle contention.
+
+Full-flush CDB suppression is handled centrally at the arbiter via
+an `i_kill` input, rather than replicated across every per-FU
+adapter — this keeps the broadly-fanned flush signal out of each
+adapter's output cone.
 
 ### Instruction → reservation station routing
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 8     | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
+| `INT_RS`   | 16    | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
 | `MUL_RS`   | 4     | MUL/MULH\*/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, SC.W, FENCE, FENCE.I |
 | `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X}, FCLASS, FSGNJ\* |
@@ -137,3 +142,33 @@ read sources from the appropriate RAT per source slot.
 If an FP instruction's `rm` field is `DYN`, dispatch substitutes the
 current `frm` CSR value into the RS entry — capturing it in program
 order so subsequent `frm` writes don't affect in-flight FP ops.
+
+### 2-wide commit
+
+The ROB retires up to two instructions per cycle. Head and head+1
+commit together when both are done and neither is a serializing
+instruction (CSR, FENCE, FENCE.I, WFI, MRET, AMO, LR, SC), neither
+is an exception, the head isn't mispredicting, and head+1 isn't any
+branch. The INT and FP regfiles both support two write ports via
+2-write-port distributed RAM with a Live Value Table that steers
+reads to the newer (slot-2) tag on same-register conflicts. The RAT
+and SQ each expose parallel slot-2 commit ports so both retires
+land in the same cycle.
+
+### Same-cycle bypasses
+
+Two bypass paths shorten commit and completion latency:
+
+- **CDB → head-done bypass.** When a CDB write targets the ROB head
+  (or head+1), the value flows into the commit mux the same cycle
+  instead of waiting for the `rob_done[head]` flop to update. Cuts
+  one cycle off the common ordinary-completion path. Excluded for
+  exception / branch / CSR / FENCE / WFI / MRET, which still use
+  the commit-time serial path.
+- **LQ addr-update + completion bypasses.** MEM_RS issues a
+  pre-issue look-ahead one cycle early so the LQ's address-update
+  CAM match is registered before real issue, making entries appear
+  `addr_valid` the same cycle MEM_RS issues. On completion, the LQ
+  writes its CDB staging register directly from the memory response
+  / L0 hit data, bypassing the per-entry `data_valid` + priority
+  encoder path.

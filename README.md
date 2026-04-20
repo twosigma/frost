@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 2.50 CoreMark/MHz (750 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Solid performance** — 2.53 CoreMark/MHz (760 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
@@ -37,7 +37,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     │                          ┌──────────────────────────────────────────┐  │
 │     │                          │  6 reservation stations                  │  │
 │     │                          │  INT  MUL  MEM  FP  FMUL  FDIV           │  │
-│     │                          │  (8)  (4)  (8)  (6)  (4)   (2)           │  │
+│     │                          │  (16) (4)  (8)  (6)  (4)   (2)           │  │
 │     │                          └──────────────┬───────────────────────────┘  │
 │     │                                         ▼                              │
 │     │                          FU shims (ALU, MUL/DIV, FPU)                  │
@@ -88,6 +88,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, and combinational CSR reads at decode
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 4 branch checkpoint slots
+- **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
 - **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
 - **Single-CDB result broadcast** with fixed-priority arbitration (longest-latency wins) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ

@@ -44,6 +44,24 @@ This is the kind of subtle correctness bug that's invisible until a
 particular branch-heavy code path with deep ROB occupancy hits the
 wraparound; the formal proof catches it.
 
+## Widen-commit slot 2
+
+The RAT accepts a parallel slot-2 commit port
+(`i_commit_valid_2`, `i_commit_dest_valid_2`, `_dest_rf_2`,
+`_dest_reg_2`, `_tag_2`) alongside the primary commit port so the
+ROB's 2-wide commit can clear both renames in a single cycle. The
+slot-2 clear block mirrors slot 1 and uses the same tag-compare
+guard: a slot only clears the RAT entry if its tag still matches
+(a younger dispatch that has re-renamed the register is preserved).
+
+When both slots target the same architectural register, the ROB's
+widen-commit hazard gate guarantees slot 2 carries the newer value;
+slot 1's tag compare necessarily misses (slot 2's rename has since
+replaced the entry), so only slot 2's clear takes effect. The
+existing rename-over-commit priority also still holds — a
+simultaneous dispatch writing the same register wins over both
+slot clears.
+
 ## Bulk free
 
 In addition to per-checkpoint free (driven by ROB commit on a

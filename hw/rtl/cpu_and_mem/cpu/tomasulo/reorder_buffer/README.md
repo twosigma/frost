@@ -53,14 +53,53 @@ handshake completes — that way a flushed CSR never mutates
 architectural state. FENCE.I additionally pulses a one-cycle
 pipeline + icache flush after commit.
 
-## Two commit views
+## Two-wide commit
 
-The ROB exposes both a combinational and a registered commit bus.
-The combinational view feeds the same-cycle misprediction detection
-in `cpu_ooo.sv`'s commit flush controller; the registered view feeds
-the slower downstream consumers (RAT clear, SQ commit). Splitting
-them keeps the misprediction-detect path short without forcing every
-consumer onto a combinational path.
+The ROB retires up to two entries per cycle. When head and head+1 are
+both done and both pass a hazard gate, both entries retire in the
+same cycle. The hazard gate excludes anything that has to be the
+last thing to happen before its commit-time side effect: CSRs,
+FENCE / FENCE.I, WFI, MRET, AMO / LR / SC, exceptions, and any
+mispredicting head or head+1 branch. That leaves the common case —
+two ordinary-completion entries retiring back-to-back.
+
+Slot 2 is a stripped-down sibling of slot 1. It carries only the
+regfile retire, store-commit, and RAT clear payload; it never drives
+mispredict / checkpoint / redirect paths because the hazard gate
+guarantees those conditions can't happen on head+1 when slot 2
+fires. Two duplicate RAMs (`_next` variants of the head-meta / pc /
+dest / value / predicted-target / checkpoint-id RAMs) give slot 2
+its own read ports at `head_idx + 1`.
+
+The regfiles take two write ports (a 2-write-port distributed RAM
+with a Live Value Table); when both slots target the same
+architectural register, the LVT steers reads to slot 2 since slot 2
+holds the newer program-order value. The same-tag priority applies
+in the RAT: slot 2's commit wins if both slots write the same reg.
+
+## Same-cycle CDB → head-done bypass
+
+The ordinary-completion path — a CDB broadcast that writes a ROB
+entry's `done`, `value`, and `fp_flags` — previously drained for one
+cycle before the head could retire, because those fields updated on
+the clock edge. The bypass forwards the CDB write directly into the
+head commit mux when it targets `head_idx` (or `head_next_idx` for
+slot 2), so the head retires the same cycle the arbiter broadcasts.
+
+Excluded cases (exception, branch / JAL / JALR, CSR, FENCE / FENCE.I,
+WFI, MRET) fall through to the existing serial / branch-update / trap
+paths — the bypass only shortcircuits the ordinary-completion path,
+which is the dominant fraction of head-wait cycles.
+
+## Three commit views
+
+The ROB exposes a combinational commit bus (`o_commit_comb`), a
+registered commit bus (`o_commit`), and parallel slot 2 variants
+(`o_commit_comb_2`, `o_commit_2`). The combinational view feeds the
+same-cycle misprediction detection in `cpu_ooo.sv`'s commit flush
+controller; the registered view feeds slower downstream consumers
+(RAT clear, SQ commit). Splitting them keeps the misprediction-detect
+path short without forcing every consumer onto a combinational path.
 
 ## Early-recovery flag
 
@@ -84,6 +123,16 @@ The exceptions:
 - **WFI / FENCE / FENCE.I / MRET** are marked done immediately —
   they have no execution phase, only a commit-time effect handled by
   the serializing FSM.
+
+## Performance counters
+
+The ROB drives several of the wrapper's performance counters
+directly: `head_and_next_done` (widen-commit actually fired) and
+`head_plus_one_done` (ungated head+1 ready, for the drain-backlog
+bucket) come from here, along with `commit_2_opportunity` /
+`commit_2_fire_actual` — the gap between those two measures how
+often the 2-wide gate is blocked by downstream back-pressure rather
+than the hazard gate.
 
 ## Verification
 

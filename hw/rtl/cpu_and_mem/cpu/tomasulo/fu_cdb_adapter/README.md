@@ -13,14 +13,15 @@ FU slot.
   the RS stalls new issues while a result is waiting for CDB access.
 - **Zero-latency pass-through** when the arbiter grants on the same
   cycle the FU result arrives — no register on the common case.
-- **Flush support**, both full and partial. Held results whose tag
-  is younger than the partial-flush boundary are dropped, and the
-  output is gated combinationally on full flush so the arbiter
-  doesn't see one extra cycle of stale `valid` while the
-  `result_pending` register catches up. (Without that gate, phantom
-  grants would propagate down a long critical path through the
-  arbiter into the FP_DIV shim's FIFO logic — a real bug, found
-  during timing closure.)
+- **Partial-flush support.** Held results whose tag is younger than
+  the partial-flush boundary are dropped, and a same-cycle
+  pass-through of a younger result is suppressed locally. Full-flush
+  CDB suppression lives once in the CDB arbiter's `i_kill` input
+  rather than replicated in every adapter, so this module's output
+  cone doesn't have to carry the broadly-fanned speculative-flush
+  signal. The full-flush `i_flush` input is still wired in — it just
+  clears the `result_pending` register on the next edge; the
+  combinational output only filters partial flushes.
 
 ## Behavior
 

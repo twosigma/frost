@@ -40,10 +40,15 @@ restoration on misprediction.
 ## Stalls
 
 Any one of the back-end resources running out stalls the entire
-front-end: ROB full, target RS full, LQ full (for loads), SQ full
-(for stores or AMOs), no checkpoint available (for branches). The
-status output reports the exact reason as a one-hot priority encode
-so `cpu_ooo.sv` can increment per-cause stall counters without
+front-end: ROB full, target RS full, LQ full (for loads or AMOs),
+SQ full (for stores or SCs), no checkpoint available (for branches).
+The LQ/SQ need flags are pre-computed once from the decoded op
+(`need_lq` covers loads / FP loads / LR / AMO; `need_sq` covers
+stores / FP stores / SC) and used both to gate the full-stall
+conditions and to pass through to the RS dispatch payload so MEM_RS
+can route them to the LQ and SQ at issue time. The status output
+reports the exact reason as a one-hot priority encode so
+`cpu_ooo.sv` can increment per-cause stall counters without
 re-deriving the conditions.
 
 ## RS routing

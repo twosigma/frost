@@ -27,10 +27,13 @@ underlying FU's pipeline depth:
   register and a one-hot subunit selector are enough. Both NaN-box
   single-precision results.
 - **`int_muldiv_shim`** drives both the multiplier and the divider
-  off the same MUL_RS issue port. The divider is 17-stage pipelined
-  with up to 17 in-flight divisions, so it carries a shift-register
-  tag queue alongside the pipeline plus a small result FIFO with
-  credit-based back-pressure.
+  off the same MUL_RS issue port. Both units are fully pipelined:
+  the multiplier is 4-stage with up to 4 in-flight multiplies, the
+  divider is 17-stage with up to 17 in-flight divisions. Each path
+  has its own shift-register tag queue alongside the pipeline and a
+  4-entry result FIFO, both with credit-based back-pressure keyed
+  off `total_occupancy = fifo_count + inflight_count` to prevent
+  FIFO overflow.
 - **`fp_div_shim`** is the most complex. It has four sub-pipelines
   (SP/DP × divide/sqrt) with 36 or 65 stages each, each with its own
   tag queue and a two-deep hold buffer at the tail to absorb
@@ -51,3 +54,15 @@ ride the pipeline to completion and get dropped at the output.
 
 Single-precision FP results are NaN-boxed (upper 32 bits set to 1)
 in every shim that produces FP results.
+
+## Result-FIFO pop convention
+
+The multi-cycle shims (`int_muldiv_shim` MUL/DIV FIFOs, `fp_div_shim`
+output FIFO) advance their read pointer on pop but intentionally do
+not clear the per-slot `valid` / `flushed` bits. `fifo_count` is the
+authoritative occupancy tracker — the stale bits are ignored until
+the next push to that slot overwrites them. Clearing on pop would
+pull `i_*_accepted` (which depends on the cross-FU CDB arbiter grant
+cone, which depends on `mispredict_recovery_pending`) into each
+FIFO register's next-state logic, which previously surfaced as
+~140 ps of WNS.
