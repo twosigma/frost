@@ -1818,7 +1818,14 @@ module tomasulo_wrapper (
   // The shim's fu_complete is packed into cdb_broadcast_t and registered into
   // cdb_fast_path_bus (mirroring the main CDB's pipeline register), giving the
   // same 1-cycle latency from issue to ROB/RS wakeup as the main path.
-  int_alu_shim u_alu_shim_2 (
+  // FastPathOnly=1: INT_RS's fast-path eligibility filter excludes
+  // ECALL/EBREAK/CSR*/JALR/branches and JAL never enters INT_RS at all, so the
+  // 2nd ALU only sees plain ALU ops. Stripping the ECALL/CSR packer branches
+  // and the ALU's CSR/JAL/JALR case arms shortens the post-ALU result-mux cone
+  // feeding cdb_fast_path_bus_reg[value].D by 1-2 LUT levels.
+  int_alu_shim #(
+      .FastPathOnly(1'b1)
+  ) u_alu_shim_2 (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_rs_issue             (int_rs_issue_w_2),

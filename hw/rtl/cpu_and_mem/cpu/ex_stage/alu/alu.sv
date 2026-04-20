@@ -33,7 +33,19 @@
  *   These use tree-based parallel structures for optimal timing.
  */
 module alu #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = 32,
+    // When 0, the internal multiplier and divider units are not instantiated
+    // and their result/valid signals are tied to 0. MUL/DIV/REM/REMU opcodes
+    // become effectively no-ops on this ALU instance — the caller must route
+    // those ops to a different FU (e.g. int_muldiv_shim in the OOO pipeline).
+    // Keeps the default at 1 for backwards compatibility with the legacy
+    // in-order ex_stage and formal testbenches that still drive MUL/DIV here.
+    parameter bit IncludeMulDiv = 1'b1,
+    // When 1, the ALU's case statement omits arms for CSR*/ECALL/EBREAK/JAL/
+    // JALR. Used by the fast-path ALU (u_alu_shim_2) whose caller restricts
+    // issue to the fast-path-eligible subset — those opcodes never arrive.
+    // Removing the arms trims the result-mux LUT cone by 1-2 levels.
+    parameter bit FastPathOnly = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -72,40 +84,56 @@ module alu #(
   logic [XLEN:0] difference;
   logic sltu;
 
-  // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
-  multiplier multiplier_inst (
-      .i_clk,
-      .i_rst,
-      .i_operand_a(multiplier_input_a),
-      .i_operand_b(multiplier_input_b),
-      .i_valid_input(multiplier_valid_input),
-      .o_product_result(multiplier_result),
-      .o_valid_output(multiplier_valid_output),
-      .o_completing_next_cycle(o_multiply_completing_next_cycle)
-  );
-  // Track multiply operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) multiplier_valid_input_registered <= 1'b0;
-    else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
-    else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
+  if (IncludeMulDiv) begin : g_muldiv
+    // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
+    multiplier multiplier_inst (
+        .i_clk,
+        .i_rst,
+        .i_operand_a(multiplier_input_a),
+        .i_operand_b(multiplier_input_b),
+        .i_valid_input(multiplier_valid_input),
+        .o_product_result(multiplier_result),
+        .o_valid_output(multiplier_valid_output),
+        .o_completing_next_cycle(o_multiply_completing_next_cycle)
+    );
+    // Track multiply operation state: set when operation starts, clear when done
+    always_ff @(posedge i_clk)
+      if (i_rst) multiplier_valid_input_registered <= 1'b0;
+      else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
+      else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
 
-  // Divider unit - computes quotient and remainder over multiple cycles
-  divider divider_inst (
-      .i_clk,
-      .i_rst,
-      .i_valid_input(divider_valid_input),
-      .i_is_signed_operation(divider_is_signed_operation),
-      .i_dividend(i_operand_a),
-      .i_divisor(i_operand_b),
-      .o_valid_output(divider_valid_output),
-      .o_quotient(divider_quotient_result),
-      .o_remainder(divider_remainder_result)
-  );
-  // Track divide operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) divider_valid_input_registered <= 1'b0;
-    else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
-    else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+    // Divider unit - computes quotient and remainder over multiple cycles
+    divider divider_inst (
+        .i_clk,
+        .i_rst,
+        .i_valid_input(divider_valid_input),
+        .i_is_signed_operation(divider_is_signed_operation),
+        .i_dividend(i_operand_a),
+        .i_divisor(i_operand_b),
+        .o_valid_output(divider_valid_output),
+        .o_quotient(divider_quotient_result),
+        .o_remainder(divider_remainder_result)
+    );
+    // Track divide operation state: set when operation starts, clear when done
+    always_ff @(posedge i_clk)
+      if (i_rst) divider_valid_input_registered <= 1'b0;
+      else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
+      else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+  end else begin : g_no_muldiv
+    // MUL/DIV units stripped out — callers must ensure the MUL/DIV/REM/REMU
+    // opcodes never reach this ALU instance (they're routed to int_muldiv_shim
+    // in the OOO pipeline). Tie the result/valid signals to 0 so the case arms
+    // in the main always_comb stay well-defined; o_write_enable on those arms
+    // will be low (multiplier_valid_output = 0), producing no side effects.
+    assign multiplier_result = '0;
+    assign multiplier_valid_output = 1'b0;
+    assign o_multiply_completing_next_cycle = 1'b0;
+    assign multiplier_valid_input_registered = 1'b0;
+    assign divider_quotient_result = '0;
+    assign divider_remainder_result = '0;
+    assign divider_valid_output = 1'b0;
+    assign divider_valid_input_registered = 1'b0;
+  end
 
   function automatic logic op_is_imm_not_reg(input logic [6:0] opcode);
     logic [6:0] unique_opcode_bits;
@@ -161,9 +189,11 @@ module alu #(
       // Add upper immediate to PC
       riscv_pkg::AUIPC: o_result = i_program_counter + XLEN'(signed'(i_immediate_u_type));
       // Jump operations - save return address for function calls
-      // Use pre-computed link address from IF stage (PC+2 for compressed, PC+4 for 32-bit)
-      riscv_pkg::JAL: o_result = i_link_address;
-      riscv_pkg::JALR: o_result = i_link_address;
+      // Use pre-computed link address from IF stage (PC+2 for compressed, PC+4 for 32-bit).
+      // FastPathOnly=1 callers guarantee these opcodes never arrive (JAL is
+      // RS_NONE, JALR is excluded from int_rs_fast_path_eligible).
+      riscv_pkg::JAL: if (!FastPathOnly) o_result = i_link_address;
+      riscv_pkg::JALR: if (!FastPathOnly) o_result = i_link_address;
       // M-extension multiply operations (1-cycle registered, requires stall)
       riscv_pkg::MUL: begin
         // Start multiply if not already in progress; use lower 32 bits of result
@@ -239,13 +269,15 @@ module alu #(
       end
       // Zicsr extension - CSR read/modify/write operations
       // All CSR instructions return the old CSR value to rd
-      // Write operations are handled in the CSR file (read-only CSRs ignore writes)
+      // Write operations are handled in the CSR file (read-only CSRs ignore writes).
+      // FastPathOnly=1 callers guarantee CSR ops never arrive.
       riscv_pkg::CSRRW,
       riscv_pkg::CSRRS,
       riscv_pkg::CSRRC,
       riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI,
-      riscv_pkg::CSRRCI: begin
+      riscv_pkg::CSRRCI:
+      if (!FastPathOnly) begin
         o_result = i_csr_read_data;
         o_write_enable = 1'b1;
       end

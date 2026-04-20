@@ -38,7 +38,16 @@
  *     producing fu_complete.valid = 0. JAL/JALR still produce a link-address
  *     result on the CDB while branch resolution uses a separate path.
  */
-module int_alu_shim (
+module int_alu_shim #(
+    // When 1, the instance only ever sees fast-path-eligible ALU ops
+    // (INT_RS fast-path filter excludes ECALL/EBREAK/CSR*/JALR/branches).
+    // Strips the ECALL/CSR packer branches from the value-mux cone, shaving
+    // ~4 LUT levels off the combinational feedback loop
+    //   CDB_fast_path.tag → RS wakeup → RS issue_idx_2 → src1 → ALU
+    //     → value-mux → cdb_fast_path_bus_reg[value].D
+    // Also propagates to the ALU's own case statement (no CSR/ECALL arms).
+    parameter bit FastPathOnly = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -79,8 +88,21 @@ module int_alu_shim (
   logic                       alu_stall;  // unused (no MUL/DIV)
   logic                       alu_mul_completing;  // unused
 
+  // IncludeMulDiv=0 strips the ALU's internal multiplier/divider instances.
+  // MUL/DIV/REM/REMU are routed to int_muldiv_shim via MUL_RS, so this ALU
+  // never sees those opcodes. The internal units were dead logic but their
+  // data-in paths kept clocking operand values into SRL pipelines every
+  // cycle, creating a 21-level combinational path from the CDB fast-path
+  // tag register through INT_RS wakeup / priority encode / payload RAM
+  // into the divider's dividend_pipeline_reg D pin (WNS -1.9 ns pre-fix).
+  //
+  // FastPathOnly propagates the shim's FastPathOnly parameter to the ALU so
+  // it can strip the CSR/ECALL/JALR case arms when the caller guarantees
+  // those opcodes never arrive.
   alu #(
-      .XLEN(riscv_pkg::XLEN)
+      .XLEN(riscv_pkg::XLEN),
+      .IncludeMulDiv(1'b0),
+      .FastPathOnly(FastPathOnly)
   ) u_alu (
       .i_clk(i_clk),
       .i_rst(~i_rst_n),  // ALU uses active-high reset
@@ -138,21 +160,24 @@ module int_alu_shim (
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
 
-    if (is_ecall_op || is_ebreak_op) begin
-      // ECALL/EBREAK: mark as exception on CDB so ROB can trigger trap at commit
-      o_fu_complete.value = '0;
-      o_fu_complete.exception = 1'b1;
-      o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
-          is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]
-                      : riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
-    end else if (is_any_csr_op) begin
-      // CSR: pass through the write operand (rs1 or zero-extended imm).
-      // Actual CSR read/write is serialized at ROB commit time.
-      if (is_csr_imm_op) o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
-      else
-        o_fu_complete.value = {
-          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
-        };
+    if (!FastPathOnly) begin
+      if (is_ecall_op || is_ebreak_op) begin
+        // ECALL/EBREAK: mark as exception on CDB so ROB can trigger trap at commit
+        o_fu_complete.value = '0;
+        o_fu_complete.exception = 1'b1;
+        o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+            is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]
+                        : riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
+      end else if (is_any_csr_op) begin
+        // CSR: pass through the write operand (rs1 or zero-extended imm).
+        // Actual CSR read/write is serialized at ROB commit time.
+        if (is_csr_imm_op)
+          o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
+        else
+          o_fu_complete.value = {
+            {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
+          };
+      end
     end
   end
 
