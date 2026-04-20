@@ -1330,7 +1330,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth:0] rob_count;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
-  logic fence_i_flush;
+  (* max_fanout = 32 *) logic fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
 
   // CSR coordination
@@ -2007,10 +2007,10 @@ module cpu_ooo #(
 
   (* max_fanout = 32 *) logic early_mispredict_capture;
   logic early_mispredict_fire;
-  logic early_mispredict_pending;
+  (* max_fanout = 32 *) logic early_mispredict_pending;
   logic early_mispredict_active;
-  logic early_backend_recovery_pending;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
+  (* max_fanout = 32 *) logic early_backend_recovery_pending;
+  (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
 
   // Captured data from the mispredicting branch
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;

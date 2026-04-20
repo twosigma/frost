@@ -736,6 +736,8 @@ module dispatch (
   // so IF's backpressure holds when slot-1 is emitted (PC has already
   // advanced past it) but INT_RS or ROB can't accept slot-1 this cycle.
   logic slot1_resource_stall;
+  (* max_fanout = 32 *)logic slot1_pair_opportunity;
+  logic slot1_pair_blocked;
 
   logic rs_full;
   always_comb begin
@@ -802,23 +804,19 @@ module dispatch (
     // density and per-cycle RS pressure.  slot-1 fire is read directly
     // off rob_alloc_req_2.alloc_valid in cpu_ooo for the same UNOPTFLAT
     // reason.
-    o_status.slot1_opportunity = dispatch_valid && slot0_can_pair && slot1_can_fire_raw;
+    o_status.slot1_opportunity = slot1_pair_opportunity;
     // slot1_blocked: opportunity present, at least one slot-1 resource full.
     // Matches slot1_resource_stall's condition set sans the gate — i.e., the
     // total cycles gate=0 would stall the pair on resource pressure.  The
     // three sub-buckets below decompose this into {INT_RS only, ROB-2 only,
     // both}; their sum equals slot1_blocked.
-    o_status.slot1_blocked = dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
-                             (slot1_int_rs_stall || i_rob_alloc_resp_2.full);
-    o_status.slot1_stall_int_rs_only =
-        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
-        slot1_int_rs_stall && !i_rob_alloc_resp_2.full;
-    o_status.slot1_stall_rob2_only =
-        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
-        !slot1_int_rs_stall && i_rob_alloc_resp_2.full;
-    o_status.slot1_stall_both =
-        dispatch_valid && slot0_can_pair && slot1_can_fire_raw &&
-        slot1_int_rs_stall && i_rob_alloc_resp_2.full;
+    o_status.slot1_blocked = slot1_pair_blocked;
+    o_status.slot1_stall_int_rs_only = slot1_pair_opportunity &&
+                                       slot1_int_rs_stall && !i_rob_alloc_resp_2.full;
+    o_status.slot1_stall_rob2_only = slot1_pair_opportunity &&
+                                     !slot1_int_rs_stall && i_rob_alloc_resp_2.full;
+    o_status.slot1_stall_both = slot1_pair_opportunity &&
+                                slot1_int_rs_stall && i_rob_alloc_resp_2.full;
   end
 
   // Dispatch fires when valid and not stalled
@@ -1235,6 +1233,7 @@ module dispatch (
   logic slot1_int_rs_room_ok;
   assign slot1_int_rs_room_ok = (rs_type == riscv_pkg::RS_INT) ?
                                 !i_int_rs_full_for_2 : !i_int_rs_full;
+  assign slot1_pair_opportunity = dispatch_valid && slot0_can_pair && slot1_can_fire_raw;
   logic slot1_fire;
   assign slot1_fire = dispatch_fire && slot0_can_pair && slot1_can_fire_raw &&
                       slot1_int_rs_room_ok &&
@@ -1249,9 +1248,9 @@ module dispatch (
   // Mirrors slot1_fire's rs_type-gated INT_RS check.
   logic slot1_int_rs_stall;
   assign slot1_int_rs_stall = (rs_type == riscv_pkg::RS_INT) ? i_int_rs_full_for_2 : i_int_rs_full;
-  assign slot1_resource_stall = slot0_can_pair && slot1_can_fire_raw &&
-                                (slot1_int_rs_stall || i_rob_alloc_resp_2.full) &&
-                                !SlotOneScaffoldingDisable;
+  assign slot1_pair_blocked = slot1_pair_opportunity &&
+                              (slot1_int_rs_stall || i_rob_alloc_resp_2.full);
+  assign slot1_resource_stall = slot1_pair_blocked && !SlotOneScaffoldingDisable;
 
   // Slot-1 source addrs drive the RAT slot-1 read ports.
   assign o_int_src1_addr_2 = i_from_id_to_ex_2.instruction.source_reg_1;
@@ -1269,8 +1268,10 @@ module dispatch (
   assign o_bypass_tag_4 = i_int_src1_2.tag;
   assign o_bypass_tag_5 = i_int_src2_2.tag;
 
-  logic src1_2_renamed, src1_2_done;
-  logic src2_2_renamed, src2_2_done;
+  logic src1_2_renamed;
+  logic src2_2_renamed;
+  logic src1_2_done;
+  logic src2_2_done;
   assign src1_2_renamed = i_int_src1_2.renamed;
   assign src2_2_renamed = i_int_src2_2.renamed;
   // Intra-pair RAW produces renamed=1, tag=<slot-0's fresh alloc tag>.  In that
@@ -1284,6 +1285,17 @@ module dispatch (
   assign src2_2_intra_pair = src2_2_renamed && (i_int_src2_2.tag == i_rob_alloc_resp.alloc_tag);
   assign src1_2_done = src1_2_renamed && !src1_2_intra_pair && i_rob_entry_done[i_int_src1_2.tag];
   assign src2_2_done = src2_2_renamed && !src2_2_intra_pair && i_rob_entry_done[i_int_src2_2.tag];
+
+  // Keep the slot-1 source-resolution terms explicit so Vivado can replicate
+  // them instead of re-deriving the same cone deep inside the RS alloc muxes.
+  (* max_fanout = 32 *) logic slot1_src1_ready_resolved;
+  (* max_fanout = 32 *) logic slot1_src2_ready_resolved;
+  logic [riscv_pkg::FLEN-1:0] slot1_src1_value_resolved;
+  logic [riscv_pkg::FLEN-1:0] slot1_src2_value_resolved;
+  assign slot1_src1_ready_resolved = !src1_2_renamed || src1_2_done;
+  assign slot1_src2_ready_resolved = !src2_2_renamed || src2_2_done;
+  assign slot1_src1_value_resolved = src1_2_done ? i_bypass_value_4 : i_int_src1_2.value;
+  assign slot1_src2_value_resolved = src2_2_done ? i_bypass_value_5 : i_int_src2_2.value;
 
   // Which architectural sources does slot-1's op actually consume?  The RS
   // only issues when src1_ready && src2_ready && src3_ready, so dispatch
@@ -1355,18 +1367,18 @@ module dispatch (
     // wake on the CDB if still pending.  Unused srcs (e.g., src2 on ADDI)
     // are forced ready=1 tag='0 value='0 so the RS issue check passes.
     if (uses_int_rs1_2) begin
-      o_rs_dispatch_2.src1_ready = !src1_2_renamed || src1_2_done;
+      o_rs_dispatch_2.src1_ready = slot1_src1_ready_resolved;
       o_rs_dispatch_2.src1_tag   = i_int_src1_2.tag;
-      o_rs_dispatch_2.src1_value = src1_2_done ? i_bypass_value_4 : i_int_src1_2.value;
+      o_rs_dispatch_2.src1_value = slot1_src1_value_resolved;
     end else begin
       o_rs_dispatch_2.src1_ready = 1'b1;
       o_rs_dispatch_2.src1_tag   = '0;
       o_rs_dispatch_2.src1_value = '0;
     end
     if (uses_int_rs2_2) begin
-      o_rs_dispatch_2.src2_ready = !src2_2_renamed || src2_2_done;
+      o_rs_dispatch_2.src2_ready = slot1_src2_ready_resolved;
       o_rs_dispatch_2.src2_tag   = i_int_src2_2.tag;
-      o_rs_dispatch_2.src2_value = src2_2_done ? i_bypass_value_5 : i_int_src2_2.value;
+      o_rs_dispatch_2.src2_value = slot1_src2_value_resolved;
     end else begin
       o_rs_dispatch_2.src2_ready = 1'b1;
       o_rs_dispatch_2.src2_tag   = '0;

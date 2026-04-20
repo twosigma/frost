@@ -270,6 +270,59 @@ module reservation_station #(
   riscv_pkg::instr_op_e dispatch_op_1;
   assign dispatch_op_1 = i_dispatch_2.op;
 
+  // Slot-1 alloc helpers are shared across the ready-bit and value-write cones.
+  // Keeping them explicit gives synthesis a cleaner replication point for the
+  // high-fanout slot-1 dispatch predicates.
+  (* max_fanout = 32 *) logic slot1_alloc_src1_use_cdb;
+  (* max_fanout = 32 *) logic slot1_alloc_src1_use_cdb2;
+  (* max_fanout = 32 *) logic slot1_alloc_src2_use_cdb;
+  (* max_fanout = 32 *) logic slot1_alloc_src2_use_cdb2;
+  (* max_fanout = 32 *) logic slot1_alloc_src3_use_cdb;
+  (* max_fanout = 32 *) logic slot1_alloc_src3_use_cdb2;
+  (* max_fanout = 32 *) logic slot1_alloc_src1_ready;
+  (* max_fanout = 32 *) logic slot1_alloc_src2_ready;
+  (* max_fanout = 32 *) logic slot1_alloc_src3_ready;
+  logic [FLEN-1:0] slot1_alloc_src1_value;
+  logic [FLEN-1:0] slot1_alloc_src2_value;
+  logic [FLEN-1:0] slot1_alloc_src3_value;
+
+  assign slot1_alloc_src1_use_cdb = !dispatch_src1_ready_1 &&
+                                    i_cdb.valid &&
+                                    (dispatch_src1_tag_1 == i_cdb.tag);
+  assign slot1_alloc_src1_use_cdb2 = !dispatch_src1_ready_1 &&
+                                     i_cdb_2.valid &&
+                                     (dispatch_src1_tag_1 == i_cdb_2.tag);
+  assign slot1_alloc_src2_use_cdb = !dispatch_src2_ready_1 &&
+                                    i_cdb.valid &&
+                                    (dispatch_src2_tag_1 == i_cdb.tag);
+  assign slot1_alloc_src2_use_cdb2 = !dispatch_src2_ready_1 &&
+                                     i_cdb_2.valid &&
+                                     (dispatch_src2_tag_1 == i_cdb_2.tag);
+  assign slot1_alloc_src3_use_cdb = !dispatch_src3_ready_1 &&
+                                    i_cdb.valid &&
+                                    (dispatch_src3_tag_1 == i_cdb.tag);
+  assign slot1_alloc_src3_use_cdb2 = !dispatch_src3_ready_1 &&
+                                     i_cdb_2.valid &&
+                                     (dispatch_src3_tag_1 == i_cdb_2.tag);
+  assign slot1_alloc_src1_ready = dispatch_src1_ready_1 ||
+                                  slot1_alloc_src1_use_cdb ||
+                                  slot1_alloc_src1_use_cdb2;
+  assign slot1_alloc_src2_ready = dispatch_src2_ready_1 ||
+                                  slot1_alloc_src2_use_cdb ||
+                                  slot1_alloc_src2_use_cdb2;
+  assign slot1_alloc_src3_ready = dispatch_src3_ready_1 ||
+                                  slot1_alloc_src3_use_cdb ||
+                                  slot1_alloc_src3_use_cdb2;
+  assign slot1_alloc_src1_value = slot1_alloc_src1_use_cdb ? i_cdb.value :
+                                  slot1_alloc_src1_use_cdb2 ? i_cdb_2.value :
+                                                              dispatch_src1_value_1;
+  assign slot1_alloc_src2_value = slot1_alloc_src2_use_cdb ? i_cdb.value :
+                                  slot1_alloc_src2_use_cdb2 ? i_cdb_2.value :
+                                                              dispatch_src2_value_1;
+  assign slot1_alloc_src3_value = slot1_alloc_src3_use_cdb ? i_cdb.value :
+                                  slot1_alloc_src3_use_cdb2 ? i_cdb_2.value :
+                                                              dispatch_src3_value_1;
+
   // ===========================================================================
   // Stage 2 Pipeline Register
   // ===========================================================================
@@ -973,15 +1026,9 @@ module reservation_station #(
           if (ENABLE_ISSUE_2)
             rs_fast_path_eligible[slot1_alloc_idx] <= int_rs_fast_path_eligible(dispatch_op_1);
 
-          rs_src1_ready[slot1_alloc_idx] <= dispatch_src1_ready_1 ||
-              (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag) ||
-              (!dispatch_src1_ready_1 && i_cdb_2.valid && dispatch_src1_tag_1 == i_cdb_2.tag);
-          rs_src2_ready[slot1_alloc_idx] <= dispatch_src2_ready_1 ||
-              (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag) ||
-              (!dispatch_src2_ready_1 && i_cdb_2.valid && dispatch_src2_tag_1 == i_cdb_2.tag);
-          rs_src3_ready[slot1_alloc_idx] <= dispatch_src3_ready_1 ||
-              (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag) ||
-              (!dispatch_src3_ready_1 && i_cdb_2.valid && dispatch_src3_tag_1 == i_cdb_2.tag);
+          rs_src1_ready[slot1_alloc_idx] <= slot1_alloc_src1_ready;
+          rs_src2_ready[slot1_alloc_idx] <= slot1_alloc_src2_ready;
+          rs_src3_ready[slot1_alloc_idx] <= slot1_alloc_src3_ready;
           rs_use_imm[slot1_alloc_idx] <= dispatch_use_imm_1;
         end
       end
@@ -1043,28 +1090,16 @@ module reservation_station #(
 
     // Slot-1 alloc (data FFs). Written at slot1_alloc_idx (see above).
     if (dispatch_fire_1) begin
-      rs_rob_tag[slot1_alloc_idx]  <= dispatch_rob_tag_1;
+      rs_rob_tag[slot1_alloc_idx] <= dispatch_rob_tag_1;
 
       rs_src1_tag[slot1_alloc_idx] <= dispatch_src1_tag_1;
-      if (!dispatch_src1_ready_1 && i_cdb.valid && dispatch_src1_tag_1 == i_cdb.tag)
-        rs_src1_value[slot1_alloc_idx] <= i_cdb.value;
-      else if (!dispatch_src1_ready_1 && i_cdb_2.valid && dispatch_src1_tag_1 == i_cdb_2.tag)
-        rs_src1_value[slot1_alloc_idx] <= i_cdb_2.value;
-      else rs_src1_value[slot1_alloc_idx] <= dispatch_src1_value_1;
+      rs_src1_value[slot1_alloc_idx] <= slot1_alloc_src1_value;
 
       rs_src2_tag[slot1_alloc_idx] <= dispatch_src2_tag_1;
-      if (!dispatch_src2_ready_1 && i_cdb.valid && dispatch_src2_tag_1 == i_cdb.tag)
-        rs_src2_value[slot1_alloc_idx] <= i_cdb.value;
-      else if (!dispatch_src2_ready_1 && i_cdb_2.valid && dispatch_src2_tag_1 == i_cdb_2.tag)
-        rs_src2_value[slot1_alloc_idx] <= i_cdb_2.value;
-      else rs_src2_value[slot1_alloc_idx] <= dispatch_src2_value_1;
+      rs_src2_value[slot1_alloc_idx] <= slot1_alloc_src2_value;
 
       rs_src3_tag[slot1_alloc_idx] <= dispatch_src3_tag_1;
-      if (!dispatch_src3_ready_1 && i_cdb.valid && dispatch_src3_tag_1 == i_cdb.tag)
-        rs_src3_value[slot1_alloc_idx] <= i_cdb.value;
-      else if (!dispatch_src3_ready_1 && i_cdb_2.valid && dispatch_src3_tag_1 == i_cdb_2.tag)
-        rs_src3_value[slot1_alloc_idx] <= i_cdb_2.value;
-      else rs_src3_value[slot1_alloc_idx] <= dispatch_src3_value_1;
+      rs_src3_value[slot1_alloc_idx] <= slot1_alloc_src3_value;
     end
 
     // CDB snoop wakeup (data: capture values). Writes from either lane; on
