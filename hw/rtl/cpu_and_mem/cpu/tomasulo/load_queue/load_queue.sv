@@ -84,6 +84,7 @@ module load_queue #(
     // Memory Interface (to data memory bus)
     // =========================================================================
     output logic                                       o_mem_read_en,
+    output logic                                       o_mem_addr_valid,
     output logic                 [riscv_pkg::XLEN-1:0] o_mem_read_addr,
     output riscv_pkg::mem_size_e                       o_mem_read_size,
     input  logic                 [riscv_pkg::XLEN-1:0] i_mem_read_data,
@@ -205,6 +206,17 @@ module load_queue #(
     end
   endfunction
 
+  function automatic logic [DEPTH-1:0] rotate_mask_from_head(input logic [DEPTH-1:0] mask,
+                                                             input logic [IdxWidth-1:0] start_idx);
+    logic [(2*DEPTH)-1:0] doubled;
+    logic [(2*DEPTH)-1:0] shifted;
+    begin
+      doubled = {mask, mask};
+      shifted = doubled >> start_idx;
+      rotate_mask_from_head = shifted[DEPTH-1:0];
+    end
+  endfunction
+
   // ===========================================================================
   // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
   // ===========================================================================
@@ -231,7 +243,7 @@ module load_queue #(
   // Per-entry multi-bit fields
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
   logic [$bits(riscv_pkg::instr_op_e)-1:0] lq_amo_op_rd;
-  logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_issue_mem_rd;
+  (* ram_style = "registers" *) logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size[DEPTH];
   logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_issue_cdb_rd;
   logic [XLEN-1:0] lq_address_issue_mem_rd;
   logic [XLEN-1:0] lq_address_amo_rd;
@@ -327,6 +339,8 @@ module load_queue #(
   // issue_cdb_idx declared above (before LUTRAM instances)
   logic issue_mem_found;  // Phase B: entry ready for memory
   logic [IdxWidth-1:0] issue_mem_idx;
+  logic [IdxWidth-1:0] issue_mem_stored_idx;
+  logic issue_mem_from_update;
   logic block_younger_mem;
   logic issue_cdb_fire;
   logic cdb_stage_slot_available;
@@ -414,31 +428,9 @@ module load_queue #(
   logic lq_addr_update_we;
   logic [IdxWidth-1:0] lq_addr_update_idx;
 
-  // lq_size is allocation-written and only read when staging sq_check,
-  // handling an issued load, or broadcasting a result on the CDB.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH($bits(riscv_pkg::mem_size_e))
-  ) u_lq_size_issue_mem (
-      .i_clk,
-      .i_write_enable (i_alloc.valid && !full),
-      .i_write_address(alloc_target[IdxWidth-1:0]),
-      .i_write_data   (i_alloc.size),
-      .i_read_address (issue_mem_idx),
-      .o_read_data    (lq_size_issue_mem_rd)
-  );
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH($bits(riscv_pkg::mem_size_e))
-  ) u_lq_size_issue_cdb (
-      .i_clk,
-      .i_write_enable (i_alloc.valid && !full),
-      .i_write_address(alloc_target[IdxWidth-1:0]),
-      .i_write_data   (i_alloc.size),
-      .i_read_address (issue_cdb_idx),
-      .o_read_data    (lq_size_issue_cdb_rd)
-  );
+  // lq_size is tiny and sits on the sq_check staging path, so keep it in FFs
+  // instead of adding another LUTRAM read cone.
+  assign lq_size_issue_cdb_rd = lq_size[issue_cdb_idx];
 
   // lq_address and lq_amo_rs2 are only written once the address CAM resolves.
   // Valid bits stay in FFs; stale RAM contents are don't-care until addr_valid.
@@ -450,7 +442,7 @@ module load_queue #(
       .i_write_enable (lq_addr_update_we),
       .i_write_address(lq_addr_update_idx),
       .i_write_data   (i_addr_update.address),
-      .i_read_address (issue_mem_idx),
+      .i_read_address (issue_mem_stored_idx),
       .o_read_data    (lq_address_issue_mem_rd)
   );
 
@@ -576,6 +568,21 @@ module load_queue #(
     else addr_update_pre_match_q <= addr_update_pre_match;
   end
 
+  // Head-priority is only a fairness/performance hint for ordinary loads; the
+  // exact live ROB-head checks remain in the eligibility masks for MMIO/LR/AMO.
+  // Registering the hint keeps lq_rob_tag compares out of the SQ-check payload
+  // address capture cone.
+  logic [DEPTH-1:0] rob_head_match_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      rob_head_match_q <= '0;
+    end else begin
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        rob_head_match_q[i] <= lq_valid[i] && (lq_rob_tag[i] == i_rob_head_tag);
+      end
+    end
+  end
+
   // Same-cycle addr bypass: uses the REGISTERED pre-match gated by the
   // actual issue valid (2 LUT levels from flops).
   logic [DEPTH-1:0] entry_addr_valid_now;
@@ -606,8 +613,9 @@ module load_queue #(
   // Pre-computed circular scan indices (head-relative order)
   logic [IdxWidth-1:0] scan_idx[DEPTH];
   always_comb begin
-    for (int unsigned j = 0; j < DEPTH; j++)
-    scan_idx[j] = IdxWidth'(({{(32 - IdxWidth) {1'b0}}, head_idx} + j) % DEPTH);
+    for (int unsigned j = 0; j < DEPTH; j++) begin
+      scan_idx[j] = IdxWidth'(head_idx + IdxWidth'(j));
+    end
   end
 
   // Phase A: per-entry CDB readiness (parallel, no inter-entry dependency)
@@ -643,35 +651,50 @@ module load_queue #(
   end
 
   // Phase B: per-entry memory issue eligibility (parallel).
-  // Includes MMIO check (MMIO loads only eligible at ROB head) so
-  // sq_check_capture/replace no longer need an indexed MMIO lookup.
-  logic [DEPTH-1:0] mem_eligible_mask;
+  // Split stored-address entries from the single entry whose address arrives
+  // this cycle.  The late i_addr_update.valid then only selects between two
+  // pre-encoded candidates instead of driving the full scan and address RAM
+  // read cone.
+  logic [DEPTH-1:0] mem_eligible_stored_phys;
+  logic [DEPTH-1:0] mem_eligible_update_phys;
+  logic [DEPTH-1:0] mem_eligible_stored_mask;
+  logic [DEPTH-1:0] mem_eligible_update_mask;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      mem_eligible_mask[i] =
-          lq_valid[scan_idx[i]] &&
-          entry_addr_valid_now[scan_idx[i]] &&
-          !lq_issued[scan_idx[i]] &&
-          !lq_data_valid[scan_idx[i]] &&
-          !in_flight_mask[scan_idx[i]] &&
-          (!entry_is_mmio_now[scan_idx[i]] || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
-          (!lq_is_lr[scan_idx[i]]   || (lq_rob_tag[scan_idx[i]] == i_rob_head_tag)) &&
-          (!lq_is_amo[scan_idx[i]]  ||
-           (lq_rob_tag[scan_idx[i]] == i_rob_head_tag && i_sq_committed_empty));
+      mem_eligible_stored_phys[i] =
+          lq_valid[i] &&
+          lq_addr_valid[i] &&
+          !lq_issued[i] &&
+          !lq_data_valid[i] &&
+          !in_flight_mask[i] &&
+          (!lq_is_mmio[i] || (lq_rob_tag[i] == i_rob_head_tag)) &&
+          (!lq_is_lr[i]   || (lq_rob_tag[i] == i_rob_head_tag)) &&
+          (!lq_is_amo[i]  || (lq_rob_tag[i] == i_rob_head_tag && i_sq_committed_empty));
+
+      mem_eligible_update_phys[i] =
+          lq_valid[i] &&
+          addr_update_pre_match_q[i] &&
+          !lq_issued[i] &&
+          !lq_data_valid[i] &&
+          !in_flight_mask[i] &&
+          (!lq_is_lr[i]   || (lq_rob_tag[i] == i_rob_head_tag)) &&
+          (!lq_is_amo[i]  || (lq_rob_tag[i] == i_rob_head_tag && i_sq_committed_empty));
     end
   end
+  assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
+  assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
 
   // AMO blocking: identify scan positions with pending (unresolved) AMOs.
   // A pending older AMO must block younger memory ops until its write
   // phase completes and the slot becomes data-valid.
+  logic [DEPTH-1:0] pending_amo_phys;
   logic [DEPTH-1:0] pending_amo_at;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      pending_amo_at[i] = lq_valid[scan_idx[i]] &&
-                          lq_is_amo[scan_idx[i]] &&
-                          !lq_data_valid[scan_idx[i]];
+      pending_amo_phys[i] = lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i];
     end
   end
+  assign pending_amo_at = rotate_mask_from_head(pending_amo_phys, head_idx);
 
   // Prefix-OR: compute "has older pending AMO" for each scan position
   logic [DEPTH-1:0] blocked_by_amo;
@@ -684,32 +707,52 @@ module load_queue #(
   end
   /* verilator lint_on ALWCOMBORDER */
 
-  // Final Phase B mask: eligible AND not blocked by older AMO
-  logic [DEPTH-1:0] mem_issue_mask;
-  assign mem_issue_mask = mem_eligible_mask & ~blocked_by_amo;
+  // Final Phase B masks: eligible AND not blocked by older AMO.
+  logic [DEPTH-1:0] mem_issue_stored_mask;
+  logic [DEPTH-1:0] mem_issue_update_mask;
+  assign mem_issue_stored_mask = mem_eligible_stored_mask & ~blocked_by_amo;
+  assign mem_issue_update_mask = mem_eligible_update_mask & ~blocked_by_amo;
 
   // The sparse queue can reuse reclaimed holes after flushes, so physical
   // queue order is not always identical to ROB age.  To avoid starving the
   // oldest architectural load behind a younger blocked entry, explicitly
   // prioritize an eligible ROB-head load over the normal physical-order scan.
-  logic head_mem_issue_found;
-  logic [IdxWidth-1:0] head_mem_issue_idx;
+  logic head_mem_stored_found;
+  logic [IdxWidth-1:0] head_mem_stored_idx;
+  logic head_mem_update_found;
+  logic [IdxWidth-1:0] head_mem_update_idx;
   always_comb begin
-    head_mem_issue_found = 1'b0;
-    head_mem_issue_idx   = '0;
+    head_mem_stored_found = 1'b0;
+    head_mem_stored_idx   = '0;
+    head_mem_update_found = 1'b0;
+    head_mem_update_idx   = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (!head_mem_issue_found &&
+      if (!head_mem_stored_found &&
           lq_valid[i] &&
-          (lq_rob_tag[i] == i_rob_head_tag) &&
-          entry_addr_valid_now[i] &&
+          rob_head_match_q[i] &&
+          lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          !entry_is_mmio_now[i] &&
+          !lq_is_mmio[i] &&
           !lq_is_lr[i] &&
-          (!lq_is_amo[i] || i_sq_committed_empty)) begin
-        head_mem_issue_found = 1'b1;
-        head_mem_issue_idx   = IdxWidth'(i);
+          !lq_is_amo[i]) begin
+        head_mem_stored_found = 1'b1;
+        head_mem_stored_idx   = IdxWidth'(i);
+      end
+
+      if (!head_mem_update_found &&
+          lq_valid[i] &&
+          rob_head_match_q[i] &&
+          addr_update_pre_match_q[i] &&
+          !lq_issued[i] &&
+          !lq_data_valid[i] &&
+          !in_flight_mask[i] &&
+          !i_addr_update.is_mmio &&
+          !lq_is_lr[i] &&
+          !lq_is_amo[i]) begin
+        head_mem_update_found = 1'b1;
+        head_mem_update_idx   = IdxWidth'(i);
       end
     end
   end
@@ -829,24 +872,90 @@ module load_queue #(
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
   logic [ReorderBufferTagWidth-1:0] issue_mem_rob_tag;
 
-  // Phase B: tree priority encoder — find oldest eligible entry
+  logic stored_scan_found;
+  logic [IdxWidth-1:0] stored_scan_idx;
+  logic [IdxWidth-1:0] stored_scan_pos;
+  logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
+
+  logic update_scan_found;
+  logic [IdxWidth-1:0] update_scan_idx;
+  logic [IdxWidth-1:0] update_scan_pos;
+  logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
+
   always_comb begin
-    issue_mem_found   = 1'b0;
-    issue_mem_idx     = '0;
-    issue_mem_rob_tag = '0;
-    block_younger_mem = 1'b0;  // kept for interface compat; unused in restructured scan
-    if (head_mem_issue_found) begin
-      issue_mem_found   = 1'b1;
-      issue_mem_idx     = head_mem_issue_idx;
-      issue_mem_rob_tag = i_rob_head_tag;
-    end else begin
-      for (int unsigned i = 0; i < DEPTH; i++) begin
-        if (mem_issue_mask[i] && !issue_mem_found) begin
-          issue_mem_found   = 1'b1;
-          issue_mem_idx     = scan_idx[i];
-          issue_mem_rob_tag = lq_rob_tag[scan_idx[i]];
-        end
+    stored_scan_found   = 1'b0;
+    stored_scan_idx     = '0;
+    stored_scan_pos     = '0;
+    stored_scan_rob_tag = '0;
+    update_scan_found   = 1'b0;
+    update_scan_idx     = '0;
+    update_scan_pos     = '0;
+    update_scan_rob_tag = '0;
+
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (mem_issue_stored_mask[i] && !stored_scan_found) begin
+        stored_scan_found   = 1'b1;
+        stored_scan_idx     = scan_idx[i];
+        stored_scan_pos     = IdxWidth'(i);
+        stored_scan_rob_tag = lq_rob_tag[scan_idx[i]];
       end
+
+      if (mem_issue_update_mask[i] && !update_scan_found) begin
+        update_scan_found   = 1'b1;
+        update_scan_idx     = scan_idx[i];
+        update_scan_pos     = IdxWidth'(i);
+        update_scan_rob_tag = lq_rob_tag[scan_idx[i]];
+      end
+    end
+  end
+
+  logic [IdxWidth-1:0] stored_issue_idx;
+  logic [ReorderBufferTagWidth-1:0] stored_issue_rob_tag;
+  logic [ReorderBufferTagWidth-1:0] update_issue_rob_tag;
+  logic update_scan_older_than_stored_scan;
+  logic update_scan_issueable;
+  logic update_scan_wins;
+
+  assign update_scan_issueable =
+      update_scan_found && (!i_addr_update.is_mmio || (update_scan_rob_tag == i_rob_head_tag));
+  assign update_scan_older_than_stored_scan =
+      update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos));
+  assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
+
+  // Phase B: select oldest eligible entry.  Stored candidates are encoded
+  // independently from the current-cycle address-update candidate so the LQ
+  // address RAM read address does not depend on i_addr_update.valid.
+  always_comb begin
+    stored_issue_idx      = head_mem_stored_found ? head_mem_stored_idx : stored_scan_idx;
+    stored_issue_rob_tag  = head_mem_stored_found ? i_rob_head_tag : stored_scan_rob_tag;
+
+    update_issue_rob_tag  = head_mem_update_found ? i_rob_head_tag : update_scan_rob_tag;
+
+    issue_mem_found       = 1'b0;
+    issue_mem_idx         = '0;
+    issue_mem_stored_idx  = stored_issue_idx;
+    issue_mem_from_update = 1'b0;
+    issue_mem_rob_tag     = '0;
+    block_younger_mem     = 1'b0;  // kept for interface compat; unused in restructured scan
+
+    if (head_mem_stored_found) begin
+      issue_mem_found   = 1'b1;
+      issue_mem_idx     = head_mem_stored_idx;
+      issue_mem_rob_tag = stored_issue_rob_tag;
+    end else if (i_addr_update.valid && head_mem_update_found && !i_addr_update.is_mmio) begin
+      issue_mem_found       = 1'b1;
+      issue_mem_idx         = head_mem_update_idx;
+      issue_mem_from_update = 1'b1;
+      issue_mem_rob_tag     = update_issue_rob_tag;
+    end else if (update_scan_wins) begin
+      issue_mem_found       = 1'b1;
+      issue_mem_idx         = update_scan_idx;
+      issue_mem_from_update = 1'b1;
+      issue_mem_rob_tag     = update_scan_rob_tag;
+    end else if (stored_scan_found) begin
+      issue_mem_found   = 1'b1;
+      issue_mem_idx     = stored_scan_idx;
+      issue_mem_rob_tag = stored_scan_rob_tag;
     end
   end
 
@@ -856,6 +965,7 @@ module load_queue #(
   // For Phase B candidate: drive SQ check ports
 
   assign sq_check_entry_valid = sq_check_pending;
+  assign o_mem_addr_valid = sq_check_entry_valid;
 
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
@@ -873,7 +983,7 @@ module load_queue #(
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward || launch_mem_issue);
 
-  // TIMING: MMIO check folded into mem_eligible_mask (Phase B scan) so these
+  // TIMING: MMIO check folded into the Phase B eligibility masks so these
   // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
   // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
@@ -1396,7 +1506,7 @@ module load_queue #(
   // Barrel-rotate valid mask so head_ptr maps to index 0
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      lq_head_valid_rotated[i] = lq_valid[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
+      lq_head_valid_rotated[i] = lq_valid[IdxWidth'(head_idx+IdxWidth'(i))];
     end
   end
 
@@ -1415,9 +1525,94 @@ module load_queue #(
   // Add offset back to head_ptr (when empty: offset=0, head stays put)
   assign head_advance_target = head_ptr + PtrWidth'({1'b0, lq_head_first_valid_offset});
 
+  // Keep these as always-updated next-state flops so synthesis does not build
+  // a deep clock-enable cone from the LQ issue scan into the SQ-check controls.
+  // The sideband bits are consumed only when sq_check_pending is set, so normal
+  // completion only needs to clear sq_check_pending; stale sideband values are
+  // overwritten on the next capture.
+  logic sq_check_pending_next;
+  logic sq_check_no_older_store_next;
+  logic sq_check_phase2_next;
+  logic sq_check_flushed;
+  assign sq_check_flushed = i_flush_en && sq_check_pending && (flush_all_entries || is_younger(
+      sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
+  ));
+
+  always_comb begin
+    sq_check_pending_next        = sq_check_pending;
+    sq_check_no_older_store_next = sq_check_no_older_store_q;
+    sq_check_phase2_next         = sq_check_phase2;
+
+    if (sq_check_flushed) begin
+      sq_check_pending_next        = 1'b0;
+      sq_check_no_older_store_next = 1'b0;
+      sq_check_phase2_next         = 1'b0;
+    end else if (sq_check_capture || sq_check_replace) begin
+      sq_check_pending_next        = 1'b1;
+      sq_check_no_older_store_next = i_sq_empty;
+      sq_check_phase2_next         = i_sq_empty;
+    end else if (sq_check_pending &&
+                 (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
+                  launch_mem_issue)) begin
+      // launch_mem_issue keeps the slot held through bus_busy stalls.
+      sq_check_pending_next = 1'b0;
+    end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
+      sq_check_phase2_next = 1'b1;
+    end else if (o_sq_check_valid && !sq_check_phase2) begin
+      sq_check_phase2_next = 1'b1;
+    end
+  end
+
   // ===========================================================================
   // Sequential Logic
   // ===========================================================================
+
+`ifdef FROST_XILINX_PRIMS
+  // Xilinx-specific timing steering: keep CE tied high so Vivado cannot put
+  // the LQ issue-scan cone on the control-flop CE pins.
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_pending_ff (
+      .C (i_clk),
+      .CE(1'b1),
+      .D (sq_check_pending_next),
+      .Q (sq_check_pending),
+      .R (!i_rst_n || i_flush_all)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_no_older_store_ff (
+      .C (i_clk),
+      .CE(1'b1),
+      .D (sq_check_no_older_store_next),
+      .Q (sq_check_no_older_store_q),
+      .R (!i_rst_n || i_flush_all)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_phase2_ff (
+      .C (i_clk),
+      .CE(1'b1),
+      .D (sq_check_phase2_next),
+      .Q (sq_check_phase2),
+      .R (!i_rst_n || i_flush_all)
+  );
+`else
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      sq_check_pending          <= 1'b0;
+      sq_check_no_older_store_q <= 1'b0;
+      sq_check_phase2           <= 1'b0;
+    end else begin
+      sq_check_pending          <= sq_check_pending_next;
+      sq_check_no_older_store_q <= sq_check_no_older_store_next;
+      sq_check_phase2           <= sq_check_phase2_next;
+    end
+  end
+`endif
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -1430,9 +1625,6 @@ module load_queue #(
       lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
-      sq_check_pending          <= 1'b0;
-      sq_check_no_older_store_q <= 1'b0;
-      sq_check_phase2           <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
@@ -1446,9 +1638,6 @@ module load_queue #(
       lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
-      sq_check_pending          <= 1'b0;
-      sq_check_no_older_store_q <= 1'b0;
-      sq_check_phase2           <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else begin
@@ -1474,13 +1663,6 @@ module load_queue #(
             drop_mem_response_pending <= 1'b1;
           end
         end
-        if (sq_check_pending && (flush_all_entries || is_younger(
-                sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
-            ))) begin
-          sq_check_pending          <= 1'b0;
-          sq_check_no_older_store_q <= 1'b0;
-          sq_check_phase2           <= 1'b0;
-        end
         // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
         // after the flush instead of compacting the tail in this cycle.
       end
@@ -1504,25 +1686,6 @@ module load_queue #(
       // -----------------------------------------------------------------
       if (lq_addr_update_we) begin
         lq_addr_valid[lq_addr_update_idx] <= 1'b1;
-      end
-
-      if (sq_check_capture || sq_check_replace) begin
-        sq_check_pending          <= 1'b1;
-        sq_check_no_older_store_q <= i_sq_empty;
-        sq_check_phase2           <= i_sq_empty;
-      end else if (sq_check_pending &&
-                   (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-                    launch_mem_issue)) begin
-        // launch_mem_issue (was stage_mem_issue) ensures the slot is held
-        // through bus_busy stalls so the staged candidate is not lost when
-        // stage_mem_issue fires but the launch is gated this cycle.
-        sq_check_pending          <= 1'b0;
-        sq_check_no_older_store_q <= 1'b0;
-        sq_check_phase2           <= 1'b0;
-      end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
-        sq_check_phase2 <= 1'b1;
-      end else if (o_sq_check_valid && !sq_check_phase2) begin
-        sq_check_phase2 <= 1'b1;
       end
 
       // -----------------------------------------------------------------
@@ -1636,6 +1799,7 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (i_alloc.valid && !full) begin
       lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
+      lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
       lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
       lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
@@ -1663,23 +1827,188 @@ module load_queue #(
   // Internal data: SQ check candidate index
   // -----------------------------------------------------------------
   logic issue_mem_uses_addr_update;
-  assign issue_mem_uses_addr_update = addr_update_pre_match_q[issue_mem_idx] && i_addr_update.valid;
+  logic [XLEN-1:0] issue_mem_addr;
+  logic [IdxWidth-1:0] update_issue_payload_idx;
+  logic [$bits(riscv_pkg::mem_size_e)-1:0] issue_mem_size_bits;
+  logic issue_mem_is_fp;
+  logic issue_mem_sign_ext;
+  logic issue_mem_is_mmio;
+  logic issue_mem_fp64_phase;
+  logic issue_mem_is_lr;
+  logic issue_mem_is_amo;
+  logic sq_check_payload_en;
+  logic [IdxWidth-1:0] sq_check_idx_next;
+  logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
+  logic [XLEN-1:0] sq_check_addr_next;
+  riscv_pkg::mem_size_e sq_check_size_next;
+  logic sq_check_is_fp_next;
+  logic sq_check_sign_ext_next;
+  logic sq_check_is_mmio_next;
+  logic sq_check_fp64_phase_next;
+  logic sq_check_is_lr_next;
+  logic sq_check_is_amo_next;
+  assign sq_check_payload_en = sq_check_capture || sq_check_replace;
+  assign issue_mem_uses_addr_update = issue_mem_from_update;
+  assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
+                                                     : lq_address_issue_mem_rd;
+  assign update_issue_payload_idx = head_mem_update_found ? head_mem_update_idx : update_scan_idx;
+  assign issue_mem_size_bits = issue_mem_from_update ? lq_size[update_issue_payload_idx]
+                                                     : lq_size[issue_mem_stored_idx];
+  assign issue_mem_is_fp = issue_mem_from_update ? lq_is_fp[update_issue_payload_idx]
+                                                 : lq_is_fp[issue_mem_stored_idx];
+  assign issue_mem_sign_ext = issue_mem_from_update ? lq_sign_ext[update_issue_payload_idx]
+                                                    : lq_sign_ext[issue_mem_stored_idx];
+  assign issue_mem_is_mmio = issue_mem_from_update ? i_addr_update.is_mmio
+                                                   : lq_is_mmio[issue_mem_stored_idx];
+  assign issue_mem_fp64_phase = issue_mem_from_update ? lq_fp64_phase[update_issue_payload_idx]
+                                                      : lq_fp64_phase[issue_mem_stored_idx];
+  assign issue_mem_is_lr = issue_mem_from_update ? lq_is_lr[update_issue_payload_idx]
+                                                 : lq_is_lr[issue_mem_stored_idx];
+  assign issue_mem_is_amo = issue_mem_from_update ? lq_is_amo[update_issue_payload_idx]
+                                                  : lq_is_amo[issue_mem_stored_idx];
+
+  // Payload flops only need to update on capture/replace. Keep the enable on
+  // the CE pin and drive D directly from the selected candidate; this removes
+  // a per-bit hold mux from the SQ-check address path.
+  assign sq_check_idx_next = issue_mem_idx;
+  assign sq_check_rob_tag_next = issue_mem_rob_tag;
+  assign sq_check_addr_next = issue_mem_addr;
+  assign sq_check_size_next = riscv_pkg::mem_size_e'(issue_mem_size_bits);
+  assign sq_check_is_fp_next = issue_mem_is_fp;
+  assign sq_check_sign_ext_next = issue_mem_sign_ext;
+  assign sq_check_is_mmio_next = issue_mem_is_mmio;
+  assign sq_check_fp64_phase_next = issue_mem_fp64_phase;
+  assign sq_check_is_lr_next = issue_mem_is_lr;
+  assign sq_check_is_amo_next = issue_mem_is_amo;
+
+`ifdef FROST_XILINX_PRIMS
+  for (genvar g_sq_idx = 0; g_sq_idx < IdxWidth; g_sq_idx++) begin : gen_sq_check_idx_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_idx_ff (
+        .C (i_clk),
+        .CE(sq_check_payload_en),
+        .D (sq_check_idx_next[g_sq_idx]),
+        .Q (sq_check_idx[g_sq_idx]),
+        .R (1'b0)
+    );
+  end
+
+  for (
+      genvar g_sq_tag = 0; g_sq_tag < ReorderBufferTagWidth; g_sq_tag++
+  ) begin : gen_sq_check_tag_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_tag_ff (
+        .C (i_clk),
+        .CE(sq_check_payload_en),
+        .D (sq_check_rob_tag_next[g_sq_tag]),
+        .Q (sq_check_rob_tag_q[g_sq_tag]),
+        .R (1'b0)
+    );
+  end
+
+  for (genvar g_sq_addr = 0; g_sq_addr < XLEN; g_sq_addr++) begin : gen_sq_check_addr_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_addr_ff (
+        .C (i_clk),
+        .CE(sq_check_payload_en),
+        .D (sq_check_addr_next[g_sq_addr]),
+        .Q (sq_check_addr_q[g_sq_addr]),
+        .R (1'b0)
+    );
+  end
+
+  for (
+      genvar g_sq_size = 0; g_sq_size < $bits(riscv_pkg::mem_size_e); g_sq_size++
+  ) begin : gen_sq_check_size_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_size_ff (
+        .C (i_clk),
+        .CE(sq_check_payload_en),
+        .D (sq_check_size_next[g_sq_size]),
+        .Q (sq_check_size_q[g_sq_size]),
+        .R (1'b0)
+    );
+  end
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_is_fp_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_is_fp_next),
+      .Q (sq_check_is_fp_q),
+      .R (1'b0)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_sign_ext_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_sign_ext_next),
+      .Q (sq_check_sign_ext_q),
+      .R (1'b0)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_is_mmio_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_is_mmio_next),
+      .Q (sq_check_is_mmio_q),
+      .R (1'b0)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_fp64_phase_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_fp64_phase_next),
+      .Q (sq_check_fp64_phase_q),
+      .R (1'b0)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_is_lr_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_is_lr_next),
+      .Q (sq_check_is_lr_q),
+      .R (1'b0)
+  );
+
+  FDRE #(
+      .INIT(1'b0)
+  ) sq_check_is_amo_ff (
+      .C (i_clk),
+      .CE(sq_check_payload_en),
+      .D (sq_check_is_amo_next),
+      .Q (sq_check_is_amo_q),
+      .R (1'b0)
+  );
+`else
   always_ff @(posedge i_clk) begin
-    if (sq_check_capture || sq_check_replace) begin
-      sq_check_idx <= issue_mem_idx;
-      sq_check_rob_tag_q <= issue_mem_rob_tag;
-      sq_check_addr_q       <= issue_mem_uses_addr_update ? i_addr_update.address
-                                                          : lq_address_issue_mem_rd;
-      sq_check_size_q <= riscv_pkg::mem_size_e'(lq_size_issue_mem_rd);
-      sq_check_is_fp_q <= lq_is_fp[issue_mem_idx];
-      sq_check_sign_ext_q <= lq_sign_ext[issue_mem_idx];
-      sq_check_is_mmio_q    <= issue_mem_uses_addr_update ? i_addr_update.is_mmio
-                                                          : lq_is_mmio[issue_mem_idx];
-      sq_check_fp64_phase_q <= lq_fp64_phase[issue_mem_idx];
-      sq_check_is_lr_q <= lq_is_lr[issue_mem_idx];
-      sq_check_is_amo_q <= lq_is_amo[issue_mem_idx];
+    if (sq_check_payload_en) begin
+      sq_check_idx          <= sq_check_idx_next;
+      sq_check_rob_tag_q    <= sq_check_rob_tag_next;
+      sq_check_addr_q       <= sq_check_addr_next;
+      sq_check_size_q       <= sq_check_size_next;
+      sq_check_is_fp_q      <= sq_check_is_fp_next;
+      sq_check_sign_ext_q   <= sq_check_sign_ext_next;
+      sq_check_is_mmio_q    <= sq_check_is_mmio_next;
+      sq_check_fp64_phase_q <= sq_check_fp64_phase_next;
+      sq_check_is_lr_q      <= sq_check_is_lr_next;
+      sq_check_is_amo_q     <= sq_check_is_amo_next;
     end
   end
+`endif
 
   // -----------------------------------------------------------------
   // Internal data: issued entry tracker + flat snapshot

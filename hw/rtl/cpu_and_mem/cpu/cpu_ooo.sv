@@ -1153,6 +1153,7 @@ module cpu_ooo #(
   logic sq_mem_write_done, sq_mem_write_done_comb;
 
   logic lq_mem_read_en;
+  logic lq_mem_addr_valid;
   logic [XLEN-1:0] lq_mem_read_addr;
   riscv_pkg::mem_size_e lq_mem_read_size;
   logic [XLEN-1:0] lq_mem_read_data;
@@ -1462,6 +1463,7 @@ module cpu_ooo #(
 
       // Load queue memory interface
       .o_lq_mem_read_en(lq_mem_read_en),
+      .o_lq_mem_addr_valid(lq_mem_addr_valid),
       .o_lq_mem_read_addr(lq_mem_read_addr),
       .o_lq_mem_read_size(lq_mem_read_size),
       .i_lq_mem_read_data(lq_mem_read_data),
@@ -2329,9 +2331,12 @@ module cpu_ooo #(
     o_data_mem_read_enable = !sq_mem_write_en && !amo_mem_write_en &&
                              (lq_mem_request_valid || lq_mem_read_en);
 
+    // Keep the BRAM address mux select independent of the LQ read-enable /
+    // cache-hit cone. Address-only changes are harmless without read_enable.
     o_data_mem_addr = sq_mem_write_en ? sq_mem_write_addr :
                       amo_mem_write_en ? amo_mem_write_addr :
-                      o_data_mem_read_enable ? lq_mem_request_addr_eff : '0;
+                      (lq_mem_request_valid || lq_mem_addr_valid) ?
+                      lq_mem_request_addr_eff : '0;
 
     o_data_mem_wr_data = sq_mem_write_en ? sq_mem_write_data :
                          amo_mem_write_en ? amo_mem_write_data : '0;

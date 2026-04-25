@@ -320,6 +320,7 @@ module tomasulo_wrapper (
     // Load Queue: Memory Interface
     // =========================================================================
     output logic                                       o_lq_mem_read_en,
+    output logic                                       o_lq_mem_addr_valid,
     output logic                 [riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
     output riscv_pkg::mem_size_e                       o_lq_mem_read_size,
     input  logic                 [riscv_pkg::XLEN-1:0] i_lq_mem_read_data,
@@ -1092,11 +1093,12 @@ module tomasulo_wrapper (
   // FP DIV result accepted: the adapter consumes the shim's output this cycle.
   // Either the adapter is idle and the shim presents a valid result (pass-through),
   // or the adapter is pending, gets granted, and the shim presents a new valid result.
+  // Use pre-kill grant so speculative full-flush does not feed back into the
+  // FP-div shim FIFO pop/count cone. During full flush the shim clears its FIFO.
   logic fp_div_result_accepted;
   assign fp_div_result_accepted =
-      !speculative_flush_all &&
-      ((!fp_div_adapter_result_pending && fp_div_shim_out.valid) ||
-      (fp_div_adapter_result_pending && o_cdb_grant[6] && fp_div_shim_out.valid));
+      (!fp_div_adapter_result_pending && fp_div_shim_out.valid) ||
+      (fp_div_adapter_result_pending && o_cdb_grant_raw[6] && fp_div_shim_out.valid);
 
   // ===========================================================================
   // Reorder Buffer Instance
@@ -1743,6 +1745,7 @@ module tomasulo_wrapper (
 
       // Memory interface (external)
       .o_mem_read_en   (o_lq_mem_read_en),
+      .o_mem_addr_valid(o_lq_mem_addr_valid),
       .o_mem_read_addr (o_lq_mem_read_addr),
       .o_mem_read_size (o_lq_mem_read_size),
       .i_mem_read_data (i_lq_mem_read_data),
