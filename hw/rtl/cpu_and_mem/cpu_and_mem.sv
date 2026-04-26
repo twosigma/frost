@@ -289,15 +289,19 @@ module cpu_and_mem #(
   // see a stable response after the side-effect pulse fires.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mmio_read_data_reg   <= '0;
       mmio_read_data_valid <= 1'b0;
     end else begin
       if (mmio_read_pulse && mmio_load_is_mmio) begin
-        mmio_read_data_reg   <= mmio_read_data_comb;
         mmio_read_data_valid <= 1'b1;
       end else if (mmio_read_data_valid && !mmio_load_valid) begin
         mmio_read_data_valid <= 1'b0;
       end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (mmio_read_pulse && mmio_load_is_mmio) begin
+      mmio_read_data_reg <= mmio_read_data_comb;
     end
   end
 

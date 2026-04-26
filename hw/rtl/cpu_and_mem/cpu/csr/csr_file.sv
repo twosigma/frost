@@ -472,11 +472,7 @@ module csr_file #(
   logic [XLEN-1:0] csr_read_data_reg;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      csr_read_data_reg <= '0;
-    end else begin
-      csr_read_data_reg <= csr_read_data_comb;
-    end
+    csr_read_data_reg <= csr_read_data_comb;
   end
 
   assign o_csr_read_data = csr_read_data_reg;

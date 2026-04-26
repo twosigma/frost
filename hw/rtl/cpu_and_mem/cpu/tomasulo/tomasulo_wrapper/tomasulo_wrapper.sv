@@ -965,8 +965,14 @@ module tomasulo_wrapper (
   // the fast combinational path via lq_fu_complete.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || speculative_flush_all) sc_fu_complete_reg <= '0;
-    else sc_fu_complete_reg <= sc_fu_complete;
+    if (!i_rst_n || speculative_flush_all) sc_fu_complete_reg.valid <= 1'b0;
+    else sc_fu_complete_reg.valid <= sc_fu_complete.valid;
+
+    sc_fu_complete_reg.tag <= sc_fu_complete.tag;
+    sc_fu_complete_reg.value <= sc_fu_complete.value;
+    sc_fu_complete_reg.exception <= sc_fu_complete.exception;
+    sc_fu_complete_reg.exc_cause <= sc_fu_complete.exc_cause;
+    sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
   end
 
   // MUX: SC > LQ for MEM adapter input. Plain stores mark the ROB done

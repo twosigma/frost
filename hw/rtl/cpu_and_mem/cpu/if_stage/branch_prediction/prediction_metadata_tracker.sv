@@ -70,13 +70,17 @@ module prediction_metadata_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush) begin
-      prediction_hit_saved <= 1'b0;
+      prediction_hit_saved   <= 1'b0;
       prediction_taken_saved <= 1'b0;
-      prediction_target_saved <= '0;
     end else if (i_stall & ~i_stall_registered) begin
       // Save at stall start
-      prediction_hit_saved <= i_prediction_used_r;
+      prediction_hit_saved   <= i_prediction_used_r;
       prediction_taken_saved <= i_prediction_used_r;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_stall & ~i_stall_registered) begin
       prediction_target_saved <= i_predicted_target_r;
     end
   end
@@ -105,21 +109,25 @@ module prediction_metadata_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush) begin
-      prediction_hit_pending_saved    <= 1'b0;
-      prediction_taken_pending_saved  <= 1'b0;
-      prediction_target_pending_saved <= '0;
-      prediction_pending_saved_valid  <= 1'b0;
+      prediction_hit_pending_saved   <= 1'b0;
+      prediction_taken_pending_saved <= 1'b0;
+      prediction_pending_saved_valid <= 1'b0;
     end else if (!i_stall) begin
       if (effective_pending_prediction_consume) begin
         prediction_pending_saved_valid <= 1'b0;
       end
 
       if (i_prediction_used_r && i_pending_prediction_fetch_holdoff) begin
-        prediction_hit_pending_saved    <= i_prediction_used_r;
-        prediction_taken_pending_saved  <= i_prediction_used_r;
-        prediction_target_pending_saved <= i_predicted_target_r;
-        prediction_pending_saved_valid  <= 1'b1;
+        prediction_hit_pending_saved   <= i_prediction_used_r;
+        prediction_taken_pending_saved <= i_prediction_used_r;
+        prediction_pending_saved_valid <= 1'b1;
       end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_stall && i_prediction_used_r && i_pending_prediction_fetch_holdoff) begin
+      prediction_target_pending_saved <= i_predicted_target_r;
     end
   end
 

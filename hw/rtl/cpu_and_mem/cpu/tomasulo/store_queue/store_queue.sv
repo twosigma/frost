@@ -521,17 +521,19 @@ module store_queue #(
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       o_sq_all_older_addrs_known <= 1'b0;
-      o_sq_forward               <= '0;
+      o_sq_forward.match         <= 1'b0;
+      o_sq_forward.can_forward   <= 1'b0;
     end else begin
       o_sq_all_older_addrs_known <= i_sq_check_valid ? fwd_all_older_known : 1'b0;
       o_sq_forward.match         <= i_sq_check_valid ? fwd_found_match : 1'b0;
       o_sq_forward.can_forward   <= i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
-      case (fwd_extract_type)
-        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
-        2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
-        default: o_sq_forward.data <= sq_data_fwd_rd;
-      endcase
     end
+
+    case (fwd_extract_type)
+      2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
+      2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
+      default: o_sq_forward.data <= sq_data_fwd_rd;
+    endcase
   end
 
   // ===========================================================================
@@ -590,18 +592,16 @@ module store_queue #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
-      o_mem_write_en      <= 1'b0;
-      o_mem_write_addr    <= '0;
-      o_mem_write_data    <= '0;
-      o_mem_write_byte_en <= '0;
-      o_mem_write_is_mmio <= 1'b0;
+      o_mem_write_en <= 1'b0;
     end else begin
-      o_mem_write_en      <= mem_write_fire_next;
-      o_mem_write_addr    <= mem_write_addr_next;
-      o_mem_write_data    <= mem_write_data_next;
-      o_mem_write_byte_en <= mem_write_byte_en_next;
-      o_mem_write_is_mmio <= mem_write_is_mmio_next;
+      o_mem_write_en <= mem_write_fire_next;
     end
+
+    o_mem_write_addr    <= mem_write_addr_next;
+    o_mem_write_data    <= mem_write_data_next;
+    o_mem_write_byte_en <= mem_write_byte_en_next;
+    o_mem_write_is_mmio <= mem_write_is_mmio_next;
+
     if (mem_write_fire_next) begin
       mem_write_entry_idx_stg <= head_idx;
       mem_write_completes_stg <= !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
@@ -698,28 +698,22 @@ module store_queue #(
   // -------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      head_ptr              <= '0;
-      tail_ptr              <= '0;
-      sq_addr_valid         <= '0;
-      sq_data_valid         <= '0;
-      sq_committed          <= '0;
-      sq_sent               <= '0;
-      write_outstanding     <= 1'b0;
-      write_entry_idx       <= '0;
-      write_completes_entry <= 1'b0;
-      write_invalidate_addr <= '0;
+      head_ptr          <= '0;
+      tail_ptr          <= '0;
+      sq_addr_valid     <= '0;
+      sq_data_valid     <= '0;
+      sq_committed      <= '0;
+      sq_sent           <= '0;
+      write_outstanding <= 1'b0;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
-      head_ptr              <= '0;
-      tail_ptr              <= '0;
-      sq_addr_valid         <= '0;
-      sq_data_valid         <= '0;
-      sq_committed          <= '0;
-      sq_sent               <= '0;
-      write_outstanding     <= 1'b0;
-      write_entry_idx       <= '0;
-      write_completes_entry <= 1'b0;
-      write_invalidate_addr <= '0;
+      head_ptr          <= '0;
+      tail_ptr          <= '0;
+      sq_addr_valid     <= '0;
+      sq_data_valid     <= '0;
+      sq_committed      <= '0;
+      sq_sent           <= '0;
+      write_outstanding <= 1'b0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -797,9 +791,6 @@ module store_queue #(
       // registers captured alongside it for entry_idx and completes_entry.
       if (o_mem_write_en) begin
         write_outstanding <= 1'b1;
-        write_entry_idx <= mem_write_entry_idx_stg;
-        write_completes_entry <= mem_write_completes_stg;
-        write_invalidate_addr <= o_mem_write_addr;
       end
 
       // -----------------------------------------------------------------
@@ -822,6 +813,12 @@ module store_queue #(
       head_ptr <= head_advance_target;
 
     end  // !flush_all
+
+    if (o_mem_write_en) begin
+      write_entry_idx <= mem_write_entry_idx_stg;
+      write_completes_entry <= mem_write_completes_stg;
+      write_invalidate_addr <= o_mem_write_addr;
+    end
   end
 
   // Keep sq_valid separate so full-flush and partial-flush invalidation do not

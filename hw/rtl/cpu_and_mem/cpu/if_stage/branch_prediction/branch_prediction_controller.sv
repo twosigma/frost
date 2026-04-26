@@ -186,19 +186,19 @@ module branch_prediction_controller (
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       ras_misprediction_r <= 1'b0;
-      ras_restore_tos_r <= '0;
-      ras_restore_valid_count_r <= '0;
       ras_pop_after_restore_r <= 1'b0;
       ras_push_after_restore_r <= 1'b0;
-      ras_push_address_after_restore_r <= '0;
     end else begin
       ras_misprediction_r <= i_ras_misprediction;
-      ras_restore_tos_r <= i_ras_restore_tos;
-      ras_restore_valid_count_r <= i_ras_restore_valid_count;
       ras_pop_after_restore_r <= i_ras_pop_after_restore;
       ras_push_after_restore_r <= i_ras_push_after_restore;
-      ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    ras_restore_tos_r <= i_ras_restore_tos;
+    ras_restore_valid_count_r <= i_ras_restore_valid_count;
+    ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
   end
 
   // Compute prediction_allowed for BTB
@@ -357,24 +357,27 @@ module branch_prediction_controller (
   // only tracks predictions that were actually used.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
-      o_prediction_used_r  <= 1'b0;
-      o_predicted_target_r <= '0;
-      o_sel_prediction_r   <= 1'b0;
+      o_prediction_used_r <= 1'b0;
+      o_sel_prediction_r  <= 1'b0;
     end else if (i_flush) begin
       // Redirect flushes invalidate any in-flight prediction metadata even if
       // the front-end is stalled. Keeping the old registered target/live bit
       // across a stall+flush lets a stale prediction apply to a later
       // instruction stream with the wrong PC/instruction pairing.
-      o_prediction_used_r  <= 1'b0;
-      o_predicted_target_r <= '0;
-      o_sel_prediction_r   <= 1'b0;
+      o_prediction_used_r <= 1'b0;
+      o_sel_prediction_r  <= 1'b0;
     end else if (~i_stall) begin
-      o_prediction_used_r  <= prediction_used_effective;
+      o_prediction_used_r <= prediction_used_effective;
+      o_sel_prediction_r  <= prediction_used_effective;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (~i_stall) begin
       // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
       o_predicted_target_r <= o_predicted_target;
-      o_sel_prediction_r   <= prediction_used_effective;
     end
   end
 

@@ -129,13 +129,9 @@ module uart_rx #(
     endcase
   end
 
-  // Datapath registers and UART bit sampling logic
+  // Output-valid control register.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      data_shift_register <= '0;
-      data_output_register <= '0;
-      baud_rate_prescaler_counter <= '0;
-      bits_remaining_counter <= '0;
       output_valid_registered <= 1'b0;
     end else begin
       // Clear valid when downstream accepts data
@@ -143,65 +139,73 @@ module uart_rx #(
         output_valid_registered <= 1'b0;
       end
 
-      unique case (current_state)
-        STATE_IDLE: begin
-          if (!uart_input_synchronized) begin
-            // Falling edge detected - start bit beginning
-            // Wait half a bit period to sample at middle of start bit
-            baud_rate_prescaler_counter <= PrescalerCounterWidth'(HalfBitCycles - 1);
-            bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will receive 8 bits
-            data_shift_register <= '0;
-          end
-        end
-
-        STATE_START_BIT: begin
-          if (baud_rate_prescaler_counter > 0) begin
-            baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
-          end else begin
-            // At mid-bit of start bit, set up for first data bit
-            // Wait full bit period to reach middle of first data bit
-            if (!uart_input_synchronized) begin
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-            end
-            // If start bit invalid (high), FSM returns to IDLE - no action needed here
-          end
-        end
-
-        STATE_DATA_BITS: begin
-          if (baud_rate_prescaler_counter > 0) begin
-            baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
-          end else begin
-            if (bits_remaining_counter > 0) begin
-              // Sample current bit at mid-bit, shift into MSB (LSB first reception)
-              data_shift_register <= {uart_input_synchronized, data_shift_register[DATA_WIDTH-1:1]};
-              bits_remaining_counter <= bits_remaining_counter - 1;
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-            end else begin
-              // All data bits received, wait for stop bit
-              baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-            end
-          end
-        end
-
-        STATE_STOP_BIT: begin
-          if (baud_rate_prescaler_counter > 0) begin
-            baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
-          end else begin
-            // Stop bit sampled - if valid (high), output received data
-            if (uart_input_synchronized) begin
-              data_output_register <= data_shift_register;
-              output_valid_registered <= 1'b1;
-            end
-            // If stop bit invalid (low) - framing error, discard data silently
-          end
-        end
-
-        default: begin
-          baud_rate_prescaler_counter <= '0;
-          bits_remaining_counter <= '0;
-        end
-      endcase
+      if (current_state == STATE_STOP_BIT && baud_rate_prescaler_counter == 0 &&
+          uart_input_synchronized) begin
+        output_valid_registered <= 1'b1;
+      end
     end
+  end
+
+  // Datapath registers. The resettable state and output-valid controls gate
+  // when these payload values are consumed, so these flops do not need reset.
+  always_ff @(posedge i_clk) begin
+    unique case (current_state)
+      STATE_IDLE: begin
+        if (!uart_input_synchronized) begin
+          // Falling edge detected - start bit beginning
+          // Wait half a bit period to sample at middle of start bit
+          baud_rate_prescaler_counter <= PrescalerCounterWidth'(HalfBitCycles - 1);
+          bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will receive 8 bits
+          data_shift_register <= '0;
+        end
+      end
+
+      STATE_START_BIT: begin
+        if (baud_rate_prescaler_counter > 0) begin
+          baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
+        end else begin
+          // At mid-bit of start bit, set up for first data bit
+          // Wait full bit period to reach middle of first data bit
+          if (!uart_input_synchronized) begin
+            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
+          end
+          // If start bit invalid (high), FSM returns to IDLE - no action needed here
+        end
+      end
+
+      STATE_DATA_BITS: begin
+        if (baud_rate_prescaler_counter > 0) begin
+          baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
+        end else begin
+          if (bits_remaining_counter > 0) begin
+            // Sample current bit at mid-bit, shift into MSB (LSB first reception)
+            data_shift_register <= {uart_input_synchronized, data_shift_register[DATA_WIDTH-1:1]};
+            bits_remaining_counter <= bits_remaining_counter - 1;
+            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
+          end else begin
+            // All data bits received, wait for stop bit
+            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
+          end
+        end
+      end
+
+      STATE_STOP_BIT: begin
+        if (baud_rate_prescaler_counter > 0) begin
+          baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
+        end else begin
+          // Stop bit sampled - if valid (high), output received data
+          if (uart_input_synchronized) begin
+            data_output_register <= data_shift_register;
+          end
+          // If stop bit invalid (low) - framing error, discard data silently
+        end
+      end
+
+      default: begin
+        baud_rate_prescaler_counter <= '0;
+        bits_remaining_counter <= '0;
+      end
+    endcase
   end
 
 endmodule : uart_rx

@@ -1576,8 +1576,46 @@ module reorder_buffer (
   // Keep commit visible for a full cycle after the retiring edge so external
   // observers can sample it after the head pointer advances.
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) o_commit <= '0;
-    else o_commit <= o_commit_comb;
+    if (!i_rst_n) o_commit.valid <= 1'b0;
+    else o_commit.valid <= o_commit_comb.valid;
+
+    o_commit.tag <= o_commit_comb.tag;
+    o_commit.dest_rf <= o_commit_comb.dest_rf;
+    o_commit.dest_reg <= o_commit_comb.dest_reg;
+    o_commit.dest_valid <= o_commit_comb.dest_valid;
+    o_commit.value <= o_commit_comb.value;
+    o_commit.is_store <= o_commit_comb.is_store;
+    o_commit.is_fp_store <= o_commit_comb.is_fp_store;
+    o_commit.exception <= o_commit_comb.exception;
+    o_commit.pc <= o_commit_comb.pc;
+    o_commit.exc_cause <= o_commit_comb.exc_cause;
+    o_commit.fp_flags <= o_commit_comb.fp_flags;
+    o_commit.has_fp_flags <= o_commit_comb.has_fp_flags;
+    o_commit.misprediction <= o_commit_comb.misprediction;
+    o_commit.early_recovered <= o_commit_comb.early_recovered;
+    o_commit.has_checkpoint <= o_commit_comb.has_checkpoint;
+    o_commit.checkpoint_id <= o_commit_comb.checkpoint_id;
+    o_commit.redirect_pc <= o_commit_comb.redirect_pc;
+    o_commit.predicted_taken <= o_commit_comb.predicted_taken;
+    o_commit.branch_taken <= o_commit_comb.branch_taken;
+    o_commit.branch_target <= o_commit_comb.branch_target;
+    o_commit.is_branch <= o_commit_comb.is_branch;
+    o_commit.is_call <= o_commit_comb.is_call;
+    o_commit.is_return <= o_commit_comb.is_return;
+    o_commit.is_jal <= o_commit_comb.is_jal;
+    o_commit.is_jalr <= o_commit_comb.is_jalr;
+    o_commit.csr_addr <= o_commit_comb.csr_addr;
+    o_commit.csr_op <= o_commit_comb.csr_op;
+    o_commit.csr_write_data <= o_commit_comb.csr_write_data;
+    o_commit.is_csr <= o_commit_comb.is_csr;
+    o_commit.is_fence <= o_commit_comb.is_fence;
+    o_commit.is_fence_i <= o_commit_comb.is_fence_i;
+    o_commit.is_wfi <= o_commit_comb.is_wfi;
+    o_commit.is_mret <= o_commit_comb.is_mret;
+    o_commit.is_amo <= o_commit_comb.is_amo;
+    o_commit.is_lr <= o_commit_comb.is_lr;
+    o_commit.is_sc <= o_commit_comb.is_sc;
+    o_commit.is_compressed <= o_commit_comb.is_compressed;
   end
 
   // ===========================================================================
@@ -1641,8 +1679,46 @@ module reorder_buffer (
   // Registered copy of slot 2 commit so external observers can sample it
   // after the head pointer advances.  Mirrors the o_commit register.
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) o_commit_2 <= '0;
-    else o_commit_2 <= o_commit_comb_2;
+    if (!i_rst_n) o_commit_2.valid <= 1'b0;
+    else o_commit_2.valid <= o_commit_comb_2.valid;
+
+    o_commit_2.tag <= o_commit_comb_2.tag;
+    o_commit_2.dest_rf <= o_commit_comb_2.dest_rf;
+    o_commit_2.dest_reg <= o_commit_comb_2.dest_reg;
+    o_commit_2.dest_valid <= o_commit_comb_2.dest_valid;
+    o_commit_2.value <= o_commit_comb_2.value;
+    o_commit_2.is_store <= o_commit_comb_2.is_store;
+    o_commit_2.is_fp_store <= o_commit_comb_2.is_fp_store;
+    o_commit_2.exception <= o_commit_comb_2.exception;
+    o_commit_2.pc <= o_commit_comb_2.pc;
+    o_commit_2.exc_cause <= o_commit_comb_2.exc_cause;
+    o_commit_2.fp_flags <= o_commit_comb_2.fp_flags;
+    o_commit_2.has_fp_flags <= o_commit_comb_2.has_fp_flags;
+    o_commit_2.misprediction <= o_commit_comb_2.misprediction;
+    o_commit_2.early_recovered <= o_commit_comb_2.early_recovered;
+    o_commit_2.has_checkpoint <= o_commit_comb_2.has_checkpoint;
+    o_commit_2.checkpoint_id <= o_commit_comb_2.checkpoint_id;
+    o_commit_2.redirect_pc <= o_commit_comb_2.redirect_pc;
+    o_commit_2.predicted_taken <= o_commit_comb_2.predicted_taken;
+    o_commit_2.branch_taken <= o_commit_comb_2.branch_taken;
+    o_commit_2.branch_target <= o_commit_comb_2.branch_target;
+    o_commit_2.is_branch <= o_commit_comb_2.is_branch;
+    o_commit_2.is_call <= o_commit_comb_2.is_call;
+    o_commit_2.is_return <= o_commit_comb_2.is_return;
+    o_commit_2.is_jal <= o_commit_comb_2.is_jal;
+    o_commit_2.is_jalr <= o_commit_comb_2.is_jalr;
+    o_commit_2.csr_addr <= o_commit_comb_2.csr_addr;
+    o_commit_2.csr_op <= o_commit_comb_2.csr_op;
+    o_commit_2.csr_write_data <= o_commit_comb_2.csr_write_data;
+    o_commit_2.is_csr <= o_commit_comb_2.is_csr;
+    o_commit_2.is_fence <= o_commit_comb_2.is_fence;
+    o_commit_2.is_fence_i <= o_commit_comb_2.is_fence_i;
+    o_commit_2.is_wfi <= o_commit_comb_2.is_wfi;
+    o_commit_2.is_mret <= o_commit_comb_2.is_mret;
+    o_commit_2.is_amo <= o_commit_comb_2.is_amo;
+    o_commit_2.is_lr <= o_commit_comb_2.is_lr;
+    o_commit_2.is_sc <= o_commit_comb_2.is_sc;
+    o_commit_2.is_compressed <= o_commit_comb_2.is_compressed;
   end
 
   // ===========================================================================

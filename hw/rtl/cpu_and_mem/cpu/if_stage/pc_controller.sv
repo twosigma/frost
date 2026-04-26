@@ -301,7 +301,7 @@ module pc_controller #(
   // redirect_kill_pending_q handle delayed crossing detection gracefully.
   logic [XLEN-2:0] seq_next_pc_reg_hw_q;
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
+    if (i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
       seq_next_pc_reg_hw_q <= '0;
     else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
@@ -490,10 +490,7 @@ module pc_controller #(
   // non-stalled cycle while valid is 0 means the data is ready the instant the
   // control block sets valid.
   always_ff @(posedge i_clk) begin
-    if (i_reset) begin
-      pending_prediction_pc     <= '0;
-      pending_prediction_target <= '0;
-    end else if (!i_stall && !pending_prediction_valid) begin
+    if (!i_stall && !pending_prediction_valid) begin
       pending_prediction_pc     <= o_pc;
       pending_prediction_target <= i_predicted_target;
     end
