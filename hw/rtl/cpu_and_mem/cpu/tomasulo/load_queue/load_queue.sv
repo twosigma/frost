@@ -586,13 +586,10 @@ module load_queue #(
   // Same-cycle addr bypass: uses the REGISTERED pre-match gated by the
   // actual issue valid (2 LUT levels from flops).
   logic [DEPTH-1:0] entry_addr_valid_now;
-  logic [DEPTH-1:0] entry_is_mmio_now;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       entry_addr_valid_now[i] = lq_addr_valid[i] ||
                                 (addr_update_pre_match_q[i] && i_addr_update.valid);
-      entry_is_mmio_now[i] = (addr_update_pre_match_q[i] && i_addr_update.valid) ?
-                             i_addr_update.is_mmio : lq_is_mmio[i];
     end
   end
 
@@ -667,9 +664,9 @@ module load_queue #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_mmio[i] || (lq_rob_tag[i] == i_rob_head_tag)) &&
-          (!lq_is_lr[i]   || (lq_rob_tag[i] == i_rob_head_tag)) &&
-          (!lq_is_amo[i]  || (lq_rob_tag[i] == i_rob_head_tag && i_sq_committed_empty));
+          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
+          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
+          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
 
       mem_eligible_update_phys[i] =
           lq_valid[i] &&
@@ -677,8 +674,8 @@ module load_queue #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_lr[i]   || (lq_rob_tag[i] == i_rob_head_tag)) &&
-          (!lq_is_amo[i]  || (lq_rob_tag[i] == i_rob_head_tag && i_sq_committed_empty));
+          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
+          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
     end
   end
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
@@ -748,7 +745,6 @@ module load_queue #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          !i_addr_update.is_mmio &&
           !lq_is_lr[i] &&
           !lq_is_amo[i]) begin
         head_mem_update_found = 1'b1;
@@ -916,8 +912,10 @@ module load_queue #(
   logic update_scan_issueable;
   logic update_scan_wins;
 
-  assign update_scan_issueable =
-      update_scan_found && (!i_addr_update.is_mmio || (update_scan_rob_tag == i_rob_head_tag));
+  // Keep the live address-derived MMIO compare out of the same-cycle capture
+  // control. If a rare current-update MMIO load is staged before it reaches
+  // ROB head, sq_check_is_mmio_q prevents SQ/memory issue until it is head.
+  assign update_scan_issueable = update_scan_found;
   assign update_scan_older_than_stored_scan =
       update_scan_issueable && (!stored_scan_found || (update_scan_pos < stored_scan_pos));
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
@@ -942,7 +940,7 @@ module load_queue #(
       issue_mem_found   = 1'b1;
       issue_mem_idx     = head_mem_stored_idx;
       issue_mem_rob_tag = stored_issue_rob_tag;
-    end else if (i_addr_update.valid && head_mem_update_found && !i_addr_update.is_mmio) begin
+    end else if (i_addr_update.valid && head_mem_update_found) begin
       issue_mem_found       = 1'b1;
       issue_mem_idx         = head_mem_update_idx;
       issue_mem_from_update = 1'b1;
