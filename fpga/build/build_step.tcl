@@ -131,7 +131,7 @@ if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
     puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming>"
     puts ""
-    puts "Steps: synth, opt, place, post_place_physopt_pass*, route, post_route_physopt_pass*, bitstream"
+    puts "Steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 
@@ -291,12 +291,12 @@ if {$step eq "synth"} {
 
     puts "** DONE — place_design complete with directive: $directive"
 
-} elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step]} {
+} elseif {[string match "post_place_physopt*" $step]} {
     # ===================
-    # PHYS_OPT DESIGN STEP (single pass)
+    # POST-PLACE PHYS_OPT (single pass)
     # ===================
     if {$checkpoint_path eq ""} {
-        puts "Error: phys_opt step requires checkpoint_path"
+        puts "Error: post_place_physopt step requires checkpoint_path"
         exit 1
     }
     open_checkpoint $checkpoint_path
@@ -309,7 +309,50 @@ if {$step eq "synth"} {
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
     write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
 
-    puts "** DONE — phys_opt_design complete with directive: $directive"
+    puts "** DONE — post_place_physopt complete with directive: $directive"
+
+} elseif {[string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
+    # ===================
+    # PHYS_OPT SWEEP (post-route or post-second-route)
+    # ===================
+    # Run phys_opt_design serially with every directive, starting with
+    # AggressiveExplore. The directive arg from the caller is ignored — the
+    # sweep order is fixed here. Final artifacts are written only after the
+    # last pass so the upstream pipeline still sees one checkpoint.
+    if {$checkpoint_path eq ""} {
+        puts "Error: $step step requires checkpoint_path"
+        exit 1
+    }
+    open_checkpoint $checkpoint_path
+
+    set sweep_order [list \
+        AggressiveExplore \
+        Default \
+        Explore \
+        ExploreWithHoldFix \
+        AlternateReplication \
+        AggressiveFanoutOpt \
+        AlternateFlowWithRetiming \
+        RuntimeOptimized \
+    ]
+    set total_passes [llength $sweep_order]
+    set pass_num 1
+    foreach sweep_directive $sweep_order {
+        puts ""
+        puts "=========================================="
+        puts "  $step sweep $pass_num/$total_passes: $sweep_directive"
+        puts "=========================================="
+        phys_opt_design -directive $sweep_directive
+        incr pass_num
+    }
+
+    write_checkpoint -force $work_directory/phys_opt.dcp
+    report_timing_summary -file $work_directory/phys_opt_timing.rpt
+    report_utilization -file $work_directory/phys_opt_util.rpt
+    report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
+    write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
+
+    puts "** DONE — $step sweep complete ($total_passes directives)"
 
 } elseif {$step eq "route"} {
     # ===================
@@ -335,6 +378,30 @@ if {$step eq "synth"} {
 
     puts "** DONE — route_design complete with directive: $directive"
 
+} elseif {$step eq "second_route"} {
+    # ===================
+    # SECOND ROUTE DESIGN STEP (no -tns_cleanup)
+    # ===================
+    # Re-routes from the post_route_physopt checkpoint without -tns_cleanup,
+    # giving the router a different exploration path. The x3 clock-uncertainty
+    # overconstraint was already cleared during the first route pass and is
+    # baked into the upstream checkpoint, so we don't touch it here.
+    if {$checkpoint_path eq ""} {
+        puts "Error: second_route step requires checkpoint_path"
+        exit 1
+    }
+    open_checkpoint $checkpoint_path
+
+    route_design -directive $directive
+
+    write_checkpoint -force $work_directory/post_second_route.dcp
+    report_timing_summary -file $work_directory/post_second_route_timing.rpt
+    report_utilization -file $work_directory/post_second_route_util.rpt
+    report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_second_route_high_fanout.rpt
+    write_failing_paths_csv $work_directory/post_second_route_failing_paths.csv $work_directory/post_second_route_timing.rpt
+
+    puts "** DONE — second route_design complete with directive: $directive"
+
 } elseif {$step eq "bitstream"} {
     # ===================
     # BITSTREAM GENERATION
@@ -359,7 +426,7 @@ if {$step eq "synth"} {
 
 } else {
     puts "Error: Unknown step '$step'"
-    puts "Valid steps: synth, opt, place, post_place_physopt_pass*, route, post_route_physopt_pass*, bitstream"
+    puts "Valid steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 

@@ -145,6 +145,8 @@ module cpu_ooo #(
   // dispatch after a CSR until it commits so no dependent instruction
   // picks up the wrong CDB value.
   logic csr_in_flight;
+  logic csr_wb_pending;
+  logic [4:0] csr_wb_dest_reg;
   logic branch_in_flight;
   localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
   logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
@@ -305,7 +307,7 @@ module cpu_ooo #(
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
   assign frontend_stall =
-      (dispatch_stall || csr_in_flight || serializing_alloc_fire ||
+      (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
@@ -326,7 +328,7 @@ module cpu_ooo #(
     if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
     else
       replay_after_serialize_stall_q <=
-        (csr_in_flight || serializing_alloc_fire) && !flush_pipeline;
+        (csr_in_flight || csr_wb_pending || serializing_alloc_fire) && !flush_pipeline;
   end
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
@@ -496,13 +498,30 @@ module cpu_ooo #(
   assign dbg_issue_valid = rs_issue_int.valid;
   assign dbg_issue_pc = rs_issue_int.pc;
   assign dbg_issue_predicted_taken = rs_issue_int.predicted_taken;
-  assign dbg_rs_dispatch_valid = rs_dispatch.valid;
-  assign dbg_rs_dispatch_pc = rs_dispatch.pc;
-  assign dbg_rs_dispatch_rob_tag = rs_dispatch.rob_tag;
-  assign dbg_rs_dispatch_src1_ready = rs_dispatch.src1_ready;
-  assign dbg_rs_dispatch_src1_tag = rs_dispatch.src1_tag;
-  assign dbg_rs_dispatch_src2_ready = rs_dispatch.src2_ready;
-  assign dbg_rs_dispatch_src2_tag = rs_dispatch.src2_tag;
+  always_comb begin
+    split_rs_dispatch_dbg = '0;
+    if (int_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = int_rs_dispatch;
+    end else if (mul_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = mul_rs_dispatch;
+    end else if (mem_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = mem_rs_dispatch;
+    end else if (fp_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = fp_rs_dispatch;
+    end else if (fmul_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = fmul_rs_dispatch;
+    end else if (fdiv_rs_dispatch.valid) begin
+      split_rs_dispatch_dbg = fdiv_rs_dispatch;
+    end
+  end
+
+  assign dbg_rs_dispatch_valid = split_rs_dispatch_dbg.valid;
+  assign dbg_rs_dispatch_pc = split_rs_dispatch_dbg.pc;
+  assign dbg_rs_dispatch_rob_tag = split_rs_dispatch_dbg.rob_tag;
+  assign dbg_rs_dispatch_src1_ready = split_rs_dispatch_dbg.src1_ready;
+  assign dbg_rs_dispatch_src1_tag = split_rs_dispatch_dbg.src1_tag;
+  assign dbg_rs_dispatch_src2_ready = split_rs_dispatch_dbg.src2_ready;
+  assign dbg_rs_dispatch_src2_tag = split_rs_dispatch_dbg.src2_tag;
 `ifndef SYNTHESIS
   assign dbg_rat_alloc_valid = rat_alloc_valid;
   assign dbg_rat_alloc_dest_rf = rat_alloc_dest_rf;
@@ -846,6 +865,7 @@ module cpu_ooo #(
                     (from_id_to_ex.instruction != riscv_pkg::NOP) &&
                     !from_id_to_ex.is_illegal_instruction &&
                     !csr_in_flight &&
+                    !csr_wb_pending &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
       // allocated before csr_in_flight rises; the held ID image during the
@@ -1075,7 +1095,13 @@ module cpu_ooo #(
   end
 
   // RS dispatch
-  riscv_pkg::rs_dispatch_t                                        rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        int_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        mul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        fp_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        fmul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        fdiv_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        split_rs_dispatch_dbg;
 
   // Checkpoint
   logic                                                           checkpoint_available;
@@ -1176,11 +1202,9 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rob_read_tag;
   logic rob_read_done;
   logic [riscv_pkg::FLEN-1:0] rob_read_value;
-  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_dispatch;
+  logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
-  logic [riscv_pkg::FLEN-1:0]
-      dispatch_bypass_value_1, dispatch_bypass_value_2, dispatch_bypass_value_3;
 
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
@@ -1262,9 +1286,11 @@ module cpu_ooo #(
 
   // CSR read data
   logic [XLEN-1:0] csr_read_data;  // registered (1-cycle latency)
-  logic [XLEN-1:0] csr_read_data_comb;  // combinational (same cycle, for rd write)
 
-  tomasulo_wrapper u_tomasulo (
+  tomasulo_wrapper #(
+      .SPLIT_RS_DISPATCH(1'b1),
+      .ENABLE_DISPATCH_DONE_REPAIR(1'b1)
+  ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -1308,6 +1334,7 @@ module cpu_ooo #(
       .o_commit_2_valid_raw     (rob_commit_2_valid_raw),
       .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
       .i_widen_commit_ok        (widen_commit_ok),
+      .i_commit_hold            (csr_commit_fire),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1346,14 +1373,17 @@ module cpu_ooo #(
       .i_read_tag(rob_read_tag),
       .o_read_done(rob_read_done),
       .o_read_value(rob_read_value),
-      .o_rob_entry_done_vec(rob_entry_done_dispatch),
+      .o_rob_entry_done_vec(),
       .i_rob_entry_epoch(rob_entry_epoch),
+      .i_bypass_valid_1(dispatch_bypass_valid_1),
       .i_bypass_tag_1(dispatch_bypass_tag_1),
-      .o_bypass_value_1(dispatch_bypass_value_1),
+      .o_bypass_value_1(),
+      .i_bypass_valid_2(dispatch_bypass_valid_2),
       .i_bypass_tag_2(dispatch_bypass_tag_2),
-      .o_bypass_value_2(dispatch_bypass_value_2),
+      .o_bypass_value_2(),
+      .i_bypass_valid_3(dispatch_bypass_valid_3),
       .i_bypass_tag_3(dispatch_bypass_tag_3),
-      .o_bypass_value_3(dispatch_bypass_value_3),
+      .o_bypass_value_3(),
 
       // RAT source lookups
       .i_int_src1_addr(int_src1_addr),
@@ -1405,7 +1435,13 @@ module cpu_ooo #(
       .o_checkpoint_alloc_id (checkpoint_alloc_id),
 
       // RS dispatch
-      .i_rs_dispatch(rs_dispatch),
+      .i_rs_dispatch('0),
+      .i_int_rs_dispatch(int_rs_dispatch),
+      .i_mul_rs_dispatch(mul_rs_dispatch),
+      .i_mem_rs_dispatch(mem_rs_dispatch),
+      .i_fp_rs_dispatch(fp_rs_dispatch),
+      .i_fmul_rs_dispatch(fmul_rs_dispatch),
+      .i_fdiv_rs_dispatch(fdiv_rs_dispatch),
       .o_rs_full(),
 
       // RS issue + status (INT_RS)
@@ -1529,17 +1565,22 @@ module cpu_ooo #(
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
 
-      // ROB done-entry bypass
-      .i_rob_entry_done(rob_entry_done_dispatch),
+      // ROB done-entry repair read request
+      .o_bypass_valid_1(dispatch_bypass_valid_1),
       .o_bypass_tag_1  (dispatch_bypass_tag_1),
-      .i_bypass_value_1(dispatch_bypass_value_1),
+      .o_bypass_valid_2(dispatch_bypass_valid_2),
       .o_bypass_tag_2  (dispatch_bypass_tag_2),
-      .i_bypass_value_2(dispatch_bypass_value_2),
+      .o_bypass_valid_3(dispatch_bypass_valid_3),
       .o_bypass_tag_3  (dispatch_bypass_tag_3),
-      .i_bypass_value_3(dispatch_bypass_value_3),
 
       // RS dispatch
-      .o_rs_dispatch(rs_dispatch),
+      .o_rs_dispatch(),
+      .o_int_rs_dispatch(int_rs_dispatch),
+      .o_mul_rs_dispatch(mul_rs_dispatch),
+      .o_mem_rs_dispatch(mem_rs_dispatch),
+      .o_fp_rs_dispatch(fp_rs_dispatch),
+      .o_fmul_rs_dispatch(fmul_rs_dispatch),
+      .o_fdiv_rs_dispatch(fdiv_rs_dispatch),
 
       // Checkpoint management
       .i_checkpoint_available(checkpoint_available),
@@ -1902,9 +1943,9 @@ module cpu_ooo #(
   // mwp_dist_ram LVT steers reads to port 1 when both ports write the
   // same address — matching program order since slot 2 has the newer tag.
   //
-  // CSR instructions still go through port 0 (slot 1) with the
-  // csr_read_data_comb fast-path; CSR commits are 1-wide only by the ROB
-  // hazard gate, so no slot 2 coincides with a CSR commit.
+  // CSR instructions use a delayed writeback from csr_read_data, the CSR
+  // file's registered read result.  That removes the commit CSR address
+  // from the same-cycle regfile-forwarding/dispatch source-value path.
   logic            port0_int_we;
   logic [     4:0] port0_int_addr;
   logic [XLEN-1:0] port0_int_data;
@@ -1918,6 +1959,20 @@ module cpu_ooo #(
   logic [     4:0] port1_fp_addr;
   logic [ FpW-1:0] port1_fp_data;
 
+  assign csr_commit_fire = rob_commit.valid && rob_commit.is_csr && !rob_commit.exception;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      csr_wb_pending  <= 1'b0;
+      csr_wb_dest_reg <= '0;
+    end else begin
+      csr_wb_pending <= csr_commit_fire && rob_commit.dest_valid;
+      if (csr_commit_fire && rob_commit.dest_valid) begin
+        csr_wb_dest_reg <= rob_commit.dest_reg;
+      end
+    end
+  end
+
   always_comb begin
     port0_int_we   = 1'b0;
     port0_int_addr = '0;
@@ -1926,12 +1981,13 @@ module cpu_ooo #(
     port0_fp_addr  = '0;
     port0_fp_data  = '0;
 
-    if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception) begin
-      if (rob_commit.is_csr) begin
-        port0_int_we   = 1'b1;
-        port0_int_addr = rob_commit.dest_reg;
-        port0_int_data = csr_read_data_comb;
-      end else if (rob_commit.dest_rf == 1'b0) begin
+    if (csr_wb_pending) begin
+      port0_int_we   = 1'b1;
+      port0_int_addr = csr_wb_dest_reg;
+      port0_int_data = csr_read_data;
+    end else if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception &&
+                 !rob_commit.is_csr) begin
+      if (rob_commit.dest_rf == 1'b0) begin
         port0_int_we   = 1'b1;
         port0_int_addr = rob_commit.dest_reg;
         port0_int_data = rob_commit.value[XLEN-1:0];
@@ -1965,6 +2021,15 @@ module cpu_ooo #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && csr_wb_pending) begin
+      assert (!rob_commit.valid && !rob_commit_2.valid)
+      else $error("CSR delayed writeback overlapped a commit write port");
+    end
+  end
+`endif
 
   // Pack the per-port signals into the regfile instantiation's array
   // inputs.  LVT priority: highest-numbered port wins on same-address
@@ -2420,11 +2485,6 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mtvec, csr_mepc;
   logic csr_mstatus_mie_direct;
 
-  // CSR execution happens at commit time (serialized by ROB).
-  // The ALU shim passes through the rs1/imm value as the CDB result.
-  // At commit, the value is available in rob_commit.value.
-  assign csr_commit_fire = rob_commit_valid && rob_commit.is_csr && !rob_commit.exception;
-
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
   // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
   // the ALU shim stored zero_extend(csr_imm) in rob_commit.value.
@@ -2442,7 +2502,7 @@ module cpu_ooo #(
       .i_csr_write_data(csr_write_data_from_commit),
       .i_csr_write_enable(csr_commit_fire),
       .o_csr_read_data(csr_read_data),
-      .o_csr_read_data_comb(csr_read_data_comb),
+      .o_csr_read_data_comb(),
       .i_instruction_retired_count(instruction_retired_count),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
@@ -2574,14 +2634,16 @@ module cpu_ooo #(
     perf_top_inc[PerfFrontendBubble] = {
       {63{1'b0}},
       (!i_rst && !flush_pipeline && (post_flush_holdoff_q == 2'd0) &&
-                      !dispatch_status.stall &&
-                      !(csr_in_flight || serializing_alloc_fire) &&
-                      !front_end_cf_serialize_stall &&
-                      !dispatch_status.dispatch_valid)
+       !dispatch_status.stall &&
+       !(csr_in_flight || csr_wb_pending || serializing_alloc_fire) &&
+       !front_end_cf_serialize_stall &&
+       !dispatch_status.dispatch_valid)
     };
     perf_top_inc[PerfFlushRecovery] = {{63{1'b0}}, flush_pipeline};
     perf_top_inc[PerfPostFlushHoldoff] = {{63{1'b0}}, (post_flush_holdoff_q != 2'd0)};
-    perf_top_inc[PerfCsrSerialize] = {{63{1'b0}}, (csr_in_flight || serializing_alloc_fire)};
+    perf_top_inc[PerfCsrSerialize] = {
+      {63{1'b0}}, (csr_in_flight || csr_wb_pending || serializing_alloc_fire)
+    };
     perf_top_inc[PerfControlFlowSerialize] = {{63{1'b0}}, front_end_cf_serialize_stall};
     perf_top_inc[PerfDispatchStallRobFull] = {{63{1'b0}}, dispatch_status.reorder_buffer_full};
     perf_top_inc[PerfDispatchStallIntRsFull] = {{63{1'b0}}, dispatch_status.int_rs_full};

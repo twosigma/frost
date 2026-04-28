@@ -17,13 +17,19 @@
 """FPGA build script with per-step directive selection.
 
 Steps:
-1. Synthesis           (post_synth.dcp)
-2. Opt                 (post_opt.dcp)
-3. Place               (post_place.dcp)
-4. Post-place phys_opt (post_place_physopt.dcp)
-5. Route               (post_route.dcp)
-6. Post-route phys_opt (final.dcp)
-7. Bitstream generation
+1. Synthesis                       (post_synth.dcp)
+2. Opt                             (post_opt.dcp)
+3. Place                           (post_place.dcp)
+4. Post-place phys_opt             (post_place_physopt.dcp)
+5. Route (with -tns_cleanup)       (post_route.dcp)
+6. Post-route phys_opt sweep       (post_route_physopt.dcp)
+7. Second route (no -tns_cleanup)  (post_second_route.dcp)
+8. Post-second-route phys_opt sweep (final.dcp)
+9. Bitstream generation
+
+The two "sweep" steps run phys_opt_design serially with every directive
+(starting with AggressiveExplore); see build_step.tcl. Final artifacts only
+appear after step 8 — earlier stages produce intermediate checkpoints.
 """
 
 import argparse
@@ -110,7 +116,16 @@ PHYS_OPT_DIRECTIVES = [
 ]
 
 # Step names in order
-STEPS = ["synth", "opt", "place", "post_place_physopt", "route", "post_route_physopt"]
+STEPS = [
+    "synth",
+    "opt",
+    "place",
+    "post_place_physopt",
+    "route",
+    "post_route_physopt",
+    "second_route",
+    "post_second_route_physopt",
+]
 
 # Map step name to checkpoint that must exist to start at that step
 STEP_REQUIRES_CHECKPOINT = {
@@ -120,16 +135,22 @@ STEP_REQUIRES_CHECKPOINT = {
     "post_place_physopt": "post_place.dcp",
     "route": "post_place_physopt.dcp",
     "post_route_physopt": "post_route.dcp",
+    "second_route": "post_route_physopt.dcp",
+    "post_second_route_physopt": "post_second_route.dcp",
 }
 
-# Map step name to checkpoint produced after that step
+# Map step name to checkpoint produced after that step. Only the final stage
+# (post_second_route_physopt) produces final.dcp; earlier stages produce
+# intermediate step-named checkpoints.
 STEP_PRODUCES_CHECKPOINT = {
     "synth": "post_synth.dcp",
     "opt": "post_opt.dcp",
     "place": "post_place.dcp",
     "post_place_physopt": "post_place_physopt.dcp",
     "route": "post_route.dcp",
-    "post_route_physopt": "final.dcp",
+    "post_route_physopt": "post_route_physopt.dcp",
+    "second_route": "post_second_route.dcp",
+    "post_second_route_physopt": "final.dcp",
 }
 
 # Map step name to canonical report prefix (used in main work directory)
@@ -139,7 +160,9 @@ STEP_REPORT_PREFIX = {
     "place": "post_place",
     "post_place_physopt": "post_place_physopt",
     "route": "post_route",
-    "post_route_physopt": "final",
+    "post_route_physopt": "post_route_physopt",
+    "second_route": "post_second_route",
+    "post_second_route_physopt": "final",
 }
 
 # Map step name to the report prefix the TCL script actually produces
@@ -150,6 +173,8 @@ _TCL_REPORT_PREFIX = {
     "post_place_physopt": "phys_opt",
     "route": "post_route",
     "post_route_physopt": "phys_opt",
+    "second_route": "post_second_route",
+    "post_second_route_physopt": "phys_opt",
 }
 
 
@@ -411,22 +436,28 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Steps (in order):
-  synth              - Synthesis
-  opt                - Opt design
-  place              - Place design
-  post_place_physopt - Post-place phys_opt
-  route              - Route design
-  post_route_physopt - Post-route phys_opt
+  synth                       - Synthesis
+  opt                         - Opt design
+  place                       - Place design
+  post_place_physopt          - Post-place phys_opt (single directive)
+  route                       - Route design (with -tns_cleanup)
+  post_route_physopt          - Phys_opt sweep over every directive (serial)
+  second_route                - Route design (without -tns_cleanup)
+  post_second_route_physopt   - Phys_opt sweep over every directive (serial);
+                                writes final.dcp + final_*.rpt + bitstream
 
-Each step uses the "Default" directive unless overridden with --*-directive.
+Each step uses a tuned default directive unless overridden with --*-directive.
+--route-directive applies to both route and second_route.
+--physopt-directive applies only to post_place_physopt; the two sweep stages
+ignore it and run AggressiveExplore + the rest of PHYS_OPT_DIRECTIVES in serial.
 
 Examples:
-  ./build.py x3                           # Full build, Default directives
-  ./build.py x3 --start-at place          # Resume from post_opt checkpoint
-  ./build.py x3 --stop-after synth        # Synth only
-  ./build.py x3 --synth-directive PerformanceOptimized  # Specific synth directive
-  ./build.py x3 --synth-directive PerformanceOptimized --stop-after synth
+  ./build.py x3                                    # Full build, tuned defaults
+  ./build.py x3 --start-at place                   # Resume from post_opt checkpoint
+  ./build.py x3 --stop-after synth                 # Synth only
+  ./build.py x3 --synth-directive PerformanceOptimized
   ./build.py x3 --start-at route --route-directive AggressiveExplore
+  ./build.py x3 --start-at second_route            # Requires post_route_physopt.dcp
 """,
     )
     parser.add_argument(
@@ -484,13 +515,15 @@ Examples:
         "--route-directive",
         choices=ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES,
         default="AggressiveExplore",
-        help="Router directive (default: AggressiveExplore)",
+        help="Router directive — used for both route (with -tns_cleanup) and "
+        "second_route (without) (default: AggressiveExplore)",
     )
     parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
-        help="Phys_opt directive for both post-place and post-route (default: AggressiveExplore)",
+        help="Phys_opt directive for post_place_physopt (default: AggressiveExplore). "
+        "post_route_physopt and post_second_route_physopt ignore this — they sweep every directive in serial.",
     )
     args = parser.parse_args()
 
@@ -503,14 +536,18 @@ Examples:
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
 
-    # Per-step directives
+    # Per-step directives. The phys_opt sweep stages ignore the directive arg
+    # in the TCL; we pass "Sweep" as a sentinel so banners and the temp work
+    # dir name make this obvious.
     step_directives = {
         "synth": args.synth_directive,
         "opt": args.opt_directive,
         "place": args.place_directive,
         "post_place_physopt": args.physopt_directive,
         "route": args.route_directive,
-        "post_route_physopt": args.physopt_directive,
+        "post_route_physopt": "Sweep",
+        "second_route": args.route_directive,
+        "post_second_route_physopt": "Sweep",
     }
 
     print(f"\n{'#'*70}")
@@ -569,8 +606,9 @@ Examples:
             print(f"\nError: Step '{step}' failed!")
             sys.exit(1)
 
-    # Generate bitstream if we completed post_route_physopt
-    if "post_route_physopt" in steps_to_run:
+    # Generate bitstream if we completed post_second_route_physopt (the only
+    # step that writes final.dcp).
+    if "post_second_route_physopt" in steps_to_run:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
 

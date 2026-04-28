@@ -169,6 +169,7 @@ class TomasuloInterface:
         self.dut.i_mret_done.value = 0
         self.dut.i_mepc.value = 0
         self.dut.i_interrupt_pending.value = 0
+        self.dut.i_commit_hold.value = 0
 
         # Flush
         self.dut.i_flush_en.value = 0
@@ -182,8 +183,11 @@ class TomasuloInterface:
 
         # ROB bypass read
         self.dut.i_read_tag.value = 0
+        self.dut.i_bypass_valid_1.value = 0
         self.dut.i_bypass_tag_1.value = 0
+        self.dut.i_bypass_valid_2.value = 0
         self.dut.i_bypass_tag_2.value = 0
+        self.dut.i_bypass_valid_3.value = 0
         self.dut.i_bypass_tag_3.value = 0
 
         # RAT source lookup addresses

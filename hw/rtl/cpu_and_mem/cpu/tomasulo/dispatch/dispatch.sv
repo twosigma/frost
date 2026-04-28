@@ -39,9 +39,10 @@
  * Source operand resolution:
  *   For each source register, the RAT is consulted:
  *   - If the RAT says "renamed" (maps to a ROB tag):
- *     - Check if the ROB entry is already done (bypass read)
- *     - If done: src_ready=1, src_value=ROB value
- *     - If not done: src_ready=0, src_tag=ROB tag (will be woken by CDB)
+ *     - src_ready=0, src_tag=ROB tag (will be woken by CDB)
+ *     - dispatch emits a registered repair-read request; the wrapper checks
+ *       whether that ROB entry is already done one cycle later and, if so,
+ *       wakes the RS with the ROB value
  *   - If the RAT says "architectural" (no rename):
  *     - src_ready=1, src_value=regfile value
  *
@@ -103,20 +104,25 @@ module dispatch (
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_rat_alloc_rob_tag,
 
     // =========================================================================
-    // ROB Done-Entry Bypass (generic source ports)
+    // ROB Done-Entry Repair Read Request (generic source ports)
     // =========================================================================
-    input  logic [   riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_done,
+    output logic                                        o_bypass_valid_1,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_1,
-    input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_1,
+    output logic                                        o_bypass_valid_2,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_2,
-    input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_2,
+    output logic                                        o_bypass_valid_3,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_bypass_tag_3,
-    input  logic [                 riscv_pkg::FLEN-1:0] i_bypass_value_3,
 
     // =========================================================================
     // RS Dispatch (to tomasulo_wrapper)
     // =========================================================================
     output riscv_pkg::rs_dispatch_t o_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_int_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_fp_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_fmul_rs_dispatch,
+    output riscv_pkg::rs_dispatch_t o_fdiv_rs_dispatch,
 
     // =========================================================================
     // Checkpoint Management (to/from tomasulo_wrapper)
@@ -152,14 +158,6 @@ module dispatch (
     input logic i_fdiv_rs_full,
     input logic i_lq_full,
     input logic i_sq_full,
-
-    // =========================================================================
-    // ROB Bypass Read (for source operand resolution)
-    // =========================================================================
-    // We need up to 5 simultaneous ROB reads for source operands.
-    // The tomasulo_wrapper exposes a single read port; the dispatch
-    // module uses the RAT lookup result's "done" and "value" fields
-    // which are returned by the RAT+ROB bypass path.
 
     // =========================================================================
     // Flush / recovery hold
@@ -743,9 +741,38 @@ module dispatch (
     o_status.stall = o_stall;
   end
 
-  // Dispatch fires when valid and not stalled
+  // Dispatch fires when valid and not stalled.  Split per-RS dispatch outputs
+  // use RS-specific fire terms so unrelated full signals do not feed every
+  // reservation station's input registers through the shared rs_full mux.
+  logic dispatch_common_ready;
   logic dispatch_fire;
-  assign dispatch_fire   = dispatch_valid && !o_stall;
+  logic int_rs_dispatch_fire;
+  logic mul_rs_dispatch_fire;
+  logic mem_rs_dispatch_fire;
+  logic fp_rs_dispatch_fire;
+  logic fmul_rs_dispatch_fire;
+  logic fdiv_rs_dispatch_fire;
+
+  assign dispatch_common_ready =
+      dispatch_valid &&
+      !i_hold &&
+      !i_rob_full &&
+      !(need_lq && i_lq_full) &&
+      !(need_sq && i_sq_full) &&
+      !(need_checkpoint && !i_checkpoint_available);
+  assign dispatch_fire = dispatch_common_ready && !rs_full;
+  assign int_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full;
+  assign mul_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_MUL) && !i_mul_rs_full;
+  assign mem_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_MEM) && !i_mem_rs_full;
+  assign fp_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full;
+  assign fmul_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_FMUL) && !i_fmul_rs_full;
+  assign fdiv_rs_dispatch_fire =
+      dispatch_common_ready && (rs_type == riscv_pkg::RS_FDIV) && !i_fdiv_rs_full;
 
   // ===========================================================================
   // RAT Source Address Outputs
@@ -756,9 +783,9 @@ module dispatch (
 
   assign o_int_src1_addr = i_rs1_addr;
   assign o_int_src2_addr = i_rs2_addr;
-  assign o_fp_src1_addr  = i_rs1_addr;
-  assign o_fp_src2_addr  = i_rs2_addr;
-  assign o_fp_src3_addr  = i_fp_rs3_addr;
+  assign o_fp_src1_addr = i_rs1_addr;
+  assign o_fp_src2_addr = i_rs2_addr;
+  assign o_fp_src3_addr = i_fp_rs3_addr;
 
   // ===========================================================================
   // Source Operand Resolution
@@ -766,114 +793,118 @@ module dispatch (
   // For each source, select between INT and FP RAT based on instruction type,
   // then resolve ready/tag/value from the RAT lookup result.
 
-  logic                                        src1_ready;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] src1_tag;
-  logic [                 riscv_pkg::FLEN-1:0] src1_value;
+  logic                                        int_src1_ready;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] int_src1_tag;
+  logic [                 riscv_pkg::FLEN-1:0] int_src1_value;
 
-  logic                                        src2_ready;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] src2_tag;
-  logic [                 riscv_pkg::FLEN-1:0] src2_value;
+  logic                                        int_src2_ready;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] int_src2_tag;
+  logic [                 riscv_pkg::FLEN-1:0] int_src2_value;
 
-  logic                                        src3_ready;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] src3_tag;
-  logic [                 riscv_pkg::FLEN-1:0] src3_value;
+  logic                                        fp_src1_ready;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_src1_tag;
+  logic [                 riscv_pkg::FLEN-1:0] fp_src1_value;
 
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_1_sel;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_2_sel;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_3_sel;
+  logic                                        fp_src2_ready;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_src2_tag;
+  logic [                 riscv_pkg::FLEN-1:0] fp_src2_value;
+
+  logic                                        fp_src3_ready;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_src3_tag;
+  logic [                 riscv_pkg::FLEN-1:0] fp_src3_value;
+
+  logic                                        bypass_valid_1_next;
+  logic                                        bypass_valid_2_next;
+  logic                                        bypass_valid_3_next;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_1_next;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_2_next;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] bypass_tag_3_next;
 
   always_comb begin
-    if (uses_fp_rs1_flag) bypass_tag_1_sel = i_fp_src1.tag;
-    else if (uses_int_rs1) bypass_tag_1_sel = i_int_src1.tag;
-    else bypass_tag_1_sel = '0;
-
-    if (uses_fp_rs2_flag) bypass_tag_2_sel = i_fp_src2.tag;
-    else if (uses_int_rs2) bypass_tag_2_sel = i_int_src2.tag;
-    else bypass_tag_2_sel = '0;
-
-    if (uses_fp_rs3_flag) bypass_tag_3_sel = i_fp_src3.tag;
-    else bypass_tag_3_sel = '0;
-  end
-
-  assign o_bypass_tag_1 = bypass_tag_1_sel;
-  assign o_bypass_tag_2 = bypass_tag_2_sel;
-  assign o_bypass_tag_3 = bypass_tag_3_sel;
-
-  // Source 1 resolution
-  // RAT lookup: renamed=1 means source maps to an in-flight ROB entry.
-  // Dispatch checks whether that ROB entry is already done and uses the
-  // async bypass value when available; otherwise the RS waits for the CDB.
-  always_comb begin
+    bypass_valid_1_next = 1'b0;
+    bypass_tag_1_next   = '0;
     if (uses_fp_rs1_flag) begin
-      src1_ready = !i_fp_src1.renamed;
-      if (i_fp_src1.renamed && i_rob_entry_done[i_fp_src1.tag]) begin
-        src1_ready = 1'b1;
-        src1_value = i_bypass_value_1;
-      end else begin
-        src1_value = i_fp_src1.value;
-      end
-      src1_tag = i_fp_src1.tag;
+      bypass_valid_1_next = i_fp_src1.renamed;
+      bypass_tag_1_next   = i_fp_src1.tag;
     end else if (uses_int_rs1) begin
-      src1_ready = !i_int_src1.renamed;
-      if (i_int_src1.renamed && i_rob_entry_done[i_int_src1.tag]) begin
-        src1_ready = 1'b1;
-        src1_value = i_bypass_value_1;
-      end else begin
-        src1_value = i_int_src1.value;
-      end
-      src1_tag = i_int_src1.tag;
-    end else begin
-      // No source 1 needed (LUI, AUIPC, JAL, etc.)
-      src1_ready = 1'b1;
-      src1_tag   = '0;
-      src1_value = '0;
+      bypass_valid_1_next = i_int_src1.renamed;
+      bypass_tag_1_next   = i_int_src1.tag;
     end
-  end
 
-  // Source 2 resolution
-  always_comb begin
+    bypass_valid_2_next = 1'b0;
+    bypass_tag_2_next   = '0;
     if (uses_fp_rs2_flag) begin
-      src2_ready = !i_fp_src2.renamed;
-      if (i_fp_src2.renamed && i_rob_entry_done[i_fp_src2.tag]) begin
-        src2_ready = 1'b1;
-        src2_value = i_bypass_value_2;
-      end else begin
-        src2_value = i_fp_src2.value;
-      end
-      src2_tag = i_fp_src2.tag;
+      bypass_valid_2_next = i_fp_src2.renamed;
+      bypass_tag_2_next   = i_fp_src2.tag;
     end else if (uses_int_rs2) begin
-      src2_ready = !i_int_src2.renamed;
-      if (i_int_src2.renamed && i_rob_entry_done[i_int_src2.tag]) begin
-        src2_ready = 1'b1;
-        src2_value = i_bypass_value_2;
-      end else begin
-        src2_value = i_int_src2.value;
-      end
-      src2_tag = i_int_src2.tag;
-    end else begin
-      // No source 2 needed
-      src2_ready = 1'b1;
-      src2_tag   = '0;
-      src2_value = '0;
+      bypass_valid_2_next = i_int_src2.renamed;
+      bypass_tag_2_next   = i_int_src2.tag;
+    end
+
+    bypass_valid_3_next = 1'b0;
+    bypass_tag_3_next   = '0;
+    if (uses_fp_rs3_flag) begin
+      bypass_valid_3_next = i_fp_src3.renamed;
+      bypass_tag_3_next   = i_fp_src3.tag;
     end
   end
 
-  // Source 3 resolution (FMA only — always FP)
-  always_comb begin
-    if (uses_fp_rs3_flag) begin
-      src3_ready = !i_fp_src3.renamed;
-      if (i_fp_src3.renamed && i_rob_entry_done[i_fp_src3.tag]) begin
-        src3_ready = 1'b1;
-        src3_value = i_bypass_value_3;
-      end else begin
-        src3_value = i_fp_src3.value;
-      end
-      src3_tag = i_fp_src3.tag;
+  // Register repair-read addresses so the ROB done/value lookup is no longer in
+  // the dispatch source-ready/value cone.  Tags are covered by the valid bits.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      o_bypass_valid_1 <= 1'b0;
+      o_bypass_valid_2 <= 1'b0;
+      o_bypass_valid_3 <= 1'b0;
     end else begin
-      src3_ready = 1'b1;
-      src3_tag   = '0;
-      src3_value = '0;
+      o_bypass_valid_1 <= dispatch_fire && bypass_valid_1_next;
+      o_bypass_valid_2 <= dispatch_fire && bypass_valid_2_next;
+      o_bypass_valid_3 <= dispatch_fire && bypass_valid_3_next;
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    o_bypass_tag_1 <= bypass_tag_1_next;
+    o_bypass_tag_2 <= bypass_tag_2_next;
+    o_bypass_tag_3 <= bypass_tag_3_next;
+  end
+
+  // Source resolution
+  // RAT lookup: renamed=1 means source maps to an in-flight ROB entry.
+  // Dispatch does not inspect completed ROB values in-line.  Renamed sources
+  // wait for either the CDB or the registered done-repair wakeup above.
+  //
+  // Keep INT and FP source slots separate here.  The per-RS dispatch builders
+  // below select only the source family each RS can actually consume, which
+  // keeps unrelated RAT outputs out of the RS dispatch-ready cones.
+  always_comb begin
+    int_src1_ready = !i_int_src1.renamed;
+    int_src1_value = i_int_src1.value;
+    int_src1_tag   = i_int_src1.tag;
+  end
+
+  always_comb begin
+    int_src2_ready = !i_int_src2.renamed;
+    int_src2_value = i_int_src2.value;
+    int_src2_tag   = i_int_src2.tag;
+  end
+
+  always_comb begin
+    fp_src1_ready = !i_fp_src1.renamed;
+    fp_src1_value = i_fp_src1.value;
+    fp_src1_tag   = i_fp_src1.tag;
+  end
+
+  always_comb begin
+    fp_src2_ready = !i_fp_src2.renamed;
+    fp_src2_value = i_fp_src2.value;
+    fp_src2_tag   = i_fp_src2.tag;
+  end
+
+  always_comb begin
+    fp_src3_ready = !i_fp_src3.renamed;
+    fp_src3_value = i_fp_src3.value;
+    fp_src3_tag   = i_fp_src3.tag;
   end
 
   // ===========================================================================
@@ -944,62 +975,179 @@ module dispatch (
   // RS Dispatch Output
   // ===========================================================================
 
+  riscv_pkg::rs_dispatch_t rs_dispatch_base;
+
   always_comb begin
-    o_rs_dispatch                  = '0;
+    rs_dispatch_base                  = '0;
 
-    o_rs_dispatch.valid            = dispatch_fire && (rs_type != riscv_pkg::RS_NONE);
-    o_rs_dispatch.rs_type          = rs_type;
-    o_rs_dispatch.rob_tag          = i_rob_alloc_resp.alloc_tag;
-    o_rs_dispatch.op               = op;
+    rs_dispatch_base.rs_type          = rs_type;
+    rs_dispatch_base.rob_tag          = i_rob_alloc_resp.alloc_tag;
+    rs_dispatch_base.op               = op;
 
-    // Source operands
-    o_rs_dispatch.src1_ready       = src1_ready;
-    o_rs_dispatch.src1_tag         = src1_tag;
-    o_rs_dispatch.src1_value       = src1_value;
-
-    o_rs_dispatch.src2_ready       = src2_ready;
-    o_rs_dispatch.src2_tag         = src2_tag;
-    o_rs_dispatch.src2_value       = src2_value;
-
-    o_rs_dispatch.src3_ready       = src3_ready;
-    o_rs_dispatch.src3_tag         = src3_tag;
-    o_rs_dispatch.src3_value       = src3_value;
+    // Unused operands are ready constants.  Per-RS builders below overwrite
+    // only the source slots that can be consumed by that RS family.
+    rs_dispatch_base.src1_ready       = 1'b1;
+    rs_dispatch_base.src2_ready       = 1'b1;
+    rs_dispatch_base.src3_ready       = 1'b1;
 
     // Immediate
-    o_rs_dispatch.imm              = imm;
-    o_rs_dispatch.use_imm          = use_imm;
+    rs_dispatch_base.imm              = imm;
+    rs_dispatch_base.use_imm          = use_imm;
 
     // Rounding mode
-    o_rs_dispatch.rm               = resolved_rm;
+    rs_dispatch_base.rm               = resolved_rm;
 
     // Branch info
-    o_rs_dispatch.branch_target    = branch_target;
-    o_rs_dispatch.predicted_taken  = predicted_taken;
-    o_rs_dispatch.predicted_target = predicted_target;
+    rs_dispatch_base.branch_target    = branch_target;
+    rs_dispatch_base.predicted_taken  = predicted_taken;
+    rs_dispatch_base.predicted_target = predicted_target;
 
     // Memory info
-    o_rs_dispatch.is_fp_mem        = is_fp_load_flag || is_fp_store_flag;
-    o_rs_dispatch.mem_needs_lq     = need_lq;
-    o_rs_dispatch.mem_needs_sq     = need_sq;
-    o_rs_dispatch.mem_size         = mem_size;
-    o_rs_dispatch.mem_signed       = mem_signed;
+    rs_dispatch_base.is_fp_mem        = is_fp_load_flag || is_fp_store_flag;
+    rs_dispatch_base.mem_needs_lq     = need_lq;
+    rs_dispatch_base.mem_needs_sq     = need_sq;
+    rs_dispatch_base.mem_size         = mem_size;
+    rs_dispatch_base.mem_signed       = mem_signed;
 
     // CSR info
-    o_rs_dispatch.csr_addr         = i_from_id_to_ex.csr_address;
-    o_rs_dispatch.csr_imm          = i_from_id_to_ex.csr_imm;
+    rs_dispatch_base.csr_addr         = i_from_id_to_ex.csr_address;
+    rs_dispatch_base.csr_imm          = i_from_id_to_ex.csr_imm;
 
     // PC and pre-computed link address for AUIPC/JAL/JALR handling.
-    o_rs_dispatch.pc               = i_from_id_to_ex.program_counter;
-    o_rs_dispatch.link_addr        = i_from_id_to_ex.link_address;
+    rs_dispatch_base.pc               = i_from_id_to_ex.program_counter;
+    rs_dispatch_base.link_addr        = i_from_id_to_ex.link_address;
 
     // Early misprediction recovery: checkpoint info and branch type.
     // need_checkpoint is true for conditional branches and JALR (not JAL).
     // When dispatch fires for a branch, a checkpoint is always available
     // (dispatch stalls otherwise), so has_checkpoint = need_checkpoint.
-    o_rs_dispatch.has_checkpoint   = need_checkpoint;
-    o_rs_dispatch.checkpoint_id    = i_checkpoint_alloc_id;
-    o_rs_dispatch.is_call          = is_call_flag;
-    o_rs_dispatch.is_return        = is_return_flag;
+    rs_dispatch_base.has_checkpoint   = need_checkpoint;
+    rs_dispatch_base.checkpoint_id    = i_checkpoint_alloc_id;
+    rs_dispatch_base.is_call          = is_call_flag;
+    rs_dispatch_base.is_return        = is_return_flag;
+  end
+
+  always_comb begin
+    o_int_rs_dispatch = rs_dispatch_base;
+    o_mul_rs_dispatch = rs_dispatch_base;
+    o_mem_rs_dispatch = rs_dispatch_base;
+    o_fp_rs_dispatch = rs_dispatch_base;
+    o_fmul_rs_dispatch = rs_dispatch_base;
+    o_fdiv_rs_dispatch = rs_dispatch_base;
+
+    o_int_rs_dispatch.valid = int_rs_dispatch_fire;
+    o_mul_rs_dispatch.valid = mul_rs_dispatch_fire;
+    o_mem_rs_dispatch.valid = mem_rs_dispatch_fire;
+    o_fp_rs_dispatch.valid = fp_rs_dispatch_fire;
+    o_fmul_rs_dispatch.valid = fmul_rs_dispatch_fire;
+    o_fdiv_rs_dispatch.valid = fdiv_rs_dispatch_fire;
+
+    // INT_RS: integer-only sources.  LUI/AUIPC/JAL-like operations keep the
+    // default ready constants for unused slots.
+    if (uses_int_rs1) begin
+      o_int_rs_dispatch.src1_ready = int_src1_ready;
+      o_int_rs_dispatch.src1_tag   = int_src1_tag;
+      o_int_rs_dispatch.src1_value = int_src1_value;
+    end
+    if (uses_int_rs2) begin
+      o_int_rs_dispatch.src2_ready = int_src2_ready;
+      o_int_rs_dispatch.src2_tag   = int_src2_tag;
+      o_int_rs_dispatch.src2_value = int_src2_value;
+    end
+
+    // MUL_RS: M-extension operations always consume integer rs1/rs2.
+    o_mul_rs_dispatch.src1_ready = int_src1_ready;
+    o_mul_rs_dispatch.src1_tag   = int_src1_tag;
+    o_mul_rs_dispatch.src1_value = int_src1_value;
+    o_mul_rs_dispatch.src2_ready = int_src2_ready;
+    o_mul_rs_dispatch.src2_tag   = int_src2_tag;
+    o_mul_rs_dispatch.src2_value = int_src2_value;
+
+    // MEM_RS: base address is integer rs1 when present; store data is integer
+    // rs2 for integer stores/AMOs and FP rs2 for FP stores.
+    if (uses_int_rs1) begin
+      o_mem_rs_dispatch.src1_ready = int_src1_ready;
+      o_mem_rs_dispatch.src1_tag   = int_src1_tag;
+      o_mem_rs_dispatch.src1_value = int_src1_value;
+    end
+    if (uses_fp_rs2_flag) begin
+      o_mem_rs_dispatch.src2_ready = fp_src2_ready;
+      o_mem_rs_dispatch.src2_tag   = fp_src2_tag;
+      o_mem_rs_dispatch.src2_value = fp_src2_value;
+    end else if (uses_int_rs2) begin
+      o_mem_rs_dispatch.src2_ready = int_src2_ready;
+      o_mem_rs_dispatch.src2_tag   = int_src2_tag;
+      o_mem_rs_dispatch.src2_value = int_src2_value;
+    end
+
+    // FP_RS: most operations use FP rs1; int-to-FP moves/conversions use INT
+    // rs1.  Source 2, when present, is always FP for this RS.
+    if (uses_fp_rs1_flag) begin
+      o_fp_rs_dispatch.src1_ready = fp_src1_ready;
+      o_fp_rs_dispatch.src1_tag   = fp_src1_tag;
+      o_fp_rs_dispatch.src1_value = fp_src1_value;
+    end else if (uses_int_rs1) begin
+      o_fp_rs_dispatch.src1_ready = int_src1_ready;
+      o_fp_rs_dispatch.src1_tag   = int_src1_tag;
+      o_fp_rs_dispatch.src1_value = int_src1_value;
+    end
+    if (uses_fp_rs2_flag) begin
+      o_fp_rs_dispatch.src2_ready = fp_src2_ready;
+      o_fp_rs_dispatch.src2_tag   = fp_src2_tag;
+      o_fp_rs_dispatch.src2_value = fp_src2_value;
+    end
+
+    // FMUL_RS: FP multiply/FMA.  FMUL uses src1/src2; FMA also uses src3.
+    o_fmul_rs_dispatch.src1_ready = fp_src1_ready;
+    o_fmul_rs_dispatch.src1_tag   = fp_src1_tag;
+    o_fmul_rs_dispatch.src1_value = fp_src1_value;
+    o_fmul_rs_dispatch.src2_ready = fp_src2_ready;
+    o_fmul_rs_dispatch.src2_tag   = fp_src2_tag;
+    o_fmul_rs_dispatch.src2_value = fp_src2_value;
+    if (uses_fp_rs3_flag) begin
+      o_fmul_rs_dispatch.src3_ready = fp_src3_ready;
+      o_fmul_rs_dispatch.src3_tag   = fp_src3_tag;
+      o_fmul_rs_dispatch.src3_value = fp_src3_value;
+    end
+
+    // FDIV_RS: FDIV uses src1/src2; FSQRT uses only src1.
+    o_fdiv_rs_dispatch.src1_ready = fp_src1_ready;
+    o_fdiv_rs_dispatch.src1_tag   = fp_src1_tag;
+    o_fdiv_rs_dispatch.src1_value = fp_src1_value;
+    if (uses_fp_rs2_flag) begin
+      o_fdiv_rs_dispatch.src2_ready = fp_src2_ready;
+      o_fdiv_rs_dispatch.src2_tag   = fp_src2_tag;
+      o_fdiv_rs_dispatch.src2_value = fp_src2_value;
+    end
+
+    // Backward-compatible combined dispatch observation used by existing unit
+    // tests and debug taps.  Keep this equivalent to the old single-bus source
+    // selection; the full CPU's split wrapper path uses the per-RS outputs.
+    o_rs_dispatch       = rs_dispatch_base;
+    o_rs_dispatch.valid = dispatch_fire && (rs_type != riscv_pkg::RS_NONE);
+    if (uses_fp_rs1_flag) begin
+      o_rs_dispatch.src1_ready = fp_src1_ready;
+      o_rs_dispatch.src1_tag   = fp_src1_tag;
+      o_rs_dispatch.src1_value = fp_src1_value;
+    end else if (uses_int_rs1) begin
+      o_rs_dispatch.src1_ready = int_src1_ready;
+      o_rs_dispatch.src1_tag   = int_src1_tag;
+      o_rs_dispatch.src1_value = int_src1_value;
+    end
+    if (uses_fp_rs2_flag) begin
+      o_rs_dispatch.src2_ready = fp_src2_ready;
+      o_rs_dispatch.src2_tag   = fp_src2_tag;
+      o_rs_dispatch.src2_value = fp_src2_value;
+    end else if (uses_int_rs2) begin
+      o_rs_dispatch.src2_ready = int_src2_ready;
+      o_rs_dispatch.src2_tag   = int_src2_tag;
+      o_rs_dispatch.src2_value = int_src2_value;
+    end
+    if (uses_fp_rs3_flag) begin
+      o_rs_dispatch.src3_ready = fp_src3_ready;
+      o_rs_dispatch.src3_tag   = fp_src3_tag;
+      o_rs_dispatch.src3_value = fp_src3_value;
+    end
   end
 
   // ===========================================================================

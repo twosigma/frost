@@ -50,7 +50,6 @@ module return_address_stack #(
 ) (
     input logic i_clk,
     input logic i_rst,
-    input logic i_stall,
     input logic i_stall_registered,
 
     // Instruction type detection (from ras_detector)
@@ -63,6 +62,9 @@ module return_address_stack #(
 
     // Prediction gating (same as BTB)
     input logic i_prediction_allowed,
+    // Write-side prediction gating with only registered stall state. This keeps
+    // the late backend stall cone off the distributed RAM write enable.
+    input logic i_prediction_allowed_for_write,
     // BTB-only prediction holdoff: UNUSED - kept for interface compatibility.
     // Previously used to allow RAS pop when BTB predicted, but this caused bugs
     // when trap/mret/branch_taken occurred during holdoff (see pop_allowed comment).
@@ -125,15 +127,15 @@ module return_address_stack #(
   //   2. Return (pop only) - predict and consume TOS
   //   3. Call (push only) - save link address
 
-  logic do_push, do_pop, do_pop_then_push;
+  logic do_push, do_pop, do_pop_then_push, do_pop_then_push_write;
   logic capture_op_inputs;
   logic do_restore_push;
 
-  // Capture call/return classification on the stall-entry cycle as well as on
-  // normal advancing cycles. IF replays that same instruction from saved
-  // values after the stall, so dropping the stall-entry classification loses
-  // the corresponding push/pop entirely.
-  assign capture_op_inputs = !i_stall || (i_stall && !i_stall_registered);
+  // Keep the stack write side independent of the live backend stall signal.
+  // During a registered stall, IF replays saved inputs; the stack consumes the
+  // replay after stall_registered drops, so calls are still pushed once without
+  // placing the dispatch/fullness cone on the RAS RAM write enable.
+  assign capture_op_inputs = !i_stall_registered;
 
   // Pop is allowed only when prediction is allowed in the current cycle.
   // NOTE: We previously included btb_only_prediction_holdoff here to allow RAS pop
@@ -144,11 +146,14 @@ module return_address_stack #(
   // in EX stage via ras_pop_after_restore.
   logic pop_allowed;
   logic pop_possible;
+  logic pop_possible_for_write;
   assign pop_allowed = i_prediction_allowed;
   assign pop_possible = pop_allowed && stack_not_empty;
+  assign pop_possible_for_write = i_prediction_allowed_for_write && stack_not_empty;
 
   // Coroutine: pop then push (effectively replaces TOS) - needs pop_possible for pop
   assign do_pop_then_push = i_is_coroutine && pop_possible;
+  assign do_pop_then_push_write = i_is_coroutine && pop_possible_for_write;
 
   // Return: pop only (when not coroutine) - needs pop_possible for pop
   assign do_pop = i_is_return && !i_is_coroutine && pop_possible;
@@ -162,9 +167,9 @@ module return_address_stack #(
   assign ras_write_enable = !i_rst &&
                             (do_restore_push ||
                              (!i_misprediction &&
-                              ((do_pop_then_push && !i_stall_registered) || do_push)));
+                              (do_pop_then_push_write || do_push)));
   assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
-                             (do_pop_then_push ? tos : tos_plus_one);
+                             (do_pop_then_push_write ? tos : tos_plus_one);
   assign ras_write_data = do_restore_push ? i_push_address_after_restore : i_link_address;
 
   sdp_dist_ram #(

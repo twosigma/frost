@@ -115,6 +115,7 @@ module reorder_buffer (
     // Driven from a registered cpu_ooo signal, so the feedback path
     // closes at a flop (no combinational loop).
     input logic i_widen_commit_ok,
+    input logic i_commit_hold,
 
     // =========================================================================
     // Store Queue Coordination
@@ -1332,7 +1333,8 @@ module reorder_buffer (
 
     case (serial_state)
       SERIAL_IDLE: begin
-        if (head_ready && !i_early_recovery_en && !i_flush_en && !i_flush_all) begin
+        if (head_ready && !i_commit_hold && !i_early_recovery_en &&
+                          !i_flush_en    && !i_flush_all) begin
           // Check for serializing instructions at head
           if (head_exception) begin
             // Exception: wait for trap unit
@@ -1439,8 +1441,8 @@ module reorder_buffer (
   // already blocks the early-recovery race; (c) removing the guard breaks
   // the commit_en ↔ branch_update critical path (19 LUT levels through the
   // CARRY8 branch-target comparison).
-  assign commit_en = head_ready && !commit_stall && !i_early_recovery_en && !i_flush_all &&
-                     !flush_after_head_commit;
+  assign commit_en = head_ready && !commit_stall && !i_commit_hold &&
+                     !i_early_recovery_en && !i_flush_all && !flush_after_head_commit;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
@@ -1453,7 +1455,7 @@ module reorder_buffer (
   // term. Outer control logic uses this to suppress younger branch resolution
   // without feeding branch_update back into commit_en.
   assign o_head_commit_misprediction_candidate =
-      head_ready && !commit_stall && !i_early_recovery_en &&
+      head_ready && !commit_stall && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
 
@@ -1463,6 +1465,7 @@ module reorder_buffer (
 
   // CSR execution signal - asserted when entering CSR_EXEC state
   assign o_csr_start = (serial_state == SERIAL_IDLE) && head_ready &&
+                       !i_commit_hold &&
                        !i_early_recovery_en &&
                        head_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
@@ -1472,6 +1475,7 @@ module reorder_buffer (
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
   assign o_mret_start = (serial_state == SERIAL_IDLE) && head_ready &&
+                        !i_commit_hold &&
                         !i_early_recovery_en &&
                         head_is_mret && !head_exception;
 
@@ -1487,7 +1491,7 @@ module reorder_buffer (
   // across clock edges; the combinational term provides same-cycle detection.
   assign o_trap_pending =
       (serial_state == SERIAL_TRAP_WAIT) ||
-      (head_ready && !i_early_recovery_en && head_exception);
+      (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
 

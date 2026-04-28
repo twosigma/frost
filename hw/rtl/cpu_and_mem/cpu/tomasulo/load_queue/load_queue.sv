@@ -1351,7 +1351,7 @@ module load_queue #(
 
   always_comb begin
     issue_cdb_result = '0;
-    if (issue_cdb_found && !i_flush_all && !i_flush_en) begin
+    if (issue_cdb_found && !i_flush_en) begin
       issue_cdb_result.valid = 1'b1;
       issue_cdb_result.tag   = lq_rob_tag[issue_cdb_idx];
 
@@ -1377,12 +1377,12 @@ module load_queue #(
   assign cdb_stage_slot_available = !cdb_stage_valid || i_result_accepted;
   assign issue_cdb_fire = issue_cdb_result.valid && cdb_stage_slot_available;
 
+  // Full-flush CDB suppression is centralized in the wrapper's cdb_kill and
+  // MEM adapter flush.  Keep i_flush_all out of this payload/valid mux so a
+  // FENCE.I/trap full flush does not route through CDB data selection.
   always_comb begin
-    o_fu_complete = '0;
-    if (cdb_stage_valid && !i_flush_all && !i_flush_en && !cdb_stage_result_flushed) begin
-      o_fu_complete       = cdb_stage_data;
-      o_fu_complete.valid = 1'b1;
-    end
+    o_fu_complete       = cdb_stage_data;
+    o_fu_complete.valid = cdb_stage_valid && !i_flush_en && !cdb_stage_result_flushed;
   end
 
   // ===========================================================================
@@ -1410,7 +1410,7 @@ module load_queue #(
       !(issued_is_fp && (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE));
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
-                            resp_bypass_ok && !i_flush_en && !i_flush_all;
+                            resp_bypass_ok && !i_flush_en;
 
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&

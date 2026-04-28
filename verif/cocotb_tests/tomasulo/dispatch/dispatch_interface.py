@@ -596,6 +596,7 @@ class DispatchInterface:
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
         self.dut.i_flush.value = 0
+        self.dut.i_hold.value = 0
 
     # =========================================================================
     # Instruction Input

@@ -116,6 +116,7 @@ module cpu_and_mem #(
   logic        mmio_load_is_mmio;
   logic [31:0] mmio_load_addr;
   logic        mmio_load_valid;
+  logic        mmio_read_capture;
   logic [31:0] data_memory_read_data;  // From RAM only
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
   logic [ 3:0] data_memory_byte_write_enable;
@@ -264,6 +265,7 @@ module cpu_and_mem #(
   assign mmio_load_is_mmio = mmio_load_valid
                           && (mmio_load_addr >= MmioAddr)
                           && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
+  assign mmio_read_capture = mmio_read_pulse && mmio_load_is_mmio;
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse)
   always_comb begin
@@ -291,7 +293,7 @@ module cpu_and_mem #(
     if (i_rst) begin
       mmio_read_data_valid <= 1'b0;
     end else begin
-      if (mmio_read_pulse && mmio_load_is_mmio) begin
+      if (mmio_read_capture) begin
         mmio_read_data_valid <= 1'b1;
       end else if (mmio_read_data_valid && !mmio_load_valid) begin
         mmio_read_data_valid <= 1'b0;
@@ -299,11 +301,29 @@ module cpu_and_mem #(
     end
   end
 
+`ifdef FROST_XILINX_PRIMS
+  // Xilinx-specific timing steering: make the MMIO data capture flops explicit
+  // so Vivado cannot encode zero-valued read cases as synchronous reset pins.
+  for (
+      genvar g_mmio_read_data = 0; g_mmio_read_data < 32; g_mmio_read_data++
+  ) begin : gen_mmio_read_data_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) mmio_read_data_ff (
+        .C (i_clk),
+        .CE(mmio_read_capture),
+        .D (mmio_read_data_comb[g_mmio_read_data]),
+        .Q (mmio_read_data_reg[g_mmio_read_data]),
+        .R (1'b0)
+    );
+  end
+`else
   always_ff @(posedge i_clk) begin
-    if (mmio_read_pulse && mmio_load_is_mmio) begin
+    if (mmio_read_capture) begin
       mmio_read_data_reg <= mmio_read_data_comb;
     end
   end
+`endif
 
   // Register MMIO consume side effects so the load-issue cone stops at the
   // MMIO read-data capture flops instead of reaching into peripheral storage.

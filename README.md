@@ -306,17 +306,17 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 80,947 | 1,029,600 | 7.9% |
-|   LUT as Logic | 68,787 | 1,029,600 | 6.7% |
-|   LUT as Distributed RAM | 11,576 | — | — |
-|   LUT as Shift Register | 584 | — | — |
-| CLB Registers | 58,844 | 2,059,200 | 2.9% |
+| CLB LUTs | 91,760 | 1,029,600 | 8.9% |
+|   LUT as Logic | 79,646 | 1,029,600 | 7.7% |
+|   LUT as Distributed RAM | 11,596 | — | — |
+|   LUT as Shift Register | 518 | — | — |
+| CLB Registers | 60,380 | 2,059,200 | 2.9% |
 | Block RAM Tile | 53.5 | 2,112 | 2.5% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,422 | 128,700 | 3.4% |
-| F7 Muxes | 6,346 | 514,800 | 1.2% |
-| F8 Muxes | 2,333 | 257,400 | 0.9% |
+| CARRY8 | 4,429 | 128,700 | 3.4% |
+| F7 Muxes | 6,361 | 514,800 | 1.2% |
+| F8 Muxes | 2,335 | 257,400 | 0.9% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
@@ -325,15 +325,15 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 60,149 | 203,800 | 29.5% |
-|   LUT as Logic | 57,120 | 203,800 | 28.0% |
-|   LUT as Distributed RAM | 2,476 | — | — |
-|   LUT as Shift Register | 553 | — | — |
-| Slice Registers | 46,374 | 407,600 | 11.4% |
-| Block RAM Tile | 70.5 | 445 | 15.8% |
-| DSPs | 40 | 840 | 4.8% |
-| F7 Muxes | 915 | 101,900 | 0.9% |
-| F8 Muxes | 32 | 50,950 | 0.1% |
+| Slice LUTs | 88,996 | 203,800 | 43.7% |
+|   LUT as Logic | 76,526 | 203,800 | 37.5% |
+|   LUT as Distributed RAM | 11,958 | — | — |
+|   LUT as Shift Register | 512 | — | — |
+| Slice Registers | 59,255 | 407,600 | 14.5% |
+| Block RAM Tile | 53.5 | 445 | 12.0% |
+| DSPs | 36 | 840 | 4.3% |
+| F7 Muxes | 6,638 | 101,900 | 6.5% |
+| F8 Muxes | 278 | 50,950 | 0.6% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |

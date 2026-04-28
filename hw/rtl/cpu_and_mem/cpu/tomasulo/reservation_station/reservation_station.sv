@@ -24,8 +24,8 @@
  *
  * Features:
  *   - Parameterized depth (2-8 entries, all FF-based)
- *   - Up to 3 source operands (for FMA instructions)
- *   - CDB snoop for operand wakeup with same-cycle dispatch bypass
+ *   - Optional third source operand (enabled only for FMA instructions)
+ *   - CDB and done-repair snoop for operand wakeup with same-cycle dispatch bypass
  *   - Priority-encoder issue selection (lowest index first)
  *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
@@ -42,6 +42,8 @@
 
 module reservation_station #(
     parameter int unsigned DEPTH = 8,
+    parameter bit HAS_SRC3 = 1'b1,
+    parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit BYPASS_STAGE2 = 1'b0
 ) (
@@ -58,6 +60,18 @@ module reservation_station #(
     // CDB Snoop / Wakeup
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
+
+    // Registered ROB-done repair wakeups from dispatch. These carry operands
+    // whose CDB broadcast happened before the consumer was dispatched.
+    input logic                                        i_repair_valid_1,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_1,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_1,
+    input logic                                        i_repair_valid_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_2,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_2,
+    input logic                                        i_repair_valid_3,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_3,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_3,
 
     // =========================================================================
     // Issue Interface (to Functional Unit)
@@ -148,6 +162,30 @@ module reservation_station #(
     end
   endfunction
 
+  function automatic logic done_repair_match(input logic [ReorderBufferTagWidth-1:0] tag);
+    begin
+      done_repair_match =
+          (i_repair_valid_1 && tag == i_repair_tag_1) ||
+          (i_repair_valid_2 && tag == i_repair_tag_2) ||
+          (i_repair_valid_3 && tag == i_repair_tag_3);
+    end
+  endfunction
+
+  function automatic logic [FLEN-1:0] done_repair_value(
+      input logic [ReorderBufferTagWidth-1:0] tag);
+    begin
+      if (i_repair_valid_1 && tag == i_repair_tag_1) begin
+        done_repair_value = i_repair_value_1;
+      end else if (i_repair_valid_2 && tag == i_repair_tag_2) begin
+        done_repair_value = i_repair_value_2;
+      end else if (i_repair_valid_3 && tag == i_repair_tag_3) begin
+        done_repair_value = i_repair_value_3;
+      end else begin
+        done_repair_value = '0;
+      end
+    end
+  endfunction
+
   // ===========================================================================
   // Dispatch Field Extraction
   // ===========================================================================
@@ -186,6 +224,18 @@ module reservation_station #(
   wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id = i_dispatch.checkpoint_id;
   wire dispatch_is_call = i_dispatch.is_call;
   wire dispatch_is_return = i_dispatch.is_return;
+  wire dispatch_src1_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src1_ready && done_repair_match(
+      dispatch_src1_tag
+  );
+  wire dispatch_src2_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src2_ready && done_repair_match(
+      dispatch_src2_tag
+  );
+  wire dispatch_src3_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready && done_repair_match(
+      dispatch_src3_tag
+  );
 
   // ===========================================================================
   // Stage 2 Pipeline Register
@@ -199,6 +249,7 @@ module reservation_station #(
   logic stage2_valid;
   logic [ReorderBufferTagWidth-1:0] stage2_rob_tag;
   riscv_pkg::instr_op_e stage2_op;
+  logic stage2_is_sc;
   logic [FLEN-1:0] stage2_src1_value;
   logic [FLEN-1:0] stage2_src2_value;
   logic [FLEN-1:0] stage2_src3_value;
@@ -253,6 +304,7 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_valid;
   logic [DEPTH-1:0] rs_src1_ready;
   logic [DEPTH-1:0] rs_src2_ready;
+  logic [DEPTH-1:0] rs_src3_ready_q;
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
   logic [DEPTH-1:0] rs_writes_cdb_hint;
@@ -268,6 +320,11 @@ module reservation_station #(
 
   logic [ReorderBufferTagWidth-1:0] rs_src3_tag[DEPTH];
   logic [FLEN-1:0] rs_src3_value[DEPTH];
+
+  // Non-FMA reservation stations do not have a third operand.  Drive src3
+  // ready as a constant so synthesis can remove src3 tag/value/wakeup logic
+  // from those instances.
+  assign rs_src3_ready = HAS_SRC3 ? rs_src3_ready_q : {DEPTH{1'b1}};
 
   // ===========================================================================
   // Internal Signals
@@ -409,7 +466,11 @@ module reservation_station #(
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
       src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
-      src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+      if (HAS_SRC3) begin
+        src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+      end else begin
+        src3_cdb_bypass[i] = 1'b0;
+      end
     end
   end
 
@@ -488,7 +549,10 @@ module reservation_station #(
       bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
       bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
       bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
-      bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value : rs_src3_value[issue_idx];
+      if (HAS_SRC3) begin
+        bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value :
+                                  rs_src3_value[issue_idx];
+      end
       bypass_issue.imm = pl_imm;
       bypass_issue.use_imm = rs_use_imm[issue_idx];
       bypass_issue.rm = pl_rm;
@@ -519,7 +583,7 @@ module reservation_station #(
   assign bypass_next_issue_is_sc = BYPASS_STAGE2 && any_ready &&
                                    (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
   assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
-                                            : (stage2_valid && (stage2_op == riscv_pkg::SC_W));
+                                            : (stage2_valid && stage2_is_sc);
 
   // Pre-issue look-ahead: expose the selected entry's rob_tag and
   // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
@@ -553,8 +617,10 @@ module reservation_station #(
                               : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
   assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
                               : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
-  assign o_issue.src3_value = BYPASS_STAGE2 ? bypass_issue.src3_value
-                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value);
+  assign o_issue.src3_value = HAS_SRC3 ?
+                              (BYPASS_STAGE2 ? bypass_issue.src3_value
+                               : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value)) :
+                              '0;
   assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
   assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
   assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
@@ -593,10 +659,10 @@ module reservation_station #(
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      rs_valid           <= '0;
-      rs_src1_ready      <= '0;
-      rs_src2_ready      <= '0;
-      rs_src3_ready      <= '0;
+      rs_valid      <= '0;
+      rs_src1_ready <= '0;
+      rs_src2_ready <= '0;
+      if (HAS_SRC3) rs_src3_ready_q <= '0;
       rs_use_imm         <= '0;
       rs_writes_cdb_hint <= '0;
     end else begin
@@ -621,24 +687,50 @@ module reservation_station #(
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
-          // Source ready bits (dispatch + CDB bypass)
+          // Source ready bits (dispatch + same-cycle CDB bypass). Some RS
+          // instances also allow insertion-time done-repair bypass; others use
+          // only the post-insertion repair snoop to keep ROB value bypass off
+          // their dispatch write cone.
           rs_src1_ready[free_idx] <= dispatch_src1_ready ||
-              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag);
+              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
+              dispatch_src1_repair_match;
           rs_src2_ready[free_idx] <= dispatch_src2_ready ||
-              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag);
-          rs_src3_ready[free_idx] <= dispatch_src3_ready ||
-              (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag);
+              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
+              dispatch_src2_repair_match;
+          if (HAS_SRC3) begin
+            rs_src3_ready_q[free_idx] <= dispatch_src3_ready ||
+                (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
+                dispatch_src3_repair_match;
+          end
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
       end
 
-      // CDB snoop wakeup (control: ready bits only)
-      if (i_cdb.valid) begin
+      // CDB and done-repair snoop wakeup (control: ready bits only)
+      if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i]) begin
-            if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_ready[i] <= 1'b1;
-            if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_ready[i] <= 1'b1;
-            if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_ready[i] <= 1'b1;
+            if (!rs_src1_ready[i] &&
+                ((i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src1_tag[i]
+                ))) begin
+              rs_src1_ready[i] <= 1'b1;
+            end
+            if (!rs_src2_ready[i] &&
+                ((i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src2_tag[i]
+                ))) begin
+              rs_src2_ready[i] <= 1'b1;
+            end
+            if (HAS_SRC3 && !rs_src3_ready[i] &&
+                ((i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src3_tag[i]
+                ))) begin
+              rs_src3_ready_q[i] <= 1'b1;
+            end
           end
         end
       end
@@ -652,32 +744,54 @@ module reservation_station #(
     if (dispatch_fire) begin
       rs_rob_tag[free_idx]  <= dispatch_rob_tag;
 
-      // Source 1 (CDB bypass or dispatch value)
+      // Source 1 (same-cycle CDB bypass or dispatch value)
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
       if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag)
         rs_src1_value[free_idx] <= i_cdb.value;
+      else if (dispatch_src1_repair_match)
+        rs_src1_value[free_idx] <= done_repair_value(dispatch_src1_tag);
       else rs_src1_value[free_idx] <= dispatch_src1_value;
 
       // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
       if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag)
         rs_src2_value[free_idx] <= i_cdb.value;
+      else if (dispatch_src2_repair_match)
+        rs_src2_value[free_idx] <= done_repair_value(dispatch_src2_tag);
       else rs_src2_value[free_idx] <= dispatch_src2_value;
 
-      // Source 3
-      rs_src3_tag[free_idx] <= dispatch_src3_tag;
-      if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
-        rs_src3_value[free_idx] <= i_cdb.value;
-      else rs_src3_value[free_idx] <= dispatch_src3_value;
+      // Source 3 (FMA only)
+      if (HAS_SRC3) begin
+        rs_src3_tag[free_idx] <= dispatch_src3_tag;
+        if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
+          rs_src3_value[free_idx] <= i_cdb.value;
+        else if (dispatch_src3_repair_match)
+          rs_src3_value[free_idx] <= done_repair_value(dispatch_src3_tag);
+        else rs_src3_value[free_idx] <= dispatch_src3_value;
+      end
     end
 
-    // CDB snoop wakeup (data: capture values)
-    if (i_cdb.valid) begin
+    // CDB and done-repair snoop wakeup (data: capture values)
+    if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (rs_valid[i]) begin
-          if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) rs_src1_value[i] <= i_cdb.value;
-          if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) rs_src2_value[i] <= i_cdb.value;
-          if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) rs_src3_value[i] <= i_cdb.value;
+          if (!rs_src1_ready[i] && i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) begin
+            rs_src1_value[i] <= i_cdb.value;
+          end else if (!rs_src1_ready[i] && done_repair_match(rs_src1_tag[i])) begin
+            rs_src1_value[i] <= done_repair_value(rs_src1_tag[i]);
+          end
+
+          if (!rs_src2_ready[i] && i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) begin
+            rs_src2_value[i] <= i_cdb.value;
+          end else if (!rs_src2_ready[i] && done_repair_match(rs_src2_tag[i])) begin
+            rs_src2_value[i] <= done_repair_value(rs_src2_tag[i]);
+          end
+
+          if (HAS_SRC3 && !rs_src3_ready[i] && i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) begin
+            rs_src3_value[i] <= i_cdb.value;
+          end else if (HAS_SRC3 && !rs_src3_ready[i] && done_repair_match(rs_src3_tag[i])) begin
+            rs_src3_value[i] <= done_repair_value(rs_src3_tag[i]);
+          end
         end
       end
     end
@@ -709,10 +823,12 @@ module reservation_station #(
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
       stage2_src1_value <= rs_src1_value[issue_idx];
       stage2_src2_value <= rs_src2_value[issue_idx];
-      stage2_src3_value <= rs_src3_value[issue_idx];
       stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
       stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
-      stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
+      if (HAS_SRC3) begin
+        stage2_src3_value <= rs_src3_value[issue_idx];
+        stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
+      end
       stage2_cdb_value <= i_cdb.value;
       stage2_imm <= pl_imm;
       stage2_use_imm <= rs_use_imm[issue_idx];
@@ -739,6 +855,13 @@ module reservation_station #(
       stage2_valid <= 1'b0;
     end
     // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
+  end
+
+  // No reset: this sideband is only observed when stage2_valid is set.
+  always_ff @(posedge i_clk) begin
+    if (issue_fire) begin
+      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+    end
   end
 
 
@@ -883,7 +1006,7 @@ module reservation_station #(
             assert (rs_src1_ready[i]);
           if (!$past(rs_src2_ready[i]) && $past(rs_src2_tag[i]) == $past(i_cdb.tag))
             assert (rs_src2_ready[i]);
-          if (!$past(rs_src3_ready[i]) && $past(rs_src3_tag[i]) == $past(i_cdb.tag))
+          if (HAS_SRC3 && !$past(rs_src3_ready[i]) && $past(rs_src3_tag[i]) == $past(i_cdb.tag))
             assert (rs_src3_ready[i]);
         end
       end

@@ -365,6 +365,8 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_empty.value = 1
         self.dut.i_sq_committed_empty.value = 1
+        self.dut.i_widen_commit_ok.value = 1
+        self.dut.i_commit_hold.value = 0
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0

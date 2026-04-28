@@ -39,8 +39,8 @@ FU_FP_DIV = 6
 
 NUM_FUS = 7
 
-# Priority order: highest priority first (longest latency)
-PRIORITY_ORDER = [FU_FP_DIV, FU_DIV, FU_FP_MUL, FU_MUL, FU_FP_ADD, FU_MEM, FU_ALU]
+# Priority order: highest priority first (CoreMark-relevant traffic first)
+PRIORITY_ORDER = [FU_MEM, FU_MUL, FU_ALU, FU_DIV, FU_FP_DIV, FU_FP_MUL, FU_FP_ADD]
 
 
 @dataclass

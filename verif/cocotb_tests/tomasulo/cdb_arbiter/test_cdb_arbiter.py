@@ -234,11 +234,11 @@ async def test_single_fu_each(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: FP_DIV + ALU → FP_DIV wins
+# Test 5: FP_DIV + ALU → ALU wins
 # ============================================================================
 @cocotb.test()
-async def test_priority_fp_div_over_alu(dut: Any) -> None:
-    """FP_DIV + ALU → FP_DIV wins."""
+async def test_priority_alu_over_fp_div(dut: Any) -> None:
+    """FP_DIV + ALU → ALU wins."""
     dut_if, model = await setup(dut)
 
     fu_completes = make_fu_completes(
@@ -253,19 +253,19 @@ async def test_priority_fp_div_over_alu(dut: Any) -> None:
     dut_cdb = dut_if.read_cdb_output()
     dut_grants = dut_if.read_grant()
 
-    assert_cdb_match(dut_cdb, model_cdb, "fp_div_over_alu")
-    assert dut_cdb.fu_type == FU_FP_DIV
-    assert dut_cdb.tag == 2
-    assert dut_grants[FU_ALU] is False
-    assert dut_grants[FU_FP_DIV] is True
+    assert_cdb_match(dut_cdb, model_cdb, "alu_over_fp_div")
+    assert dut_cdb.fu_type == FU_ALU
+    assert dut_cdb.tag == 1
+    assert dut_grants[FU_ALU] is True
+    assert dut_grants[FU_FP_DIV] is False
 
 
 # ============================================================================
-# Test 6: DIV + MUL → DIV wins
+# Test 6: DIV + MUL → MUL wins
 # ============================================================================
 @cocotb.test()
-async def test_priority_div_over_mul(dut: Any) -> None:
-    """DIV + MUL → DIV wins."""
+async def test_priority_mul_over_div(dut: Any) -> None:
+    """DIV + MUL → MUL wins."""
     dut_if, model = await setup(dut)
 
     fu_completes = make_fu_completes(
@@ -280,18 +280,18 @@ async def test_priority_div_over_mul(dut: Any) -> None:
     dut_cdb = dut_if.read_cdb_output()
     dut_grants = dut_if.read_grant()
 
-    assert_cdb_match(dut_cdb, model_cdb, "div_over_mul")
-    assert dut_cdb.fu_type == FU_DIV
-    assert dut_grants[FU_DIV] is True
-    assert dut_grants[FU_MUL] is False
+    assert_cdb_match(dut_cdb, model_cdb, "mul_over_div")
+    assert dut_cdb.fu_type == FU_MUL
+    assert dut_grants[FU_MUL] is True
+    assert dut_grants[FU_DIV] is False
 
 
 # ============================================================================
-# Test 6: All 7 FUs valid → FP_DIV wins (highest priority)
+# Test 6: All 7 FUs valid → MEM wins (highest priority)
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_valid(dut: Any) -> None:
-    """All 7 FUs valid → FP_DIV wins (highest priority)."""
+    """All 7 FUs valid → MEM wins (highest priority)."""
     dut_if, model = await setup(dut)
 
     specs = {}
@@ -306,25 +306,25 @@ async def test_priority_all_valid(dut: Any) -> None:
     dut_grants = dut_if.read_grant()
 
     assert_cdb_match(dut_cdb, model_cdb, "all_valid")
-    assert dut_cdb.fu_type == FU_FP_DIV
-    assert dut_grants[FU_FP_DIV] is True
+    assert dut_cdb.fu_type == FU_MEM
+    assert dut_grants[FU_MEM] is True
     # All others should be denied
     for i in range(NUM_FUS):
-        if i != FU_FP_DIV:
+        if i != FU_MEM:
             assert dut_grants[i] is False, f"FU {i} should not be granted"
 
 
 # ============================================================================
-# Test 7: All except FP_DIV → DIV wins
+# Test 7: All except MEM → MUL wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_except_highest(dut: Any) -> None:
-    """All except FP_DIV → DIV wins."""
+    """All except MEM → MUL wins."""
     dut_if, model = await setup(dut)
 
     specs = {}
     for fu_idx in range(NUM_FUS):
-        if fu_idx != FU_FP_DIV:
+        if fu_idx != FU_MEM:
             specs[fu_idx] = {"tag": fu_idx + 10, "value": fu_idx * 0x1000}
 
     fu_completes = make_fu_completes(specs)
@@ -335,8 +335,8 @@ async def test_priority_all_except_highest(dut: Any) -> None:
     dut_grants = dut_if.read_grant()
 
     assert_cdb_match(dut_cdb, model_cdb, "all_except_highest")
-    assert dut_cdb.fu_type == FU_DIV
-    assert dut_grants[FU_DIV] is True
+    assert dut_cdb.fu_type == FU_MUL
+    assert dut_grants[FU_MUL] is True
 
 
 # ============================================================================
@@ -568,28 +568,28 @@ async def test_loser_must_retry(dut: Any) -> None:
     """FU that lost arbitration: grant=0, must re-present next cycle."""
     dut_if, model = await setup(dut)
 
-    # Cycle 1: ALU + FP_DIV both valid → FP_DIV wins, ALU loses
+    # Cycle 1: ALU + FP_DIV both valid → ALU wins, FP_DIV loses
     dut_if.drive_fu_complete(FU_ALU, tag=1, value=0x1111)
     dut_if.drive_fu_complete(FU_FP_DIV, tag=2, value=0x2222)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
     dut_grants = dut_if.read_grant()
-    assert dut_cdb.fu_type == FU_FP_DIV
-    assert dut_grants[FU_ALU] is False
-    assert dut_grants[FU_FP_DIV] is True
+    assert dut_cdb.fu_type == FU_ALU
+    assert dut_grants[FU_ALU] is True
+    assert dut_grants[FU_FP_DIV] is False
 
-    # Cycle 2: FP_DIV clears (was granted), ALU still valid → ALU wins
-    dut_if.clear_fu_complete(FU_FP_DIV)
+    # Cycle 2: ALU clears (was granted), FP_DIV still valid → FP_DIV wins
+    dut_if.clear_fu_complete(FU_ALU)
     await dut_if.step()
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
     dut_grants = dut_if.read_grant()
     assert dut_cdb.valid
-    assert dut_cdb.fu_type == FU_ALU
-    assert dut_cdb.tag == 1
-    assert dut_grants[FU_ALU] is True
+    assert dut_cdb.fu_type == FU_FP_DIV
+    assert dut_cdb.tag == 2
+    assert dut_grants[FU_FP_DIV] is True
 
 
 # ============================================================================

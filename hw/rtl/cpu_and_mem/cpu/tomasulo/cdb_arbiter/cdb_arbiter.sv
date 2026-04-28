@@ -22,14 +22,15 @@
  *   - ROB (mark done + store value)
  *   - All RS instances (operand wakeup)
  *
- * Priority order (longest latency first, to minimize pipeline stalls):
- *   1. FP_DIV (6) — ~32-35 cycles
- *   2. DIV   (2) — 17 cycles
- *   3. FP_MUL (5) — ~8-9 cycles
- *   4. MUL   (1) — 4 cycles
- *   5. FP_ADD (4) — ~4-5 cycles
- *   6. MEM   (3) — variable (cache hit ~1 cycle)
- *   7. ALU   (0) — combinational, can tolerate wait
+ * Priority order favors CoreMark-relevant traffic and keeps FP/div valid cones
+ * out of the grants for ALU/MEM/MUL:
+ *   1. MEM   (3) — load/SC results
+ *   2. MUL   (1) — integer multiply
+ *   3. ALU   (0) — common integer path
+ *   4. DIV   (2) — integer divide
+ *   5. FP_DIV (6)
+ *   6. FP_MUL (5)
+ *   7. FP_ADD (4)
  *
  * Purely combinational — no output register. Matches how i_cdb currently
  * feeds RS/ROB on the same cycle edge.
@@ -82,8 +83,8 @@ module cdb_arbiter (
   // Valid vector for convenience (used by formal assertions)
   logic                    [riscv_pkg::NumFus-1:0] valid_vec;
 
-  // Fixed-priority encoder: longest-latency FU wins.
-  // Priority: FP_DIV > DIV > FP_MUL > MUL > FP_ADD > MEM > ALU
+  // Fixed-priority encoder: CoreMark-relevant FUs win before FP/div traffic.
+  // Priority: MEM > MUL > ALU > DIV > FP_DIV > FP_MUL > FP_ADD
   logic                                            found;
   logic                    [                  2:0] winner_idx;
   riscv_pkg::fu_complete_t                         winner_data;
@@ -100,41 +101,41 @@ module cdb_arbiter (
     winner_data = '0;
     o_grant_raw = '0;
 
-    if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_DIV;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_DIV];
-      o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
+    if (i_fu_complete[riscv_pkg::FU_MEM].valid) begin
       found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_DIV;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_DIV];
-      o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_MUL;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_MUL];
-      o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
+      winner_idx                     = riscv_pkg::FU_MEM;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_MEM];
+      o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_MUL].valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_MUL;
       winner_data                    = i_fu_complete[riscv_pkg::FU_MUL];
       o_grant_raw[riscv_pkg::FU_MUL] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_ADD;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_ADD];
-      o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_MEM].valid) begin
-      found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_MEM;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_MEM];
-      o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_ALU].valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_ALU;
       winner_data                    = i_fu_complete[riscv_pkg::FU_ALU];
       o_grant_raw[riscv_pkg::FU_ALU] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_DIV;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_DIV];
+      o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_DIV;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_DIV];
+      o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_MUL;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_MUL];
+      o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_ADD;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_ADD];
+      o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end
 
@@ -320,72 +321,72 @@ module cdb_arbiter (
   // Priority assertions (uses valid_vec, no array port access)
   // -------------------------------------------------------------------------
 
-  // FP_DIV (highest) always wins when valid
+  // MEM (highest) always wins when valid
   always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_DIV]) begin
-      p_priority_fp_div_wins : assert (o_grant[riscv_pkg::FU_FP_DIV]);
+    if (valid_vec[riscv_pkg::FU_MEM]) begin
+      p_priority_mem_wins : assert (o_grant[riscv_pkg::FU_MEM]);
     end
   end
 
-  // DIV wins when valid and FP_DIV not valid
+  // MUL wins when valid and MEM not valid
   always_comb begin
-    if (valid_vec[riscv_pkg::FU_DIV] && !valid_vec[riscv_pkg::FU_FP_DIV]) begin
-      p_priority_div_over_lower : assert (o_grant[riscv_pkg::FU_DIV]);
-    end
-  end
-
-  // FP_MUL wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV]) begin
-      p_priority_fp_mul_over_lower : assert (o_grant[riscv_pkg::FU_FP_MUL]);
-    end
-  end
-
-  // MUL wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL]) begin
+    if (valid_vec[riscv_pkg::FU_MUL] && !valid_vec[riscv_pkg::FU_MEM]) begin
       p_priority_mul_over_lower : assert (o_grant[riscv_pkg::FU_MUL]);
     end
   end
 
-  // FP_ADD wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_ADD] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_MUL]) begin
-      p_priority_fp_add_over_lower : assert (o_grant[riscv_pkg::FU_FP_ADD]);
-    end
-  end
-
-  // MEM wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_MEM] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_ADD]) begin
-      p_priority_mem_over_alu : assert (o_grant[riscv_pkg::FU_MEM]);
-    end
-  end
-
-  // ALU wins only when it's the sole valid FU
+  // ALU wins when valid and MEM/MUL are not valid
   always_comb begin
     if (valid_vec[riscv_pkg::FU_ALU] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_MUL]) begin
+      p_priority_alu_over_lower : assert (o_grant[riscv_pkg::FU_ALU]);
+    end
+  end
+
+  // DIV wins when valid and CoreMark-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_ADD] &&
-        !valid_vec[riscv_pkg::FU_MEM]) begin
-      p_priority_alu_lowest : assert (o_grant[riscv_pkg::FU_ALU]);
+        !valid_vec[riscv_pkg::FU_ALU]) begin
+      p_priority_div_over_lower : assert (o_grant[riscv_pkg::FU_DIV]);
+    end
+  end
+
+  // FP_DIV wins when valid and higher-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_DIV] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV]) begin
+      p_priority_fp_div_over_lower : assert (o_grant[riscv_pkg::FU_FP_DIV]);
+    end
+  end
+
+  // FP_MUL wins when valid and higher-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_DIV]) begin
+      p_priority_fp_mul_over_lower : assert (o_grant[riscv_pkg::FU_FP_MUL]);
+    end
+  end
+
+  // FP_ADD wins only when it is the highest remaining valid FU
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_ADD] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_MUL]) begin
+      p_priority_fp_add_lowest : assert (o_grant[riscv_pkg::FU_FP_ADD]);
     end
   end
 

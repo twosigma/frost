@@ -62,6 +62,13 @@ module pd_stage #(
       .o_illegal(decomp_illegal)
   );
 
+  // Derive the PD-local compressed select from the raw parcel bits instead of
+  // using the IF sideband select. The sideband remains useful for PC/buffer
+  // timing in IF, but keeping it out of PD's instruction/target muxes avoids a
+  // BRAM sideband -> final-instruction -> branch-target carry-chain path.
+  logic pd_sel_compressed;
+  assign pd_sel_compressed = decomp_is_compressed;
+
   // ===========================================================================
   // Final Instruction Selection
   // ===========================================================================
@@ -73,7 +80,7 @@ module pd_stage #(
   logic [31:0] instruction_non_nop;
 
   always_comb begin
-    if (i_from_if_to_pd.sel_compressed) instruction_non_nop = decompressed_instr;
+    if (pd_sel_compressed) instruction_non_nop = decompressed_instr;
     else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 
@@ -113,27 +120,55 @@ module pd_stage #(
   // taken and redirect IF to the computed target. This saves ~4-5 cycles vs
   // waiting for EX-stage misprediction recovery on cold-start BTB misses.
   //
-  // After decompression, ALL conditional branches (including C.BEQZ/C.BNEZ)
-  // have B-type format with opcode 7'b1100011 and sign bit at bit[31].
+  // Compute native B-type and compressed C.BEQZ/C.BNEZ branch targets in
+  // parallel. Selecting decompressed-vs-native before the adder made the IF
+  // sideband/compressed-select path feed a 32-bit carry chain into
+  // pd_redirect_target_r. Only these two instruction classes can trigger this
+  // cold-backward-branch heuristic, so direct immediate extraction is equivalent
+  // and keeps the select after the carry chains.
 
-  // B-type immediate extraction from the decompressed instruction
-  logic [XLEN-1:0] pd_imm_b;
-  assign pd_imm_b = {
-    {19{final_instruction[31]}},  // sign-extend bits [31:13]
-    final_instruction[31],  // imm[12]
-    final_instruction[7],  // imm[11]
-    final_instruction[30:25],  // imm[10:5]
-    final_instruction[11:8],  // imm[4:1]
+  logic [XLEN-1:0] pd_imm_b_native;
+  assign pd_imm_b_native = {
+    {19{i_from_if_to_pd.effective_instr[31]}},  // sign-extend bits [31:13]
+    i_from_if_to_pd.effective_instr[31],  // imm[12]
+    i_from_if_to_pd.effective_instr[7],  // imm[11]
+    i_from_if_to_pd.effective_instr[30:25],  // imm[10:5]
+    i_from_if_to_pd.effective_instr[11:8],  // imm[4:1]
     1'b0  // imm[0] always zero
   };
 
+  logic [XLEN-1:0] pd_imm_b_compressed;
+  assign pd_imm_b_compressed = {
+    {23{i_from_if_to_pd.raw_parcel[12]}},  // sign-extend bits [31:9]
+    i_from_if_to_pd.raw_parcel[12],  // imm[8]
+    i_from_if_to_pd.raw_parcel[6:5],  // imm[7:6]
+    i_from_if_to_pd.raw_parcel[2],  // imm[5]
+    i_from_if_to_pd.raw_parcel[11:10],  // imm[4:3]
+    i_from_if_to_pd.raw_parcel[4:3],  // imm[2:1]
+    1'b0  // imm[0] always zero
+  };
+
+  logic pd_native_branch;
+  logic pd_compressed_branch;
+  assign pd_native_branch = !pd_sel_compressed &&
+                            (i_from_if_to_pd.effective_instr[6:0] == riscv_pkg::OPC_BRANCH);
+  assign pd_compressed_branch =
+      (i_from_if_to_pd.raw_parcel[1:0] == 2'b01) &&
+      ((i_from_if_to_pd.raw_parcel[15:13] == 3'b110) ||
+       (i_from_if_to_pd.raw_parcel[15:13] == 3'b111));
+
+  logic [XLEN-1:0] pd_backward_target_native;
+  logic [XLEN-1:0] pd_backward_target_compressed;
   logic [XLEN-1:0] pd_backward_target;
-  assign pd_backward_target = i_from_if_to_pd.program_counter + pd_imm_b;
+  assign pd_backward_target_native = i_from_if_to_pd.program_counter + pd_imm_b_native;
+  assign pd_backward_target_compressed = i_from_if_to_pd.program_counter + pd_imm_b_compressed;
+  assign pd_backward_target = pd_compressed_branch ? pd_backward_target_compressed :
+                              pd_backward_target_native;
 
   logic pd_backward_branch;
   assign pd_backward_branch =
-      (final_instruction[6:0] == riscv_pkg::OPC_BRANCH) &&  // conditional branch
-      final_instruction[31] &&  // backward (negative offset)
+      ((pd_native_branch && i_from_if_to_pd.effective_instr[31]) ||
+       (pd_compressed_branch && i_from_if_to_pd.raw_parcel[12])) &&  // backward offset
       !i_from_if_to_pd.btb_predicted_taken &&  // BTB didn't predict
       !i_from_if_to_pd.ras_predicted &&  // RAS didn't predict
       !i_from_if_to_pd.sel_nop &&  // not a bubble
@@ -160,7 +195,7 @@ module pd_stage #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.stall) pd_redirect_target_r <= pd_backward_target;
+    if (!i_pipeline_ctrl.stall && pd_backward_branch) pd_redirect_target_r <= pd_backward_target;
   end
 
   assign o_pd_redirect = pd_redirect_r;
@@ -191,8 +226,8 @@ module pd_stage #(
                                       riscv_pkg::NOP : final_instruction;
       // Illegal compressed indication is only valid when compressed decode path is selected.
       o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                             (!i_from_if_to_pd.sel_nop &&
-                                              i_from_if_to_pd.sel_compressed &&
+                                              (!i_from_if_to_pd.sel_nop &&
+                                              pd_sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
       // Branch prediction metadata - clear on flush/pd_redirect.
       //

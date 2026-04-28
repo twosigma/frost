@@ -256,6 +256,9 @@ module branch_prediction_controller (
   // sideband are not advancing together, so consuming a prediction there can
   // re-tag a later instruction with the wrong PC.
   assign ras_pop_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning && !i_stall;
+  logic ras_write_prediction_allowed;
+  assign ras_write_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning &&
+                                        !i_stall_registered;
 
   return_address_stack #(
       .RAS_DEPTH(RasDepth),
@@ -263,13 +266,13 @@ module branch_prediction_controller (
   ) ras_inst (
       .i_clk,
       .i_rst(i_reset),
-      .i_stall,
       .i_stall_registered,
       .i_is_call(ras_is_call),
       .i_is_return(ras_is_return),
       .i_is_coroutine(ras_is_coroutine),
       .i_link_address(i_link_address),
       .i_prediction_allowed(ras_pop_prediction_allowed),
+      .i_prediction_allowed_for_write(ras_write_prediction_allowed),
       .i_btb_only_prediction_holdoff(o_btb_only_prediction_holdoff),
       .i_misprediction(ras_misprediction_r),
       .i_restore_tos(ras_restore_tos_r),
