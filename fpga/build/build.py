@@ -17,19 +17,26 @@
 """FPGA build script with per-step directive selection.
 
 Steps:
-1. Synthesis                       (post_synth.dcp)
-2. Opt                             (post_opt.dcp)
-3. Place                           (post_place.dcp)
-4. Post-place phys_opt             (post_place_physopt.dcp)
-5. Route (with -tns_cleanup)       (post_route.dcp)
-6. Post-route phys_opt sweep       (post_route_physopt.dcp)
-7. Second route (no -tns_cleanup)  (post_second_route.dcp)
-8. Post-second-route phys_opt sweep (final.dcp)
+1. Synthesis                          (post_synth.dcp)
+2. Opt                                (post_opt.dcp)
+3. Place                              (post_place.dcp)
+4. Post-place phys_opt sweep          (post_place_physopt.dcp)
+5. Route (with -tns_cleanup)          (post_route.dcp / final.dcp*)
+6. Post-route phys_opt sweep          (post_route_physopt.dcp / final.dcp*)
+7. Second route (no -tns_cleanup)     (post_second_route.dcp / final.dcp*)
+8. Post-second-route phys_opt sweep   (final.dcp)
 9. Bitstream generation
 
-The two "sweep" steps run phys_opt_design serially with every directive
-(starting with AggressiveExplore); see build_step.tcl. Final artifacts only
-appear after step 8 — earlier stages produce intermediate checkpoints.
+All three phys_opt stages (4, 6, 8) run a hardcoded sweep over every directive
+in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore. Each sweep stops
+early as soon as a phys_opt_design pass closes timing (WNS>=0).
+
+* Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
+  outputs are promoted to final.dcp/final_*.rpt and remaining stages are
+  skipped, jumping straight to bitstream. Step 4 does not skip ahead — its
+  closure is under the x3 overconstraint, and we always still want the
+  unconstrained route to run. Step 8 is the last possible step and always
+  writes final.dcp.
 """
 
 import argparse
@@ -177,6 +184,14 @@ _TCL_REPORT_PREFIX = {
     "post_second_route_physopt": "phys_opt",
 }
 
+# Steps where successful timing closure (WNS>=0) promotes outputs to "final.*"
+# naming and short-circuits subsequent passes (jumping straight to bitstream).
+# post_second_route_physopt is excluded because it's the last step and always
+# writes final.* statically; post_place_physopt is excluded because closure
+# during its sweep is under x3 overconstraint and we always still want the
+# unconstrained route step to run.
+FINAL_ELIGIBLE_STEPS = {"route", "post_route_physopt", "second_route"}
+
 
 # =============================================================================
 # Utility Functions
@@ -259,12 +274,10 @@ def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
-    step: str,
+    checkpoint_name: str,
+    report_prefix: str,
 ) -> None:
     """Copy checkpoint and reports from step work dir to main work directory."""
-    report_prefix = STEP_REPORT_PREFIX[step]
-    checkpoint_name = STEP_PRODUCES_CHECKPOINT[step]
-
     # Copy checkpoint (rename to standard name)
     for dcp in work_dir.glob("*.dcp"):
         dst = main_work / checkpoint_name
@@ -304,10 +317,13 @@ def run_step(
     vivado_path: str,
     retiming: bool = False,
     keep_temps: bool = False,
-) -> bool:
+) -> tuple[bool, float | None, str]:
     """Run a single build step with the given directive.
 
-    Returns True on success, False on failure.
+    Returns (success, wns_ns, actual_report_prefix). actual_report_prefix is
+    "final" when the step's outputs were promoted to final.dcp/final_*.rpt
+    (final-eligible step + WNS>=0, or post_second_route_physopt unconditionally),
+    otherwise the step's non-final canonical prefix.
     """
     main_work = script_dir / board_name / "work"
     main_work.mkdir(parents=True, exist_ok=True)
@@ -318,7 +334,7 @@ def run_step(
         input_checkpoint = main_work / required_checkpoint
         if not input_checkpoint.exists():
             print(f"Error: Required checkpoint not found: {input_checkpoint}")
-            return False
+            return False, None, ""
     else:
         input_checkpoint = None
 
@@ -349,18 +365,29 @@ def run_step(
 
     if result.returncode != 0:
         print(f"\n  [FAIL] {step} / {directive} (exit code {result.returncode})")
-        return False
+        return False, None, ""
 
     # Extract timing
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
     timing = extract_timing_from_report(timing_rpt)
     wns = timing.get("wns_ns")
+    timing_met = wns is not None and wns >= 0
+
+    # Decide canonical output names. Final-eligible steps get promoted to
+    # final.* when timing closes; post_second_route_physopt's static entry is
+    # already final.* (last possible step).
+    if step in FINAL_ELIGIBLE_STEPS and timing_met:
+        checkpoint_name = "final.dcp"
+        report_prefix = "final"
+    else:
+        checkpoint_name = STEP_PRODUCES_CHECKPOINT[step]
+        report_prefix = STEP_REPORT_PREFIX[step]
 
     if wns is not None:
         tns = timing.get("tns_ns")
         failing = timing.get("failing_endpoints", 0)
         total = timing.get("total_endpoints", 0)
-        met = "TIMING MET" if wns >= 0 else f"WNS: {wns:.3f} ns"
+        met = "TIMING MET" if timing_met else f"WNS: {wns:.3f} ns"
         print(f"\n  [DONE] {step} / {directive} ({met})")
         print(
             f"  WNS: {wns:.3f} ns | TNS: {tns:.3f} ns | Failing endpoints: {failing}/{total}"
@@ -368,14 +395,16 @@ def run_step(
     else:
         print(f"\n  [DONE] {step} / {directive} (no timing data)")
 
+    print(f"  Output: {checkpoint_name} + {report_prefix}_*.rpt")
+
     # Copy results to main work directory
-    copy_results_to_main_work(work_dir, main_work, step)
+    copy_results_to_main_work(work_dir, main_work, checkpoint_name, report_prefix)
 
     # Clean up temp directory
     if not keep_temps:
         shutil.rmtree(work_dir)
 
-    return True
+    return True, wns, report_prefix
 
 
 def generate_bitstream(
@@ -439,17 +468,24 @@ Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
   place                       - Place design
-  post_place_physopt          - Post-place phys_opt (single directive)
+  post_place_physopt          - Phys_opt sweep (always continues to route, even
+                                if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup)
   post_route_physopt          - Phys_opt sweep over every directive (serial)
   second_route                - Route design (without -tns_cleanup)
   post_second_route_physopt   - Phys_opt sweep over every directive (serial);
-                                writes final.dcp + final_*.rpt + bitstream
+                                always writes final.dcp + final_*.rpt + bitstream
+
+Behavior:
+  * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore.
+    Each sweep stops early if a directive closes timing (WNS>=0).
+  * Pipeline early-exit at route, post_route_physopt, or second_route: when
+    one of these closes timing, its outputs are promoted to final.dcp/final_*
+    and remaining stages are skipped — bitstream runs next.
 
 Each step uses a tuned default directive unless overridden with --*-directive.
 --route-directive applies to both route and second_route.
---physopt-directive applies only to post_place_physopt; the two sweep stages
-ignore it and run AggressiveExplore + the rest of PHYS_OPT_DIRECTIVES in serial.
+--physopt-directive is currently ignored (kept for backward compatibility).
 
 Examples:
   ./build.py x3                                    # Full build, tuned defaults
@@ -522,8 +558,9 @@ Examples:
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
-        help="Phys_opt directive for post_place_physopt (default: AggressiveExplore). "
-        "post_route_physopt and post_second_route_physopt ignore this — they sweep every directive in serial.",
+        help="Currently ignored — all phys_opt stages (post_place, post_route, "
+        "post_second_route) run a hardcoded sweep over every directive. Kept "
+        "for backward compatibility.",
     )
     args = parser.parse_args()
 
@@ -536,14 +573,14 @@ Examples:
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
 
-    # Per-step directives. The phys_opt sweep stages ignore the directive arg
-    # in the TCL; we pass "Sweep" as a sentinel so banners and the temp work
-    # dir name make this obvious.
+    # Per-step directives. The three phys_opt stages all run hardcoded sweeps
+    # in the TCL and ignore the directive arg; we pass "Sweep" as a sentinel
+    # so banners and the temp work dir name make this obvious.
     step_directives = {
         "synth": args.synth_directive,
         "opt": args.opt_directive,
         "place": args.place_directive,
-        "post_place_physopt": args.physopt_directive,
+        "post_place_physopt": "Sweep",
         "route": args.route_directive,
         "post_route_physopt": "Sweep",
         "second_route": args.route_directive,
@@ -590,11 +627,13 @@ Examples:
         print(f"Starting from checkpoint: {checkpoint_path}")
 
     # Run steps
+    final_produced = False
+    last_report_prefix = None
     for step in steps_to_run:
         directive = step_directives[step]
         retiming = args.retiming if step == "synth" else False
 
-        if not run_step(
+        success, wns, actual_prefix = run_step(
             script_dir,
             board_name,
             step,
@@ -602,13 +641,29 @@ Examples:
             args.vivado_path,
             retiming=retiming,
             keep_temps=args.keep_temps,
-        ):
+        )
+        if not success:
             print(f"\nError: Step '{step}' failed!")
             sys.exit(1)
 
-    # Generate bitstream if we completed post_second_route_physopt (the only
-    # step that writes final.dcp).
-    if "post_second_route_physopt" in steps_to_run:
+        last_report_prefix = actual_prefix
+        if actual_prefix == "final":
+            final_produced = True
+
+        # Pipeline early-exit: timing closure at any route or post-route
+        # phys_opt step short-circuits the remaining stages and goes straight
+        # to bitstream. post_second_route_physopt always finalizes naturally.
+        if step in FINAL_ELIGIBLE_STEPS and wns is not None and wns >= 0:
+            remaining = steps_to_run[steps_to_run.index(step) + 1 :]
+            if remaining:
+                print(
+                    f"\nTiming met at {step} — skipping subsequent stages: "
+                    f"{', '.join(remaining)}"
+                )
+            break
+
+    # Generate bitstream whenever this run produced final.dcp
+    if final_produced:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
 
@@ -622,23 +677,23 @@ Examples:
     if all_util:
         update_readme_utilization(script_dir, all_util)
 
-    # Final summary
-    last_prefix = STEP_REPORT_PREFIX[steps_to_run[-1]]
+    # Final summary — read from whichever prefix the last completed step wrote
     print(f"\n{'#'*70}")
     print("# BUILD COMPLETE!")
     print(f"{'#'*70}")
 
-    last_timing_rpt = main_work / f"{last_prefix}_timing.rpt"
-    if last_timing_rpt.exists():
-        timing = extract_timing_from_report(last_timing_rpt)
-        if timing.get("wns_ns") is not None:
-            failing = timing.get("failing_endpoints", 0)
-            total = timing.get("total_endpoints", 0)
-            print(f"\nTiming (after {last_prefix}):")
-            print(f"  WNS: {timing['wns_ns']:.3f} ns")
-            print(f"  TNS: {timing['tns_ns']:.3f} ns")
-            print(f"  Failing endpoints: {failing}/{total}")
-            print(f"  Timing Met: {'YES!' if timing['wns_ns'] >= 0 else 'No'}")
+    if last_report_prefix:
+        last_timing_rpt = main_work / f"{last_report_prefix}_timing.rpt"
+        if last_timing_rpt.exists():
+            timing = extract_timing_from_report(last_timing_rpt)
+            if timing.get("wns_ns") is not None:
+                failing = timing.get("failing_endpoints", 0)
+                total = timing.get("total_endpoints", 0)
+                print(f"\nTiming (after {last_report_prefix}):")
+                print(f"  WNS: {timing['wns_ns']:.3f} ns")
+                print(f"  TNS: {timing['tns_ns']:.3f} ns")
+                print(f"  Failing endpoints: {failing}/{total}")
+                print(f"  Timing Met: {'YES!' if timing['wns_ns'] >= 0 else 'No'}")
 
     bitstream = main_work / f"{board_name}_frost.bit"
     if bitstream.exists():

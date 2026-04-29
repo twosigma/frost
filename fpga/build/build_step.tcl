@@ -291,34 +291,16 @@ if {$step eq "synth"} {
 
     puts "** DONE — place_design complete with directive: $directive"
 
-} elseif {[string match "post_place_physopt*" $step]} {
+} elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
     # ===================
-    # POST-PLACE PHYS_OPT (single pass)
-    # ===================
-    if {$checkpoint_path eq ""} {
-        puts "Error: post_place_physopt step requires checkpoint_path"
-        exit 1
-    }
-    open_checkpoint $checkpoint_path
-
-    phys_opt_design -directive $directive
-
-    write_checkpoint -force $work_directory/phys_opt.dcp
-    report_timing_summary -file $work_directory/phys_opt_timing.rpt
-    report_utilization -file $work_directory/phys_opt_util.rpt
-    report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
-    write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
-
-    puts "** DONE — post_place_physopt complete with directive: $directive"
-
-} elseif {[string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
-    # ===================
-    # PHYS_OPT SWEEP (post-route or post-second-route)
+    # PHYS_OPT SWEEP (post-place, post-route, or post-second-route)
     # ===================
     # Run phys_opt_design serially with every directive, starting with
     # AggressiveExplore. The directive arg from the caller is ignored — the
-    # sweep order is fixed here. Final artifacts are written only after the
-    # last pass so the upstream pipeline still sees one checkpoint.
+    # sweep order is fixed here. After each pass we sample the worst-case
+    # setup slack; if WNS>=0 we stop the sweep early so we don't risk a later
+    # directive regressing the closed state. Final artifacts are written once
+    # after the loop so the upstream pipeline still sees one checkpoint.
     if {$checkpoint_path eq ""} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
@@ -337,12 +319,28 @@ if {$step eq "synth"} {
     ]
     set total_passes [llength $sweep_order]
     set pass_num 1
+    set passes_run 0
+    set early_exit 0
     foreach sweep_directive $sweep_order {
         puts ""
         puts "=========================================="
         puts "  $step sweep $pass_num/$total_passes: $sweep_directive"
         puts "=========================================="
         phys_opt_design -directive $sweep_directive
+        incr passes_run
+
+        # Sample worst-case setup slack to decide if we can stop early.
+        set worst_path [lindex [get_timing_paths -delay_type max -nworst 1 -max_paths 1] 0]
+        if {$worst_path ne ""} {
+            set wns [get_property SLACK $worst_path]
+            puts ""
+            puts "  WNS after $sweep_directive: $wns ns"
+            if {$wns >= 0.0} {
+                puts "  ** Timing met — stopping $step sweep early (after $pass_num/$total_passes directives)"
+                set early_exit 1
+                break
+            }
+        }
         incr pass_num
     }
 
@@ -352,7 +350,11 @@ if {$step eq "synth"} {
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
     write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
 
-    puts "** DONE — $step sweep complete ($total_passes directives)"
+    if {$early_exit} {
+        puts "** DONE — $step sweep complete ($passes_run/$total_passes directives, stopped early on closure)"
+    } else {
+        puts "** DONE — $step sweep complete ($passes_run/$total_passes directives)"
+    }
 
 } elseif {$step eq "route"} {
     # ===================
