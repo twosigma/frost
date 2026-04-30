@@ -53,8 +53,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
     Defaults:
-      - Non-Xilinx targets: 600s
-      - Xilinx targets (synth_xilinx*): 900s
+      - Non-Xilinx targets: 1200s
+      - Xilinx targets (synth_xilinx*): 1800s
 
     Environment overrides:
       - FROST_YOSYS_TIMEOUT_SEC

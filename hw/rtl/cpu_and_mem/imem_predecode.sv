@@ -87,13 +87,16 @@ module imem_predecode #(
   // memory_even[k] holds the word whose full word-index is 2*k   (even)
   // memory_odd [k] holds the word whose full word-index is 2*k+1 (odd)
   /* verilator lint_off MULTIDRIVEN */
-  (* ram_style = "block" *) logic [DataWidth-1:0] memory_even[HalfDepth];
-  (* ram_style = "block" *) logic [DataWidth-1:0] memory_odd[HalfDepth];
+  (* ram_style = "block" *)logic [DataWidth-1:0] memory_even[HalfDepth];
+  (* ram_style = "block" *)logic [DataWidth-1:0] memory_odd [HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
   // Initialization — split sw.mem into even/odd banks
   // =========================================================================
+`ifndef SYNTHESIS
+  // Keep the preload split out of synthesis: Yosys expands the temporary
+  // init_mem array into registers during frontend elaboration.
   logic [DataWidth-1:0] init_mem[FullDepth];
 
   initial begin
@@ -116,6 +119,7 @@ module imem_predecode #(
       end
     end
   end
+`endif
 
   // =========================================================================
   // Port A: Programming interface (write to one bank per cycle)

@@ -188,20 +188,10 @@ module load_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
-`ifdef FORMAL
-  // Yosys 0.60 does not parse $bits(package::enum) in packed ranges reliably.
+  // Keep these literal for Yosys, which does not parse $bits(package::enum) reliably.
+  // instr_op_e is an untyped enum (default int), and mem_size_e is logic [1:0].
   localparam int unsigned InstrOpWidth = 32;
   localparam int unsigned MemSizeWidth = 2;
-`else
-`ifdef FROST_YOSYS
-  // Yosys 0.60 does not parse $bits(package::enum) in packed ranges reliably.
-  localparam int unsigned InstrOpWidth = 32;
-  localparam int unsigned MemSizeWidth = 2;
-`else
-  localparam int unsigned InstrOpWidth = $bits(riscv_pkg::instr_op_e);
-  localparam int unsigned MemSizeWidth = $bits(riscv_pkg::mem_size_e);
-`endif
-`endif
 
   // ===========================================================================
   // Helper Functions
