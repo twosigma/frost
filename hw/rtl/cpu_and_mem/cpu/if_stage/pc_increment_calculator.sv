@@ -18,16 +18,16 @@
   PC Increment Calculator
 
   Computes the next sequential PC values using parallel adders for timing optimization.
-  This module pre-computes all possible PC increment results (pc+0, pc+2, pc+4) in
-  parallel, then selects the correct result based on instruction type and state.
+  This module pre-computes fetch PC increment results (pc+2, pc+4) in parallel,
+  then selects the correct result based on instruction type and state.
 
   Key Timing Optimization:
   ========================
   Instead of:  next_pc = pc + mux(select, 0, 2, 4)  [select→mux→CARRY8]
-  We do:       next_pc = mux(select, pc+0, pc+2, pc+4)  [CARRY8 in parallel, then mux]
+  We do:       next_pc = mux(select, pc+2, pc+4)  [CARRY8 in parallel, then mux]
 
   This moves the late-arriving select signal from BEFORE the CARRY8 chain to
-  AFTER it. All three additions compute in parallel, then the mux selects the
+  AFTER it. Both additions compute in parallel, then the mux selects the
   correct result. The critical path from is_compressed to PC now only needs
   to control a mux, not feed into a CARRY8 adder chain.
 
@@ -80,14 +80,14 @@ module pc_increment_calculator #(
   // ===========================================================================
   // PC Increment Selection Signals
   // ===========================================================================
-  // Combinational select signals for instruction type
-  // Priority: sel_0 (spanning wait) > sel_2 (compressed/spanning) > default (32-bit)
-  logic pc_inc_comb_sel_0, pc_inc_comb_sel_2;
-  assign pc_inc_comb_sel_0 = 1'b0;
+  // Combinational select signal for instruction type. With 64-bit fetch,
+  // fetch-side spanning wait is gone, so the fetch PC never needs a +0
+  // sequential increment.
+  logic pc_inc_comb_sel_2;
   assign pc_inc_comb_sel_2 = i_is_compressed;
 
   // Final PC increment select with priority encoding
-  // Priority: sel_holdoff (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
+  // Priority: sel_holdoff (holdoff) > sel_2 (halfword) > default
   // Use i_any_holdoff_safe (registered) to break timing path from branch_taken.
   //
   // CRITICAL: prediction holdoff and redirect/reset holdoff need different
@@ -99,10 +99,9 @@ module pc_increment_calculator #(
   // For redirect/reset holdoff, +4 is required even from a halfword PC. Using +2
   // there leaves the numeric fetch lead too small, so the BRAM word for the next
   // word-aligned instruction arrives one cycle late after a halfword redirect.
-  logic pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2, pc_inc_sel_0;
+  logic pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2;
   assign pc_inc_sel_redirect_holdoff = i_any_holdoff_safe;
   assign pc_inc_sel_prediction_holdoff = !i_any_holdoff_safe && i_prediction_holdoff;
-  assign pc_inc_sel_0 = 1'b0;
   assign pc_inc_sel_2 = !pc_inc_sel_redirect_holdoff &&
                         !pc_inc_sel_prediction_holdoff &&
                         i_control_flow_to_halfword_r;
@@ -114,8 +113,7 @@ module pc_increment_calculator #(
   localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
-  logic [XLEN-1:0] next_pc_plus_0, next_pc_plus_2, next_pc_plus_4;
-  assign next_pc_plus_0 = i_pc;
+  logic [XLEN-1:0] next_pc_plus_2, next_pc_plus_4;
   assign next_pc_plus_2 = i_pc + IncC;
   assign next_pc_plus_4 = i_pc + Inc4;
 
@@ -123,21 +121,13 @@ module pc_increment_calculator #(
   logic [XLEN-1:0] next_sequential_pc;
   always_comb begin
     casez ({
-      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_0, pc_inc_sel_2
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
     })
-      4'b1???: next_sequential_pc = next_pc_plus_4;
-      4'b01??: next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
-      4'b001?: next_sequential_pc = next_pc_plus_0;  // spanning wait: +0
-      4'b0001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
+      3'b1??: next_sequential_pc = next_pc_plus_4;
+      3'b01?: next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+      3'b001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
       default: begin
-        // Normal case: use combinational signals for fine-grained selection
-        casez ({
-          pc_inc_comb_sel_0, pc_inc_comb_sel_2
-        })
-          2'b1?:   next_sequential_pc = next_pc_plus_0;  // spanning wait
-          2'b01:   next_sequential_pc = next_pc_plus_2;  // compressed/spanning
-          default: next_sequential_pc = next_pc_plus_4;  // 32-bit instruction
-        endcase
+        next_sequential_pc = pc_inc_comb_sel_2 ? next_pc_plus_2 : next_pc_plus_4;
       end
     endcase
   end

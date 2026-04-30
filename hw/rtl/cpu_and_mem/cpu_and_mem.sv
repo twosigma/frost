@@ -52,6 +52,7 @@ module cpu_and_mem #(
 
     output logic       o_uart_wr_en,
     output logic [7:0] o_uart_wr_data,
+    input  logic       i_uart_tx_ready,
 
     // UART RX interface - received data from UART
     input  logic [7:0] i_uart_rx_data,
@@ -85,10 +86,11 @@ module cpu_and_mem #(
   // - sw/common/link.ld (MMIO memory region and PROVIDE statements)
   // - cpu module parameters
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  localparam int unsigned MmioSizeBytes = 32'h28;
+  localparam int unsigned MmioSizeBytes = 32'h2C;
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
-  localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024; // RX status (bit0 = data available)
+  localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
+  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028; // TX status (bit0: can accept byte)
   localparam int unsigned Fifo0MmioAddr = 32'h4000_0008;
   localparam int unsigned Fifo1MmioAddr = 32'h4000_000C;
   // Timer registers (CLINT-compatible layout)
@@ -113,7 +115,6 @@ module cpu_and_mem #(
   logic [31:0] mmio_read_data_comb;
   logic [31:0] mmio_read_data_reg;
   logic        mmio_read_data_valid;
-  logic        mmio_load_is_mmio;
   logic [31:0] mmio_load_addr;
   logic        mmio_load_valid;
   logic        mmio_read_capture;
@@ -262,10 +263,10 @@ module cpu_and_mem #(
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
-  assign mmio_load_is_mmio = mmio_load_valid
-                          && (mmio_load_addr >= MmioAddr)
-                          && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
-  assign mmio_read_capture = mmio_read_pulse && mmio_load_is_mmio;
+  // mmio_read_pulse is already range-qualified by cpu_ooo using the same
+  // MMIO bounds. Avoid repeating that late address compare here because this
+  // signal directly drives the high-fanout MMIO read-data capture enables.
+  assign mmio_read_capture = mmio_read_pulse;
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse)
   always_comb begin
@@ -276,6 +277,8 @@ module cpu_and_mem #(
       UartRxDataMmioAddr:   mmio_read_data_comb = {24'b0, i_uart_rx_data};
       // UART RX status - bit 0 indicates data available (non-destructive read)
       UartRxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_rx_valid};
+      // UART TX status - bit 0 indicates the TX FIFO can accept at least one byte.
+      UartTxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_tx_ready};
       Fifo0MmioAddr:        mmio_read_data_comb = i_fifo0_rd_data;
       Fifo1MmioAddr:        mmio_read_data_comb = i_fifo1_rd_data;
       MtimeLowMmioAddr:     mmio_read_data_comb = mtime[31:0];

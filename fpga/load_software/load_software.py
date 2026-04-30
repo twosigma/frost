@@ -50,7 +50,7 @@ VALID_APPS = [
 # Iterations are calibrated for ~10 second runtime on each board
 BOARD_CONFIG = {
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000},
-    "genesys2": {"clock_freq": 133333333, "coremark_iterations": 3000},
+    "genesys2": {"clock_freq": 133333333, "coremark_iterations": 4000},
 }
 
 
