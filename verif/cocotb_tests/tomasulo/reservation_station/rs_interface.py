@@ -89,6 +89,8 @@ def pack_rs_dispatch(
     predicted_taken: bool = False,
     predicted_target: int = 0,
     is_fp_mem: bool = False,
+    mem_needs_lq: bool = False,
+    mem_needs_sq: bool = False,
     mem_size: int = 0,
     mem_signed: bool = False,
     csr_addr: int = 0,
@@ -125,6 +127,10 @@ def pack_rs_dispatch(
     bit += 1
     val |= (mem_size & 0x3) << bit
     bit += MEM_SIZE_WIDTH
+    val |= (1 if mem_needs_sq else 0) << bit
+    bit += 1
+    val |= (1 if mem_needs_lq else 0) << bit
+    bit += 1
     val |= (1 if is_fp_mem else 0) << bit
     bit += 1
     val |= (predicted_target & MASK32) << bit
@@ -225,6 +231,10 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit += 1
     result["mem_size"] = (raw >> bit) & 0x3
     bit += MEM_SIZE_WIDTH
+    result["mem_needs_sq"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["mem_needs_lq"] = bool((raw >> bit) & 1)
+    bit += 1
     result["is_fp_mem"] = bool((raw >> bit) & 1)
     bit += 1
     result["predicted_target"] = (raw >> bit) & MASK32
@@ -302,11 +312,21 @@ class RSInterface:
         else:
             self.dut.i_dispatch.value = 0
         self.dut.i_cdb.value = 0
+        self.dut.i_repair_valid_1.value = 0
+        self.dut.i_repair_tag_1.value = 0
+        self.dut.i_repair_value_1.value = 0
+        self.dut.i_repair_valid_2.value = 0
+        self.dut.i_repair_tag_2.value = 0
+        self.dut.i_repair_value_2.value = 0
+        self.dut.i_repair_valid_3.value = 0
+        self.dut.i_repair_tag_3.value = 0
+        self.dut.i_repair_value_3.value = 0
         self.dut.i_fu_ready.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_head_query_tag.value = 0
 
     # =========================================================================
     # Dispatch
@@ -352,6 +372,8 @@ class RSInterface:
             int(kwargs.get("predicted_target", 0)) & MASK32
         )
         d.i_dispatch_is_fp_mem.value = 1 if kwargs.get("is_fp_mem") else 0
+        d.i_dispatch_mem_needs_lq.value = 1 if kwargs.get("mem_needs_lq") else 0
+        d.i_dispatch_mem_needs_sq.value = 1 if kwargs.get("mem_needs_sq") else 0
         d.i_dispatch_mem_size.value = int(kwargs.get("mem_size", 0)) & 0x3
         d.i_dispatch_mem_signed.value = 1 if kwargs.get("mem_signed") else 0
         d.i_dispatch_csr_addr.value = int(kwargs.get("csr_addr", 0)) & 0xFFF
@@ -382,6 +404,8 @@ class RSInterface:
         d.i_dispatch_predicted_taken.value = 0
         d.i_dispatch_predicted_target.value = 0
         d.i_dispatch_is_fp_mem.value = 0
+        d.i_dispatch_mem_needs_lq.value = 0
+        d.i_dispatch_mem_needs_sq.value = 0
         d.i_dispatch_mem_size.value = 0
         d.i_dispatch_mem_signed.value = 0
         d.i_dispatch_csr_addr.value = 0
@@ -434,6 +458,8 @@ class RSInterface:
             "predicted_taken": bool(d.o_issue_predicted_taken.value),
             "predicted_target": int(d.o_issue_predicted_target.value),
             "is_fp_mem": bool(d.o_issue_is_fp_mem.value),
+            "mem_needs_lq": bool(d.o_issue_mem_needs_lq.value),
+            "mem_needs_sq": bool(d.o_issue_mem_needs_sq.value),
             "mem_size": int(d.o_issue_mem_size.value),
             "mem_signed": bool(d.o_issue_mem_signed.value),
             "csr_addr": int(d.o_issue_csr_addr.value),

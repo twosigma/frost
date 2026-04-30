@@ -44,89 +44,6 @@ def unpack_rat_lookup(val: int) -> LookupResult:
     return LookupResult(renamed=renamed, tag=tag, value=value)
 
 
-COMMIT_FIELDS = [
-    ("valid", 1),
-    ("tag", 5),
-    ("dest_rf", 1),
-    ("dest_reg", 5),
-    ("dest_valid", 1),
-    ("value", 64),
-    ("is_store", 1),
-    ("is_fp_store", 1),
-    ("exception", 1),
-    ("pc", 32),
-    ("exc_cause", 5),
-    ("fp_flags", 5),
-    ("has_fp_flags", 1),
-    ("misprediction", 1),
-    ("early_recovered", 1),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", 3),
-    ("redirect_pc", 32),
-    ("predicted_taken", 1),
-    ("branch_taken", 1),
-    ("branch_target", 32),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("csr_addr", 12),
-    ("csr_op", 3),
-    ("csr_write_data", 32),
-    ("is_csr", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_wfi", 1),
-    ("is_mret", 1),
-    ("is_amo", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_compressed", 1),
-]
-COMMIT_WIDTH = sum(width for _, width in COMMIT_FIELDS)
-
-_COMMIT_OFFSETS: dict[str, tuple[int, int]] = {}
-_offset = COMMIT_WIDTH
-for _name, _width in COMMIT_FIELDS:
-    _offset -= _width
-    _COMMIT_OFFSETS[_name] = (_offset, _width)
-assert _offset == 0
-
-
-def pack_commit(
-    valid: bool = False,
-    tag: int = 0,
-    dest_rf: int = 0,
-    dest_reg: int = 0,
-    dest_valid: bool = False,
-) -> int:
-    """Pack a commit struct for driving i_commit.
-
-    Only sets the fields the RAT cares about; all others are 0.
-    """
-    val = 0
-    valid_offset, _ = _COMMIT_OFFSETS["valid"]
-    tag_offset, _ = _COMMIT_OFFSETS["tag"]
-    dest_rf_offset, _ = _COMMIT_OFFSETS["dest_rf"]
-    dest_reg_offset, _ = _COMMIT_OFFSETS["dest_reg"]
-    dest_valid_offset, _ = _COMMIT_OFFSETS["dest_valid"]
-
-    if valid:
-        val |= 1 << valid_offset
-    val |= (tag & MASK_TAG) << tag_offset
-    val |= (dest_rf & 1) << dest_rf_offset
-    val |= (dest_reg & MASK_REG) << dest_reg_offset
-    if dest_valid:
-        val |= 1 << dest_valid_offset
-    return val
-
-
-def pack_commit_invalid() -> int:
-    """Pack an invalid commit (valid=0)."""
-    return 0
-
-
 class RATInterface:
     """Interface to Register Alias Table DUT.
 
@@ -139,6 +56,7 @@ class RATInterface:
         self.dut = dut
         self._shadow_rat = RATModel()
         self._rob_tag_refcounts = [0] * (MASK_TAG + 1)
+        self._rob_head_tag = 0
         self._pending_rename: tuple[int, int, int] | None = None
         self._pending_commit: tuple[int, int, int, bool] | None = None
         self._pending_checkpoint_save: tuple[int, int, int, int] | None = None
@@ -193,6 +111,7 @@ class RATInterface:
         """Initialize all input signals to default values."""
         self._shadow_rat = RATModel()
         self._rob_tag_refcounts = [0] * (MASK_TAG + 1)
+        self._rob_head_tag = 0
         self._pending_rename = None
         self._pending_commit = None
         self._pending_checkpoint_save = None
@@ -221,7 +140,16 @@ class RATInterface:
         self.dut.i_alloc_rob_tag.value = 0
 
         # Commit
-        self.dut.i_commit.value = 0
+        self.dut.i_commit_valid.value = 0
+        self.dut.i_commit_dest_valid.value = 0
+        self.dut.i_commit_dest_rf.value = 0
+        self.dut.i_commit_dest_reg.value = 0
+        self.dut.i_commit_tag.value = 0
+        self.dut.i_commit_valid_2.value = 0
+        self.dut.i_commit_dest_valid_2.value = 0
+        self.dut.i_commit_dest_rf_2.value = 0
+        self.dut.i_commit_dest_reg_2.value = 0
+        self.dut.i_commit_tag_2.value = 0
 
         # Checkpoint save
         self.dut.i_checkpoint_save.value = 0
@@ -243,15 +171,34 @@ class RATInterface:
 
         # Flush
         self.dut.i_flush_all.value = 0
+        self.dut.i_rob_head_tag.value = self._rob_head_tag
         self._drive_rob_entry_valid()
 
-    def _drive_rob_entry_valid(self) -> None:
-        """Drive the synthetic ROB-valid vector used by standalone RAT tests."""
+    @property
+    def rob_entry_valid_mask(self) -> int:
+        """Return the synthetic ROB-valid bitmask used by standalone tests."""
         rob_valid_mask = 0
         for tag, refcount in enumerate(self._rob_tag_refcounts):
             if refcount > 0:
                 rob_valid_mask |= 1 << tag
+        return rob_valid_mask
+
+    @property
+    def rob_entry_epoch_mask(self) -> int:
+        """Return the synthetic ROB epoch bitmask used by standalone tests."""
+        return 0
+
+    @property
+    def rob_head_tag(self) -> int:
+        """Return the synthetic ROB head tag used by standalone tests."""
+        return self._rob_head_tag
+
+    def _drive_rob_entry_valid(self) -> None:
+        """Drive the synthetic ROB-valid vector used by standalone RAT tests."""
+        rob_valid_mask = self.rob_entry_valid_mask
         self.dut.i_rob_entry_valid.value = rob_valid_mask
+        self.dut.i_rob_entry_epoch.value = self.rob_entry_epoch_mask
+        self.dut.i_rob_head_tag.value = self._rob_head_tag
 
     def _apply_pending_cycle_updates(self) -> None:
         """Apply queued same-cycle effects to the synthetic ROB-valid vector."""
@@ -269,7 +216,12 @@ class RATInterface:
             self._shadow_rat.flush_all()
             self._rob_tag_refcounts = [0] * (MASK_TAG + 1)
         elif self._pending_checkpoint_restore is not None:
-            self._shadow_rat.checkpoint_restore(self._pending_checkpoint_restore)
+            self._shadow_rat.checkpoint_restore(
+                self._pending_checkpoint_restore,
+                rob_entry_valid=self.rob_entry_valid_mask,
+                rob_entry_epoch=self.rob_entry_epoch_mask,
+                rob_head_tag=self._rob_head_tag,
+            )
         else:
             if self._pending_checkpoint_free is not None:
                 self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
@@ -401,13 +353,11 @@ class RATInterface:
         self, tag: int, dest_rf: int, dest_reg: int, dest_valid: bool = True
     ) -> None:
         """Drive commit signals."""
-        self.dut.i_commit.value = pack_commit(
-            valid=True,
-            tag=tag,
-            dest_rf=dest_rf,
-            dest_reg=dest_reg,
-            dest_valid=dest_valid,
-        )
+        self.dut.i_commit_valid.value = 1
+        self.dut.i_commit_dest_valid.value = 1 if dest_valid else 0
+        self.dut.i_commit_dest_rf.value = dest_rf & 1
+        self.dut.i_commit_dest_reg.value = dest_reg & MASK_REG
+        self.dut.i_commit_tag.value = tag & MASK_TAG
         self._pending_commit = (
             tag & MASK_TAG,
             dest_rf & 1,
@@ -417,7 +367,11 @@ class RATInterface:
 
     def clear_commit(self) -> None:
         """Clear commit signals."""
-        self.dut.i_commit.value = 0
+        self.dut.i_commit_valid.value = 0
+        self.dut.i_commit_dest_valid.value = 0
+        self.dut.i_commit_dest_rf.value = 0
+        self.dut.i_commit_dest_reg.value = 0
+        self.dut.i_commit_tag.value = 0
         self._apply_pending_cycle_updates()
 
     async def commit(

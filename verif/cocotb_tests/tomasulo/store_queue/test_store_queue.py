@@ -87,9 +87,7 @@ async def commit_and_write(
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Memory write should fire
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
 
     # Model tracks write initiation
@@ -108,6 +106,40 @@ async def commit_and_write(
     # after the entry is freed).
     await dut_if.step()
 
+    return write_req
+
+
+async def complete_mem_write(dut_if: SQInterface, model: SQModel) -> MemWriteReq:
+    """Complete the currently eligible memory write. Returns write request."""
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Expected memory write after commit"
+
+    model.mem_write_initiate()
+
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
+    model.mem_write_done()
+    model.advance_head()
+    await dut_if.step()
+    dut_if.clear_mem_write_done()
+
+    # Extra cycle for head pointer advancement (head_advance_target is
+    # computed from registered sq_valid, so the head advances one cycle
+    # after the entry is freed).
+    await dut_if.step()
+
+    return write_req
+
+
+async def wait_for_mem_write(dut_if: SQInterface, max_cycles: int = 4) -> MemWriteReq:
+    """Wait for the registered store-memory write pulse."""
+    await Timer(1, unit="ns")
+    write_req = dut_if.read_mem_write()
+    for _ in range(max_cycles):
+        if write_req.en:
+            return write_req
+        await dut_if.step()
+        write_req = dut_if.read_mem_write()
     return write_req
 
 
@@ -345,8 +377,7 @@ async def test_fsd_two_phase(dut: Any) -> None:
     dut_if.clear_commit()
 
     # Phase 0: low word at addr
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 0 write expected"
     assert (
         write_req.addr == 0x4000
@@ -362,8 +393,7 @@ async def test_fsd_two_phase(dut: Any) -> None:
     dut_if.clear_mem_write_done()
 
     # Phase 1: high word at addr+4
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 1 write expected"
     assert (
         write_req.addr == 0x4004
@@ -697,8 +727,7 @@ async def test_in_order_write(dut: Any) -> None:
 
     # Write should happen from head (tag 0 first)
     for i, (addr, data) in enumerate(zip(addrs, datas)):
-        await Timer(1, unit="ns")
-        write_req = dut_if.read_mem_write()
+        write_req = await wait_for_mem_write(dut_if)
         assert write_req.en, f"Write {i} should be active"
         assert (
             write_req.addr == addr
@@ -772,8 +801,7 @@ async def test_no_write_without_data(dut: Any) -> None:
     dut_if.clear_data_update()
 
     # Now write should happen
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Write should fire once data arrives"
     assert write_req.data == 0xBEEF
 
@@ -794,7 +822,8 @@ async def test_cache_invalidation(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Write fires
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Expected memory write after commit"
     model.mem_write_initiate()
     await dut_if.step()
 
@@ -985,6 +1014,8 @@ async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
     dut_if.clear_commit()
 
     # Phase 0: low word at base addr
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Phase 0 write expected"
     model.mem_write_initiate()
     await dut_if.step()
     dut_if.drive_mem_write_done()
@@ -1001,8 +1032,7 @@ async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
     dut_if.clear_mem_write_done()
 
     # Phase 1: high word at addr+4
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 1 write expected"
 
     model.mem_write_initiate()
@@ -1268,7 +1298,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
     await Timer(1, unit="ns")
 
     # Initially committed_empty should be true (no entries)
-    assert dut_if.committed_empty, "committed_empty should be true when SQ empty"
+    assert bool(dut_if.committed_empty), "committed_empty should be true when SQ empty"
 
     # Allocate an uncommitted entry
     dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
@@ -1287,7 +1317,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
     await Timer(1, unit="ns")
     # Entry exists but is uncommitted → committed_empty stays true
-    assert (
+    assert bool(
         dut_if.committed_empty
     ), "committed_empty should be true with only uncommitted entries"
 
@@ -1299,22 +1329,16 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
     await Timer(1, unit="ns")
     # Now there is a committed entry → committed_empty should be false
-    assert (
-        not dut_if.committed_empty
+    assert not bool(
+        dut_if.committed_empty
     ), "committed_empty should be false with committed entry"
 
     # Complete the write
-    model.mem_write_initiate()  # type: ignore[unreachable]
-    await dut_if.step()
-    dut_if.drive_mem_write_done()
-    model.mem_write_done()
-    model.advance_head()
-    await dut_if.step()
-    dut_if.clear_mem_write_done()
-    await dut_if.step()
+    write_req = await complete_mem_write(dut_if, model)
+    assert write_req.en, "Expected memory write after commit"
 
     await Timer(1, unit="ns")
-    assert (
+    assert bool(
         dut_if.committed_empty
     ), "committed_empty should be true after write completes"
 

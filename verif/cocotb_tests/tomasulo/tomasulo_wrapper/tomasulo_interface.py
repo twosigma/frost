@@ -19,6 +19,8 @@ Adds compound dispatch method that coordinates ROB alloc + RAT rename + RS dispa
 Supports six RS instances with per-RS issue/status/fu_ready access.
 """
 
+import re
+from pathlib import Path
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
 
@@ -65,6 +67,96 @@ RS_MEM = 2
 RS_FP = 3
 RS_FMUL = 4
 RS_FDIV = 5
+
+
+def _parse_instr_op_enum() -> dict[str, int]:
+    """Parse instr_op_e so direct wrapper tests track current memory op values."""
+    pkg_path = (
+        Path(__file__).resolve().parents[4]
+        / "hw"
+        / "rtl"
+        / "cpu_and_mem"
+        / "cpu"
+        / "riscv_pkg.sv"
+    )
+    text = pkg_path.read_text()
+    match = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    if not match:
+        raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
+
+    result: dict[str, int] = {}
+    next_val = 0
+    for raw_line in match.group(1).splitlines():
+        line = re.sub(r"//.*", "", raw_line).strip().rstrip(",")
+        if not line:
+            continue
+
+        assigned = re.fullmatch(
+            r"([A-Z_][A-Z0-9_]*)\s*=\s*(?:\d*'[bBdDhHoO])?([0-9a-fA-F_]+)",
+            line,
+        )
+        if assigned:
+            digits = assigned.group(2).replace("_", "")
+            base = 10
+            base_match = re.search(r"'([bBdDhHoO])", line)
+            if base_match:
+                base = {"b": 2, "d": 10, "h": 16, "o": 8}[base_match.group(1).lower()]
+            next_val = int(digits, base)
+            result[assigned.group(1)] = next_val
+            next_val += 1
+            continue
+
+        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", line):
+            result[line] = next_val
+            next_val += 1
+            continue
+
+        raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
+
+    return result
+
+
+_INSTR_OPS = _parse_instr_op_enum()
+_LQ_OPS = {
+    _INSTR_OPS[name]
+    for name in (
+        "LB",
+        "LH",
+        "LW",
+        "LBU",
+        "LHU",
+        "FLW",
+        "FLD",
+        "LR_W",
+        "AMOSWAP_W",
+        "AMOADD_W",
+        "AMOXOR_W",
+        "AMOAND_W",
+        "AMOOR_W",
+        "AMOMIN_W",
+        "AMOMAX_W",
+        "AMOMINU_W",
+        "AMOMAXU_W",
+    )
+}
+_SQ_OPS = {_INSTR_OPS[name] for name in ("SB", "SH", "SW", "FSW", "FSD", "SC_W")}
+_FP_MEM_OPS = {_INSTR_OPS[name] for name in ("FLW", "FLD", "FSW", "FSD")}
+_SIGNED_LOAD_OPS = {_INSTR_OPS[name] for name in ("LB", "LH")}
+_BYTE_OPS = {_INSTR_OPS[name] for name in ("LB", "LBU", "SB")}
+_HALF_OPS = {_INSTR_OPS[name] for name in ("LH", "LHU", "SH")}
+_DOUBLE_OPS = {_INSTR_OPS[name] for name in ("FLD", "FSD")}
+
+
+def _mem_size_for_op(op: int) -> int:
+    """Return riscv_pkg::mem_size_e encoding for a memory op."""
+    if op in _BYTE_OPS:
+        return 0
+    if op in _HALF_OPS:
+        return 1
+    if op in _DOUBLE_OPS:
+        return 3
+    return 2
+
 
 # Per-RS DUT signal names for issue, fu_ready, full, empty, count.
 # INT_RS uses the backward-compatible names (o_rs_issue, i_rs_fu_ready, etc.).
@@ -418,6 +510,10 @@ class TomasuloInterface:
         """Read and unpack commit output."""
         return read_commit_output(self.dut)
 
+    def set_commit_hold(self, hold: bool = True) -> None:
+        """Hold ROB commit while still allowing CDB writes to mark entries done."""
+        self.dut.i_commit_hold.value = 1 if hold else 0
+
     @property
     def commit_valid(self) -> bool:
         """Return whether commit output is valid."""
@@ -607,6 +703,13 @@ class TomasuloInterface:
         """Drive RS dispatch signals. rs_type selects which RS receives it."""
         kwargs["valid"] = True
         kwargs["rs_type"] = rs_type
+        if rs_type == RS_MEM:
+            op = int(kwargs.get("op", 0))
+            kwargs.setdefault("mem_needs_lq", op in _LQ_OPS)
+            kwargs.setdefault("mem_needs_sq", op in _SQ_OPS)
+            kwargs.setdefault("is_fp_mem", op in _FP_MEM_OPS)
+            kwargs.setdefault("mem_size", _mem_size_for_op(op))
+            kwargs.setdefault("mem_signed", op in _SIGNED_LOAD_OPS)
         self.dut.i_rs_dispatch.value = pack_rs_dispatch(**kwargs)
 
     def clear_rs_dispatch(self) -> None:

@@ -495,6 +495,8 @@ RS_DISPATCH_FIELDS = [
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
     ("is_fp_mem", 1),
+    ("mem_needs_lq", 1),
+    ("mem_needs_sq", 1),
     ("mem_size", MEM_SIZE_WIDTH),
     ("mem_signed", 1),
     ("csr_addr", 12),

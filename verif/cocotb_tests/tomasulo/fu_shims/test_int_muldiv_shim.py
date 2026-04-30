@@ -330,11 +330,11 @@ async def test_rem_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: Busy during MUL
+# Test 9: Single MUL does not assert busy (credit-based)
 # ============================================================================
 @cocotb.test()
-async def test_busy_during_mul(dut: Any) -> None:
-    """After issuing MUL, o_fu_busy=1 while in-flight, 0 after completion."""
+async def test_single_mul_not_busy(dut: Any) -> None:
+    """After issuing one MUL, o_fu_busy=0 (FIFO has room for more)."""
     iface = await setup(dut)
 
     assert not iface.read_busy(), "busy should be 0 before issue"
@@ -350,8 +350,8 @@ async def test_busy_during_mul(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    # Multiplier is in-flight, busy should be asserted
-    assert iface.read_busy(), "busy should be 1 while MUL is in-flight"
+    # Busy is credit/backpressure based; one in-flight MUL still leaves space.
+    assert not iface.read_busy(), "busy should be 0 with one MUL in-flight"
 
     # Wait for completion
     result = await wait_for_mul_complete(iface)
@@ -359,7 +359,7 @@ async def test_busy_during_mul(dut: Any) -> None:
 
     # After completion cycle, busy should drop on the next cycle
     await iface.step()
-    assert not iface.read_busy(), "busy should be 0 after MUL completion"
+    assert not iface.read_busy(), "busy should still be 0 after MUL completion"
 
 
 # ============================================================================

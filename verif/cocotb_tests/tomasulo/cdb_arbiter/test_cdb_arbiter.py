@@ -287,11 +287,11 @@ async def test_priority_mul_over_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: All 7 FUs valid → MEM wins (highest priority)
+# Test 6: All 7 FUs valid -> MUL wins (highest priority)
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_valid(dut: Any) -> None:
-    """All 7 FUs valid → MEM wins (highest priority)."""
+    """All 7 FUs valid -> MUL wins (highest priority)."""
     dut_if, model = await setup(dut)
 
     specs = {}
@@ -306,25 +306,25 @@ async def test_priority_all_valid(dut: Any) -> None:
     dut_grants = dut_if.read_grant()
 
     assert_cdb_match(dut_cdb, model_cdb, "all_valid")
-    assert dut_cdb.fu_type == FU_MEM
-    assert dut_grants[FU_MEM] is True
+    assert dut_cdb.fu_type == FU_MUL
+    assert dut_grants[FU_MUL] is True
     # All others should be denied
     for i in range(NUM_FUS):
-        if i != FU_MEM:
+        if i != FU_MUL:
             assert dut_grants[i] is False, f"FU {i} should not be granted"
 
 
 # ============================================================================
-# Test 7: All except MEM → MUL wins
+# Test 7: All except MUL -> MEM wins
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_except_highest(dut: Any) -> None:
-    """All except MEM → MUL wins."""
+    """All except MUL -> MEM wins."""
     dut_if, model = await setup(dut)
 
     specs = {}
     for fu_idx in range(NUM_FUS):
-        if fu_idx != FU_MEM:
+        if fu_idx != FU_MUL:
             specs[fu_idx] = {"tag": fu_idx + 10, "value": fu_idx * 0x1000}
 
     fu_completes = make_fu_completes(specs)
@@ -335,8 +335,8 @@ async def test_priority_all_except_highest(dut: Any) -> None:
     dut_grants = dut_if.read_grant()
 
     assert_cdb_match(dut_cdb, model_cdb, "all_except_highest")
-    assert dut_cdb.fu_type == FU_MUL
-    assert dut_grants[FU_MUL] is True
+    assert dut_cdb.fu_type == FU_MEM
+    assert dut_grants[FU_MEM] is True
 
 
 # ============================================================================

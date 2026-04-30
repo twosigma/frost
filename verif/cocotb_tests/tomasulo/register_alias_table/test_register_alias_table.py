@@ -790,9 +790,10 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     await dut_if.rename(dest_rf=0, dest_reg=1, rob_tag=1)
     model.rename(0, 1, 1)
 
-    # Checkpoint 0 (captures x1 -> ROB[1], everything else clear)
-    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=1)
-    model.checkpoint_save(0, 1, 0, 0)
+    # Checkpoint 0 (captures x1 -> ROB[1], everything else clear).  The
+    # branch tag must be younger than the captured producers.
+    await dut_if.checkpoint_save(checkpoint_id=0, branch_tag=5)
+    model.checkpoint_save(0, 5, 0, 0)
 
     # Post-checkpoint: rename x2->ROB[2], x3->ROB[3], f5->ROB[4]
     await dut_if.rename(dest_rf=0, dest_reg=2, rob_tag=2)
@@ -881,9 +882,9 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
     model.rename(0, 5, 15)
 
     await dut_if.checkpoint_save(
-        checkpoint_id=1, branch_tag=15, ras_tos=3, ras_valid_count=6
+        checkpoint_id=1, branch_tag=16, ras_tos=3, ras_valid_count=6
     )
-    model.checkpoint_save(1, 15, 3, 6)
+    model.checkpoint_save(1, 16, 3, 6)
 
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=20)  # Overwrite
     model.rename(0, 5, 20)
@@ -1406,7 +1407,12 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
             if valid_slots:
                 slot_id = random.choice(valid_slots)
                 dut_if.drive_checkpoint_restore(slot_id)
-                model.checkpoint_restore(slot_id)
+                model.checkpoint_restore(
+                    slot_id,
+                    dut_if.rob_entry_valid_mask,
+                    dut_if.rob_entry_epoch_mask,
+                    dut_if.rob_head_tag,
+                )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_restore()
@@ -1519,7 +1525,12 @@ async def test_random_mixed_stress(dut: Any) -> None:
             if valid_slots:
                 slot_id = random.choice(valid_slots)
                 dut_if.drive_checkpoint_restore(slot_id)
-                model.checkpoint_restore(slot_id)
+                model.checkpoint_restore(
+                    slot_id,
+                    dut_if.rob_entry_valid_mask,
+                    dut_if.rob_entry_epoch_mask,
+                    dut_if.rob_head_tag,
+                )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_restore()
