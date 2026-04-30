@@ -13,6 +13,7 @@ smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
+read -formal -sv sdp_dist_ram.sv
 read -sv fp_lzc.sv
 read -sv fp_classify_operand.sv
 read -sv fp_operand_unpacker.sv
@@ -26,6 +27,7 @@ prep -top fp_div_shim
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv

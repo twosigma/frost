@@ -243,7 +243,7 @@ module lq_l0_cache #(
       f_fill_valid_q <= 1'b0;
       f_fill_addr_q  <= '0;
     end else begin
-      f_fill_valid_q <= i_fill_valid & ~i_flush_all;
+      f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry;
       f_fill_addr_q  <= i_fill_addr;
     end
   end

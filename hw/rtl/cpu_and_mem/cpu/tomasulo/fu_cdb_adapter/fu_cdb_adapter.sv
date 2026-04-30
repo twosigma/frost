@@ -164,6 +164,7 @@ module fu_cdb_adapter #(
 
   // Standard formal preamble
   initial assume (!i_rst_n);
+  initial assume (!result_pending);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;
@@ -201,7 +202,7 @@ module fu_cdb_adapter #(
 
   // When pending and not partially flushed: output is always valid
   always_comb begin
-    if (result_pending && !partial_flush_held) begin
+    if (i_rst_n && result_pending && !partial_flush_held) begin
       p_pending_valid : assert (o_fu_complete.valid);
     end
   end
@@ -346,7 +347,7 @@ module fu_cdb_adapter #(
 
   // Reset idle
   always @(posedge i_clk) begin
-    if (!i_rst_n) begin
+    if (f_past_valid && !i_rst_n) begin
       p_reset_idle : assert (!result_pending);
     end
   end

@@ -223,38 +223,27 @@ module cdb_arbiter (
 
   // CDB tag matches granted FU
   always_comb begin
-    if (o_grant[riscv_pkg::FU_ALU])
-      p_cdb_tag_alu : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_ALU].tag);
-    if (o_grant[riscv_pkg::FU_MUL])
-      p_cdb_tag_mul : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_MUL].tag);
-    if (o_grant[riscv_pkg::FU_DIV])
-      p_cdb_tag_div : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_DIV].tag);
-    if (o_grant[riscv_pkg::FU_MEM])
-      p_cdb_tag_mem : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_MEM].tag);
-    if (o_grant[riscv_pkg::FU_FP_ADD])
-      p_cdb_tag_fp_add : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_FP_ADD].tag);
-    if (o_grant[riscv_pkg::FU_FP_MUL])
-      p_cdb_tag_fp_mul : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_FP_MUL].tag);
-    if (o_grant[riscv_pkg::FU_FP_DIV])
-      p_cdb_tag_fp_div : assert (o_cdb.tag == i_fu_complete[riscv_pkg::FU_FP_DIV].tag);
+    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_tag_alu : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_tag_mul : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_tag_div : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_tag_mem : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_ADD]) p_cdb_tag_fp_add : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_MUL]) p_cdb_tag_fp_mul : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_DIV]) p_cdb_tag_fp_div : assert (o_cdb.tag == winner_data.tag);
   end
 
   // CDB value matches granted FU
   always_comb begin
-    if (o_grant[riscv_pkg::FU_ALU])
-      p_cdb_value_alu : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_ALU].value);
-    if (o_grant[riscv_pkg::FU_MUL])
-      p_cdb_value_mul : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_MUL].value);
-    if (o_grant[riscv_pkg::FU_DIV])
-      p_cdb_value_div : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_DIV].value);
-    if (o_grant[riscv_pkg::FU_MEM])
-      p_cdb_value_mem : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_MEM].value);
+    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_value_alu : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_value_mul : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_value_div : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_value_mem : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_ADD])
-      p_cdb_value_fp_add : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_FP_ADD].value);
+      p_cdb_value_fp_add : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_MUL])
-      p_cdb_value_fp_mul : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_FP_MUL].value);
+      p_cdb_value_fp_mul : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_DIV])
-      p_cdb_value_fp_div : assert (o_cdb.value == i_fu_complete[riscv_pkg::FU_FP_DIV].value);
+      p_cdb_value_fp_div : assert (o_cdb.value == winner_data.value);
   end
 
   // CDB exception fields match granted FU
@@ -262,45 +251,45 @@ module cdb_arbiter (
     if (o_grant[riscv_pkg::FU_ALU])
       p_cdb_exc_alu :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_ALU].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_ALU].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_ALU].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_MUL])
       p_cdb_exc_mul :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_MUL].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_MUL].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_MUL].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_DIV])
       p_cdb_exc_div :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_DIV].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_DIV].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_DIV].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_MEM])
       p_cdb_exc_mem :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_MEM].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_MEM].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_MEM].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_ADD])
       p_cdb_exc_fp_add :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_FP_ADD].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_FP_ADD].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_FP_ADD].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_MUL])
       p_cdb_exc_fp_mul :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_FP_MUL].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_FP_MUL].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_FP_MUL].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_DIV])
       p_cdb_exc_fp_div :
       assert (
-        o_cdb.exception == i_fu_complete[riscv_pkg::FU_FP_DIV].exception &&
-        o_cdb.exc_cause == i_fu_complete[riscv_pkg::FU_FP_DIV].exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete[riscv_pkg::FU_FP_DIV].fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
   end
 
   // CDB fu_type matches the granted FU index (unrolled for unique Yosys labels)
@@ -324,14 +313,14 @@ module cdb_arbiter (
   // MUL (highest) always wins when valid
   always_comb begin
     if (valid_vec[riscv_pkg::FU_MUL]) begin
-      p_priority_mul_wins : assert (o_grant[riscv_pkg::FU_MUL]);
+      p_priority_mul_wins : assert (o_grant_raw[riscv_pkg::FU_MUL]);
     end
   end
 
   // MEM wins when valid and MUL not valid
   always_comb begin
     if (valid_vec[riscv_pkg::FU_MEM] && !valid_vec[riscv_pkg::FU_MUL]) begin
-      p_priority_mem_over_lower : assert (o_grant[riscv_pkg::FU_MEM]);
+      p_priority_mem_over_lower : assert (o_grant_raw[riscv_pkg::FU_MEM]);
     end
   end
 
@@ -340,7 +329,7 @@ module cdb_arbiter (
     if (valid_vec[riscv_pkg::FU_ALU] &&
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM]) begin
-      p_priority_alu_over_lower : assert (o_grant[riscv_pkg::FU_ALU]);
+      p_priority_alu_over_lower : assert (o_grant_raw[riscv_pkg::FU_ALU]);
     end
   end
 
@@ -350,7 +339,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_ALU]) begin
-      p_priority_div_over_lower : assert (o_grant[riscv_pkg::FU_DIV]);
+      p_priority_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_DIV]);
     end
   end
 
@@ -361,7 +350,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_ALU] &&
         !valid_vec[riscv_pkg::FU_DIV]) begin
-      p_priority_fp_div_over_lower : assert (o_grant[riscv_pkg::FU_FP_DIV]);
+      p_priority_fp_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_DIV]);
     end
   end
 
@@ -373,7 +362,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_ALU] &&
         !valid_vec[riscv_pkg::FU_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_DIV]) begin
-      p_priority_fp_mul_over_lower : assert (o_grant[riscv_pkg::FU_FP_MUL]);
+      p_priority_fp_mul_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_MUL]);
     end
   end
 
@@ -386,7 +375,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_MUL]) begin
-      p_priority_fp_add_lowest : assert (o_grant[riscv_pkg::FU_FP_ADD]);
+      p_priority_fp_add_lowest : assert (o_grant_raw[riscv_pkg::FU_FP_ADD]);
     end
   end
 

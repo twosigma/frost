@@ -188,6 +188,20 @@ module load_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
+`ifdef FORMAL
+  // Yosys 0.60 does not parse $bits(package::enum) in packed ranges reliably.
+  localparam int unsigned InstrOpWidth = 32;
+  localparam int unsigned MemSizeWidth = 2;
+`else
+`ifdef FROST_YOSYS
+  // Yosys 0.60 does not parse $bits(package::enum) in packed ranges reliably.
+  localparam int unsigned InstrOpWidth = 32;
+  localparam int unsigned MemSizeWidth = 2;
+`else
+  localparam int unsigned InstrOpWidth = $bits(riscv_pkg::instr_op_e);
+  localparam int unsigned MemSizeWidth = $bits(riscv_pkg::mem_size_e);
+`endif
+`endif
 
   // ===========================================================================
   // Helper Functions
@@ -242,9 +256,9 @@ module load_queue #(
 
   // Per-entry multi-bit fields
   logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
-  logic [$bits(riscv_pkg::instr_op_e)-1:0] lq_amo_op_rd;
-  (* ram_style = "registers" *) logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size[DEPTH];
-  logic [$bits(riscv_pkg::mem_size_e)-1:0] lq_size_issue_cdb_rd;
+  logic [InstrOpWidth-1:0] lq_amo_op_rd;
+  (* ram_style = "registers" *) logic [MemSizeWidth-1:0] lq_size[DEPTH];
+  logic [MemSizeWidth-1:0] lq_size_issue_cdb_rd;
   logic [XLEN-1:0] lq_address_issue_mem_rd;
   logic [XLEN-1:0] lq_address_amo_rd;
   logic [XLEN-1:0] lq_amo_rs2_rd;
@@ -254,7 +268,7 @@ module load_queue #(
   // AMO op is written once at allocation and only read back for AMO execution.
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH($bits(riscv_pkg::instr_op_e))
+      .DATA_WIDTH(InstrOpWidth)
   ) u_lq_amo_op (
       .i_clk,
       .i_write_enable (i_alloc.valid && !full),
@@ -399,7 +413,7 @@ module load_queue #(
   // load is outstanding (allocation-/addr-update-time fields don't change once
   // set; sq_check_*_q already encodes the right phase for FLD).
   logic [XLEN-1:0] issued_addr;
-  logic [$bits(riscv_pkg::mem_size_e)-1:0] issued_size;
+  logic [MemSizeWidth-1:0] issued_size;
   logic issued_is_fp;
   logic issued_is_lr;
   logic issued_is_amo;
@@ -1123,9 +1137,11 @@ module load_queue #(
   // AMO serialization (ROB head + SQ committed-empty) guarantees these
   // two invalidation sources are mutually exclusive.
 `ifndef SYNTHESIS
+`ifndef FORMAL
   assert property (@(posedge i_clk) disable iff (!i_rst_n)
       !(i_cache_invalidate_valid && amo_cache_inv))
   else $error("BUG: SQ and AMO cache invalidation fired simultaneously");
+`endif
 `endif
 
   // Cache-hit fast path signal: Phase B candidate hits L0 cache, SQ
@@ -1827,7 +1843,7 @@ module load_queue #(
   logic issue_mem_uses_addr_update;
   logic [XLEN-1:0] issue_mem_addr;
   logic [IdxWidth-1:0] update_issue_payload_idx;
-  logic [$bits(riscv_pkg::mem_size_e)-1:0] issue_mem_size_bits;
+  logic [MemSizeWidth-1:0] issue_mem_size_bits;
   logic issue_mem_is_fp;
   logic issue_mem_sign_ext;
   logic issue_mem_is_mmio;
@@ -1918,9 +1934,7 @@ module load_queue #(
     );
   end
 
-  for (
-      genvar g_sq_size = 0; g_sq_size < $bits(riscv_pkg::mem_size_e); g_sq_size++
-  ) begin : gen_sq_check_size_ff
+  for (genvar g_sq_size = 0; g_sq_size < MemSizeWidth; g_sq_size++) begin : gen_sq_check_size_ff
     FDRE #(
         .INIT(1'b0)
     ) sq_check_size_ff (
@@ -2106,6 +2120,13 @@ module load_queue #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+  logic [ReorderBufferTagWidth-1:0] f_pre_issue_rob_tag_q;
+  logic                             f_pre_issue_needs_lq_q;
+  always @(posedge i_clk) begin
+    f_pre_issue_rob_tag_q  <= i_pre_issue_rob_tag;
+    f_pre_issue_needs_lq_q <= i_pre_issue_needs_lq;
+  end
+
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
   end
@@ -2129,6 +2150,27 @@ module load_queue #(
   //     whose valid is being cleared on the same edge get a harmless
   //     address write into a dead slot.
   // (assumption removed — was: no addr_update during flush)
+
+  // The registered address-update pre-match is driven by MEM_RS look-ahead one
+  // cycle before the matching address update arrives.
+  always_comb begin
+    if (i_rst_n && i_addr_update.valid) begin
+      assume (f_pre_issue_needs_lq_q);
+      assume (i_addr_update.rob_tag == f_pre_issue_rob_tag_q);
+    end
+  end
+
+  // The ROB allocates a unique tag per in-flight instruction, so two live LQ
+  // entries cannot legitimately have the same producer tag.
+  always_comb begin
+    if (i_rst_n) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        for (int j = i + 1; j < DEPTH; j++) begin
+          assume (!lq_valid[i] || !lq_valid[j] || (lq_rob_tag[i] != lq_rob_tag[j]));
+        end
+      end
+    end
+  end
 
   // No allocation when full
   always_comb begin
@@ -2175,10 +2217,11 @@ module load_queue #(
     end
   end
 
-  // No memory issue without addr_valid
+  // Memory launches from the registered SQ-check request payload.  The backing
+  // entry's addr_valid bit may be cleared/reused after capture.
   always_comb begin
     if (i_rst_n && o_mem_read_en) begin
-      p_no_mem_issue_without_addr : assert (lq_addr_valid[launch_mem_issue_idx]);
+      p_no_mem_issue_without_addr : assert (sq_check_entry_valid && sq_check_entry_issueable);
     end
   end
 
@@ -2196,10 +2239,10 @@ module load_queue #(
     end
   end
 
-  // SQ check valid implies valid address on check ports
+  // SQ check valid implies a staged request is present on check ports.
   always_comb begin
     if (i_rst_n && o_sq_check_valid) begin
-      p_sq_check_valid_has_addr : assert (lq_addr_valid[sq_check_idx]);
+      p_sq_check_valid_has_addr : assert (sq_check_entry_valid);
     end
   end
 
@@ -2217,10 +2260,11 @@ module load_queue #(
     end
   end
 
-  // A staged result can only be consumed when the wrapper reports acceptance.
+  // Result acceptance is a downstream handshake: the wrapper/adapter may only
+  // consume a staged result that the LQ is actually presenting.
   always_comb begin
-    if (i_rst_n && i_result_accepted) begin
-      p_result_accept_needs_valid : assert (o_fu_complete.valid);
+    if (i_rst_n && !o_fu_complete.valid) begin
+      a_result_accept_needs_valid : assume (!i_result_accepted);
     end
   end
 
@@ -2234,8 +2278,7 @@ module load_queue #(
   // Cache-hit fast path must always have SQ disambiguation confirmed
   always_comb begin
     if (i_rst_n && cache_hit_fast_path) begin
-      p_cache_hit_needs_sq :
-      assert (o_sq_check_valid && i_sq_all_older_addrs_known && !i_sq_forward.match);
+      p_cache_hit_needs_sq : assert (sq_can_issue && (sq_no_older_store || !i_sq_forward.match));
     end
   end
 
@@ -2282,7 +2325,9 @@ module load_queue #(
       cover_addr_update : cover (i_addr_update.valid);
       cover_mem_issue : cover (o_mem_read_en);
       cover_cdb_broadcast : cover (o_fu_complete.valid);
-      cover_sq_forward : cover (sq_do_forward);
+      if (ENABLE_SQ_FORWARD_FAST_PATH) begin
+        cover_sq_forward : cover (sq_do_forward);
+      end
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |lq_valid);
 

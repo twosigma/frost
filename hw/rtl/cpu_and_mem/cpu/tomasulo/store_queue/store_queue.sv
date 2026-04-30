@@ -1067,9 +1067,15 @@ module store_queue #(
     end
   end
 
-  // Forwarding only when check is valid
-  always_comb begin
-    if (i_rst_n && !i_sq_check_valid) begin
+  // Forwarding outputs are registered, so they reflect the previous check.
+  always @(posedge i_clk) begin
+    if (f_past_valid && i_rst_n && $past(
+            i_rst_n
+        ) && !$past(
+            i_flush_all
+        ) && !$past(
+            i_sq_check_valid
+        )) begin
       p_no_fwd_without_check : assert (!o_sq_forward.match);
     end
   end

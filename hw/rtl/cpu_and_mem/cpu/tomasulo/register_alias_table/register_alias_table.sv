@@ -627,6 +627,34 @@ module register_alias_table (
     if (f_past_valid) assume (i_rst_n);
   end
 
+  logic                    f_commit_int_active;
+  logic [RegAddrWidth-1:0] f_commit_int_dest_reg;
+  logic                    f_commit_int_was_valid;
+  logic                    f_commit_int_tag_match;
+  logic                    f_commit2_int_clears_same_dest;
+
+  always @(posedge i_clk) begin
+    f_commit_int_active <= i_commit_valid &&
+                           i_commit_dest_valid &&
+                           !i_commit_dest_rf &&
+                           i_commit_dest_reg != '0 &&
+                           !i_flush_all &&
+                           !i_checkpoint_restore &&
+                           !(i_alloc_valid &&
+                             !i_alloc_dest_rf &&
+                             i_alloc_dest_reg == i_commit_dest_reg);
+    f_commit_int_dest_reg <= i_commit_dest_reg;
+    f_commit_int_was_valid <= int_rat_valid[i_commit_dest_reg];
+    f_commit_int_tag_match <= int_rat_tag[i_commit_dest_reg] == i_commit_tag;
+    f_commit2_int_clears_same_dest <= i_commit_valid_2 &&
+                                      i_commit_dest_valid_2 &&
+                                      !i_commit_dest_rf_2 &&
+                                      i_commit_dest_reg_2 != '0 &&
+                                      i_commit_dest_reg_2 == i_commit_dest_reg &&
+                                      int_rat_valid[i_commit_dest_reg_2] &&
+                                      int_rat_tag[i_commit_dest_reg_2] == i_commit_tag_2;
+  end
+
   // -------------------------------------------------------------------------
   // Structural constraints (assumes)
   // -------------------------------------------------------------------------
@@ -749,39 +777,13 @@ module register_alias_table (
         ));
       end
 
-      // Commit clears entry when tag matches (INT)
-      if ($past(
-              i_commit_valid
-          ) && $past(
-              i_commit_dest_valid
-          ) && !$past(
-              i_commit_dest_rf
-          ) && $past(
-              i_commit_dest_reg
-          ) != '0 && !$past(
-              i_flush_all
-          ) && !$past(
-              i_checkpoint_restore
-          ) && !$past(
-              i_alloc_valid && !i_alloc_dest_rf && i_alloc_dest_reg == i_commit_dest_reg
-          )) begin
-        if ($past(
-                int_rat_valid[i_commit_dest_reg]
-            ) && $past(
-                int_rat_tag[i_commit_dest_reg]
-            ) == $past(
-                i_commit_tag
-            )) begin
-          p_commit_clears_int : assert (!int_rat_valid[$past(i_commit_dest_reg)]);
-        end
-        if ($past(
-                int_rat_valid[i_commit_dest_reg]
-            ) && $past(
-                int_rat_tag[i_commit_dest_reg]
-            ) != $past(
-                i_commit_tag
-            )) begin
-          p_commit_preserves_int : assert (int_rat_valid[$past(i_commit_dest_reg)]);
+      // Commit clears entry when tag matches (INT).  The sampled helpers avoid
+      // nested $past(dynamic_index), which older Yosys handles poorly.
+      if (f_commit_int_active && f_commit_int_was_valid) begin
+        if (f_commit_int_tag_match) begin
+          p_commit_clears_int : assert (!int_rat_valid[f_commit_int_dest_reg]);
+        end else if (!f_commit2_int_clears_same_dest) begin
+          p_commit_preserves_int : assert (int_rat_valid[f_commit_int_dest_reg]);
         end
       end
     end
