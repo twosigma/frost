@@ -1399,6 +1399,7 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::IntRsDepth),
       .HAS_SRC3(1'b0),
+      .DISPATCH_REPAIR_BYPASS(1'b0),
       .TRACK_INT_WRITEBACK_HINT(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
@@ -1509,6 +1510,7 @@ module tomasulo_wrapper #(
       .DEPTH(riscv_pkg::MemRsDepth),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
+      .ISSUE_REPAIR_BYPASS(1'b0),
       .BYPASS_STAGE2(1'b0)
   ) u_mem_rs (
       .i_clk(i_clk),
@@ -2147,28 +2149,72 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_imm_q;
+  logic sq_early_addr_repair_valid_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_rob_tag_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_src1_tag_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_q;
+
+  logic sq_early_addr_repair_match;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base;
+  logic sq_early_addr_repair_fire;
+  always_comb begin
+    sq_early_addr_repair_match = 1'b0;
+    sq_early_addr_repair_base  = '0;
+    if (done_repair_valid_1 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_1) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_1[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_2 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_2) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_2[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_3 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_3) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_3[riscv_pkg::XLEN-1:0];
+    end
+  end
+
+  assign sq_early_addr_repair_fire = sq_early_addr_repair_valid_q &&
+                                     sq_early_addr_repair_match &&
+                                     !i_flush_all && !i_flush_en;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_flush_en) begin
       sq_early_addr_valid_q <= 1'b0;
+      sq_early_addr_repair_valid_q <= 1'b0;
     end else begin
-      sq_early_addr_valid_q   <= sq_alloc_req.valid && !o_sq_full && mem_rs_dispatch.src1_ready;
+      sq_early_addr_valid_q <= sq_alloc_req.valid && !o_sq_full && mem_rs_dispatch.src1_ready;
       sq_early_addr_rob_tag_q <= mem_rs_dispatch.rob_tag;
-      sq_early_addr_base_q    <= mem_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0];
-      sq_early_addr_imm_q     <= mem_rs_dispatch.imm;
+      sq_early_addr_base_q <= mem_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0];
+      sq_early_addr_imm_q <= mem_rs_dispatch.imm;
+
+      sq_early_addr_repair_valid_q <= sq_alloc_req.valid &&
+                                      !o_sq_full &&
+                                      !mem_rs_dispatch.src1_ready;
+      sq_early_addr_repair_rob_tag_q <= mem_rs_dispatch.rob_tag;
+      sq_early_addr_repair_src1_tag_q <= mem_rs_dispatch.src1_tag;
+      sq_early_addr_repair_imm_q <= mem_rs_dispatch.imm;
     end
   end
 
   // Adder now runs on registered inputs — off the dispatch critical path
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
+  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
   assign sq_early_effective_addr = sq_early_addr_base_q + sq_early_addr_imm_q;
+  assign sq_early_repair_effective_addr = sq_early_addr_repair_base + sq_early_addr_repair_imm_q;
 
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   always_comb begin
-    sq_early_addr_update.valid   = sq_early_addr_valid_q;
-    sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
-    sq_early_addr_update.address = sq_early_effective_addr;
-    sq_early_addr_update.is_mmio = (sq_early_effective_addr >= MmioBase);
+    sq_early_addr_update = '0;
+    if (sq_early_addr_repair_fire) begin
+      sq_early_addr_update.valid   = 1'b1;
+      sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
+      sq_early_addr_update.address = sq_early_repair_effective_addr;
+      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr >= MmioBase);
+    end else begin
+      sq_early_addr_update.valid   = sq_early_addr_valid_q;
+      sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
+      sq_early_addr_update.address = sq_early_effective_addr;
+      sq_early_addr_update.is_mmio = (sq_early_effective_addr >= MmioBase);
+    end
   end
 
   // ===========================================================================
@@ -2243,12 +2289,12 @@ module tomasulo_wrapper #(
       .i_commit_valid_comb  (commit_store_like_raw),
       .i_commit_rob_tag_comb(head_tag),
 
-      // Widen-commit slot 2 same-cycle guard.  Slot 2's head+1 tag is
-      // head_tag+1 when commit_2_fire is asserted, but since slot 2 is
-      // ROB-gated on commit_2_store_like_raw we can use that directly.
-      // The tag passed here must match what the ROB would retire as slot 2.
-      .i_commit_valid_comb_2  (commit_2_store_like_raw),
-      .i_commit_rob_tag_comb_2(head_tag + 1'b1),
+      // Slot 2 is always older than any ordinary partial-flush boundary that
+      // can overlap commit_2_fire, and delayed recovery sees it through the
+      // registered commit path.  Keep the raw head+1 ROB metadata cone out of
+      // the SQ valid flops.
+      .i_commit_valid_comb_2  (1'b0),
+      .i_commit_rob_tag_comb_2('0),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),

@@ -44,6 +44,7 @@ module reservation_station #(
     parameter int unsigned DEPTH = 8,
     parameter bit HAS_SRC3 = 1'b1,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
+    parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit BYPASS_STAGE2 = 1'b0
 ) (
@@ -282,6 +283,12 @@ module reservation_station #(
   logic stage2_src2_bypassed;
   logic stage2_src3_bypassed;
   logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
+  logic [1:0] stage2_src1_repair_sel;
+  logic [1:0] stage2_src2_repair_sel;
+  logic [1:0] stage2_src3_repair_sel;
+  logic [FLEN-1:0] stage2_repair_value_1;
+  logic [FLEN-1:0] stage2_repair_value_2;
+  logic [FLEN-1:0] stage2_repair_value_3;
 
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
@@ -461,15 +468,49 @@ module reservation_station #(
   logic [DEPTH-1:0] src1_cdb_bypass;
   logic [DEPTH-1:0] src2_cdb_bypass;
   logic [DEPTH-1:0] src3_cdb_bypass;
+  logic [1:0] src1_repair_sel[DEPTH];
+  logic [1:0] src2_repair_sel[DEPTH];
+  logic [1:0] src3_repair_sel[DEPTH];
 
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
       src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src1_repair_sel[i] = 2'd0;
+      src2_repair_sel[i] = 2'd0;
+      if (ISSUE_REPAIR_BYPASS && !rs_src1_ready[i]) begin
+        if (i_repair_valid_1 && rs_src1_tag[i] == i_repair_tag_1) begin
+          src1_repair_sel[i] = 2'd1;
+        end else if (i_repair_valid_2 && rs_src1_tag[i] == i_repair_tag_2) begin
+          src1_repair_sel[i] = 2'd2;
+        end else if (i_repair_valid_3 && rs_src1_tag[i] == i_repair_tag_3) begin
+          src1_repair_sel[i] = 2'd3;
+        end
+      end
+      if (ISSUE_REPAIR_BYPASS && !rs_src2_ready[i]) begin
+        if (i_repair_valid_1 && rs_src2_tag[i] == i_repair_tag_1) begin
+          src2_repair_sel[i] = 2'd1;
+        end else if (i_repair_valid_2 && rs_src2_tag[i] == i_repair_tag_2) begin
+          src2_repair_sel[i] = 2'd2;
+        end else if (i_repair_valid_3 && rs_src2_tag[i] == i_repair_tag_3) begin
+          src2_repair_sel[i] = 2'd3;
+        end
+      end
       if (HAS_SRC3) begin
         src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+        src3_repair_sel[i] = 2'd0;
+        if (ISSUE_REPAIR_BYPASS && !rs_src3_ready[i]) begin
+          if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
+            src3_repair_sel[i] = 2'd1;
+          end else if (i_repair_valid_2 && rs_src3_tag[i] == i_repair_tag_2) begin
+            src3_repair_sel[i] = 2'd2;
+          end else if (i_repair_valid_3 && rs_src3_tag[i] == i_repair_tag_3) begin
+            src3_repair_sel[i] = 2'd3;
+          end
+        end
       end else begin
         src3_cdb_bypass[i] = 1'b0;
+        src3_repair_sel[i] = 2'd0;
       end
     end
   end
@@ -477,13 +518,15 @@ module reservation_station #(
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i] && (rs_src1_ready[i] || src1_cdb_bypass[i])
+      entry_ready[i] = rs_valid[i] &&
+          (rs_src1_ready[i] || src1_cdb_bypass[i] || (src1_repair_sel[i] != 2'd0))
       // Even when an instruction uses an immediate, issue still
       // requires src2 to be ready if the opcode actually has a
       // second source (for example stores: base+imm address and
       // rs2 store data). Dispatch marks truly-unused src2
       // operands ready, so a plain src2_ready check is correct.
-      && (rs_src2_ready[i] || src2_cdb_bypass[i]) && (rs_src3_ready[i] || src3_cdb_bypass[i]);
+      && (rs_src2_ready[i] || src2_cdb_bypass[i] || (src2_repair_sel[i] != 2'd0)) &&
+          (rs_src3_ready[i] || src3_cdb_bypass[i] || (src3_repair_sel[i] != 2'd0));
     end
   end
 
@@ -540,6 +583,28 @@ module reservation_station #(
                       (BYPASS_STAGE2 || can_issue_to_stage2) &&
                       !i_flush_all && !i_flush_en;
 
+  function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [1:0] sel);
+    begin
+      case (sel)
+        2'd1: repair_value_for_sel = i_repair_value_1;
+        2'd2: repair_value_for_sel = i_repair_value_2;
+        2'd3: repair_value_for_sel = i_repair_value_3;
+        default: repair_value_for_sel = '0;
+      endcase
+    end
+  endfunction
+
+  function automatic logic [FLEN-1:0] stage2_repair_value_for(input logic [1:0] sel);
+    begin
+      case (sel)
+        2'd1: stage2_repair_value_for = stage2_repair_value_1;
+        2'd2: stage2_repair_value_for = stage2_repair_value_2;
+        2'd3: stage2_repair_value_for = stage2_repair_value_3;
+        default: stage2_repair_value_for = '0;
+      endcase
+    end
+  endfunction
+
   always_comb begin
     bypass_issue                 = '0;
     bypass_issue_writes_cdb_hint = 1'b0;
@@ -547,11 +612,19 @@ module reservation_station #(
       bypass_issue.valid = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
       bypass_issue.rob_tag = rs_rob_tag[issue_idx];
       bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
-      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value : rs_src1_value[issue_idx];
-      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value : rs_src2_value[issue_idx];
+      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value :
+                                ((src1_repair_sel[issue_idx] != 2'd0) ?
+                                 repair_value_for_sel(src1_repair_sel[issue_idx]) :
+          rs_src1_value[issue_idx]);
+      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value :
+                                ((src2_repair_sel[issue_idx] != 2'd0) ?
+                                 repair_value_for_sel(src2_repair_sel[issue_idx]) :
+          rs_src2_value[issue_idx]);
       if (HAS_SRC3) begin
         bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value :
-                                  rs_src3_value[issue_idx];
+                                  ((src3_repair_sel[issue_idx] != 2'd0) ?
+                                   repair_value_for_sel(src3_repair_sel[issue_idx]) :
+            rs_src3_value[issue_idx]);
       end
       bypass_issue.imm = pl_imm;
       bypass_issue.use_imm = rs_use_imm[issue_idx];
@@ -614,13 +687,24 @@ module reservation_station #(
   // For CDB-bypassed sources, substitute the CDB value captured at issue
   // time.  All inputs are registered, so this MUX is off the critical path.
   assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
-                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
+                              : (stage2_src1_bypassed ? stage2_cdb_value :
+                                 ((stage2_src1_repair_sel != 2'd0) ?
+                                  stage2_repair_value_for(
+      stage2_src1_repair_sel
+  ) : stage2_src1_value));
   assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
-                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
+                              : (stage2_src2_bypassed ? stage2_cdb_value :
+                                 ((stage2_src2_repair_sel != 2'd0) ?
+                                  stage2_repair_value_for(
+      stage2_src2_repair_sel
+  ) : stage2_src2_value));
   assign o_issue.src3_value = HAS_SRC3 ?
                               (BYPASS_STAGE2 ? bypass_issue.src3_value
-                               : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value)) :
-                              '0;
+                               : (stage2_src3_bypassed ? stage2_cdb_value :
+                                  ((stage2_src3_repair_sel != 2'd0) ?
+                                   stage2_repair_value_for(
+      stage2_src3_repair_sel
+  ) : stage2_src3_value))) : '0;
   assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
   assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
   assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
@@ -825,9 +909,12 @@ module reservation_station #(
       stage2_src2_value <= rs_src2_value[issue_idx];
       stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
       stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
+      stage2_src1_repair_sel <= src1_repair_sel[issue_idx];
+      stage2_src2_repair_sel <= src2_repair_sel[issue_idx];
       if (HAS_SRC3) begin
         stage2_src3_value <= rs_src3_value[issue_idx];
         stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
+        stage2_src3_repair_sel <= src3_repair_sel[issue_idx];
       end
       stage2_cdb_value <= i_cdb.value;
       stage2_imm <= pl_imm;
@@ -855,6 +942,17 @@ module reservation_station #(
       stage2_valid <= 1'b0;
     end
     // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
+  end
+
+  // Repair values are live only when a corresponding nonzero stage2 repair
+  // selector is captured on issue_fire. Update the wide value flops whenever
+  // stage2 can accept a new entry and hold while stage2 is blocked.
+  always_ff @(posedge i_clk) begin
+    if (can_issue_to_stage2) begin
+      stage2_repair_value_1 <= i_repair_value_1;
+      stage2_repair_value_2 <= i_repair_value_2;
+      stage2_repair_value_3 <= i_repair_value_3;
+    end
   end
 
   // No reset: this sideband is only observed when stage2_valid is set.

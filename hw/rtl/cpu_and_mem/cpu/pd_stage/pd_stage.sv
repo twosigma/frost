@@ -195,7 +195,7 @@ module pd_stage #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.stall && pd_backward_branch) pd_redirect_target_r <= pd_backward_target;
+    if (!i_pipeline_ctrl.stall) pd_redirect_target_r <= pd_backward_target;
   end
 
   assign o_pd_redirect = pd_redirect_r;
