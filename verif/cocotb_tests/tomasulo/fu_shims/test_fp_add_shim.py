@@ -407,3 +407,86 @@ async def test_fsgnj_s(dut: Any) -> None:
         f"got 0x{result['value']:016X}"
     )
     assert result["exception"] is False, "unexpected exception"
+
+
+# ============================================================================
+# Test 9: FMAX_D with a signaling NaN raises NV and returns the number
+# ============================================================================
+@cocotb.test()
+async def test_fmax_d_snan_sets_invalid(dut: Any) -> None:
+    """FMAX_D(sNaN, 1.0) returns 1.0 and raises invalid-operation."""
+    iface = await setup(dut)
+
+    rob_tag = 8
+    snan_d = 0x7FF0_0000_0000_0001
+    one_d = 0x3FF0_0000_0000_0000
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("FMAX_D"),
+        src1_value=snan_d,
+        src2_value=one_d,
+        rm=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_complete(iface)
+
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["value"] == one_d, (
+        f"FMAX_D(sNaN, 1.0) should be 0x{one_d:016X}, " f"got 0x{result['value']:016X}"
+    )
+    assert (
+        result["fp_flags"] == 0x10
+    ), f"FMAX_D(sNaN, 1.0) should raise NV only, got 0x{result['fp_flags']:02X}"
+    assert result["exception"] is False, "unexpected exception"
+
+
+@cocotb.test()
+async def test_fmax_d_snan_after_clean_ops_sets_invalid(dut: Any) -> None:
+    """A later FMAX_D(sNaN, 1.0) still raises NV after clean min/max ops."""
+    iface = await setup(dut)
+
+    one_d = 0x3FF0_0000_0000_0000
+    two_d = 0x4000_0000_0000_0000
+    neg_one_d = 0xBFF0_0000_0000_0000
+    neg_two_d = 0xC000_0000_0000_0000
+    snan_d = 0x7FF0_0000_0000_0001
+
+    for tag, op_name, src1, src2, expected in [
+        (9, "FMIN_D", two_d, one_d, one_d),
+        (10, "FMAX_D", two_d, one_d, two_d),
+        (11, "FMAX_D", neg_one_d, neg_two_d, neg_one_d),
+    ]:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tag,
+            op=_op(op_name),
+            src1_value=src1,
+            src2_value=src2,
+            rm=0,
+        )
+        await RisingEdge(iface.clock)
+        iface.clear_issue()
+        result = await wait_for_complete(iface)
+        assert result["value"] == expected
+        assert result["fp_flags"] == 0
+        await RisingEdge(iface.clock)
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=12,
+        op=_op("FMAX_D"),
+        src1_value=snan_d,
+        src2_value=one_d,
+        rm=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+    result = await wait_for_complete(iface)
+
+    assert result["value"] == one_d
+    assert result["fp_flags"] == 0x10

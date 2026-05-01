@@ -55,6 +55,10 @@ module fp_mul_shim (
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
 
+  function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
+    unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
+  endfunction
+
   // ===========================================================================
   // Age comparison for partial flush
   // ===========================================================================
@@ -134,9 +138,9 @@ module fp_mul_shim (
   end
 
   // Operand extraction
-  wire [31:0] src1_s = i_rs_issue.src1_value[31:0];
-  wire [31:0] src2_s = i_rs_issue.src2_value[31:0];
-  wire [31:0] src3_s = i_rs_issue.src3_value[31:0];
+  wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
+  wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
+  wire [31:0] src3_s = unbox32(i_rs_issue.src3_value);
   wire [63:0] src1_d = i_rs_issue.src1_value;
   wire [63:0] src2_d = i_rs_issue.src2_value;
   wire [63:0] src3_d = i_rs_issue.src3_value;

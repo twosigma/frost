@@ -221,6 +221,16 @@ module load_queue #(
     end
   endfunction
 
+  function automatic logic is_load_misaligned(input riscv_pkg::mem_size_e size,
+                                              input logic [XLEN-1:0] addr);
+    unique case (size)
+      riscv_pkg::MEM_SIZE_HALF:   is_load_misaligned = addr[0];
+      riscv_pkg::MEM_SIZE_WORD:   is_load_misaligned = |addr[1:0];
+      riscv_pkg::MEM_SIZE_DOUBLE: is_load_misaligned = |addr[2:0];
+      default:                    is_load_misaligned = 1'b0;
+    endcase
+  endfunction
+
   // ===========================================================================
   // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
   // ===========================================================================
@@ -982,8 +992,15 @@ module load_queue #(
   // gate so the LQ can issue 1 load/cycle in steady state. The launch_mem_issue
   // term mirrors the corresponding clearing branch in the always_ff below.
   logic sq_check_will_clear;
+  logic sq_check_misaligned;
+  logic misalign_bypass_fire;
+  assign sq_check_misaligned = sq_check_entry_valid && sq_check_entry_issueable &&
+                               is_load_misaligned(
+      sq_check_size_q, sq_check_addr_q
+  );
   assign sq_check_will_clear = sq_check_pending &&
-      (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward || launch_mem_issue);
+      (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
+       launch_mem_issue || misalign_bypass_fire);
 
   // TIMING: MMIO check folded into the Phase B eligibility masks so these
   // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
@@ -1013,6 +1030,7 @@ module load_queue #(
 
     if (!i_flush_all && !i_flush_en && !drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable &&
+        !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
     end
@@ -1041,9 +1059,11 @@ module load_queue #(
   logic sq_no_older_store;
   assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
+      !sq_check_misaligned &&
       (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
+      !sq_check_misaligned &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
@@ -1418,11 +1438,15 @@ module load_queue #(
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
 
+  assign misalign_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
+                                !resp_bypass_fire && sq_check_misaligned && !i_flush_en;
+
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
-                                 !resp_bypass_fire && cache_hit_fast_path;
+                                 !resp_bypass_fire && !misalign_bypass_fire &&
+                                 cache_hit_fast_path;
 
-  assign bypass_fire = resp_bypass_fire || cache_hit_bypass_fire;
+  assign bypass_fire = resp_bypass_fire || misalign_bypass_fire || cache_hit_bypass_fire;
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
   // signals (lu_data_out / lu_cache_out / raw word) instead of the LUTRAM.
@@ -1446,15 +1470,18 @@ module load_queue #(
     end
   end
 
-  assign bypass_idx     = resp_bypass_fire ? issued_idx : sq_check_idx;
-  assign bypass_tag     = resp_bypass_fire ? issued_rob_tag : sq_check_rob_tag_q;
-  assign bypass_value   = resp_bypass_fire ? resp_bypass_value : cache_hit_bypass_value;
+  assign bypass_idx = resp_bypass_fire ? issued_idx : sq_check_idx;
+  assign bypass_tag = resp_bypass_fire ? issued_rob_tag : sq_check_rob_tag_q;
+  assign bypass_value =
+      misalign_bypass_fire ? '0 :
+      resp_bypass_fire ? resp_bypass_value :
+      cache_hit_bypass_value;
 
   // Entry freeing: once the result is captured into the stage, the queue slot
   // can be released. The staged copy now owns the completion payload.  The
   // bypass path frees the entry the same cycle it completes (no intervening
   // data_valid state).
-  assign free_entry_en  = issue_cdb_fire || bypass_fire;
+  assign free_entry_en = issue_cdb_fire || bypass_fire;
   assign free_entry_idx = issue_cdb_fire ? issue_cdb_idx : bypass_idx;
 
   // ===========================================================================
@@ -1557,7 +1584,7 @@ module load_queue #(
       sq_check_phase2_next         = i_sq_empty;
     end else if (sq_check_pending &&
                  (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-                  launch_mem_issue)) begin
+                  launch_mem_issue || misalign_bypass_fire)) begin
       // launch_mem_issue keeps the slot held through bus_busy stalls.
       sq_check_pending_next = 1'b0;
     end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
@@ -2076,11 +2103,13 @@ module load_queue #(
       cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
       cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
     end else if (bypass_fire) begin
-      cdb_stage_data.tag       <= bypass_tag;
-      cdb_stage_data.value     <= bypass_value;
-      cdb_stage_data.exception <= 1'b0;
-      cdb_stage_data.exc_cause <= '0;
-      cdb_stage_data.fp_flags  <= '0;
+      cdb_stage_data.tag <= bypass_tag;
+      cdb_stage_data.value <= bypass_value;
+      cdb_stage_data.exception <= misalign_bypass_fire;
+      cdb_stage_data.exc_cause <= misalign_bypass_fire ?
+          riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) :
+          riscv_pkg::exc_cause_t'('0);
+      cdb_stage_data.fp_flags <= '0;
     end
   end
 

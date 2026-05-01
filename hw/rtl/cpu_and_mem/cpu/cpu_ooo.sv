@@ -863,7 +863,6 @@ module cpu_ooo #(
   logic id_valid;
   assign id_valid = pd_valid_q && !flush_pipeline && !i_rst &&
                     (from_id_to_ex.instruction != riscv_pkg::NOP) &&
-                    !from_id_to_ex.is_illegal_instruction &&
                     !csr_in_flight &&
                     !csr_wb_pending &&
       // Re-dispatch the held ID image after real backpressure stalls,
@@ -1164,6 +1163,7 @@ module cpu_ooo #(
   // CSR coordination
   logic csr_start, csr_done_ack;
   logic trap_pending;
+  logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
   logic rob_trap_taken_ack;
@@ -1334,7 +1334,7 @@ module cpu_ooo #(
       .o_commit_2_valid_raw     (rob_commit_2_valid_raw),
       .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
       .i_widen_commit_ok        (widen_commit_ok),
-      .i_commit_hold            (csr_commit_fire),
+      .i_commit_hold            (csr_commit_fire || trap_mret_commit_hold_q),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1524,6 +1524,11 @@ module cpu_ooo #(
       .i_perf_counter_select (wrapper_perf_counter_select),
       .o_perf_counter_data   (wrapper_perf_counter_data)
   );
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
+    else trap_mret_commit_hold_q <= trap_pending || mret_start;
+  end
 
   // ===========================================================================
   // Dispatch Unit
@@ -2490,6 +2495,37 @@ module cpu_ooo #(
   // the ALU shim stored zero_extend(csr_imm) in rob_commit.value.
   logic [XLEN-1:0] csr_write_data_from_commit;
   assign csr_write_data_from_commit = rob_commit.value[XLEN-1:0];
+  logic rob_commit_fp_flags_nonzero;
+  logic rob_commit_2_fp_flags_nonzero;
+  logic rob_commit_fp_flags_valid;
+  logic rob_commit_2_fp_flags_valid;
+  logic rob_commit_any_fp_flags_valid;
+  riscv_pkg::fp_flags_t rob_commit_fp_flags_merged;
+
+  assign rob_commit_fp_flags_nonzero = rob_commit.fp_flags.nv | rob_commit.fp_flags.dz |
+                                       rob_commit.fp_flags.of | rob_commit.fp_flags.uf |
+                                       rob_commit.fp_flags.nx;
+  assign rob_commit_2_fp_flags_nonzero = rob_commit_2.fp_flags.nv | rob_commit_2.fp_flags.dz |
+                                         rob_commit_2.fp_flags.of | rob_commit_2.fp_flags.uf |
+                                         rob_commit_2.fp_flags.nx;
+  assign rob_commit_fp_flags_valid = rob_commit_valid && rob_commit_fp_flags_nonzero &&
+                                     !rob_commit.exception;
+  assign rob_commit_2_fp_flags_valid = rob_commit_2_valid && rob_commit_2_fp_flags_nonzero &&
+                                       !rob_commit_2.exception;
+  assign rob_commit_any_fp_flags_valid = rob_commit_fp_flags_valid || rob_commit_2_fp_flags_valid;
+
+  always_comb begin
+    rob_commit_fp_flags_merged.nv = (rob_commit_fp_flags_valid && rob_commit.fp_flags.nv) ||
+                                    (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.nv);
+    rob_commit_fp_flags_merged.dz = (rob_commit_fp_flags_valid && rob_commit.fp_flags.dz) ||
+                                    (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.dz);
+    rob_commit_fp_flags_merged.of = (rob_commit_fp_flags_valid && rob_commit.fp_flags.of) ||
+                                    (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.of);
+    rob_commit_fp_flags_merged.uf = (rob_commit_fp_flags_valid && rob_commit.fp_flags.uf) ||
+                                    (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.uf);
+    rob_commit_fp_flags_merged.nx = (rob_commit_fp_flags_valid && rob_commit.fp_flags.nx) ||
+                                    (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.nx);
+  end
 
   csr_file #(
       .XLEN(XLEN)
@@ -2517,9 +2553,9 @@ module cpu_ooo #(
       .o_mepc(csr_mepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
       // FP flags: accumulated from ROB commit
-      .i_fp_flags(rob_commit.fp_flags),
-      .i_fp_flags_valid(rob_commit_valid && rob_commit.has_fp_flags && !rob_commit.exception),
-      .i_fp_flags_wb_valid(rob_commit_valid && rob_commit.has_fp_flags),
+      .i_fp_flags(rob_commit_fp_flags_merged),
+      .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
+      .i_fp_flags_wb_valid(rob_commit_any_fp_flags_valid),
       .i_fp_flags_ma('0),
       .i_fp_flags_ma_valid(1'b0),
       .o_frm(frm_csr),
@@ -2597,10 +2633,9 @@ module cpu_ooo #(
   assign flush_for_trap = trap_taken_reg;
   assign flush_for_mret = mret_taken_reg;
 
-  // Acknowledge trap/mret to ROB using REGISTERED versions to break the
-  // combinational feedback: rob_valid → o_mret_start → trap_unit →
-  // mret_taken → i_mret_done → serial FSM → commit_en → CSR → regfile.
-  // The ROB's serial FSM stays in TRAP_WAIT/MRET_EXEC one extra cycle.
+  // Acknowledge trap/mret to the ROB on the registered recovery pulse. This
+  // keeps the head trap metadata stable through the CSR trap-entry update; the
+  // commit hold above blocks younger retirement during the delay.
   assign rob_trap_taken_ack = trap_taken_reg;
   assign mret_done_ack = mret_taken_reg;
 

@@ -934,6 +934,16 @@ module tomasulo_wrapper #(
   logic lq_head_load_bb_sq_wait;
   logic lq_head_load_bb_staging;
 
+  function automatic logic is_mem_access_misaligned(input riscv_pkg::mem_size_e size,
+                                                    input logic [riscv_pkg::XLEN-1:0] addr);
+    unique case (size)
+      riscv_pkg::MEM_SIZE_HALF:   is_mem_access_misaligned = addr[0];
+      riscv_pkg::MEM_SIZE_WORD:   is_mem_access_misaligned = |addr[1:0];
+      riscv_pkg::MEM_SIZE_DOUBLE: is_mem_access_misaligned = |addr[2:0];
+      default:                    is_mem_access_misaligned = 1'b0;
+    endcase
+  endfunction
+
   // ===========================================================================
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
   // ===========================================================================
@@ -1000,6 +1010,7 @@ module tomasulo_wrapper #(
   logic sc_success;
   logic sc_fu_complete_valid;
   logic store_issue_fire;
+  logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
 
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
@@ -1020,8 +1031,15 @@ module tomasulo_wrapper #(
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W is excluded — it has its own completion path above.
+  assign store_misalign_issue =
+      o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+      (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+      is_mem_access_misaligned(
+      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
+  );
   assign store_issue_fire = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                            (o_mem_rs_issue.op != riscv_pkg::SC_W);
+                            (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+                            !store_misalign_issue;
   assign store_complete_tag = o_mem_rs_issue.rob_tag;
 
   // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
@@ -1045,11 +1063,22 @@ module tomasulo_wrapper #(
     sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
   end
 
-  // MUX: SC > LQ for MEM adapter input. Plain stores mark the ROB done
-  // directly and do not need to occupy the shared MEM adapter/CDB slot.
+  riscv_pkg::fu_complete_t store_misalign_fu_complete;
+  always_comb begin
+    store_misalign_fu_complete = '0;
+    store_misalign_fu_complete.valid = store_misalign_issue;
+    store_misalign_fu_complete.tag = o_mem_rs_issue.rob_tag;
+    store_misalign_fu_complete.exception = 1'b1;
+    store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+        riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+  end
+
+  // MUX: SC > misaligned store exception > LQ for MEM adapter input.
+  // Aligned plain stores mark the ROB done directly and do not occupy CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
     if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
+    else if (store_misalign_fu_complete.valid) mem_fu_to_adapter = store_misalign_fu_complete;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
@@ -1061,6 +1090,7 @@ module tomasulo_wrapper #(
                               lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
                               !sc_fu_complete_reg.valid &&
+                              !store_misalign_issue &&
                               !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
@@ -1529,6 +1559,8 @@ module tomasulo_wrapper #(
       .i_repair_value_3(bypass_value_3),
       .o_issue(mem_rs_issue_raw),
       .i_fu_ready(i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc) &&
+                  !sc_fu_complete_valid && !sc_fu_complete_reg.valid &&
+                  !mem_adapter_result_pending &&
                   !i_backend_recovery_hold),
       .o_issue_writes_cdb_hint(),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
@@ -2049,7 +2081,7 @@ module tomasulo_wrapper #(
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
       .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
-                                sc_fu_complete_reg.valid),
+                                sc_fu_complete_reg.valid || store_misalign_issue),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
@@ -2229,7 +2261,8 @@ module tomasulo_wrapper #(
 
   riscv_pkg::sq_addr_update_t sq_addr_update;
   always_comb begin
-    sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq;
+    sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+                             !store_misalign_issue;
     sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     sq_addr_update.address = sq_effective_addr;
     sq_addr_update.is_mmio = sq_addr_is_mmio;
@@ -2238,9 +2271,10 @@ module tomasulo_wrapper #(
   // Data update: store data from src2_value
   riscv_pkg::sq_data_update_t sq_data_update;
   always_comb begin
-    sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq;
+    sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+                             !store_misalign_issue;
     sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
-    sq_data_update.data    = o_mem_rs_issue.src2_value;
+    sq_data_update.data = o_mem_rs_issue.src2_value;
   end
 
   // ===========================================================================

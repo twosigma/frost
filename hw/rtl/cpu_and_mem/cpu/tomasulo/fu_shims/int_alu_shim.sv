@@ -125,8 +125,10 @@ module int_alu_shim (
   // write_enable for them. Handle explicitly to produce CDB exception result.
   logic is_ecall_op;
   logic is_ebreak_op;
-  assign is_ecall_op  = (i_rs_issue.op == riscv_pkg::ECALL);
-  assign is_ebreak_op = (i_rs_issue.op == riscv_pkg::EBREAK);
+  logic is_illegal_op;
+  assign is_ecall_op   = (i_rs_issue.op == riscv_pkg::ECALL);
+  assign is_ebreak_op  = (i_rs_issue.op == riscv_pkg::EBREAK);
+  assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
 
   always_comb begin
     o_fu_complete.tag       = i_rs_issue.rob_tag;
@@ -138,13 +140,14 @@ module int_alu_shim (
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
 
-    if (is_ecall_op || is_ebreak_op) begin
-      // ECALL/EBREAK: mark as exception on CDB so ROB can trigger trap at commit
+    if (is_ecall_op || is_ebreak_op || is_illegal_op) begin
+      // Synchronous traps complete on CDB so the ROB can take them precisely at commit.
       o_fu_complete.value = '0;
       o_fu_complete.exception = 1'b1;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
-          is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]
-                      : riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
+          is_illegal_op ? riscv_pkg::ExcIllegalInstr[riscv_pkg::ExcCauseWidth-1:0] :
+          is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0] :
+          riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
     end else if (is_any_csr_op) begin
       // CSR: pass through the write operand (rs1 or zero-extended imm).
       // Actual CSR read/write is serialized at ROB commit time.

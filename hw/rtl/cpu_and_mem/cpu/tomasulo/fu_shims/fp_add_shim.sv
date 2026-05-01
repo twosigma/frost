@@ -56,6 +56,10 @@ module fp_add_shim (
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
 
+  function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
+    unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
+  endfunction
+
   // ===========================================================================
   // Age comparison for partial flush
   // ===========================================================================
@@ -142,10 +146,12 @@ module fp_add_shim (
   // ===========================================================================
   // Operand extraction
   // ===========================================================================
-  wire [31:0] src1_s = i_rs_issue.src1_value[31:0];
-  wire [31:0] src2_s = i_rs_issue.src2_value[31:0];
+  wire [31:0] src1_s_raw = i_rs_issue.src1_value[31:0];
+  wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
+  wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
   wire [63:0] src1_d = i_rs_issue.src1_value;
   wire [63:0] src2_d = i_rs_issue.src2_value;
+  wire [31:0] src1_s_convert = (i_rs_issue.op == riscv_pkg::FMV_X_W) ? src1_s_raw : src1_s;
 
   // ===========================================================================
   // In-flight + flush tracking
@@ -338,7 +344,7 @@ module fp_add_shim (
       .i_use_convert_s (cvt_use_s),
       .i_use_convert_d (cvt_use_d),
       .i_use_convert_sd(cvt_use_sd),
-      .i_operand_a_s   (src1_s),
+      .i_operand_a_s   (src1_s_convert),
       .i_operand_a_d   (src1_d),
       .i_int_operand   (i_rs_issue.src1_value[XLEN-1:0]),
       .i_operation     (i_rs_issue.op),

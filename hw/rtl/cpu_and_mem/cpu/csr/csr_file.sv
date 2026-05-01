@@ -252,29 +252,28 @@ module csr_file #(
   // fflags is sticky: new exception flags are ORed with existing flags.
   // CSR writes can clear flags explicitly.
   //
-  // Pipeline hazard: When fsflags/csrrw writes to fflags (in EX stage), the
-  // FP instruction whose flags were forwarded may still be in MA and advance
-  // to WB on the next cycle. Without suppression, its WB accumulation would
-  // re-set the flags that the CSR write just cleared. The fflags_csr_wrote
-  // flag suppresses WB accumulation for one cycle after a CSR write to fflags.
+  // Pipeline hazard: When fsflags/csrrw writes to fflags and its read used
+  // forwarded FP flags, that same FP instruction may still advance into the
+  // WB path on the next cycle. Suppress only that forwarded replay; OOO commit
+  // may retire a distinct younger FP instruction in the following cycle.
 
-  logic fflags_csr_wrote;
+  logic fflags_suppress_forwarded_wb;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      fflags_csr_wrote <= 1'b0;
+      fflags_suppress_forwarded_wb <= 1'b0;
     end else begin
-      fflags_csr_wrote <= i_csr_write_enable && i_csr_read_enable &&
-                          (i_csr_address == riscv_pkg::CsrFflags ||
-                           i_csr_address == riscv_pkg::CsrFcsr);
+      fflags_suppress_forwarded_wb <= i_csr_write_enable && i_csr_read_enable &&
+                                      (i_csr_address == riscv_pkg::CsrFflags ||
+                                       i_csr_address == riscv_pkg::CsrFcsr) &&
+                                      (i_fp_flags_ma_valid || i_fp_flags_wb_valid);
     end
   end
 
   // Effective FP flags valid: suppress accumulation for one cycle after CSR
-  // write to fflags/fcsr. The flags were already forwarded to the CSR read
-  // via the MA/WB forwarding paths, so re-accumulating would be a double-count.
+  // write to fflags/fcsr only if the CSR read actually forwarded pending flags.
   logic fp_flags_valid_eff;
-  assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_csr_wrote;
+  assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_suppress_forwarded_wb;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

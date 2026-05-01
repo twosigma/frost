@@ -177,7 +177,8 @@ module dispatch (
   // ===========================================================================
 
   riscv_pkg::instr_op_e op;
-  assign op = i_from_id_to_ex.instruction_operation;
+  assign op = i_from_id_to_ex.is_illegal_instruction ? riscv_pkg::ILLEGAL :
+                                                    i_from_id_to_ex.instruction_operation;
 
   // RS routing
   riscv_pkg::rs_type_e rs_type;
@@ -218,7 +219,7 @@ module dispatch (
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       // Privileged (exceptions) -> INT_RS
-      riscv_pkg::ECALL, riscv_pkg::EBREAK:
+      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
       rs_type = riscv_pkg::RS_INT;
 
       // Multiply/divide -> MUL_RS
@@ -406,6 +407,7 @@ module dispatch (
   logic is_store_flag, is_fp_store_flag, is_load_flag, is_fp_load_flag;
   logic is_branch_flag, is_call_flag, is_return_flag;
   logic is_jal_flag, is_jalr_flag;
+  logic op_has_fp_flags;
 
   always_comb begin
     // Inlined uses_fp_rs1
@@ -572,10 +574,30 @@ module dispatch (
     // Inlined is_jalr_op
     is_jalr_flag = (op == riscv_pkg::JALR);
 
+    case (op)
+      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
+      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D, riscv_pkg::FMUL_D,
+      riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
+      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
+      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
+      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
+      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
+      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
+      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
+      op_has_fp_flags = 1'b1;
+      default: op_has_fp_flags = 1'b0;
+    endcase
+
     // Reuse the ID-stage RAS classification so commit-time recovery matches the
     // IF-stage RAS detector. In particular, compressed `c.jalr t0` expands to
     // `jalr x1, x5, 0` and is a plain call in real code, not a return.
-    is_call_flag = i_from_id_to_ex.is_ras_call;
+    is_call_flag   = i_from_id_to_ex.is_ras_call;
     is_return_flag = i_from_id_to_ex.is_ras_return;
   end
 
@@ -956,8 +978,10 @@ module dispatch (
     // reading rs1 from the RS issue and computing the CSR result.
     '0;
 
-    // FP flags validity: FP compute ops produce flags, FP loads do not
-    o_rob_alloc_req.has_fp_flags = i_from_id_to_ex.is_fp_compute;
+    // FP flags validity: FP compute ops produce flags, FP loads do not.
+    // Derive this from the decoded op here so FP flags do not depend on a
+    // parallel ID-stage opcode classifier staying aligned through stalls.
+    o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
   end
 
   // ===========================================================================

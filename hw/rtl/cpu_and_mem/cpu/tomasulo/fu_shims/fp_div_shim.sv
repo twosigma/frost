@@ -54,6 +54,10 @@ module fp_div_shim (
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned FlagsW = 5;  // fp_flags_t width
 
+  function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
+    unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
+  endfunction
+
   // Sub-unit indices
   localparam int unsigned NumUnits = 4;
   localparam int unsigned UDivS = 0;
@@ -113,8 +117,8 @@ module fp_div_shim (
   end
 
   // Operand extraction
-  wire [31:0] src1_s = i_rs_issue.src1_value[31:0];
-  wire [31:0] src2_s = i_rs_issue.src2_value[31:0];
+  wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
+  wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
   wire [63:0] src1_d = i_rs_issue.src1_value;
   wire [63:0] src2_d = i_rs_issue.src2_value;
 

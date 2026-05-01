@@ -87,6 +87,9 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 # Override with --no-sim-filter (CLI) or include_all=True (API).
 SIM_MAX_TEST_CASES = 5000
 
+# Slow fused FP arch tests can run for more than two hours under Verilator.
+ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "9000"))
+
 
 @dataclass
 class TestResult:
@@ -222,7 +225,7 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
             text=True,
             env=env,
             check=False,
-            timeout=7200,
+            timeout=ARCH_SIM_TIMEOUT_SEC,
         )
 
         if result.returncode == 0:
@@ -318,7 +321,12 @@ def run_single_test(test_src: Path, extension: str) -> TestResult:
     # Simulate
     result = run_simulation()
     if result is None:
-        return TestResult(test_name, extension, "SKIP", "Simulation timed out")
+        return TestResult(
+            test_name,
+            extension,
+            "SKIP",
+            f"Simulation timed out after {ARCH_SIM_TIMEOUT_SEC}s",
+        )
 
     combined_output = (result.stdout or "") + (result.stderr or "")
 

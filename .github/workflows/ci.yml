@@ -85,6 +85,8 @@ jobs:
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extension }})
     runs-on: ubuntu-24.04
+    # Allows the 150-minute simulator timeout plus checkout, Docker load, and compile overhead.
+    timeout-minutes: 165
     needs: build-docker
     strategy:
       fail-fast: false

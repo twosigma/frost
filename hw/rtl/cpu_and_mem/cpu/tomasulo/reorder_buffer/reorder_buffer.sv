@@ -1441,7 +1441,7 @@ module reorder_buffer (
   // already blocks the early-recovery race; (c) removing the guard breaks
   // the commit_en ↔ branch_update critical path (19 LUT levels through the
   // CARRY8 branch-target comparison).
-  assign commit_en = head_ready && !commit_stall && !i_commit_hold &&
+  assign commit_en = head_ready && !head_exception && !commit_stall && !i_commit_hold &&
                      !i_early_recovery_en && !i_flush_all && !flush_after_head_commit;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)

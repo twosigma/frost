@@ -137,8 +137,6 @@ module imem_predecode #(
   assign write_sideband[0] = (i_port_a_write_data[1:0] != 2'b11);  // is_compressed_lo
   assign write_sideband[1] = (i_port_a_write_data[17:16] != 2'b11);  // is_compressed_hi
 
-  logic [DataWidth-1:0] port_a_read_data_wide;
-
   // Port A — even bank
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
@@ -157,6 +155,9 @@ module imem_predecode #(
     end
   end
 
+`ifndef SYNTHESIS
+  logic [DataWidth-1:0] port_a_read_data_wide;
+
   // Port A read (write-first): read back from whichever bank was addressed
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
@@ -169,6 +170,12 @@ module imem_predecode #(
     end
   end
   assign o_port_a_read_data = port_a_read_data_wide[31:0];
+`else
+  // The programming-side readback is unused by the core. Removing this BRAM
+  // read port under synthesis keeps the two-bank memory in a Xilinx-mappable
+  // one-write/one-read shape.
+  assign o_port_a_read_data = i_port_a_write_data;
+`endif
 
   // =========================================================================
   // Port B: 64-bit instruction fetch (read both banks every cycle)

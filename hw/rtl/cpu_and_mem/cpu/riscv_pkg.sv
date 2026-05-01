@@ -275,7 +275,8 @@ package riscv_pkg;
     FEQ_D,      // FP equal (double)
     FLT_D,      // FP less than (double)
     FLE_D,      // FP less than or equal (double)
-    FCLASS_D    // FP classify (double)
+    FCLASS_D,   // FP classify (double)
+    ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
   // ===========================================================================
