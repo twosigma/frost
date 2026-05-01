@@ -20,10 +20,9 @@ for driving stimulus and reading outputs.
 Note: Verilator flattens packed structs into single bit vectors.
 This interface handles packing/unpacking struct fields automatically.
 
-When running with the Icarus VPI-safe testbench wrapper
-(reservation_station_tb), dispatch and issue ports are individual
-scalar signals instead of wide packed struct ports. The interface
-detects this automatically via ``hasattr(dut, 'i_dispatch_valid')``.
+Some older local testbench wrappers expose dispatch and issue as individual
+scalar signals instead of wide packed struct ports. The interface detects this
+automatically via ``hasattr(dut, 'i_dispatch_valid')``.
 """
 
 from typing import Any
@@ -273,14 +272,14 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
 class RSInterface:
     """Interface to the Reservation Station DUT.
 
-    Automatically detects whether the DUT has flattened ports (Icarus
-    testbench wrapper) or packed struct ports (Verilator / direct module).
+    Automatically detects whether the DUT has flattened wrapper ports or the
+    packed struct ports used by the direct module.
     """
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
-        # Icarus tb wrapper exposes individual dispatch/issue ports
+        # Flattened wrappers expose individual dispatch/issue ports.
         self._flat = hasattr(dut, "i_dispatch_valid")
 
     @property
@@ -348,7 +347,7 @@ class RSInterface:
             self.dut.i_dispatch.value = 0
 
     def _drive_dispatch_flat(self, **kwargs: Any) -> None:
-        """Drive individual dispatch ports (Icarus wrapper)."""
+        """Drive individual dispatch ports from a flattened wrapper."""
         d = self.dut
         d.i_dispatch_valid.value = 1 if kwargs.get("valid") else 0
         d.i_dispatch_rs_type.value = int(kwargs.get("rs_type", 0)) & 0x7
@@ -414,7 +413,7 @@ class RSInterface:
         d.i_dispatch_link_addr.value = 0
 
     # =========================================================================
-    # CDB (84 bits — always packed, small enough for Icarus VPI)
+    # CDB (84 bits, always packed)
     # =========================================================================
 
     def drive_cdb(self, tag: int, value: int = 0, **kwargs: Any) -> None:
@@ -442,7 +441,7 @@ class RSInterface:
         return unpack_rs_issue(int(self.dut.o_issue.value))
 
     def _read_issue_flat(self) -> dict:
-        """Read individual issue ports (Icarus wrapper)."""
+        """Read individual issue ports from a flattened wrapper."""
         d = self.dut
         return {
             "valid": bool(d.o_issue_valid.value),

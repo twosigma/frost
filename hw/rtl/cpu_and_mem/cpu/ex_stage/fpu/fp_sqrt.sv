@@ -264,7 +264,7 @@ module fp_sqrt #(
   logic                           comp_special_invalid[RootBits+1];
   logic        [             2:0] comp_rm             [RootBits+1];
 
-  // Connect stage 2 output to compute pipeline input (always_comb for Icarus compat)
+  // Connect stage 2 output to compute pipeline input.
   always_comb begin
     comp_root[0]            = s2_root;
     comp_remainder[0]       = s2_remainder;

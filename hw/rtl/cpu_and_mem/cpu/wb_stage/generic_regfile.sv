@@ -48,8 +48,7 @@ module generic_regfile #(
     input  logic [ NUM_WRITE_PORTS*AddrWidth-1:0] i_write_addr,
     input  logic [NUM_WRITE_PORTS*DATA_WIDTH-1:0] i_write_data,
     input  logic                                  i_stall,
-    // Packed vectors for Icarus Verilog compatibility
-    // (Icarus does not support unpacked arrays as module ports)
+    // Packed vectors keep the module interface simple for synthesis and cocotb.
     input  logic [  NUM_READ_PORTS*AddrWidth-1:0] i_read_addr,
     output logic [ NUM_READ_PORTS*DATA_WIDTH-1:0] o_read_data
 );

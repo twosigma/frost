@@ -15,7 +15,7 @@
  */
 
 /*
- * Instruction Fetch (IF) Stage - First stage of the 6-stage RISC-V pipeline
+ * Instruction Fetch (IF) Stage - first stage of the in-order front-end
  *
  * This top-level module orchestrates instruction fetching by instantiating and
  * connecting specialized submodules organized into two subsystems:
@@ -75,8 +75,8 @@
  *   decompression. This breaks the long combinational path from memory read
  *   through decompression to pipeline registers.
  *
- *   All branches and jumps (JAL, JALR, conditional branches) are resolved in
- *   the EX stage and redirected through the i_from_ex_comb interface.
+ *   Branches and jumps are resolved by the OOO integration logic and
+ *   redirected through the i_from_ex_comb interface.
  */
 module if_stage #(
     parameter int unsigned XLEN = 32

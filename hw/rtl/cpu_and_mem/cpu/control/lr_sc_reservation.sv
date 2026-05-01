@@ -33,7 +33,7 @@
  *   can see the pending reservation.
  *
  * Related Modules:
- *   - cpu.sv: Instantiates this module
+ *   - Former in-order CPU top: instantiated this module
  *   - store_unit.sv: Uses reservation for SC success/fail determination
  *   - ex_stage.sv: Passes reservation to store_unit
  */

@@ -241,7 +241,7 @@ module fp_div_shim (
   // ===========================================================================
   localparam int unsigned MaxPipeDepth = 65;  // max(36, 65)
 
-  // Tag queue arrays — flat for Icarus compatibility
+  // Tag queue arrays stay flat for simple storage and waveform visibility.
   logic            tq_valid  [NumUnits] [MaxPipeDepth];
   logic [TagW-1:0] tq_tag    [NumUnits] [MaxPipeDepth];
   logic            tq_flushed[NumUnits] [MaxPipeDepth];

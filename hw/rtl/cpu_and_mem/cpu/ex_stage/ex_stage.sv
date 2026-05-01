@@ -15,7 +15,7 @@
  */
 
 /*
- * Execute (EX) Stage - Fourth stage of the 6-stage RISC-V pipeline
+ * Legacy Execute (EX) stage from the former in-order back-end
  *
  * This stage performs the core computational work of the processor:
  *   - ALU operations for arithmetic, logical, and bit manipulation

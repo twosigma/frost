@@ -1216,7 +1216,7 @@ module load_queue #(
   // lq_data LUTRAM Write Logic (combinational)
   // ===========================================================================
   // Placed after all signal declarations it references (cache_hit_fast_path,
-  // sq_do_forward, lu_cache_out, lu_data_out, etc.) for Icarus compatibility.
+  // sq_do_forward, lu_cache_out, lu_data_out, etc.) for readable tool output.
 
   always_comb begin
     lq_data_lo_we   = '0;

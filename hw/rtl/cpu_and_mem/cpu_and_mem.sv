@@ -19,7 +19,7 @@
   dual-port RAM and memory-mapped I/O peripherals. This module serves as the main
   compute and storage subsystem, managing the instruction fetch interface, data memory
   access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
-  instantiates a 6-stage pipelined RISC-V CPU alongside two separate dual-port RAMs:
+  instantiates the Tomasulo OOO RISC-V CPU alongside two separate dual-port RAMs:
   one for instruction fetch and one for data access. Both memories use Port A on the
   divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
   clock (i_clk) for runtime operations - instruction fetch from memory 0 and data

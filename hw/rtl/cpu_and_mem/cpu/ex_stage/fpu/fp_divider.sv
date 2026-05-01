@@ -358,7 +358,7 @@ module fp_divider #(
   logic                         div_special_div_zero[DivCycles+1];
   logic        [           2:0] div_rm              [DivCycles+1];
 
-  // Connect stage 3 output to divide pipeline input (always_comb for Icarus compat)
+  // Connect stage 3 output to divide pipeline input.
   always_comb begin
     div_quotient[0]         = s3_quotient;
     div_remainder[0]        = s3_remainder;

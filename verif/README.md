@@ -40,9 +40,10 @@ This directory contains a comprehensive Python-based verification framework for 
 The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table.
 
 Additional features:
-- 32 general-purpose registers
+- 32 general-purpose registers plus a separate FP register file
 - Harvard architecture with separate instruction and data memory interfaces
-- 6-stage pipeline (IF → PD → ID → EX → MA → WB) with flush mechanisms
+- In-order IF/PD/ID front-end feeding a Tomasulo OOO back-end
+- Precise in-order commit through the ROB, with branch/trap recovery paths
 
 ### Verification Methodology
 

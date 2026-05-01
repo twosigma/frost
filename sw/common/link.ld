@@ -1,5 +1,5 @@
 /* Linker script for FROST RISC-V bare-metal programs
- * Defines memory layout and section placement for RV32IMAB programs
+ * Defines memory layout and section placement for RV32GCB programs
  * IMPORTANT: Memory sizes here must match hardware configuration in cpu_and_mem.sv
  */
 

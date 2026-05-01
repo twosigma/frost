@@ -15,7 +15,7 @@
  */
 
 /*
-  Pre-Decode (PD) Stage - Second stage of the 6-stage RISC-V pipeline.
+  Pre-Decode (PD) Stage - second stage of the in-order front-end.
 
   This stage performs RVC decompression and instruction selection. The IF stage
   outputs raw parcel and selection signals; PD performs the actual decompression.
@@ -25,13 +25,13 @@
   Key operations:
   - RVC decompression (16-bit to 32-bit instruction expansion)
   - Instruction selection muxing (NOP, compressed, or aligned; spanning is pre-assembled in IF)
-  - Early source register extraction for forwarding/hazard timing
+  - Early source register extraction for regfile read and dispatch timing
 
   The decompressed/selected instruction is registered and passed to ID stage,
   which performs full instruction decoding and immediate extraction.
 
-  Flush is observed here (along with ID stage) during the 2-cycle flush
-  window after branches, traps, or MRET.
+  Flush is observed here (along with ID stage) during branch, trap, MRET,
+  and FENCE.I recovery.
 */
 module pd_stage #(
     parameter int unsigned XLEN = 32

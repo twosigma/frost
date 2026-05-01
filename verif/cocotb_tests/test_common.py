@@ -139,7 +139,7 @@ def handle_branch_flush(
     Returns:
         Tuple of (operation, rd, rs1, rs2, imm) representing a NOP
     """
-    # Update branch tracking: shift through 3 levels for 6-stage pipeline
+    # Update branch tracking through the monitor's three flush slots.
     state.advance_branch_state()
 
     # Return NOP instruction parameters
@@ -191,9 +191,8 @@ async def warmup_pipeline(
 ) -> None:
     """Fill the pipeline with NOPs to synchronize expected value queues.
 
-    With a 6-stage pipeline, we need to queue expected values for the first
-    PIPELINE_DEPTH cycles before o_vld starts firing. Drive NOPs to ensure
-    predictable initial state.
+    Queue expected values for the first PIPELINE_DEPTH cycles before o_vld
+    starts firing. Drive NOPs to ensure predictable initial state.
 
     Args:
         dut_if: DUT interface for signal access

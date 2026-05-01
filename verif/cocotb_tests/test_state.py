@@ -124,7 +124,7 @@ class TestState:
         # ====================================================================
         # Branch/Jump State
         # ====================================================================
-        # 6-stage pipeline needs 3 flush cycles when branch is taken
+        # Branch recovery model keeps three pending flush slots for the monitor.
         self.branch_taken_current: bool = False
         self.branch_taken_previous: bool = False
         self.branch_taken_two_cycles_ago: bool = False
@@ -322,7 +322,7 @@ class TestState:
         CSR reads happen in EX stage, which is PIPELINE_IF_TO_EX_CYCLES after IF.
         The counter value at EX time is what gets captured.
 
-        Pipeline timing for counters (6-stage: IF-PD-ID-EX-MA-WB):
+        Counter timing for the monitor alignment model:
 
         - cycle: Increments every clock edge. When CSR is in EX, the counter
           has incremented pipeline_offset more times since generation.

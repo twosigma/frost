@@ -81,8 +81,8 @@ MEMORY_SIZE_WORDS: Final[int] = 2**14
 MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
 
-MMIO_SIZE_BYTES: Final[int] = 0x28
-"""Size of MMIO peripheral range in bytes (40 bytes: 0x40000000-0x40000027)."""
+MMIO_SIZE_BYTES: Final[int] = 0x2C
+"""Size of MMIO peripheral range in bytes (44 bytes: 0x40000000-0x4000002B)."""
 
 # ============================================================================
 # Register File Configuration
@@ -252,19 +252,19 @@ NOP_INSTRUCTION: Final[int] = 0x00000013
 # ============================================================================
 
 PIPELINE_DEPTH: Final[int] = 6
-"""Number of pipeline stages (IF-PD-ID-EX-MA-WB)."""
+"""Warmup/drain cycles used by the CPU cocotb monitor alignment model."""
 
 PIPELINE_FLUSH_CYCLES: Final[int] = 3
-"""Number of cycles to flush pipeline on branch/jump (instructions before EX)."""
+"""Branch/jump recovery padding cycles used by the random-instruction model."""
 
 PIPELINE_IF_TO_EX_CYCLES: Final[int] = 3
-"""Cycles from instruction fetch to execute stage."""
+"""Legacy monitor offset from fetch to branch/CSR resolution."""
 
 PIPELINE_IF_TO_MA_CYCLES: Final[int] = 4
-"""Cycles from instruction fetch to memory access stage."""
+"""Legacy monitor offset from fetch to memory-observation point."""
 
 PIPELINE_IF_TO_WB_CYCLES: Final[int] = 5
-"""Cycles from instruction fetch to writeback stage."""
+"""Legacy monitor offset from fetch to architectural writeback observation."""
 
 # ============================================================================
 # Division Edge Cases (RISC-V Spec)

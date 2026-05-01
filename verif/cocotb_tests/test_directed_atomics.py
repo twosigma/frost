@@ -312,7 +312,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================

@@ -92,10 +92,9 @@ Options:
 **Pytest Usage:**
 
 ```bash
-pytest test_run_cocotb.py                          # Run all cocotb tests (both simulators)
-pytest test_run_cocotb.py -k verilator             # Run with Verilator only
-pytest test_run_cocotb.py -k hello_world           # Run specific test (both simulators)
-pytest test_run_cocotb.py -k "verilator and hello_world"  # Specific test, one simulator
+pytest test_run_cocotb.py                          # Run all cocotb tests with Verilator
+pytest test_run_cocotb.py -k hello_world           # Run a specific test
+pytest test_run_cocotb.py -k unit                  # Run Tomasulo unit tests
 pytest test_run_cocotb.py -s                       # Show live output
 ```
 
@@ -138,7 +137,7 @@ pytest test_arch_compliance.py -v -m slow
 
 ### `test_riscv_tests.py`
 
-Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise forwarding, bypassing, and pipeline hazards that arch_test's single-instruction focus doesn't cover.
+Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and OOO commit cases that arch_test's single-instruction focus does not cover.
 
 **Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
 
@@ -232,7 +231,7 @@ pytest test_run_yosys.py                           # Run synthesis test
 | `conftest.py`              | Pytest configuration and fixtures         |
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
-| `test_riscv_tests.py`      | riscv-tests ISA pipeline test runner      |
+| `test_riscv_tests.py`      | riscv-tests ISA regression runner         |
 | `test_riscv_torture.py`    | Random instruction torture test runner    |
 | `.gitignore`               | Excludes build artifacts                  |
 

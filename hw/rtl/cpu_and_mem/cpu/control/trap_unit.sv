@@ -84,7 +84,7 @@ module trap_unit #(
     input logic [XLEN-1:0] i_mtvec,
     input logic [XLEN-1:0] i_mepc,
 
-    // Direct MIE bit input (bypasses bit extraction which Icarus has issues with)
+    // Direct MIE bit input keeps mstatus bit extraction out of this path.
     input logic i_mstatus_mie_direct,
 
     // Interrupt pending inputs
@@ -116,7 +116,7 @@ module trap_unit #(
     output logic o_stall_for_wfi  // Stall pipeline for WFI
 );
 
-  // Use direct mstatus_mie input to avoid Icarus issues with bit extraction
+  // Use direct mstatus_mie input instead of re-extracting from mstatus.
   logic mstatus_mie;
   assign mstatus_mie = i_mstatus_mie_direct;
 

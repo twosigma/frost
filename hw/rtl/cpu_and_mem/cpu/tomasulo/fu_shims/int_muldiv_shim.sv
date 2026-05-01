@@ -161,7 +161,7 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   localparam int unsigned MulPipeDepth = 4;
 
-  // Individual flat arrays (avoid unpacked-array-of-packed-struct for Icarus).
+  // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
   logic            mul_trk_valid  [MulPipeDepth];
   logic [TagW-1:0] mul_trk_tag    [MulPipeDepth];
   logic            mul_trk_is_low [MulPipeDepth];  // 1 = MUL (low 32 bits), 0 = high
@@ -413,7 +413,7 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17
 
-  // Individual flat arrays (avoid unpacked-array-of-packed-struct for Icarus).
+  // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
   logic            div_trk_valid  [DivPipeDepth];
   logic [TagW-1:0] div_trk_tag    [DivPipeDepth];
   logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM/REMU, 0 = DIV/DIVU
@@ -480,7 +480,7 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   localparam int unsigned FifoDepth = 4;
 
-  // Individual flat arrays for FIFO data (Icarus compat — no struct arrays).
+  // Individual flat arrays for FIFO data; no struct arrays in the storage path.
   logic [               TagW-1:0] div_fifo_tag           [FifoDepth];
   logic [    riscv_pkg::FLEN-1:0] div_fifo_value_rd;
   logic [    riscv_pkg::FLEN-1:0] div_fifo_value_wr_data;

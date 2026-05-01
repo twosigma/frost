@@ -23,7 +23,7 @@
  * Pipeline structure:
  *   IF → PD → ID → DISPATCH → [OOO execution via Tomasulo] → COMMIT
  *
- * Key changes from in-order cpu.sv:
+ * Key changes from the former in-order back-end:
  *   - REMOVED: EX/MA/WB stages, forwarding_unit, fp_forwarding_unit,
  *              hazard_resolution_unit (in-order versions)
  *   - ADDED: dispatch module, tomasulo_wrapper (ROB+RAT+RS+CDB+LQ+SQ+FU shims)
@@ -37,7 +37,7 @@ module cpu_ooo #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h28
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
 ) (
     input logic i_clk,
     input logic i_rst,

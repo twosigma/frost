@@ -71,7 +71,7 @@
 module forwarding_unit #(
     parameter int unsigned XLEN = 32,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h28
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
 ) (
     input logic i_clk,
     // control inputs

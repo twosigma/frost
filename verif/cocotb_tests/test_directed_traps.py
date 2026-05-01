@@ -125,7 +125,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
@@ -447,7 +447,7 @@ async def run_directed_interrupt_trap_test(
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
@@ -712,7 +712,7 @@ async def run_directed_mret_interrupt_race_test(
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # Warmup
@@ -927,7 +927,7 @@ async def run_directed_csrsi_enable_mie_test(
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # Warmup
@@ -1158,7 +1158,7 @@ async def run_directed_illegal_instruction_test(
         )
     )
 
-    # Initialize register file pipeline states for 6-stage pipeline.
+    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================

@@ -88,7 +88,7 @@ module csr_file #(
     output logic [XLEN-1:0] o_mtvec,
     output logic [XLEN-1:0] o_mepc,
 
-    // Direct output of mstatus MIE bit to avoid Icarus concatenation issues
+    // Direct output of mstatus MIE bit for timing and simpler consumers.
     output logic o_mstatus_mie_direct,
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
@@ -136,8 +136,8 @@ module csr_file #(
   assign o_frm = frm;
 
   // Machine-mode CSRs
-  // mstatus: store MIE and MPIE as separate registers to work around Icarus Verilog issues
-  // Icarus has problems with bit manipulation in always_ff blocks, so we use separate registers
+  // mstatus: store MIE and MPIE as separate registers so hot-path bit updates
+  // do not require read/modify/write of the full CSR word.
   logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
   logic [XLEN-1:0] mstatus;  // Constructed from mie and mpie
@@ -180,7 +180,7 @@ module csr_file #(
   assign o_mtvec = mtvec;
   assign o_mepc = mepc;
 
-  // Direct output of mstatus_mie register - bypasses concatenation for Icarus compatibility
+  // Direct output of mstatus_mie register bypasses full-word CSR concatenation.
   assign o_mstatus_mie_direct = mstatus_mie;
 
   // ==========================================================================
@@ -311,9 +311,9 @@ module csr_file #(
   // ==========================================================================
 
   // Compute next-state values for mstatus/mie bits in a combinational block.
-  // This works around Icarus Verilog issues with conditional assignments in always_ff.
+  // Keep the next-state logic explicit and easy for synthesis/formal tools.
   // The always block below just registers these values unconditionally.
-  // Note: Using always @(*) instead of always_comb for Icarus compatibility.
+  // Note: old-style sensitivity keeps this block accepted by all supported tools.
 
   always_comb begin
     // Default: keep current values
@@ -343,8 +343,8 @@ module csr_file #(
     end
   end
 
-  // Simple flip-flops for mstatus/mie bits - using old-style always for Icarus compatibility
-  // Note: Using always @(posedge) instead of always_ff as a workaround for Icarus issues
+  // Simple flip-flops for mstatus/mie bits.
+  // Note: old-style always is used here because this block predates the OOO refactor.
   always @(posedge i_clk) begin
     if (i_rst) begin
       mstatus_mie <= 1'b0;

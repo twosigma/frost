@@ -15,14 +15,14 @@
  */
 
 /*
- * Instruction Decode (ID) stage - Third stage of the 6-stage RISC-V pipeline.
+ * Instruction Decode (ID) stage - third stage of the in-order front-end.
  *
  * This module decodes RISC-V instructions into control signals and immediate values.
  * It instantiates decoders for instruction type determination and immediate
  * value extraction. The module identifies load instructions, store operations, branch
- * conditions, and ALU operations. It supports pipeline flushing on branch mispredictions
- * and stalling for hazards. The decoded information is passed to the Execute stage through
- * a pipeline register that can be flushed or stalled as needed for correct program execution.
+ * conditions, and ALU operations. It supports front-end flushing and dispatch
+ * stalls. The decoded information is passed to dispatch through a register that
+ * can be flushed or stalled as needed for correct program execution.
  *
  * Submodule Hierarchy:
  * ====================

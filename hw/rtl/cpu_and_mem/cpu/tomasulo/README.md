@@ -104,12 +104,12 @@ A small FSM in the ROB pins certain instructions at the commit head:
 
 ### Single-CDB arbitration
 
-One result broadcast per cycle. Fixed priority, longest-latency wins,
-so a high-latency unit doesn't get pushed even further by losing
-arbitration:
+One result broadcast per cycle. Fixed priority favors common integer
+traffic while keeping FP/divide valid cones out of the fastest grant
+paths:
 
 ```
-FP_DIV  >  DIV  >  FP_MUL  >  MUL  >  FP_ADD  >  MEM  >  ALU
+MUL  >  MEM  >  ALU  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
 Losers latch their result in a one-deep `fu_cdb_adapter` and

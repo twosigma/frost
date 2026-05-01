@@ -15,7 +15,7 @@
  */
 
 /*
- * RISC-V Processor Package - Type definitions for RV32IMACB implementation
+ * RISC-V Processor Package - Type definitions for RV32GCB implementation
  *
  * This package contains all shared type definitions, enumerations, constants,
  * and pipeline data structures for the FROST RISC-V processor core.

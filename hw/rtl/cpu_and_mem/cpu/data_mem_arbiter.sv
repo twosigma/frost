@@ -32,7 +32,7 @@
  *   - fp_mem_write_active: indicates FP store is driving the bus (used by L0 cache)
  *
  * Related Modules:
- *   - cpu.sv: Instantiates this module
+ *   - Former in-order CPU top: instantiated this module
  *   - ex_stage.sv: Provides EX combinational memory signals
  *   - ma_stage.sv: Provides FP64 sequencer signals and registered EX-to-MA data
  *   - amo_unit.sv: Provides atomic memory operation write signals

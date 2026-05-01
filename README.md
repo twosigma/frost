@@ -90,7 +90,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 4 branch checkpoint slots
 - **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
 - **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
-- **Single-CDB result broadcast** with fixed-priority arbitration (longest-latency wins) and one-deep holding registers per FU
+- **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
 - **Branch prediction** with 32-entry 2-bit BTB (trained for both conditional branches and JAL), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups

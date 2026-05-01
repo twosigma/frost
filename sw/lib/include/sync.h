@@ -25,10 +25,10 @@
  *   - Self-modifying code needs instruction cache coherency (fence_i)
  *   - Memory ordering guarantees are needed between cores/devices (fence)
  *
- * On Frost (RV32IMAB with Zifencei), these are effectively NOPs since:
- *   - No instruction cache exists (unified memory)
- *   - Single-core, in-order execution
- *   - No out-of-order memory system
+ * On Frost (RV32GCB with Zifencei), these are lightweight barriers:
+ *   - No instruction cache exists, so fence.i has no cache to invalidate
+ *   - The single-core memory system completes loads/stores in program order
+ *     at commit
  *
  * However, using these primitives ensures code portability to more
  * complex RISC-V implementations where they have real effects.
@@ -38,8 +38,9 @@
  * FENCE - Memory ordering fence
  *
  * Ensures all prior memory operations (loads and stores) complete before
- * any subsequent memory operations begin. On simple in-order cores like
- * Frost, this is a NOP but ensures portability to out-of-order systems.
+ * any subsequent memory operations begin. On Frost this also acts as a
+ * compiler barrier, and it keeps software portable to systems with weaker
+ * memory ordering.
  *
  * The "memory" clobber tells the compiler not to reorder memory accesses
  * across this barrier.

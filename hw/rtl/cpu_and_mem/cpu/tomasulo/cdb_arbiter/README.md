@@ -4,12 +4,12 @@ A purely combinational fixed-priority arbiter that picks one
 functional unit completion per cycle for broadcast on the Common
 Data Bus. Seven inputs, one winner per cycle, no internal state.
 
-The priority order is longest-latency first, on the principle that a
-unit which has already waited 30 cycles for a result shouldn't get
-pushed any further by losing arbitration to a single-cycle ALU op:
+The priority order favors the common integer traffic that dominates
+CoreMark while keeping FP/divide valid cones out of the fastest grant
+paths:
 
 ```
-FP_DIV  >  DIV  >  FP_MUL  >  MUL  >  FP_ADD  >  MEM  >  ALU
+MUL  >  MEM  >  ALU  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
 Losers are held in their per-FU `fu_cdb_adapter` and re-presented

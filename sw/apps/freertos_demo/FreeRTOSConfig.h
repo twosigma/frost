@@ -18,7 +18,7 @@
  * FreeRTOS Configuration for FROST RISC-V Processor
  *
  * This configuration is for a minimal FreeRTOS setup targeting:
- *   - RV32IMAB with M-mode only
+ *   - RV32GCB with M-mode only
  *   - Single core (mhartid = 0)
  *   - CLINT-style timer (mtime/mtimecmp)
  *   - 300 MHz clock frequency
