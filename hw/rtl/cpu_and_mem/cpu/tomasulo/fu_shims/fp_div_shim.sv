@@ -146,6 +146,33 @@ module fp_div_shim (
   logic                        div_s_valid;
   riscv_pkg::fp_flags_t        div_s_flags;
 
+`ifdef FORMAL
+  // The shim proof covers tag/flush/FIFO control. Model the arithmetic
+  // sub-units as latency-matched valid pipelines so formal does not spend most
+  // of its time bit-blasting FP divide/sqrt datapaths.
+  logic [ DivSDepth-1:0] f_div_s_valid_pipe;
+  logic [ DivDDepth-1:0] f_div_d_valid_pipe;
+  logic [SqrtSDepth-1:0] f_sqrt_s_valid_pipe;
+  logic [SqrtDDepth-1:0] f_sqrt_d_valid_pipe;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_div_s_valid_pipe  <= '0;
+      f_div_d_valid_pipe  <= '0;
+      f_sqrt_s_valid_pipe <= '0;
+      f_sqrt_d_valid_pipe <= '0;
+    end else begin
+      f_div_s_valid_pipe  <= {f_div_s_valid_pipe[DivSDepth-2:0], fire_div_s};
+      f_div_d_valid_pipe  <= {f_div_d_valid_pipe[DivDDepth-2:0], fire_div_d};
+      f_sqrt_s_valid_pipe <= {f_sqrt_s_valid_pipe[SqrtSDepth-2:0], fire_sqrt_s};
+      f_sqrt_d_valid_pipe <= {f_sqrt_d_valid_pipe[SqrtDDepth-2:0], fire_sqrt_d};
+    end
+  end
+
+  assign div_s_valid  = f_div_s_valid_pipe[DivSDepth-1];
+  assign div_s_result = '0;
+  assign div_s_flags  = '0;
+`else
   fp_divider #(
       .FP_WIDTH(32)
   ) u_div_s (
@@ -160,11 +187,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(div_s_flags)
   );
+`endif
 
   logic                 [63:0] div_d_result;
   logic                        div_d_valid;
   riscv_pkg::fp_flags_t        div_d_flags;
 
+`ifdef FORMAL
+  assign div_d_valid  = f_div_d_valid_pipe[DivDDepth-1];
+  assign div_d_result = '0;
+  assign div_d_flags  = '0;
+`else
   fp_divider #(
       .FP_WIDTH(64)
   ) u_div_d (
@@ -179,11 +212,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(div_d_flags)
   );
+`endif
 
   logic                 [31:0] sqrt_s_result;
   logic                        sqrt_s_valid;
   riscv_pkg::fp_flags_t        sqrt_s_flags;
 
+`ifdef FORMAL
+  assign sqrt_s_valid  = f_sqrt_s_valid_pipe[SqrtSDepth-1];
+  assign sqrt_s_result = '0;
+  assign sqrt_s_flags  = '0;
+`else
   fp_sqrt #(
       .FP_WIDTH(32)
   ) u_sqrt_s (
@@ -197,11 +236,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(sqrt_s_flags)
   );
+`endif
 
   logic                 [63:0] sqrt_d_result;
   logic                        sqrt_d_valid;
   riscv_pkg::fp_flags_t        sqrt_d_flags;
 
+`ifdef FORMAL
+  assign sqrt_d_valid  = f_sqrt_d_valid_pipe[SqrtDDepth-1];
+  assign sqrt_d_result = '0;
+  assign sqrt_d_flags  = '0;
+`else
   fp_sqrt #(
       .FP_WIDTH(64)
   ) u_sqrt_d (
@@ -215,6 +260,7 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(sqrt_d_flags)
   );
+`endif
 
   // Collect sub-unit outputs into arrays for uniform handling
   logic              unit_valid_out[NumUnits];

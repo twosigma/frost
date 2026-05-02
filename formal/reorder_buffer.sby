@@ -9,7 +9,7 @@ cover: mode cover
 cover: depth 30
 
 [engines]
-smtbmc boolector
+smtbmc yices
 
 [script]
 read -formal -sv riscv_pkg.sv
