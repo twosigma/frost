@@ -60,8 +60,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
       - FROST_YOSYS_TIMEOUT_SEC
       - FROST_YOSYS_XILINX_TIMEOUT_SEC
     """
-    default_timeout = 600
-    default_xilinx_timeout = 900
+    default_timeout = 1200
+    default_xilinx_timeout = 1800
 
     env_name = (
         "FROST_YOSYS_XILINX_TIMEOUT_SEC"
