@@ -94,9 +94,10 @@ module imem_predecode #(
   // =========================================================================
   // Initialization — split sw.mem into even/odd banks
   // =========================================================================
-`ifndef SYNTHESIS
-  // Keep the preload split out of synthesis: Yosys expands the temporary
-  // init_mem array into registers during frontend elaboration.
+`ifndef YOSYS
+  // Keep the preload split out of Yosys: it expands the temporary init_mem
+  // array into registers during frontend elaboration. Vivado still needs this
+  // block so the FPGA bitstream contains the compile-time hello_world image.
   logic [DataWidth-1:0] init_mem[FullDepth];
 
   initial begin
@@ -119,7 +120,7 @@ module imem_predecode #(
       end
     end
   end
-`endif
+`endif  // YOSYS
 
   // =========================================================================
   // Port A: Programming interface (write to one bank per cycle)
