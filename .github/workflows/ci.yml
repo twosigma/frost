@@ -22,7 +22,7 @@ on:
 
 env:
   # Tool versions - single source of truth (also in Dockerfile)
-  VERILATOR_VERSION: "5.044"
+  VERILATOR_VERSION: "5.046"
   YOSYS_VERSION: "0.60"
 
 jobs:
@@ -42,6 +42,9 @@ jobs:
         with:
           context: .
           tags: frost-dev:latest
+          build-args: |
+            VERILATOR_VERSION=${{ env.VERILATOR_VERSION }}
+            YOSYS_VERSION=${{ env.YOSYS_VERSION }}
           outputs: type=docker,dest=/tmp/frost-dev.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
