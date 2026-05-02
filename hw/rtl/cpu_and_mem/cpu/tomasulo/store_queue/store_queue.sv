@@ -320,6 +320,7 @@ module store_queue #(
   logic                  full;
   logic                  empty;
   logic [CountWidth-1:0] count;
+  logic                  committed_empty_q;
 
   // Memory write tracking
   logic                  write_outstanding;  // One outstanding write at a time
@@ -352,13 +353,29 @@ module store_queue #(
   assign o_empty = empty;
   assign o_count = count;
 
-  // Committed-empty: no committed-but-unwritten entries
+  // Committed-empty: no committed-but-unwritten entries. Register this status
+  // for consumers that feed MEM issue/CDB arbitration. Raw same-cycle commit
+  // pulses pessimistically clear the bit so fences/SCs cannot observe stale
+  // empty while a store commit is entering the SQ pipeline.
   logic any_committed;
   always_comb begin
     any_committed = 1'b0;
     for (int i = 0; i < DEPTH; i++) if (sq_valid[i] && sq_committed[i]) any_committed = 1'b1;
   end
-  assign o_committed_empty = ~any_committed;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      committed_empty_q <= 1'b1;
+    end else begin
+      committed_empty_q <= !any_committed &&
+                           !i_commit_valid &&
+                           !i_commit_valid_2 &&
+                           !i_commit_valid_comb &&
+                           !i_commit_valid_comb_2;
+    end
+  end
+
+  assign o_committed_empty = committed_empty_q;
 
   // ===========================================================================
   // Store-to-Load Forwarding (combinational scan)

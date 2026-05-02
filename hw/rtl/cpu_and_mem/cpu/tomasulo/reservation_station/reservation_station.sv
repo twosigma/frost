@@ -283,12 +283,6 @@ module reservation_station #(
   logic stage2_src2_bypassed;
   logic stage2_src3_bypassed;
   logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
-  logic [1:0] stage2_src1_repair_sel;
-  logic [1:0] stage2_src2_repair_sel;
-  logic [1:0] stage2_src3_repair_sel;
-  logic [FLEN-1:0] stage2_repair_value_1;
-  logic [FLEN-1:0] stage2_repair_value_2;
-  logic [FLEN-1:0] stage2_repair_value_3;
 
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
@@ -340,6 +334,7 @@ module reservation_station #(
   logic full;
   logic empty;
   logic [CountWidth-1:0] count;
+  logic [CountWidth-1:0] count_next;
 
   // Free entry selection
   logic [$clog2(DEPTH)-1:0] free_idx;
@@ -435,10 +430,28 @@ module reservation_station #(
   // ===========================================================================
 
   // --- Count, full, empty ---
+  // Keep occupancy registered so dispatch back-pressure does not depend on a
+  // live popcount of all rs_valid bits. Flushes still recompute the exact
+  // post-flush count because they may invalidate multiple arbitrary entries.
   always_comb begin
-    count = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      count = count + {{(CountWidth - 1) {1'b0}}, rs_valid[i]};
+    count_next = count;
+    if (i_flush_all) begin
+      count_next = '0;
+    end else if (i_flush_en) begin
+      count_next = '0;
+      for (int i = 0; i < DEPTH; i++) begin
+        count_next = count_next +
+            {{(CountWidth - 1) {1'b0}},
+             (rs_valid[i] && !should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))};
+      end
+    end else begin
+      case ({
+        dispatch_fire, issue_fire
+      })
+        2'b10:   count_next = count + CountWidth'(1);
+        2'b01:   count_next = count - CountWidth'(1);
+        default: count_next = count;
+      endcase
     end
   end
 
@@ -594,17 +607,6 @@ module reservation_station #(
     end
   endfunction
 
-  function automatic logic [FLEN-1:0] stage2_repair_value_for(input logic [1:0] sel);
-    begin
-      case (sel)
-        2'd1: stage2_repair_value_for = stage2_repair_value_1;
-        2'd2: stage2_repair_value_for = stage2_repair_value_2;
-        2'd3: stage2_repair_value_for = stage2_repair_value_3;
-        default: stage2_repair_value_for = '0;
-      endcase
-    end
-  endfunction
-
   always_comb begin
     bypass_issue                 = '0;
     bypass_issue_writes_cdb_hint = 1'b0;
@@ -687,24 +689,12 @@ module reservation_station #(
   // For CDB-bypassed sources, substitute the CDB value captured at issue
   // time.  All inputs are registered, so this MUX is off the critical path.
   assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
-                              : (stage2_src1_bypassed ? stage2_cdb_value :
-                                 ((stage2_src1_repair_sel != 2'd0) ?
-                                  stage2_repair_value_for(
-      stage2_src1_repair_sel
-  ) : stage2_src1_value));
+                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
   assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
-                              : (stage2_src2_bypassed ? stage2_cdb_value :
-                                 ((stage2_src2_repair_sel != 2'd0) ?
-                                  stage2_repair_value_for(
-      stage2_src2_repair_sel
-  ) : stage2_src2_value));
+                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
   assign o_issue.src3_value = HAS_SRC3 ?
                               (BYPASS_STAGE2 ? bypass_issue.src3_value
-                               : (stage2_src3_bypassed ? stage2_cdb_value :
-                                  ((stage2_src3_repair_sel != 2'd0) ?
-                                   stage2_repair_value_for(
-      stage2_src3_repair_sel
-  ) : stage2_src3_value))) : '0;
+                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value)) : '0;
   assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
   assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
   assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
@@ -749,7 +739,9 @@ module reservation_station #(
       if (HAS_SRC3) rs_src3_ready_q <= '0;
       rs_use_imm         <= '0;
       rs_writes_cdb_hint <= '0;
+      count              <= '0;
     end else begin
+      count <= count_next;
 
       // Flush logic (highest priority for rs_valid)
       if (i_flush_all) begin
@@ -905,16 +897,19 @@ module reservation_station #(
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_src1_value <= rs_src1_value[issue_idx];
-      stage2_src2_value <= rs_src2_value[issue_idx];
+      stage2_src1_value <= (src1_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+          src1_repair_sel[issue_idx]
+      ) : rs_src1_value[issue_idx];
+      stage2_src2_value <= (src2_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+          src2_repair_sel[issue_idx]
+      ) : rs_src2_value[issue_idx];
       stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
       stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
-      stage2_src1_repair_sel <= src1_repair_sel[issue_idx];
-      stage2_src2_repair_sel <= src2_repair_sel[issue_idx];
       if (HAS_SRC3) begin
-        stage2_src3_value <= rs_src3_value[issue_idx];
+        stage2_src3_value <= (src3_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+            src3_repair_sel[issue_idx]
+        ) : rs_src3_value[issue_idx];
         stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
-        stage2_src3_repair_sel <= src3_repair_sel[issue_idx];
       end
       stage2_cdb_value <= i_cdb.value;
       stage2_imm <= pl_imm;
@@ -942,17 +937,6 @@ module reservation_station #(
       stage2_valid <= 1'b0;
     end
     // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
-  end
-
-  // Repair values are live only when a corresponding nonzero stage2 repair
-  // selector is captured on issue_fire. Update the wide value flops whenever
-  // stage2 can accept a new entry and hold while stage2 is blocked.
-  always_ff @(posedge i_clk) begin
-    if (can_issue_to_stage2) begin
-      stage2_repair_value_1 <= i_repair_value_1;
-      stage2_repair_value_2 <= i_repair_value_2;
-      stage2_repair_value_3 <= i_repair_value_3;
-    end
   end
 
   // No reset: this sideband is only observed when stage2_valid is set.

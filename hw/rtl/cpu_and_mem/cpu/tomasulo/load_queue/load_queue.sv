@@ -1122,8 +1122,10 @@ module load_queue #(
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
-      // Lookup: staged SQ-disambiguation candidate
-      .i_lookup_addr(sq_check_entry_valid ? sq_check_addr_q : '0),
+      // Lookup: staged SQ-disambiguation candidate. Hits are consumed only
+      // when sq_can_issue is true, so stale lookup addresses are harmless and
+      // keep sq_check_pending out of the LUTRAM address cone.
+      .i_lookup_addr(sq_check_addr_q),
       .o_lookup_hit (cache_lookup_hit),
       .o_lookup_data(cache_lookup_data),
 

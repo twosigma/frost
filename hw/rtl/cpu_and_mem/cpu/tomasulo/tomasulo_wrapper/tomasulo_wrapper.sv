@@ -618,7 +618,7 @@ module tomasulo_wrapper #(
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_3 && rob_entry_done[i_bypass_tag_3];
 
   // Head tag for RS partial flush
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
+  (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   riscv_pkg::rob_perf_events_t rob_perf_events;
   assign head_tag = o_head_tag;
 
@@ -1017,8 +1017,9 @@ module tomasulo_wrapper #(
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
-  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending &&
-                                !speculative_flush_all;
+  // Full-flush CDB suppression is centralized in cdb_kill. Keep it out of the
+  // MEM completion valid cone so FENCE.I/trap flush does not feed CDB select.
+  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending;
 
   // SC fu_complete generation
   riscv_pkg::fu_complete_t sc_fu_complete;
@@ -1088,8 +1089,7 @@ module tomasulo_wrapper #(
   //   - sc_fu_complete_valid (combinational): SC arming this cycle; its
   //     registered copy will own the adapter next cycle.
   //   - sc_fu_complete_reg.valid: SC is owning the adapter this cycle.
-  assign lq_result_accepted = !speculative_flush_all &&
-                              lq_fu_complete.valid &&
+  assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_valid &&
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_issue &&

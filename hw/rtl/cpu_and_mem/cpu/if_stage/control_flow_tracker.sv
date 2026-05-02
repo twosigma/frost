@@ -94,14 +94,12 @@ module control_flow_tracker #(
     if (i_reset) begin
       o_control_flow_holdoff <= 1'b0;
       o_reset_holdoff <= 1'b1;
-    end else if (o_control_flow_change) begin
+    end else begin
       // Latch redirect holdoff even if the front-end is stalled. Otherwise a
       // mispredict/redirect that arrives into back-pressure can skip the stale
       // BRAM-suppression window and pair new-path instruction data with an old PC.
-      o_control_flow_holdoff <= 1'b1;
-    end else if (!i_stall) begin
-      o_control_flow_holdoff <= 1'b0;
-      o_reset_holdoff <= 1'b0;
+      o_control_flow_holdoff <= o_control_flow_change || (o_control_flow_holdoff && i_stall);
+      o_reset_holdoff <= o_reset_holdoff && (i_stall || o_control_flow_change);
     end
   end
 
