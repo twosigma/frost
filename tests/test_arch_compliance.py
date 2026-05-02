@@ -87,8 +87,8 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 # Override with --no-sim-filter (CLI) or include_all=True (API).
 SIM_MAX_TEST_CASES = 5000
 
-# Slow fused FP arch tests can run for more than two hours under Verilator.
-ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "9000"))
+# Slow fused FP arch tests can run for more than three hours under Verilator.
+ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
 
 @dataclass
