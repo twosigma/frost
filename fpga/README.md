@@ -166,6 +166,9 @@ Load software into instruction memory without regenerating the bitstream. This e
 
 The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.
 
+Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
+1 stop bit (8N1) to view the board UART console.
+
 **Examples:**
 ```bash
 # Load coremark on X3 locally

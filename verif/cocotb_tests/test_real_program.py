@@ -38,6 +38,7 @@ from typing import Any
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
 UART_DATA_BITS = 8
+CHECKPOINT_TRACE_WIDTH = 8
 UART_CLK_FREQ_HZ_DEFAULT = 300_000_000
 UART_RX_DATA_MMIO_ADDR = 0x4000_0004
 UART_RX_STATUS_MMIO_ADDR = 0x4000_0024
@@ -2134,7 +2135,7 @@ async def run_until_complete(
                 event = (
                     "ckpt   "
                     f"cycle={cycle + 1} "
-                    f"in_use=0b{(checkpoint_in_use or 0):04b} "
+                    f"in_use=0b{(checkpoint_in_use or 0):0{CHECKPOINT_TRACE_WIDTH}b} "
                     f"avail={_read_bool(checkpoint_available_sig)} "
                     f"alloc_id={_read_int(checkpoint_alloc_id_sig)} "
                     f"save={_read_bool(checkpoint_save_sig)} "
@@ -2143,7 +2144,7 @@ async def run_until_complete(
                     f"restore_id={_read_int(checkpoint_restore_id_sig)} "
                     f"free={_read_bool(checkpoint_free_sig)} "
                     f"free_id={_read_int(checkpoint_free_id_sig)} "
-                    f"flush_pend=0b{(_read_int(checkpoint_flush_pending_sig) or 0):04b} "
+                    f"flush_pend=0b{(_read_int(checkpoint_flush_pending_sig) or 0):0{CHECKPOINT_TRACE_WIDTH}b} "
                     f"early_recov={_read_bool(early_mispredict_pending_sig)} "
                     f"commit_recov={_read_bool(mispredict_recovery_pending_sig)} "
                     f"correct_commit={_read_bool(correct_branch_commit_pending_sig)} "
