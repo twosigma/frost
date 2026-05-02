@@ -87,6 +87,9 @@ MMIO registers:
 | `0x4000_0024` | UART_RX_STATUS | Bit 0 is data available |
 | `0x4000_0028` | UART_TX_STATUS | Bit 0 is can accept byte |
 
+The hardware UART console is configured for 115200 baud, 8 data bits, no
+parity, and 1 stop bit (8N1).
+
 If these addresses change, update `cpu_and_mem.sv`, `cpu_ooo.sv` parameters,
 `sw/common/link.ld`, `sw/lib/include/mmio.h`, and the verification constants in
 `verif/config.py`.

@@ -26,7 +26,7 @@
  *   - 5 source lookups: 2 INT, 3 FP (third for FMA src3)
  *   - Single rename write port (from dispatch)
  *   - Commit clear (from ROB) with tag match guard
- *   - 4-slot checkpoint storage for branch speculation recovery
+ *   - 8-slot checkpoint storage for branch speculation recovery
  *   - Checkpoint save/restore/free for misprediction recovery
  *   - RAS state capture in checkpoints
  *   - Full flush (exception) clears all rename state
@@ -156,8 +156,8 @@ module register_alias_table (
   localparam int unsigned NumFpRegs = riscv_pkg::NumFpRegs;  // 32
   localparam int unsigned RegAddrWidth = riscv_pkg::RegAddrWidth;  // 5
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;  // 5
-  localparam int unsigned NumCheckpoints = riscv_pkg::NumCheckpoints;  // 4
-  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;  // 2
+  localparam int unsigned NumCheckpoints = riscv_pkg::NumCheckpoints;  // 8
+  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;  // 3
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned RasPtrBits = riscv_pkg::RasPtrBits;  // 3
@@ -810,7 +810,7 @@ module register_alias_table (
         i_alloc_dest_reg == i_commit_dest_reg
       );
 
-      // All 4 checkpoints in use (exhaustion)
+      // All checkpoints in use (exhaustion)
       cover_ckpt_exhaustion : cover (checkpoint_valid == {NumCheckpoints{1'b1}});
 
       // Checkpoint save

@@ -168,6 +168,9 @@ After the FPGA is programmed with the bitstream:
 | `o_uart_tx`  | Output    | AP24 | UART transmit for debug console        |
 | `i_uart_rx`  | Input     | AR24 | UART receive for debug console input   |
 
+Use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1) for the board
+UART debug console.
+
 ## Clock Generation
 
 All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from the board's reference oscillator:

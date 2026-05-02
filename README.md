@@ -30,7 +30,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     ▲      C-ext     CSR rd                             ▼                    │
 │     │      expand                          ┌─────────────────────────────┐   │
 │     │                                      │   ROB  (32 entries)         │   │
-│     │   ┌─────────────┐                    │   RAT  (INT + FP, 4 ckpts)  │   │
+│     │   ┌─────────────┐                    │   RAT  (INT + FP, 8 ckpts)  │   │
 │     │   │ BTB (32×2b) │                    └──────────────┬──────────────┘   │
 │     │   │ RAS (8)     │                                   │ issue            │
 │     │   └─────────────┘                                   ▼                  │
@@ -87,7 +87,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, and combinational CSR reads at decode
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
-- **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 4 branch checkpoint slots
+- **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
 - **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
 - **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
 - **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
@@ -290,6 +290,9 @@ Running `pytest tests/` exercises:
 ./fpga/load_software/load_software.py x3 isa_test
 ```
 
+Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
+1 stop bit (8N1) to view the board UART console.
+
 ## Supported FPGA Boards
 
 | Board              | FPGA                 | CPU Clock |
@@ -369,7 +372,7 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **OOO**         | Out-of-order execution                           |
 | **Tomasulo**    | OOO scheduling algorithm with register renaming  |
 | **ROB**         | Reorder Buffer (32-entry, in-order commit)       |
-| **RAT**         | Register Alias Table (INT + FP rename, 4 ckpts)  |
+| **RAT**         | Register Alias Table (INT + FP rename, 8 ckpts)  |
 | **RS**          | Reservation Station (per-FU instruction window)  |
 | **LQ**          | Load Queue (in-flight loads, L0 cache, MMIO)     |
 | **SQ**          | Store Queue (non-speculative, store-to-load fwd) |

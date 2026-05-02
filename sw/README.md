@@ -32,6 +32,7 @@ The filesystem is the authoritative inventory: `find sw/apps -maxdepth 1 -type d
 ### UART (`lib/include/uart.h`, `lib/src/uart.c`)
 
 Serial console I/O driver with printf-style formatting and character input.
+On hardware, use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1).
 
 ```c
 #include "uart.h"

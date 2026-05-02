@@ -37,7 +37,7 @@ Checkpoint Tests:
 - test_checkpoint_restore_ras_state: RAS state correctly restored
 - test_checkpoint_free: Freeing a checkpoint makes it available
 - test_checkpoint_availability: Priority encoder finds lowest free slot
-- test_checkpoint_exhaustion: All 4 checkpoints in use
+- test_checkpoint_exhaustion: All checkpoint slots in use
 - test_checkpoint_restore_undoes_renames: Restore reverts post-checkpoint renames
 - test_multiple_checkpoint_round_trips: Multiple save/restore sequences
 
@@ -157,7 +157,7 @@ async def test_reset_state(dut: Any) -> None:
         expected = model.lookup_fp(addr, regfile_val)
         check_lookup(result, expected, f"FP f{addr}")
 
-    # All 4 checkpoints should be available
+    # All checkpoint slots should be available
     assert dut_if.checkpoint_available, "Checkpoint should be available after reset"
     assert dut_if.checkpoint_alloc_id == 0, "First free checkpoint should be 0"
 
@@ -749,12 +749,12 @@ async def test_checkpoint_availability(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_exhaustion(dut: Any) -> None:
-    """Test that all 4 checkpoints can be allocated (exhaustion)."""
+    """Test that all checkpoint slots can be allocated (exhaustion)."""
     cocotb.log.info("=== Test: Checkpoint Exhaustion ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate all 4 checkpoints
+    # Allocate all checkpoint slots
     for i in range(NUM_CHECKPOINTS):
         await dut_if.checkpoint_save(checkpoint_id=i, branch_tag=i + 10)
         model.checkpoint_save(i, i + 10, 0, 0)
@@ -966,7 +966,7 @@ async def test_flush_all_after_checkpoints(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate all 4 checkpoints
+    # Allocate all checkpoint slots
     for i in range(NUM_CHECKPOINTS):
         await dut_if.checkpoint_save(checkpoint_id=i, branch_tag=i)
         model.checkpoint_save(i, i, 0, 0)

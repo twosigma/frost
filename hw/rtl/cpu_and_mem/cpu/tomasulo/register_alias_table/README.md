@@ -22,7 +22,7 @@ INT RAT, FP RAT, and RAS state (top-of-stack pointer + valid count).
 On misprediction, the checkpoint atomically replaces the active RAT
 in a single cycle.
 
-There are 4 checkpoint slots. With 4–8 branches typically in flight
+There are 8 checkpoint slots. With 4–8 branches typically in flight
 at a time, exhaustion is rare; when it happens dispatch stalls until
 a slot frees. The checkpoint snapshots themselves live in distributed
 RAM — saving roughly a thousand flip-flops compared to keeping them

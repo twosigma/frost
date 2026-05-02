@@ -12,7 +12,7 @@ from the in-order core.
    IF → PD → ID → dispatch ──► ROB                ┌─► commit ─► regfile / SQ /
                   rename       (32 entries)       │             trap entry / redirect
                   resource    + RAT (INT+FP,
-                  alloc        4 ckpts)
+                  alloc        8 ckpts)
                                   │
                                   ▼
                          ┌────────────────────────┐
