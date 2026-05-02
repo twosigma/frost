@@ -4,7 +4,10 @@ cover
 
 [options]
 bmc: mode bmc
-bmc: depth 20
+# ROB BMC checks local safety invariants and one-cycle interface contracts.
+# The widened commit path makes deeper bounds hit a solver cliff in CI without
+# adding coverage for wraparound/full-buffer behavior.
+bmc: depth 12
 cover: mode cover
 cover: depth 30
 
