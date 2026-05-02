@@ -116,6 +116,7 @@ module load_queue #(
     // =========================================================================
     input logic i_sq_empty,
     input logic i_sq_committed_empty,
+    input logic i_trap_misaligned_accesses,
 
     // =========================================================================
     // AMO Memory Write Interface
@@ -994,8 +995,9 @@ module load_queue #(
   logic sq_check_will_clear;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
-  assign sq_check_misaligned = sq_check_entry_valid && sq_check_entry_issueable &&
-                               is_load_misaligned(
+  assign sq_check_misaligned = i_trap_misaligned_accesses &&
+      sq_check_entry_valid && sq_check_entry_issueable &&
+      is_load_misaligned(
       sq_check_size_q, sq_check_addr_q
   );
   assign sq_check_will_clear = sq_check_pending &&

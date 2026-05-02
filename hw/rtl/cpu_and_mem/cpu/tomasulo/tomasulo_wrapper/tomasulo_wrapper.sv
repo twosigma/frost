@@ -125,6 +125,7 @@ module tomasulo_wrapper #(
     input  logic                                        i_mret_done,
     input  logic                  [riscv_pkg::XLEN-1:0] i_mepc,
     input  logic                                        i_interrupt_pending,
+    input  logic                                        i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when cpu_ooo's pending-write
     // FIFO has room for a slot-2 regfile write this cycle.  Driven from
@@ -1032,6 +1033,7 @@ module tomasulo_wrapper #(
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W is excluded — it has its own completion path above.
   assign store_misalign_issue =
+      i_trap_misaligned_accesses &&
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
       is_mem_access_misaligned(
@@ -2096,6 +2098,7 @@ module tomasulo_wrapper #(
       // SQ empty / committed-empty (for issue gating)
       .i_sq_empty(o_sq_empty),
       .i_sq_committed_empty(sq_committed_empty),
+      .i_trap_misaligned_accesses(i_trap_misaligned_accesses),
 
       // AMO memory write interface
       .o_amo_mem_write_en  (o_amo_mem_write_en),

@@ -1286,6 +1286,7 @@ module cpu_ooo #(
 
   // CSR read data
   logic [XLEN-1:0] csr_read_data;  // registered (1-cycle latency)
+  logic [XLEN-1:0] csr_mtvec;
 
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
@@ -1329,12 +1330,14 @@ module cpu_ooo #(
 
       // Widen-commit slot 2 observation + back-pressure to the ROB's
       // commit_2_fire gate from the pending-write FIFO.
-      .o_commit_2               (rob_commit_2),
-      .o_commit_comb_2          (rob_commit_comb_2),
-      .o_commit_2_valid_raw     (rob_commit_2_valid_raw),
+      .o_commit_2(rob_commit_2),
+      .o_commit_comb_2(rob_commit_comb_2),
+      .o_commit_2_valid_raw(rob_commit_2_valid_raw),
       .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
-      .i_widen_commit_ok        (widen_commit_ok),
-      .i_commit_hold            (csr_commit_fire || trap_mret_commit_hold_q),
+      .i_widen_commit_ok(widen_commit_ok),
+      // Commit-time branch recovery is registered for timing; hold the ROB
+      // during that recovery cycle so younger wrong-path entries cannot retire.
+      .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q || mispredict_recovery_pending),
 
       // ROB external coordination
       .o_csr_start(csr_start),
@@ -1347,6 +1350,7 @@ module cpu_ooo #(
       .i_mret_done(mret_done_ack),
       .i_mepc(mepc_value),
       .i_interrupt_pending(interrupt_pending),
+      .i_trap_misaligned_accesses(|csr_mtvec[XLEN-1:2]),
 
       // Flush
       .i_flush_en(flush_en),
@@ -2487,7 +2491,7 @@ module cpu_ooo #(
   // then signals csr_start. The CSR file performs the read/write,
   // then signals csr_done.
 
-  logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mtvec, csr_mepc;
+  logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mepc;
   logic csr_mstatus_mie_direct;
 
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
