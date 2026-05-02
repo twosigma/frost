@@ -108,7 +108,7 @@ Validated with these tool versions:
 |---------------|-------------------|---------|
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
 | **Testbench** | Cocotb            | 2.0.1   |
-| **Simulator** | Verilator         | 5.044   |
+| **Simulator** | Verilator         | 5.046   |
 | **Synthesis** | Yosys             | 0.60    |
 | **Formal**    | SymbiYosys        | 0.62    |
 |               | Z3                | 4.15.0  |
@@ -136,7 +136,7 @@ pytest tests/
 ```
 
 The Docker image includes:
-- Verilator 5.044 (built from source)
+- Verilator 5.046 (built from source)
 - Yosys 0.60 (built from source)
 - SymbiYosys 0.62 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
 - RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
