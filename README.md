@@ -2,60 +2,64 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-A 6-stage pipelined RISC-V processor implementing **RV32GCB** (G = IMAFD) with full machine-mode privilege support for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
+An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and full machine-mode privilege support for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
 There are many RISC-V cores. Here's what makes FROST different:
 
-- **Fully open-source toolchain** — works with Verilator, Icarus Verilog, and Yosys. No vendor lock-in or expensive commercial tools required.
-- **Clean, readable SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL with documentation, suitable for understanding and extending.
-- **Practical performance** — 1.76 CoreMark/MHz (527 CoreMark at 300 MHz on UltraScale+) with branch prediction (BTB + RAS), L0 cache, and full data forwarding.
+- **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
+- **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
+- **Solid performance** — 2.53 CoreMark/MHz (760 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
-- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Artix-7, Kintex-7, and UltraScale+.
+- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
 ## Features
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                            FROST RISC-V CPU                               │
-├───────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                         6-Stage Pipeline                            │  │
-│  │  ┌────┐   ┌────┐   ┌────┐   ┌────┐   ┌────┐   ┌────┐                │  │
-│  │  │ IF │──>│ PD │──>│ ID │──>│ EX │──>│ MA │──>│ WB │                │  │
-│  │  └────┘   └────┘   └────┘   └────┘   └────┘   └────┘                │  │
-│  │    │        │                  │        │                           │  │
-│  │    │   C-extension      ┌──────┴────────┴──────┐                    │  │
-│  │    │   decompression    │   Forwarding Unit    │                    │  │
-│  │    │                    └──────────────────────┘                    │  │
-│  │    v                                                                │  │
-│  │  ┌──────────────┐   ┌─────────────┐   ┌──────────────────────┐      │  │
-│  │  │  L0 Cache    │   │  Regfile    │   │      Trap Unit       │      │  │
-│  │  │ (load-use    │   │  (32x32)    │   │  (M-mode interrupts  │      │  │
-│  │  │  bypass)     │   │             │   │   and exceptions)    │      │  │
-│  │  └──────────────┘   └─────────────┘   └──────────────────────┘      │  │
-│  │                                                                     │  │
-│  │  ┌──────────────┐                                                   │  │
-│  │  │     BTB      │  (32-entry 2-bit saturating counter predictor)    │  │
-│  │  └──────────────┘                                                   │  │
-│  │  ┌──────────────┐                                                   │  │
-│  │  │     RAS      │  (8-entry return address stack)                   │  │
-│  │  └──────────────┘                                                   │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                           Peripherals                               │  │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────────┐   │  │
-│  │  │    UART    │  │   mtime/   │  │   FIFO0    │  │    FIFO1     │   │  │
-│  │  │  (TX/RX)   │  │  mtimecmp  │  │            │  │              │   │  │
-│  │  └────────────┘  └────────────┘  └────────────┘  └──────────────┘   │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-└───────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              FROST RISC-V CPU                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   In-order front-end                                                         │
+│   ┌────┐   ┌────┐   ┌────┐    dispatch / rename / resource alloc             │
+│   │ IF │──>│ PD │──>│ ID │──────────────────────────────┐                    │
+│   └────┘   └────┘   └────┘                              │                    │
+│     ▲      C-ext     CSR rd                             ▼                    │
+│     │      expand                          ┌─────────────────────────────┐   │
+│     │                                      │   ROB  (32 entries)         │   │
+│     │   ┌─────────────┐                    │   RAT  (INT + FP, 4 ckpts)  │   │
+│     │   │ BTB (32×2b) │                    └──────────────┬──────────────┘   │
+│     │   │ RAS (8)     │                                   │ issue            │
+│     │   └─────────────┘                                   ▼                  │
+│     │                          ┌──────────────────────────────────────────┐  │
+│     │                          │  6 reservation stations                  │  │
+│     │                          │  INT  MUL  MEM  FP  FMUL  FDIV           │  │
+│     │                          │  (16) (4)  (8)  (6)  (4)   (2)           │  │
+│     │                          └──────────────┬───────────────────────────┘  │
+│     │                                         ▼                              │
+│     │                          FU shims (ALU, MUL/DIV, FPU)                  │
+│     │                          LQ + L0 cache, SQ                             │
+│     │                                         │                              │
+│     │                                         ▼                              │
+│     │                          CDB (1 lane, fixed priority)                  │
+│     │                          broadcasts result; wakes RS, marks ROB done   │
+│     │                                         │                              │
+│     │                                         ▼                              │
+│     │                            commit ──> INT / FP regfiles                │
+│     │                                        SQ release, trap, redirect      │
+│     │                                                                        │
+│     └─── early mispredict recovery (~2 cycles): redirect IF + restore RAT    │
+│                                                                              │
+│   ┌──────────────────────────┐    ┌─────────────────────────────────────┐    │
+│   │ Trap Unit                │    │ Peripherals                         │    │
+│   │ (M-mode, mret, wfi,      │    │ UART, mtime/mtimecmp, FIFO0/1       │    │
+│   │  interrupts, exceptions) │    │                                     │    │
+│   └──────────────────────────┘    └─────────────────────────────────────┘    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Supported RISC-V Extensions
@@ -81,9 +85,16 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Architecture Highlights
 
-- **6-stage pipeline** with full data forwarding (IF → PD → ID → EX → MA → WB)
-- **Branch prediction** with 32-entry 2-bit BTB and 8-entry return address stack (0-cycle penalty for correct predictions)
-- **L0 cache** reduces load-use stalls (direct-mapped, write-through)
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, and combinational CSR reads at decode
+- **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
+- **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 4 branch checkpoint slots
+- **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
+- **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
+- **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
+- **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
+- **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
+- **Branch prediction** with 32-entry 2-bit BTB (trained for both conditional branches and JAL), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
+- **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
@@ -98,7 +109,6 @@ Validated with these tool versions:
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
 | **Testbench** | Cocotb            | 2.0.1   |
 | **Simulator** | Verilator         | 5.044   |
-|               | Icarus Verilog    | 12.0    |
 | **Synthesis** | Yosys             | 0.60    |
 | **Formal**    | SymbiYosys        | 0.62    |
 |               | Z3                | 4.15.0  |
@@ -127,7 +137,6 @@ pytest tests/
 
 The Docker image includes:
 - Verilator 5.044 (built from source)
-- Icarus Verilog 12.0
 - Yosys 0.60 (built from source)
 - SymbiYosys 0.62 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
 - RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
@@ -204,8 +213,7 @@ frost/
 │   └── load_software/        # Software loading via JTAG
 └── boards/                   # Board-specific wrappers
     ├── x3/                   # Alveo X3522PV
-    ├── genesys2/             # Digilent Genesys2
-    └── nexys_a7/             # Digilent Nexys A7
+    └── genesys2/             # Digilent Genesys2
 ```
 
 ## User Guide
@@ -231,8 +239,6 @@ git submodule update --init
 # Using pytest (recommended)
 pytest tests/                              # Run all tests
 pytest tests/ -s                           # With live output
-pytest tests/ --sim=verilator              # Use Verilator
-
 # Standalone test runner
 ./tests/test_run_cocotb.py cpu             # CPU verification
 ./tests/test_run_cocotb.py hello_world     # Hello World program
@@ -240,9 +246,8 @@ pytest tests/ --sim=verilator              # Use Verilator
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
-# With specific simulator
-./tests/test_run_cocotb.py cpu --sim=verilator
-./tests/test_run_cocotb.py cpu --sim=verilator
+# With waveform output
+WAVES=1 ./tests/test_run_cocotb.py cpu
 ```
 
 ### Running Synthesis
@@ -254,7 +259,6 @@ pytest tests/ --sim=verilator              # Use Verilator
 # FPGA synthesis (Vivado)
 ./fpga/build/build.py x3                   # Alveo X3
 ./fpga/build/build.py genesys2             # Genesys2
-./fpga/build/build.py nexys_a7             # Nexys A7
 ```
 
 ### Pytest Test Coverage
@@ -264,7 +268,7 @@ Running `pytest tests/` exercises:
 - **CPU verification** — constrained-random instruction sequences validated against Python reference models
 - **Directed tests** — atomic operations (LR/SC), trap handling, compressed instructions
 - **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across I, M, A, F, D, C, B, K, Zicond, and Zifencei extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
-- **ISA pipeline tests** — 126 self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) across rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, and B-extension suites, exercising forwarding, bypassing, and pipeline hazards (Verilator only)
+- **ISA pipeline tests** — 126 self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) across rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, and B-extension suites, exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
 - **Random instruction torture tests** — 20 randomly generated RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
@@ -292,7 +296,6 @@ Running `pytest tests/` exercises:
 |--------------------|----------------------|-----------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   |
 | Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   |
-| Digilent Nexys A7  | Artix-7 (xc7a100t)   | 80 MHz    |
 
 
 <!-- FPGA_UTILIZATION_START -->
@@ -303,17 +306,17 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 48,040 | 1,029,600 | 4.7% |
-|   LUT as Logic | 46,481 | 1,029,600 | 4.5% |
-|   LUT as Distributed RAM | 1,168 | — | — |
-|   LUT as Shift Register | 391 | — | — |
-| CLB Registers | 37,747 | 2,059,200 | 1.8% |
-| Block RAM Tile | 68.5 | 2,112 | 3.2% |
+| CLB LUTs | 83,397 | 1,029,600 | 8.1% |
+|   LUT as Logic | 79,987 | 1,029,600 | 7.8% |
+|   LUT as Distributed RAM | 2,892 | — | — |
+|   LUT as Shift Register | 518 | — | — |
+| CLB Registers | 60,670 | 2,059,200 | 3.0% |
+| Block RAM Tile | 73.5 | 2,112 | 3.5% |
 | URAM | 0 | 352 | 0.0% |
-| DSPs | 30 | 1,320 | 2.3% |
-| CARRY8 | 2,790 | 128,700 | 2.2% |
-| F7 Muxes | 385 | 514,800 | 0.1% |
-| F8 Muxes | 2 | 257,400 | 0.0% |
+| DSPs | 32 | 1,320 | 2.4% |
+| CARRY8 | 4,441 | 128,700 | 3.5% |
+| F7 Muxes | 2,250 | 514,800 | 0.4% |
+| F8 Muxes | 236 | 257,400 | 0.1% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
@@ -322,52 +325,31 @@ Running `pytest tests/` exercises:
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 46,683 | 203,800 | 22.9% |
-|   LUT as Logic | 44,988 | 203,800 | 22.1% |
-|   LUT as Distributed RAM | 1,308 | — | — |
-|   LUT as Shift Register | 387 | — | — |
-| Slice Registers | 37,151 | 407,600 | 9.1% |
-| Block RAM Tile | 68.5 | 445 | 15.4% |
-| DSPs | 34 | 840 | 4.0% |
-| F7 Muxes | 386 | 101,900 | 0.4% |
-| F8 Muxes | 2 | 50,950 | 0.0% |
+| Slice LUTs | 79,647 | 203,800 | 39.1% |
+|   LUT as Logic | 75,875 | 203,800 | 37.2% |
+|   LUT as Distributed RAM | 3,260 | — | — |
+|   LUT as Shift Register | 512 | — | — |
+| Slice Registers | 59,416 | 407,600 | 14.6% |
+| Block RAM Tile | 73.5 | 445 | 16.5% |
+| DSPs | 36 | 840 | 4.3% |
+| F7 Muxes | 2,308 | 101,900 | 2.3% |
+| F8 Muxes | 235 | 50,950 | 0.5% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |
 
-**Digilent Nexys A7** (Artix-7 @ 80 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 46,683 | 63,400 | 73.6% |
-|   LUT as Logic | 44,988 | 63,400 | 71.0% |
-|   LUT as Distributed RAM | 1,308 | — | — |
-|   LUT as Shift Register | 387 | — | — |
-| Slice Registers | 37,151 | 126,800 | 29.3% |
-| Block RAM Tile | 68.5 | 135 | 50.7% |
-| DSPs | 34 | 240 | 14.2% |
-| F7 Muxes | 384 | 31,700 | 1.2% |
-| F8 Muxes | 2 | 15,850 | 0.0% |
-| Bonded IOB | 4 | 210 | 1.9% |
-| MMCM | 1 | 6 | 16.7% |
-| PLL | 0 | 6 | 0.0% |
-
 <!-- FPGA_UTILIZATION_END -->
 
-## In-Progress: Tomasulo Out-of-Order Execution
+## CPU Internals
 
-An out-of-order execution backend using the Tomasulo algorithm is under active development. This implementation will add dynamic instruction scheduling while preserving the existing front-end (IF/PD/ID) and ISA support.
-
-Key components being built:
-- **Reorder Buffer (ROB)** — Unified INT/FP, in-order commit, precise exceptions
-- **Register Alias Tables** — Separate INT and FP RATs with checkpoint support
-- **Reservation Stations** — INT, MUL, MEM, FP, FMUL, FDIV
-- **Load/Store Queues** — Memory disambiguation, store-to-load forwarding
-
-The Tomasulo RTL implementation is being developed in a separate directory alongside the existing in-order pipeline:
-`hw/rtl/cpu_and_mem/cpu/tomasulo/`
-
-Once complete, it may replace the in-order processor or remain as an alternative configuration.
+For a deeper dive into the OOO design and the cross-cutting decisions that
+hold it together, see the CPU README at
+[`hw/rtl/cpu_and_mem/cpu/README.md`](hw/rtl/cpu_and_mem/cpu/README.md) and
+the Tomasulo back-end README at
+[`hw/rtl/cpu_and_mem/cpu/tomasulo/README.md`](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md).
+Each Tomasulo submodule (ROB, RAT, dispatch, reservation station, load
+queue, store queue, CDB arbiter, FU shims) has its own README under
+`hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 
 ## Glossary
 
@@ -380,16 +362,22 @@ Once complete, it may replace the in-order processor or remain as an alternative
 | **C extension** | Compressed 16-bit instructions                   |
 | **F extension** | Single-precision floating-point (32-bit IEEE 754)|
 | **D extension** | Double-precision floating-point (64-bit IEEE 754)|
-| **G extension** | Shorthand for IMAFD                               |
+| **G extension** | Shorthand for IMAFD                              |
 | **IF**          | Instruction Fetch stage                          |
 | **PD**          | Pre-Decode stage (C extension decompression)     |
-| **ID**          | Instruction Decode stage                         |
-| **EX**          | Execute stage                                    |
-| **MA**          | Memory Access stage                              |
-| **WB**          | Write Back stage                                 |
+| **ID**          | Instruction Decode + dispatch / rename           |
+| **OOO**         | Out-of-order execution                           |
+| **Tomasulo**    | OOO scheduling algorithm with register renaming  |
+| **ROB**         | Reorder Buffer (32-entry, in-order commit)       |
+| **RAT**         | Register Alias Table (INT + FP rename, 4 ckpts)  |
+| **RS**          | Reservation Station (per-FU instruction window)  |
+| **LQ**          | Load Queue (in-flight loads, L0 cache, MMIO)     |
+| **SQ**          | Store Queue (non-speculative, store-to-load fwd) |
+| **CDB**         | Common Data Bus (single-lane result broadcast)   |
+| **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
 | **BTB**         | Branch Target Buffer (32-entry branch predictor) |
-| **RAS**         | Return Address Stack (8-entry return predictor)   |
+| **RAS**         | Return Address Stack (8-entry return predictor)  |
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |
 | **Cocotb**      | Python-based verification framework              |

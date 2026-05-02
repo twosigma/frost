@@ -263,69 +263,54 @@ module fp_compare #(
   // State Machine and Sequential Logic
   // =========================================================================
 
+  // Control registers (with reset)
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
-      operand_a_s1 <= '0;
-      operand_b_s1 <= '0;
-      operation_s1 <= riscv_pkg::ADD;
-      operand_a_s2 <= '0;
-      operand_b_s2 <= '0;
-      operation_s2 <= riscv_pkg::ADD;
-      sign_a_s2 <= 1'b0;
-      sign_b_s2 <= 1'b0;
-      is_nan_a_s2 <= 1'b0;
-      is_nan_b_s2 <= 1'b0;
-      either_nan_s2 <= 1'b0;
-      either_snan_s2 <= 1'b0;
-      is_zero_a_s2 <= 1'b0;
-      is_zero_b_s2 <= 1'b0;
-      mag_a_lt_b_s2 <= 1'b0;
-      mag_a_eq_b_s2 <= 1'b0;
-      result_reg <= '0;
-      is_compare_reg <= 1'b0;
-      flags_reg <= '0;
       valid_reg <= 1'b0;
     end else begin
       state <= next_state;
       valid_reg <= (state == STAGE2);
-
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            operand_a_s1 <= i_operand_a;
-            operand_b_s1 <= i_operand_b;
-            operation_s1 <= i_operation;
-          end
-        end
-
-        STAGE1: begin
-          // Capture stage 1 results into stage 2 registers
-          operand_a_s2 <= operand_a_s1;
-          operand_b_s2 <= operand_b_s1;
-          operation_s2 <= operation_s1;
-          sign_a_s2 <= sign_a_s1;
-          sign_b_s2 <= sign_b_s1;
-          is_nan_a_s2 <= is_nan_a_s1;
-          is_nan_b_s2 <= is_nan_b_s1;
-          either_nan_s2 <= either_nan_s1;
-          either_snan_s2 <= either_snan_s1;
-          is_zero_a_s2 <= is_zero_a_s1;
-          is_zero_b_s2 <= is_zero_b_s1;
-          mag_a_lt_b_s2 <= mag_a_lt_b_s1;
-          mag_a_eq_b_s2 <= mag_a_eq_b_s1;
-        end
-
-        STAGE2: begin
-          // Capture final result
-          result_reg <= result_s2_comb;
-          is_compare_reg <= is_compare_s2_comb;
-          flags_reg <= flags_s2_comb;
-        end
-
-        default: ;
-      endcase
     end
+  end
+
+  // Data pipeline registers (no reset needed)
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE: begin
+        if (i_valid) begin
+          operand_a_s1 <= i_operand_a;
+          operand_b_s1 <= i_operand_b;
+          operation_s1 <= i_operation;
+        end
+      end
+
+      STAGE1: begin
+        // Capture stage 1 results into stage 2 registers
+        operand_a_s2 <= operand_a_s1;
+        operand_b_s2 <= operand_b_s1;
+        operation_s2 <= operation_s1;
+        sign_a_s2 <= sign_a_s1;
+        sign_b_s2 <= sign_b_s1;
+        is_nan_a_s2 <= is_nan_a_s1;
+        is_nan_b_s2 <= is_nan_b_s1;
+        either_nan_s2 <= either_nan_s1;
+        either_snan_s2 <= either_snan_s1;
+        is_zero_a_s2 <= is_zero_a_s1;
+        is_zero_b_s2 <= is_zero_b_s1;
+        mag_a_lt_b_s2 <= mag_a_lt_b_s1;
+        mag_a_eq_b_s2 <= mag_a_eq_b_s1;
+      end
+
+      STAGE2: begin
+        // Capture final result
+        result_reg <= result_s2_comb;
+        is_compare_reg <= is_compare_s2_comb;
+        flags_reg <= flags_s2_comb;
+      end
+
+      default: ;
+    endcase
   end
 
   // Next state logic

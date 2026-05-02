@@ -177,6 +177,7 @@ class LQModel:
         self.mem_outstanding = False
         self.issued_idx = 0
         self._ptr_wrap = 2 * depth  # Pointer wrapping boundary
+        self.cdb_stage = FuComplete()
         # Reservation register (LR/SC)
         self.reservation_valid = False
         self.reservation_addr = 0
@@ -192,6 +193,7 @@ class LQModel:
         self.tail_ptr = 0
         self.mem_outstanding = False
         self.issued_idx = 0
+        self.cdb_stage = FuComplete()
         self.reservation_valid = False
         self.reservation_addr = 0
         self.amo_state = 0
@@ -219,16 +221,8 @@ class LQModel:
 
     @property
     def full(self) -> bool:
-        """Pointer-based full (matches RTL).
-
-        With out-of-order frees and partial flush, holes can exist between
-        head and tail.  The RTL reports full when the pointer space is
-        exhausted even if some entries are invalid, so the model must too.
-        """
-        return (
-            self.head_ptr % self.depth == self.tail_ptr % self.depth
-            and self.head_ptr != self.tail_ptr
-        )
+        """Count-based full (matches the sparse-hole RTL)."""
+        return self.count == self.depth
 
     @property
     def empty(self) -> bool:
@@ -245,10 +239,15 @@ class LQModel:
         is_amo: bool = False,
         amo_op: int = 0,
     ) -> bool:
-        """Allocate a new entry at tail. Returns True if successful."""
+        """Allocate a new entry at the next invalid slot. Returns True if successful."""
         if self.full:
             return False
-        idx = self.tail_idx
+        ptr = self.tail_ptr
+        for _ in range(self.depth):
+            if not self.entries[ptr % self.depth].valid:
+                break
+            ptr = (ptr + 1) % self._ptr_wrap
+        idx = ptr % self.depth
         e = self.entries[idx]
         e.valid = True
         e.rob_tag = rob_tag & MASK_TAG
@@ -267,7 +266,7 @@ class LQModel:
         e.is_amo = is_amo
         e.amo_op = amo_op
         e.amo_rs2 = 0
-        self.tail_ptr = (self.tail_ptr + 1) % self._ptr_wrap
+        self.tail_ptr = (ptr + 1) % self._ptr_wrap
         return True
 
     def addr_update(
@@ -303,12 +302,28 @@ class LQModel:
             if e.valid:
                 if cdb_idx is None and e.data_valid:
                     cdb_idx = idx
-                if (
-                    mem_idx is None
-                    and e.addr_valid
-                    and not e.issued
-                    and not e.data_valid
-                ):
+        # Match the RTL head_mem_issue shortcut: a regular load at the ROB head
+        # can bypass the normal physical-order scan so it does not starve behind
+        # a younger blocked entry after sparse-hole reuse.
+        for idx, e in enumerate(self.entries):
+            if (
+                e.valid
+                and e.rob_tag == (rob_head_tag & MASK_TAG)
+                and e.addr_valid
+                and not e.issued
+                and not e.data_valid
+                and not e.is_mmio
+                and not e.is_lr
+                and (not e.is_amo or sq_committed_empty)
+            ):
+                mem_idx = idx
+                break
+
+        if mem_idx is None:
+            for i in range(self.depth):
+                idx = (self.head_idx + i) % self.depth
+                e = self.entries[idx]
+                if e.valid and e.addr_valid and not e.issued and not e.data_valid:
                     # LR/AMO gating
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
@@ -317,6 +332,7 @@ class LQModel:
                     ):
                         continue
                     mem_idx = idx
+                    break
         return cdb_idx, mem_idx
 
     def get_sq_check(
@@ -453,37 +469,46 @@ class LQModel:
         """Invalidate reservation on snoop."""
         self.reservation_valid = False
 
-    def get_fu_complete(self, adapter_pending: bool = False) -> FuComplete:
-        """Get CDB broadcast output (combinational)."""
-        if adapter_pending:
-            return FuComplete()
+    def _capture_ready_fu_complete(self) -> None:
+        """Capture the next ready completion into the one-entry output stage."""
+        if self.cdb_stage.valid:
+            return
         cdb_idx, _ = self._issue_scan()
         if cdb_idx is None:
-            return FuComplete()
+            return
         e = self.entries[cdb_idx]
         value = 0
         if e.is_fp:
             if e.size == MEM_SIZE_DOUBLE:
                 value = e.data & MASK64
             else:
-                # FLW: NaN-box
                 value = (0xFFFFFFFF << 32) | (e.data & MASK32)
         else:
-            # INT: zero-extend XLEN to FLEN
             value = e.data & MASK32
-        return FuComplete(valid=True, tag=e.rob_tag, value=value & MASK64)
+        self.cdb_stage = FuComplete(valid=True, tag=e.rob_tag, value=value & MASK64)
+        self.entries[cdb_idx].valid = False
+
+    def get_fu_complete(self, adapter_pending: bool = False) -> FuComplete:
+        """Get the staged FU completion output."""
+        del adapter_pending
+        self._capture_ready_fu_complete()
+        return FuComplete(
+            valid=self.cdb_stage.valid,
+            tag=self.cdb_stage.tag,
+            value=self.cdb_stage.value,
+            exception=self.cdb_stage.exception,
+            exc_cause=self.cdb_stage.exc_cause,
+            fp_flags=self.cdb_stage.fp_flags,
+        )
 
     def free_cdb_entry(self, adapter_pending: bool = False) -> None:
-        """Free the entry that was broadcast on CDB."""
-        if adapter_pending:
-            return
-        cdb_idx, _ = self._issue_scan()
-        if cdb_idx is not None:
-            self.entries[cdb_idx].valid = False
+        """Accept and clear the currently-presented staged completion."""
+        del adapter_pending
+        self.cdb_stage = FuComplete()
 
     def advance_head(self) -> None:
         """Advance head pointer past freed entries."""
-        while self.head_ptr != self.tail_ptr and not self.entries[self.head_idx].valid:
+        while self.count and not self.entries[self.head_idx].valid:
             self.head_ptr = (self.head_ptr + 1) % self._ptr_wrap
 
     def flush_all(self) -> None:
@@ -522,9 +547,7 @@ class LQModel:
                 e.rob_tag, flush_tag & MASK_TAG, rob_head_tag & MASK_TAG
             ):
                 e.valid = False
-        # Retract tail past consecutive invalid entries at tail end
-        while (
-            self.tail_ptr != self.head_ptr
-            and not self.entries[(self.tail_ptr - 1) % self.depth].valid
+        if self.cdb_stage.valid and is_younger(
+            self.cdb_stage.tag, flush_tag & MASK_TAG, rob_head_tag & MASK_TAG
         ):
-            self.tail_ptr = (self.tail_ptr - 1) % self._ptr_wrap
+            self.cdb_stage = FuComplete()

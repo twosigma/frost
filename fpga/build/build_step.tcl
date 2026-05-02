@@ -131,7 +131,7 @@ if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
     puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming>"
     puts ""
-    puts "Steps: synth, opt, place, post_place_physopt_pass*, route, post_route_physopt_pass*, bitstream"
+    puts "Steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 
@@ -141,9 +141,9 @@ set directive [lindex $argv 2]
 set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
 
-if {$board_name ne "x3" && $board_name ne "genesys2" && $board_name ne "nexys_a7"} {
+if {$board_name ne "x3" && $board_name ne "genesys2"} {
     puts "Error: Invalid board name '$board_name'"
-    puts "Valid boards: x3, genesys2, nexys_a7"
+    puts "Valid boards: x3, genesys2"
     exit 1
 }
 
@@ -157,9 +157,6 @@ if {$board_name eq "genesys2"} {
 } elseif {$board_name eq "x3"} {
     set fpga_part_number xcux35-vsva1365-3-e
     set top_level_module_name x3_frost
-} elseif {$board_name eq "nexys_a7"} {
-    set fpga_part_number xc7a100tcsg324-1
-    set top_level_module_name nexys_a7_frost
 }
 
 set number_of_parallel_jobs 32
@@ -211,7 +208,7 @@ if {$step eq "synth"} {
     set_property -dict [list \
         CONFIG.PROTOCOL {AXI4LITE} \
         CONFIG.SINGLE_PORT_BRAM {1} \
-        CONFIG.MEM_DEPTH {16384} \
+        CONFIG.MEM_DEPTH {32768} \
     ] [get_ips axi_bram_ctrl_0]
 
     generate_target all [get_ips]
@@ -294,17 +291,81 @@ if {$step eq "synth"} {
 
     puts "** DONE — place_design complete with directive: $directive"
 
-} elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step]} {
+} elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
     # ===================
-    # PHYS_OPT DESIGN STEP (single pass)
+    # PHYS_OPT SWEEP (post-place, post-route, or post-second-route)
     # ===================
+    # Run phys_opt_design serially with every directive, starting with
+    # AggressiveExplore. The directive arg from the caller is ignored — the
+    # sweep order is fixed here. After each pass we sample the worst-case
+    # setup slack and checkpoint the best-WNS design. If WNS>=0 we stop the
+    # sweep early; otherwise we still restore the best observed pass before
+    # writing the canonical outputs so a late directive cannot regress WNS.
     if {$checkpoint_path eq ""} {
-        puts "Error: phys_opt step requires checkpoint_path"
+        puts "Error: $step step requires checkpoint_path"
         exit 1
     }
     open_checkpoint $checkpoint_path
 
-    phys_opt_design -directive $directive
+    set sweep_order [list \
+        AggressiveExplore \
+        Default \
+        Explore \
+        ExploreWithHoldFix \
+        AlternateReplication \
+        AggressiveFanoutOpt \
+        AlternateFlowWithRetiming \
+        RuntimeOptimized \
+    ]
+    set total_passes [llength $sweep_order]
+    set pass_num 1
+    set passes_run 0
+    set early_exit 0
+    set best_wns -999999.0
+    set best_pass 0
+    set best_directive ""
+    set best_checkpoint [file join $work_directory phys_opt_best.dcp]
+    foreach sweep_directive $sweep_order {
+        puts ""
+        puts "=========================================="
+        puts "  $step sweep $pass_num/$total_passes: $sweep_directive"
+        puts "=========================================="
+        phys_opt_design -directive $sweep_directive
+        incr passes_run
+
+        # Sample worst-case setup slack to decide if we can stop early.
+        set worst_path [lindex [get_timing_paths -delay_type max -nworst 1 -max_paths 1] 0]
+        if {$worst_path ne ""} {
+            set wns [get_property SLACK $worst_path]
+            puts ""
+            puts "  WNS after $sweep_directive: $wns ns"
+            if {$wns > $best_wns} {
+                set best_wns $wns
+                set best_pass $pass_num
+                set best_directive $sweep_directive
+                write_checkpoint -force $best_checkpoint
+                puts "  ** New best $step WNS: $best_wns ns ($best_directive, pass $best_pass/$total_passes)"
+            }
+            if {$wns >= 0.0} {
+                puts "  ** Timing met — stopping $step sweep early (after $pass_num/$total_passes directives)"
+                set early_exit 1
+                break
+            }
+        }
+        incr pass_num
+    }
+
+    if {[file exists $best_checkpoint]} {
+        if {$best_pass != $passes_run} {
+            puts ""
+            puts "  Restoring best $step pass: $best_directive (pass $best_pass/$total_passes, WNS=$best_wns ns)"
+            close_design
+            open_checkpoint $best_checkpoint
+        } else {
+            puts ""
+            puts "  Keeping current $step pass: $best_directive (pass $best_pass/$total_passes, WNS=$best_wns ns)"
+        }
+    }
 
     write_checkpoint -force $work_directory/phys_opt.dcp
     report_timing_summary -file $work_directory/phys_opt_timing.rpt
@@ -312,7 +373,11 @@ if {$step eq "synth"} {
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
     write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
 
-    puts "** DONE — phys_opt_design complete with directive: $directive"
+    if {$early_exit} {
+        puts "** DONE — $step sweep complete ($passes_run/$total_passes directives, stopped early on closure)"
+    } else {
+        puts "** DONE — $step sweep complete ($passes_run/$total_passes directives)"
+    }
 
 } elseif {$step eq "route"} {
     # ===================
@@ -338,6 +403,30 @@ if {$step eq "synth"} {
 
     puts "** DONE — route_design complete with directive: $directive"
 
+} elseif {$step eq "second_route"} {
+    # ===================
+    # SECOND ROUTE DESIGN STEP (no -tns_cleanup)
+    # ===================
+    # Re-routes from the post_route_physopt checkpoint without -tns_cleanup,
+    # giving the router a different exploration path. The x3 clock-uncertainty
+    # overconstraint was already cleared during the first route pass and is
+    # baked into the upstream checkpoint, so we don't touch it here.
+    if {$checkpoint_path eq ""} {
+        puts "Error: second_route step requires checkpoint_path"
+        exit 1
+    }
+    open_checkpoint $checkpoint_path
+
+    route_design -directive $directive
+
+    write_checkpoint -force $work_directory/post_second_route.dcp
+    report_timing_summary -file $work_directory/post_second_route_timing.rpt
+    report_utilization -file $work_directory/post_second_route_util.rpt
+    report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_second_route_high_fanout.rpt
+    write_failing_paths_csv $work_directory/post_second_route_failing_paths.csv $work_directory/post_second_route_timing.rpt
+
+    puts "** DONE — second route_design complete with directive: $directive"
+
 } elseif {$step eq "bitstream"} {
     # ===================
     # BITSTREAM GENERATION
@@ -362,7 +451,7 @@ if {$step eq "synth"} {
 
 } else {
     puts "Error: Unknown step '$step'"
-    puts "Valid steps: synth, opt, place, post_place_physopt_pass*, route, post_route_physopt_pass*, bitstream"
+    puts "Valid steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 

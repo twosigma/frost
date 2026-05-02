@@ -76,7 +76,7 @@ jobs:
       - name: Run Cocotb tests with Verilator
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m cocotb --sim verilator -v \
+            pytest tests/ -m cocotb -v \
               --ignore=tests/test_arch_compliance.py \
               --ignore=tests/test_riscv_tests.py \
               --ignore=tests/test_riscv_torture.py
@@ -85,6 +85,8 @@ jobs:
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extension }})
     runs-on: ubuntu-24.04
+    # Allows the 210-minute simulator timeout plus checkout, Docker load, and compile overhead.
+    timeout-minutes: 225
     needs: build-docker
     strategy:
       fail-fast: false
@@ -136,10 +138,10 @@ jobs:
         run: |
           if [ -n "${{ matrix.test_path }}" ]; then
             docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --sim verilator --test ${{ matrix.test_path }}
+              python3 tests/test_arch_compliance.py --test ${{ matrix.test_path }}
           else
             docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --sim verilator --extensions ${{ matrix.extension }}
+              python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }}
           fi
 
   # riscv-tests ISA Tests - parallelized by suite
@@ -169,7 +171,7 @@ jobs:
       - name: Run riscv-tests ISA suite (${{ matrix.suite }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --sim verilator --suites ${{ matrix.suite }}
+            python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }}
 
   # riscv-tests Benchmarks
   test-riscv-benchmarks:
@@ -198,7 +200,7 @@ jobs:
       - name: Run riscv-tests benchmark (${{ matrix.benchmark }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --sim verilator --benchmarks ${{ matrix.benchmark }}
+            python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }}
 
   # riscv-torture Random Instruction Tests
   test-riscv-torture:
@@ -223,32 +225,7 @@ jobs:
       - name: Run riscv-torture tests
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_torture.py --sim verilator --all
-
-  # Run Cocotb tests with Icarus Verilog
-  test-icarus:
-    name: Cocotb Tests (Icarus)
-    runs-on: ubuntu-24.04
-    needs: build-docker
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Download Docker image
-        uses: actions/download-artifact@v4
-        with:
-          name: frost-docker-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
-
-      - name: Run Cocotb tests with Icarus
-        run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m cocotb --sim icarus -v
+            python3 tests/test_riscv_torture.py --all
 
   # Run Yosys synthesis check
   test-synthesis:

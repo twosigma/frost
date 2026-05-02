@@ -20,18 +20,19 @@ This document provides guidelines for contributors. The detailed style sections 
 
 ## Project Overview
 
-FROST is a 6-stage pipelined RISC-V processor implementing **RV32IMACB** with full machine-mode privilege support. Understanding the architecture helps you contribute effectively:
+FROST is an out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and full machine-mode privilege support. Understanding the architecture helps you contribute effectively:
 
-### Pipeline Stages
+### Architecture Outline
 
 ```
-IF → PD → ID → EX → MA → WB
- │    │    │    │    │    └─ Write-back to register file
- │    │    │    │    └─ Memory access (load/store completion)
- │    │    │    └─ Execute (ALU, branch resolution)
- │    │    └─ Instruction decode, register file read
- │    └─ Pre-decode (C-extension decompression)
- └─ Instruction fetch, branch prediction
+IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
+ │    │    │        │          │                  └─ ROB commit to INT/FP regfiles
+ │    │    │        │          ├─ ROB, RAT, reservation stations, CDB
+ │    │    │        │          └─ Load queue, store queue, FU shims
+ │    │    │        └─ Rename and resource allocation
+ │    │    └─ Instruction decode, CSR reads, branch target precompute
+ │    └─ Pre-decode and C-extension decompression
+ └─ Instruction fetch, branch prediction, return address stack
 ```
 
 ### Key Design Principles
@@ -39,7 +40,7 @@ IF → PD → ID → EX → MA → WB
 - **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
 - **Timing optimization**: Critical paths carefully managed with registered outputs
 - **Comprehensive verification**: Cocotb-based testing with 16,000+ random instructions
-- **Multi-simulator support**: Tested on Verilator and Icarus Verilog
+- **Verilator simulation**: All tests run under Verilator
 
 ### Memory Map
 
@@ -57,7 +58,7 @@ Before contributing, ensure you have the required tools installed. See the [main
 Required tools:
 - **RISC-V GCC** (`riscv-none-elf-gcc`) - for compiling bare-metal software
 - **Cocotb** - Python-based verification framework
-- **Simulator** (one or more): Verilator or Icarus Verilog
+- **Simulator**: Verilator
 - **Yosys** - for synthesis verification
 
 ### Setting Up Your Development Environment
@@ -452,15 +453,6 @@ pytest tests/test_run_cocotb.py::TestRealPrograms::test_frost_isa_test -s
 pytest tests/test_run_yosys.py -s
 ```
 
-Test with multiple simulators when possible:
-```bash
-# Icarus Verilog
-pytest tests/test_run_cocotb.py -s --sim icarus
-
-# Verilator
-pytest tests/test_run_cocotb.py -s --sim verilator
-```
-
 ### Software Changes
 
 Build and run Hello World:
@@ -580,11 +572,11 @@ We welcome contributions in these areas:
 
 | Area | Examples |
 |------|----------|
-| Bug fixes | Pipeline hazards, instruction encoding, timing issues |
-| ISA extensions | F (floating-point), D (double), Zfinx, custom extensions |
+| Bug fixes | OOO ordering, instruction encoding, timing issues |
+| ISA extensions | Additional standard or custom extensions |
 | Privilege modes | S-mode (supervisor), U-mode (user) support |
 | Board support | New FPGA boards, SoC integrations |
-| Performance | Branch predictor improvements, cache enhancements |
+| Performance | Branch predictor, scheduler, memory-system, or cache improvements |
 | Peripherals | SPI, I2C, GPIO, timers |
 | Documentation | Architecture guides, tutorials, examples |
 | Verification | New test cases, coverage improvements, formal verification |
@@ -607,7 +599,7 @@ All contributions go through code review. Reviewers will check:
 | Style | Does it follow project conventions (naming, formatting, comments)? |
 | Testing | Are there adequate tests? Do existing tests still pass? |
 | Documentation | Are changes documented? Are comments clear? |
-| Portability | Does it maintain cross-simulator and cross-tool compatibility? |
+| Portability | Does it maintain Verilator, Yosys, and Vivado compatibility? |
 | Performance | Does it meet timing on target FPGAs? Are there regressions? |
 
 ## Questions?

@@ -16,9 +16,9 @@
 
 /*
  * Arithmetic Logic Unit (ALU) - Core execution unit for RISC-V processor.
- * Implements all RV32IMAB arithmetic, logical, and shift operations including the
- * base integer ISA, M-extension for multiply/divide, A-extension atomic operations,
- * and B-extension (Zba, Zbb, Zbs), plus Zicond and Zbkb. B = Zba + Zbb + Zbs.
+ * Implements integer arithmetic, logical, and shift operations including the
+ * base integer ISA, M-extension multiply/divide operations, B-extension
+ * operations (Zba, Zbb, Zbs), plus Zicond and Zbkb. B = Zba + Zbb + Zbs.
  * The ALU handles immediate and register-based operations, computes branch addresses
  * for JAL/JALR, and generates upper immediate values for LUI/AUIPC. It instantiates
  * separate multiplier and divider units for M-extension operations which require

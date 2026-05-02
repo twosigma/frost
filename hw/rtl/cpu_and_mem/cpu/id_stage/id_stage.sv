@@ -15,14 +15,14 @@
  */
 
 /*
- * Instruction Decode (ID) stage - Third stage of the 6-stage RISC-V pipeline.
+ * Instruction Decode (ID) stage - third stage of the in-order front-end.
  *
  * This module decodes RISC-V instructions into control signals and immediate values.
  * It instantiates decoders for instruction type determination and immediate
  * value extraction. The module identifies load instructions, store operations, branch
- * conditions, and ALU operations. It supports pipeline flushing on branch mispredictions
- * and stalling for hazards. The decoded information is passed to the Execute stage through
- * a pipeline register that can be flushed or stalled as needed for correct program execution.
+ * conditions, and ALU operations. It supports front-end flushing and dispatch
+ * stalls. The decoded information is passed to dispatch through a register that
+ * can be flushed or stalled as needed for correct program execution.
  *
  * Submodule Hierarchy:
  * ====================
@@ -38,11 +38,29 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
+    // Cold-backward-branch override from pd_stage. Both signals are FF outputs
+    // of pd_stage (the same registers that drive the IF redirect). Applying the
+    // override here instead of inside pd_stage's o_from_pd_to_id register keeps
+    // the long pd_backward_target combinational chain off the worst path.
+    input logic i_pd_redirect,
+    input logic [XLEN-1:0] i_pd_redirect_target,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex
 );
+
+  // Effective BTB metadata after applying the cold-backward-branch override.
+  // i_pd_redirect is high in the cycle the just-detected backward branch reaches
+  // id_stage (it tracks pd_backward_branch through the same stall/flush gates as
+  // o_from_pd_to_id), so the override naturally aligns with the branch instruction.
+  logic [XLEN-1:0] effective_btb_predicted_target;
+  logic            effective_btb_hit;
+  logic            effective_btb_predicted_taken;
+  assign effective_btb_predicted_target = i_pd_redirect ? i_pd_redirect_target :
+                                          i_from_pd_to_id.btb_predicted_target;
+  assign effective_btb_hit = i_pd_redirect | i_from_pd_to_id.btb_hit;
+  assign effective_btb_predicted_taken = i_pd_redirect | i_from_pd_to_id.btb_predicted_taken;
 
   // Internal signals for decoded instruction information
   riscv_pkg::instr_t instruction;
@@ -162,7 +180,7 @@ module id_stage #(
       .i_immediate_b_type(immediate_b_type),
       .i_immediate_j_type(immediate_j_type),
       .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
-      .i_btb_predicted_target(i_from_pd_to_id.btb_predicted_target),
+      .i_btb_predicted_target(effective_btb_predicted_target),
       .i_is_jal(is_jal_direct),
       // Pre-computed target outputs
       .o_branch_target_precomputed(branch_target_precomputed),
@@ -313,76 +331,53 @@ module id_stage #(
   // ===========================================================================
   // Latch decoded values and pass to Execute stage
 
+
   always_ff @(posedge i_clk) begin
     // On reset, insert a NOP (no operation) into the pipeline
     if (i_pipeline_ctrl.reset) begin
-      o_from_id_to_ex.instruction                  <= riscv_pkg::NOP;
-      o_from_id_to_ex.instruction_operation        <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
-      o_from_id_to_ex.is_load_instruction          <= 1'b0;
-      o_from_id_to_ex.is_load_byte                 <= 1'b0;
-      o_from_id_to_ex.is_load_halfword             <= 1'b0;
-      o_from_id_to_ex.is_load_unsigned             <= 1'b0;
-      o_from_id_to_ex.is_multiply                  <= 1'b0;
-      o_from_id_to_ex.is_divide                    <= 1'b0;
-      o_from_id_to_ex.program_counter              <= '0;
-      o_from_id_to_ex.branch_operation             <= riscv_pkg::NULL;
-      o_from_id_to_ex.store_operation              <= riscv_pkg::STN;  // Store nothing
-      o_from_id_to_ex.is_jump_and_link             <= 1'b0;
-      o_from_id_to_ex.is_jump_and_link_register    <= 1'b0;
-      o_from_id_to_ex.is_csr_instruction           <= 1'b0;
-      o_from_id_to_ex.csr_address                  <= '0;
-      o_from_id_to_ex.csr_imm                      <= '0;
+      o_from_id_to_ex.instruction               <= riscv_pkg::NOP;
+      o_from_id_to_ex.instruction_operation     <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
+      o_from_id_to_ex.is_load_instruction       <= 1'b0;
+      o_from_id_to_ex.is_load_byte              <= 1'b0;
+      o_from_id_to_ex.is_load_halfword          <= 1'b0;
+      o_from_id_to_ex.is_load_unsigned          <= 1'b0;
+      o_from_id_to_ex.is_multiply               <= 1'b0;
+      o_from_id_to_ex.is_divide                 <= 1'b0;
+      o_from_id_to_ex.branch_operation          <= riscv_pkg::NULL;
+      o_from_id_to_ex.store_operation           <= riscv_pkg::STN;  // Store nothing
+      o_from_id_to_ex.is_jump_and_link          <= 1'b0;
+      o_from_id_to_ex.is_jump_and_link_register <= 1'b0;
+      o_from_id_to_ex.is_csr_instruction        <= 1'b0;
       // A extension (atomics)
-      o_from_id_to_ex.is_amo_instruction           <= 1'b0;
-      o_from_id_to_ex.is_lr                        <= 1'b0;
-      o_from_id_to_ex.is_sc                        <= 1'b0;
+      o_from_id_to_ex.is_amo_instruction        <= 1'b0;
+      o_from_id_to_ex.is_lr                     <= 1'b0;
+      o_from_id_to_ex.is_sc                     <= 1'b0;
       // Privileged instructions (trap handling)
-      o_from_id_to_ex.is_mret                      <= 1'b0;
-      o_from_id_to_ex.is_wfi                       <= 1'b0;
-      o_from_id_to_ex.is_ecall                     <= 1'b0;
-      o_from_id_to_ex.is_ebreak                    <= 1'b0;
-      o_from_id_to_ex.is_illegal_instruction       <= 1'b0;
-      o_from_id_to_ex.link_address                 <= '0;
-      // Pre-computed branch/jump targets (pipeline balancing)
-      o_from_id_to_ex.branch_target_precomputed    <= '0;
-      o_from_id_to_ex.jal_target_precomputed       <= '0;
-      // Regfile read data (read in ID stage using early source regs from PD)
-      o_from_id_to_ex.source_reg_1_data            <= '0;
-      o_from_id_to_ex.source_reg_2_data            <= '0;
-      // Pre-computed x0 check flags (timing optimization)
-      o_from_id_to_ex.source_reg_1_is_x0           <= 1'b1;  // NOP uses x0
-      o_from_id_to_ex.source_reg_2_is_x0           <= 1'b1;  // NOP uses x0
+      o_from_id_to_ex.is_mret                   <= 1'b0;
+      o_from_id_to_ex.is_wfi                    <= 1'b0;
+      o_from_id_to_ex.is_ecall                  <= 1'b0;
+      o_from_id_to_ex.is_ebreak                 <= 1'b0;
+      o_from_id_to_ex.is_illegal_instruction    <= 1'b0;
       // Branch prediction metadata
-      o_from_id_to_ex.btb_hit                      <= 1'b0;
-      o_from_id_to_ex.btb_predicted_taken          <= 1'b0;
-      o_from_id_to_ex.btb_predicted_target         <= '0;
+      o_from_id_to_ex.btb_hit                   <= 1'b0;
+      o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
       // RAS prediction metadata
-      o_from_id_to_ex.ras_predicted                <= 1'b0;
-      o_from_id_to_ex.ras_predicted_target         <= '0;
-      o_from_id_to_ex.ras_checkpoint_tos           <= '0;
-      o_from_id_to_ex.ras_checkpoint_valid_count   <= '0;
+      o_from_id_to_ex.ras_predicted             <= 1'b0;
       // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
-      o_from_id_to_ex.is_ras_return                <= 1'b0;
-      o_from_id_to_ex.is_ras_call                  <= 1'b0;
-      o_from_id_to_ex.ras_predicted_target_nonzero <= 1'b0;
-      o_from_id_to_ex.ras_expected_rs1             <= '0;
+      o_from_id_to_ex.is_ras_return             <= 1'b0;
+      o_from_id_to_ex.is_ras_call               <= 1'b0;
       // TIMING OPTIMIZATION: Pre-computed BTB verification
-      o_from_id_to_ex.btb_correct_non_jalr         <= 1'b0;
-      o_from_id_to_ex.btb_expected_rs1             <= '0;
+      o_from_id_to_ex.btb_correct_non_jalr      <= 1'b0;
       // F extension
-      o_from_id_to_ex.is_fp_instruction            <= 1'b0;
-      o_from_id_to_ex.is_fp_load                   <= 1'b0;
-      o_from_id_to_ex.is_fp_store                  <= 1'b0;
-      o_from_id_to_ex.is_fp_load_double            <= 1'b0;
-      o_from_id_to_ex.is_fp_store_double           <= 1'b0;
-      o_from_id_to_ex.is_fp_compute                <= 1'b0;
-      o_from_id_to_ex.is_pipelined_fp_op           <= 1'b0;
-      o_from_id_to_ex.is_fp_to_int                 <= 1'b0;
-      o_from_id_to_ex.is_int_to_fp                 <= 1'b0;
-      o_from_id_to_ex.fp_rm                        <= 3'b0;
-      o_from_id_to_ex.fp_source_reg_1_data         <= '0;
-      o_from_id_to_ex.fp_source_reg_2_data         <= '0;
-      o_from_id_to_ex.fp_source_reg_3_data         <= '0;
+      o_from_id_to_ex.is_fp_instruction         <= 1'b0;
+      o_from_id_to_ex.is_fp_load                <= 1'b0;
+      o_from_id_to_ex.is_fp_store               <= 1'b0;
+      o_from_id_to_ex.is_fp_load_double         <= 1'b0;
+      o_from_id_to_ex.is_fp_store_double        <= 1'b0;
+      o_from_id_to_ex.is_fp_compute             <= 1'b0;
+      o_from_id_to_ex.is_pipelined_fp_op        <= 1'b0;
+      o_from_id_to_ex.is_fp_to_int              <= 1'b0;
+      o_from_id_to_ex.is_int_to_fp              <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
       // When pipeline is not stalled, pass decoded instruction to Execute stage
       // If flushing (e.g., due to branch), insert NOP instead
@@ -398,7 +393,6 @@ module id_stage #(
       o_from_id_to_ex.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct;
       // Check if this is a divide/remainder operation (M extension) - use direct decode
       o_from_id_to_ex.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct;
-      o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
       o_from_id_to_ex.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
                                                                   branch_operation;
       o_from_id_to_ex.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
@@ -406,8 +400,6 @@ module id_stage #(
       o_from_id_to_ex.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
       // CSR instruction fields (Zicsr extension)
       o_from_id_to_ex.is_csr_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
-      o_from_id_to_ex.csr_address <= csr_address;
-      o_from_id_to_ex.csr_imm <= csr_imm;
       // A extension (atomics)
       o_from_id_to_ex.is_amo_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
       o_from_id_to_ex.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr;
@@ -419,34 +411,21 @@ module id_stage #(
       o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
       o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 is_illegal_instruction;
-      // Pre-computed link address from IF stage
-      o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
-      // Pre-computed branch/jump targets (computed here, used by EX stage)
-      o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
-      o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
       // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
-      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.btb_hit;
+      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              i_from_pd_to_id.btb_predicted_taken;
-      o_from_id_to_ex.btb_predicted_target <= i_from_pd_to_id.btb_predicted_target;
+                                              effective_btb_predicted_taken;
       // RAS prediction metadata - clear on flush (prediction for flushed instr is invalid)
       o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
-      o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
-      o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
       // TIMING OPTIMIZATION: Pre-computed RAS instruction type flags
       // These remove comparisons from the EX stage critical path
       o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
-      // Pre-computed expected rs1 for RAS verification (removes JALR adder from critical path)
-      o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
       // TIMING OPTIMIZATION: Pre-computed BTB verification
       // For non-JALR: target comparison done in ID stage (no forwarding dependency)
       // For JALR: use btb_expected_rs1 in EX stage (same algebraic transformation as RAS)
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
-      o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
       // F extension - clear on flush
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
@@ -460,10 +439,26 @@ module id_stage #(
                                             is_pipelined_fp_op_direct;
       o_from_id_to_ex.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct;
       o_from_id_to_ex.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct;
-      o_from_id_to_ex.fp_rm <= fp_rm_direct;
     end
     // Pass immediate values and regfile data (datapath, not affected by reset - only by stall)
     if (~i_pipeline_ctrl.stall) begin
+      o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
+      o_from_id_to_ex.csr_address <= csr_address;
+      o_from_id_to_ex.csr_imm <= csr_imm;
+      // Pre-computed link address from IF stage
+      o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
+      // Pre-computed branch/jump targets (computed here, used by EX stage)
+      o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
+      o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
+      o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
+      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
+      o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
+      o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+      o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
+      // Pre-computed expected rs1 values for branch/RAS verification.
+      o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
+      o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
+      o_from_id_to_ex.fp_rm <= fp_rm_direct;
       o_from_id_to_ex.immediate_u_type <= immediate_u_type;
       o_from_id_to_ex.immediate_s_type <= immediate_s_type;
       o_from_id_to_ex.immediate_i_type <= immediate_i_type;

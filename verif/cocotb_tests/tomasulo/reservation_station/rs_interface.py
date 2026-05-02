@@ -20,10 +20,9 @@ for driving stimulus and reading outputs.
 Note: Verilator flattens packed structs into single bit vectors.
 This interface handles packing/unpacking struct fields automatically.
 
-When running with the Icarus VPI-safe testbench wrapper
-(reservation_station_tb), dispatch and issue ports are individual
-scalar signals instead of wide packed struct ports. The interface
-detects this automatically via ``hasattr(dut, 'i_dispatch_valid')``.
+Some older local testbench wrappers expose dispatch and issue as individual
+scalar signals instead of wide packed struct ports. The interface detects this
+automatically via ``hasattr(dut, 'i_dispatch_valid')``.
 """
 
 from typing import Any
@@ -57,6 +56,9 @@ FP_FLAGS_WIDTH = 5
 # fu_type_e: 3 bits
 FU_TYPE_WIDTH = 3
 
+# checkpoint_id_t: NumCheckpoints=8 -> 3 bits
+CHECKPOINT_ID_WIDTH = 3
+
 
 # =============================================================================
 # Struct Packing/Unpacking
@@ -86,17 +88,34 @@ def pack_rs_dispatch(
     predicted_taken: bool = False,
     predicted_target: int = 0,
     is_fp_mem: bool = False,
+    mem_needs_lq: bool = False,
+    mem_needs_sq: bool = False,
     mem_size: int = 0,
     mem_signed: bool = False,
     csr_addr: int = 0,
     csr_imm: int = 0,
     pc: int = 0,
+    link_addr: int = 0,
+    has_checkpoint: bool = False,
+    checkpoint_id: int = 0,
+    is_call: bool = False,
+    is_return: bool = False,
 ) -> int:
     """Pack dispatch fields into a bit vector for driving i_dispatch."""
     val = 0
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (1 if is_return else 0) << bit
+    bit += 1
+    val |= (1 if is_call else 0) << bit
+    bit += 1
+    val |= (checkpoint_id & ((1 << CHECKPOINT_ID_WIDTH) - 1)) << bit
+    bit += CHECKPOINT_ID_WIDTH
+    val |= (1 if has_checkpoint else 0) << bit
+    bit += 1
+    val |= (link_addr & MASK32) << bit
+    bit += XLEN
     val |= (pc & MASK32) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit
@@ -107,6 +126,10 @@ def pack_rs_dispatch(
     bit += 1
     val |= (mem_size & 0x3) << bit
     bit += MEM_SIZE_WIDTH
+    val |= (1 if mem_needs_sq else 0) << bit
+    bit += 1
+    val |= (1 if mem_needs_lq else 0) << bit
+    bit += 1
     val |= (1 if is_fp_mem else 0) << bit
     bit += 1
     val |= (predicted_target & MASK32) << bit
@@ -182,11 +205,21 @@ def pack_cdb_broadcast(
     return val
 
 
-def unpack_rs_issue(raw: int) -> dict:
+def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     """Unpack rs_issue_t from a bit vector."""
     bit = 0
-    result = {}
+    result: dict[str, int | bool] = {}
 
+    result["is_return"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["is_call"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["checkpoint_id"] = (raw >> bit) & ((1 << CHECKPOINT_ID_WIDTH) - 1)
+    bit += CHECKPOINT_ID_WIDTH
+    result["has_checkpoint"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["link_addr"] = (raw >> bit) & MASK32
+    bit += XLEN
     result["pc"] = (raw >> bit) & MASK32
     bit += XLEN
     result["csr_imm"] = (raw >> bit) & 0x1F
@@ -197,6 +230,10 @@ def unpack_rs_issue(raw: int) -> dict:
     bit += 1
     result["mem_size"] = (raw >> bit) & 0x3
     bit += MEM_SIZE_WIDTH
+    result["mem_needs_sq"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["mem_needs_lq"] = bool((raw >> bit) & 1)
+    bit += 1
     result["is_fp_mem"] = bool((raw >> bit) & 1)
     bit += 1
     result["predicted_target"] = (raw >> bit) & MASK32
@@ -235,14 +272,14 @@ def unpack_rs_issue(raw: int) -> dict:
 class RSInterface:
     """Interface to the Reservation Station DUT.
 
-    Automatically detects whether the DUT has flattened ports (Icarus
-    testbench wrapper) or packed struct ports (Verilator / direct module).
+    Automatically detects whether the DUT has flattened wrapper ports or the
+    packed struct ports used by the direct module.
     """
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
-        # Icarus tb wrapper exposes individual dispatch/issue ports
+        # Flattened wrappers expose individual dispatch/issue ports.
         self._flat = hasattr(dut, "i_dispatch_valid")
 
     @property
@@ -274,11 +311,21 @@ class RSInterface:
         else:
             self.dut.i_dispatch.value = 0
         self.dut.i_cdb.value = 0
+        self.dut.i_repair_valid_1.value = 0
+        self.dut.i_repair_tag_1.value = 0
+        self.dut.i_repair_value_1.value = 0
+        self.dut.i_repair_valid_2.value = 0
+        self.dut.i_repair_tag_2.value = 0
+        self.dut.i_repair_value_2.value = 0
+        self.dut.i_repair_valid_3.value = 0
+        self.dut.i_repair_tag_3.value = 0
+        self.dut.i_repair_value_3.value = 0
         self.dut.i_fu_ready.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_head_query_tag.value = 0
 
     # =========================================================================
     # Dispatch
@@ -300,7 +347,7 @@ class RSInterface:
             self.dut.i_dispatch.value = 0
 
     def _drive_dispatch_flat(self, **kwargs: Any) -> None:
-        """Drive individual dispatch ports (Icarus wrapper)."""
+        """Drive individual dispatch ports from a flattened wrapper."""
         d = self.dut
         d.i_dispatch_valid.value = 1 if kwargs.get("valid") else 0
         d.i_dispatch_rs_type.value = int(kwargs.get("rs_type", 0)) & 0x7
@@ -324,11 +371,14 @@ class RSInterface:
             int(kwargs.get("predicted_target", 0)) & MASK32
         )
         d.i_dispatch_is_fp_mem.value = 1 if kwargs.get("is_fp_mem") else 0
+        d.i_dispatch_mem_needs_lq.value = 1 if kwargs.get("mem_needs_lq") else 0
+        d.i_dispatch_mem_needs_sq.value = 1 if kwargs.get("mem_needs_sq") else 0
         d.i_dispatch_mem_size.value = int(kwargs.get("mem_size", 0)) & 0x3
         d.i_dispatch_mem_signed.value = 1 if kwargs.get("mem_signed") else 0
         d.i_dispatch_csr_addr.value = int(kwargs.get("csr_addr", 0)) & 0xFFF
         d.i_dispatch_csr_imm.value = int(kwargs.get("csr_imm", 0)) & 0x1F
         d.i_dispatch_pc.value = int(kwargs.get("pc", 0)) & MASK32
+        d.i_dispatch_link_addr.value = int(kwargs.get("link_addr", 0)) & MASK32
 
     def _clear_dispatch_flat(self) -> None:
         """Clear all individual dispatch ports to zero."""
@@ -353,14 +403,17 @@ class RSInterface:
         d.i_dispatch_predicted_taken.value = 0
         d.i_dispatch_predicted_target.value = 0
         d.i_dispatch_is_fp_mem.value = 0
+        d.i_dispatch_mem_needs_lq.value = 0
+        d.i_dispatch_mem_needs_sq.value = 0
         d.i_dispatch_mem_size.value = 0
         d.i_dispatch_mem_signed.value = 0
         d.i_dispatch_csr_addr.value = 0
         d.i_dispatch_csr_imm.value = 0
         d.i_dispatch_pc.value = 0
+        d.i_dispatch_link_addr.value = 0
 
     # =========================================================================
-    # CDB (84 bits — always packed, small enough for Icarus VPI)
+    # CDB (84 bits, always packed)
     # =========================================================================
 
     def drive_cdb(self, tag: int, value: int = 0, **kwargs: Any) -> None:
@@ -388,7 +441,7 @@ class RSInterface:
         return unpack_rs_issue(int(self.dut.o_issue.value))
 
     def _read_issue_flat(self) -> dict:
-        """Read individual issue ports (Icarus wrapper)."""
+        """Read individual issue ports from a flattened wrapper."""
         d = self.dut
         return {
             "valid": bool(d.o_issue_valid.value),
@@ -404,11 +457,14 @@ class RSInterface:
             "predicted_taken": bool(d.o_issue_predicted_taken.value),
             "predicted_target": int(d.o_issue_predicted_target.value),
             "is_fp_mem": bool(d.o_issue_is_fp_mem.value),
+            "mem_needs_lq": bool(d.o_issue_mem_needs_lq.value),
+            "mem_needs_sq": bool(d.o_issue_mem_needs_sq.value),
             "mem_size": int(d.o_issue_mem_size.value),
             "mem_signed": bool(d.o_issue_mem_signed.value),
             "csr_addr": int(d.o_issue_csr_addr.value),
             "csr_imm": int(d.o_issue_csr_imm.value),
             "pc": int(d.o_issue_pc.value),
+            "link_addr": int(d.o_issue_link_addr.value),
         }
 
     @property

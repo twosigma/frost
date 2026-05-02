@@ -157,7 +157,7 @@ class FormalRunner:
         if not sby_path.exists():
             raise FileNotFoundError(f"SBY file not found: {sby_path}")
 
-        cmd = ["sby", "-f", str(sby_path), task]
+        cmd = ["sby", "-t", "-f", str(sby_path), task]
 
         if capture_output:
             return subprocess.run(

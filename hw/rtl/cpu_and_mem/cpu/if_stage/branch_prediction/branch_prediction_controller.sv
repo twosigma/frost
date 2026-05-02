@@ -41,6 +41,7 @@ module branch_prediction_controller (
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
+    input logic i_stall_registered,
     input logic i_flush,
 
     // Current PC for BTB lookup
@@ -54,6 +55,7 @@ module branch_prediction_controller (
     input logic i_is_32bit_spanning,
     input logic i_spanning_wait_for_fetch,
     input logic i_spanning_in_progress,
+    input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
 
     // BTB update interface (from EX stage)
@@ -61,6 +63,8 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_pc,
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_target,
     input logic                       i_btb_update_taken,
+    input logic                       i_btb_update_compressed,
+    input logic                       i_btb_update_requires_pc_reg_handoff,
 
     // RAS inputs (for call/return detection)
     input riscv_pkg::instr_t i_instruction,  // Current instruction for RAS detection
@@ -74,6 +78,8 @@ module branch_prediction_controller (
     input logic [riscv_pkg::RasPtrBits-1:0] i_ras_restore_tos,
     input logic [  riscv_pkg::RasPtrBits:0] i_ras_restore_valid_count,
     input logic                             i_ras_pop_after_restore,
+    input logic                             i_ras_push_after_restore,
+    input logic [      riscv_pkg::XLEN-1:0] i_ras_push_address_after_restore,
 
     // Combinational prediction outputs (for pc_controller next_pc selection)
     output logic                       o_predicted_taken,
@@ -88,6 +94,8 @@ module branch_prediction_controller (
     output logic o_prediction_holdoff,  // One cycle after prediction (for c_ext_state)
     output logic o_btb_only_prediction_holdoff,  // Holdoff when BTB (not RAS) predicted
     output logic o_sel_prediction_r,  // Registered sel_prediction (for pc_controller pc_reg)
+    output logic o_prediction_requires_pc_reg_handoff,
+    // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
     // RAS prediction outputs (for pipeline passthrough)
@@ -107,6 +115,10 @@ module branch_prediction_controller (
   logic            btb_hit;
   logic            btb_predicted_taken;
   logic [XLEN-1:0] btb_predicted_target;
+  logic            btb_compressed;
+  logic            btb_requires_pc_reg_handoff;
+
+  assign o_prediction_requires_pc_reg_handoff = btb_requires_pc_reg_handoff;
 
   branch_predictor #(
       .XLEN(XLEN)
@@ -119,12 +131,16 @@ module branch_prediction_controller (
       .o_btb_hit(btb_hit),
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
+      .o_btb_compressed(btb_compressed),
+      .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
       // Update from EX stage
       .i_update(i_btb_update),
       .i_update_pc(i_btb_update_pc),
       .i_update_target(i_btb_update_target),
-      .i_update_taken(i_btb_update_taken)
+      .i_update_taken(i_btb_update_taken),
+      .i_update_compressed(i_btb_update_compressed),
+      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff)
   );
 
   // ===========================================================================
@@ -164,40 +180,61 @@ module branch_prediction_controller (
   logic [RasPtrBits-1:0] ras_restore_tos_r;
   logic [  RasPtrBits:0] ras_restore_valid_count_r;
   logic                  ras_pop_after_restore_r;
+  logic                  ras_push_after_restore_r;
+  logic [      XLEN-1:0] ras_push_address_after_restore_r;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       ras_misprediction_r <= 1'b0;
-      ras_restore_tos_r <= '0;
-      ras_restore_valid_count_r <= '0;
       ras_pop_after_restore_r <= 1'b0;
+      ras_push_after_restore_r <= 1'b0;
     end else begin
       ras_misprediction_r <= i_ras_misprediction;
-      ras_restore_tos_r <= i_ras_restore_tos;
-      ras_restore_valid_count_r <= i_ras_restore_valid_count;
       ras_pop_after_restore_r <= i_ras_pop_after_restore;
+      ras_push_after_restore_r <= i_ras_push_after_restore;
     end
   end
 
+  always_ff @(posedge i_clk) begin
+    ras_restore_tos_r <= i_ras_restore_tos;
+    ras_restore_valid_count_r <= i_ras_restore_valid_count;
+    ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
+  end
+
   // Compute prediction_allowed for BTB
-  // BTB doesn't know instruction type, so must block halfword-aligned PCs
-  // (could be second half of spanning instruction)
+  // Block halfword-aligned PCs unless the BTB entry is marked as compressed.
+  // A 32-bit spanning instruction at a halfword PC must NOT be predicted because
+  // the redirect would corrupt the spanning state machine. Compressed instructions
+  // at halfword PCs are safe to predict.
   // CRITICAL: Block during prediction_holdoff to prevent feedback loop.
   // After a prediction redirects PC, the next cycle has stale instruction data.
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
   //
   // TIMING OPTIMIZATION: Keep BTB/RAS allow logic independent of late
-  // i_branch_taken. Branch filtering is applied at the final "prediction used"
-  // stage to avoid dragging branch resolution through the full predictor cone.
+  // i_branch_taken and i_is_32bit_spanning. Both are applied at the final
+  // "prediction used" stage to avoid dragging them through the full predictor
+  // cone. This makes is_32bit_spanning (which depends on BRAM → is_compressed)
+  // parallel with the prediction logic instead of serial, cutting ~5 LUT levels
+  // from the critical path:
+  //   BEFORE: BRAM → is_compressed → is_32bit_spanning → prediction_common → RAS → PC
+  //   AFTER:  BRAM → is_32bit_spanning ─┐
+  //           registered → prediction_common → sel_prediction ─ AND → prediction_used → PC
   logic prediction_common;
   logic prediction_allowed_stable;
-  assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall &&
+  // TIMING OPTIMIZATION: Use i_stall_registered to break the critical 14-level path
+  // rob_valid → commit_en → mret_start → id_valid → stall → prediction_common → RAS WE.
+  // During the first stall cycle (stall=1, stall_registered=0), a prediction may fire.
+  // This is safe: MRET/trap stalls flush the pipeline next cycle, and checkpoint restore
+  // corrects any spurious RAS push/pop. Non-trap stalls have short paths that arrive
+  // well before the clock edge regardless.
+  assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
                              !i_any_holdoff_safe &&
                              !o_prediction_holdoff &&
-                             !i_is_32bit_spanning && !i_spanning_wait_for_fetch &&
+                             !i_spanning_wait_for_fetch &&
                              !i_spanning_in_progress &&
+                             !i_use_instr_buffer &&
                              !i_disable_branch_prediction;
-  assign prediction_allowed_stable = prediction_common && !i_pc[1];
+  assign prediction_allowed_stable = prediction_common && (!i_pc[1] || btb_compressed);
 
   logic prediction_allowed;
   assign prediction_allowed = prediction_allowed_stable;
@@ -209,23 +246,40 @@ module branch_prediction_controller (
   logic ras_prediction_allowed;
   assign ras_prediction_allowed = ras_prediction_allowed_stable;
 
+  // Gate RAS pop with is_32bit_spanning (removed from prediction_common for timing).
+  // This is on the registered pop path (RAS always_ff), not the PC mux critical path.
+  // Prevents RAS state corruption from spurious pops during spanning instructions.
+  logic ras_pop_prediction_allowed;
+  // The first cycle of a front-end stall may still have a live BTB/RAS lookup
+  // because prediction_common uses i_stall_registered for timing.  Do not let
+  // that cycle mutate speculative RAS state: pc/o_pc_reg and prediction
+  // sideband are not advancing together, so consuming a prediction there can
+  // re-tag a later instruction with the wrong PC.
+  assign ras_pop_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning && !i_stall;
+  logic ras_write_prediction_allowed;
+  assign ras_write_prediction_allowed = ras_prediction_allowed && !i_is_32bit_spanning &&
+                                        !i_stall_registered;
+
   return_address_stack #(
       .RAS_DEPTH(RasDepth),
       .RAS_PTR_BITS(RasPtrBits)
   ) ras_inst (
       .i_clk,
       .i_rst(i_reset),
-      .i_stall,
+      .i_stall_registered,
       .i_is_call(ras_is_call),
       .i_is_return(ras_is_return),
       .i_is_coroutine(ras_is_coroutine),
       .i_link_address(i_link_address),
-      .i_prediction_allowed(ras_prediction_allowed),
+      .i_prediction_allowed(ras_pop_prediction_allowed),
+      .i_prediction_allowed_for_write(ras_write_prediction_allowed),
       .i_btb_only_prediction_holdoff(o_btb_only_prediction_holdoff),
       .i_misprediction(ras_misprediction_r),
       .i_restore_tos(ras_restore_tos_r),
       .i_restore_valid_count(ras_restore_valid_count_r),
       .i_pop_after_restore(ras_pop_after_restore_r),
+      .i_push_after_restore(ras_push_after_restore_r),
+      .i_push_address_after_restore(ras_push_address_after_restore_r),
       .o_ras_valid(ras_valid),
       .o_ras_target(ras_target),
       .o_checkpoint_tos(ras_checkpoint_tos),
@@ -260,10 +314,16 @@ module branch_prediction_controller (
   logic sel_prediction;
   assign sel_prediction = sel_ras_prediction || sel_btb_prediction;
 
-  // Actual prediction use must still be blocked when branch resolution is taking
-  // priority this cycle. Keep this as a final gate to shorten branch_taken depth.
+  // Actual prediction use must still be blocked when branch resolution or spanning
+  // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
+  // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
-  assign prediction_used_effective = sel_prediction && !i_branch_taken;
+  // Only "use" a prediction when IF can actually consume it. A prediction that
+  // fires on the first stall cycle is especially dangerous for halfword target
+  // handoff: the branch bytes can keep moving through IF while the PC/metadata
+  // bookkeeping stays behind by one instruction.
+  assign prediction_used_effective = sel_prediction && !i_stall &&
+                                     !i_branch_taken && !i_is_32bit_spanning;
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
@@ -300,16 +360,27 @@ module branch_prediction_controller (
   // only tracks predictions that were actually used.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
-      o_prediction_used_r  <= 1'b0;
-      o_predicted_target_r <= '0;
-      o_sel_prediction_r   <= 1'b0;
+      o_prediction_used_r <= 1'b0;
+      o_sel_prediction_r  <= 1'b0;
+    end else if (i_flush) begin
+      // Redirect flushes invalidate any in-flight prediction metadata even if
+      // the front-end is stalled. Keeping the old registered target/live bit
+      // across a stall+flush lets a stale prediction apply to a later
+      // instruction stream with the wrong PC/instruction pairing.
+      o_prediction_used_r <= 1'b0;
+      o_sel_prediction_r  <= 1'b0;
     end else if (~i_stall) begin
-      o_prediction_used_r  <= prediction_used_effective;
+      o_prediction_used_r <= prediction_used_effective;
+      o_sel_prediction_r  <= prediction_used_effective;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (~i_stall) begin
       // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
       o_predicted_target_r <= o_predicted_target;
-      o_sel_prediction_r   <= prediction_used_effective;
     end
   end
 
@@ -326,9 +397,11 @@ module branch_prediction_controller (
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_prediction_holdoff <= 1'b0;
+    end else if (i_flush) begin
+      o_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
-      // Set holdoff on cycle after prediction; clear on flush
-      o_prediction_holdoff <= i_flush ? 1'b0 : prediction_used_effective;
+      // Set holdoff on cycle after prediction.
+      o_prediction_holdoff <= prediction_used_effective;
     end
   end
 
@@ -349,13 +422,16 @@ module branch_prediction_controller (
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
   logic btb_only_prediction_effective;
-  assign btb_only_prediction_effective = btb_only_prediction && !i_branch_taken;
+  assign btb_only_prediction_effective = btb_only_prediction && !i_stall &&
+                                         !i_branch_taken && !i_is_32bit_spanning;
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_btb_only_prediction_holdoff <= 1'b0;
+    end else if (i_flush) begin
+      o_btb_only_prediction_holdoff <= 1'b0;
     end else if (~i_stall) begin
-      o_btb_only_prediction_holdoff <= i_flush ? 1'b0 : btb_only_prediction_effective;
+      o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
     end
   end
 

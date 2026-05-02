@@ -43,8 +43,6 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-venv \
     python3-pip \
-    # HDL simulators (Verilator and Yosys built from source below)
-    iverilog \
     # Build tools (shared by Verilator, Yosys, and Boolector)
     make \
     cmake \
@@ -177,4 +175,4 @@ CMD ["/bin/bash"]
 # Usage:
 #   docker build -t frost-dev .
 #   docker run -it --rm -v $(pwd):/workspace frost-dev
-#   pytest tests/ -m cocotb --sim verilator
+#   pytest tests/ -m cocotb

@@ -24,13 +24,14 @@
  *
  *   - Back-pressure signaling (`o_result_pending`) so the RS can stall new
  *     issues while a result is waiting for CDB access.
- *   - Zero-latency pass-through when the arbiter grants on the same cycle
- *     the FU result arrives (combinational path from input to output).
- *   - Pipeline flush support: `i_flush` (full) discards any held result.
- *     `i_flush_en` (partial) discards held results whose tag is younger
- *     than `i_flush_tag` (relative to `i_rob_head_tag`).  The output mux
- *     is also gated combinationally so that a same-cycle pass-through of
- *     a younger result is suppressed before reaching the CDB arbiter.
+ *   - Optional zero-latency pass-through when the arbiter grants on the same
+ *     cycle the FU result arrives. Set REGISTER_OUTPUT for long-latency or
+ *     non-critical FUs when the pass-through valid cone hurts timing.
+ *   - Pipeline flush support: `i_flush` (full) discards any held result on
+ *     the next edge. `i_flush_en` (partial) discards held results whose tag
+ *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`). Same-cycle
+ *     pass-through of a younger partial-flush result is still suppressed here;
+ *     speculative full-flush CDB suppression is handled once at the arbiter.
  *
  * State machine (1 bit: result_pending):
  *
@@ -44,7 +45,10 @@
  *     flush / partial flush of held tag -> clear register, go IDLE
  */
 
-module fu_cdb_adapter (
+module fu_cdb_adapter #(
+    parameter bit ALLOW_GRANT_REFILL = 1'b1,
+    parameter bit REGISTER_OUTPUT = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -106,11 +110,17 @@ module fu_cdb_adapter (
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
+  // Same-cycle partial flush of a younger pass-through result must still be
+  // suppressed locally. Full-flush kill is centralized at the CDB arbiter so
+  // this one-deep adapter doesn't have to carry that signal through its
+  // output/held-result control cone.
   always_comb begin
-    if (result_pending && !partial_flush_held) o_fu_complete = held_result;
-    else if (!result_pending && !partial_flush_input) o_fu_complete = i_fu_result;
-    else begin
-      o_fu_complete = '0;  // suppress stale result
+    if (result_pending && !partial_flush_held) begin
+      o_fu_complete = held_result;
+    end else if (!REGISTER_OUTPUT && !result_pending && !partial_flush_input) begin
+      o_fu_complete = i_fu_result;
+    end else begin
+      o_fu_complete = '0;
     end
   end
 
@@ -119,31 +129,34 @@ module fu_cdb_adapter (
   // ---------------------------------------------------------------------------
   // Register logic
   // ---------------------------------------------------------------------------
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  // Control: result_pending (with reset)
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       result_pending <= 1'b0;
-      held_result    <= '0;
     end else if (i_flush || partial_flush_held) begin
-      // Full flush or partial flush of held result — discard
       result_pending <= 1'b0;
-      held_result    <= '0;
     end else if (result_pending && i_grant) begin
-      // Currently pending result was granted
-      if (i_fu_result.valid) begin
-        // Back-to-back: grant old + latch new
-        held_result    <= i_fu_result;
-        result_pending <= 1'b1;
-      end else begin
-        // Granted, go idle
-        result_pending <= 1'b0;
-      end
-    end else if (!result_pending && i_fu_result.valid && !i_grant && !partial_flush_input) begin
-      // Pass-through failed (not granted), latch — but not if partially flushed
-      held_result    <= i_fu_result;
-      result_pending <= 1'b1;
+      result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid;
+    end else if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
+      result_pending <= REGISTER_OUTPUT || !i_grant;
     end
   end
 
+  // Data: held_result (no reset - gated by result_pending)
+  // Writing the pass-through payload even on same-cycle grant/flush is safe:
+  // result_pending is the only visibility bit, so any stale idle payload stays
+  // dormant until the next pending capture overwrites it. This keeps grant and
+  // full-flush off the wide held_result control cone.
+  always_ff @(posedge i_clk) begin
+    if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
+        (!result_pending && i_fu_result.valid)) begin
+      held_result <= i_fu_result;
+    end
+  end
+
+  // ===========================================================================
+  // Debug traces (simulation only)
+  // ===========================================================================
   // ===========================================================================
   // Formal Verification
   // ===========================================================================
@@ -151,6 +164,7 @@ module fu_cdb_adapter (
 
   // Standard formal preamble
   initial assume (!i_rst_n);
+  initial assume (!result_pending);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;
@@ -188,15 +202,19 @@ module fu_cdb_adapter (
 
   // When pending and not partially flushed: output is always valid
   always_comb begin
-    if (result_pending && !partial_flush_held) begin
+    if (i_rst_n && result_pending && !partial_flush_held) begin
       p_pending_valid : assert (o_fu_complete.valid);
     end
   end
 
-  // When idle with valid input and not partially flushed: output is valid
+  // When idle with valid input and not partially flushed: pass-through mode
+  // presents output immediately; registered-output mode captures first.
   always_comb begin
-    if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
+    if (!REGISTER_OUTPUT && !result_pending && i_fu_result.valid && !partial_flush_input) begin
       p_passthrough_valid : assert (o_fu_complete.valid);
+    end
+    if (REGISTER_OUTPUT && !result_pending) begin
+      p_registered_idle_output_invalid : assert (!o_fu_complete.valid);
     end
   end
 
@@ -265,19 +283,19 @@ module fu_cdb_adapter (
 
   // Pass-through: tag matches input (when not partially flushed)
   always_comb begin
-    if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
+    if (!REGISTER_OUTPUT && !result_pending && i_fu_result.valid && !partial_flush_input) begin
       p_passthrough_tag : assert (o_fu_complete.tag == i_fu_result.tag);
     end
   end
 
   // Pass-through: value matches input (when not partially flushed)
   always_comb begin
-    if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
+    if (!REGISTER_OUTPUT && !result_pending && i_fu_result.valid && !partial_flush_input) begin
       p_passthrough_value : assert (o_fu_complete.value == i_fu_result.value);
     end
   end
 
-  // Latch correctness: after pass-through not granted, next-cycle output matches
+  // Latch correctness: after captured idle input, next-cycle output matches.
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(
             i_rst_n
@@ -285,9 +303,9 @@ module fu_cdb_adapter (
             result_pending
         ) && $past(
             i_fu_result.valid
-        ) && !$past(
+        ) && (REGISTER_OUTPUT || !$past(
             i_grant
-        ) && !$past(
+        )) && !$past(
             i_flush
         ) && !$past(
             partial_flush_input
@@ -329,7 +347,7 @@ module fu_cdb_adapter (
 
   // Reset idle
   always @(posedge i_clk) begin
-    if (!i_rst_n) begin
+    if (f_past_valid && !i_rst_n) begin
       p_reset_idle : assert (!result_pending);
     end
   end

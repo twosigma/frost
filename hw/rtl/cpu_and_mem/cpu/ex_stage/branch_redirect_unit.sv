@@ -80,12 +80,16 @@ module branch_redirect_unit #(
     output logic [XLEN-1:0] o_btb_update_pc,
     output logic [XLEN-1:0] o_btb_update_target,
     output logic            o_btb_update_taken,
+    output logic            o_btb_update_compressed,
+    output logic            o_btb_update_requires_pc_reg_handoff,
 
     // RAS recovery outputs
     output logic                  o_ras_misprediction,
     output logic [RasPtrBits-1:0] o_ras_restore_tos,
     output logic [  RasPtrBits:0] o_ras_restore_valid_count,
-    output logic                  o_ras_pop_after_restore
+    output logic                  o_ras_pop_after_restore,
+    output logic                  o_ras_push_after_restore,
+    output logic [      XLEN-1:0] o_ras_push_address_after_restore
 );
 
   // ===========================================================================
@@ -195,9 +199,12 @@ module branch_redirect_unit #(
   // The BTB should learn the true branch behavior, not the recovery action.
 
   logic is_branch_or_jump;
+  logic is_conditional_branch;
   assign is_branch_or_jump = (i_branch_operation != riscv_pkg::NULL) ||
                              i_is_jump_and_link ||
                              i_is_jump_and_link_register;
+  assign is_conditional_branch = (i_branch_operation != riscv_pkg::NULL) &&
+                                 (i_branch_operation != riscv_pkg::JUMP);
 
   // Detect false prediction: BTB predicted taken, but instruction is not a branch/jump.
   // This can happen due to BTB aliasing (different instruction with same index/tag).
@@ -207,13 +214,30 @@ module branch_redirect_unit #(
   assign btb_false_prediction = i_btb_predicted_taken && !is_branch_or_jump;
 
   // Update BTB when:
-  // 1. Any branch/jump instruction resolves (normal case - learn actual outcome)
+  // 1. A conditional branch resolves (normal case - learn actual outcome)
   // 2. Non-branch was falsely predicted as taken (clear stale prediction)
-  assign o_btb_update = is_branch_or_jump || btb_false_prediction;
+  // 3. A JALR hit a stale BTB entry (clear it; JALR targets are intentionally
+  //    not learned by the BTB in this design)
+  //
+  // JAL/JALR instructions are intentionally excluded from BTB training.
+  // Returns are handled architecturally by the RAS, and direct-call
+  // prediction is not worth the extra PC/instruction alignment hazards around
+  // compressed upper-half calls in the shared front-end. Sequential fetch
+  // still reaches the direct-call target correctly; only the speculative BTB
+  // shortcut is disabled.
+  logic btb_jalr_prediction;
+  assign btb_jalr_prediction = i_btb_predicted_taken && i_is_jump_and_link_register;
+
+  assign o_btb_update = is_conditional_branch || btb_false_prediction || btb_jalr_prediction;
   assign o_btb_update_pc = i_program_counter;
   assign o_btb_update_target = i_actual_branch_target;
-  // For false predictions on non-branches, mark as not-taken to prevent repeated mispredictions
-  assign o_btb_update_taken = is_branch_or_jump ? i_actual_branch_taken : 1'b0;
+  // For false predictions and JALR scrubs, mark as not-taken to drive the BTB
+  // back toward "do not predict taken" for that PC.
+  assign o_btb_update_taken = is_conditional_branch ? i_actual_branch_taken : 1'b0;
+  // Compressed if link_address == PC + 2 (vs PC + 4 for 32-bit)
+  assign o_btb_update_compressed = (i_link_address == i_program_counter + 32'd2);
+  assign o_btb_update_requires_pc_reg_handoff = is_conditional_branch ||
+                                                i_is_jump_and_link_register;
 
   // ===========================================================================
   // RAS (Return Address Stack) Misprediction Detection
@@ -258,5 +282,7 @@ module branch_redirect_unit #(
   // This ensures every return "consumes" exactly one stack entry.
   // Pop after restore for returns that trigger misprediction (spanning or wrong prediction)
   assign o_ras_pop_after_restore = o_ras_misprediction && actual_is_return;
+  assign o_ras_push_after_restore = 1'b0;
+  assign o_ras_push_address_after_restore = '0;
 
 endmodule : branch_redirect_unit

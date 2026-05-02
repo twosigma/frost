@@ -215,8 +215,8 @@ fence_i();                                // Instruction fetch fence
 ```
 
 **Use cases:**
-- `fence()`: Ensure memory operations complete before subsequent accesses (NOP on Frost's in-order core)
-- `fence_i()`: Synchronize instruction stream after modifying code in memory (NOP on Frost - no I-cache)
+- `fence()`: Ensure memory operations complete before subsequent accesses
+- `fence_i()`: Synchronize instruction stream after modifying code in memory (no I-cache on Frost)
 
 ### CSR Access (`lib/include/csr.h`)
 
@@ -414,7 +414,7 @@ Defined in `common/link.ld`:
 |--------|--------------|-------|-------------------------------|
 | ROM    | `0x00000000` | 96 KB | Code and read-only data       |
 | RAM    | `0x00018000` | 32 KB | Variables, BSS, and stack     |
-| MMIO   | `0x40000000` | 40 B  | Memory-mapped I/O peripherals |
+| MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals |
 
 ### Peripheral Addresses
 
@@ -430,6 +430,7 @@ Defined in `common/link.ld`:
 | MTIMECMP_HI    | `0x4000001C` | Timer compare high 32 bits               |
 | MSIP           | `0x40000020` | Machine software interrupt pending       |
 | UART_RX_STATUS | `0x40000024` | UART RX status (bit 0 = data available)  |
+| UART_TX_STATUS | `0x40000028` | UART TX status (bit 0 = can accept byte) |
 
 **Notes:**
 - Simple timing uses Zicntr CSR counters (cycle, instret) via single-instruction reads. See `csr.h` and `timer.h`.

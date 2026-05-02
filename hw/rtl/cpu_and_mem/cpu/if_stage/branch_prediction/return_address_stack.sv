@@ -50,7 +50,7 @@ module return_address_stack #(
 ) (
     input logic i_clk,
     input logic i_rst,
-    input logic i_stall,
+    input logic i_stall_registered,
 
     // Instruction type detection (from ras_detector)
     input logic i_is_call,      // JAL/JALR with rd in {x1, x5} - PUSH
@@ -62,6 +62,9 @@ module return_address_stack #(
 
     // Prediction gating (same as BTB)
     input logic i_prediction_allowed,
+    // Write-side prediction gating with only registered stall state. This keeps
+    // the late backend stall cone off the distributed RAM write enable.
+    input logic i_prediction_allowed_for_write,
     // BTB-only prediction holdoff: UNUSED - kept for interface compatibility.
     // Previously used to allow RAS pop when BTB predicted, but this caused bugs
     // when trap/mret/branch_taken occurred during holdoff (see pop_allowed comment).
@@ -73,6 +76,8 @@ module return_address_stack #(
     input logic [RAS_PTR_BITS-1:0] i_restore_tos,
     input logic [RAS_PTR_BITS:0] i_restore_valid_count,
     input logic i_pop_after_restore,  // Pop after restoring (for returns that triggered restore)
+    input logic i_push_after_restore,  // Push after restoring (for calls that triggered restore)
+    input logic [riscv_pkg::XLEN-1:0] i_push_address_after_restore,
 
     // Prediction outputs
     output logic o_ras_valid,  // RAS has valid prediction for return
@@ -122,59 +127,50 @@ module return_address_stack #(
   //   2. Return (pop only) - predict and consume TOS
   //   3. Call (push only) - save link address
 
-  logic do_push, do_pop, do_pop_then_push;
+  logic do_push, do_pop, do_pop_then_push, do_pop_then_push_write;
+  logic capture_op_inputs;
+  logic do_restore_push;
 
-  // Register RAS operation inputs to break the EX->IF timing path into the RAM.
-  // Predictions remain combinational; only stack updates are pipelined by 1 cycle.
-  logic is_call_r;
-  logic is_return_r;
-  logic is_coroutine_r;
-  logic prediction_allowed_r;
-  logic [riscv_pkg::XLEN-1:0] link_address_r;
+  // Keep the stack write side independent of the live backend stall signal.
+  // During a registered stall, IF replays saved inputs; the stack consumes the
+  // replay after stall_registered drops, so calls are still pushed once without
+  // placing the dispatch/fullness cone on the RAS RAM write enable.
+  assign capture_op_inputs = !i_stall_registered;
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst || i_misprediction) begin
-      is_call_r <= 1'b0;
-      is_return_r <= 1'b0;
-      is_coroutine_r <= 1'b0;
-      prediction_allowed_r <= 1'b0;
-      link_address_r <= '0;
-    end else if (!i_stall) begin
-      is_call_r <= i_is_call;
-      is_return_r <= i_is_return;
-      is_coroutine_r <= i_is_coroutine;
-      prediction_allowed_r <= i_prediction_allowed;
-      link_address_r <= i_link_address;
-    end
-  end
-
-  // Pop is allowed only when prediction_allowed is true.
+  // Pop is allowed only when prediction is allowed in the current cycle.
   // NOTE: We previously included btb_only_prediction_holdoff here to allow RAS pop
   // when BTB predicted a return. However, this caused a bug: if trap/mret/branch_taken
   // occurs during btb_only_prediction_holdoff, the instruction is flushed before
   // reaching EX stage, so no recovery happens, but RAS already popped, corrupting state.
-  // The safe approach is to only pop when prediction_allowed is true (which includes
-  // !trap_taken && !mret_taken && !branch_taken gates). For btb_only_prediction_holdoff
-  // cases, the pop will happen during recovery in EX stage via ras_pop_after_restore.
+  // For btb_only_prediction_holdoff cases, the pop will happen during recovery
+  // in EX stage via ras_pop_after_restore.
   logic pop_allowed;
   logic pop_possible;
-  logic is_call_only;
-  assign pop_allowed = prediction_allowed_r;
+  logic pop_possible_for_write;
+  assign pop_allowed = i_prediction_allowed;
   assign pop_possible = pop_allowed && stack_not_empty;
-  assign is_call_only = is_call_r && !is_coroutine_r;
+  assign pop_possible_for_write = i_prediction_allowed_for_write && stack_not_empty;
 
   // Coroutine: pop then push (effectively replaces TOS) - needs pop_possible for pop
-  assign do_pop_then_push = is_coroutine_r && pop_possible;
+  assign do_pop_then_push = i_is_coroutine && pop_possible;
+  assign do_pop_then_push_write = i_is_coroutine && pop_possible_for_write;
 
   // Return: pop only (when not coroutine) - needs pop_possible for pop
-  assign do_pop = is_return_r && !is_coroutine_r && pop_possible;
+  assign do_pop = i_is_return && !i_is_coroutine && pop_possible;
 
-  // Call: push only - NOT gated by prediction_allowed (i_is_call includes instruction validity)
-  assign do_push = is_call_only;
+  // Push calls on the first cycle they are observed, including stall-entry.
+  // Replay after stall does not re-push because capture_op_inputs is false once
+  // stall_registered takes over.
+  assign do_push = i_is_call && !i_is_coroutine && capture_op_inputs;
+  assign do_restore_push = i_misprediction && i_push_after_restore;
 
-  assign ras_write_enable = !i_rst && !i_misprediction && !i_stall && (do_pop_then_push || do_push);
-  assign ras_write_address = do_pop_then_push ? tos : tos_plus_one;
-  assign ras_write_data = link_address_r;
+  assign ras_write_enable = !i_rst &&
+                            (do_restore_push ||
+                             (!i_misprediction &&
+                              (do_pop_then_push_write || do_push)));
+  assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
+                             (do_pop_then_push_write ? tos : tos_plus_one);
+  assign ras_write_data = do_restore_push ? i_push_address_after_restore : i_link_address;
 
   sdp_dist_ram #(
       .ADDR_WIDTH(RAS_PTR_BITS),
@@ -194,17 +190,19 @@ module return_address_stack #(
   // Provide predicted return address for returns and coroutines.
   // Valid when stack is not empty and prediction is allowed.
   //
-  // TIMING OPTIMIZATION: Use registered detection signals (is_return_r, is_coroutine_r)
-  // instead of combinational (i_is_return, i_is_coroutine) to break the critical path:
-  //   BRAM → is_compressed → ras_detector → o_ras_valid → sel_prediction → PC
-  //
-  // This adds 1 cycle latency to RAS prediction (returns are predicted 1 cycle later),
-  // but the performance impact is acceptable:
-  //   - RAS is speculative; correctness is guaranteed by EX stage verification
-  //   - 1-cycle latency per RAS prediction is still faster than no RAS
-  //   - Breaks the WNS path allowing the design to meet timing
-
-  assign o_ras_valid = (is_return_r || is_coroutine_r) && stack_not_empty && prediction_allowed_r;
+  // Return/coroutine predictions must stay aligned with the current IF
+  // instruction. Delaying the classification by a cycle makes the RAS
+  // predicted-taken metadata and recovery checkpoint attach to the following
+  // instruction instead of the return itself, which corrupts commit-time
+  // recovery on tightly-packed call/return thunks.
+  // TIMING OPTIMIZATION: Removed i_prediction_allowed from o_ras_valid.
+  // It was redundant: sel_ras_prediction = ras_prediction_allowed && ras_valid
+  // already gates on ras_prediction_allowed (which includes prediction_common).
+  // Removing it here makes o_ras_valid depend only on registered signals
+  // (is_return/is_coroutine from pipelined detector, stack_not_empty from
+  // registered valid_count), breaking the deep combinational path:
+  // prediction_common → ras_prediction_allowed → o_ras_valid → sel_ras_prediction
+  assign o_ras_valid = (i_is_return || i_is_coroutine) && stack_not_empty;
   assign o_ras_target = ras_read_data;
 
   // ===========================================================================
@@ -235,12 +233,19 @@ module return_address_stack #(
       if (i_pop_after_restore && i_restore_valid_count != '0) begin
         tos <= i_restore_tos - RAS_PTR_BITS'(1);
         valid_count <= i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
+      end else if (i_push_after_restore) begin
+        tos <= i_restore_tos + RAS_PTR_BITS'(1);
+        if (i_restore_valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
+          valid_count <= i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
+        end else begin
+          valid_count <= i_restore_valid_count;
+        end
       end else begin
         tos <= i_restore_tos;
         valid_count <= i_restore_valid_count;
       end
-    end else if (!i_stall) begin
-      if (do_pop_then_push) begin
+    end else begin
+      if (do_pop_then_push && !i_stall_registered) begin
         // Coroutine: pop then push - TOS stays same position
         // valid_count unchanged (pop + push = net zero change)
       end else if (do_push) begin
@@ -250,7 +255,7 @@ module return_address_stack #(
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
           valid_count <= valid_count + (RAS_PTR_BITS + 1)'(1);
         end
-      end else if (do_pop) begin
+      end else if (do_pop && !i_stall_registered) begin
         // Pop: decrement TOS and valid_count
         tos <= tos_minus_one;
         valid_count <= valid_count - (RAS_PTR_BITS + 1)'(1);

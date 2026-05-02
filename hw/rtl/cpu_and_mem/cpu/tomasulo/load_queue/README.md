@@ -1,152 +1,126 @@
 # Load Queue
 
-Circular buffer that tracks in-flight load instructions from dispatch through
-memory access to CDB broadcast. Entries are allocated in program order and
-freed when their result is accepted by the CDB arbiter (via `fu_cdb_adapter`).
+The LQ tracks every in-flight load from dispatch through memory access
+to CDB broadcast. It also owns the L0 data cache, the LR/SC
+reservation register, and the AMO read-modify-write path. Loads
+allocate in program order at dispatch and free when their result is
+broadcast on the CDB.
 
-## Architecture
+## What makes loads interesting
 
-```
-  Dispatch ──> [Alloc] ──> Tail
-                              |
-  MEM_RS Issue ──> [Addr Update] ──> CAM search by rob_tag
-                              |
-  [Issue Selection] ──> Priority scan head→tail
-      |           |
-   Phase A     Phase B
-   (CDB)       (Memory)
-      |           |
-      |        [SQ Disambig] ──> o_sq_check_* / i_sq_forward
-      |           |
-      |        [Mem Issue] ──> o_mem_read_*
-      |           |
-      |        [Mem Resp] ──> load_unit ──> data capture
-      |           |
-   [CDB Broadcast] ──> o_fu_complete ──> fu_cdb_adapter ──> CDB slot 3
-      |
-  [Free Entry] ──> Head advances
-```
+The hard part of an OOO load queue is figuring out *when* a load may
+issue. The LQ uses conservative disambiguation: a load can't issue
+to memory until every older store address is known. If a matching
+older store turns up, the LQ pulls the data from the SQ via
+store-to-load forwarding and skips memory entirely. Otherwise it
+checks the L0 cache; on a hit, the result is available the same
+cycle, and on a miss it issues to main memory.
 
-## Storage Strategy
+MMIO loads are an additional case. Their reads can have side effects
+(clear-on-read registers, status pulses), so they can't be issued
+speculatively. The LQ pins MMIO loads to the ROB head — they only
+fire when their entry is the oldest in flight.
 
-**Hybrid FF + LUTRAM.** Control and CAM-scanned fields remain in FFs; the
-64-bit `data` field is stored in split lo/hi `mwp_dist_ram` instances (32 bits
-each, 2 write ports).
+FP64 loads (FLD) on the 32-bit memory bus need two sequential
+accesses, so the entry has a phase bit and the data field is split
+lo/hi in the LUTRAM so each phase writes only its half.
 
-- **FFs**: `valid`, `rob_tag`, `is_fp`, `addr_valid`, `address`, `size`,
-  `sign_ext`, `is_mmio`, `fp64_phase`, `issued`, `data_valid`, `forwarded`.
-  These require parallel CAM-style tag search, per-entry invalidation on flush,
-  and parallel priority scan for issue selection.
-- **LUTRAM** (`mwp_dist_ram`, 2 write ports each, lo/hi split):
-  - Port 0: cache-hit fast path, SQ forwarding, or memory response (mutually
-    exclusive sources).
-  - Port 1: AMO completion (can overlap with port 0).
-  - Split into lo (bits 31:0) and hi (bits 63:32) for FLD two-phase partial
-    writes (phase 0 writes lo only, phase 1 writes hi only).
+## L0 cache
 
-## Entry Structure
+The L0 is a 128-entry direct-mapped write-through cache, preserved
+from the in-order core but moved inside the LQ. It's a hit-path
+optimization: loads check it in parallel with SQ disambiguation, and
+a hit returns the result the same cycle. Stores invalidate matching
+lines on commit (the SQ pulses an invalidate back to the LQ), which
+keeps the cache coherent without needing a write-through path of its
+own.
 
-| Field       | Width   | Description                              |
-|-------------|---------|------------------------------------------|
-| valid       | 1 bit   | Entry allocated                          |
-| rob_tag     | 5 bits  | Associated ROB entry                     |
-| is_fp       | 1 bit   | FP load (FLW/FLD)                        |
-| addr_valid  | 1 bit   | Address has been calculated              |
-| address     | 32 bits | Load address                             |
-| size        | 2 bits  | 00=B, 01=H, 10=W, 11=D (for FLD)         |
-| sign_ext    | 1 bit   | Sign extend result (INT only)            |
-| is_mmio     | 1 bit   | MMIO address (non-speculative only)      |
-| fp64_phase  | 1 bit   | FLD phase: 0=low word, 1=high word       |
-| issued      | 1 bit   | Sent to memory                           |
-| data_valid  | 1 bit   | Data received from memory/forward        |
-| data        | 64 bits | Loaded data (FLEN for FLD) — in LUTRAM   |
-| forwarded   | 1 bit   | Data from store queue forward            |
-| **Total**   | **~116 bits** |                                    |
+Two things the cache intentionally *doesn't* do:
 
-## Ports
+- **No flush on branch mispredict.** The L0 holds only architectural
+  state (committed stores invalidate, loads fill with memory's view),
+  so there's nothing speculative to throw away. Leaving cached lines
+  hot across mispredict recovery roughly doubles the steady-state hit
+  rate on CoreMark (36.5% → 72.4%).
+- **No same-cycle fill → lookup bypass.** Forwarding the in-flight
+  fill into a same-cycle lookup dragged the back-end flush cone into
+  `data_memory`'s write-enable path. A same-cycle hit on the just-filled
+  line becomes a one-cycle-delayed hit instead; the LUTRAM is current
+  next cycle regardless.
 
-| Port | Dir | Type | Description |
-|------|-----|------|-------------|
-| `i_clk` | in | logic | Clock |
-| `i_rst_n` | in | logic | Active-low reset |
-| `i_alloc` | in | `lq_alloc_req_t` | Allocation from dispatch |
-| `o_full` | out | logic | LQ is full |
-| `i_addr_update` | in | `lq_addr_update_t` | Address from MEM_RS issue |
-| `o_sq_check_valid` | out | logic | SQ disambiguation request |
-| `o_sq_check_addr` | out | XLEN | Address for SQ check |
-| `o_sq_check_rob_tag` | out | 5 bits | ROB tag for SQ check |
-| `o_sq_check_size` | out | `mem_size_e` | Size for SQ check |
-| `i_sq_all_older_addrs_known` | in | logic | SQ has all older addresses |
-| `i_sq_forward` | in | `sq_forward_result_t` | SQ forwarding result |
-| `o_mem_read_en` | out | logic | Memory read request |
-| `o_mem_read_addr` | out | XLEN | Memory read address |
-| `o_mem_read_size` | out | `mem_size_e` | Memory read size |
-| `i_mem_read_data` | in | XLEN | Memory read data |
-| `i_mem_read_valid` | in | logic | Memory read response valid |
-| `o_fu_complete` | out | `fu_complete_t` | CDB result to adapter |
-| `i_adapter_result_pending` | in | logic | Back-pressure from adapter |
-| `i_rob_head_tag` | in | 5 bits | ROB head for MMIO ordering |
-| `i_flush_en` | in | logic | Partial flush enable |
-| `i_flush_tag` | in | 5 bits | Partial flush tag boundary |
-| `i_flush_all` | in | logic | Full pipeline flush |
-| `o_empty` | out | logic | LQ is empty |
-| `o_count` | out | 4 bits | Number of valid entries |
+## Issue and completion bypasses
 
-## Key Behaviors
+Two bypass paths shave a cycle each off the load critical latency:
 
-1. **Allocation**: On `i_alloc.valid && !o_full`, write entry at tail, advance
-   tail pointer.
+- **Same-cycle `addr_valid` bypass.** MEM_RS emits a pre-issue
+  look-ahead one cycle before the real issue (`o_pre_issue_rob_tag` +
+  `o_pre_issue_needs_lq`); the LQ pre-registers the CAM match against
+  that tag so the entry appears addr-valid the same cycle MEM_RS issues
+  (`entry_addr_valid_now`). Removes the flop between RS issue and SQ
+  disambiguation.
+- **`cdb_stage` completion bypass.** On a memory response or L0
+  fast-path hit, the LQ writes `cdb_stage` directly from the response /
+  cache data path instead of routing through `lq_data_valid` + a
+  priority encoder. The entry frees and the CDB broadcast arms the
+  same cycle. AMO and FLD stay on the standard path.
 
-2. **Address Update**: CAM search all entries for matching `rob_tag` with
-   `!addr_valid`. Write address and `is_mmio` flag.
+## Back-to-back issue
 
-3. **Issue Selection**: Two-phase priority scan from head to tail:
-   - Phase A: Oldest entry with `data_valid` (ready for CDB broadcast)
-   - Phase B: Oldest entry with `addr_valid && !issued && !data_valid`
-     (ready for SQ disambiguation and memory)
+In steady state the LQ issues one load per cycle: `launch_mem_issue`
+is gated only by `i_mem_bus_busy` (not the previous launch's
+`mem_outstanding`). Making this work without dropping results required
+five coupled pieces — the priority encoder masks out the entries
+already in-flight, SQ-check capture fires the same cycle the previous
+candidate launches, and `lq_data` port 0 is reserved for the memory
+response while port 1 handles cache hits / SQ forwards / AMO writes
+(they can't collide on the same port anymore).
 
-4. **Store Disambiguation**: Phase B candidate drives `o_sq_check_*` ports.
-   Response determines action: forward data, issue to memory, or stall.
+## Issued-entry snapshot
 
-5. **Memory Issue**: Single outstanding read. `issued_idx` register tracks
-   which entry is awaiting response. FLD uses two phases (addr, addr+4).
+The response handler reads from a flat snapshot of the issued load's
+attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / fp64_phase /
+rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
+`issued_idx`. Removing the `lq_*[issued_idx]` read path takes the LQ
+entry array out of the `data_memory` address cone.
 
-6. **Memory Response**: Load unit extracts bytes/halfwords with sign extension.
-   FLD phase 0 stores low word and resets `issued` for phase 1 re-issue.
+## Atomics
 
-7. **CDB Broadcast**: INT loads zero-extend XLEN to FLEN. FLW NaN-boxes
-   (`{32'hFFFF_FFFF, data[31:0]}`). FLD uses raw 64-bit data.
+The LR reservation register lives in the LQ. LR sets it on
+completion; SC clears it; any SQ write to the reserved address
+clears it via a snoop. SC succeeds if the reservation is still valid
+when SC reaches the ROB head. AMO uses a separate memory write port
+on the LQ for the write half of the read-modify-write — the AMO
+fires from the ROB head with the SQ committed-empty so nothing else
+can interleave.
 
-8. **Entry Freeing**: When CDB broadcasts, the entry is freed. Head pointer
-   advances past contiguous freed entries.
+## Storage strategy
 
-9. **MMIO**: MMIO entries only issue when `rob_tag == i_rob_head_tag`.
+Hybrid FF + LUTRAM. Control fields and the address need parallel
+CAM-style scan (for tag match on address update, oldest-first issue
+selection, partial flush invalidation), so they stay in flip-flops.
+The 64-bit data payload lives in distributed RAM split lo/hi (to
+support FLD's two-phase fills), each half in a 2-write-port LUTRAM:
+port 0 is reserved for memory response, port 1 handles cache hits,
+SQ forwards, and AMO write-completion. The split lets a memory
+response for the previously-issued load and a cache hit on the
+newly-captured load land in the same cycle without colliding.
 
-10. **Flush**: `i_flush_all` resets all state. `i_flush_en` invalidates
-    entries younger than `i_flush_tag` (age comparison relative to ROB head).
+## Performance counters
+
+The LQ emits pulses for the wrapper's performance counters so the
+head-load wait bucket — historically a large fraction of CoreMark
+idle time — can be attributed. L0 hits and fills are counted
+directly; the head-load wait is split into five sub-buckets
+(`addr_pending`, `sq_disambig`, `bus_blocked`, `cdb_wait`, `post_lq`)
+and the `bus_blocked` bucket is further split into five mutually
+exclusive causes (`bb_issued`, `bb_bus_busy`, `bb_amo`, `bb_sq_wait`,
+`bb_staging`). The wrapper parent counter `head_wait_mem_load` is
+still live alongside the decomposition.
 
 ## Verification
 
-- **Formal**: `ifdef FORMAL` block with BMC (depth 12) and cover (depth 20).
-  Assertions check pointer/count consistency, issue prerequisites, MMIO
-  ordering, CDB back-pressure, and flush behavior.
-- **Cocotb**: 38 unit tests covering reset, allocation, address update,
-  LW/LB/LBU/LH/LHU, SQ forwarding, MMIO, FLD two-phase, FLW NaN-boxing,
-  flush, ordering, back-pressure, constrained random, LR/SC reservation,
-  and AMO read-modify-write operations.
-
-## Dependencies
-
-| Module | Purpose |
-|--------|---------|
-| `riscv_pkg` | Type definitions |
-| `sdp_dist_ram` | Simple dual-port distributed RAM (used by `lq_l0_cache`) |
-| `mwp_dist_ram` | Multi-write-port distributed RAM for lq_data lo/hi LUTRAM |
-| `load_unit` | Byte/halfword extraction and sign extension |
-| `lq_l0_cache` | L0 data cache for OoO load hits |
-
-## Files
-
-- `load_queue.sv` - Module implementation
-- `load_queue.f` - Cocotb compilation file list
-- `README.md` - This file
+Cocotb tests cover allocation, address update, every load size,
+SQ forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing, partial
+and full flush, AMO read-modify-write, LR/SC reservation, and
+constrained-random stress. Inline formal properties prove pointer
+invariants, issue prerequisites, MMIO ordering, and flush behavior.

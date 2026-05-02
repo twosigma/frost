@@ -55,6 +55,10 @@ module fp_mul_shim (
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
 
+  function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
+    unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
+  endfunction
+
   // ===========================================================================
   // Age comparison for partial flush
   // ===========================================================================
@@ -134,9 +138,9 @@ module fp_mul_shim (
   end
 
   // Operand extraction
-  wire [31:0] src1_s = i_rs_issue.src1_value[31:0];
-  wire [31:0] src2_s = i_rs_issue.src2_value[31:0];
-  wire [31:0] src3_s = i_rs_issue.src3_value[31:0];
+  wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
+  wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
+  wire [31:0] src3_s = unbox32(i_rs_issue.src3_value);
   wire [63:0] src1_d = i_rs_issue.src1_value;
   wire [63:0] src2_d = i_rs_issue.src2_value;
   wire [63:0] src3_d = i_rs_issue.src3_value;
@@ -159,7 +163,7 @@ module fp_mul_shim (
       i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       in_flight <= 1'b0;
       flushed   <= 1'b0;
@@ -178,12 +182,8 @@ module fp_mul_shim (
   logic [TagW-1:0] tag_reg;
   logic use_mult_reg, op_double_reg;
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
-    if (!i_rst_n) begin
-      tag_reg       <= '0;
-      use_mult_reg  <= 1'b0;
-      op_double_reg <= 1'b0;
-    end else if (fire) begin
+  always_ff @(posedge i_clk) begin
+    if (fire) begin
       tag_reg       <= i_rs_issue.rob_tag;
       use_mult_reg  <= use_mult;
       op_double_reg <= op_is_double;

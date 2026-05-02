@@ -35,8 +35,9 @@ MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # sq_alloc_req_t packed layout (MSB-first in SV):
-# valid(1) | rob_tag(5) | is_fp(1) | size(2) | is_sc(1) = 10 bits
-SQ_ALLOC_WIDTH = 10
+# valid(1) | rob_tag(5) | is_fp(1) | size(2) | is_sc(1) |
+# addr_valid(1) | address(32) | is_mmio(1) = 44 bits
+SQ_ALLOC_WIDTH = 44
 
 # sq_addr_update_t packed layout:
 # is_mmio(1) | address(32) | rob_tag(5) | valid(1) = 39 bits
@@ -57,10 +58,19 @@ def pack_sq_alloc(
     is_fp: bool = False,
     size: int = 2,
     is_sc: bool = False,
+    addr_valid: bool = False,
+    address: int = 0,
+    is_mmio: bool = False,
 ) -> int:
     """Pack sq_alloc_req_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
+    val |= (1 if is_mmio else 0) << bit
+    bit += 1
+    val |= (address & MASK32) << bit
+    bit += XLEN
+    val |= (1 if addr_valid else 0) << bit
+    bit += 1
     val |= (1 if is_sc else 0) << bit
     bit += 1
     val |= (size & 0x3) << bit
@@ -151,6 +161,7 @@ class SQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
+        self.dut.i_early_addr_update.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_data_update.value = 0
         self.dut.i_commit_valid.value = 0
@@ -177,6 +188,9 @@ class SQInterface:
         is_fp: bool = False,
         size: int = 2,
         is_sc: bool = False,
+        addr_valid: bool = False,
+        address: int = 0,
+        is_mmio: bool = False,
     ) -> None:
         """Drive allocation request."""
         self.dut.i_alloc.value = pack_sq_alloc(
@@ -185,6 +199,9 @@ class SQInterface:
             is_fp=is_fp,
             size=size,
             is_sc=is_sc,
+            addr_valid=addr_valid,
+            address=address,
+            is_mmio=is_mmio,
         )
 
     def clear_alloc(self) -> None:

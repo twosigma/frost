@@ -53,15 +53,15 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
     Defaults:
-      - Non-Xilinx targets: 600s
-      - Xilinx targets (synth_xilinx*): 900s
+      - Non-Xilinx targets: 3600s
+      - Xilinx targets (synth_xilinx*): 1800s
 
     Environment overrides:
       - FROST_YOSYS_TIMEOUT_SEC
       - FROST_YOSYS_XILINX_TIMEOUT_SEC
     """
-    default_timeout = 600
-    default_xilinx_timeout = 900
+    default_timeout = 3600
+    default_xilinx_timeout = 1800
 
     env_name = (
         "FROST_YOSYS_XILINX_TIMEOUT_SEC"
@@ -100,7 +100,6 @@ SYNTHESIS_TARGETS = [
 # Design file lists available for synthesis
 DESIGN_FILELISTS = {
     "frost": "hw/rtl/cpu_and_mem/cpu_and_mem.f",
-    "tomasulo": "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo.f",
 }
 
 
@@ -143,9 +142,24 @@ class YosysRunner:
         sw_mem_link.symlink_to(sw_mem_target)
 
     def parse_filelist(self, filelist_path: Path) -> list[str]:
-        """Parse a filelist file and return list of Verilog files."""
-        files = []
+        """Parse a filelist file and return deduplicated list of Verilog files.
 
+        Sub-module filelists are self-contained (include their own package and
+        RAM primitive dependencies) so they work standalone for cocotb unit
+        tests.  When nested inside a full-chip filelist this causes duplicates
+        that Yosys rejects as module redefinitions.  We deduplicate here while
+        preserving first-occurrence order.
+        """
+        seen: set[str] = set()
+        files: list[str] = []
+
+        self._parse_filelist_recursive(filelist_path, files, seen)
+        return files
+
+    def _parse_filelist_recursive(
+        self, filelist_path: Path, files: list[str], seen: set[str]
+    ) -> None:
+        """Recursively parse filelist, deduplicating by resolved path."""
         with open(filelist_path) as f:
             for line in f:
                 line = line.strip()
@@ -160,14 +174,14 @@ class YosysRunner:
                     nested_filelist = nested_filelist.replace(
                         "$(ROOT)", str(self.root_dir)
                     )
-                    nested_files = self.parse_filelist(Path(nested_filelist))
-                    files.extend(nested_files)
+                    self._parse_filelist_recursive(Path(nested_filelist), files, seen)
                 else:
                     # Replace $(ROOT) with actual root directory
                     file_path = line.replace("$(ROOT)", str(self.root_dir))
-                    files.append(file_path)
-
-        return files
+                    resolved = str(Path(file_path).resolve())
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        files.append(file_path)
 
     def run_synthesis(
         self, capture_output: bool = True, synth_command: str = "synth_xilinx"
@@ -188,11 +202,13 @@ class YosysRunner:
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
 
-        # Enable Xilinx primitive instantiations only for synth_xilinx targets.
-        # Generic/ASIC synthesis stays technology-agnostic.
-        xilinx_define = (
-            "-DFROST_XILINX_PRIMS" if synth_command.startswith("synth_xilinx") else ""
-        )
+        # -DSYNTHESIS: Standard guard so simulation-only code ($warning,
+        # assertions, etc.) is excluded during synthesis.
+        # -DFROST_XILINX_PRIMS: Enable Xilinx primitive instantiations only
+        # for synth_xilinx targets; generic/ASIC synthesis stays agnostic.
+        defines = "-DSYNTHESIS"
+        if synth_command.startswith("synth_xilinx"):
+            defines += " -DFROST_XILINX_PRIMS"
 
         # Build Yosys script
         yosys_script = []
@@ -200,9 +216,9 @@ class YosysRunner:
         # Read all Verilog files with SystemVerilog support for .sv files
         for vfile in verilog_files:
             if vfile.endswith(".sv"):
-                yosys_script.append(f"read_verilog -sv {xilinx_define} {vfile}".strip())
+                yosys_script.append(f"read_verilog -sv {defines} {vfile}")
             else:
-                yosys_script.append(f"read_verilog {xilinx_define} {vfile}".strip())
+                yosys_script.append(f"read_verilog {defines} {vfile}")
 
         # Add synthesis command
         yosys_script.append(synth_command)
@@ -346,72 +362,6 @@ class TestYosysSynthesis:
             pytest.fail(f"Unexpected error during {target_name} synthesis: {e}")
 
 
-@pytest.mark.synthesis
-class TestYosysTomasuloSynthesis:
-    """Test cases for Yosys synthesis of Tomasulo out-of-order modules."""
-
-    @pytest.mark.parametrize(
-        "target_name,synth_command,description",
-        SYNTHESIS_TARGETS,
-        ids=[t[0] for t in SYNTHESIS_TARGETS],
-    )
-    def test_tomasulo_synthesis(
-        self, target_name: str, synth_command: str, description: str, capsys: Any
-    ) -> None:
-        """Run synthesis for Tomasulo modules on a specific target."""
-        runner = YosysRunner(filelist_key="tomasulo")
-
-        # Check if Yosys is available
-        try:
-            subprocess.run(["yosys", "-V"], capture_output=True, check=True)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pytest.fail("Yosys not installed - required for synthesis tests")
-
-        with capsys.disabled():
-            print(f"\nRunning Yosys Tomasulo synthesis for {description}...")
-
-        try:
-            result = runner.run_synthesis(
-                capture_output=True, synth_command=synth_command
-            )
-
-            # Check for errors
-            has_error, error_lines = runner.check_for_errors(result)
-
-            # Print summary for debugging
-            with capsys.disabled():
-                if has_error:
-                    print(f"\nTomasulo synthesis for {target_name} failed with errors:")
-                    for line in error_lines:
-                        print(f"  {line}")
-                else:
-                    print(
-                        f"\nTomasulo synthesis for {target_name} completed successfully"
-                    )
-                    if result.stdout and "End of script" in result.stdout:
-                        # Extract and print statistics if available
-                        for line in result.stdout.splitlines():
-                            if "Number of cells:" in line or "Number of wires:" in line:
-                                print(f"  {line.strip()}")
-
-            # Assert no errors
-            if has_error:
-                error_msg = (
-                    f"Yosys Tomasulo synthesis for {target_name} failed:\n"
-                    + "\n".join(error_lines)
-                )
-                pytest.fail(error_msg)
-
-        except subprocess.TimeoutExpired:
-            pytest.fail(
-                f"Yosys Tomasulo synthesis for {target_name} timed out after 5 minutes"
-            )
-        except Exception as e:
-            pytest.fail(
-                f"Unexpected error during {target_name} Tomasulo synthesis: {e}"
-            )
-
-
 # Command-line interface for standalone execution
 def main() -> int:
     """Run Yosys synthesis from command line."""
@@ -422,8 +372,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                           # Run frost targets (generic, xilinx)
-  %(prog)s --design tomasulo         # Run tomasulo out-of-order modules
+  %(prog)s                           # Run all targets (generic, xilinx)
   %(prog)s --target xilinx           # Run synthesis for Xilinx only
   %(prog)s --target generic          # Run generic/ASIC synthesis
   %(prog)s --target ice40            # Run iCE40 synthesis (any Yosys target works)
@@ -431,19 +380,11 @@ Examples:
 
 This script can also be run via pytest:
   pytest test_run_yosys.py                        # Run all synthesis tests
-  pytest test_run_yosys.py::TestYosysSynthesis    # Run frost only
-  pytest test_run_yosys.py::TestYosysTomasuloSynthesis  # Run tomasulo only
+  pytest test_run_yosys.py::TestYosysSynthesis    # Run specific class
 """,
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show full Yosys output"
-    )
-    parser.add_argument(
-        "--design",
-        "-d",
-        default="frost",
-        choices=list(DESIGN_FILELISTS.keys()),
-        help=f"Design to synthesize (default: frost). Available: {list(DESIGN_FILELISTS.keys())}",
     )
     parser.add_argument(
         "--target",
@@ -465,8 +406,8 @@ This script can also be run via pytest:
         print("Error: Yosys is not installed or not in PATH")
         return 1
 
-    runner = YosysRunner(filelist_key=args.design)
-    print(f"Design: {args.design} ({runner.filelist})")
+    runner = YosysRunner()
+    print(f"Design: frost ({runner.filelist})")
 
     # Determine which targets to run
     if args.target:

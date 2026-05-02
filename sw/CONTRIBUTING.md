@@ -237,13 +237,15 @@ The `common.mk` provides these overridable options (set before `include`):
 
 ## ISA Support
 
-The toolchain is configured for RV32IMACB with these extensions:
+The toolchain is configured for RV32GCB plus these extensions:
 
 | Extension | Description |
 |-----------|-------------|
 | I | Base integer instructions |
 | M | Multiply/divide |
 | A | Atomics (LR.W, SC.W, AMO) |
+| F | Single-precision floating point |
+| D | Double-precision floating point |
 | C | Compressed (16-bit encoding) |
 | B | Bit manipulation (Zba + Zbb + Zbs) |
 | Zicsr | CSR instructions |
@@ -282,7 +284,7 @@ pytest test_run_cocotb.py::TestRealPrograms::test_frost_isa_test -s
 When possible, test on actual FPGA hardware:
 
 ```bash
-# Program bitstream (once) - specify your board: x3, genesys2, or nexys_a7
+# Program bitstream (once) - specify your board: x3 or genesys2
 ./fpga/program_bitstream/program_bitstream.py x3
 
 # Load software (fast reload)

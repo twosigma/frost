@@ -1,5 +1,5 @@
 # ALU (Arithmetic Logic Unit) file list
-# RV32IMAB ALU with base integer, M, A, and B extensions
+# Integer ALU with base integer, M, B, Zicond, and Zbkb operations
 # Note: B = Zba + Zbb + Zbs (full bit manipulation extension)
 
 # 4-cycle pipelined multiplier (DSP48E2-tiled 27x18 partial products)

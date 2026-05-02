@@ -54,15 +54,18 @@ module csr_file #(
     input logic i_rst,
 
     // CSR access interface (directly from ID/EX stage)
-    input  logic            i_csr_read_enable,   // CSR instruction in EX stage
-    input  logic [    11:0] i_csr_address,       // CSR address
-    input  logic [     2:0] i_csr_op,            // CSR operation (funct3)
-    input  logic [XLEN-1:0] i_csr_write_data,    // rs1 value or zero-extended immediate
-    input  logic            i_csr_write_enable,  // Actually perform write (not stalled/flushed)
-    output logic [XLEN-1:0] o_csr_read_data,     // CSR read value
+    input  logic            i_csr_read_enable,    // CSR instruction in EX stage
+    input  logic [    11:0] i_csr_address,        // CSR address
+    input  logic [     2:0] i_csr_op,             // CSR operation (funct3)
+    input  logic [XLEN-1:0] i_csr_write_data,     // rs1 value or zero-extended immediate
+    input  logic            i_csr_write_enable,   // Actually perform write (not stalled/flushed)
+    output logic [XLEN-1:0] o_csr_read_data,      // CSR read value (registered, 1-cycle latency)
+    output logic [XLEN-1:0] o_csr_read_data_comb, // CSR read value (combinational, same cycle)
 
-    // Instruction retire signal (active when instruction commits)
-    input logic i_instruction_retired,
+    // Instruction retire count: 0, 1, or 2 per cycle.  For widen-commit
+    // the OOO core can retire two entries in a single cycle; the instret
+    // counter must increment by the retire count.
+    input logic [1:0] i_instruction_retired_count,
 
     // Interrupt pending inputs (directly from peripherals)
     input riscv_pkg::interrupt_t i_interrupts,
@@ -85,7 +88,7 @@ module csr_file #(
     output logic [XLEN-1:0] o_mtvec,
     output logic [XLEN-1:0] o_mepc,
 
-    // Direct output of mstatus MIE bit to avoid Icarus concatenation issues
+    // Direct output of mstatus MIE bit for timing and simpler consumers.
     output logic o_mstatus_mie_direct,
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
@@ -104,7 +107,13 @@ module csr_file #(
     input logic                 i_fp_flags_ma_valid, // Valid when FP instruction in MA stage
 
     // F extension: Rounding mode output for FPU
-    output logic [2:0] o_frm
+    output logic [2:0] o_frm,
+
+    // Tomasulo profiling counters
+    output logic [ 7:0] o_perf_counter_select,
+    output logic        o_perf_snapshot_capture,
+    input  logic [63:0] i_perf_counter_data,
+    input  logic [31:0] i_perf_counter_count
 );
 
   // ==========================================================================
@@ -127,8 +136,8 @@ module csr_file #(
   assign o_frm = frm;
 
   // Machine-mode CSRs
-  // mstatus: store MIE and MPIE as separate registers to work around Icarus Verilog issues
-  // Icarus has problems with bit manipulation in always_ff blocks, so we use separate registers
+  // mstatus: store MIE and MPIE as separate registers so hot-path bit updates
+  // do not require read/modify/write of the full CSR word.
   logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
   logic [XLEN-1:0] mstatus;  // Constructed from mie and mpie
@@ -154,6 +163,7 @@ module csr_file #(
   logic [XLEN-1:0] mepc;  // Exception PC
   logic [XLEN-1:0] mcause;  // Trap cause
   logic [XLEN-1:0] mtval;  // Trap value
+  logic [XLEN-1:0] perf_counter_select;
 
   // mip is read-only and directly reflects interrupt inputs
   logic [XLEN-1:0] mip;
@@ -170,7 +180,7 @@ module csr_file #(
   assign o_mtvec = mtvec;
   assign o_mepc = mepc;
 
-  // Direct output of mstatus_mie register - bypasses concatenation for Icarus compatibility
+  // Direct output of mstatus_mie register bypasses full-word CSR concatenation.
   assign o_mstatus_mie_direct = mstatus_mie;
 
   // ==========================================================================
@@ -196,6 +206,7 @@ module csr_file #(
       riscv_pkg::CsrMepc:     csr_current_value = mepc;
       riscv_pkg::CsrMcause:   csr_current_value = mcause;
       riscv_pkg::CsrMtval:    csr_current_value = mtval;
+      riscv_pkg::CsrMperfSel: csr_current_value = perf_counter_select;
       default:                csr_current_value = '0;
     endcase
   end
@@ -230,8 +241,8 @@ module csr_file #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       instret_counter <= 64'd0;
-    end else if (i_instruction_retired) begin
-      instret_counter <= instret_counter + 64'd1;
+    end else begin
+      instret_counter <= instret_counter + 64'(i_instruction_retired_count);
     end
   end
 
@@ -241,29 +252,28 @@ module csr_file #(
   // fflags is sticky: new exception flags are ORed with existing flags.
   // CSR writes can clear flags explicitly.
   //
-  // Pipeline hazard: When fsflags/csrrw writes to fflags (in EX stage), the
-  // FP instruction whose flags were forwarded may still be in MA and advance
-  // to WB on the next cycle. Without suppression, its WB accumulation would
-  // re-set the flags that the CSR write just cleared. The fflags_csr_wrote
-  // flag suppresses WB accumulation for one cycle after a CSR write to fflags.
+  // Pipeline hazard: When fsflags/csrrw writes to fflags and its read used
+  // forwarded FP flags, that same FP instruction may still advance into the
+  // WB path on the next cycle. Suppress only that forwarded replay; OOO commit
+  // may retire a distinct younger FP instruction in the following cycle.
 
-  logic fflags_csr_wrote;
+  logic fflags_suppress_forwarded_wb;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      fflags_csr_wrote <= 1'b0;
+      fflags_suppress_forwarded_wb <= 1'b0;
     end else begin
-      fflags_csr_wrote <= i_csr_write_enable && i_csr_read_enable &&
-                          (i_csr_address == riscv_pkg::CsrFflags ||
-                           i_csr_address == riscv_pkg::CsrFcsr);
+      fflags_suppress_forwarded_wb <= i_csr_write_enable && i_csr_read_enable &&
+                                      (i_csr_address == riscv_pkg::CsrFflags ||
+                                       i_csr_address == riscv_pkg::CsrFcsr) &&
+                                      (i_fp_flags_ma_valid || i_fp_flags_wb_valid);
     end
   end
 
   // Effective FP flags valid: suppress accumulation for one cycle after CSR
-  // write to fflags/fcsr. The flags were already forwarded to the CSR read
-  // via the MA/WB forwarding paths, so re-accumulating would be a double-count.
+  // write to fflags/fcsr only if the CSR read actually forwarded pending flags.
   logic fp_flags_valid_eff;
-  assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_csr_wrote;
+  assign fp_flags_valid_eff = i_fp_flags_valid && ~fflags_suppress_forwarded_wb;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -300,9 +310,9 @@ module csr_file #(
   // ==========================================================================
 
   // Compute next-state values for mstatus/mie bits in a combinational block.
-  // This works around Icarus Verilog issues with conditional assignments in always_ff.
+  // Keep the next-state logic explicit and easy for synthesis/formal tools.
   // The always block below just registers these values unconditionally.
-  // Note: Using always @(*) instead of always_comb for Icarus compatibility.
+  // Note: old-style sensitivity keeps this block accepted by all supported tools.
 
   always_comb begin
     // Default: keep current values
@@ -332,8 +342,8 @@ module csr_file #(
     end
   end
 
-  // Simple flip-flops for mstatus/mie bits - using old-style always for Icarus compatibility
-  // Note: Using always @(posedge) instead of always_ff as a workaround for Icarus issues
+  // Simple flip-flops for mstatus/mie bits.
+  // Note: old-style always is used here because this block predates the OOO refactor.
   always @(posedge i_clk) begin
     if (i_rst) begin
       mstatus_mie <= 1'b0;
@@ -356,11 +366,12 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mtvec    <= 32'h0000_0000;
-      mscratch <= 32'h0000_0000;
-      mepc     <= 32'h0000_0000;
-      mcause   <= 32'h0000_0000;
-      mtval    <= 32'h0000_0000;
+      mtvec               <= 32'h0000_0000;
+      mscratch            <= 32'h0000_0000;
+      mepc                <= 32'h0000_0000;
+      mcause              <= 32'h0000_0000;
+      mtval               <= 32'h0000_0000;
+      perf_counter_select <= '0;
     end else if (i_trap_taken) begin
       // Trap entry: save state
       mepc   <= i_trap_pc;
@@ -373,6 +384,7 @@ module csr_file #(
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
         riscv_pkg::CsrMtval: mtval <= csr_new_value;
+        riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
         default: ;
       endcase
     end
@@ -442,6 +454,11 @@ module csr_file #(
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
         riscv_pkg::CsrMtval: csr_read_data_comb = mtval;
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
+        riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
+        riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
+        riscv_pkg::CsrMperfData: csr_read_data_comb = i_perf_counter_data[31:0];
+        riscv_pkg::CsrMperfDataH: csr_read_data_comb = i_perf_counter_data[63:32];
+        riscv_pkg::CsrMperfCount: csr_read_data_comb = i_perf_counter_count;
         // Machine information registers (read-only)
         riscv_pkg::CsrMhartid:
         csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
@@ -454,14 +471,15 @@ module csr_file #(
   logic [XLEN-1:0] csr_read_data_reg;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      csr_read_data_reg <= '0;
-    end else begin
-      csr_read_data_reg <= csr_read_data_comb;
-    end
+    csr_read_data_reg <= csr_read_data_comb;
   end
 
   assign o_csr_read_data = csr_read_data_reg;
+  assign o_csr_read_data_comb = csr_read_data_comb;
+  assign o_perf_counter_select = perf_counter_select[7:0];
+  assign o_perf_snapshot_capture = i_csr_write_enable && i_csr_read_enable &&
+                                   (i_csr_address == riscv_pkg::CsrMperfCtl) &&
+                                   i_csr_write_data[0];
 
   // ===========================================================================
   // Formal Verification Properties
@@ -507,15 +525,9 @@ module csr_file #(
       // Cycle counter increments every cycle (not in reset).
       p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
 
-      // Instret increments on retire.
-      if ($past(i_instruction_retired)) begin
-        p_instret_increments : assert (instret_counter == $past(instret_counter) + 64'd1);
-      end
-
-      // Instret stable when no retire and no reset.
-      if ($past(!i_instruction_retired)) begin
-        p_instret_stable : assert (instret_counter == $past(instret_counter));
-      end
+      // Instret increments by the retire count (0, 1, or 2 per cycle).
+      p_instret_increments :
+      assert (instret_counter == $past(instret_counter) + 64'($past(i_instruction_retired_count)));
 
       // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.

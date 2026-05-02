@@ -72,8 +72,7 @@ module fpu_mult_unit #(
 
   // Dest reg capture
   always_ff @(posedge i_clk) begin
-    if (i_rst) o_dest_reg <= 5'b0;
-    else if (i_valid && i_use_unit && can_start) o_dest_reg <= i_dest_reg;
+    if (i_valid && i_use_unit && can_start) o_dest_reg <= i_dest_reg;
   end
 
   fp_multiplier #(

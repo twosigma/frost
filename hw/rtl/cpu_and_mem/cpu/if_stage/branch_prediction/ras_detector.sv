@@ -29,18 +29,18 @@
  *              - Saves return address to link register
  *              - RAS should PUSH the link address
  *
- *   Return:    JALR with rs1 in {x1, x5} AND rd = x0 AND imm = 0
+ *   Return:    JALR with rs1 = x1 AND rd = x0 AND imm = 0
  *              - Jumps to saved return address without saving new address
  *              - RAS should POP and predict target
  *
- *   Coroutine: JALR with rd in {x1, x5} AND rs1 in {x1, x5} AND rd != rs1 AND imm = 0
+ *   Coroutine: JALR with rd in {x1, x5} AND rs1 = x1 AND rd != rs1 AND imm = 0
  *              - Swaps return addresses (used in coroutine switching)
  *              - RAS should POP then PUSH (effectively swap)
  *
  * Compressed Instruction Support:
  * ==============================
- *   C.JR:   1000_rs1_00000_10 -> JALR x0, rs1, 0  (RETURN if rs1 in {x1, x5})
- *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (CALL, COROUTINE if rs1 in {x1, x5})
+ *   C.JR:   1000_rs1_00000_10 -> JALR x0, rs1, 0  (RETURN if rs1 = x1)
+ *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (CALL, COROUTINE if rs1 = x1)
  *   C.JAL:  001_imm_01        -> JAL x1, imm      (CALL, RV32 only)
  *
  * IMPORTANT: In this design, decompression happens in PD stage, so IF stage
@@ -93,11 +93,13 @@ module ras_detector (
 
   logic rd_is_link;
   logic rs1_is_link;
+  logic rs1_is_return_link;
   logic rd_is_zero;
 
-  assign rd_is_link  = (rd == 5'd1) || (rd == 5'd5);
+  assign rd_is_link = (rd == 5'd1) || (rd == 5'd5);
   assign rs1_is_link = (rs1 == 5'd1) || (rs1 == 5'd5);
-  assign rd_is_zero  = (rd == 5'd0);
+  assign rs1_is_return_link = (rs1 == 5'd1);
+  assign rd_is_zero = (rd == 5'd0);
 
   // ===========================================================================
   // 32-bit Instruction Type Detection
@@ -129,9 +131,11 @@ module ras_detector (
 
   // Link register detection for compressed instructions
   logic c_rs1_is_link;
+  logic c_rs1_is_return_link;
   logic c_rs1_is_nonzero;
 
   assign c_rs1_is_link = (c_rs1 == 5'd1) || (c_rs1 == 5'd5);
+  assign c_rs1_is_return_link = (c_rs1 == 5'd1);
   assign c_rs1_is_nonzero = (c_rs1 != 5'd0);
 
   // Compressed instruction type detection
@@ -162,10 +166,11 @@ module ras_detector (
   assign is_call_32 = (is_jal && rd_is_link) || (is_jalr && rd_is_link);
 
   // Return: JALR using link register as source, not saving return address
-  assign is_return_32 = is_jalr && rs1_is_link && rd_is_zero && imm_i_is_zero;
+  assign is_return_32 = is_jalr && rs1_is_return_link && rd_is_zero && imm_i_is_zero;
 
   // Coroutine: JALR with both rd and rs1 as link registers, but different
-  assign is_coroutine_32 = is_jalr && rd_is_link && rs1_is_link && (rd != rs1) && imm_i_is_zero;
+  assign is_coroutine_32 = is_jalr && rd_is_link && rs1_is_return_link && (rd != rs1) &&
+                           imm_i_is_zero;
 
   // Compressed detection
   logic is_call_c;
@@ -176,12 +181,15 @@ module ras_detector (
   // C.JALR is a call (rd=x1 implicit), and also coroutine if rs1 is a link reg
   assign is_call_c = is_c_jal || is_c_jalr;
 
-  // C.JR is a return if rs1 is a link register (rd=x0 implicit)
-  assign is_return_c = is_c_jr && c_rs1_is_link;
+  // C.JR is a return only for x1/ra. Real code commonly uses x5/t0 as an
+  // indirect jump scratch register, and treating that as a return poisons the RAS.
+  assign is_return_c = is_c_jr && c_rs1_is_return_link;
 
-  // C.JALR with rs1 as a link register is a coroutine (rd=x1, rs1 in {x1, x5})
-  // Only coroutine if rd != rs1, which means rs1 must be x5 (since rd is always x1)
-  assign is_coroutine_c = is_c_jalr && (c_rs1 == 5'd5);
+  // Treat compressed C.JALR as a plain call, even when rs1=x5. In real code
+  // x5/t0 is commonly used as a temporary indirect-call target register, and
+  // classifying that pattern as a coroutine hint causes the RAS to skip the
+  // required call push for sequences like "la t0, label; c.jalr t0".
+  assign is_coroutine_c = 1'b0;
 
   // ===========================================================================
   // Final Output Mux

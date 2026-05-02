@@ -27,6 +27,7 @@
 
 /* Critical section nesting counter - NOT static so trap handler can access */
 UBaseType_t uxCriticalNesting = 0;
+static volatile uint32_t ulPortYieldPending = 0;
 
 /* Timer tick interval */
 static uint64_t ullNextTime = 0;
@@ -49,6 +50,10 @@ void vPortExitCritical(void)
     uxCriticalNesting--;
     if (uxCriticalNesting == 0) {
         portENABLE_INTERRUPTS();
+        if (ulPortYieldPending != 0U) {
+            ulPortYieldPending = 0U;
+            vPortYield();
+        }
     }
 }
 
@@ -60,6 +65,17 @@ void vPortYield(void)
      * The trap handler will handle mcause=11 (environment call from M-mode)
      * and perform the context switch. */
     __asm volatile("ecall");
+}
+
+/*-----------------------------------------------------------*/
+
+void vPortYieldWithinAPI(void)
+{
+    if (uxCriticalNesting != 0U) {
+        ulPortYieldPending = 1U;
+    } else {
+        vPortYield();
+    }
 }
 
 /*-----------------------------------------------------------*/
@@ -80,7 +96,7 @@ static void prvSetupTimerInterrupt(void)
     MTIMECMP_LO = (uint32_t) (ullNextTime & 0xFFFFFFFF);
     MTIMECMP_HI = (uint32_t) (ullNextTime >> 32);
 
-    /* Enable timer interrupt in mie (bit 7 = MTIE) */
+    /* Enable timer interrupt in mie (bit 7 = MTIE). */
     uint32_t mie_val = 0x80;
     __asm volatile("csrs mie, %0" ::"r"(mie_val));
 

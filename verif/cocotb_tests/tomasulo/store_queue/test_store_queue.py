@@ -87,9 +87,7 @@ async def commit_and_write(
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Memory write should fire
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
 
     # Model tracks write initiation
@@ -108,6 +106,40 @@ async def commit_and_write(
     # after the entry is freed).
     await dut_if.step()
 
+    return write_req
+
+
+async def complete_mem_write(dut_if: SQInterface, model: SQModel) -> MemWriteReq:
+    """Complete the currently eligible memory write. Returns write request."""
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Expected memory write after commit"
+
+    model.mem_write_initiate()
+
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
+    model.mem_write_done()
+    model.advance_head()
+    await dut_if.step()
+    dut_if.clear_mem_write_done()
+
+    # Extra cycle for head pointer advancement (head_advance_target is
+    # computed from registered sq_valid, so the head advances one cycle
+    # after the entry is freed).
+    await dut_if.step()
+
+    return write_req
+
+
+async def wait_for_mem_write(dut_if: SQInterface, max_cycles: int = 4) -> MemWriteReq:
+    """Wait for the registered store-memory write pulse."""
+    await Timer(1, unit="ns")
+    write_req = dut_if.read_mem_write()
+    for _ in range(max_cycles):
+        if write_req.en:
+            return write_req
+        await dut_if.step()
+        write_req = dut_if.read_mem_write()
     return write_req
 
 
@@ -142,6 +174,34 @@ async def test_alloc_single(dut: Any) -> None:
     assert dut_if.count == 1, f"Expected count=1, got {dut_if.count}"
     assert not dut_if.empty, "Should not be empty"
     assert not dut_if.full, "Should not be full"
+
+
+# ============================================================================
+# Test 2b: Allocate with address already known
+# ============================================================================
+@cocotb.test()
+async def test_alloc_with_initial_address(dut: Any) -> None:
+    """Dispatch-time address capture should remove the need for addr_update."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc(
+        rob_tag=6,
+        size=MEM_SIZE_WORD,
+        addr_valid=True,
+        address=0x1040,
+    )
+    model.alloc(6, False, MEM_SIZE_WORD, addr_valid=True, address=0x1040)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_data_update(6, 0x11223344)
+    model.data_update(6, 0x11223344)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    write_req = await commit_and_write(dut_if, model, rob_tag=6)
+    assert write_req.addr == 0x1040
+    assert write_req.data == 0x11223344
 
 
 # ============================================================================
@@ -317,8 +377,7 @@ async def test_fsd_two_phase(dut: Any) -> None:
     dut_if.clear_commit()
 
     # Phase 0: low word at addr
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 0 write expected"
     assert (
         write_req.addr == 0x4000
@@ -334,8 +393,7 @@ async def test_fsd_two_phase(dut: Any) -> None:
     dut_if.clear_mem_write_done()
 
     # Phase 1: high word at addr+4
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 1 write expected"
     assert (
         write_req.addr == 0x4004
@@ -371,7 +429,7 @@ async def test_forward_sw_to_lw(dut: Any) -> None:
     # LQ check: load at same address, younger rob_tag
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=store_addr, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     all_known = dut_if.read_all_older_addrs_known()
@@ -396,7 +454,7 @@ async def test_forward_no_match(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x3000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     all_known = dut_if.read_all_older_addrs_known()
@@ -422,7 +480,7 @@ async def test_forward_stall_no_addr(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     all_known = dut_if.read_all_older_addrs_known()
     assert not all_known, "Should NOT have all older addrs known"
@@ -450,7 +508,7 @@ async def test_forward_match_no_data(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match (same word address)"
@@ -470,11 +528,36 @@ async def test_forward_size_mismatch(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2001, rob_tag=5, size=MEM_SIZE_BYTE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match (same word address)"
     assert not fwd.can_forward, "Can't forward different size/addr"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Test 15b: Disjoint halfwords in same word do not conflict
+# ============================================================================
+@cocotb.test()
+async def test_forward_disjoint_halfwords_no_match(dut: Any) -> None:
+    """SH at addr, LH at addr+2 → no match because byte lanes do not overlap."""
+    dut_if, model = await setup(dut)
+
+    await alloc_addr_data(
+        dut_if, model, rob_tag=3, address=0x2000, data=0x1234, size=MEM_SIZE_HALF
+    )
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=0x2002, rob_tag=5, size=MEM_SIZE_HALF)
+    await dut_if.step()  # Wait for registered SQ forwarding output
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "All older addrs should be known"
+    assert not fwd.match, "Disjoint halfwords in the same word should not conflict"
+    assert not fwd.can_forward, "No match means no forward either"
     dut_if.clear_sq_check()
 
 
@@ -491,7 +574,7 @@ async def test_forward_newest_wins(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=6, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -521,7 +604,7 @@ async def test_forward_fsd_to_fld(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_DOUBLE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -644,8 +727,7 @@ async def test_in_order_write(dut: Any) -> None:
 
     # Write should happen from head (tag 0 first)
     for i, (addr, data) in enumerate(zip(addrs, datas)):
-        await Timer(1, unit="ns")
-        write_req = dut_if.read_mem_write()
+        write_req = await wait_for_mem_write(dut_if)
         assert write_req.en, f"Write {i} should be active"
         assert (
             write_req.addr == addr
@@ -719,8 +801,7 @@ async def test_no_write_without_data(dut: Any) -> None:
     dut_if.clear_data_update()
 
     # Now write should happen
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Write should fire once data arrives"
     assert write_req.data == 0xBEEF
 
@@ -741,7 +822,8 @@ async def test_cache_invalidation(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Write fires
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Expected memory write after commit"
     model.mem_write_initiate()
     await dut_if.step()
 
@@ -773,11 +855,51 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
     # Load with tag=3 (older than store tag=5, head=0)
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x2000, rob_tag=3, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert not fwd.match, "Store is not older than load, should not match"
     dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Test 25b: Commit-visible forwarding when ROB head has advanced
+# ============================================================================
+@cocotb.test()
+async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
+    """A just-committed store must still block/forward a younger load.
+
+    The ROB can advance its head to the load's tag before the SQ latches the
+    store's committed bit. Forwarding must treat i_commit_valid as visible in
+    that same cycle so the load cannot issue to memory in front of the store.
+    """
+    dut_if, model = await setup(dut)
+
+    store_addr = 0x2000
+    store_data = 0x1234ABCD
+    store_tag = 3
+    load_tag = 4
+
+    await alloc_addr_data(
+        dut_if, model, rob_tag=store_tag, address=store_addr, data=store_data
+    )
+
+    dut_if.drive_rob_head_tag(load_tag)
+    dut_if.drive_commit(store_tag)
+    dut_if.drive_sq_check(addr=store_addr, rob_tag=load_tag, size=MEM_SIZE_WORD)
+    await dut_if.step()  # Wait for registered SQ forwarding output
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "The committing older store should still count as known"
+    assert fwd.match, "A just-committed older store must still match the load"
+    assert fwd.can_forward, "A just-committed older store must still forward"
+    assert fwd.data == store_data, f"Expected 0x{store_data:x}, got 0x{fwd.data:x}"
+
+    dut_if.clear_commit()
+    dut_if.clear_sq_check()
+    await dut_if.step()
 
 
 # ============================================================================
@@ -801,7 +923,7 @@ async def test_forward_fsd_overlap_plus4(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "DOUBLE store overlaps at +4"
@@ -828,7 +950,7 @@ async def test_mmio_store_no_forward(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=mmio_addr, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match MMIO store address"
@@ -856,7 +978,7 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=addr, rob_tag=6, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match
@@ -892,6 +1014,8 @@ async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
     dut_if.clear_commit()
 
     # Phase 0: low word at base addr
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Phase 0 write expected"
     model.mem_write_initiate()
     await dut_if.step()
     dut_if.drive_mem_write_done()
@@ -908,8 +1032,7 @@ async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
     dut_if.clear_mem_write_done()
 
     # Phase 1: high word at addr+4
-    await Timer(1, unit="ns")
-    write_req = dut_if.read_mem_write()
+    write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 1 write expected"
 
     model.mem_write_initiate()
@@ -950,7 +1073,7 @@ async def test_forward_flw_at_fsd_base(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLW at FSD base should match"
@@ -983,7 +1106,7 @@ async def test_forward_flw_at_fsd_plus4(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLW at FSD+4 should match"
@@ -1016,7 +1139,7 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
     dut_if.drive_sq_check(addr=0x4000, rob_tag=5, size=MEM_SIZE_BYTE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LB at FSD base should match"
@@ -1175,7 +1298,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
     await Timer(1, unit="ns")
 
     # Initially committed_empty should be true (no entries)
-    assert dut_if.committed_empty, "committed_empty should be true when SQ empty"
+    assert bool(dut_if.committed_empty), "committed_empty should be true when SQ empty"
 
     # Allocate an uncommitted entry
     dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
@@ -1194,7 +1317,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
     await Timer(1, unit="ns")
     # Entry exists but is uncommitted → committed_empty stays true
-    assert (
+    assert bool(
         dut_if.committed_empty
     ), "committed_empty should be true with only uncommitted entries"
 
@@ -1206,22 +1329,16 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
     await Timer(1, unit="ns")
     # Now there is a committed entry → committed_empty should be false
-    assert (
-        not dut_if.committed_empty
+    assert not bool(
+        dut_if.committed_empty
     ), "committed_empty should be false with committed entry"
 
     # Complete the write
-    model.mem_write_initiate()  # type: ignore[unreachable]
-    await dut_if.step()
-    dut_if.drive_mem_write_done()
-    model.mem_write_done()
-    model.advance_head()
-    await dut_if.step()
-    dut_if.clear_mem_write_done()
-    await dut_if.step()
+    write_req = await complete_mem_write(dut_if, model)
+    assert write_req.en, "Expected memory write after commit"
 
     await Timer(1, unit="ns")
-    assert (
+    assert bool(
         dut_if.committed_empty
     ), "committed_empty should be true after write completes"
 
@@ -1254,7 +1371,7 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
     dut_if.drive_rob_head_tag(0)
     # FLD check: 64-bit load at the same address
     dut_if.drive_sq_check(addr=0x5000, rob_tag=5, size=MEM_SIZE_DOUBLE)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLD at FSW address should match"
@@ -1287,7 +1404,7 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
     dut_if.drive_rob_head_tag(0)
     # LH at FSD base: sub-word load from DOUBLE store
     dut_if.drive_sq_check(addr=0x7000, rob_tag=5, size=MEM_SIZE_HALF)
-    await Timer(1, unit="ns")
+    await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LH at FSD base should match"
@@ -1296,17 +1413,16 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 38: Non-contiguous hole — pointer-full with fewer than DEPTH valid
+# Test 38: Non-contiguous hole reuse without immediate tail compaction
 # ============================================================================
 @cocotb.test()
 async def test_pointer_full_with_hole(dut: Any) -> None:
-    """Partial flush creates a hole; pointer-full fires with < DEPTH valid entries.
+    """Partial flush leaves holes; the queue fills only after every hole is reused.
 
     Allocate out-of-ROB-order so partial flush creates:
       idx 0(V:tag0) 1(V:tag1) 2(I:tag5) 3(V:tag2) 4(I:tag6) 5(I:tag7)
-    Tail retracts from 6→4 (stops at valid idx 3).  Then allocate 4 more
-    to exhaust pointer space: pointer-full with only 7 valid entries.
-    Pointer-based full in the model must agree with the DUT.
+    Then allocate into the available holes. After four allocations the queue
+    still has one free slot; the fifth allocation should make it full.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
@@ -1333,17 +1449,24 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert not dut_if.full, "SQ should not be full after partial flush"
     assert not model.full, "Model should not be full after partial flush"
 
-    # Allocate 4 more entries to exhaust pointer space (tail wraps to head)
+    # Four allocations should reuse four of the five free holes.
     for i in range(4):
         dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
         model.alloc(10 + i, False, MEM_SIZE_WORD)
         await dut_if.step()
         dut_if.clear_alloc()
 
-    # Pointer-full with 7 valid entries (idx 2 is a hole)
-    assert dut_if.full, "SQ should be pointer-full after filling remaining slots"
-    assert model.full, "Model pointer-full must agree with DUT"  # type: ignore[unreachable]
+    assert not dut_if.full, "SQ should not be full while one free hole remains"
+    assert not model.full, "Model should not be full while one free hole remains"
     assert (
         dut_if.count == 7
     ), f"Expected 7 valid entries (with hole), got {dut_if.count}"
     assert model.count == 7, f"Model count must match DUT (got {model.count})"
+
+    dut_if.drive_alloc(rob_tag=14, size=MEM_SIZE_WORD)
+    model.alloc(14, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 8, f"Expected 8 valid entries, got {dut_if.count}"
+    assert model.count == 8, f"Model count must match DUT (got {model.count})"

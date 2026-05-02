@@ -24,10 +24,10 @@
  *
  * Features:
  *   - Parameterized depth (2-8 entries, all FF-based)
- *   - Up to 3 source operands (for FMA instructions)
- *   - CDB snoop for operand wakeup with same-cycle dispatch bypass
+ *   - Optional third source operand (enabled only for FMA instructions)
+ *   - CDB and done-repair snoop for operand wakeup with same-cycle dispatch bypass
  *   - Priority-encoder issue selection (lowest index first)
- *   - Immediate bypass: use_imm skips src2 readiness check
+ *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
  *
  * Storage Strategy:
@@ -38,18 +38,15 @@
  *   in a single-port distributed RAM (sdp_dist_ram): written once at
  *   dispatch, read once at issue.  Valid bits in FFs gate all reads,
  *   so stale LUTRAM data behind flushed entries is harmless.
- *
- * Icarus VPI Workaround:
- *   Icarus Verilog 12.0 crashes (vvp event.cc assertion) on very wide
- *   packed struct VPI-facing ports. Internal signals of any width are
- *   fine; only ports that cocotb drives/reads via VPI are affected. Ports
- *   up to 187 bits work; 352+ bits crash. When ICARUS is defined, the
- *   module exposes dispatch and issue fields as individual ports. Internal
- *   wire aliases ensure the core logic is identical for both paths.
  */
 
 module reservation_station #(
-    parameter int unsigned DEPTH = 8
+    parameter int unsigned DEPTH = 8,
+    parameter bit HAS_SRC3 = 1'b1,
+    parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
+    parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
+    parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
+    parameter bit BYPASS_STAGE2 = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -57,74 +54,46 @@ module reservation_station #(
     // =========================================================================
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
-`ifdef ICARUS
-    // Flattened ports -- avoids wide packed struct signals in Icarus VVP.
-    input logic i_dispatch_valid,
-    input logic [2:0] i_dispatch_rs_type,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_rob_tag,
-    input logic [31:0] i_dispatch_op,
-    input logic i_dispatch_src1_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src1_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src1_value,
-    input logic i_dispatch_src2_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src2_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src2_value,
-    input logic i_dispatch_src3_ready,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_dispatch_src3_tag,
-    input logic [riscv_pkg::FLEN-1:0] i_dispatch_src3_value,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_imm,
-    input logic i_dispatch_use_imm,
-    input logic [2:0] i_dispatch_rm,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_branch_target,
-    input logic i_dispatch_predicted_taken,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_predicted_target,
-    input logic i_dispatch_is_fp_mem,
-    input logic [1:0] i_dispatch_mem_size,
-    input logic i_dispatch_mem_signed,
-    input logic [11:0] i_dispatch_csr_addr,
-    input logic [4:0] i_dispatch_csr_imm,
-    input logic [riscv_pkg::XLEN-1:0] i_dispatch_pc,
-`else
     input riscv_pkg::rs_dispatch_t i_dispatch,
-`endif
     output logic o_full,
 
     // =========================================================================
-    // CDB Snoop / Wakeup (84 bits -- small enough for all simulators)
+    // CDB Snoop / Wakeup
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
+
+    // Registered ROB-done repair wakeups from dispatch. These carry operands
+    // whose CDB broadcast happened before the consumer was dispatched.
+    input logic                                        i_repair_valid_1,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_1,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_1,
+    input logic                                        i_repair_valid_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_2,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_2,
+    input logic                                        i_repair_valid_3,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_3,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_3,
 
     // =========================================================================
     // Issue Interface (to Functional Unit)
     // =========================================================================
-`ifdef ICARUS
-    output logic                                                        o_issue_valid,
-    output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_issue_rob_tag,
-    output logic                 [                                31:0] o_issue_op,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src1_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src2_value,
-    output logic                 [                 riscv_pkg::FLEN-1:0] o_issue_src3_value,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_imm,
-    output logic                                                        o_issue_use_imm,
-    output logic                 [                                 2:0] o_issue_rm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_branch_target,
-    output logic                                                        o_issue_predicted_taken,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_predicted_target,
-    output logic                                                        o_issue_is_fp_mem,
-    output logic                 [                                 1:0] o_issue_mem_size,
-    output logic                                                        o_issue_mem_signed,
-    output logic                 [                                11:0] o_issue_csr_addr,
-    output logic                 [                                 4:0] o_issue_csr_imm,
-    output logic                 [                 riscv_pkg::XLEN-1:0] o_issue_pc,
-`else
-    output riscv_pkg::rs_issue_t                                        o_issue,
-`endif
-    input  logic                                                        i_fu_ready,
+    output riscv_pkg::rs_issue_t o_issue,
+    input  logic                 i_fu_ready,
+    output logic                 o_issue_writes_cdb_hint,
 
     // =========================================================================
     // SC Issue Peek (combinational, independent of i_fu_ready)
     // =========================================================================
     output logic o_next_issue_is_sc,
+
+    // =========================================================================
+    // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS with
+    // BYPASS_STAGE2=0, these expose the rob_tag and mem_needs_lq of the
+    // entry being captured into stage2 this cycle, so the LQ can pre-compute
+    // the addr_update CAM match and register it before the issue fires.
+    // =========================================================================
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
+    output logic                                        o_pre_issue_needs_lq,
 
     // =========================================================================
     // Flush Control
@@ -138,7 +107,19 @@ module reservation_station #(
     // Status / Debug
     // =========================================================================
     output logic                       o_empty,
-    output logic [$clog2(DEPTH+1)-1:0] o_count
+    output logic [$clog2(DEPTH+1)-1:0] o_count,
+
+    // =========================================================================
+    // Head-wait diagnostic observation (combinational, for perf counters)
+    // =========================================================================
+    // Given a query rob_tag (typically the ROB head tag), expose whether this
+    // RS currently holds that tag and what state it is in. Used to decompose
+    // head_wait_int into sub-buckets at the wrapper level. Drives no
+    // functional logic; synthesis optimizes these away if unconnected.
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_query_tag,
+    output logic                                        o_head_query_in_rs,
+    output logic                                        o_head_query_rs_ready,
+    output logic                                        o_head_query_in_stage2
 );
 
   // ===========================================================================
@@ -147,6 +128,7 @@ module reservation_station #(
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
+  localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
 
   // ===========================================================================
@@ -166,40 +148,50 @@ module reservation_station #(
     end
   endfunction
 
+  function automatic logic int_rs_writes_cdb(input riscv_pkg::instr_op_e op);
+    begin
+      case (op)
+        riscv_pkg::BEQ,
+        riscv_pkg::BNE,
+        riscv_pkg::BLT,
+        riscv_pkg::BGE,
+        riscv_pkg::BLTU,
+        riscv_pkg::BGEU:
+        int_rs_writes_cdb = 1'b0;
+        default: int_rs_writes_cdb = 1'b1;
+      endcase
+    end
+  endfunction
+
+  function automatic logic done_repair_match(input logic [ReorderBufferTagWidth-1:0] tag);
+    begin
+      done_repair_match =
+          (i_repair_valid_1 && tag == i_repair_tag_1) ||
+          (i_repair_valid_2 && tag == i_repair_tag_2) ||
+          (i_repair_valid_3 && tag == i_repair_tag_3);
+    end
+  endfunction
+
+  function automatic logic [FLEN-1:0] done_repair_value(
+      input logic [ReorderBufferTagWidth-1:0] tag);
+    begin
+      if (i_repair_valid_1 && tag == i_repair_tag_1) begin
+        done_repair_value = i_repair_value_1;
+      end else if (i_repair_valid_2 && tag == i_repair_tag_2) begin
+        done_repair_value = i_repair_value_2;
+      end else if (i_repair_valid_3 && tag == i_repair_tag_3) begin
+        done_repair_value = i_repair_value_3;
+      end else begin
+        done_repair_value = '0;
+      end
+    end
+  endfunction
+
   // ===========================================================================
   // Dispatch Field Extraction
   // ===========================================================================
-  // Wire aliases allow the module body to work identically regardless of
-  // whether the dispatch input is a packed struct port or individual signals.
+  // Wire aliases allow the module body to use short names for struct fields.
 
-`ifdef ICARUS
-  wire                                              dispatch_valid = i_dispatch_valid;
-  wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch_rob_tag;
-  riscv_pkg::instr_op_e                             dispatch_op;
-  assign dispatch_op = riscv_pkg::instr_op_e'(i_dispatch_op);
-  wire dispatch_src1_ready = i_dispatch_src1_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src1_tag = i_dispatch_src1_tag;
-  wire [FLEN-1:0] dispatch_src1_value = i_dispatch_src1_value;
-  wire dispatch_src2_ready = i_dispatch_src2_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src2_tag = i_dispatch_src2_tag;
-  wire [FLEN-1:0] dispatch_src2_value = i_dispatch_src2_value;
-  wire dispatch_src3_ready = i_dispatch_src3_ready;
-  wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag = i_dispatch_src3_tag;
-  wire [FLEN-1:0] dispatch_src3_value = i_dispatch_src3_value;
-  wire [XLEN-1:0] dispatch_imm = i_dispatch_imm;
-  wire dispatch_use_imm = i_dispatch_use_imm;
-  wire [2:0] dispatch_rm = i_dispatch_rm;
-  wire [XLEN-1:0] dispatch_branch_target = i_dispatch_branch_target;
-  wire dispatch_predicted_taken = i_dispatch_predicted_taken;
-  wire [XLEN-1:0] dispatch_predicted_target = i_dispatch_predicted_target;
-  wire dispatch_is_fp_mem = i_dispatch_is_fp_mem;
-  riscv_pkg::mem_size_e dispatch_mem_size;
-  assign dispatch_mem_size = riscv_pkg::mem_size_e'(i_dispatch_mem_size);
-  wire            dispatch_mem_signed = i_dispatch_mem_signed;
-  wire [    11:0] dispatch_csr_addr = i_dispatch_csr_addr;
-  wire [     4:0] dispatch_csr_imm = i_dispatch_csr_imm;
-  wire [XLEN-1:0] dispatch_pc = i_dispatch_pc;
-`else
   wire                                              dispatch_valid = i_dispatch.valid;
   wire                  [ReorderBufferTagWidth-1:0] dispatch_rob_tag = i_dispatch.rob_tag;
   riscv_pkg::instr_op_e                             dispatch_op;
@@ -220,60 +212,85 @@ module reservation_station #(
   wire dispatch_predicted_taken = i_dispatch.predicted_taken;
   wire [XLEN-1:0] dispatch_predicted_target = i_dispatch.predicted_target;
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
+  wire dispatch_mem_needs_lq = i_dispatch.mem_needs_lq;
+  wire dispatch_mem_needs_sq = i_dispatch.mem_needs_sq;
   riscv_pkg::mem_size_e dispatch_mem_size;
   assign dispatch_mem_size = i_dispatch.mem_size;
-  wire            dispatch_mem_signed = i_dispatch.mem_signed;
-  wire [    11:0] dispatch_csr_addr = i_dispatch.csr_addr;
-  wire [     4:0] dispatch_csr_imm = i_dispatch.csr_imm;
+  wire dispatch_mem_signed = i_dispatch.mem_signed;
+  wire [11:0] dispatch_csr_addr = i_dispatch.csr_addr;
+  wire [4:0] dispatch_csr_imm = i_dispatch.csr_imm;
   wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
-`endif
+  wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
+  wire dispatch_has_checkpoint = i_dispatch.has_checkpoint;
+  wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id = i_dispatch.checkpoint_id;
+  wire dispatch_is_call = i_dispatch.is_call;
+  wire dispatch_is_return = i_dispatch.is_return;
+  wire dispatch_src1_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src1_ready && done_repair_match(
+      dispatch_src1_tag
+  );
+  wire dispatch_src2_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src2_ready && done_repair_match(
+      dispatch_src2_tag
+  );
+  wire dispatch_src3_repair_match =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready && done_repair_match(
+      dispatch_src3_tag
+  );
 
   // ===========================================================================
-  // Issue Output Intermediates
+  // Stage 2 Pipeline Register
   // ===========================================================================
-  // Set in the always_comb block below; assigned to output ports via
-  // simulator-specific logic (ifdef ICARUS assigns / else struct pack).
+  // Issue output is registered to break the combinational path from RS
+  // entry arrays (priority encoder + LUTRAM read + operand mux) to
+  // downstream consumers (FU shims, LQ/SQ address computation, CDB).
+  // The stage2 register holds a full copy of the issued instruction's data,
+  // presented to downstream with one-shot valid when i_fu_ready is asserted.
 
-  logic                             issue_out_valid;
-  logic [ReorderBufferTagWidth-1:0] issue_out_rob_tag;
-`ifdef ICARUS
-  logic [31:0] issue_out_op;
-`else
-  riscv_pkg::instr_op_e issue_out_op;
-`endif
-  logic [FLEN-1:0] issue_out_src1_value;
-  logic [FLEN-1:0] issue_out_src2_value;
-  logic [FLEN-1:0] issue_out_src3_value;
-  logic [XLEN-1:0] issue_out_imm;
-  logic            issue_out_use_imm;
-  logic [     2:0] issue_out_rm;
-  logic [XLEN-1:0] issue_out_branch_target;
-  logic            issue_out_predicted_taken;
-  logic [XLEN-1:0] issue_out_predicted_target;
-  logic            issue_out_is_fp_mem;
-`ifdef ICARUS
-  logic [1:0] issue_out_mem_size;
-`else
-  riscv_pkg::mem_size_e issue_out_mem_size;
-`endif
-  logic            issue_out_mem_signed;
-  logic [    11:0] issue_out_csr_addr;
-  logic [     4:0] issue_out_csr_imm;
-  logic [XLEN-1:0] issue_out_pc;
+  logic stage2_valid;
+  logic [ReorderBufferTagWidth-1:0] stage2_rob_tag;
+  riscv_pkg::instr_op_e stage2_op;
+  logic stage2_is_sc;
+  logic [FLEN-1:0] stage2_src1_value;
+  logic [FLEN-1:0] stage2_src2_value;
+  logic [FLEN-1:0] stage2_src3_value;
+  logic [XLEN-1:0] stage2_imm;
+  logic stage2_use_imm;
+  logic stage2_writes_cdb_hint;
+  logic [2:0] stage2_rm;
+  logic [XLEN-1:0] stage2_branch_target;
+  logic stage2_predicted_taken;
+  logic [XLEN-1:0] stage2_predicted_target;
+  logic stage2_is_fp_mem;
+  logic stage2_mem_needs_lq;
+  logic stage2_mem_needs_sq;
+  riscv_pkg::mem_size_e stage2_mem_size;
+  logic stage2_mem_signed;
+  logic [11:0] stage2_csr_addr;
+  logic [4:0] stage2_csr_imm;
+  logic [XLEN-1:0] stage2_pc;
+  logic [XLEN-1:0] stage2_link_addr;
+  logic stage2_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] stage2_checkpoint_id;
+  logic stage2_is_call;
+  logic stage2_is_return;
 
-  // ===========================================================================
-  // Debug Signals (for verification -- Verilator only)
-  // ===========================================================================
-`ifdef VERILATOR
-  logic dbg_dispatch_valid  /* verilator public_flat_rd */;
-  assign dbg_dispatch_valid = dispatch_valid;
+  // CDB bypass flags: set when an issued instruction's source was woken by
+  // same-cycle CDB bypass.  The output MUX substitutes stage2_cdb_value for
+  // these sources, breaking the timing-critical data path from CDB through
+  // the issue-select priority encoder to the stage2 register input.
+  logic stage2_src1_bypassed;
+  logic stage2_src2_bypassed;
+  logic stage2_src3_bypassed;
+  logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
 
-  logic dbg_issue_valid  /* verilator public_flat_rd */;
-  assign dbg_issue_valid = issue_out_valid;
-
-  logic dbg_full  /* verilator public_flat_rd */;
-  assign dbg_full = full;
-`endif
+  // Stage 2 control signals
+  logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
+  logic stage2_accept;  // Stage2 content consumed by FU this cycle
+  logic can_issue_to_stage2;  // Stage2 is empty or being consumed — RS may load it
+  riscv_pkg::rs_issue_t bypass_issue;
+  logic bypass_issue_writes_cdb_hint;
+  logic bypass_next_issue_is_sc;
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -285,44 +302,52 @@ module reservation_station #(
   //   written once at dispatch, read once at issue (single port each).
 
   // 1-bit packed vectors (for bulk operations)
-  logic [                DEPTH-1:0] rs_valid;
-  logic [                DEPTH-1:0] rs_src1_ready;
-  logic [                DEPTH-1:0] rs_src2_ready;
-  logic [                DEPTH-1:0] rs_src3_ready;
-  logic [                DEPTH-1:0] rs_use_imm;
+  logic [DEPTH-1:0] rs_valid;
+  logic [DEPTH-1:0] rs_src1_ready;
+  logic [DEPTH-1:0] rs_src2_ready;
+  logic [DEPTH-1:0] rs_src3_ready_q;
+  logic [DEPTH-1:0] rs_src3_ready;
+  logic [DEPTH-1:0] rs_use_imm;
+  logic [DEPTH-1:0] rs_writes_cdb_hint;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
-  logic [ReorderBufferTagWidth-1:0] rs_rob_tag    [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src1_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src1_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src1_tag[DEPTH];
+  logic [FLEN-1:0] rs_src1_value[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src2_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src2_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src2_tag[DEPTH];
+  logic [FLEN-1:0] rs_src2_value[DEPTH];
 
-  logic [ReorderBufferTagWidth-1:0] rs_src3_tag   [DEPTH];
-  logic [                 FLEN-1:0] rs_src3_value [DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src3_tag[DEPTH];
+  logic [FLEN-1:0] rs_src3_value[DEPTH];
+
+  // Non-FMA reservation stations do not have a third operand.  Drive src3
+  // ready as a constant so synthesis can remove src3 tag/value/wakeup logic
+  // from those instances.
+  assign rs_src3_ready = HAS_SRC3 ? rs_src3_ready_q : {DEPTH{1'b1}};
 
   // ===========================================================================
   // Internal Signals
   // ===========================================================================
 
-  logic                             full;
-  logic                             empty;
-  logic [           CountWidth-1:0] count;
+  logic full;
+  logic empty;
+  logic [CountWidth-1:0] count;
+  logic [CountWidth-1:0] count_next;
 
   // Free entry selection
-  logic [        $clog2(DEPTH)-1:0] free_idx;
-  logic                             free_found;
+  logic [$clog2(DEPTH)-1:0] free_idx;
+  logic free_found;
 
   // Issue selection
-  logic [                DEPTH-1:0] entry_ready;
-  logic [        $clog2(DEPTH)-1:0] issue_idx;
-  logic                             any_ready;
-  logic                             issue_fire;
+  logic [DEPTH-1:0] entry_ready;
+  logic [$clog2(DEPTH)-1:0] issue_idx;
+  logic any_ready;
+  logic issue_fire;
 
   // Dispatch condition
-  logic                             dispatch_fire;
+  (* max_fanout = 32 *) logic dispatch_fire;
 
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
@@ -333,7 +358,8 @@ module reservation_station #(
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 2 + 1 + 12 + 5 + XLEN;  // 185
+      32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 1 + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN +
+      1 + CheckpointIdWidth + 1 + 1;
 
   logic [PayloadWidth-1:0] payload_wr_data;
   logic [PayloadWidth-1:0] payload_rd_data;
@@ -346,11 +372,18 @@ module reservation_station #(
     dispatch_predicted_taken,  //  1  predicted_taken
     dispatch_predicted_target,  // 32  predicted_target
     dispatch_is_fp_mem,  //  1  is_fp_mem
+    dispatch_mem_needs_lq,  //  1  mem_needs_lq
+    dispatch_mem_needs_sq,  //  1  mem_needs_sq
     2'(dispatch_mem_size),  //  2  mem_size
     dispatch_mem_signed,  //  1  mem_signed
     dispatch_csr_addr,  // 12  csr_addr
     dispatch_csr_imm,  //  5  csr_imm
-    dispatch_pc  // 32  pc
+    dispatch_pc,  // 32  pc
+    dispatch_link_addr,  // 32  link_addr
+    dispatch_has_checkpoint,  //  1  has_checkpoint
+    dispatch_checkpoint_id,  //  CheckpointIdWidth  checkpoint_id
+    dispatch_is_call,  //  1  is_call
+    dispatch_is_return  //  1  is_return
   };
 
   sdp_dist_ram #(
@@ -366,32 +399,59 @@ module reservation_station #(
   );
 
   // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
-  logic [    31:0] pl_op_bits;
-  logic [XLEN-1:0] pl_imm;
-  logic [     2:0] pl_rm;
-  logic [XLEN-1:0] pl_branch_target;
-  logic            pl_predicted_taken;
-  logic [XLEN-1:0] pl_predicted_target;
-  logic            pl_is_fp_mem;
-  logic [     1:0] pl_mem_size_bits;
-  logic            pl_mem_signed;
-  logic [    11:0] pl_csr_addr;
-  logic [     4:0] pl_csr_imm;
-  logic [XLEN-1:0] pl_pc;
+  logic [                 31:0] pl_op_bits;
+  logic [             XLEN-1:0] pl_imm;
+  logic [                  2:0] pl_rm;
+  logic [             XLEN-1:0] pl_branch_target;
+  logic                         pl_predicted_taken;
+  logic [             XLEN-1:0] pl_predicted_target;
+  logic                         pl_is_fp_mem;
+  logic                         pl_mem_needs_lq;
+  logic                         pl_mem_needs_sq;
+  logic [                  1:0] pl_mem_size_bits;
+  logic                         pl_mem_signed;
+  logic [                 11:0] pl_csr_addr;
+  logic [                  4:0] pl_csr_imm;
+  logic [             XLEN-1:0] pl_pc;
+  logic [             XLEN-1:0] pl_link_addr;
+  logic                         pl_has_checkpoint;
+  logic [CheckpointIdWidth-1:0] pl_checkpoint_id;
+  logic                         pl_is_call;
+  logic                         pl_is_return;
 
   assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
-          pl_predicted_target, pl_is_fp_mem, pl_mem_size_bits, pl_mem_signed,
-          pl_csr_addr, pl_csr_imm, pl_pc} = payload_rd_data;
+          pl_predicted_target, pl_is_fp_mem, pl_mem_needs_lq, pl_mem_needs_sq,
+          pl_mem_size_bits, pl_mem_signed,
+          pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr,
+          pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return} = payload_rd_data;
 
   // ===========================================================================
   // Combinational Logic
   // ===========================================================================
 
   // --- Count, full, empty ---
+  // Keep occupancy registered so dispatch back-pressure does not depend on a
+  // live popcount of all rs_valid bits. Flushes still recompute the exact
+  // post-flush count because they may invalidate multiple arbitrary entries.
   always_comb begin
-    count = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      count = count + {{(CountWidth - 1) {1'b0}}, rs_valid[i]};
+    count_next = count;
+    if (i_flush_all) begin
+      count_next = '0;
+    end else if (i_flush_en) begin
+      count_next = '0;
+      for (int i = 0; i < DEPTH; i++) begin
+        count_next = count_next +
+            {{(CountWidth - 1) {1'b0}},
+             (rs_valid[i] && !should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))};
+      end
+    end else begin
+      case ({
+        dispatch_fire, issue_fire
+      })
+        2'b10:   count_next = count + CountWidth'(1);
+        2'b01:   count_next = count - CountWidth'(1);
+        default: count_next = count;
+      endcase
     end
   end
 
@@ -413,13 +473,73 @@ module reservation_station #(
   // --- Dispatch fire condition ---
   assign dispatch_fire = dispatch_valid && !full && !i_flush_all && !i_flush_en;
 
+  // --- CDB bypass wakeup per entry ---
+  // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
+  // and an entry's pending source tag matches, treat that source as ready
+  // immediately (combinationally) rather than waiting for the next clock edge.
+  // This reduces dependent chain latency by 1 cycle.
+  logic [DEPTH-1:0] src1_cdb_bypass;
+  logic [DEPTH-1:0] src2_cdb_bypass;
+  logic [DEPTH-1:0] src3_cdb_bypass;
+  logic [1:0] src1_repair_sel[DEPTH];
+  logic [1:0] src2_repair_sel[DEPTH];
+  logic [1:0] src3_repair_sel[DEPTH];
+
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
+      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src1_repair_sel[i] = 2'd0;
+      src2_repair_sel[i] = 2'd0;
+      if (ISSUE_REPAIR_BYPASS && !rs_src1_ready[i]) begin
+        if (i_repair_valid_1 && rs_src1_tag[i] == i_repair_tag_1) begin
+          src1_repair_sel[i] = 2'd1;
+        end else if (i_repair_valid_2 && rs_src1_tag[i] == i_repair_tag_2) begin
+          src1_repair_sel[i] = 2'd2;
+        end else if (i_repair_valid_3 && rs_src1_tag[i] == i_repair_tag_3) begin
+          src1_repair_sel[i] = 2'd3;
+        end
+      end
+      if (ISSUE_REPAIR_BYPASS && !rs_src2_ready[i]) begin
+        if (i_repair_valid_1 && rs_src2_tag[i] == i_repair_tag_1) begin
+          src2_repair_sel[i] = 2'd1;
+        end else if (i_repair_valid_2 && rs_src2_tag[i] == i_repair_tag_2) begin
+          src2_repair_sel[i] = 2'd2;
+        end else if (i_repair_valid_3 && rs_src2_tag[i] == i_repair_tag_3) begin
+          src2_repair_sel[i] = 2'd3;
+        end
+      end
+      if (HAS_SRC3) begin
+        src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+        src3_repair_sel[i] = 2'd0;
+        if (ISSUE_REPAIR_BYPASS && !rs_src3_ready[i]) begin
+          if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
+            src3_repair_sel[i] = 2'd1;
+          end else if (i_repair_valid_2 && rs_src3_tag[i] == i_repair_tag_2) begin
+            src3_repair_sel[i] = 2'd2;
+          end else if (i_repair_valid_3 && rs_src3_tag[i] == i_repair_tag_3) begin
+            src3_repair_sel[i] = 2'd3;
+          end
+        end
+      end else begin
+        src3_cdb_bypass[i] = 1'b0;
+        src3_repair_sel[i] = 2'd0;
+      end
+    end
+  end
+
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i]
-                     && rs_src1_ready[i]
-                     && (rs_src2_ready[i] || rs_use_imm[i])
-                     && rs_src3_ready[i];
+      entry_ready[i] = rs_valid[i] &&
+          (rs_src1_ready[i] || src1_cdb_bypass[i] || (src1_repair_sel[i] != 2'd0))
+      // Even when an instruction uses an immediate, issue still
+      // requires src2 to be ready if the opcode actually has a
+      // second source (for example stores: base+imm address and
+      // rs2 store data). Dispatch marks truly-unused src2
+      // operands ready, so a plain src2_ready check is correct.
+      && (rs_src2_ready[i] || src2_cdb_bypass[i] || (src2_repair_sel[i] != 2'd0)) &&
+          (rs_src3_ready[i] || src3_cdb_bypass[i] || (src3_repair_sel[i] != 2'd0));
     end
   end
 
@@ -435,98 +555,174 @@ module reservation_station #(
     end
   end
 
-  assign issue_fire = any_ready && i_fu_ready;
-
-  // --- SC issue peek: reports whether the next-to-issue entry is an SC ---
-  assign o_next_issue_is_sc = any_ready && (pl_op_bits == 32'(riscv_pkg::SC_W));
-
-  // --- Issue output ---
+  // --- Head-wait diagnostic observation ---
+  // Scan for an entry whose rob_tag matches the query tag. At most one entry
+  // can match by construction (each in-flight rob_tag is unique).
+  logic [DEPTH-1:0] head_query_match;
   always_comb begin
-    issue_out_valid            = 1'b0;
-    issue_out_rob_tag          = '0;
-    issue_out_op               = riscv_pkg::instr_op_e'(0);
-    issue_out_src1_value       = '0;
-    issue_out_src2_value       = '0;
-    issue_out_src3_value       = '0;
-    issue_out_imm              = '0;
-    issue_out_use_imm          = 1'b0;
-    issue_out_rm               = '0;
-    issue_out_branch_target    = '0;
-    issue_out_predicted_taken  = 1'b0;
-    issue_out_predicted_target = '0;
-    issue_out_is_fp_mem        = 1'b0;
-    issue_out_mem_size         = riscv_pkg::mem_size_e'(0);
-    issue_out_mem_signed       = 1'b0;
-    issue_out_csr_addr         = '0;
-    issue_out_csr_imm          = '0;
-    issue_out_pc               = '0;
-    if (issue_fire) begin
-      issue_out_valid            = 1'b1;
-      issue_out_rob_tag          = rs_rob_tag[issue_idx];
-      issue_out_op               = riscv_pkg::instr_op_e'(pl_op_bits);
-      issue_out_src1_value       = rs_src1_value[issue_idx];
-      issue_out_src2_value       = rs_src2_value[issue_idx];
-      issue_out_src3_value       = rs_src3_value[issue_idx];
-      issue_out_imm              = pl_imm;
-      issue_out_use_imm          = rs_use_imm[issue_idx];
-      issue_out_rm               = pl_rm;
-      issue_out_branch_target    = pl_branch_target;
-      issue_out_predicted_taken  = pl_predicted_taken;
-      issue_out_predicted_target = pl_predicted_target;
-      issue_out_is_fp_mem        = pl_is_fp_mem;
-      issue_out_mem_size         = riscv_pkg::mem_size_e'(pl_mem_size_bits);
-      issue_out_mem_signed       = pl_mem_signed;
-      issue_out_csr_addr         = pl_csr_addr;
-      issue_out_csr_imm          = pl_csr_imm;
-      issue_out_pc               = pl_pc;
+    for (int i = 0; i < DEPTH; i++) begin
+      head_query_match[i] = rs_valid[i] && (rs_rob_tag[i] == i_head_query_tag);
+    end
+  end
+  assign o_head_query_in_rs = |head_query_match;
+  assign o_head_query_rs_ready = |(head_query_match & entry_ready);
+  // BYPASS_STAGE2: stage2_valid is forced to 0, so the match never fires.
+  assign o_head_query_in_stage2 = !BYPASS_STAGE2 && stage2_valid &&
+                                   (stage2_rob_tag == i_head_query_tag);
+
+  // --- Stage 2 control ---
+  // Flush squash: stage2 holds an instruction younger than the flush boundary.
+  assign stage2_should_flush = !BYPASS_STAGE2 && stage2_valid && (i_flush_all ||
+      (i_flush_en && should_flush_entry(
+      stage2_rob_tag, i_flush_tag, i_rob_head_tag
+  )));
+
+  // Stage2 content consumed by downstream FU this cycle (one-shot pulse).
+  assign stage2_accept = !BYPASS_STAGE2 && stage2_valid && i_fu_ready && !stage2_should_flush;
+
+  // RS may load stage2 when it is empty or being consumed this cycle.
+  assign can_issue_to_stage2 = !stage2_valid || stage2_accept;
+
+  // Issue from RS entry arrays into stage2. i_fu_ready is retained so that
+  // entries only move to stage2 when the FU can accept — preserving the same
+  // count/full/empty semantics as the old combinational design. The timing
+  // benefit comes from registering the DATA path in stage2, not from decoupling
+  // the control path.
+  // A partial/full flush invalidates younger entries on the clock edge, but the
+  // ready scan above still sees pre-flush state combinationally in the same
+  // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
+  // misprediction/trap flush cycle.
+  assign issue_fire = any_ready && i_fu_ready &&
+                      (BYPASS_STAGE2 || can_issue_to_stage2) &&
+                      !i_flush_all && !i_flush_en;
+
+  function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [1:0] sel);
+    begin
+      case (sel)
+        2'd1: repair_value_for_sel = i_repair_value_1;
+        2'd2: repair_value_for_sel = i_repair_value_2;
+        2'd3: repair_value_for_sel = i_repair_value_3;
+        default: repair_value_for_sel = '0;
+      endcase
+    end
+  endfunction
+
+  always_comb begin
+    bypass_issue                 = '0;
+    bypass_issue_writes_cdb_hint = 1'b0;
+    if (BYPASS_STAGE2) begin
+      bypass_issue.valid = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
+      bypass_issue.rob_tag = rs_rob_tag[issue_idx];
+      bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
+      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value :
+                                ((src1_repair_sel[issue_idx] != 2'd0) ?
+                                 repair_value_for_sel(src1_repair_sel[issue_idx]) :
+          rs_src1_value[issue_idx]);
+      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value :
+                                ((src2_repair_sel[issue_idx] != 2'd0) ?
+                                 repair_value_for_sel(src2_repair_sel[issue_idx]) :
+          rs_src2_value[issue_idx]);
+      if (HAS_SRC3) begin
+        bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value :
+                                  ((src3_repair_sel[issue_idx] != 2'd0) ?
+                                   repair_value_for_sel(src3_repair_sel[issue_idx]) :
+            rs_src3_value[issue_idx]);
+      end
+      bypass_issue.imm = pl_imm;
+      bypass_issue.use_imm = rs_use_imm[issue_idx];
+      bypass_issue.rm = pl_rm;
+      bypass_issue.branch_target = pl_branch_target;
+      bypass_issue.predicted_taken = pl_predicted_taken;
+      bypass_issue.predicted_target = pl_predicted_target;
+      bypass_issue.is_fp_mem = pl_is_fp_mem;
+      bypass_issue.mem_needs_lq = pl_mem_needs_lq;
+      bypass_issue.mem_needs_sq = pl_mem_needs_sq;
+      bypass_issue.mem_size = riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      bypass_issue.mem_signed = pl_mem_signed;
+      bypass_issue.csr_addr = pl_csr_addr;
+      bypass_issue.csr_imm = pl_csr_imm;
+      bypass_issue.pc = pl_pc;
+      bypass_issue.link_addr = pl_link_addr;
+      bypass_issue.has_checkpoint = pl_has_checkpoint;
+      bypass_issue.checkpoint_id = pl_checkpoint_id;
+      bypass_issue.is_call = pl_is_call;
+      bypass_issue.is_return = pl_is_return;
+      bypass_issue_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ?
+                                      rs_writes_cdb_hint[issue_idx] : 1'b0;
     end
   end
 
-  // --- Issue port assignment ---
-`ifdef ICARUS
-  assign o_issue_valid            = issue_out_valid;
-  assign o_issue_rob_tag          = issue_out_rob_tag;
-  assign o_issue_op               = issue_out_op;
-  assign o_issue_src1_value       = issue_out_src1_value;
-  assign o_issue_src2_value       = issue_out_src2_value;
-  assign o_issue_src3_value       = issue_out_src3_value;
-  assign o_issue_imm              = issue_out_imm;
-  assign o_issue_use_imm          = issue_out_use_imm;
-  assign o_issue_rm               = issue_out_rm;
-  assign o_issue_branch_target    = issue_out_branch_target;
-  assign o_issue_predicted_taken  = issue_out_predicted_taken;
-  assign o_issue_predicted_target = issue_out_predicted_target;
-  assign o_issue_is_fp_mem        = issue_out_is_fp_mem;
-  assign o_issue_mem_size         = issue_out_mem_size;
-  assign o_issue_mem_signed       = issue_out_mem_signed;
-  assign o_issue_csr_addr         = issue_out_csr_addr;
-  assign o_issue_csr_imm          = issue_out_csr_imm;
-  assign o_issue_pc               = issue_out_pc;
-`else
-  always_comb begin
-    o_issue.valid            = issue_out_valid;
-    o_issue.rob_tag          = issue_out_rob_tag;
-    o_issue.op               = issue_out_op;
-    o_issue.src1_value       = issue_out_src1_value;
-    o_issue.src2_value       = issue_out_src2_value;
-    o_issue.src3_value       = issue_out_src3_value;
-    o_issue.imm              = issue_out_imm;
-    o_issue.use_imm          = issue_out_use_imm;
-    o_issue.rm               = issue_out_rm;
-    o_issue.branch_target    = issue_out_branch_target;
-    o_issue.predicted_taken  = issue_out_predicted_taken;
-    o_issue.predicted_target = issue_out_predicted_target;
-    o_issue.is_fp_mem        = issue_out_is_fp_mem;
-    o_issue.mem_size         = issue_out_mem_size;
-    o_issue.mem_signed       = issue_out_mem_signed;
-    o_issue.csr_addr         = issue_out_csr_addr;
-    o_issue.csr_imm          = issue_out_csr_imm;
-    o_issue.pc               = issue_out_pc;
-  end
-`endif
+  // --- SC issue peek ---
+  // The generic RS reads this from stage2. MEM_RS can opt into the direct
+  // issue path and peek the ready entry combinationally instead.
+  assign bypass_next_issue_is_sc = BYPASS_STAGE2 && any_ready &&
+                                   (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+  assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
+                                            : (stage2_valid && stage2_is_sc);
+
+  // Pre-issue look-ahead: expose the selected entry's rob_tag and
+  // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
+  // can register a CAM pre-match and avoid a 5-level combinational chain
+  // at issue time (T).
+  assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
+  assign o_pre_issue_needs_lq = issue_fire && pl_mem_needs_lq;
+
+  // --- Issue port assignment (driven from stage2 pipeline register) ---
+  // Data fields are driven unconditionally from stage2 FFs.
+  // Valid depends only on registered stage2_valid and the FU ready signal
+  // (itself derived from registered adapter/shim state).  The same-cycle
+  // flush is intentionally NOT checked here: removing stage2_should_flush
+  // from the output breaks the critical timing path
+  //   trap_taken → flush → stage2_should_flush → o_issue.valid → downstream
+  // which was the longest combinational chain in the design (-1.28 ns WNS).
+  // A "phantom issue" can escape during a flush cycle, but it is harmless:
+  //   - Full flush (flush_all): LQ/SQ reset all state, ignoring the update.
+  //   - Partial flush (flush_en): LQ/SQ CAM-match on rob_tag; the flushed
+  //     entry's valid bit is cleared on the same edge, so the address update
+  //     writes into a dead entry that is never observed.
+  //   - CDB results for flushed tags are discarded by the ROB/RS flush logic.
+  // The internal stage2_accept signal still checks stage2_should_flush so
+  // that the stage2 pipeline register is correctly cleared on the next edge.
+  assign o_issue.valid = BYPASS_STAGE2 ? bypass_issue.valid : (stage2_valid && i_fu_ready);
+  assign o_issue.rob_tag = BYPASS_STAGE2 ? bypass_issue.rob_tag : stage2_rob_tag;
+  assign o_issue.op = BYPASS_STAGE2 ? bypass_issue.op : stage2_op;
+  // For CDB-bypassed sources, substitute the CDB value captured at issue
+  // time.  All inputs are registered, so this MUX is off the critical path.
+  assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
+                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
+  assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
+                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
+  assign o_issue.src3_value = HAS_SRC3 ?
+                              (BYPASS_STAGE2 ? bypass_issue.src3_value
+                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value)) : '0;
+  assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
+  assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
+  assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
+  assign o_issue.branch_target = BYPASS_STAGE2 ? bypass_issue.branch_target : stage2_branch_target;
+  assign o_issue.predicted_taken = BYPASS_STAGE2 ? bypass_issue.predicted_taken :
+                                                   stage2_predicted_taken;
+  assign o_issue.predicted_target = BYPASS_STAGE2 ? bypass_issue.predicted_target :
+                                                    stage2_predicted_target;
+  assign o_issue.is_fp_mem = BYPASS_STAGE2 ? bypass_issue.is_fp_mem : stage2_is_fp_mem;
+  assign o_issue.mem_needs_lq = BYPASS_STAGE2 ? bypass_issue.mem_needs_lq : stage2_mem_needs_lq;
+  assign o_issue.mem_needs_sq = BYPASS_STAGE2 ? bypass_issue.mem_needs_sq : stage2_mem_needs_sq;
+  assign o_issue.mem_size = BYPASS_STAGE2 ? bypass_issue.mem_size : stage2_mem_size;
+  assign o_issue.mem_signed = BYPASS_STAGE2 ? bypass_issue.mem_signed : stage2_mem_signed;
+  assign o_issue.csr_addr = BYPASS_STAGE2 ? bypass_issue.csr_addr : stage2_csr_addr;
+  assign o_issue.csr_imm = BYPASS_STAGE2 ? bypass_issue.csr_imm : stage2_csr_imm;
+  assign o_issue.pc = BYPASS_STAGE2 ? bypass_issue.pc : stage2_pc;
+  assign o_issue.link_addr = BYPASS_STAGE2 ? bypass_issue.link_addr : stage2_link_addr;
+  assign o_issue.has_checkpoint = BYPASS_STAGE2 ? bypass_issue.has_checkpoint :
+                                                  stage2_has_checkpoint;
+  assign o_issue.checkpoint_id = BYPASS_STAGE2 ? bypass_issue.checkpoint_id : stage2_checkpoint_id;
+  assign o_issue.is_call = BYPASS_STAGE2 ? bypass_issue.is_call : stage2_is_call;
+  assign o_issue.is_return = BYPASS_STAGE2 ? bypass_issue.is_return : stage2_is_return;
+
+  assign o_issue_writes_cdb_hint = BYPASS_STAGE2 ? bypass_issue_writes_cdb_hint
+                                                 : stage2_writes_cdb_hint;
 
   // --- Status outputs ---
-  assign o_full  = full;
+  assign o_full = full;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -534,110 +730,222 @@ module reservation_station #(
   // Sequential Logic
   // ===========================================================================
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  // --- Control signals (with reset) ---
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      // Reset: clear all valid bits
       rs_valid      <= '0;
       rs_src1_ready <= '0;
       rs_src2_ready <= '0;
-      rs_src3_ready <= '0;
-      rs_use_imm    <= '0;
+      if (HAS_SRC3) rs_src3_ready_q <= '0;
+      rs_use_imm         <= '0;
+      rs_writes_cdb_hint <= '0;
+      count              <= '0;
     end else begin
+      count <= count_next;
 
-      // -----------------------------------------------------------------
       // Flush logic (highest priority for rs_valid)
-      // -----------------------------------------------------------------
       if (i_flush_all) begin
         rs_valid <= '0;
       end else if (i_flush_en) begin
+        // Partial flush: invalidate entries younger than flush_tag.
+        // The old head==flush_tag+1 full-clear is now handled by
+        // speculative_flush_all (passed as i_flush_all) from the wrapper.
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i] && should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
             rs_valid[i] <= 1'b0;
           end
         end
       end else begin
+        if (issue_fire) rs_valid[issue_idx] <= 1'b0;
 
-        // -----------------------------------------------------------------
-        // Issue: invalidate issued entry
-        // -----------------------------------------------------------------
-        if (issue_fire) begin
-          rs_valid[issue_idx] <= 1'b0;
-        end
-
-        // -----------------------------------------------------------------
-        // Dispatch: write new entry at free index
-        // -----------------------------------------------------------------
         if (dispatch_fire) begin
-          rs_valid[free_idx]   <= 1'b1;
-          rs_rob_tag[free_idx] <= dispatch_rob_tag;
+          rs_valid[free_idx] <= 1'b1;
+          if (TRACK_INT_WRITEBACK_HINT)
+            rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
-          // Source 1 -- CDB bypass: if CDB matches src1 tag, capture value
-          if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) begin
-            rs_src1_ready[free_idx] <= 1'b1;
-            rs_src1_tag[free_idx]   <= dispatch_src1_tag;
-            rs_src1_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src1_ready[free_idx] <= dispatch_src1_ready;
-            rs_src1_tag[free_idx]   <= dispatch_src1_tag;
-            rs_src1_value[free_idx] <= dispatch_src1_value;
+          // Source ready bits (dispatch + same-cycle CDB bypass). Some RS
+          // instances also allow insertion-time done-repair bypass; others use
+          // only the post-insertion repair snoop to keep ROB value bypass off
+          // their dispatch write cone.
+          rs_src1_ready[free_idx] <= dispatch_src1_ready ||
+              (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
+              dispatch_src1_repair_match;
+          rs_src2_ready[free_idx] <= dispatch_src2_ready ||
+              (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
+              dispatch_src2_repair_match;
+          if (HAS_SRC3) begin
+            rs_src3_ready_q[free_idx] <= dispatch_src3_ready ||
+                (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
+                dispatch_src3_repair_match;
           end
-
-          // Source 2 -- CDB bypass
-          if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag) begin
-            rs_src2_ready[free_idx] <= 1'b1;
-            rs_src2_tag[free_idx]   <= dispatch_src2_tag;
-            rs_src2_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src2_ready[free_idx] <= dispatch_src2_ready;
-            rs_src2_tag[free_idx]   <= dispatch_src2_tag;
-            rs_src2_value[free_idx] <= dispatch_src2_value;
-          end
-
-          // Source 3 -- CDB bypass
-          if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag) begin
-            rs_src3_ready[free_idx] <= 1'b1;
-            rs_src3_tag[free_idx]   <= dispatch_src3_tag;
-            rs_src3_value[free_idx] <= i_cdb.value;
-          end else begin
-            rs_src3_ready[free_idx] <= dispatch_src3_ready;
-            rs_src3_tag[free_idx]   <= dispatch_src3_tag;
-            rs_src3_value[free_idx] <= dispatch_src3_value;
-          end
-
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
+      end
 
-      end  // !flush
-
-      // -----------------------------------------------------------------
-      // CDB snoop (wakeup): update pending sources across all entries.
-      // Runs independently of flush/dispatch so surviving entries are
-      // woken even when partial flush coincides with a CDB broadcast.
-      // -----------------------------------------------------------------
-      if (i_cdb.valid) begin
+      // CDB and done-repair snoop wakeup (control: ready bits only)
+      if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i]) begin
-            // Source 1 wakeup
-            if (!rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag) begin
+            if (!rs_src1_ready[i] &&
+                ((i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src1_tag[i]
+                ))) begin
               rs_src1_ready[i] <= 1'b1;
-              rs_src1_value[i] <= i_cdb.value;
             end
-            // Source 2 wakeup
-            if (!rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag) begin
+            if (!rs_src2_ready[i] &&
+                ((i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src2_tag[i]
+                ))) begin
               rs_src2_ready[i] <= 1'b1;
-              rs_src2_value[i] <= i_cdb.value;
             end
-            // Source 3 wakeup
-            if (!rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag) begin
-              rs_src3_ready[i] <= 1'b1;
-              rs_src3_value[i] <= i_cdb.value;
+            if (HAS_SRC3 && !rs_src3_ready[i] &&
+                ((i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) ||
+                 done_repair_match(
+                    rs_src3_tag[i]
+                ))) begin
+              rs_src3_ready_q[i] <= 1'b1;
             end
           end
         end
       end
 
-    end  // !reset
+    end
   end
+
+  // --- Data signals (no reset) ---
+  always_ff @(posedge i_clk) begin
+    // Dispatch: capture tags and values at free index
+    if (dispatch_fire) begin
+      rs_rob_tag[free_idx]  <= dispatch_rob_tag;
+
+      // Source 1 (same-cycle CDB bypass or dispatch value)
+      rs_src1_tag[free_idx] <= dispatch_src1_tag;
+      if (!dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag)
+        rs_src1_value[free_idx] <= i_cdb.value;
+      else if (dispatch_src1_repair_match)
+        rs_src1_value[free_idx] <= done_repair_value(dispatch_src1_tag);
+      else rs_src1_value[free_idx] <= dispatch_src1_value;
+
+      // Source 2
+      rs_src2_tag[free_idx] <= dispatch_src2_tag;
+      if (!dispatch_src2_ready && i_cdb.valid && dispatch_src2_tag == i_cdb.tag)
+        rs_src2_value[free_idx] <= i_cdb.value;
+      else if (dispatch_src2_repair_match)
+        rs_src2_value[free_idx] <= done_repair_value(dispatch_src2_tag);
+      else rs_src2_value[free_idx] <= dispatch_src2_value;
+
+      // Source 3 (FMA only)
+      if (HAS_SRC3) begin
+        rs_src3_tag[free_idx] <= dispatch_src3_tag;
+        if (!dispatch_src3_ready && i_cdb.valid && dispatch_src3_tag == i_cdb.tag)
+          rs_src3_value[free_idx] <= i_cdb.value;
+        else if (dispatch_src3_repair_match)
+          rs_src3_value[free_idx] <= done_repair_value(dispatch_src3_tag);
+        else rs_src3_value[free_idx] <= dispatch_src3_value;
+      end
+    end
+
+    // CDB and done-repair snoop wakeup (data: capture values)
+    if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (rs_valid[i]) begin
+          if (!rs_src1_ready[i] && i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) begin
+            rs_src1_value[i] <= i_cdb.value;
+          end else if (!rs_src1_ready[i] && done_repair_match(rs_src1_tag[i])) begin
+            rs_src1_value[i] <= done_repair_value(rs_src1_tag[i]);
+          end
+
+          if (!rs_src2_ready[i] && i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) begin
+            rs_src2_value[i] <= i_cdb.value;
+          end else if (!rs_src2_ready[i] && done_repair_match(rs_src2_tag[i])) begin
+            rs_src2_value[i] <= done_repair_value(rs_src2_tag[i]);
+          end
+
+          if (HAS_SRC3 && !rs_src3_ready[i] && i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) begin
+            rs_src3_value[i] <= i_cdb.value;
+          end else if (HAS_SRC3 && !rs_src3_ready[i] && done_repair_match(rs_src3_tag[i])) begin
+            rs_src3_value[i] <= done_repair_value(rs_src3_tag[i]);
+          end
+        end
+      end
+    end
+  end
+
+  // ===========================================================================
+  // Stage 2 Pipeline Register — Sequential Logic
+  // ===========================================================================
+  // Captures the issued instruction's data on issue_fire and holds it until
+  // consumed by the downstream FU (stage2_accept) or flushed.
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      stage2_valid <= 1'b0;
+    end else if (BYPASS_STAGE2) begin
+      stage2_valid <= 1'b0;
+    end else if (stage2_should_flush) begin
+      // Flush squash: clear stage2. No refill is possible here because
+      // issue_fire is suppressed during flush (!i_flush_all && !i_flush_en).
+      stage2_valid <= 1'b0;
+    end else if (issue_fire) begin
+      // Load stage2 from the RS entry selected by the priority encoder.
+      // This covers both the empty-fill and back-to-back (accept + refill) cases.
+      // For CDB-bypassed sources, store the stale rs_src_value here and set the
+      // bypass flag; the output MUX substitutes cdb_value_q.  This breaks the
+      // timing-critical path CDB → tag match → issue select → FLEN MUX → stage2.
+      stage2_valid <= 1'b1;
+      stage2_rob_tag <= rs_rob_tag[issue_idx];
+      stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+      stage2_src1_value <= (src1_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+          src1_repair_sel[issue_idx]
+      ) : rs_src1_value[issue_idx];
+      stage2_src2_value <= (src2_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+          src2_repair_sel[issue_idx]
+      ) : rs_src2_value[issue_idx];
+      stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
+      stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
+      if (HAS_SRC3) begin
+        stage2_src3_value <= (src3_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+            src3_repair_sel[issue_idx]
+        ) : rs_src3_value[issue_idx];
+        stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
+      end
+      stage2_cdb_value <= i_cdb.value;
+      stage2_imm <= pl_imm;
+      stage2_use_imm <= rs_use_imm[issue_idx];
+      stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
+      stage2_rm <= pl_rm;
+      stage2_branch_target <= pl_branch_target;
+      stage2_predicted_taken <= pl_predicted_taken;
+      stage2_predicted_target <= pl_predicted_target;
+      stage2_is_fp_mem <= pl_is_fp_mem;
+      stage2_mem_needs_lq <= pl_mem_needs_lq;
+      stage2_mem_needs_sq <= pl_mem_needs_sq;
+      stage2_mem_size <= riscv_pkg::mem_size_e'(pl_mem_size_bits);
+      stage2_mem_signed <= pl_mem_signed;
+      stage2_csr_addr <= pl_csr_addr;
+      stage2_csr_imm <= pl_csr_imm;
+      stage2_pc <= pl_pc;
+      stage2_link_addr <= pl_link_addr;
+      stage2_has_checkpoint <= pl_has_checkpoint;
+      stage2_checkpoint_id <= pl_checkpoint_id;
+      stage2_is_call <= pl_is_call;
+      stage2_is_return <= pl_is_return;
+    end else if (stage2_accept) begin
+      // Consumed by FU, no new entry ready — go empty.
+      stage2_valid <= 1'b0;
+    end
+    // else: stage2_valid && !stage2_accept && !stage2_should_flush — hold (blocked)
+  end
+
+  // No reset: this sideband is only observed when stage2_valid is set.
+  always_ff @(posedge i_clk) begin
+    if (issue_fire) begin
+      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+    end
+  end
+
 
   // ===========================================================================
   // Simulation Assertions
@@ -653,8 +961,10 @@ module reservation_station #(
         $warning("RS: dispatch attempted during flush");
 
       // Issue fires only for ready entries (fatal: indicates RTL bug)
-      if (issue_out_valid && !entry_ready[issue_idx])
+      // Checks stage1 issue_fire (RS→stage2), not stage2 output.
+      if (issue_fire && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
+
     end
   end
 `endif
@@ -724,11 +1034,18 @@ module reservation_station #(
     end
   end
 
-  // Issue output valid implies the entry was valid and ready
+  // Stage1 issue_fire implies the selected entry was valid and ready
   always_comb begin
-    if (i_rst_n && issue_out_valid) begin
+    if (i_rst_n && issue_fire) begin
       p_issue_entry_was_valid : assert (rs_valid[issue_idx]);
       p_issue_entry_was_ready : assert (entry_ready[issue_idx]);
+    end
+  end
+
+  // Stage2 output valid implies stage2 is occupied
+  always_comb begin
+    if (i_rst_n && o_issue.valid && !BYPASS_STAGE2) begin
+      p_stage2_output_coherent : assert (stage2_valid);
     end
   end
 
@@ -749,9 +1066,10 @@ module reservation_station #(
         p_issue_clears_valid : assert (!rs_valid[$past(issue_idx)]);
       end
 
-      // flush_all empties RS
+      // flush_all empties RS and stage2
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (rs_valid == '0);
+        p_flush_all_empties_stage2 : assert (!stage2_valid);
       end
 
       // CDB snoop sets ready bit when tag matches (all entries checked).
@@ -770,7 +1088,7 @@ module reservation_station #(
             assert (rs_src1_ready[i]);
           if (!$past(rs_src2_ready[i]) && $past(rs_src2_tag[i]) == $past(i_cdb.tag))
             assert (rs_src2_ready[i]);
-          if (!$past(rs_src3_ready[i]) && $past(rs_src3_tag[i]) == $past(i_cdb.tag))
+          if (HAS_SRC3 && !$past(rs_src3_ready[i]) && $past(rs_src3_tag[i]) == $past(i_cdb.tag))
             assert (rs_src3_ready[i]);
         end
       end
@@ -817,6 +1135,16 @@ module reservation_station #(
       cover_cdb_bypass_at_dispatch :
       cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
              && dispatch_src1_tag == i_cdb.tag);
+
+      // Stage2 back-to-back: consumed and refilled in the same cycle
+      if (!BYPASS_STAGE2) cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
+
+      // Stage2 flush squash
+      if (!BYPASS_STAGE2) cover_stage2_flush : cover (stage2_should_flush);
+
+      // Stage2 blocked (FU not ready)
+      if (!BYPASS_STAGE2)
+        cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
     end
   end
 

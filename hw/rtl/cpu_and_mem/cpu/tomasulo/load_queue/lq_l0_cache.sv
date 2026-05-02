@@ -18,8 +18,8 @@
  * LQ L0 Data Cache
  *
  * Simplified OoO-compatible L0 data cache for the Load Queue.
- * Direct-mapped, word-aligned entries with FF-based tag+valid
- * and LUTRAM data array.
+ * Direct-mapped, word-aligned entries with FF-based valid bits and
+ * LUTRAM-backed tag/data arrays.
  *
  * The existing l0_cache.sv uses in-order pipeline types; this module
  * uses simple address/data ports suitable for the LQ's OoO issue path.
@@ -68,8 +68,9 @@ module lq_l0_cache #(
   // Storage
   // ===========================================================================
   logic [     DEPTH-1:0] valid;
-  logic [  TagWidth-1:0] tags                                                  [DEPTH];
-  logic [      XLEN-1:0] data                                                  [DEPTH];
+  logic [  TagWidth-1:0] tag_lookup_rd;
+  logic [  TagWidth-1:0] tag_inv_rd;
+  logic [      XLEN-1:0] data_lookup_rd;
 
   // ===========================================================================
   // Address decomposition
@@ -86,17 +87,89 @@ module lq_l0_cache #(
 
   wire  [IndexWidth-1:0] inv_index = i_invalidate_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] inv_tag = i_invalidate_addr[(2+IndexWidth)+:TagWidth];
+  logic                  invalidate_fill_entry;
+  logic                  invalidate_existing_entry;
+  logic                  lookup_hit_array;
+  logic                  lookup_fill_bypass;
+  logic                  lookup_invalidated;
+
+  // Tags are written only on fill and read at two independent addresses
+  // (lookup and invalidate), so duplicate the simple dual-port RAM once
+  // per read port instead of keeping the tag array in flip-flops.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(TagWidth)
+  ) u_tag_lookup_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (lookup_index),
+      .i_write_data   (fill_tag),
+      .o_read_data    (tag_lookup_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(TagWidth)
+  ) u_tag_inv_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (inv_index),
+      .i_write_data   (fill_tag),
+      .o_read_data    (tag_inv_rd)
+  );
+
+  // Data has a single write port and a single lookup read port, making it
+  // an ideal fit for a small LUTRAM rather than a bank of FFs.
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(XLEN)
+  ) u_data_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (lookup_index),
+      .i_write_data   (i_fill_data),
+      .o_read_data    (data_lookup_rd)
+  );
 
   // ===========================================================================
   // Combinational Lookup
   // ===========================================================================
-  assign o_lookup_hit  = valid[lookup_index] && (tags[lookup_index] == lookup_tag) && !lookup_mmio;
-  assign o_lookup_data = data[lookup_index];
+  assign invalidate_fill_entry =
+      i_invalidate_valid && i_fill_valid &&
+      (fill_index == inv_index) && (fill_tag == inv_tag);
+  assign invalidate_existing_entry =
+      i_invalidate_valid &&
+      valid[inv_index] &&
+      (tag_inv_rd == inv_tag) &&
+      !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
+  assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
+  // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be combined
+  // into o_lookup_hit. That created a long combinational chain
+  //   i_flush_en (← mispredict_recovery_pending) → accept_mem_response
+  //   → cache_fill_valid → lookup_fill_bypass → o_lookup_hit
+  //   → cache_hit_fast_path → o_mem_read_en → o_mmio_load_valid (wrapper FIFO)
+  //   → data_memory ADDRARDADDR
+  // that became the new -0.944 ns critical path after the issued_idx →
+  // lq_*_rd cone was removed. The bypass only helps the (rare) case where a
+  // load is staged for lookup the exact cycle its address is being filled by
+  // a sibling load's response; in every other case the LUTRAM is already
+  // updated by next cycle and the normal lookup_hit_array path wins. Drop
+  // the bypass term so o_lookup_hit depends only on registered signals
+  // (sq_check_addr_q, valid[], tag LUTRAM, i_invalidate_valid). Cost: a
+  // missed bypass forces one extra memory cycle for the same-cycle case.
+  assign lookup_fill_bypass = 1'b0;
+  assign lookup_invalidated =
+      i_invalidate_valid && (inv_index == lookup_index) && (inv_tag == lookup_tag);
+  assign o_lookup_hit = !lookup_mmio && lookup_hit_array && !lookup_invalidated;
+  assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
   // Sequential: Fill, Invalidate, Flush
   // ===========================================================================
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       valid <= '0;
     end else if (i_flush_all) begin
@@ -105,15 +178,16 @@ module lq_l0_cache #(
       // Fill
       if (i_fill_valid) begin
         valid[fill_index] <= 1'b1;
-        tags[fill_index]  <= fill_tag;
-        data[fill_index]  <= i_fill_data;
       end
 
       // Invalidate (single address).
-      // Suppress when a concurrent fill targets the same index — the fill
-      // takes priority since it writes a fresh tag+data.
-      if (i_invalidate_valid && valid[inv_index] && tags[inv_index] == inv_tag
-          && !(i_fill_valid && fill_index == inv_index)) begin
+      //
+      // A concurrent fill to the same index is only allowed to win when it
+      // replaces a DIFFERENT tag in that direct-mapped slot. If the fill and
+      // invalidate target the same tag, the invalidate must win; otherwise a
+      // load response can reinsert stale data into the cache in the same cycle
+      // that a committed store is trying to invalidate that word.
+      if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
       end
     end
@@ -149,7 +223,7 @@ module lq_l0_cache #(
   always_comb begin
     if (i_rst_n && o_lookup_hit) begin
       p_hit_implies_valid : assert (valid[lookup_index]);
-      p_hit_implies_tag_match : assert (tags[lookup_index] == lookup_tag);
+      p_hit_implies_tag_match : assert (tag_lookup_rd == lookup_tag);
     end
   end
 
@@ -164,12 +238,12 @@ module lq_l0_cache #(
   // Track a single fill address across one cycle for a cleaner assertion.
   reg [XLEN-1:0] f_fill_addr_q;
   reg            f_fill_valid_q;
-  always @(posedge i_clk or negedge i_rst_n) begin
+  always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_fill_valid_q <= 1'b0;
       f_fill_addr_q  <= '0;
     end else begin
-      f_fill_valid_q <= i_fill_valid & ~i_flush_all;
+      f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry;
       f_fill_addr_q  <= i_fill_addr;
     end
   end

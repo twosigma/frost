@@ -141,6 +141,7 @@ module frost #(
       .o_instr_mem_rddata,
       .o_uart_wr_en(uart_write_enable_from_cpu),
       .o_uart_wr_data(uart_write_data_from_cpu),
+      .i_uart_tx_ready(uart_fifo_input_ready),
       // UART RX interface
       .i_uart_rx_data(uart_rx_data_to_cpu),
       .i_uart_rx_valid(uart_rx_data_valid_to_cpu),
@@ -197,6 +198,7 @@ module frost #(
   logic [7:0] uart_fifo_data;
   logic       uart_fifo_valid;
   logic       uart_fifo_ready;
+  logic       uart_fifo_input_ready;
 
   /*
     Dual-clock FIFO for UART data - crosses from CPU clock domain to UART clock domain (clk_div4)
@@ -204,7 +206,9 @@ module frost #(
     This enables the fast CPU to continue execution while UART sends data at baud rate.
   */
   dc_fifo #(
-      .DATA_WIDTH(8)  // 8 bits per UART character
+      .DATA_WIDTH(8),  // 8 bits per UART character
+      .DEPTH(16384),
+      .READY_MARGIN(64)
   ) uart_transmit_clock_domain_crossing_fifo (
       .o_clk(i_clk_div4),  // Output: UART clock domain (slow)
       .i_clk(i_clk),  // Input: CPU clock domain (fast)
@@ -212,7 +216,7 @@ module frost #(
       .i_rst(reset_synchronized),
       .i_data(uart_write_data_delay_chain[NumUartDelayStages-1]),
       .i_valid(uart_write_enable_delay_chain[NumUartDelayStages-1]),
-      .o_ready(),  // Not used - assume FIFO has sufficient depth
+      .o_ready(uart_fifo_input_ready),
       .o_data(uart_fifo_data),
       .o_valid(uart_fifo_valid),
       .i_ready(uart_fifo_ready)

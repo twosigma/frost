@@ -235,8 +235,8 @@ def _adjust_imm_to_avoid_mmio(
 ) -> int:
     """Adjust immediate if the effective address would land in reserved high space.
 
-    The in-order CPU treats all addresses at or above 0x40000000 as non-cacheable
-    MMIO/reserved space. Keep random RAM accesses below that boundary so the DUT
+    Frost treats all addresses at or above 0x40000000 as MMIO/reserved space.
+    Keep random RAM accesses below that boundary so the DUT
     and software memory model exercise the same backing store.
 
     Args:

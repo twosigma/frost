@@ -15,7 +15,7 @@
  */
 
 /*
- * Execute (EX) Stage - Fourth stage of the 6-stage RISC-V pipeline
+ * Legacy Execute (EX) stage from the former in-order back-end
  *
  * This stage performs the core computational work of the processor:
  *   - ALU operations for arithmetic, logical, and bit manipulation
@@ -223,11 +223,15 @@ module ex_stage #(
       .o_btb_update_pc(o_from_ex_comb.btb_update_pc),
       .o_btb_update_target(o_from_ex_comb.btb_update_target),
       .o_btb_update_taken(o_from_ex_comb.btb_update_taken),
+      .o_btb_update_compressed(o_from_ex_comb.btb_update_compressed),
+      .o_btb_update_requires_pc_reg_handoff(o_from_ex_comb.btb_update_requires_pc_reg_handoff),
       // RAS recovery outputs
       .o_ras_misprediction(o_from_ex_comb.ras_misprediction),
       .o_ras_restore_tos(o_from_ex_comb.ras_restore_tos),
       .o_ras_restore_valid_count(o_from_ex_comb.ras_restore_valid_count),
-      .o_ras_pop_after_restore(o_from_ex_comb.ras_pop_after_restore)
+      .o_ras_pop_after_restore(o_from_ex_comb.ras_pop_after_restore),
+      .o_ras_push_after_restore(o_from_ex_comb.ras_push_after_restore),
+      .o_ras_push_address_after_restore(o_from_ex_comb.ras_push_address_after_restore)
   );
 
   // Store unit - calculates memory addresses and prepares data for writes

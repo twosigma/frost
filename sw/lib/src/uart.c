@@ -39,9 +39,19 @@
 void uart_putchar(char c)
 {
     /* Terminals that expect CR+LF line endings need CR (carriage return) before LF (line feed) */
-    if (c == '\n')
+    if (c == '\n') {
+        while (!uart_tx_ready())
+            ;
         UART_TX = (uint8_t) '\r';
+    }
+    while (!uart_tx_ready())
+        ;
     UART_TX = (uint8_t) c;
+}
+
+int uart_tx_ready(void)
+{
+    return (UART_TX_STATUS & 1) != 0;
 }
 
 void uart_puts(const char *s)

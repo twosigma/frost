@@ -39,32 +39,38 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (121 bits total, MSB to LSB):
-# [120]     alloc_valid
-# [119:88]  pc (32 bits)
-# [87]      dest_rf
-# [86:82]   dest_reg (5 bits)
-# [81]      dest_valid
-# [80]      is_store
-# [79]      is_fp_store
-# [78]      is_branch
-# [77]      predicted_taken
-# [76:45]   predicted_target (32 bits)
-# [44]      is_call
-# [43]      is_return
-# [42:11]   link_addr (32 bits)
-# [10]      is_jal
-# [9]       is_jalr
-# [8]       is_csr
-# [7]       is_fence
-# [6]       is_fence_i
-# [5]       is_wfi
-# [4]       is_mret
-# [3]       is_amo
-# [2]       is_lr
-# [1]       is_sc
-# [0]       is_compressed
-ALLOC_REQ_WIDTH = 121
+# reorder_buffer_alloc_req_t field positions (204 bits total, MSB to LSB):
+# [203]      alloc_valid
+# [202:171]  pc (32 bits)
+# [170:168]  rs_type (3 bits)
+# [167]      dest_rf
+# [166:162]  dest_reg (5 bits)
+# [161]      dest_valid
+# [160]      is_store
+# [159]      is_fp_store
+# [158]      is_branch
+# [157]      predicted_taken
+# [156:125]  predicted_target (32 bits)
+# [124:93]   branch_target (32 bits)
+# [92]       is_call
+# [91]       is_return
+# [90:59]    link_addr (32 bits)
+# [58]       is_jal
+# [57]       is_jalr
+# [56]       is_csr
+# [55]       is_fence
+# [54]       is_fence_i
+# [53]       is_wfi
+# [52]       is_mret
+# [51]       is_amo
+# [50]       is_lr
+# [49]       is_sc
+# [48]       is_compressed
+# [47:36]    csr_addr (12 bits)
+# [35:33]    csr_op (3 bits)
+# [32:1]     csr_write_data (32 bits)
+# [0]        has_fp_flags
+ALLOC_REQ_WIDTH = 204
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -76,6 +82,14 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit = 0  # Start from LSB
 
     # Pack from LSB to MSB (reverse order of struct declaration)
+    val |= (1 if req.has_fp_flags else 0) << bit
+    bit += 1
+    val |= (req.csr_write_data & MASK32) << bit
+    bit += 32
+    val |= (req.csr_op & 0x7) << bit
+    bit += 3
+    val |= (req.csr_addr & 0xFFF) << bit
+    bit += 12
     val |= (1 if req.is_compressed else 0) << bit
     bit += 1
     val |= (1 if req.is_sc else 0) << bit
@@ -104,6 +118,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 1
     val |= (1 if req.is_call else 0) << bit
     bit += 1
+    val |= (req.branch_target & MASK32) << bit
+    bit += 32
     val |= (req.predicted_target & MASK32) << bit
     bit += 32
     val |= (1 if req.predicted_taken else 0) << bit
@@ -120,6 +136,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 5
     val |= (req.dest_rf & 1) << bit
     bit += 1
+    val |= (req.rs_type & 0x7) << bit
+    bit += 3
     val |= (req.pc & MASK32) << bit
     bit += 32
     val |= 1 << bit  # alloc_valid = 1
@@ -208,63 +226,69 @@ def pack_branch_update_invalid() -> int:
     return 0
 
 
-# reorder_buffer_commit_t (unpacking for reads):
-# See tomasulo_pkg.sv for field order
-# Total approximately 200+ bits
+COMMIT_FIELDS = [
+    ("valid", 1),
+    ("tag", 5),
+    ("dest_rf", 1),
+    ("dest_reg", 5),
+    ("dest_valid", 1),
+    ("value", 64),
+    ("is_store", 1),
+    ("is_fp_store", 1),
+    ("exception", 1),
+    ("pc", 32),
+    ("exc_cause", 5),
+    ("fp_flags", 5),
+    ("has_fp_flags", 1),
+    ("misprediction", 1),
+    ("early_recovered", 1),
+    ("has_checkpoint", 1),
+    ("checkpoint_id", 3),
+    ("redirect_pc", 32),
+    ("predicted_taken", 1),
+    ("branch_taken", 1),
+    ("branch_target", 32),
+    ("is_branch", 1),
+    ("is_call", 1),
+    ("is_return", 1),
+    ("is_jal", 1),
+    ("is_jalr", 1),
+    ("csr_addr", 12),
+    ("csr_op", 3),
+    ("csr_write_data", 32),
+    ("is_csr", 1),
+    ("is_fence", 1),
+    ("is_fence_i", 1),
+    ("is_wfi", 1),
+    ("is_mret", 1),
+    ("is_amo", 1),
+    ("is_lr", 1),
+    ("is_sc", 1),
+    ("is_compressed", 1),
+]
+
+_COMMIT_OFFSETS: dict[str, tuple[int, int]] = {}
+_offset = sum(width for _, width in COMMIT_FIELDS)
+for _name, _width in COMMIT_FIELDS:
+    _offset -= _width
+    _COMMIT_OFFSETS[_name] = (_offset, _width)
+assert _offset == 0
+
+
 def unpack_commit(val: int) -> dict[str, Any]:
     """Unpack commit output into a dictionary."""
-    bit = 0
     result: dict[str, Any] = {}
-
-    result["is_sc"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_lr"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_amo"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_mret"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_wfi"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fence_i"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fence"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_csr"] = bool((val >> bit) & 1)
-    bit += 1
-    result["redirect_pc"] = (val >> bit) & MASK32
-    bit += 32
-    result["checkpoint_id"] = (val >> bit) & 0x3
-    bit += 2
-    result["has_checkpoint"] = bool((val >> bit) & 1)
-    bit += 1
-    result["misprediction"] = bool((val >> bit) & 1)
-    bit += 1
-    result["fp_flags"] = (val >> bit) & 0x1F
-    bit += 5
-    result["exc_cause"] = (val >> bit) & 0x1F
-    bit += 5
-    result["pc"] = (val >> bit) & MASK32
-    bit += 32
-    result["exception"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_fp_store"] = bool((val >> bit) & 1)
-    bit += 1
-    result["is_store"] = bool((val >> bit) & 1)
-    bit += 1
-    result["value"] = (val >> bit) & MASK64
-    bit += 64
-    result["dest_valid"] = bool((val >> bit) & 1)
-    bit += 1
-    result["dest_reg"] = (val >> bit) & 0x1F
-    bit += 5
-    result["dest_rf"] = (val >> bit) & 1
-    bit += 1
-    result["tag"] = (val >> bit) & 0x1F
-    bit += 5
-    result["valid"] = bool((val >> bit) & 1)
-
+    for name, (offset, width) in _COMMIT_OFFSETS.items():
+        raw = (val >> offset) & ((1 << width) - 1)
+        result[name] = bool(raw) if width == 1 else raw
     return result
+
+
+def read_commit_output(dut: Any) -> dict[str, Any]:
+    """Read commit output as sampled on the active clock edge."""
+    if hasattr(dut, "o_commit_comb"):
+        return unpack_commit(int(dut.o_commit_comb.value))
+    return unpack_commit(int(dut.o_commit.value))
 
 
 class ReorderBufferInterface:
@@ -334,11 +358,15 @@ class ReorderBufferInterface:
         """Initialize all input signals to default values."""
         self.dut.i_alloc_req.value = 0
         self.dut.i_cdb_write.value = 0
+        self.dut.i_store_complete_valid.value = 0
+        self.dut.i_store_complete_tag.value = 0
         self.dut.i_branch_update.value = 0
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_empty.value = 1
         self.dut.i_sq_committed_empty.value = 1
+        self.dut.i_widen_commit_ok.value = 1
+        self.dut.i_commit_hold.value = 0
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0
@@ -347,6 +375,8 @@ class ReorderBufferInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_early_recovery_en.value = 0
+        self.dut.i_early_recovery_tag.value = 0
         self.dut.i_read_tag.value = 0
 
     # =========================================================================
@@ -395,6 +425,24 @@ class ReorderBufferInterface:
         """Clear CDB write."""
         self.dut.i_cdb_write.value = 0
 
+    def drive_store_complete(self, tag: int) -> None:
+        """Drive direct store-complete pulse. Call on falling edge."""
+        self.dut.i_store_complete_valid.value = 1
+        self.dut.i_store_complete_tag.value = tag
+
+    def clear_store_complete(self) -> None:
+        """Clear direct store-complete pulse."""
+        self.dut.i_store_complete_valid.value = 0
+        self.dut.i_store_complete_tag.value = 0
+
+    async def store_complete(self, tag: int) -> None:
+        """Perform direct store-complete transaction."""
+        await FallingEdge(self.clock)
+        self.drive_store_complete(tag)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_store_complete()
+
     async def cdb_write(self, write: CDBWrite) -> None:
         """Perform CDB write transaction."""
         await FallingEdge(self.clock)
@@ -442,8 +490,7 @@ class ReorderBufferInterface:
 
     def read_commit(self) -> dict:
         """Read commit output signals."""
-        val = int(self.dut.o_commit.value)
-        return unpack_commit(val)
+        return read_commit_output(self.dut)
 
     @property
     def commit_valid(self) -> bool:

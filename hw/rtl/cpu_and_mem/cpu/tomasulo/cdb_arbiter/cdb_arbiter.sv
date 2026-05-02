@@ -22,14 +22,15 @@
  *   - ROB (mark done + store value)
  *   - All RS instances (operand wakeup)
  *
- * Priority order (longest latency first, to minimize pipeline stalls):
- *   1. FP_DIV (6) — ~32-35 cycles
- *   2. DIV   (2) — 17 cycles
- *   3. FP_MUL (5) — ~8-9 cycles
- *   4. MUL   (1) — 4 cycles
- *   5. FP_ADD (4) — ~4-5 cycles
- *   6. MEM   (3) — variable (cache hit ~1 cycle)
- *   7. ALU   (0) — combinational, can tolerate wait
+ * Priority order favors integer traffic without putting FP/div valid cones
+ * ahead of the CoreMark-critical grants:
+ *   1. MUL   (1) — integer multiply
+ *   2. MEM   (3) — load/SC results
+ *   3. ALU   (0) — common integer path
+ *   4. DIV   (2) — integer divide
+ *   5. FP_DIV (6)
+ *   6. FP_MUL (5)
+ *   7. FP_ADD (4)
  *
  * Purely combinational — no output register. Matches how i_cdb currently
  * feeds RS/ROB on the same cycle edge.
@@ -42,38 +43,52 @@ module cdb_arbiter (
     input logic i_rst_n,
 
     // FU completion requests (one per functional unit)
-`ifdef VERILATOR
-    // Only Verilator supports unpacked arrays of packed structs as ports.
-    input riscv_pkg::fu_complete_t i_fu_complete  [riscv_pkg::NumFus],
-`else
-    // Icarus and Yosys (synthesis/formal) need flattened individual ports.
-    input riscv_pkg::fu_complete_t i_fu_complete_0,
-    input riscv_pkg::fu_complete_t i_fu_complete_1,
-    input riscv_pkg::fu_complete_t i_fu_complete_2,
-    input riscv_pkg::fu_complete_t i_fu_complete_3,
-    input riscv_pkg::fu_complete_t i_fu_complete_4,
-    input riscv_pkg::fu_complete_t i_fu_complete_5,
-    input riscv_pkg::fu_complete_t i_fu_complete_6,
-`endif
+    input riscv_pkg::fu_complete_t i_fu_complete_0,  // ALU
+    input riscv_pkg::fu_complete_t i_fu_complete_1,  // MUL
+    input riscv_pkg::fu_complete_t i_fu_complete_2,  // DIV
+    input riscv_pkg::fu_complete_t i_fu_complete_3,  // MEM
+    input riscv_pkg::fu_complete_t i_fu_complete_4,  // FP_ADD
+    input riscv_pkg::fu_complete_t i_fu_complete_5,  // FP_MUL
+    input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
+
+    // Suppress CDB broadcast/grants during speculative full-flush recovery.
+    input logic i_kill,
 
     // CDB broadcast output (to RS wakeup + ROB write)
     output riscv_pkg::cdb_broadcast_t o_cdb,
 
     // Per-FU grant signals (back-pressure: FU can clear result when granted)
-    output logic [riscv_pkg::NumFus-1:0] o_grant
+    output logic [riscv_pkg::NumFus-1:0] o_grant,
+
+    // Pre-kill grant vector. Identical to o_grant when !i_kill; during kill,
+    // still reflects the priority-encoder result (not zero). Used by shims
+    // that need a flush-independent "would be granted" signal for pop
+    // decisions — during kill the shim is clearing its own FIFO via i_flush,
+    // so popping a "would-grant" entry is harmless (cleared at same edge).
+    // Keeps the cdb_kill → shim→fifo_regs combinational cone off the
+    // critical path.
+    output logic [riscv_pkg::NumFus-1:0] o_grant_raw
 );
+
+  // Build internal array from individual ports
+  riscv_pkg::fu_complete_t i_fu_complete[riscv_pkg::NumFus];
+  assign i_fu_complete[0] = i_fu_complete_0;
+  assign i_fu_complete[1] = i_fu_complete_1;
+  assign i_fu_complete[2] = i_fu_complete_2;
+  assign i_fu_complete[3] = i_fu_complete_3;
+  assign i_fu_complete[4] = i_fu_complete_4;
+  assign i_fu_complete[5] = i_fu_complete_5;
+  assign i_fu_complete[6] = i_fu_complete_6;
 
   // Valid vector for convenience (used by formal assertions)
   logic                    [riscv_pkg::NumFus-1:0] valid_vec;
 
-  // Fixed-priority encoder: longest-latency FU wins.
-  // Priority: FP_DIV > DIV > FP_MUL > MUL > FP_ADD > MEM > ALU
+  // Fixed-priority encoder.
+  // Priority: MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD
   logic                                            found;
   logic                    [                  2:0] winner_idx;
   riscv_pkg::fu_complete_t                         winner_data;
 
-`ifdef VERILATOR
-  // Use unpacked array port directly (this path is active under VERILATOR)
   always_comb begin
     for (int i = 0; i < riscv_pkg::NumFus; i++) begin
       valid_vec[i] = i_fu_complete[i].valid;
@@ -84,105 +99,59 @@ module cdb_arbiter (
     found       = 1'b0;
     winner_idx  = 3'd0;
     winner_data = '0;
-    o_grant     = '0;
+    o_grant_raw = '0;
 
-    if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_DIV;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_DIV];
-      o_grant[riscv_pkg::FU_FP_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_DIV;
-      winner_data                = i_fu_complete[riscv_pkg::FU_DIV];
-      o_grant[riscv_pkg::FU_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_MUL;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_MUL];
-      o_grant[riscv_pkg::FU_FP_MUL] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_MUL].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MUL;
-      winner_data                = i_fu_complete[riscv_pkg::FU_MUL];
-      o_grant[riscv_pkg::FU_MUL] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_ADD;
-      winner_data                   = i_fu_complete[riscv_pkg::FU_FP_ADD];
-      o_grant[riscv_pkg::FU_FP_ADD] = 1'b1;
+    if (i_fu_complete[riscv_pkg::FU_MUL].valid) begin
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_MUL;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_MUL];
+      o_grant_raw[riscv_pkg::FU_MUL] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_MEM].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MEM;
-      winner_data                = i_fu_complete[riscv_pkg::FU_MEM];
-      o_grant[riscv_pkg::FU_MEM] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_MEM;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_MEM];
+      o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete[riscv_pkg::FU_ALU].valid) begin
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_ALU;
-      winner_data                = i_fu_complete[riscv_pkg::FU_ALU];
-      o_grant[riscv_pkg::FU_ALU] = 1'b1;
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_ALU;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_ALU];
+      o_grant_raw[riscv_pkg::FU_ALU] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
+      found                          = 1'b1;
+      winner_idx                     = riscv_pkg::FU_DIV;
+      winner_data                    = i_fu_complete[riscv_pkg::FU_DIV];
+      o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_DIV;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_DIV];
+      o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_MUL;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_MUL];
+      o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
+    end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
+      found                             = 1'b1;
+      winner_idx                        = riscv_pkg::FU_FP_ADD;
+      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_ADD];
+      o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end
-`else
-  // Icarus / Yosys (synthesis + formal): reference individual port names
-  always_comb begin
-    valid_vec[0] = i_fu_complete_0.valid;
-    valid_vec[1] = i_fu_complete_1.valid;
-    valid_vec[2] = i_fu_complete_2.valid;
-    valid_vec[3] = i_fu_complete_3.valid;
-    valid_vec[4] = i_fu_complete_4.valid;
-    valid_vec[5] = i_fu_complete_5.valid;
-    valid_vec[6] = i_fu_complete_6.valid;
-  end
 
+  // Kill-gated grant: suppress CDB broadcast and adapter grant when in
+  // speculative full-flush recovery. o_grant_raw is the pre-kill version.
   always_comb begin
-    found       = 1'b0;
-    winner_idx  = 3'd0;
-    winner_data = '0;
-    o_grant     = '0;
-
-    if (i_fu_complete_6.valid) begin  // FP_DIV
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_DIV;
-      winner_data                   = i_fu_complete_6;
-      o_grant[riscv_pkg::FU_FP_DIV] = 1'b1;
-    end else if (i_fu_complete_2.valid) begin  // DIV
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_DIV;
-      winner_data                = i_fu_complete_2;
-      o_grant[riscv_pkg::FU_DIV] = 1'b1;
-    end else if (i_fu_complete_5.valid) begin  // FP_MUL
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_MUL;
-      winner_data                   = i_fu_complete_5;
-      o_grant[riscv_pkg::FU_FP_MUL] = 1'b1;
-    end else if (i_fu_complete_1.valid) begin  // MUL
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MUL;
-      winner_data                = i_fu_complete_1;
-      o_grant[riscv_pkg::FU_MUL] = 1'b1;
-    end else if (i_fu_complete_4.valid) begin  // FP_ADD
-      found                         = 1'b1;
-      winner_idx                    = riscv_pkg::FU_FP_ADD;
-      winner_data                   = i_fu_complete_4;
-      o_grant[riscv_pkg::FU_FP_ADD] = 1'b1;
-    end else if (i_fu_complete_3.valid) begin  // MEM
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_MEM;
-      winner_data                = i_fu_complete_3;
-      o_grant[riscv_pkg::FU_MEM] = 1'b1;
-    end else if (i_fu_complete_0.valid) begin  // ALU
-      found                      = 1'b1;
-      winner_idx                 = riscv_pkg::FU_ALU;
-      winner_data                = i_fu_complete_0;
-      o_grant[riscv_pkg::FU_ALU] = 1'b1;
+    if (i_kill) begin
+      o_grant = '0;
+    end else begin
+      o_grant = o_grant_raw;
     end
   end
-`endif
 
-  // Pack CDB output
+  // Pack CDB output. Suppressed during kill (speculative full-flush).
   always_comb begin
-    o_cdb.valid     = found;
+    o_cdb.valid     = found && !i_kill;
     o_cdb.tag       = winner_data.tag;
     o_cdb.value     = winner_data.value;
     o_cdb.exception = winner_data.exception;
@@ -220,6 +189,12 @@ module cdb_arbiter (
     p_grant_at_most_one : assert ($onehot0(o_grant));
   end
 
+  always_comb begin
+    if (i_kill) begin
+      p_kill_blocks_cdb : assert (!o_cdb.valid && o_grant == '0);
+    end
+  end
+
   // Grant and CDB valid are equivalent
   always_comb begin
     p_grant_implies_cdb_valid : assert ((|o_grant) == o_cdb.valid);
@@ -246,75 +221,75 @@ module cdb_arbiter (
     end
   end
 
-  // CDB tag matches granted FU (unrolled for flattened ports)
+  // CDB tag matches granted FU
   always_comb begin
-    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_tag_alu : assert (o_cdb.tag == i_fu_complete_0.tag);
-    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_tag_mul : assert (o_cdb.tag == i_fu_complete_1.tag);
-    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_tag_div : assert (o_cdb.tag == i_fu_complete_2.tag);
-    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_tag_mem : assert (o_cdb.tag == i_fu_complete_3.tag);
-    if (o_grant[riscv_pkg::FU_FP_ADD]) p_cdb_tag_fp_add : assert (o_cdb.tag == i_fu_complete_4.tag);
-    if (o_grant[riscv_pkg::FU_FP_MUL]) p_cdb_tag_fp_mul : assert (o_cdb.tag == i_fu_complete_5.tag);
-    if (o_grant[riscv_pkg::FU_FP_DIV]) p_cdb_tag_fp_div : assert (o_cdb.tag == i_fu_complete_6.tag);
+    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_tag_alu : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_tag_mul : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_tag_div : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_tag_mem : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_ADD]) p_cdb_tag_fp_add : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_MUL]) p_cdb_tag_fp_mul : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_FP_DIV]) p_cdb_tag_fp_div : assert (o_cdb.tag == winner_data.tag);
   end
 
-  // CDB value matches granted FU (unrolled for flattened ports)
+  // CDB value matches granted FU
   always_comb begin
-    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_value_alu : assert (o_cdb.value == i_fu_complete_0.value);
-    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_value_mul : assert (o_cdb.value == i_fu_complete_1.value);
-    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_value_div : assert (o_cdb.value == i_fu_complete_2.value);
-    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_value_mem : assert (o_cdb.value == i_fu_complete_3.value);
+    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_value_alu : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_value_mul : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_value_div : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_value_mem : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_ADD])
-      p_cdb_value_fp_add : assert (o_cdb.value == i_fu_complete_4.value);
+      p_cdb_value_fp_add : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_MUL])
-      p_cdb_value_fp_mul : assert (o_cdb.value == i_fu_complete_5.value);
+      p_cdb_value_fp_mul : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_DIV])
-      p_cdb_value_fp_div : assert (o_cdb.value == i_fu_complete_6.value);
+      p_cdb_value_fp_div : assert (o_cdb.value == winner_data.value);
   end
 
-  // CDB exception fields match granted FU (unrolled for flattened ports)
+  // CDB exception fields match granted FU
   always_comb begin
     if (o_grant[riscv_pkg::FU_ALU])
       p_cdb_exc_alu :
       assert (
-        o_cdb.exception == i_fu_complete_0.exception &&
-        o_cdb.exc_cause == i_fu_complete_0.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_0.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_MUL])
       p_cdb_exc_mul :
       assert (
-        o_cdb.exception == i_fu_complete_1.exception &&
-        o_cdb.exc_cause == i_fu_complete_1.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_1.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_DIV])
       p_cdb_exc_div :
       assert (
-        o_cdb.exception == i_fu_complete_2.exception &&
-        o_cdb.exc_cause == i_fu_complete_2.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_2.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_MEM])
       p_cdb_exc_mem :
       assert (
-        o_cdb.exception == i_fu_complete_3.exception &&
-        o_cdb.exc_cause == i_fu_complete_3.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_3.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_ADD])
       p_cdb_exc_fp_add :
       assert (
-        o_cdb.exception == i_fu_complete_4.exception &&
-        o_cdb.exc_cause == i_fu_complete_4.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_4.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_MUL])
       p_cdb_exc_fp_mul :
       assert (
-        o_cdb.exception == i_fu_complete_5.exception &&
-        o_cdb.exc_cause == i_fu_complete_5.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_5.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
     if (o_grant[riscv_pkg::FU_FP_DIV])
       p_cdb_exc_fp_div :
       assert (
-        o_cdb.exception == i_fu_complete_6.exception &&
-        o_cdb.exc_cause == i_fu_complete_6.exc_cause &&
-        o_cdb.fp_flags  == i_fu_complete_6.fp_flags);
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
   end
 
   // CDB fu_type matches the granted FU index (unrolled for unique Yosys labels)
@@ -335,72 +310,72 @@ module cdb_arbiter (
   // Priority assertions (uses valid_vec, no array port access)
   // -------------------------------------------------------------------------
 
-  // FP_DIV (highest) always wins when valid
+  // MUL (highest) always wins when valid
   always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_DIV]) begin
-      p_priority_fp_div_wins : assert (o_grant[riscv_pkg::FU_FP_DIV]);
+    if (valid_vec[riscv_pkg::FU_MUL]) begin
+      p_priority_mul_wins : assert (o_grant_raw[riscv_pkg::FU_MUL]);
     end
   end
 
-  // DIV wins when valid and FP_DIV not valid
+  // MEM wins when valid and MUL not valid
   always_comb begin
-    if (valid_vec[riscv_pkg::FU_DIV] && !valid_vec[riscv_pkg::FU_FP_DIV]) begin
-      p_priority_div_over_lower : assert (o_grant[riscv_pkg::FU_DIV]);
+    if (valid_vec[riscv_pkg::FU_MEM] && !valid_vec[riscv_pkg::FU_MUL]) begin
+      p_priority_mem_over_lower : assert (o_grant_raw[riscv_pkg::FU_MEM]);
     end
   end
 
-  // FP_MUL wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV]) begin
-      p_priority_fp_mul_over_lower : assert (o_grant[riscv_pkg::FU_FP_MUL]);
-    end
-  end
-
-  // MUL wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL]) begin
-      p_priority_mul_over_lower : assert (o_grant[riscv_pkg::FU_MUL]);
-    end
-  end
-
-  // FP_ADD wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_FP_ADD] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_MUL]) begin
-      p_priority_fp_add_over_lower : assert (o_grant[riscv_pkg::FU_FP_ADD]);
-    end
-  end
-
-  // MEM wins when valid and higher-priority not valid
-  always_comb begin
-    if (valid_vec[riscv_pkg::FU_MEM] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
-        !valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_ADD]) begin
-      p_priority_mem_over_alu : assert (o_grant[riscv_pkg::FU_MEM]);
-    end
-  end
-
-  // ALU wins only when it's the sole valid FU
+  // ALU wins when valid and MUL/MEM are not valid
   always_comb begin
     if (valid_vec[riscv_pkg::FU_ALU] &&
-        !valid_vec[riscv_pkg::FU_FP_DIV] &&
-        !valid_vec[riscv_pkg::FU_DIV] &&
-        !valid_vec[riscv_pkg::FU_FP_MUL] &&
         !valid_vec[riscv_pkg::FU_MUL] &&
-        !valid_vec[riscv_pkg::FU_FP_ADD] &&
         !valid_vec[riscv_pkg::FU_MEM]) begin
-      p_priority_alu_lowest : assert (o_grant[riscv_pkg::FU_ALU]);
+      p_priority_alu_over_lower : assert (o_grant_raw[riscv_pkg::FU_ALU]);
+    end
+  end
+
+  // DIV wins when valid and CoreMark-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_ALU]) begin
+      p_priority_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_DIV]);
+    end
+  end
+
+  // FP_DIV wins when valid and higher-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_DIV] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV]) begin
+      p_priority_fp_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_DIV]);
+    end
+  end
+
+  // FP_MUL wins when valid and higher-priority FUs are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_MUL] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_DIV]) begin
+      p_priority_fp_mul_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_MUL]);
+    end
+  end
+
+  // FP_ADD wins only when it is the highest remaining valid FU
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_FP_ADD] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_DIV] &&
+        !valid_vec[riscv_pkg::FU_FP_MUL]) begin
+      p_priority_fp_add_lowest : assert (o_grant_raw[riscv_pkg::FU_FP_ADD]);
     end
   end
 

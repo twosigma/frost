@@ -33,8 +33,8 @@ NUM_INT_REGS = 32
 NUM_FP_REGS = 32
 REG_ADDR_WIDTH = 5
 ROB_TAG_WIDTH = 5
-NUM_CHECKPOINTS = 4
-CHECKPOINT_ID_WIDTH = 2
+NUM_CHECKPOINTS = 8
+CHECKPOINT_ID_WIDTH = 3
 XLEN = 32
 FLEN = 64
 RAS_PTR_BITS = 3
@@ -43,6 +43,8 @@ MASK32 = (1 << 32) - 1
 MASK64 = (1 << 64) - 1
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK_REG = (1 << REG_ADDR_WIDTH) - 1
+MASK_AGE = (1 << (ROB_TAG_WIDTH + 1)) - 1
+ALL_ROB_ENTRIES_VALID = (1 << (MASK_TAG + 1)) - 1
 
 
 @dataclass
@@ -209,7 +211,7 @@ class RATModel:
         """Save current RAT state into a checkpoint slot.
 
         Args:
-            checkpoint_id: Slot index (0-3).
+            checkpoint_id: Slot index.
             branch_tag: ROB tag of the branch instruction.
             ras_tos: RAS top-of-stack pointer.
             ras_valid_count: RAS valid entry count.
@@ -223,27 +225,85 @@ class RATModel:
         slot.int_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in self.int_rat]
         slot.fp_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in self.fp_rat]
 
-    def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int]:
+    def _restored_tag_still_live(
+        self,
+        restored_tag: int,
+        branch_tag: int,
+        rob_entry_valid: int,
+        rob_entry_epoch: int,
+        rob_head_tag: int,
+        restored_epoch: int = 0,
+    ) -> bool:
+        """Return whether a checkpointed tag survives restore filtering."""
+        tag = restored_tag & MASK_TAG
+        head = rob_head_tag & MASK_TAG
+        tag_age = (tag - head) & MASK_AGE
+        branch_age = ((branch_tag & MASK_TAG) - head) & MASK_AGE
+        return (
+            bool((rob_entry_valid >> tag) & 1)
+            and (((rob_entry_epoch >> tag) & 1) == (restored_epoch & 1))
+            and tag_age < branch_age
+        )
+
+    def checkpoint_restore(
+        self,
+        checkpoint_id: int,
+        rob_entry_valid: int | None = None,
+        rob_entry_epoch: int = 0,
+        rob_head_tag: int = 0,
+    ) -> tuple[int, int]:
         """Restore RAT state from a checkpoint slot.
 
         Args:
-            checkpoint_id: Slot index (0-3).
+            checkpoint_id: Slot index.
+            rob_entry_valid: Current ROB-valid bitmask. If omitted, all tags are
+                treated as live; branch-age filtering still applies.
+            rob_entry_epoch: Current ROB epoch bitmask.
+            rob_head_tag: Current ROB head tag for modulo age comparison.
 
         Returns:
             Tuple of (ras_tos, ras_valid_count).
         """
         slot = self.checkpoints[checkpoint_id]
         assert slot.valid, f"Restoring from invalid checkpoint {checkpoint_id}"
-        # Bulk restore
-        self.int_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in slot.int_rat]
-        self.fp_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in slot.fp_rat]
+        valid_mask = (
+            ALL_ROB_ENTRIES_VALID if rob_entry_valid is None else rob_entry_valid
+        )
+        self.int_rat = [
+            RATEntry(
+                valid=e.valid
+                and self._restored_tag_still_live(
+                    e.tag,
+                    slot.branch_tag,
+                    valid_mask,
+                    rob_entry_epoch,
+                    rob_head_tag,
+                ),
+                tag=e.tag,
+            )
+            for e in slot.int_rat
+        ]
+        self.fp_rat = [
+            RATEntry(
+                valid=e.valid
+                and self._restored_tag_still_live(
+                    e.tag,
+                    slot.branch_tag,
+                    valid_mask,
+                    rob_entry_epoch,
+                    rob_head_tag,
+                ),
+                tag=e.tag,
+            )
+            for e in slot.fp_rat
+        ]
         return slot.ras_tos, slot.ras_valid_count
 
     def checkpoint_free(self, checkpoint_id: int) -> None:
         """Free a checkpoint slot.
 
         Args:
-            checkpoint_id: Slot index (0-3).
+            checkpoint_id: Slot index.
         """
         self.checkpoints[checkpoint_id].valid = False
 

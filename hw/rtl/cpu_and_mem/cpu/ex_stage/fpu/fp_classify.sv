@@ -107,7 +107,6 @@ module fp_classify #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       started <= 1'b0;
-      result_reg <= 32'b0;
     end else if (i_valid && !started) begin
       // Capture result on start
       started <= 1'b1;

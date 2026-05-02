@@ -51,6 +51,9 @@ EXC_CAUSE_WIDTH = 5
 # fp_flags_t: 5 bits
 FP_FLAGS_WIDTH = 5
 
+# checkpoint_id_t: NumCheckpoints=8 -> 3 bits
+CHECKPOINT_ID_WIDTH = 3
+
 # fu_complete_t total width
 FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH + 1
 
@@ -79,11 +82,18 @@ def pack_rs_issue(
     predicted_taken: bool = False,
     predicted_target: int = 0,
     is_fp_mem: bool = False,
+    mem_needs_lq: bool = False,
+    mem_needs_sq: bool = False,
     mem_size: int = 0,
     mem_signed: bool = False,
     csr_addr: int = 0,
     csr_imm: int = 0,
     pc: int = 0,
+    link_addr: int = 0,
+    has_checkpoint: bool = False,
+    checkpoint_id: int = 0,
+    is_call: bool = False,
+    is_return: bool = False,
 ) -> int:
     """Pack rs_issue_t fields into a bit vector for driving i_rs_issue.
 
@@ -91,16 +101,27 @@ def pack_rs_issue(
     It does NOT contain rs_type, src*_tag, or src*_ready fields.
 
     Field order (LSB to MSB, reverse of struct declaration):
-    pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) | mem_size(2) |
-    is_fp_mem(1) | predicted_target(32) | predicted_taken(1) |
-    branch_target(32) | rm(3) | use_imm(1) | imm(32) | src3_value(64) |
-    src2_value(64) | src1_value(64) | op(32) | rob_tag(5) | valid(1)
-    Total: 384 bits.
+    is_return(1) | is_call(1) | checkpoint_id(3) | has_checkpoint(1) |
+    link_addr(32) | pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
+    mem_size(2) | mem_needs_sq(1) | mem_needs_lq(1) | is_fp_mem(1) |
+    predicted_target(32) | predicted_taken(1) | branch_target(32) |
+    rm(3) | use_imm(1) | imm(32) | src3_value(64) | src2_value(64) |
+    src1_value(64) | op(32) | rob_tag(5) | valid(1)
     """
     val = 0
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (1 if is_return else 0) << bit
+    bit += 1
+    val |= (1 if is_call else 0) << bit
+    bit += 1
+    val |= (checkpoint_id & ((1 << CHECKPOINT_ID_WIDTH) - 1)) << bit
+    bit += CHECKPOINT_ID_WIDTH
+    val |= (1 if has_checkpoint else 0) << bit
+    bit += 1
+    val |= (link_addr & MASK32) << bit
+    bit += XLEN
     val |= (pc & MASK32) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit
@@ -111,6 +132,10 @@ def pack_rs_issue(
     bit += 1
     val |= (mem_size & 0x3) << bit
     bit += MEM_SIZE_WIDTH
+    val |= (1 if mem_needs_sq else 0) << bit
+    bit += 1
+    val |= (1 if mem_needs_lq else 0) << bit
+    bit += 1
     val |= (1 if is_fp_mem else 0) << bit
     bit += 1
     val |= (predicted_target & MASK32) << bit

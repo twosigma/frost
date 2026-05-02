@@ -33,7 +33,7 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
         # Use 1 iteration for simulation to complete quickly
         "ITERATIONS": "1",
         # Use low clock frequency so timing calculations don't overflow
-        "FPGA_CPU_CLK_FREQ": "50000",
+        "FPGA_CPU_CLK_FREQ": "30000",
     },
 }
 

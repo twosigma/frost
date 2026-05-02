@@ -1,5 +1,5 @@
 /* Linker script for FROST RISC-V bare-metal programs
- * Defines memory layout and section placement for RV32IMAB programs
+ * Defines memory layout and section placement for RV32GCB programs
  * IMPORTANT: Memory sizes here must match hardware configuration in cpu_and_mem.sv
  */
 
@@ -20,7 +20,7 @@ MEMORY
      *   - hw/rtl/cpu_and_mem/cpu_and_mem.sv (MmioAddr constants)
      *   - This file's PROVIDE statements below
      */
-    MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 40    /* Peripherals: UART TX/RX, FIFOs, Timer, MSIP */
+    MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 44    /* Peripherals: UART TX/RX, FIFOs, Timer, MSIP */
 }
 
 /* Stack configuration - C stack grows downward from top of RAM
@@ -132,6 +132,7 @@ SECTIONS
     PROVIDE(UART_ADDR           = 0x40000000);  /* UART transmit register (write-only) */
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);  /* UART receive data (read consumes byte) */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024);  /* UART RX status (bit 0 = data available) */
+    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028);  /* UART TX status (bit 0 = can accept byte) */
     PROVIDE(FIFO0_ADDR      = 0x40000008);  /* MMIO FIFO 0 */
     PROVIDE(FIFO1_ADDR      = 0x4000000C);  /* MMIO FIFO 1 */
     /* CLINT-compatible timer registers (for RTOS support) */

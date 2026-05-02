@@ -54,6 +54,10 @@ module fp_div_shim (
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned FlagsW = 5;  // fp_flags_t width
 
+  function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
+    unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
+  endfunction
+
   // Sub-unit indices
   localparam int unsigned NumUnits = 4;
   localparam int unsigned UDivS = 0;
@@ -113,8 +117,8 @@ module fp_div_shim (
   end
 
   // Operand extraction
-  wire [31:0] src1_s = i_rs_issue.src1_value[31:0];
-  wire [31:0] src2_s = i_rs_issue.src2_value[31:0];
+  wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
+  wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
   wire [63:0] src1_d = i_rs_issue.src1_value;
   wire [63:0] src2_d = i_rs_issue.src2_value;
 
@@ -142,6 +146,33 @@ module fp_div_shim (
   logic                        div_s_valid;
   riscv_pkg::fp_flags_t        div_s_flags;
 
+`ifdef FORMAL
+  // The shim proof covers tag/flush/FIFO control. Model the arithmetic
+  // sub-units as latency-matched valid pipelines so formal does not spend most
+  // of its time bit-blasting FP divide/sqrt datapaths.
+  logic [ DivSDepth-1:0] f_div_s_valid_pipe;
+  logic [ DivDDepth-1:0] f_div_d_valid_pipe;
+  logic [SqrtSDepth-1:0] f_sqrt_s_valid_pipe;
+  logic [SqrtDDepth-1:0] f_sqrt_d_valid_pipe;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_div_s_valid_pipe  <= '0;
+      f_div_d_valid_pipe  <= '0;
+      f_sqrt_s_valid_pipe <= '0;
+      f_sqrt_d_valid_pipe <= '0;
+    end else begin
+      f_div_s_valid_pipe  <= {f_div_s_valid_pipe[DivSDepth-2:0], fire_div_s};
+      f_div_d_valid_pipe  <= {f_div_d_valid_pipe[DivDDepth-2:0], fire_div_d};
+      f_sqrt_s_valid_pipe <= {f_sqrt_s_valid_pipe[SqrtSDepth-2:0], fire_sqrt_s};
+      f_sqrt_d_valid_pipe <= {f_sqrt_d_valid_pipe[SqrtDDepth-2:0], fire_sqrt_d};
+    end
+  end
+
+  assign div_s_valid  = f_div_s_valid_pipe[DivSDepth-1];
+  assign div_s_result = '0;
+  assign div_s_flags  = '0;
+`else
   fp_divider #(
       .FP_WIDTH(32)
   ) u_div_s (
@@ -156,11 +187,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(div_s_flags)
   );
+`endif
 
   logic                 [63:0] div_d_result;
   logic                        div_d_valid;
   riscv_pkg::fp_flags_t        div_d_flags;
 
+`ifdef FORMAL
+  assign div_d_valid  = f_div_d_valid_pipe[DivDDepth-1];
+  assign div_d_result = '0;
+  assign div_d_flags  = '0;
+`else
   fp_divider #(
       .FP_WIDTH(64)
   ) u_div_d (
@@ -175,11 +212,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(div_d_flags)
   );
+`endif
 
   logic                 [31:0] sqrt_s_result;
   logic                        sqrt_s_valid;
   riscv_pkg::fp_flags_t        sqrt_s_flags;
 
+`ifdef FORMAL
+  assign sqrt_s_valid  = f_sqrt_s_valid_pipe[SqrtSDepth-1];
+  assign sqrt_s_result = '0;
+  assign sqrt_s_flags  = '0;
+`else
   fp_sqrt #(
       .FP_WIDTH(32)
   ) u_sqrt_s (
@@ -193,11 +236,17 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(sqrt_s_flags)
   );
+`endif
 
   logic                 [63:0] sqrt_d_result;
   logic                        sqrt_d_valid;
   riscv_pkg::fp_flags_t        sqrt_d_flags;
 
+`ifdef FORMAL
+  assign sqrt_d_valid  = f_sqrt_d_valid_pipe[SqrtDDepth-1];
+  assign sqrt_d_result = '0;
+  assign sqrt_d_flags  = '0;
+`else
   fp_sqrt #(
       .FP_WIDTH(64)
   ) u_sqrt_d (
@@ -211,6 +260,7 @@ module fp_div_shim (
       .o_stall(),
       .o_flags(sqrt_d_flags)
   );
+`endif
 
   // Collect sub-unit outputs into arrays for uniform handling
   logic              unit_valid_out[NumUnits];
@@ -241,7 +291,7 @@ module fp_div_shim (
   // ===========================================================================
   localparam int unsigned MaxPipeDepth = 65;  // max(36, 65)
 
-  // Tag queue arrays — flat for Icarus compatibility
+  // Tag queue arrays stay flat for simple storage and waveform visibility.
   logic            tq_valid  [NumUnits] [MaxPipeDepth];
   logic [TagW-1:0] tq_tag    [NumUnits] [MaxPipeDepth];
   logic            tq_flushed[NumUnits] [MaxPipeDepth];
@@ -259,11 +309,11 @@ module fp_div_shim (
                                     (u == UDivD)  ? DivDDepth  :
                                     (u == USqrtS) ? SqrtSDepth : SqrtDDepth;
 
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
+    // Control: valid + flushed (with reset)
+    always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         for (int i = 0; i < MaxPipeDepth; i++) begin
           tq_valid[u][i]   <= 1'b0;
-          tq_tag[u][i]     <= '0;
           tq_flushed[u][i] <= 1'b0;
         end
       end else if (i_flush) begin
@@ -271,33 +321,32 @@ module fp_div_shim (
           tq_valid[u][i] <= 1'b0;
         end
       end else begin
-        // Shift stages [0..Depth-2] -> [1..Depth-1]
         for (int i = Depth - 1; i >= 1; i--) begin
           tq_valid[u][i] <= tq_valid[u][i-1];
-          tq_tag[u][i]   <= tq_tag[u][i-1];
           if (tq_valid[u][i-1] && i_flush_en && is_younger(
                   tq_tag[u][i-1], i_flush_tag, i_rob_head_tag
-              )) begin
+              ))
             tq_flushed[u][i] <= 1'b1;
-          end else begin
-            tq_flushed[u][i] <= tq_flushed[u][i-1];
-          end
+          else tq_flushed[u][i] <= tq_flushed[u][i-1];
         end
-        // Stage 0: load from issue or invalidate
         if (fire_unit[u]) begin
           tq_valid[u][0] <= 1'b1;
-          tq_tag[u][0]   <= i_rs_issue.rob_tag;
-          if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag)) begin
+          if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
             tq_flushed[u][0] <= 1'b1;
-          end else begin
-            tq_flushed[u][0] <= 1'b0;
-          end
+          else tq_flushed[u][0] <= 1'b0;
         end else begin
           tq_valid[u][0]   <= 1'b0;
-          tq_tag[u][0]     <= '0;
           tq_flushed[u][0] <= 1'b0;
         end
       end
+    end
+
+    // Data: tag shift register (no reset)
+    always_ff @(posedge i_clk) begin
+      for (int i = Depth - 1; i >= 1; i--) begin
+        tq_tag[u][i] <= tq_tag[u][i-1];
+      end
+      if (fire_unit[u]) tq_tag[u][0] <= i_rs_issue.rob_tag;
     end
   end
 
@@ -370,7 +419,7 @@ module fp_div_shim (
 
   // Hold buffer management (2-deep circular buffer per sub-unit)
   for (genvar u = 0; u < NumUnits; u++) begin : gen_hold
-    always_ff @(posedge i_clk or negedge i_rst_n) begin
+    always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         hold_valid[u][0]   <= 1'b0;
         hold_valid[u][1]   <= 1'b0;
@@ -442,19 +491,45 @@ module fp_div_shim (
   end
 
   // ===========================================================================
-  // Result FIFO (depth 4, register-based)
+  // Result FIFO (depth 4, FF control with LUTRAM payload)
   // ===========================================================================
-  logic [               TagW-1:0] fifo_tag                   [FifoDepth];
-  logic [               FLEN-1:0] fifo_value                 [FifoDepth];
-  logic [             FlagsW-1:0] fifo_flags                 [FifoDepth];
+  logic [               TagW-1:0] fifo_tag           [FifoDepth];
+  logic [               FLEN-1:0] fifo_value_rd;
+  logic [               FLEN-1:0] fifo_value_wr_data;
+  logic [             FlagsW-1:0] fifo_flags_rd;
+  logic [             FlagsW-1:0] fifo_flags_wr_data;
   logic [          FifoDepth-1:0] fifo_valid;
   logic [          FifoDepth-1:0] fifo_flushed;
   logic [$clog2(FifoDepth+1)-1:0] fifo_count;
   logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
   logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
 
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(FifoDepth)),
+      .DATA_WIDTH(FLEN)
+  ) u_fifo_value (
+      .i_clk,
+      .i_write_enable (fifo_push),
+      .i_write_address(fifo_wr_ptr),
+      .i_write_data   (fifo_value_wr_data),
+      .i_read_address (fifo_rd_ptr),
+      .o_read_data    (fifo_value_rd)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH($clog2(FifoDepth)),
+      .DATA_WIDTH(FlagsW)
+  ) u_fifo_flags (
+      .i_clk,
+      .i_write_enable (fifo_push),
+      .i_write_address(fifo_wr_ptr),
+      .i_write_data   (fifo_flags_wr_data),
+      .i_read_address (fifo_rd_ptr),
+      .o_read_data    (fifo_flags_rd)
+  );
+
   // Same-cycle partial flush of FIFO head
-  logic                           fifo_head_partial_flushing;
+  logic fifo_head_partial_flushing;
   assign fifo_head_partial_flushing = (fifo_count != '0) &&
       !fifo_flushed[fifo_rd_ptr] && i_flush_en &&
       is_younger(
@@ -468,7 +543,16 @@ module fp_div_shim (
       (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
   assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
 
-  always_ff @(posedge i_clk or negedge i_rst_n) begin
+  always_comb begin
+    fifo_value_wr_data = '0;
+    fifo_flags_wr_data = '0;
+    if (fifo_push) begin
+      fifo_value_wr_data = hold_value[arbiter_sel][hold_rd[arbiter_sel]];
+      fifo_flags_wr_data = hold_flags[arbiter_sel][hold_rd[arbiter_sel]];
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       for (int i = 0; i < FifoDepth; i++) begin
         fifo_valid[i]   <= 1'b0;
@@ -500,17 +584,18 @@ module fp_div_shim (
       // Push from arbiter (reads from rd slot of selected hold buffer)
       if (fifo_push) begin
         fifo_tag[fifo_wr_ptr]     <= hold_tag[arbiter_sel][hold_rd[arbiter_sel]];
-        fifo_value[fifo_wr_ptr]   <= hold_value[arbiter_sel][hold_rd[arbiter_sel]];
-        fifo_flags[fifo_wr_ptr]   <= hold_flags[arbiter_sel][hold_rd[arbiter_sel]];
         fifo_valid[fifo_wr_ptr]   <= 1'b1;
         fifo_flushed[fifo_wr_ptr] <= 1'b0;
         fifo_wr_ptr               <= fifo_wr_ptr + 1;
       end
 
-      // Pop
+      // Pop — advance rd_ptr only. fifo_valid / fifo_flushed stay set; they
+      // are only consulted gated by fifo_count (authoritative occupancy) and
+      // get overwritten on the next push to this slot, so clearing them here
+      // would only drag i_div_accepted (which depends on the arbiter grant
+      // through mispredict_recovery_pending → flush cone) into the fifo
+      // register cone.
       if (fifo_pop) begin
-        fifo_valid[fifo_rd_ptr] <= 1'b0;
-        fifo_flushed[fifo_rd_ptr] <= 1'b0;
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end
 
@@ -532,10 +617,10 @@ module fp_div_shim (
     if (fifo_count != '0 && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
       o_fu_complete.valid     = 1'b1;
       o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
-      o_fu_complete.value     = fifo_value[fifo_rd_ptr];
+      o_fu_complete.value     = fifo_value_rd;
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_flags[fifo_rd_ptr]);
+      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_flags_rd);
     end else begin
       o_fu_complete.valid     = 1'b0;
       o_fu_complete.tag       = '0;
@@ -617,5 +702,6 @@ module fp_div_shim (
   end
 
 `endif  // FORMAL
+
 
 endmodule : fp_div_shim

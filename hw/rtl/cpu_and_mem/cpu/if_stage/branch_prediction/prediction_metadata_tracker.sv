@@ -18,13 +18,12 @@
  * Prediction Metadata Tracker
  *
  * Manages branch prediction metadata as it flows through the IF stage,
- * handling the complexities of stalls and spanning instructions.
+ * handling the complexities of stalls.
  *
  * When an instruction enters the pipeline, its prediction metadata must
  * accompany it through all stages. This is complicated by:
  *   1. Stalls - BRAM output changes during stall, but we need the original prediction
- *   2. Spanning - 32-bit instructions spanning two words take multiple cycles
- *   3. NOPs - Inserted during holdoff cycles, have no valid prediction
+ *   2. NOPs - Inserted during holdoff cycles, have no valid prediction
  *
  * This module saves prediction metadata at critical points and selects the
  * correct metadata to output based on the current instruction type.
@@ -32,7 +31,6 @@
  * Metadata Flow:
  *   - prediction_r: Registered prediction from branch_prediction_controller
  *   - prediction_saved: Saved at stall start for restoration
- *   - prediction_spanning_saved: Saved when spanning starts
  *   - prediction_to_pd: Final output based on instruction type
  */
 module prediction_metadata_tracker #(
@@ -48,17 +46,12 @@ module prediction_metadata_tracker #(
     // Current registered prediction from branch_prediction_controller
     input logic            i_prediction_used_r,
     input logic [XLEN-1:0] i_predicted_target_r,
+    input logic            i_pending_prediction_fetch_holdoff,
 
     // Instruction type signals (determine which metadata source to use)
-    input logic i_sel_nop,             // Current output is NOP
-    input logic i_sel_spanning,        // Current output is spanning instruction
-    input logic i_sel_nop_saved,       // Saved sel_nop from stall
-    input logic i_sel_spanning_saved,  // Saved sel_spanning from stall
-    input logic i_use_saved_values,    // Use stall-saved values
-
-    // Spanning detection
-    input logic i_is_32bit_spanning,
-    input logic i_spanning_wait_for_fetch,
+    input logic i_sel_nop,          // Current output is NOP
+    input logic i_sel_nop_saved,    // Saved sel_nop from stall
+    input logic i_use_saved_values, // Use stall-saved values
 
     // Outputs to PD stage
     output logic            o_btb_hit,
@@ -77,47 +70,65 @@ module prediction_metadata_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush) begin
-      prediction_hit_saved <= 1'b0;
+      prediction_hit_saved   <= 1'b0;
       prediction_taken_saved <= 1'b0;
-      prediction_target_saved <= '0;
     end else if (i_stall & ~i_stall_registered) begin
       // Save at stall start
-      prediction_hit_saved <= i_prediction_used_r;
+      prediction_hit_saved   <= i_prediction_used_r;
       prediction_taken_saved <= i_prediction_used_r;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_stall & ~i_stall_registered) begin
       prediction_target_saved <= i_predicted_target_r;
     end
   end
 
   // ===========================================================================
-  // Spanning Instruction Preservation
+  // Pending Prediction Preservation
   // ===========================================================================
-  // When a 32-bit instruction spans two memory words (halfword-aligned), the
-  // first cycle outputs NOP while waiting for the second word. By the time we
-  // output the actual spanning instruction, the registered prediction has
-  // advanced to a different PC. Save prediction when spanning starts.
-  //
-  // Detect first cycle of spanning (is_32bit_spanning but not yet in wait state)
+  // Pending prediction handoff preservation:
+  // when IF keeps walking older instructions after a BTB redirect, the normal
+  // 1-cycle registered metadata would otherwise get attached to the wrong
+  // instruction and then disappear before the predicted branch itself arrives.
 
-  logic spanning_first_cycle;
-  assign spanning_first_cycle = i_is_32bit_spanning && !i_spanning_wait_for_fetch;
+  logic            prediction_hit_pending_saved;
+  logic            prediction_taken_pending_saved;
+  logic [XLEN-1:0] prediction_target_pending_saved;
+  logic            prediction_pending_saved_valid;
 
-  logic            prediction_hit_spanning_saved;
-  logic            prediction_taken_spanning_saved;
-  logic [XLEN-1:0] prediction_target_spanning_saved;
+  logic            effective_sel_nop;
+  assign effective_sel_nop = i_use_saved_values ? i_sel_nop_saved : i_sel_nop;
+
+  logic effective_pending_prediction_consume;
+  assign effective_pending_prediction_consume =
+      prediction_pending_saved_valid &&
+      !effective_sel_nop &&
+      !i_pending_prediction_fetch_holdoff;
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush) begin
-      prediction_hit_spanning_saved <= 1'b0;
-      prediction_taken_spanning_saved <= 1'b0;
-      prediction_target_spanning_saved <= '0;
-    end else if (!i_stall && spanning_first_cycle) begin
-      // Save when spanning starts
-      prediction_hit_spanning_saved <= i_prediction_used_r;
-      prediction_taken_spanning_saved <= i_prediction_used_r;
-      prediction_target_spanning_saved <= i_predicted_target_r;
+      prediction_hit_pending_saved   <= 1'b0;
+      prediction_taken_pending_saved <= 1'b0;
+      prediction_pending_saved_valid <= 1'b0;
+    end else if (!i_stall) begin
+      if (effective_pending_prediction_consume) begin
+        prediction_pending_saved_valid <= 1'b0;
+      end
+
+      if (i_prediction_used_r && i_pending_prediction_fetch_holdoff) begin
+        prediction_hit_pending_saved   <= i_prediction_used_r;
+        prediction_taken_pending_saved <= i_prediction_used_r;
+        prediction_pending_saved_valid <= 1'b1;
+      end
     end
-    // Note: Don't clear on other conditions. Stale values when not in
-    // spanning are harmless since sel_spanning gates their use.
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_stall && i_prediction_used_r && i_pending_prediction_fetch_holdoff) begin
+      prediction_target_pending_saved <= i_predicted_target_r;
+    end
   end
 
   // ===========================================================================
@@ -125,21 +136,13 @@ module prediction_metadata_tracker #(
   // ===========================================================================
   // Select prediction metadata based on instruction type:
   //   1. sel_nop = 1: Clear prediction (NOP has no valid prediction)
-  //   2. sel_spanning = 1: Use spanning-saved (from when spanning started)
-  //   3. Otherwise: Use normal registered (with stall handling)
+  //   2. pending_saved valid: Replay saved BTB metadata for predicted branch
+  //   3. pending holdoff: Clear metadata during old-path handoff phase
+  //   4. Otherwise: Use normal registered (with stall handling)
   //
   // CRITICAL: When sel_nop is set, the output is a NOP, not the actual
   // instruction. Passing stale prediction metadata would cause incorrect
   // misprediction detection in EX stage.
-  //
-  // ALSO: Spanning instructions are at halfword-aligned addresses (pc_reg[1]=1).
-  // Predictions are blocked for halfword-aligned PCs, so spanning instructions
-  // never have valid predictions. Always output zeros to prevent stale metadata.
-
-  logic effective_sel_nop;
-  logic effective_sel_spanning;
-  assign effective_sel_nop = i_use_saved_values ? i_sel_nop_saved : i_sel_nop;
-  assign effective_sel_spanning = i_use_saved_values ? i_sel_spanning_saved : i_sel_spanning;
 
   always_comb begin
     if (effective_sel_nop) begin
@@ -147,8 +150,15 @@ module prediction_metadata_tracker #(
       o_btb_hit = 1'b0;
       o_btb_predicted_taken = 1'b0;
       o_btb_predicted_target = '0;
-    end else if (effective_sel_spanning) begin
-      // Spanning: predictions blocked for halfword PCs, always output zeros
+    end else if (prediction_pending_saved_valid && !i_pending_prediction_fetch_holdoff) begin
+      // The predicted branch/jump is finally reaching IF/PD after the pending
+      // old-path handoff. Replay the saved BTB metadata on this instruction.
+      o_btb_hit = prediction_hit_pending_saved;
+      o_btb_predicted_taken = prediction_taken_pending_saved;
+      o_btb_predicted_target = prediction_target_pending_saved;
+    end else if (i_pending_prediction_fetch_holdoff) begin
+      // During the old-path handoff phase, registered BTB metadata belongs to a
+      // younger predicted branch, not the instruction currently in IF/PD.
       o_btb_hit = 1'b0;
       o_btb_predicted_taken = 1'b0;
       o_btb_predicted_target = '0;

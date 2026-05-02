@@ -17,10 +17,9 @@
 Provides packing/unpacking for fu_complete_t array and cdb_broadcast_t output,
 plus transaction helpers for driving stimulus and reading results.
 
-Verilator exposes the unpacked array port as dut.i_fu_complete[index].
-Icarus (via cdb_arbiter_tb wrapper) flattens it to individual signals
-(i_fu_complete_0 .. i_fu_complete_6).  The _get_fu_signal helper detects
-which convention is in use at runtime.
+The RTL exposes individual FU completion ports
+(i_fu_complete_0 .. i_fu_complete_6).  The _get_fu_signal helper also accepts
+an indexable array-style handle so older local wrappers keep working.
 """
 
 from typing import Any
@@ -100,7 +99,7 @@ def unpack_cdb_broadcast(raw: int) -> CdbBroadcast:
 class CdbArbiterInterface:
     """Interface to the CDB arbiter DUT.
 
-    Handles both Verilator (unpacked array) and Icarus (flattened individual ports).
+    Handles both individual FU ports and older array-style wrappers.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -115,6 +114,7 @@ class CdbArbiterInterface:
     async def reset_dut(self, cycles: int = 5) -> None:
         """Reset the DUT and init all inputs."""
         self.clear_all_fu_completes()
+        self.dut.i_kill.value = 0
         self.dut.i_rst_n.value = 0
 
         for _ in range(cycles):
@@ -132,9 +132,9 @@ class CdbArbiterInterface:
     def _get_fu_signal(self, fu_index: int) -> Any:
         """Get the DUT signal for a specific FU complete slot.
 
-        Verilator exposes unpacked arrays as indexable handles:
+        Older wrappers may expose an indexable array handle:
           dut.i_fu_complete[index]
-        Icarus TB wrapper uses flattened individual ports:
+        The current RTL exposes individual ports:
           dut.i_fu_complete_0 .. dut.i_fu_complete_6
         """
         if hasattr(self.dut, "i_fu_complete_0"):
@@ -169,6 +169,10 @@ class CdbArbiterInterface:
         """Clear all FU completion slots."""
         for i in range(NUM_FUS):
             self._get_fu_signal(i).value = 0
+
+    def set_kill(self, value: bool) -> None:
+        """Drive the arbiter-wide kill input."""
+        self.dut.i_kill.value = int(value)
 
     def read_cdb_output(self) -> CdbBroadcast:
         """Read the CDB broadcast output."""

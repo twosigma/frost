@@ -22,7 +22,7 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 │          v                  v                  v                  v                  v          │
 │  ┌──────────────────────────────────────────────────────────────────────┐  ┌────────────────┐   │
 │  │                            Simulator                                 │  │     Yosys      │   │
-│  │                       Icarus/Verilator                               │  │ (open-source)  │   │
+│  │                                Verilator                               │  │ (open-source)  │   │
 │  └──────────────────────────────────────────────────────────────────────┘  └────────────────┘   │
 │                                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -54,17 +54,12 @@ Applications are compiled automatically before simulation—no manual build step
 ./test_run_cocotb.py isa_test                      # Run ISA compliance tests
 ./test_run_cocotb.py freertos_demo                 # Run FreeRTOS demo
 
-# Specify simulator
-./test_run_cocotb.py cpu --sim=verilator           # Use Verilator
-./test_run_cocotb.py cpu --sim=icarus              # Use Icarus Verilog
-./test_run_cocotb.py cpu --sim=verilator           # Use Verilator
-
 # Reproducibility options
 ./test_run_cocotb.py cpu --random-seed=12345       # Use specific seed
 ./test_run_cocotb.py cpu --testcase=test_random    # Run specific test function
 
 # Seed sweep (parallel random seed testing)
-./test_run_cocotb.py cpu --sim=verilator --seed-sweep 10          # Run 10 seeds in parallel
+./test_run_cocotb.py cpu --seed-sweep 10          # Run 10 seeds in parallel
 ./test_run_cocotb.py cpu --seed-sweep 20 --max-workers 4          # Limit parallelism
 ./test_run_cocotb.py cpu --seed-sweep 10 --testcase test_random   # Sweep specific test
 ```
@@ -85,7 +80,7 @@ Passing seeds: [123456789, 234567890, ...]
 Failing seeds: [987654321]
 
 To reproduce a failure, run:
-  ./test_run_cocotb.py cpu --sim=verilator --random-seed=987654321
+  ./test_run_cocotb.py cpu --random-seed=987654321
 ============================================================
 ```
 
@@ -97,10 +92,9 @@ Options:
 **Pytest Usage:**
 
 ```bash
-pytest test_run_cocotb.py                          # Run all cocotb tests (both simulators)
-pytest test_run_cocotb.py -k verilator             # Run with Verilator only
-pytest test_run_cocotb.py -k hello_world           # Run specific test (both simulators)
-pytest test_run_cocotb.py -k "verilator and hello_world"  # Specific test, one simulator
+pytest test_run_cocotb.py                          # Run all cocotb tests with Verilator
+pytest test_run_cocotb.py -k hello_world           # Run a specific test
+pytest test_run_cocotb.py -k unit                  # Run Tomasulo unit tests
 pytest test_run_cocotb.py -s                       # Show live output
 ```
 
@@ -114,36 +108,36 @@ Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-
 
 ```bash
 # Run all supported extensions
-./test_arch_compliance.py --sim verilator --all
+./test_arch_compliance.py --all
 
 # Run specific extensions
-./test_arch_compliance.py --sim verilator --extensions I M A
+./test_arch_compliance.py --extensions I M A
 
 # Run a single test
-./test_arch_compliance.py --sim verilator --test rv32i_m/I/src/add-01.S
+./test_arch_compliance.py --test rv32i_m/I/src/add-01.S
 
 # Parallel execution
-./test_arch_compliance.py --sim verilator --all --parallel 4
+./test_arch_compliance.py --all --parallel 4
 
 # Include tests too large for simulation (hardware validation)
-./test_arch_compliance.py --sim verilator --all --no-sim-filter
+./test_arch_compliance.py --all --no-sim-filter
 ```
 
 **Pytest Usage:**
 
 ```bash
-pytest test_arch_compliance.py -v --sim verilator -m slow
+pytest test_arch_compliance.py -v -m slow
 ```
 
 **Notes:**
-- Verilator only (too slow for Icarus, skips automatically for non-Verilator sims)
+- Verilator only
 - Tests with >5000 test cases are filtered by default (12 tests with 7K-14K cases that take >30 min each). Use `--no-sim-filter` for hardware validation runs
 - In CI, runs as 10 parallel jobs (one per extension) via GitHub Actions matrix strategy
 - Simulation uses 2MB memory override (`-GMEM_SIZE_BYTES=2097152`) to fit large test data sections
 
 ### `test_riscv_tests.py`
 
-Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise forwarding, bypassing, and pipeline hazards that arch_test's single-instruction focus doesn't cover.
+Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and OOO commit cases that arch_test's single-instruction focus does not cover.
 
 **Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
 
@@ -151,16 +145,16 @@ Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests 
 
 ```bash
 # Run all suites
-./test_riscv_tests.py --sim verilator --all
+./test_riscv_tests.py --all
 
 # Run specific suites
-./test_riscv_tests.py --sim verilator --suites rv32ui rv32um rv32uf
+./test_riscv_tests.py --suites rv32ui rv32um rv32uf
 
 # Run a single test
-./test_riscv_tests.py --sim verilator --test rv32ui/add
+./test_riscv_tests.py --test rv32ui/add
 
 # Parallel execution
-./test_riscv_tests.py --sim verilator --all --parallel 4
+./test_riscv_tests.py --all --parallel 4
 
 # List available tests
 ./test_riscv_tests.py --list
@@ -169,7 +163,7 @@ Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests 
 **Pytest Usage:**
 
 ```bash
-pytest test_riscv_tests.py -v --sim verilator -m slow
+pytest test_riscv_tests.py -v -m slow
 ```
 
 **Notes:**
@@ -184,13 +178,13 @@ Runs random instruction torture tests on Frost. A Python-based generator creates
 
 ```bash
 # Run all torture tests
-./test_riscv_torture.py --sim verilator --all
+./test_riscv_torture.py --all
 
 # Run a single test
-./test_riscv_torture.py --sim verilator --test test_001
+./test_riscv_torture.py --test test_001
 
 # List available tests and reference status
-./test_riscv_torture.py --sim verilator --list
+./test_riscv_torture.py --list
 ```
 
 **Generating Tests:**
@@ -205,7 +199,7 @@ cd sw/apps/riscv_torture
 **Pytest Usage:**
 
 ```bash
-pytest test_riscv_torture.py -v --sim verilator -m slow
+pytest test_riscv_torture.py -v -m slow
 ```
 
 **Notes:**
@@ -237,7 +231,7 @@ pytest test_run_yosys.py                           # Run synthesis test
 | `conftest.py`              | Pytest configuration and fixtures         |
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
-| `test_riscv_tests.py`      | riscv-tests ISA pipeline test runner      |
+| `test_riscv_tests.py`      | riscv-tests ISA regression runner         |
 | `test_riscv_torture.py`    | Random instruction torture test runner    |
 | `.gitignore`               | Excludes build artifacts                  |
 
@@ -264,37 +258,11 @@ pytest -m synthesis                                # Synthesis tests only
 pytest -k "not slow"                               # Skip slow tests
 ```
 
-### Simulator Selection
-
-By default, pytest runs each cocotb test with both Icarus and Verilator simulators
-(parametrized via `CI_SIMULATORS`). Use `-k` to filter by simulator:
-
-```bash
-pytest test_run_cocotb.py -k verilator             # Verilator only (fastest)
-pytest test_run_cocotb.py -k icarus                # Icarus Verilog only
-pytest test_run_cocotb.py                          # Both simulators (default)
-```
-
-You can combine `-k` with test name filters:
-
-```bash
-pytest test_run_cocotb.py -k "verilator and hello_world"  # Specific test, one simulator
-pytest test_run_cocotb.py -k "verilator and not coremark" # Skip slow tests
-```
-
-For standalone execution, use `--sim` directly:
-
-```bash
-./test_run_cocotb.py cpu --sim=verilator           # Verilator
-./test_run_cocotb.py cpu --sim=icarus              # Icarus Verilog
-./test_run_cocotb.py cpu --sim=verilator           # Verilator
-```
-
 ### Environment Variables
 
-| Variable      | Description                      | Default    |
-|---------------|----------------------------------|------------|
-| `SIM`         | Simulator to use                 | `icarus`   |
+| Variable      | Description                      | Default      |
+|---------------|----------------------------------|--------------|
+| `SIM`         | Simulator to use                 | `verilator`  |
 | `TESTCASE`    | Specific test function to run    | (all)      |
 | `RANDOM_SEED` | Random seed for reproducibility  | (random)   |
 | `WAVES`       | Generate waveform file (1/0)     | `0`        |
@@ -321,13 +289,6 @@ sim_build/
 ## Requirements
 
 See the [main README](../README.md#prerequisites) for validated tool versions.
-
-### Simulators (choose one or more)
-
-| Simulator      | Notes                       |
-|----------------|-----------------------------|
-| Icarus Verilog | Default, widely available   |
-| Verilator      | Fastest, incremental builds |
 
 ### Other Tools
 

@@ -17,12 +17,12 @@
 /*
  * Branch Target Buffer (BTB) - 2-Bit Saturating Counter Predictor
  *
- * A 32-entry, 2-bit direct-mapped BTB for branch prediction.
+ * A 128-entry, 2-bit direct-mapped BTB for branch prediction by default.
  * Reduces the 3-cycle branch penalty for correctly predicted taken branches.
  *
  * Design:
  * =======
- *   - 32 entries indexed by PC[6:2] (5 bits)
+ *   - 128 entries indexed by PC[8:2] (7 bits) by default
  *   - Each entry: valid (1) + tag (26 bits) + target (32) + counter (2)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - 2-bit saturating counter (bimodal predictor):
@@ -43,7 +43,7 @@
  * Operation:
  * ==========
  *   Prediction (IF stage):
- *     - Index BTB with current PC[6:2]
+ *     - Index BTB with current PC[6:2] by default
  *     - Compare tag (PC[31:7] ++ PC[1]) with stored tag
  *     - If hit && counter[1] set → predict taken, use stored target
  *     - Otherwise → predict not-taken (sequential)
@@ -62,26 +62,31 @@
  */
 module branch_predictor #(
     parameter int unsigned XLEN = 32,
-    parameter int unsigned BTB_INDEX_BITS = 5  // 32 entries
+    parameter int unsigned BTB_INDEX_BITS = 7  // 128 entries
 ) (
     input logic i_clk,
     input logic i_rst,
 
     // Prediction interface (IF stage)
-    input  logic [XLEN-1:0] i_pc,               // Current PC for lookup
-    output logic            o_btb_hit,          // BTB entry hit
-    output logic            o_predicted_taken,  // Predict taken
-    output logic [XLEN-1:0] o_predicted_target, // Predicted target address
+    input  logic [XLEN-1:0] i_pc,                          // Current PC for lookup
+    output logic            o_btb_hit,                     // BTB entry hit
+    output logic            o_predicted_taken,             // Predict taken
+    output logic [XLEN-1:0] o_predicted_target,            // Predicted target address
+    output logic            o_btb_compressed,              // Entry is for compressed instruction
+    // Predicted op must still execute in IF/PD/ID
+    output logic            o_btb_requires_pc_reg_handoff,
 
     // Update interface (from EX stage)
-    input logic            i_update,         // Update BTB entry
-    input logic [XLEN-1:0] i_update_pc,      // PC of branch instruction
-    input logic [XLEN-1:0] i_update_target,  // Actual branch target
-    input logic            i_update_taken    // Actual branch outcome
+    input logic            i_update,                         // Update BTB entry
+    input logic [XLEN-1:0] i_update_pc,                      // PC of branch instruction
+    input logic [XLEN-1:0] i_update_target,                  // Actual branch target
+    input logic            i_update_taken,                   // Actual branch outcome
+    input logic            i_update_compressed,              // Branch was compressed (16-bit)
+    input logic            i_update_requires_pc_reg_handoff
 );
 
   // BTB parameters
-  localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;  // 32
+  localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;
   // Tag includes PC[1] to distinguish halfword-aligned addresses (important for C extension).
   // Without PC[1], addresses like 0x100 and 0x102 would alias to the same entry.
   localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 26 bits (includes PC[1])
@@ -176,6 +181,33 @@ module branch_predictor #(
       .o_read_data(btb_counter_update)
   );
 
+  // Compressed flag RAM (lookup read only)
+  logic btb_compressed_lookup;
+  logic btb_requires_pc_reg_handoff_lookup;
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(1)
+  ) btb_compressed_ram (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_compressed),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_compressed_lookup)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(1)
+  ) btb_requires_pc_reg_handoff_ram (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_requires_pc_reg_handoff),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_requires_pc_reg_handoff_lookup)
+  );
+
   // Combinational lookup
   wire lookup_valid = btb_valid[lookup_index];
   wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
@@ -188,6 +220,8 @@ module branch_predictor #(
   // Prediction output: predict taken when counter[1] == 1 (value >= 2)
   assign o_predicted_taken = o_btb_hit && lookup_counter[1];
   assign o_predicted_target = lookup_target;
+  assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
+  assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
 
   // Current counter value for the entry being updated
   wire [1:0] current_counter = btb_counter_update;

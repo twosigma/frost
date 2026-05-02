@@ -361,10 +361,10 @@ class CPUModel:
     ) -> int:
         """Compute the expected program counter after instruction execution.
 
-        In the 6-stage pipeline, o_pc_vld fires at ID stage (before branch
-        resolution in EX). So o_pc always shows sequential PC regardless of
-        instruction type. Branch/jump targets affect subsequent flush NOPs,
-        not the instruction's own o_pc output.
+        In the current monitor contract, o_pc_vld fires before branch
+        recovery affects the observed PC. So o_pc shows the sequential PC for
+        the instruction itself; branch/jump targets affect subsequent flush
+        NOPs.
 
         Args:
             state: Test state with current PC values
@@ -390,7 +390,7 @@ class CPUModel:
         """Calculate the internal PC update value for pipeline state tracking.
 
         The internal PC tracking differs from the expected PC output because:
-        - expected_pc: What the hardware outputs (always sequential in 6-stage pipeline)
+        - expected_pc: What the hardware outputs for this instruction
         - internal PC: What we track so subsequent flush NOPs have correct expected_pc
 
         For control flow instructions (JAL, JALR, taken branches), the internal

@@ -33,7 +33,7 @@
  *   can see the pending reservation.
  *
  * Related Modules:
- *   - cpu.sv: Instantiates this module
+ *   - Former in-order CPU top: instantiated this module
  *   - store_unit.sv: Uses reservation for SC success/fail determination
  *   - ex_stage.sv: Passes reservation to store_unit
  */
@@ -69,8 +69,7 @@ module lr_sc_reservation #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      valid_registered   <= 1'b0;
-      address_registered <= '0;
+      valid_registered <= 1'b0;
     end else if (~i_stall) begin
       // Clear reservation when SC.W is being executed
       if (i_is_sc_in_ex) begin
@@ -121,10 +120,9 @@ module lr_sc_reservation #(
         p_stall_preserves_addr : assert (address_registered == $past(address_registered));
       end
 
-      // Reset clears all: after reset, valid is cleared and address is zero.
+      // Reset clears valid (address is don't-care, gated by valid).
       if ($past(i_rst)) begin
         p_reset_clears_valid : assert (!valid_registered);
-        p_reset_clears_addr : assert (address_registered == '0);
       end
     end
 

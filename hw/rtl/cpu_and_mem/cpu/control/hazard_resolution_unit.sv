@@ -38,12 +38,13 @@
 module hazard_resolution_unit #(
     parameter int unsigned XLEN = 32,
     parameter int unsigned NUM_PIPELINE_STAGES = 6,
-    // PC becomes valid at ID stage (stage index 2 in 0-indexed 6-stage pipeline:
+    // Legacy in-order path: PC becomes valid at ID stage (stage index 2 in
+    // the former 0-indexed IF/PD/ID/EX/MA/WB pipeline:
     // IF=0, PD=1, ID=2...)
     // This offset from the final stage determines when o_pc_vld asserts
     parameter int unsigned PC_VALID_STAGE_OFFSET = 4,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h28
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -308,7 +309,7 @@ module hazard_resolution_unit #(
     stall_registered <= (pipeline_reset || pipeline_flush) ? 1'b0 : pipeline_stall;
 
   // Register branch taken signal for pipeline flush control
-  // With 6-stage pipeline, flush for 2 cycles and observe in both PD and ID stages
+  // Legacy in-order path: flush for 2 cycles and observe in both PD and ID stages.
   //
   // CRITICAL: Clear registered signals during stall to prevent spurious flush after stall.
   // Problem scenario without this fix:

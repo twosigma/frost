@@ -39,7 +39,7 @@ module stall_capture_reg #(
   logic [WIDTH-1:0] saved;
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush) saved <= '0;
+    if (i_flush) saved <= '0;
     else if (i_stall & ~i_stall_registered) saved <= i_data;
   end
 

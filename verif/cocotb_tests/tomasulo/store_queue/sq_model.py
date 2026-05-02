@@ -161,43 +161,48 @@ class SQModel:
 
     @property
     def full(self) -> bool:
-        """Pointer-based full (matches RTL).
-
-        With out-of-order frees (SC discard, partial flush), holes can
-        exist between head and tail.  The RTL reports full when the
-        pointer space is exhausted even if some entries are invalid,
-        so the model must too.
-        """
-        return (
-            self.head_ptr % self.depth == self.tail_ptr % self.depth
-            and self.head_ptr != self.tail_ptr
-        )
+        """Count-based full (matches the sparse-hole RTL)."""
+        return self.count == self.depth
 
     @property
     def empty(self) -> bool:
         """Return whether the store queue is empty."""
         return self.count == 0
 
-    def alloc(self, rob_tag: int, is_fp: bool, size: int, is_sc: bool = False) -> bool:
-        """Allocate a new entry at tail. Returns True if successful."""
+    def alloc(
+        self,
+        rob_tag: int,
+        is_fp: bool,
+        size: int,
+        is_sc: bool = False,
+        addr_valid: bool = False,
+        address: int = 0,
+        is_mmio: bool = False,
+    ) -> bool:
+        """Allocate a new entry at the next invalid slot. Returns True if successful."""
         if self.full:
             return False
-        idx = self.tail_idx
+        ptr = self.tail_ptr
+        for _ in range(self.depth):
+            if not self.entries[ptr % self.depth].valid:
+                break
+            ptr = (ptr + 1) % self._ptr_wrap
+        idx = ptr % self.depth
         e = self.entries[idx]
         e.valid = True
         e.rob_tag = rob_tag & MASK_TAG
         e.is_fp = is_fp
-        e.addr_valid = False
-        e.address = 0
+        e.addr_valid = addr_valid
+        e.address = address & MASK32
         e.data_valid = False
         e.data = 0
         e.size = size
-        e.is_mmio = False
+        e.is_mmio = is_mmio
         e.fp64_phase = 0
         e.committed = False
         e.sent = False
         e.is_sc = is_sc
-        self.tail_ptr = (self.tail_ptr + 1) % self._ptr_wrap
+        self.tail_ptr = (ptr + 1) % self._ptr_wrap
         return True
 
     @property
@@ -277,7 +282,7 @@ class SQModel:
 
     def advance_head(self) -> None:
         """Advance head pointer past freed entries."""
-        while self.head_ptr != self.tail_ptr and not self.entries[self.head_idx].valid:
+        while self.count and not self.entries[self.head_idx].valid:
             self.head_ptr = (self.head_ptr + 1) % self._ptr_wrap
 
     def check_forward(
@@ -355,11 +360,7 @@ class SQModel:
         self.reset()
 
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
-        """Partial flush: invalidate uncommitted entries younger than flush_tag.
-
-        Committed entries are never flushed. After invalidating, retract
-        tail_ptr backwards past consecutive invalid entries at the tail end.
-        """
+        """Partial flush: invalidate uncommitted entries younger than flush_tag."""
         for e in self.entries:
             if (
                 e.valid
@@ -367,9 +368,3 @@ class SQModel:
                 and is_younger(e.rob_tag, flush_tag & MASK_TAG, rob_head_tag & MASK_TAG)
             ):
                 e.valid = False
-        # Retract tail past consecutive invalid entries at tail end
-        while (
-            self.tail_ptr != self.head_ptr
-            and not self.entries[(self.tail_ptr - 1) % self.depth].valid
-        ):
-            self.tail_ptr = (self.tail_ptr - 1) % self._ptr_wrap

@@ -20,13 +20,13 @@ Orchestrates building, simulating, and comparing signatures for
 riscv-arch-test compliance tests against golden reference outputs.
 
 Can be run standalone:
-    ./test_arch_compliance.py --sim verilator --extensions I M
-    ./test_arch_compliance.py --sim verilator --all
-    ./test_arch_compliance.py --sim verilator --test rv32i_m/I/src/add-01.S
-    ./test_arch_compliance.py --sim verilator --extensions I --parallel 4
+    ./test_arch_compliance.py --extensions I M
+    ./test_arch_compliance.py --all
+    ./test_arch_compliance.py --test rv32i_m/I/src/add-01.S
+    ./test_arch_compliance.py --extensions I --parallel 4
 
 Or via pytest:
-    pytest test_arch_compliance.py -v --sim verilator -m slow
+    pytest test_arch_compliance.py -v -m slow
 """
 
 import argparse
@@ -86,6 +86,9 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 # 7000+ cases; the largest passing test has ~2300.
 # Override with --no-sim-filter (CLI) or include_all=True (API).
 SIM_MAX_TEST_CASES = 5000
+
+# Slow fused FP arch tests can run for more than three hours under Verilator.
+ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
 
 @dataclass
@@ -175,7 +178,7 @@ def compile_test(test_src: Path) -> bool:
     return result.returncode == 0
 
 
-def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
+def run_simulation() -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result."""
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -184,7 +187,7 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     )
 
     # Set up the sw.mem symlink manually
-    os.environ["SIM"] = simulator
+    os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
@@ -197,10 +200,8 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     os.chdir(TESTS_DIR)
 
     try:
-        # Clean only if Verilator toplevel changed
-        needs_clean = simulator != "verilator" or runner._verilator_needs_rebuild(
-            sim_build_dir
-        )
+        # Clean only if toplevel changed
+        needs_clean = runner._verilator_needs_rebuild(sim_build_dir)
         if needs_clean:
             subprocess.run(["make", "clean"], check=False)
 
@@ -224,10 +225,10 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
             text=True,
             env=env,
             check=False,
-            timeout=7200,
+            timeout=ARCH_SIM_TIMEOUT_SEC,
         )
 
-        if simulator == "verilator" and result.returncode == 0:
+        if result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
 
         return result
@@ -302,7 +303,7 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     return False, "\n".join(diff_lines)
 
 
-def run_single_test(test_src: Path, extension: str, simulator: str) -> TestResult:
+def run_single_test(test_src: Path, extension: str) -> TestResult:
     """Build, simulate, and verify a single arch test."""
     test_name = test_src.stem
 
@@ -318,9 +319,14 @@ def run_single_test(test_src: Path, extension: str, simulator: str) -> TestResul
         )
 
     # Simulate
-    result = run_simulation(simulator)
+    result = run_simulation()
     if result is None:
-        return TestResult(test_name, extension, "SKIP", "Simulation timed out")
+        return TestResult(
+            test_name,
+            extension,
+            "SKIP",
+            f"Simulation timed out after {ARCH_SIM_TIMEOUT_SEC}s",
+        )
 
     combined_output = (result.stdout or "") + (result.stderr or "")
 
@@ -349,9 +355,9 @@ def run_single_test(test_src: Path, extension: str, simulator: str) -> TestResul
         )
 
 
-def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
+def _run_test_worker(args: tuple[str, str, str]) -> TestResult:
     """Worker function for parallel test execution."""
-    test_src_str, extension, simulator, arch_test_app_dir_str = args
+    test_src_str, extension, arch_test_app_dir_str = args
     # Restore module-level paths in worker process
     global ARCH_TEST_APP_DIR, ARCH_TEST_DIR, SUITE_DIR, REFERENCES_DIR
     ARCH_TEST_APP_DIR = Path(arch_test_app_dir_str)
@@ -359,12 +365,11 @@ def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
     SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
     REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-    return run_single_test(Path(test_src_str), extension, simulator)
+    return run_single_test(Path(test_src_str), extension)
 
 
 def run_extension_tests(
     extension: str,
-    simulator: str,
     parallel: int = 1,
     include_all: bool = False,
 ) -> list[TestResult]:
@@ -380,9 +385,7 @@ def run_extension_tests(
 
     if parallel > 1:
         # Parallel execution
-        work_items = [
-            (str(t), extension, simulator, str(ARCH_TEST_APP_DIR)) for t in tests
-        ]
+        work_items = [(str(t), extension, str(ARCH_TEST_APP_DIR)) for t in tests]
         with ProcessPoolExecutor(max_workers=parallel) as executor:
             futures = {
                 executor.submit(_run_test_worker, item): item[0] for item in work_items
@@ -399,7 +402,7 @@ def run_extension_tests(
     else:
         # Sequential execution
         for test_src in tests:
-            result = run_single_test(test_src, extension, simulator)
+            result = run_single_test(test_src, extension)
             results.append(result)
             _print_result(result)
 
@@ -434,20 +437,15 @@ class TestArchCompliance:
     EXTENSIONS = SUPPORTED_EXTENSIONS
 
     @pytest.mark.parametrize("extension", EXTENSIONS)
-    def test_arch_compliance(self, extension: str, request: Any, capsys: Any) -> None:
+    def test_arch_compliance(self, extension: str, capsys: Any) -> None:
         """Run arch compliance tests for a single ISA extension.
 
         Parametrized by extension (not individual test) for manageable pytest output.
-        Verilator only - skips for other simulators.
         """
-        sim = request.config.getoption("--sim")
-        if sim != "verilator":
-            pytest.skip("Arch compliance tests require verilator")
-
         os.environ["SIM"] = "verilator"
         with capsys.disabled():
             print(f"\nRunning arch compliance tests for extension {extension}...")
-            results = run_extension_tests(extension, "verilator")
+            results = run_extension_tests(extension)
 
         failed = [r for r in results if r.status == "FAIL"]
         if failed:
@@ -467,19 +465,13 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  %(prog)s --sim verilator --extensions I M
-  %(prog)s --sim verilator --all
-  %(prog)s --sim verilator --test rv32i_m/I/src/add-01.S
-  %(prog)s --sim verilator --extensions I --parallel 4
+  %(prog)s --extensions I M
+  %(prog)s --all
+  %(prog)s --test rv32i_m/I/src/add-01.S
+  %(prog)s --extensions I --parallel 4
 
 Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
 """,
-    )
-    parser.add_argument(
-        "--sim",
-        required=True,
-        choices=["icarus", "verilator"],
-        help="Simulator to use",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -528,7 +520,7 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         ext = parts[1] if len(parts) > 1 else "unknown"
 
         print(f"=== RISC-V Architecture Test: {args.test} ===")
-        result = run_single_test(test_path, ext, args.sim)
+        result = run_single_test(test_path, ext)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
@@ -543,14 +535,13 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
 
     print("=" * 60)
     print("RISC-V Architecture Test Results")
-    print(f"Simulator: {args.sim}")
     print(f"Extensions: {', '.join(extensions)}")
     print("=" * 60)
 
     all_results: list[TestResult] = []
     for ext in extensions:
         results = run_extension_tests(
-            ext, args.sim, parallel=args.parallel, include_all=args.no_sim_filter
+            ext, parallel=args.parallel, include_all=args.no_sim_filter
         )
         all_results.extend(results)
 

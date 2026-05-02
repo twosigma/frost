@@ -15,7 +15,7 @@
  */
 
 /*
- * RISC-V Processor Package - Type definitions for RV32IMACB implementation
+ * RISC-V Processor Package - Type definitions for RV32GCB implementation
  *
  * This package contains all shared type definitions, enumerations, constants,
  * and pipeline data structures for the FROST RISC-V processor core.
@@ -275,7 +275,8 @@ package riscv_pkg;
     FEQ_D,      // FP equal (double)
     FLT_D,      // FP less than (double)
     FLE_D,      // FP less than or equal (double)
-    FCLASS_D    // FP classify (double)
+    FCLASS_D,   // FP classify (double)
+    ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
   // ===========================================================================
@@ -320,6 +321,12 @@ package riscv_pkg;
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
+  // Custom machine CSRs for Tomasulo performance profiling
+  localparam bit [11:0] CsrMperfSel = 12'h7C0;  // Profiling counter selector
+  localparam bit [11:0] CsrMperfCtl = 12'h7C1;  // Profiling control (bit 0 = snapshot)
+  localparam bit [11:0] CsrMperfData = 12'hFC0;  // Selected counter low 32 bits
+  localparam bit [11:0] CsrMperfDataH = 12'hFC1;  // Selected counter high 32 bits
+  localparam bit [11:0] CsrMperfCount = 12'hFC2;  // Number of profiling counters
 
   // F extension: Floating-point CSRs
   localparam bit [11:0] CsrFflags = 12'h001;  // FP exception flags (NV, DZ, OF, UF, NX)
@@ -492,18 +499,17 @@ package riscv_pkg;
   localparam int unsigned RasPtrBits = $clog2(RasDepth);
 
   // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage
-  // IF outputs raw/partially processed data; PD performs decompression for better timing
+  // IF outputs raw/partially processed data; PD performs decompression for better timing.
+  // With 64-bit fetch, spanning instructions are assembled immediately in IF — no
+  // sel_spanning or spanning_instr fields are needed.
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     // Raw 16-bit parcel for decompression (compressed instructions)
     logic [15:0] raw_parcel;
     // Selection signals for final instruction mux (computed in IF, used in PD)
     logic sel_nop;
-    logic sel_spanning;
     logic sel_compressed;  // True if raw_parcel is a compressed instruction
-    // Pre-assembled spanning instruction (32-bit from spanning buffer)
-    instr_t spanning_instr;
-    // Effective 32-bit instruction word (for aligned 32-bit case)
+    // Effective 32-bit instruction word (aligned or spanning-assembled)
     instr_t effective_instr;
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
@@ -659,11 +665,15 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_pc;  // PC of branch instruction
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
+    logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
+    logic btb_update_requires_pc_reg_handoff;  // Predicted op must still execute in IF/PD/ID
     // RAS misprediction recovery signals
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
     logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
     logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
+    logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
+    logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
     // F extension fields
     logic stall_for_fpu;  // Stall for multi-cycle FP operation
     logic fpu_completing_next_cycle;  // FPU result will be valid next cycle
@@ -1054,7 +1064,7 @@ package riscv_pkg;
   );  // 5 bits for 32-entry Reorder Buffer
 
   // Reservation Station depths (per RS type)
-  localparam int unsigned IntRsDepth = 8;  // Integer ALU operations
+  localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
   localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj
@@ -1066,8 +1076,8 @@ package riscv_pkg;
   localparam int unsigned SqDepth = 8;  // Store queue entries
 
   // Checkpoint parameters
-  localparam int unsigned NumCheckpoints = 4;  // For branch speculation recovery
-  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 2 bits
+  localparam int unsigned NumCheckpoints = 8;  // For branch speculation recovery
+  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 3 bits
 
   // Register file sizes
   localparam int unsigned NumIntRegs = 32;  // x0-x31
@@ -1187,12 +1197,21 @@ package riscv_pkg;
     logic is_amo;      // AMO (execute at head with SQ empty)
     logic is_lr;       // LR (sets reservation)
     logic is_sc;       // SC (checks reservation at head)
+
+    // CSR info (stored at dispatch, used at commit for serialized CSR execution)
+    logic [11:0]     csr_addr;
+    logic [2:0]      csr_op;          // funct3 for CSR operation
+    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
+
+    // FP flags validity
+    logic has_fp_flags;  // This instruction produces FP flags (FP compute, not FP load)
   } reorder_buffer_entry_t;
 
   // Reorder Buffer interface signals (for module ports)
   typedef struct packed {
     logic                    alloc_valid;       // Request Reorder Buffer allocation
     logic [XLEN-1:0]         pc;
+    rs_type_e                rs_type;
     logic                    dest_rf;
     logic [RegAddrWidth-1:0] dest_reg;
     logic                    dest_valid;
@@ -1201,6 +1220,7 @@ package riscv_pkg;
     logic                    is_branch;
     logic                    predicted_taken;
     logic [XLEN-1:0]         predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0]         branch_target;     // Architectural taken target when known at dispatch
     logic                    is_call;
     logic                    is_return;
     // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
@@ -1219,6 +1239,12 @@ package riscv_pkg;
     logic                    is_lr;
     logic                    is_sc;
     logic                    is_compressed;     // Compressed (16-bit) instruction
+    // CSR info (stored in ROB entry for commit-time serialized execution)
+    logic [11:0]             csr_addr;
+    logic [2:0]              csr_op;            // funct3 for CSR operation
+    logic [XLEN-1:0]         csr_write_data;    // rs1 value or zero-ext immediate
+    // FP flags validity
+    logic                    has_fp_flags;      // Instruction produces FP flags
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -1273,11 +1299,26 @@ package riscv_pkg;
     logic [XLEN-1:0] pc;  // For mepc
     exc_cause_t exc_cause;
     fp_flags_t fp_flags;  // FP flags to accumulate
+    logic has_fp_flags;  // FP flags are valid (FP compute op, not FP load)
     // Branch misprediction recovery
-    logic misprediction;  // Branch mispredicted
+    logic misprediction;  // Branch mispredicted (raw, not gated by early recovery)
+    logic early_recovered;  // Misprediction already handled by early execute-time recovery
     logic has_checkpoint;
     logic [CheckpointIdWidth-1:0] checkpoint_id;
     logic [XLEN-1:0] redirect_pc;  // Correct target on misprediction
+    // Branch info (for BTB update and RAS restore at commit)
+    logic predicted_taken;  // Front-end predicted this control flow as taken
+    logic branch_taken;  // Actual branch outcome
+    logic [XLEN-1:0] branch_target;  // Actual branch target
+    logic is_branch;  // Conditional branch or jump
+    logic is_call;  // Call instruction (for RAS update)
+    logic is_return;  // Return instruction (for RAS restore)
+    logic is_jal;  // JAL instruction
+    logic is_jalr;  // JALR instruction
+    // CSR info (for commit-time CSR execution)
+    logic [11:0] csr_addr;  // CSR address
+    logic [2:0] csr_op;  // CSR operation funct3
+    logic [XLEN-1:0] csr_write_data;  // CSR write data (rs1 or zero-ext imm)
     // Serializing instruction flags (for outer control logic)
     logic is_csr;  // CSR instruction (Reorder Buffer executes at commit)
     logic is_fence;  // FENCE (SQ must be drained)
@@ -1288,7 +1329,67 @@ package riscv_pkg;
     logic is_amo;  // AMO instruction (executed at head with SQ empty)
     logic is_lr;  // LR (load-reserved, sets reservation)
     logic is_sc;  // SC (store-conditional, checks reservation)
+    logic is_compressed;  // Compressed (16-bit) instruction (for BTB update)
   } reorder_buffer_commit_t;
+
+  typedef struct packed {
+    logic rob_empty;
+    logic head_wait_total;
+    logic head_wait_int;
+    logic head_wait_branch;
+    logic head_wait_mul;
+    logic head_wait_mem_load;
+    logic head_wait_mem_store;
+    logic head_wait_mem_amo;
+    logic head_wait_fp;
+    logic head_wait_fmul;
+    logic head_wait_fdiv;
+    logic commit_blocked_csr;
+    logic commit_blocked_fence;
+    logic commit_blocked_wfi;
+    logic commit_blocked_mret;
+    logic commit_blocked_trap;
+    // Fires on cycles where commit_en is high AND the entry immediately
+    // behind head is also valid+done. Upper bound on the fraction of cycles
+    // a 2-wide commit would actually retire a second instruction.
+    logic head_and_next_done;
+    // Fires whenever the entry immediately behind head is valid+done,
+    // regardless of whether head is committing. Subtract head_and_next_done
+    // to get "done-queue stacking up behind a stalled head" — cycles where
+    // widen-commit is building up work for later bursts.
+    logic head_plus_one_done;
+    // Fires when the full 2-wide commit gate would fire: commit_en high,
+    // head+1 valid+done, and both head and head+1 pass the hazard
+    // exclusions (serial ops, branches on head+1, FENCE.I, exceptions,
+    // AMO/LR/SC, and head-mispredicting-branches). Tighter upper bound on
+    // the actual widen-commit fire rate than head_and_next_done.
+    logic commit_2_opportunity;
+    // Actual widen-commit fire rate: opportunity ANDed with the master
+    // enable and the cpu_ooo pending-write FIFO back-pressure term.  The
+    // difference between commit_2_opportunity and commit_2_fire_actual
+    // is the "throttled by FIFO pressure" fraction.
+    logic commit_2_fire_actual;
+    // Widen-commit blocker decomposition. These four events partition the
+    // gap between head_and_next_done (commit firing and head+1 ready to
+    // retire) and commit_2_opportunity (actually fires 2-wide). Each event
+    // is gated on commit_en && head_next_valid_done, so their sum equals
+    // (head_and_next_done - commit_2_opportunity).
+    //
+    //   HeadSerial      : head itself is a serial op or mispredicting
+    //                     branch (head_ok_2wide = 0).
+    //   NextSerial      : head is plain, head+1 is serial (CSR / fence /
+    //                     fence_i / WFI / MRET / AMO / LR / SC /
+    //                     exception) — not a branch.
+    //   NextBranchMispred : head+1 is a branch that will flush.
+    //   NextBranchCorrect : head+1 is a correctly-predicted branch (taken
+    //                       or not-taken). This is the most promising
+    //                       attack candidate — no flush is needed, just
+    //                       BTB/RAS update from slot-2.
+    logic commit_2_blocked_head_serial;
+    logic commit_2_blocked_next_serial;
+    logic commit_2_blocked_next_branch_mispred;
+    logic commit_2_blocked_next_branch_correct;
+  } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------
   // RAT Entry and Checkpoint Structures
@@ -1382,8 +1483,15 @@ package riscv_pkg;
     logic      mem_signed;  // Sign-extend on load
 
     // For CSR: address and immediate
-    logic [11:0] csr_addr;  // CSR address
-    logic [4:0]  csr_imm;   // Zero-extended CSR immediate
+    logic [11:0]                  csr_addr;        // CSR address
+    logic [4:0]                   csr_imm;         // Zero-extended CSR immediate
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0]              link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                         has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic                         is_call;
+    logic                         is_return;
   } rs_entry_t;
 
   // RS dispatch request (from dispatch unit to RS)
@@ -1415,6 +1523,8 @@ package riscv_pkg;
     logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
     // Memory info
     logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
     mem_size_e                        mem_size;
     logic                             mem_signed;
     // CSR info
@@ -1422,6 +1532,13 @@ package riscv_pkg;
     logic [4:0]                       csr_imm;
     // Program counter (for ALU: AUIPC, JAL/JALR link address)
     logic [XLEN-1:0]                  pc;
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
   } rs_dispatch_t;
 
   // RS issue signals (from RS to functional unit)
@@ -1440,6 +1557,8 @@ package riscv_pkg;
     logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
     // Memory info (for MEM_RS)
     logic                             is_fp_mem;
+    logic                             mem_needs_lq;
+    logic                             mem_needs_sq;
     mem_size_e                        mem_size;
     logic                             mem_signed;
     // CSR info
@@ -1447,6 +1566,13 @@ package riscv_pkg;
     logic [4:0]                       csr_imm;
     // Program counter (for ALU: AUIPC, JAL/JALR link address)
     logic [XLEN-1:0]                  pc;
+    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
+    logic [XLEN-1:0]                  link_addr;
+    // Early misprediction recovery: checkpoint info and branch type
+    logic                             has_checkpoint;
+    logic [CheckpointIdWidth-1:0]     checkpoint_id;
+    logic                             is_call;
+    logic                             is_return;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------
@@ -1519,7 +1645,10 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     logic                             is_fp;
     mem_size_e                        size;
-    logic                             is_sc;    // Store-conditional
+    logic                             is_sc;       // Store-conditional
+    logic                             addr_valid;  // Address already known at dispatch
+    logic [XLEN-1:0]                  address;
+    logic                             is_mmio;
   } sq_alloc_req_t;
 
   // SQ address update (from address calculation)
@@ -1648,9 +1777,15 @@ package riscv_pkg;
 
   // Dispatch status (from dispatch to front-end)
   typedef struct packed {
+    logic dispatch_valid;
     logic stall;                // Stall decode (Reorder Buffer/RS/LQ/SQ full)
     logic reorder_buffer_full;
-    logic rs_full;              // Target RS is full
+    logic int_rs_full;
+    logic mul_rs_full;
+    logic mem_rs_full;
+    logic fp_rs_full;
+    logic fmul_rs_full;
+    logic fdiv_rs_full;
     logic lq_full;
     logic sq_full;
     logic checkpoint_full;      // All checkpoints in use (branch)
@@ -1660,13 +1795,17 @@ package riscv_pkg;
   // Instruction Routing Table
   // ---------------------------------------------------------------------------
   // Helper function to determine RS assignment from instruction operation.
+  // Guarded from synthesis because Yosys cannot resolve enum values inside
+  // package functions.  Modules that need these during synthesis must inline
+  // equivalent logic using fully-qualified riscv_pkg:: enum references.
+`ifndef SYNTHESIS
 
   function automatic rs_type_e get_rs_type(instr_op_e op);
     case (op)
       // Integer ALU operations -> INT_RS
       ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
       ADDI, ANDI, ORI, XORI, SLTI, SLTIU, SLLI, SRLI, SRAI,
-      LUI, AUIPC, JAL, JALR,
+      LUI, AUIPC, JALR,
       BEQ, BNE, BLT, BGE, BLTU, BGEU,
       // Zba/Zbb/Zbs/Zbkb/Zicond -> INT_RS (all 1-cycle ALU ops)
       SH1ADD, SH2ADD, SH3ADD,
@@ -1714,7 +1853,7 @@ package riscv_pkg;
       FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer)
-      WFI, MRET, PAUSE: get_rs_type = RS_NONE;
+      JAL, WFI, MRET, PAUSE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -1813,8 +1952,8 @@ package riscv_pkg;
   function automatic logic uses_fp_rs2(instr_op_e op);
     case (op)
       // FP compute ops with 2+ sources
-      FADD_S, FSUB_S, FMUL_S,
-      FADD_D, FSUB_D, FMUL_D,
+      FADD_S, FSUB_S, FMUL_S, FDIV_S,
+      FADD_D, FSUB_D, FMUL_D, FDIV_D,
       FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S,
       FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
       FMIN_S, FMAX_S, FMIN_D, FMAX_D,
@@ -1885,5 +2024,7 @@ package riscv_pkg;
       default: is_conditional_branch_op = 1'b0;
     endcase
   endfunction
+
+`endif  // SYNTHESIS
 
 endpackage : riscv_pkg

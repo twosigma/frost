@@ -19,7 +19,7 @@
   dual-port RAM and memory-mapped I/O peripherals. This module serves as the main
   compute and storage subsystem, managing the instruction fetch interface, data memory
   access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
-  instantiates a 6-stage pipelined RISC-V CPU alongside two separate dual-port RAMs:
+  instantiates the Tomasulo OOO RISC-V CPU alongside two separate dual-port RAMs:
   one for instruction fetch and one for data access. Both memories use Port A on the
   divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
   clock (i_clk) for runtime operations - instruction fetch from memory 0 and data
@@ -52,6 +52,7 @@ module cpu_and_mem #(
 
     output logic       o_uart_wr_en,
     output logic [7:0] o_uart_wr_data,
+    input  logic       i_uart_tx_ready,
 
     // UART RX interface - received data from UART
     input  logic [7:0] i_uart_rx_data,
@@ -85,10 +86,11 @@ module cpu_and_mem #(
   // - sw/common/link.ld (MMIO memory region and PROVIDE statements)
   // - cpu module parameters
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  localparam int unsigned MmioSizeBytes = 32'h28;
+  localparam int unsigned MmioSizeBytes = 32'h2C;
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
-  localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024; // RX status (bit0 = data available)
+  localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
+  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028; // TX status (bit0: can accept byte)
   localparam int unsigned Fifo0MmioAddr = 32'h4000_0008;
   localparam int unsigned Fifo1MmioAddr = 32'h4000_000C;
   // Timer registers (CLINT-compatible layout)
@@ -104,19 +106,36 @@ module cpu_and_mem #(
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
   // CPU interface signals
-  logic [31:0] program_counter, instruction;
+  logic [31:0] program_counter;
+  logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
+  logic [ 3:0] instruction_sideband;  // Predecode: {next_sb[1:0], current_sb[1:0]}
+  logic        instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
-  logic                  [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
-  logic                  [31:0] mmio_read_data_comb;
-  logic                  [31:0] mmio_read_data_reg;
-  logic                         is_mmio_registered;
-  logic                  [31:0] mmio_load_addr;
-  logic                         mmio_load_valid;
-  logic                  [31:0] data_memory_read_data;  // From RAM only
-  logic                  [31:0] data_memory_address_registered;  // Delayed for read data alignment
-  logic                  [ 3:0] data_memory_byte_write_enable;
-  logic                         data_memory_read_enable;
-  logic                         mmio_read_pulse;
+  logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
+  logic [31:0] mmio_read_data_comb;
+  logic [31:0] mmio_read_data_reg;
+  logic        mmio_read_data_valid;
+  logic [31:0] mmio_load_addr;
+  logic        mmio_load_valid;
+  logic        mmio_read_capture;
+  logic [31:0] data_memory_read_data;  // From RAM only
+  logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
+  logic [ 3:0] data_memory_byte_write_enable;
+  // MMIO-pre-masked copy routed straight to the BRAM WEA pins. Generated in
+  // cpu_ooo using the SQ/AMO-side registered is_mmio flags so the BRAM
+  // write-enable no longer depends on the late combinational
+  // data_memory_address-range test.
+  logic [ 3:0] data_memory_bram_byte_write_enable;
+  logic        data_memory_read_enable;
+  logic        mmio_read_pulse;
+  logic        fifo0_rd_pulse_q;
+  logic        fifo1_rd_pulse_q;
+  logic        uart_rx_ready_q;
+`ifndef SYNTHESIS
+  logic [31:0] data_memory_store_last_addr;
+  localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
+  localparam logic [31:0] CoremarkListNodeHi = 32'h0001_f910;
+`endif
 
   // Timer registers (CLINT-style)
   logic                  [63:0] mtime;  // Machine time counter
@@ -141,9 +160,8 @@ module cpu_and_mem #(
   end
   assign interrupts.mtip = mtip_registered;
 
-  // RISC-V CPU core - 6-stage pipeline with RV32IMAB + Zicsr + Machine-mode
-  // Note: B = Zba + Zbb + Zbs (full bit manipulation extension)
-  cpu #(
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine-mode
+  cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
       .MMIO_SIZE_BYTES(MmioSizeBytes)
@@ -152,9 +170,12 @@ module cpu_and_mem #(
       .i_rst,
       .o_pc(program_counter),
       .i_instr(instruction),
+      .i_instr_sideband(instruction_sideband),
+      .i_instr_bank_sel_r(instruction_bank_sel_r),
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
+      .o_data_mem_bram_byte_wr_en(data_memory_bram_byte_write_enable),
       .o_data_mem_read_enable(data_memory_read_enable),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
@@ -170,38 +191,42 @@ module cpu_and_mem #(
       .i_disable_branch_prediction(1'b0)
   );
 
-  logic is_mmio;
-  assign is_mmio = (data_memory_address >= MmioAddr)
-                 && (data_memory_address < (MmioAddr + MmioSizeBytes));
+  // MMIO mask now lives in cpu_ooo at the SQ/AMO source; the BRAM consumes
+  // data_memory_bram_byte_write_enable directly. The old address-range check
+  // pulled the full data_memory_address mux (and therefore the LQ issue
+  // cone) onto the BRAM WEA pin (-1.045 ns WNS path).
 
   // Dual memory architecture with separate instruction and data memories
   // Both memories receive instruction writes (fan out) on Port A (div4 clock)
   // Memory 0: Port A = instruction programming (div4), Port B = instruction fetch (main clk)
   // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
 
-  // Memory 0: Instruction memory (uses simpler BRAM without byte enables or write-first)
+  // Memory 0: Instruction memory with predecode sideband
+  // Stores 32-bit instruction data + 2-bit is_compressed sideband per word.
+  // Sideband bits are computed at write time and arrive at the same Tco as
+  // instruction data on the fetch port, eliminating the combinational
+  // is_compressed LUT from the BRAM -> PC critical path.
   // Port A: Instruction programming only (div4 clock, write only)
   // Port B: Instruction fetch (main clock, read only)
-  tdp_bram_dc #(
-      .DATA_WIDTH(32),
+  imem_predecode #(
       .ADDR_WIDTH(MemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
-      .INIT_FILE("sw.mem")  // Software initialization file
+      .INIT_FILE("sw.mem")
   ) instruction_memory (
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
-      .i_port_b_clk(i_clk),
-      .i_port_b_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)
       .i_port_a_byte_address(i_instr_mem_addr),
       .i_port_a_write_data(i_instr_mem_wrdata),
       .i_port_a_write_enable(i_instr_mem_en),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only)
+      .i_port_b_clk(i_clk),
+      .i_port_b_enable(1'b1),
       .i_port_b_byte_address(program_counter),
-      .i_port_b_write_data('0),
-      .i_port_b_write_enable(1'b0),
-      .o_port_b_read_data(instruction)
+      .o_port_b_read_data(instruction),
+      .o_port_b_sideband(instruction_sideband),
+      .o_port_b_bank_sel_r(instruction_bank_sel_r)
   );
 
   // Memory 1: Data memory
@@ -223,22 +248,25 @@ module cpu_and_mem #(
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(data_memory_address),
       .i_port_b_write_data(data_memory_write_data),
-      .i_port_b_byte_write_enable(data_memory_byte_write_enable & {4{~is_mmio}}),
+      .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
       .o_port_b_read_data(data_memory_read_data)
   );
-  assign o_instr_mem_rddata = instruction;
+  assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
   logic [3:0] data_memory_byte_write_enable_registered;
+  logic       data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
+    data_memory_read_enable_registered <= i_rst ? 1'b0 : data_memory_read_enable;
     data_memory_byte_write_enable_registered <= i_rst ? '0 : data_memory_byte_write_enable;
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
-  assign is_mmio_registered = mmio_load_valid
-                           && (mmio_load_addr >= MmioAddr)
-                           && (mmio_load_addr < (MmioAddr + MmioSizeBytes));
+  // mmio_read_pulse is already range-qualified by cpu_ooo using the same
+  // MMIO bounds. Avoid repeating that late address compare here because this
+  // signal directly drives the high-fanout MMIO read-data capture enables.
+  assign mmio_read_capture = mmio_read_pulse;
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse)
   always_comb begin
@@ -249,6 +277,8 @@ module cpu_and_mem #(
       UartRxDataMmioAddr:   mmio_read_data_comb = {24'b0, i_uart_rx_data};
       // UART RX status - bit 0 indicates data available (non-destructive read)
       UartRxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_rx_valid};
+      // UART TX status - bit 0 indicates the TX FIFO can accept at least one byte.
+      UartTxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_tx_ready};
       Fifo0MmioAddr:        mmio_read_data_comb = i_fifo0_rd_data;
       Fifo1MmioAddr:        mmio_read_data_comb = i_fifo1_rd_data;
       MtimeLowMmioAddr:     mmio_read_data_comb = mtime[31:0];
@@ -260,16 +290,65 @@ module cpu_and_mem #(
     endcase
   end
 
-  // Register MMIO read data to break combinational FIFO/UART paths into the core.
+  // Register MMIO read data so both the legacy in-order path and the OOO path
+  // see a stable response after the side-effect pulse fires.
   always_ff @(posedge i_clk) begin
-    if (i_rst) mmio_read_data_reg <= '0;
-    else if (mmio_read_pulse && is_mmio_registered) mmio_read_data_reg <= mmio_read_data_comb;
+    if (i_rst) begin
+      mmio_read_data_valid <= 1'b0;
+    end else begin
+      if (mmio_read_capture) begin
+        mmio_read_data_valid <= 1'b1;
+      end else if (mmio_read_data_valid && !mmio_load_valid) begin
+        mmio_read_data_valid <= 1'b0;
+      end
+    end
+  end
+
+`ifdef FROST_XILINX_PRIMS
+  // Xilinx-specific timing steering: make the MMIO data capture flops explicit
+  // so Vivado cannot encode zero-valued read cases as synchronous reset pins.
+  for (
+      genvar g_mmio_read_data = 0; g_mmio_read_data < 32; g_mmio_read_data++
+  ) begin : gen_mmio_read_data_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) mmio_read_data_ff (
+        .C (i_clk),
+        .CE(mmio_read_capture),
+        .D (mmio_read_data_comb[g_mmio_read_data]),
+        .Q (mmio_read_data_reg[g_mmio_read_data]),
+        .R (1'b0)
+    );
+  end
+`else
+  always_ff @(posedge i_clk) begin
+    if (mmio_read_capture) begin
+      mmio_read_data_reg <= mmio_read_data_comb;
+    end
+  end
+`endif
+
+  // Register MMIO consume side effects so the load-issue cone stops at the
+  // MMIO read-data capture flops instead of reaching into peripheral storage.
+  // The load queue only allows one outstanding read, so the data sampled on
+  // mmio_read_pulse remains the architecturally visible response when the
+  // consume pulse fires on the following cycle.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fifo0_rd_pulse_q <= 1'b0;
+      fifo1_rd_pulse_q <= 1'b0;
+      uart_rx_ready_q  <= 1'b0;
+    end else begin
+      fifo0_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo0MmioAddr);
+      fifo1_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo1MmioAddr);
+      uart_rx_ready_q  <= mmio_read_pulse && (mmio_load_addr == UartRxDataMmioAddr);
+    end
   end
 
   // Multiplexer for read data - selects between RAM and registered MMIO data
   always_comb begin
     data_memory_or_peripheral_read_data = data_memory_read_data;  // Default: use RAM data
-    if (is_mmio_registered) data_memory_or_peripheral_read_data = mmio_read_data_reg;
+    if (mmio_read_data_valid) data_memory_or_peripheral_read_data = mmio_read_data_reg;
   end
 
   // write to UART
@@ -287,14 +366,11 @@ module cpu_and_mem #(
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1MmioAddr;
 
-  // FIFO read enable generation - pulse on MMIO load (two-cycle bubble in CPU)
-  assign o_fifo0_rd_en = (data_memory_address_registered == Fifo0MmioAddr) && mmio_read_pulse;
-  assign o_fifo1_rd_en = (data_memory_address_registered == Fifo1MmioAddr) && mmio_read_pulse;
-
-  // UART RX ready generation - pulses on load from UART RX data address
-  // This consumes the byte from the RX FIFO
-  assign o_uart_rx_ready = (data_memory_address_registered == UartRxDataMmioAddr) &&
-                           mmio_read_pulse;
+  // FIFO/UART consume pulses fire one cycle after the MMIO read request is
+  // accepted. The response data itself was already captured above.
+  assign o_fifo0_rd_en = fifo0_rd_pulse_q;
+  assign o_fifo1_rd_en = fifo1_rd_pulse_q;
+  assign o_uart_rx_ready = uart_rx_ready_q;
 
   // Timer register updates
   // mtime increments every clock cycle (provides wall-clock time)

@@ -67,7 +67,7 @@ Non-Interference & Additional Coverage Tests:
 Usage:
     cd frost/tests
     make clean
-    ./test_run_cocotb.py --sim verilator reorder_buffer
+    ./test_run_cocotb.py reorder_buffer
 """
 
 import cocotb
@@ -154,11 +154,15 @@ def make_branch_request(
     pc: int,
     predicted_taken: bool = False,
     predicted_target: int = 0,
+    branch_target: int | None = None,
     is_jal: bool = False,
     is_jalr: bool = False,
     link_addr: int = 0,
 ) -> AllocationRequest:
     """Create allocation request for branch/jump instruction."""
+    actual_target = (
+        predicted_target if (branch_target is None and is_jal) else (branch_target or 0)
+    )
     return AllocationRequest(
         pc=pc,
         dest_rf=0,
@@ -167,6 +171,7 @@ def make_branch_request(
         is_branch=True,
         predicted_taken=predicted_taken,
         predicted_target=predicted_target,
+        branch_target=actual_target,
         is_jal=is_jal,
         is_jalr=is_jalr,
         link_addr=link_addr,
@@ -395,6 +400,43 @@ async def test_cdb_write(dut: Any) -> None:
     await ClockCycles(dut_if.clock, 8)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "Buffer should be empty after all commits"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_store_complete_marks_done(dut: Any) -> None:
+    """Plain stores mark the ROB done directly without going through the CDB."""
+    cocotb.log.info("=== Test: Direct Store Completion ===")
+
+    dut_if, model = await setup_test(dut)
+
+    req = make_store_request(pc=0x1800)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    assert dut_if.count == 1, "Should have 1 entry"
+    assert (
+        int(dut.o_head_done.value) == 0
+    ), "Store should not be done immediately after allocation"
+
+    dut_if.drive_store_complete(0)
+    model.store_complete(0)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_store_complete()
+
+    assert (
+        int(dut.o_head_done.value) == 1
+    ), "Direct store completion should mark the head entry done"
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+
+    assert int(dut.o_empty.value) == 1, "Store should commit once marked done"
 
     cocotb.log.info("=== Test Passed ===")
 

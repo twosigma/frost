@@ -18,18 +18,23 @@
   PC Increment Calculator
 
   Computes the next sequential PC values using parallel adders for timing optimization.
-  This module pre-computes all possible PC increment results (pc+0, pc+2, pc+4) in
-  parallel, then selects the correct result based on instruction type and state.
+  This module pre-computes fetch PC increment results (pc+2, pc+4) in parallel,
+  then selects the correct result based on instruction type and state.
 
   Key Timing Optimization:
   ========================
   Instead of:  next_pc = pc + mux(select, 0, 2, 4)  [select→mux→CARRY8]
-  We do:       next_pc = mux(select, pc+0, pc+2, pc+4)  [CARRY8 in parallel, then mux]
+  We do:       next_pc = mux(select, pc+2, pc+4)  [CARRY8 in parallel, then mux]
 
   This moves the late-arriving select signal from BEFORE the CARRY8 chain to
-  AFTER it. All three additions compute in parallel, then the mux selects the
+  AFTER it. Both additions compute in parallel, then the mux selects the
   correct result. The critical path from is_compressed to PC now only needs
   to control a mux, not feed into a CARRY8 adder chain.
+
+  For the pc_reg path, both compressed (+2) and 32-bit (+4/+0) results are
+  pre-computed using registered-only select signals. The BRAM-dependent
+  is_compressed controls only a final 2:1 mux between the pre-computed
+  outcomes, keeping the CARRY8 chains entirely off the BRAM→o_pc_reg path.
 
   Outputs:
   ========
@@ -50,16 +55,19 @@ module pc_increment_calculator #(
     // C-extension state signals
     input logic i_spanning_wait_for_fetch,
     input logic i_spanning_in_progress,
-    input logic i_is_32bit_spanning,
+    input logic i_spanning_eligible,  // Registered-only: is_32bit_spanning without is_compressed
     input logic i_spanning_to_halfword,
     input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,
+    input logic i_is_compressed_for_pc,
+    input logic i_sel_nop,  // IF outputs NOP (stale BRAM data — is_compressed unreliable)
 
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_control_flow_to_halfword_r,
+    input logic i_stall_registered,
 
     // Mid-32bit correction (from pc_controller)
     input logic i_mid_32bit_correction,
@@ -72,28 +80,31 @@ module pc_increment_calculator #(
   // ===========================================================================
   // PC Increment Selection Signals
   // ===========================================================================
-  // Combinational select signals for instruction type
-  // Priority: sel_0 (spanning wait) > sel_2 (compressed/spanning) > default (32-bit)
-  logic pc_inc_comb_sel_0, pc_inc_comb_sel_2;
-  assign pc_inc_comb_sel_0 = i_spanning_wait_for_fetch;
-  assign pc_inc_comb_sel_2 = i_spanning_in_progress || i_is_compressed || i_is_32bit_spanning;
+  // Combinational select signal for instruction type. With 64-bit fetch,
+  // fetch-side spanning wait is gone, so the fetch PC never needs a +0
+  // sequential increment.
+  logic pc_inc_comb_sel_2;
+  assign pc_inc_comb_sel_2 = i_is_compressed;
 
   // Final PC increment select with priority encoding
-  // Priority: sel_4 (holdoff) > sel_0 (spanning wait) > sel_2 (halfword) > default
+  // Priority: sel_holdoff (holdoff) > sel_2 (halfword) > default
   // Use i_any_holdoff_safe (registered) to break timing path from branch_taken.
   //
-  // CRITICAL: Include i_prediction_holdoff in the holdoff check!
-  // After prediction redirects PC to target, instruction data is STALE (BRAM latency).
-  // is_compressed is computed from stale data. If we use stale is_compressed
-  // to compute pc_increment, we'd get the wrong next PC.
-  // During prediction_holdoff, force pc_increment=4 to skip the stale cycle safely.
-  logic pc_inc_sel_4, pc_inc_sel_2, pc_inc_sel_0;
-  assign pc_inc_sel_4 = i_any_holdoff_safe || i_prediction_holdoff;
-  assign pc_inc_sel_0 = !i_any_holdoff_safe && !i_prediction_holdoff && i_spanning_wait_for_fetch;
-  assign pc_inc_sel_2 = !i_any_holdoff_safe && !i_prediction_holdoff &&
-                        !i_spanning_wait_for_fetch &&
-                        (i_control_flow_to_halfword_r || i_spanning_to_halfword_registered ||
-                         i_spanning_in_progress || i_is_32bit_spanning);
+  // CRITICAL: prediction holdoff and redirect/reset holdoff need different
+  // treatment for halfword PCs.
+  //
+  // For prediction holdoff, +2 from a halfword PC is correct: it advances to the
+  // next word boundary without letting o_pc get two instructions ahead of pc_reg.
+  //
+  // For redirect/reset holdoff, +4 is required even from a halfword PC. Using +2
+  // there leaves the numeric fetch lead too small, so the BRAM word for the next
+  // word-aligned instruction arrives one cycle late after a halfword redirect.
+  logic pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2;
+  assign pc_inc_sel_redirect_holdoff = i_any_holdoff_safe;
+  assign pc_inc_sel_prediction_holdoff = !i_any_holdoff_safe && i_prediction_holdoff;
+  assign pc_inc_sel_2 = !pc_inc_sel_redirect_holdoff &&
+                        !pc_inc_sel_prediction_holdoff &&
+                        i_control_flow_to_halfword_r;
 
   // ===========================================================================
   // Parallel Adders for PC (Fetch Address)
@@ -102,8 +113,7 @@ module pc_increment_calculator #(
   localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
-  logic [XLEN-1:0] next_pc_plus_0, next_pc_plus_2, next_pc_plus_4;
-  assign next_pc_plus_0 = i_pc;
+  logic [XLEN-1:0] next_pc_plus_2, next_pc_plus_4;
   assign next_pc_plus_2 = i_pc + IncC;
   assign next_pc_plus_4 = i_pc + Inc4;
 
@@ -111,20 +121,13 @@ module pc_increment_calculator #(
   logic [XLEN-1:0] next_sequential_pc;
   always_comb begin
     casez ({
-      pc_inc_sel_4, pc_inc_sel_0, pc_inc_sel_2
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
     })
-      3'b1??: next_sequential_pc = next_pc_plus_4;  // holdoff: +4
-      3'b01?: next_sequential_pc = next_pc_plus_0;  // spanning wait: +0
+      3'b1??: next_sequential_pc = next_pc_plus_4;
+      3'b01?: next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
       3'b001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
       default: begin
-        // Normal case: use combinational signals for fine-grained selection
-        casez ({
-          pc_inc_comb_sel_0, pc_inc_comb_sel_2
-        })
-          2'b1?:   next_sequential_pc = next_pc_plus_0;  // spanning wait
-          2'b01:   next_sequential_pc = next_pc_plus_2;  // compressed/spanning
-          default: next_sequential_pc = next_pc_plus_4;  // 32-bit instruction
-        endcase
+        next_sequential_pc = pc_inc_comb_sel_2 ? next_pc_plus_2 : next_pc_plus_4;
       end
     endcase
   end
@@ -132,34 +135,55 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // Priority: sel_0 (spanning/wait/holdoff) > sel_2 (compressed) > default (32-bit)
+  // TIMING OPTIMIZATION: Pre-compute pc_reg_normal for both possible is_compressed
+  // outcomes using only registered select signals. The parallel adders settle from
+  // registered i_pc_reg (~0.3 ns) well before BRAM data arrives (~0.9 ns).
+  // Only the final 2:1 mux uses the late-arriving BRAM-dependent is_compressed,
+  // keeping the CARRY8 chains entirely off the BRAM→o_pc_reg critical path.
+  //
   // CRITICAL: Include spanning_to_halfword_registered to hold pc_reg during the holdoff cycle.
   // During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
   // (use_buffer_after_spanning), instruction_aligner uses pc_reg[1] to select
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
-  logic pc_reg_inc_sel_0, pc_reg_inc_sel_2;
-  assign pc_reg_inc_sel_0 = i_spanning_wait_for_fetch || i_is_32bit_spanning ||
-                            i_spanning_to_halfword_registered ||
-                            i_prediction_from_buffer_holdoff;  // Hold during stale cycle
-  assign pc_reg_inc_sel_2 = !i_spanning_in_progress && !pc_reg_inc_sel_0 && i_is_compressed;
 
-  logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
-  assign pc_reg_plus_0 = i_pc_reg;
-  assign pc_reg_plus_2 = i_pc_reg + IncC;
-  assign pc_reg_plus_4 = i_pc_reg + Inc4;
+  // TIMING: The pre-computed results (pc_reg_if_compressed, pc_reg_if_32bit)
+  // depend ONLY on registered inputs and settle ~0.3 ns into the cycle.  The
+  // late-arriving is_compressed (BRAM-dependent, ~0.9 ns) must only control
+  // the final 2:1 MUX, NOT feed into the CARRY8 adder chains.
+  //
+  // Without a hard module boundary, Vivado merges the adders with the
+  // downstream MUX into a single CARRY8 chain where the S-inputs depend on
+  // is_compressed — putting the entire carry chain on the BRAM→o_pc_reg path.
+  //
+  // The submodule instance with dont_touch prevents this: Vivado cannot
+  // dissolve the boundary, so the adders and registered-select MUXes stay
+  // inside the submodule while the is_compressed MUX stays outside.
+  logic [XLEN-1:0] pc_reg_if_compressed;
+  logic [XLEN-1:0] pc_reg_if_32bit;
 
-  // Compute pc_reg_normal (normal sequential PC_reg)
+  (* dont_touch = "yes" *) pc_reg_precompute #(
+      .XLEN(XLEN)
+  ) u_pc_reg_precompute (
+      .i_pc_reg                         (i_pc_reg),
+      .i_spanning_wait_for_fetch        (i_spanning_wait_for_fetch),
+      .i_spanning_to_halfword_registered(i_spanning_to_halfword_registered),
+      .i_prediction_from_buffer_holdoff (i_prediction_from_buffer_holdoff),
+      .i_spanning_in_progress           (i_spanning_in_progress),
+      .i_spanning_eligible              (i_spanning_eligible),
+      .o_pc_reg_if_compressed           (pc_reg_if_compressed),
+      .o_pc_reg_if_32bit                (pc_reg_if_32bit)
+  );
+
+  // Final: select based on live is_compressed. Only this 2:1 mux is on the
+  // BRAM→o_pc_reg critical path — the CARRY8 chains settle from registered
+  // i_pc_reg well before BRAM data arrives.
+  //
+  // When sel_nop is active, the BRAM data is stale (wrong address after a
+  // redirect) so is_compressed is unreliable. Force +2 (compressed) to
+  // prevent pc_reg from overshooting a pending prediction branch PC.
   logic [XLEN-1:0] pc_reg_normal;
-  always_comb begin
-    casez ({
-      pc_reg_inc_sel_0, pc_reg_inc_sel_2
-    })
-      2'b1?:   pc_reg_normal = pc_reg_plus_0;  // spanning/wait/holdoff: +0
-      2'b01:   pc_reg_normal = pc_reg_plus_2;  // compressed: +2
-      default: pc_reg_normal = pc_reg_plus_4;  // 32-bit: +4
-    endcase
-  end
+  assign pc_reg_normal = (i_is_compressed || i_sel_nop) ? pc_reg_if_compressed : pc_reg_if_32bit;
 
   // ===========================================================================
   // Special PC Corrections
@@ -180,8 +204,7 @@ module pc_increment_calculator #(
   logic seq_sel_holdoff, seq_sel_mid_32bit, seq_sel_spanning_hw;
   assign seq_sel_holdoff = i_any_holdoff_safe;
   assign seq_sel_mid_32bit = !i_any_holdoff_safe && i_mid_32bit_correction;
-  assign seq_sel_spanning_hw = !i_any_holdoff_safe && !i_mid_32bit_correction &&
-                               i_spanning_to_halfword;
+  assign seq_sel_spanning_hw = 1'b0;
 
   always_comb begin
     if (seq_sel_holdoff) begin

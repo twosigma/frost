@@ -33,6 +33,9 @@
 /* Transmit a single character over UART */
 void uart_putchar(char c);
 
+/* Check whether the UART transmitter can accept a byte */
+int uart_tx_ready(void);
+
 /* Transmit a null-terminated string over UART */
 void uart_puts(const char *s);
 

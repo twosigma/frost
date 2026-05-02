@@ -14,7 +14,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unified runner for cocotb simulations - works with pytest and standalone."""
+"""Unified runner for cocotb simulations - works with pytest and standalone.
+
+Standalone:
+    ./test_run_cocotb.py hello_world
+    ./test_run_cocotb.py reorder_buffer
+    ./test_run_cocotb.py --list-tests
+
+Pytest (all tests):
+    pytest ./test_run_cocotb.py
+
+Pytest (real program tests only):
+    pytest ./test_run_cocotb.py -k programs
+
+Pytest (tomasulo unit tests only):
+    pytest ./test_run_cocotb.py -k unit
+"""
 
 import os
 import random
@@ -29,10 +44,7 @@ from typing import Any
 from collections.abc import Mapping
 
 import pytest
-
-# Simulators to test in CI
-CI_SIMULATORS = ["icarus", "verilator"]
-
+import cocotb
 
 # =============================================================================
 # Test Configuration Registry
@@ -47,7 +59,7 @@ class CocotbRunConfig:
     hdl_toplevel_module: str
     app_name: str | None = None  # Application name (compiled on demand)
     description: str = ""
-    supported_simulators: tuple[str, ...] | None = None  # None means all simulators
+    include_in_pytest: bool = True
 
 
 # CPU testbench tests (multiple modules combined)
@@ -64,11 +76,6 @@ CPU_TEST_MODULES = ",".join(
 # Registry of all available tests - single source of truth
 # Maps test name to its configuration
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
-    "cpu": CocotbRunConfig(
-        python_test_module=CPU_TEST_MODULES,
-        hdl_toplevel_module="cpu_tb",
-        description="CPU random regression and directed tests",
-    ),
     # Real program tests - all use same module/toplevel, differ only in app
     "branch_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -232,7 +239,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
         description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
-        supported_simulators=("verilator",),
     ),
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
@@ -243,31 +249,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
         hdl_toplevel_module="int_alu_shim",
         description="Integer ALU shim unit tests (ADD, SUB, shifts, LUI, AUIPC, JAL, CSR)",
-        supported_simulators=("verilator",),
     ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
         description="Integer MUL/DIV shim unit tests (MUL, MULH, DIV, REM, flush)",
-        supported_simulators=("verilator",),
     ),
     "fp_add_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
         hdl_toplevel_module="fp_add_shim",
         description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
-        supported_simulators=("verilator",),
     ),
     "fp_mul_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
         hdl_toplevel_module="fp_mul_shim",
         description="FP mul shim unit tests (FMUL, FMADD, FMSUB, FNMADD, FNMSUB)",
-        supported_simulators=("verilator",),
     ),
     "fp_div_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",
         hdl_toplevel_module="fp_div_shim",
         description="FP div shim unit tests (FDIV, FSQRT, flush)",
-        supported_simulators=("verilator",),
+    ),
+    "dispatch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.dispatch.test_dispatch",
+        hdl_toplevel_module="dispatch",
+        description="Dispatch unit tests (instruction classification, source resolution, stall, RS routing)",
     ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
@@ -277,7 +283,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)
-REAL_PROGRAM_TESTS = [name for name in TEST_REGISTRY if name != "cpu"]
+REAL_PROGRAM_TESTS = [
+    name
+    for name, config in TEST_REGISTRY.items()
+    if config.app_name is not None and config.include_in_pytest
+]
+
+UNIT_TESTS = [
+    name
+    for name, config in TEST_REGISTRY.items()
+    if config.app_name is None and config.include_in_pytest
+]
 
 
 # =============================================================================
@@ -353,12 +369,7 @@ class CocotbRunner:
         """
         environment_variables = os.environ.copy()
 
-        # Select HDL simulator (icarus or verilator)
-        simulator_name = environment_variables.get("SIM", "icarus")
-        if simulator_name == "":
-            simulator_name = "icarus"
-
-        environment_variables["SIM"] = simulator_name
+        environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
 
         # Add verification infrastructure to Python path so cocotb_tests modules are importable
@@ -443,11 +454,18 @@ class CocotbRunner:
             True if rebuild needed (toplevel changed), False for incremental build.
         """
         toplevel_marker = sim_build_dir / ".last_toplevel"
+        cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
         verilator_binary = sim_build_dir / "Vtop"
+        cocotb_libs_dir = str(
+            (Path(cocotb.__file__).resolve().parent / "libs").resolve()
+        )
 
-        # If sim_build exists with a binary but no marker, force rebuild
-        # (this handles stale state from before marker tracking was added)
-        if verilator_binary.exists() and not toplevel_marker.exists():
+        # If sim_build exists with a binary but no marker, force rebuild.
+        # This handles stale state from before marker tracking was added or
+        # before cocotb/Python environment changes were tracked.
+        if verilator_binary.exists() and (
+            not toplevel_marker.exists() or not cocotb_libs_marker.exists()
+        ):
             return True
 
         if not toplevel_marker.exists():
@@ -455,15 +473,47 @@ class CocotbRunner:
 
         try:
             last_toplevel = toplevel_marker.read_text().strip()
-            return last_toplevel != self.hdl_toplevel_module
+            last_cocotb_libs = cocotb_libs_marker.read_text().strip()
+            return (
+                last_toplevel != self.hdl_toplevel_module
+                or last_cocotb_libs != cocotb_libs_dir
+            )
         except OSError:
             return False
 
     def _update_verilator_toplevel_marker(self, sim_build_dir: Path) -> None:
-        """Record the current toplevel for future incremental build checks."""
+        """Record the current build environment for future incremental checks."""
         sim_build_dir.mkdir(exist_ok=True)
         toplevel_marker = sim_build_dir / ".last_toplevel"
+        cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
         toplevel_marker.write_text(self.hdl_toplevel_module)
+        cocotb_libs_marker.write_text(
+            str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
+        )
+
+    def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
+        """Return True when the existing Verilator build dir can be rebuilt in place."""
+        if not sim_build_dir.exists():
+            return True
+        if not os.access(sim_build_dir, os.W_OK):
+            return False
+        for path in (
+            sim_build_dir / "Vtop",
+            sim_build_dir / ".last_toplevel",
+            sim_build_dir / ".last_cocotb_libs",
+        ):
+            if path.exists() and not os.access(path, os.W_OK):
+                return False
+        return True
+
+    def _fallback_verilator_build_dir(self) -> Path:
+        """Create a user-writable temporary Verilator build directory."""
+        prefix = f"{self.hdl_toplevel_module}_"
+        if self.app_name:
+            prefix = f"{self.app_name}_"
+        return Path(
+            tempfile.mkdtemp(prefix=prefix + "sim_build_", dir=tempfile.gettempdir())
+        )
 
     def run_simulation(
         self, check: bool = True, capture_output: bool = True
@@ -480,13 +530,14 @@ class CocotbRunner:
         env["SIM_BUILD"] = str(sim_build_dir)
 
         try:
-            # For Verilator, skip clean to enable incremental builds when RTL unchanged.
+            # Skip clean to enable incremental builds when RTL unchanged.
             # However, if the toplevel module changed, we must rebuild.
-            # For other simulators, always clean to ensure fresh state.
-            simulator = env.get("SIM", "icarus")
-            needs_clean = simulator != "verilator" or self._verilator_needs_rebuild(
-                sim_build_dir
-            )
+            needs_clean = self._verilator_needs_rebuild(sim_build_dir)
+
+            if needs_clean and not self._verilator_build_dir_writable(sim_build_dir):
+                sim_build_dir = self._fallback_verilator_build_dir()
+                env["SIM_BUILD"] = str(sim_build_dir)
+                needs_clean = False
 
             if needs_clean:
                 # Don't fail on clean errors (e.g., permission denied on root-owned files)
@@ -524,9 +575,9 @@ class CocotbRunner:
                     stderr=None,  # Don't capture, let it stream to terminal
                 )
 
-            # For Verilator, update the toplevel marker only after successful build.
+            # Update the toplevel marker only after successful build.
             # This ensures we don't mark a toplevel as built if compilation failed.
-            if simulator == "verilator" and result.returncode == 0:
+            if result.returncode == 0:
                 self._update_verilator_toplevel_marker(sim_build_dir)
 
             return result
@@ -545,45 +596,31 @@ class CocotbRunner:
 # =============================================================================
 
 
-def run_test_with_simulator(
-    test_name: str, simulator: str, capsys: Any | None = None
-) -> None:
-    """Run a test with the specified simulator.
+def run_test(test_name: str, capsys: Any | None = None) -> None:
+    """Run a test with Verilator.
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
-        simulator: Simulator to use ("icarus", "verilator")
         capsys: Optional pytest capsys fixture for output control
 
     Raises:
         pytest.fail: If the test fails
         KeyError: If test_name is not in TEST_REGISTRY
     """
-    os.environ["SIM"] = simulator
+    os.environ["SIM"] = "verilator"
     config = TEST_REGISTRY[test_name]
-
-    # Skip tests that don't support this simulator (e.g. FP shims need Verilator)
-    if (
-        config.supported_simulators is not None
-        and simulator not in config.supported_simulators
-    ):
-        pytest.skip(
-            f"{test_name} not supported on {simulator} "
-            f"(requires {', '.join(config.supported_simulators)})"
-        )
-
     runner = CocotbRunner.from_config(config)
 
     if capsys is not None:
         with capsys.disabled():
-            print(f"\nRunning {test_name} with {simulator} simulator...")
+            print(f"\nRunning {test_name}...")
             result = runner.run_simulation(check=False, capture_output=False)
     else:
-        print(f"\nRunning {test_name} with {simulator} simulator...")
+        print(f"\nRunning {test_name}...")
         result = runner.run_simulation(check=False, capture_output=False)
 
     if runner.check_for_failures(result):
-        pytest.fail(f"Cocotb test failed with {simulator}. Check output for details.")
+        pytest.fail(f"Cocotb test {test_name} failed. Check output for details.")
 
 
 # =============================================================================
@@ -591,15 +628,16 @@ def run_test_with_simulator(
 # =============================================================================
 
 
-@pytest.mark.cocotb
-class TestCPU:
-    """Test cases for RISC-V CPU core (random regression + directed tests)."""
+if "cpu" in TEST_REGISTRY:
 
-    @pytest.mark.slow
-    @pytest.mark.parametrize("simulator", CI_SIMULATORS)
-    def test_cpu(self, simulator: str, capsys: Any) -> None:
-        """Run the CPU test through cocotb with different simulators."""
-        run_test_with_simulator("cpu", simulator, capsys)
+    @pytest.mark.cocotb
+    class TestCPU:
+        """Test cases for RISC-V CPU core (random regression + directed tests)."""
+
+        @pytest.mark.slow
+        def test_cpu(self, capsys: Any) -> None:
+            """Run the CPU test through cocotb."""
+            run_test("cpu", capsys)
 
 
 @pytest.mark.cocotb
@@ -611,17 +649,27 @@ class TestRealPrograms:
     """
 
     @pytest.mark.slow
-    @pytest.mark.parametrize("simulator", CI_SIMULATORS)
     @pytest.mark.parametrize("test_name", REAL_PROGRAM_TESTS)
-    def test_real_program(self, test_name: str, simulator: str, capsys: Any) -> None:
+    def test_real_program(self, test_name: str, capsys: Any) -> None:
         """Run a real program test through cocotb.
 
         This parametrized test replaces 14 nearly-identical test methods.
         Pytest will generate test IDs like:
-            test_real_program[hello_world-icarus]
-            test_real_program[coremark-verilator]
+            test_real_program[hello_world]
+            test_real_program[coremark]
         """
-        run_test_with_simulator(test_name, simulator, capsys)
+        run_test(test_name, capsys)
+
+
+@pytest.mark.cocotb
+class TestUnitTests:
+    """Tomasulo unit tests (individual OOO components)."""
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize("test_name", UNIT_TESTS)
+    def test_unit(self, test_name: str, capsys: Any) -> None:
+        """Run a Tomasulo unit test through cocotb."""
+        run_test(test_name, capsys)
 
 
 # =============================================================================
@@ -631,7 +679,6 @@ class TestRealPrograms:
 
 def _run_single_seed(
     test_name: str,
-    simulator: str,
     seed: int,
     testcase: str | None,
     temp_dir: str,
@@ -642,7 +689,6 @@ def _run_single_seed(
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
-        simulator: Simulator to use
         seed: Random seed for this run
         testcase: Optional specific test case to run
         temp_dir: Temporary directory for build artifacts
@@ -651,7 +697,7 @@ def _run_single_seed(
         Tuple of (seed, passed, error_message)
     """
     # Set up environment for this specific run
-    os.environ["SIM"] = simulator
+    os.environ["SIM"] = "verilator"
     os.environ["COCOTB_RANDOM_SEED"] = str(seed)
     os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
 
@@ -678,7 +724,6 @@ def _run_single_seed(
 
 def run_seed_sweep(
     test_name: str,
-    simulator: str,
     num_seeds: int,
     testcase: str | None = None,
     max_workers: int | None = None,
@@ -687,7 +732,6 @@ def run_seed_sweep(
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
-        simulator: Simulator to use
         num_seeds: Number of different seeds to test
         testcase: Optional specific test case to run
         max_workers: Maximum number of parallel workers (default: num_seeds)
@@ -700,7 +744,7 @@ def run_seed_sweep(
 
     print(f"\n{'='*60}")
     print(f"Seed Sweep: Running {num_seeds} simulations in parallel")
-    print(f"Test: {test_name}, Simulator: {simulator}")
+    print(f"Test: {test_name}")
     print(f"Seeds: {seeds}")
     print(f"{'='*60}\n")
 
@@ -712,7 +756,7 @@ def run_seed_sweep(
             # Submit all jobs
             futures = {
                 executor.submit(
-                    _run_single_seed, test_name, simulator, seed, testcase, temp_dir
+                    _run_single_seed, test_name, seed, testcase, temp_dir
                 ): seed
                 for seed in seeds
             }
@@ -747,9 +791,7 @@ def run_seed_sweep(
         print(f"Failing seeds: {sorted(failed_seeds)}")
         print("\nTo reproduce a failure, run:")
         for seed in sorted(failed_seeds):
-            print(
-                f"  ./test_run_cocotb.py {test_name} --sim={simulator} --random-seed={seed}"
-            )
+            print(f"  ./test_run_cocotb.py {test_name} --random-seed={seed}")
 
     print(f"{'='*60}\n")
 
@@ -780,11 +822,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s cpu                    # Run CPU test with default simulator (icarus)
-  %(prog)s hello_world --sim=verilator  # Run Hello World with Verilator
-  %(prog)s isa_test --sim=icarus  # Run ISA compliance tests
-  %(prog)s cpu --sim=verilator --seed-sweep 10  # Run 10 seeds in parallel, report results
-  %(prog)s --list-tests           # Show available tests from TEST_REGISTRY and exit
+  %(prog)s hello_world              # Run Hello World
+  %(prog)s isa_test                 # Run ISA compliance tests
+  %(prog)s --list-tests             # Show available tests from TEST_REGISTRY and exit
 
 Note: Seed sweep runs simulations in parallel and reports pass/fail for each seed.
 
@@ -805,12 +845,6 @@ Available tests:
         "--list-tests",
         action="store_true",
         help="List available tests and exit",
-    )
-    parser.add_argument(
-        "--sim",
-        default="icarus",
-        choices=["icarus", "verilator"],
-        help="Simulator to use (default: icarus)",
     )
     parser.add_argument(
         "--testcase",
@@ -848,18 +882,6 @@ Available tests:
     if args.test is None:
         parser.error("the following arguments are required: test")
 
-    # Early check for simulator compatibility (covers both normal and seed-sweep)
-    early_config = TEST_REGISTRY[args.test]
-    if (
-        early_config.supported_simulators is not None
-        and args.sim not in early_config.supported_simulators
-    ):
-        print(
-            f"Error: {args.test} is not supported on {args.sim}. "
-            f"Supported simulators: {', '.join(early_config.supported_simulators)}"
-        )
-        sys.exit(1)
-
     # Handle seed sweep mode
     if args.seed_sweep:
         if args.seed_sweep < 1:
@@ -870,7 +892,6 @@ Available tests:
             sys.exit(1)
         results = run_seed_sweep(
             test_name=args.test,
-            simulator=args.sim,
             num_seeds=args.seed_sweep,
             testcase=args.testcase,
             max_workers=args.max_workers,
@@ -881,7 +902,7 @@ Available tests:
         sys.exit(0)
 
     # Set environment based on args
-    os.environ["SIM"] = args.sim
+    os.environ["SIM"] = "verilator"
     if args.testcase:
         # Anchor at end for exact match (COCOTB_TEST_FILTER uses regex).
         # We only anchor at end because cocotb may prefix with module path.

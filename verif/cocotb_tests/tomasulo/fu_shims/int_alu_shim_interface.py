@@ -25,7 +25,21 @@ from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
 
-from .fp_add_shim_interface import pack_rs_issue, unpack_fu_complete
+from .fp_add_shim_interface import (
+    _parse_instr_op_enum,
+    pack_rs_issue,
+    unpack_fu_complete,
+)
+
+_INSTR_OP = _parse_instr_op_enum()
+_BRANCH_OPS = {
+    _INSTR_OP["BEQ"],
+    _INSTR_OP["BNE"],
+    _INSTR_OP["BLT"],
+    _INSTR_OP["BGE"],
+    _INSTR_OP["BLTU"],
+    _INSTR_OP["BGEU"],
+}
 
 
 class IntAluShimInterface:
@@ -43,6 +57,7 @@ class IntAluShimInterface:
     def _init_inputs(self) -> None:
         """Drive all inputs to zero / inactive."""
         self.dut.i_rs_issue.value = 0
+        self.dut.i_issue_writes_cdb_hint.value = 0
         self.dut.i_csr_read_data.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
@@ -76,11 +91,12 @@ class IntAluShimInterface:
         imm: int = 0,
         use_imm: bool = False,
         pc: int = 0,
+        link_addr: int = 0,
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Exposes imm, use_imm, and pc which the ALU shim uses for
-        immediate operations, LUI/AUIPC, and JAL link address.
+        Exposes imm, use_imm, pc, and link_addr which the ALU shim uses for
+        immediate operations, LUI/AUIPC, and JAL/JALR link results.
         """
         packed = pack_rs_issue(
             valid=valid,
@@ -91,8 +107,10 @@ class IntAluShimInterface:
             imm=imm,
             use_imm=use_imm,
             pc=pc,
+            link_addr=link_addr,
         )
         self.dut.i_rs_issue.value = packed
+        self.dut.i_issue_writes_cdb_hint.value = 0 if op in _BRANCH_OPS else 1
 
     def drive_csr_read_data(self, value: int) -> None:
         """Drive i_csr_read_data."""
@@ -101,6 +119,7 @@ class IntAluShimInterface:
     def clear_issue(self) -> None:
         """Clear i_rs_issue (drive to zero / invalid)."""
         self.dut.i_rs_issue.value = 0
+        self.dut.i_issue_writes_cdb_hint.value = 0
 
     def read_fu_complete(self) -> dict:
         """Read and unpack the o_fu_complete output."""

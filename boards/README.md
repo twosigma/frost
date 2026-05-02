@@ -7,7 +7,6 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 | Board                  | FPGA                               | CPU Clock  | Features                 |
 |------------------------|------------------------------------|------------|--------------------------|
 | [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | Entry-level development  |
-| [Nexys A7](nexys_a7/)  | Xilinx Artix-7 (xc7a100t)          | 80 MHz     | Entry-level development  |
 | [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | High-performance target  |
 
 ## Architecture Overview
@@ -17,7 +16,7 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
 │                           Board Top Module                                │
-│                      (genesys2_frost, nexys_a7_frost, x3_frost)           │
+│                      (genesys2_frost, x3_frost)                           │
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────────────┐  │
 │  │                        Clock Generation                             │  │
@@ -50,8 +49,8 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 │  │  │      │                    FROST CPU                           │  │  │
 │  │  │      v                                                        │  │  │
 │  │  │  ┌─────────────┐   ┌────────────────────┐   ┌─────────────┐   │  │  │
-│  │  │  │ Instruction │<──│ 6-Stage Pipeline   │   │  UART TX    │───┼──┼─>│
-│  │  │  │   Memory    │   │ (IF-PD-ID-EX-MA-WB)│   │  UART RX    │<──┼──┼──│
+│  │  │  │ Instruction │<──│  FROST OOO CPU     │   │  UART TX    │───┼──┼─>│
+│  │  │  │   Memory    │   │ (IF-PD-ID+Tomasulo)│   │  UART RX    │<──┼──┼──│
 │  │  │  │   (BRAM)    │   └────────────────────┘   └─────────────┘   │  │  │
 │  │  │  └─────────────┘                                              │  │  │
 │  │  │                                                               │  │  │
@@ -97,11 +96,6 @@ boards/
 │   ├── genesys2_frost.f         # File list for synthesis tools
 │   └── constr/
 │       └── genesys2.xdc         # Pin assignments & timing constraints
-├── nexys_a7/
-│   ├── nexys_a7_frost.sv        # Top-level board wrapper (clock generation)
-│   ├── nexys_a7_frost.f         # File list for synthesis tools
-│   └── constr/
-│       └── nexys_a7.xdc         # Pin assignments & timing constraints
 └── x3/
     ├── x3_frost.sv              # Top-level board wrapper (clock generation)
     ├── x3_frost.f               # File list for synthesis tools
@@ -123,7 +117,7 @@ boards/
 
 For automated builds, use the build script (recommended):
 ```bash
-./fpga/build/build.py <board>   # e.g., genesys2, nexys_a7, x3
+./fpga/build/build.py <board>   # e.g., genesys2, x3
 ```
 
 For manual Vivado project setup:
@@ -165,15 +159,6 @@ After the FPGA is programmed with the bitstream:
 | `i_uart_rx`   | Input     | Y20  | UART receive for debug console input     |
 | `o_fan_pwm`   | Output    | W19  | Fan PWM control (disabled, prevents noise) |
 
-### Nexys A7
-
-| Signal        | Direction | Pin  | Description                              |
-|---------------|-----------|------|------------------------------------------|
-| `i_sysclk`    | Input     | E3   | 100 MHz single-ended clock               |
-| `i_pb_resetn` | Input     | C12  | Push-button reset (active-low)           |
-| `o_uart_tx`   | Output    | C4   | UART transmit for debug console          |
-| `i_uart_rx`   | Input     | D4   | UART receive for debug console input     |
-
 ### X3
 
 | Signal       | Direction | Pin  | Description                            |
@@ -190,21 +175,20 @@ All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from
 | Board    | Input Clock | VCO Freq | CPU Clock  | Calculation            |
 |----------|-------------|----------|------------|------------------------|
 | Genesys2 | 200 MHz     | 800 MHz  | 133.33 MHz | 200 × 4 / 6            |
-| Nexys A7 | 100 MHz     | 800 MHz  | 80 MHz     | 100 × 8 / 10           |
 | X3       | 300 MHz     | 1200 MHz | 300 MHz    | 300 × 4 / 1 / 4        |
 
 **Note:** All boards generate a /4 clock for JTAG and UART clock domain crossing.
 
 ## Board Comparison
 
-| Feature           | Genesys2             | Nexys A7             | X3                          |
-|-------------------|----------------------|----------------------|-----------------------------|
-| **FPGA Family**   | Kintex-7             | Artix-7              | UltraScale+                 |
-| **FPGA Part**     | xc7k325tffg900-2     | xc7a100tcsg324-1     | xcux35-vsva1365-3-e         |
-| **CPU Clock**     | 133.33 MHz           | 80 MHz               | 300 MHz                     |
-| **Div4 Clock**    | 33.33 MHz            | 20 MHz               | 75 MHz                      |
-| **Reset**         | Push-button + JTAG   | Push-button + JTAG   | JTAG load only              |
-| **Use Case**      | Development/learning | Development/learning | Production/high-performance |
+| Feature           | Genesys2             | X3                          |
+|-------------------|----------------------|-----------------------------|
+| **FPGA Family**   | Kintex-7             | UltraScale+                 |
+| **FPGA Part**     | xc7k325tffg900-2     | xcux35-vsva1365-3-e         |
+| **CPU Clock**     | 133.33 MHz           | 300 MHz                     |
+| **Div4 Clock**    | 33.33 MHz            | 75 MHz                      |
+| **Reset**         | Push-button + JTAG   | JTAG load only              |
+| **Use Case**      | Development/learning | Production/high-performance |
 
 ## Adding Support for New Boards
 

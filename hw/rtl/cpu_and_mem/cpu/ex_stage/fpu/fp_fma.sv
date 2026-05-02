@@ -695,321 +695,199 @@ module fp_fma #(
   // TIMING: Limit fanout to force register replication and improve timing
   (* max_fanout = 30 *) logic valid_reg;
 
+  // Control: state machine and valid_reg
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
-      operand_a_reg <= '0;
-      operand_b_reg <= '0;
-      operand_c_reg <= '0;
-      negate_product_reg <= 1'b0;
-      negate_c_reg <= 1'b0;
-      rm_reg <= 3'b0;
-      // Stage 2
-      mant_a_s2 <= '0;
-      mant_b_s2 <= '0;
-      prod_exp_s2 <= '0;
-      prod_sign_s2 <= 1'b0;
-      c_exp_s2 <= '0;
-      mant_c_s2 <= '0;
-      c_sign_s2 <= 1'b0;
-      rm_s2 <= 3'b0;
-      is_special_s2 <= 1'b0;
-      special_result_s2 <= '0;
-      special_invalid_s2 <= 1'b0;
-      // Stage 3 (before LZC)
-      prod_mant_s3 <= '0;
-      prod_exp_s3 <= '0;
-      prod_sign_s3 <= 1'b0;
-      c_exp_s3 <= '0;
-      mant_c_s3 <= '0;
-      c_sign_s3 <= 1'b0;
-      rm_s3 <= 3'b0;
-      is_special_s3 <= 1'b0;
-      special_result_s3 <= '0;
-      special_invalid_s3 <= 1'b0;
-      // Stage 3B (after LZC, before shift)
-      prod_mant_s3b <= '0;
-      prod_exp_s3b <= '0;
-      prod_sign_s3b <= 1'b0;
-      prod_is_zero_s3b <= 1'b0;
-      prod_msb_set_s3b <= 1'b0;
-      prod_lzc_s3b <= '0;
-      c_exp_s3b <= '0;
-      mant_c_s3b <= '0;
-      c_sign_s3b <= 1'b0;
-      rm_s3b <= 3'b0;
-      is_special_s3b <= 1'b0;
-      special_result_s3b <= '0;
-      special_invalid_s3b <= 1'b0;
-      // Stage 4
-      prod_exp_s4 <= '0;
-      prod_mant_s4 <= '0;
-      prod_sign_s4 <= 1'b0;
-      c_exp_s4 <= '0;
-      c_mant_s4 <= '0;
-      c_sign_s4 <= 1'b0;
-      rm_s4 <= 3'b0;
-      is_special_s4 <= 1'b0;
-      special_result_s4 <= '0;
-      special_invalid_s4 <= 1'b0;
-      // Stage 4b
-      exp_large_s4b <= '0;
-      shift_prod_amt_s4b <= '0;
-      shift_c_amt_s4b <= '0;
-      // Stage 5 (aligned operands)
-      exp_large_s5 <= '0;
-      prod_aligned_s5 <= '0;
-      c_aligned_s5 <= '0;
-      prod_sign_s5 <= 1'b0;
-      c_sign_s5 <= 1'b0;
-      sticky_s5 <= 1'b0;
-      sticky_c_sub_s5 <= 1'b0;
-      rm_s5 <= 3'b0;
-      is_special_s5 <= 1'b0;
-      special_result_s5 <= '0;
-      special_invalid_s5 <= 1'b0;
-      // Stage 5A (add/sub results)
-      sum_s5a <= '0;
-      result_sign_s5a <= 1'b0;
-      sign_large_s5a <= 1'b0;
-      sign_small_s5a <= 1'b0;
-      sum_is_zero_s5a <= 1'b0;
-      // Stage 6
-      exp_large_s6 <= '0;
-      sum_s6 <= '0;
-      sum_is_zero_s6 <= 1'b0;
-      lzc_s6 <= '0;
-      sum_sticky_s6 <= 1'b0;
-      sticky_c_sub_s6 <= 1'b0;
-      result_sign_s6 <= 1'b0;
-      sign_large_s6 <= 1'b0;
-      sign_small_s6 <= 1'b0;
-      rm_s6 <= 3'b0;
-      is_special_s6 <= 1'b0;
-      special_result_s6 <= '0;
-      special_invalid_s6 <= 1'b0;
-      // Stage 7 (normalize)
-      normalized_sum_s7 <= '0;
-      normalized_exp_s7 <= '0;
-      sum_is_zero_s7 <= 1'b0;
-      sum_sticky_s7 <= 1'b0;
-      sticky_c_sub_s7 <= 1'b0;
-      norm_sticky_s7 <= 1'b0;
-      result_sign_s7 <= 1'b0;
-      sign_large_s7 <= 1'b0;
-      sign_small_s7 <= 1'b0;
-      rm_s7 <= 3'b0;
-      is_special_s7 <= 1'b0;
-      special_result_s7 <= '0;
-      special_invalid_s7 <= 1'b0;
-      // Stage 7B (rounding inputs)
-      mantissa_work_s7b <= '0;
-      guard_work_s7b <= 1'b0;
-      round_work_s7b <= 1'b0;
-      sticky_work_s7b <= 1'b0;
-      exp_work_s7b <= '0;
-      fp_round_sign_s7b <= 1'b0;
-      is_zero_result_s7b <= 1'b0;
-      // Stage 8 (after round-up decision)
-      result_sign_s8 <= 1'b0;
-      exp_work_s8 <= '0;
-      mantissa_work_s8 <= '0;
-      round_up_s8 <= 1'b0;
-      is_inexact_s8 <= 1'b0;
-      is_zero_result_s8 <= 1'b0;
-      rm_s8 <= 3'b0;
-      is_special_s8 <= 1'b0;
-      special_result_s8 <= '0;
-      special_invalid_s8 <= 1'b0;
-      // Stage 9 (final output)
-      result_s9 <= '0;
-      flags_s9 <= '0;
       valid_reg <= 1'b0;
     end else begin
       state <= next_state;
       valid_reg <= (state == STAGE9);
-
-      case (state)
-        IDLE: begin
-          if (i_valid) begin
-            operand_a_reg <= i_operand_a;
-            operand_b_reg <= i_operand_b;
-            operand_c_reg <= i_operand_c;
-            negate_product_reg <= i_negate_product;
-            negate_c_reg <= i_negate_c;
-            rm_reg <= i_rounding_mode;
-          end
-        end
-
-        STAGE1: begin
-          mant_a_s2 <= mant_a_int;
-          mant_b_s2 <= mant_b_int;
-          prod_exp_s2 <= prod_exp_tentative;
-          prod_sign_s2 <= sign_prod;
-          c_exp_s2 <= $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_c_adj});
-          mant_c_s2 <= mant_c_int;
-          c_sign_s2 <= sign_c_adj;
-          rm_s2 <= rm_reg;
-          is_special_s2 <= is_special;
-          special_result_s2 <= special_result;
-          special_invalid_s2 <= special_invalid;
-        end
-
-        STAGE2: begin
-          // Multiply pipeline runs continuously; no action needed here.
-        end
-
-        STAGE2B: begin
-          // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
-          if (prod_mant_s2_tiled_valid) begin
-            prod_mant_s3 <= prod_mant_s2_tiled;
-            prod_exp_s3 <= prod_exp_s2;
-            prod_sign_s3 <= prod_sign_s2;
-            c_exp_s3 <= c_exp_s2;
-            mant_c_s3 <= mant_c_s2;
-            c_sign_s3 <= c_sign_s2;
-            rm_s3 <= rm_s2;
-            is_special_s3 <= is_special_s2;
-            special_result_s3 <= special_result_s2;
-            special_invalid_s3 <= special_invalid_s2;
-          end
-        end
-
-        STAGE3A: begin
-          // Capture LZC results into stage 3B registers
-          prod_mant_s3b <= prod_mant_s3;
-          prod_exp_s3b <= prod_exp_s3;
-          prod_sign_s3b <= prod_sign_s3;
-          prod_is_zero_s3b <= prod_is_zero;
-          prod_msb_set_s3b <= prod_msb_set;
-          prod_lzc_s3b <= prod_lzc;
-          c_exp_s3b <= c_exp_s3;
-          mant_c_s3b <= mant_c_s3;
-          c_sign_s3b <= c_sign_s3;
-          rm_s3b <= rm_s3;
-          is_special_s3b <= is_special_s3;
-          special_result_s3b <= special_result_s3;
-          special_invalid_s3b <= special_invalid_s3;
-        end
-
-        STAGE3B: begin
-          // Capture normalized product into stage 4 registers
-          prod_exp_s4 <= prod_exp_norm;
-          prod_mant_s4 <= prod_mant_norm;
-          prod_sign_s4 <= prod_sign_s3b;
-          c_exp_s4 <= c_exp_s3b;
-          c_mant_s4 <= {mant_c_s3b, {MantBits{1'b0}}};
-          c_sign_s4 <= c_sign_s3b;
-          rm_s4 <= rm_s3b;
-          is_special_s4 <= is_special_s3b;
-          special_result_s4 <= special_result_s3b;
-          special_invalid_s4 <= special_invalid_s3b;
-        end
-
-        STAGE4: begin
-          exp_large_s4b <= exp_large;
-          shift_prod_amt_s4b <= shift_prod_amt;
-          shift_c_amt_s4b <= shift_c_amt;
-        end
-
-        STAGE4B: begin
-          exp_large_s5 <= exp_large_s4b;
-          prod_aligned_s5 <= prod_aligned;
-          c_aligned_s5 <= c_aligned;
-          prod_sign_s5 <= prod_sign_s4;
-          c_sign_s5 <= c_sign_s4;
-          sticky_s5 <= sticky_prod | sticky_c;
-          // Track when the smaller operand was shifted out during subtraction.
-          // This affects the guard bit calculation for FMA precision.
-          sticky_c_sub_s5 <= (prod_sign_s4 != c_sign_s4) ? (
-              (prod_aligned > c_aligned) ? sticky_c :
-              (c_aligned > prod_aligned) ? sticky_prod :
-              1'b0
-          ) : 1'b0;
-          rm_s5 <= rm_s4;
-          is_special_s5 <= is_special_s4;
-          special_result_s5 <= special_result_s4;
-          special_invalid_s5 <= special_invalid_s4;
-        end
-
-        STAGE5A: begin
-          sum_s5a <= sum_s5a_comb;
-          result_sign_s5a <= result_sign_s5a_comb;
-          sign_large_s5a <= sign_large_s5a_comb;
-          sign_small_s5a <= sign_small_s5a_comb;
-          sum_is_zero_s5a <= sum_is_zero_s5a_comb;
-        end
-
-        STAGE5B: begin
-          exp_large_s6 <= exp_large_s5;
-          sum_s6 <= sum_s5a;
-          sum_is_zero_s6 <= sum_is_zero_s5a;
-          lzc_s6 <= lzc_s5b_comb;
-          sum_sticky_s6 <= sticky_s5;
-          sticky_c_sub_s6 <= sticky_c_sub_s5;
-          result_sign_s6 <= result_sign_s5a;
-          sign_large_s6 <= sign_large_s5a;
-          sign_small_s6 <= sign_small_s5a;
-          rm_s6 <= rm_s5;
-          is_special_s6 <= is_special_s5;
-          special_result_s6 <= special_result_s5;
-          special_invalid_s6 <= special_invalid_s5;
-        end
-
-        STAGE6: begin
-          normalized_sum_s7 <= normalized_sum_s6_comb;
-          normalized_exp_s7 <= normalized_exp_s6_comb;
-          sum_is_zero_s7 <= sum_is_zero_s6;
-          sum_sticky_s7 <= sum_sticky_s6;
-          sticky_c_sub_s7 <= sticky_c_sub_s6;
-          norm_sticky_s7 <= norm_sticky_s6_comb;
-          result_sign_s7 <= result_sign_s6;
-          sign_large_s7 <= sign_large_s6;
-          sign_small_s7 <= sign_small_s6;
-          rm_s7 <= rm_s6;
-          is_special_s7 <= is_special_s6;
-          special_result_s7 <= special_result_s6;
-          special_invalid_s7 <= special_invalid_s6;
-        end
-
-        STAGE7A: begin
-          // Capture subnormal handling outputs into stage 7B registers
-          mantissa_work_s7b <= mantissa_work_s7a_comb;
-          guard_work_s7b <= guard_work_s7a_comb;
-          round_work_s7b <= round_work_s7a_comb;
-          sticky_work_s7b <= sticky_work_s7a_comb;
-          exp_work_s7b <= exp_work_s7a_comb;
-          fp_round_sign_s7b <= fp_round_sign_s7a_comb;
-          is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
-        end
-
-        STAGE7B: begin
-          // Capture round-up decision into s8 registers
-          result_sign_s8 <= fp_round_sign_s7b;
-          exp_work_s8 <= exp_work_s7b;
-          mantissa_work_s8 <= mantissa_work_s7b;
-          round_up_s8 <= round_up_s7b_comb;
-          is_inexact_s8 <= is_inexact_s7b;
-          is_zero_result_s8 <= is_zero_result_s7b;
-          rm_s8 <= rm_s7;
-          is_special_s8 <= is_special_s7;
-          special_result_s8 <= special_result_s7;
-          special_invalid_s8 <= special_invalid_s7;
-        end
-
-        STAGE8: begin
-          // Capture final result into s9 registers
-          result_s9 <= final_result_s8_comb;
-          flags_s9  <= final_flags_s8_comb;
-        end
-
-        STAGE9: begin
-          // Output already captured in s9
-        end
-
-        default: ;
-      endcase
     end
+  end
+
+  // Data: pipeline registers (no reset needed)
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE: begin
+        if (i_valid) begin
+          operand_a_reg <= i_operand_a;
+          operand_b_reg <= i_operand_b;
+          operand_c_reg <= i_operand_c;
+          negate_product_reg <= i_negate_product;
+          negate_c_reg <= i_negate_c;
+          rm_reg <= i_rounding_mode;
+        end
+      end
+
+      STAGE1: begin
+        mant_a_s2 <= mant_a_int;
+        mant_b_s2 <= mant_b_int;
+        prod_exp_s2 <= prod_exp_tentative;
+        prod_sign_s2 <= sign_prod;
+        c_exp_s2 <= $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_c_adj});
+        mant_c_s2 <= mant_c_int;
+        c_sign_s2 <= sign_c_adj;
+        rm_s2 <= rm_reg;
+        is_special_s2 <= is_special;
+        special_result_s2 <= special_result;
+        special_invalid_s2 <= special_invalid;
+      end
+
+      STAGE2: begin
+        // Multiply pipeline runs continuously; no action needed here.
+      end
+
+      STAGE2B: begin
+        // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
+        if (prod_mant_s2_tiled_valid) begin
+          prod_mant_s3 <= prod_mant_s2_tiled;
+          prod_exp_s3 <= prod_exp_s2;
+          prod_sign_s3 <= prod_sign_s2;
+          c_exp_s3 <= c_exp_s2;
+          mant_c_s3 <= mant_c_s2;
+          c_sign_s3 <= c_sign_s2;
+          rm_s3 <= rm_s2;
+          is_special_s3 <= is_special_s2;
+          special_result_s3 <= special_result_s2;
+          special_invalid_s3 <= special_invalid_s2;
+        end
+      end
+
+      STAGE3A: begin
+        // Capture LZC results into stage 3B registers
+        prod_mant_s3b <= prod_mant_s3;
+        prod_exp_s3b <= prod_exp_s3;
+        prod_sign_s3b <= prod_sign_s3;
+        prod_is_zero_s3b <= prod_is_zero;
+        prod_msb_set_s3b <= prod_msb_set;
+        prod_lzc_s3b <= prod_lzc;
+        c_exp_s3b <= c_exp_s3;
+        mant_c_s3b <= mant_c_s3;
+        c_sign_s3b <= c_sign_s3;
+        rm_s3b <= rm_s3;
+        is_special_s3b <= is_special_s3;
+        special_result_s3b <= special_result_s3;
+        special_invalid_s3b <= special_invalid_s3;
+      end
+
+      STAGE3B: begin
+        // Capture normalized product into stage 4 registers
+        prod_exp_s4 <= prod_exp_norm;
+        prod_mant_s4 <= prod_mant_norm;
+        prod_sign_s4 <= prod_sign_s3b;
+        c_exp_s4 <= c_exp_s3b;
+        c_mant_s4 <= {mant_c_s3b, {MantBits{1'b0}}};
+        c_sign_s4 <= c_sign_s3b;
+        rm_s4 <= rm_s3b;
+        is_special_s4 <= is_special_s3b;
+        special_result_s4 <= special_result_s3b;
+        special_invalid_s4 <= special_invalid_s3b;
+      end
+
+      STAGE4: begin
+        exp_large_s4b <= exp_large;
+        shift_prod_amt_s4b <= shift_prod_amt;
+        shift_c_amt_s4b <= shift_c_amt;
+      end
+
+      STAGE4B: begin
+        exp_large_s5 <= exp_large_s4b;
+        prod_aligned_s5 <= prod_aligned;
+        c_aligned_s5 <= c_aligned;
+        prod_sign_s5 <= prod_sign_s4;
+        c_sign_s5 <= c_sign_s4;
+        sticky_s5 <= sticky_prod | sticky_c;
+        // Track when the smaller operand was shifted out during subtraction.
+        // This affects the guard bit calculation for FMA precision.
+        sticky_c_sub_s5 <= (prod_sign_s4 != c_sign_s4) ? (
+            (prod_aligned > c_aligned) ? sticky_c :
+            (c_aligned > prod_aligned) ? sticky_prod :
+            1'b0
+        ) : 1'b0;
+        rm_s5 <= rm_s4;
+        is_special_s5 <= is_special_s4;
+        special_result_s5 <= special_result_s4;
+        special_invalid_s5 <= special_invalid_s4;
+      end
+
+      STAGE5A: begin
+        sum_s5a <= sum_s5a_comb;
+        result_sign_s5a <= result_sign_s5a_comb;
+        sign_large_s5a <= sign_large_s5a_comb;
+        sign_small_s5a <= sign_small_s5a_comb;
+        sum_is_zero_s5a <= sum_is_zero_s5a_comb;
+      end
+
+      STAGE5B: begin
+        exp_large_s6 <= exp_large_s5;
+        sum_s6 <= sum_s5a;
+        sum_is_zero_s6 <= sum_is_zero_s5a;
+        lzc_s6 <= lzc_s5b_comb;
+        sum_sticky_s6 <= sticky_s5;
+        sticky_c_sub_s6 <= sticky_c_sub_s5;
+        result_sign_s6 <= result_sign_s5a;
+        sign_large_s6 <= sign_large_s5a;
+        sign_small_s6 <= sign_small_s5a;
+        rm_s6 <= rm_s5;
+        is_special_s6 <= is_special_s5;
+        special_result_s6 <= special_result_s5;
+        special_invalid_s6 <= special_invalid_s5;
+      end
+
+      STAGE6: begin
+        normalized_sum_s7 <= normalized_sum_s6_comb;
+        normalized_exp_s7 <= normalized_exp_s6_comb;
+        sum_is_zero_s7 <= sum_is_zero_s6;
+        sum_sticky_s7 <= sum_sticky_s6;
+        sticky_c_sub_s7 <= sticky_c_sub_s6;
+        norm_sticky_s7 <= norm_sticky_s6_comb;
+        result_sign_s7 <= result_sign_s6;
+        sign_large_s7 <= sign_large_s6;
+        sign_small_s7 <= sign_small_s6;
+        rm_s7 <= rm_s6;
+        is_special_s7 <= is_special_s6;
+        special_result_s7 <= special_result_s6;
+        special_invalid_s7 <= special_invalid_s6;
+      end
+
+      STAGE7A: begin
+        // Capture subnormal handling outputs into stage 7B registers
+        mantissa_work_s7b <= mantissa_work_s7a_comb;
+        guard_work_s7b <= guard_work_s7a_comb;
+        round_work_s7b <= round_work_s7a_comb;
+        sticky_work_s7b <= sticky_work_s7a_comb;
+        exp_work_s7b <= exp_work_s7a_comb;
+        fp_round_sign_s7b <= fp_round_sign_s7a_comb;
+        is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
+      end
+
+      STAGE7B: begin
+        // Capture round-up decision into s8 registers
+        result_sign_s8 <= fp_round_sign_s7b;
+        exp_work_s8 <= exp_work_s7b;
+        mantissa_work_s8 <= mantissa_work_s7b;
+        round_up_s8 <= round_up_s7b_comb;
+        is_inexact_s8 <= is_inexact_s7b;
+        is_zero_result_s8 <= is_zero_result_s7b;
+        rm_s8 <= rm_s7;
+        is_special_s8 <= is_special_s7;
+        special_result_s8 <= special_result_s7;
+        special_invalid_s8 <= special_invalid_s7;
+      end
+
+      STAGE8: begin
+        // Capture final result into s9 registers
+        result_s9 <= final_result_s8_comb;
+        flags_s9  <= final_flags_s8_comb;
+      end
+
+      STAGE9: begin
+        // Output already captured in s9
+      end
+
+      default: ;
+    endcase
   end
 
   // Next state logic

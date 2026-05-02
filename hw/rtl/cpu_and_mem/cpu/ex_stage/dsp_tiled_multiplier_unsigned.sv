@@ -152,23 +152,16 @@ module dsp_tiled_multiplier_unsigned #(
   end
 
   // ---------------------------------------------------------------------------
-  // Sequential control.
+  // Sequential control (o_valid_output, busy, load_terms_pending, level_reg,
+  // chunk_reg) - with reset.
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_product_result <= '0;
       o_valid_output <= 1'b0;
-      operand_a_reg <= '0;
-      operand_b_reg <= '0;
       busy <= 1'b0;
       load_terms_pending <= 1'b0;
       level_reg <= '0;
       chunk_reg <= '0;
-      for (int t = 0; t < NumTerms; t++) begin
-        work_terms_reg[t] <= '0;
-        partial_terms_reg[t] <= '0;
-        carry_reg[t] <= 1'b0;
-      end
     end else begin
       o_valid_output <= 1'b0;
 
@@ -178,44 +171,65 @@ module dsp_tiled_multiplier_unsigned #(
           level_reg <= '0;
           chunk_reg <= '0;
           load_terms_pending <= 1'b0;
-          for (int t = 0; t < NumTerms; t++) begin
-            work_terms_reg[t] <= aligned_term_comb[t];
-            partial_terms_reg[t] <= '0;
-            carry_reg[t] <= 1'b0;
-          end
         end else if (i_valid_input) begin
-          operand_a_reg <= i_operand_a;
-          operand_b_reg <= i_operand_b;
           load_terms_pending <= 1'b1;
         end
       end else begin
-        // Apply one 32-bit chunk add across all active term pairs.
-        for (int t = 0; t < NumTerms; t++) begin
-          partial_terms_reg[t] <= partial_terms_next[t];
-          carry_reg[t] <= carry_next[t];
-        end
-
         if (chunk_reg == LastChunk) begin
           // Completed all chunks for this reduction level.
           if (level_reg == LastLevel) begin
             // Final reduction complete.
-            o_product_result <= partial_terms_next[0][ProductWidth-1:0];
             o_valid_output <= 1'b1;
             busy <= 1'b0;
           end else begin
-            // Move reduced terms to next level and reset chunk accumulator.
-            for (int t = 0; t < NumTerms; t++) begin
-              if (t < next_terms_current) work_terms_reg[t] <= partial_terms_next[t];
-              else work_terms_reg[t] <= '0;
-              partial_terms_reg[t] <= '0;
-              carry_reg[t] <= 1'b0;
-            end
+            // Move to next reduction level and reset chunk accumulator.
             level_reg <= level_reg + 1'b1;
             chunk_reg <= '0;
           end
         end else begin
           // Continue current reduction level with next 32-bit chunk.
           chunk_reg <= chunk_reg + 1'b1;
+        end
+      end
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Sequential data (o_product_result, operand_a_reg, operand_b_reg,
+  // work_terms_reg, partial_terms_reg, carry_reg) - no reset.
+  // ---------------------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (!busy) begin
+      if (load_terms_pending) begin
+        for (int t = 0; t < NumTerms; t++) begin
+          work_terms_reg[t] <= aligned_term_comb[t];
+          partial_terms_reg[t] <= '0;
+          carry_reg[t] <= 1'b0;
+        end
+      end else if (i_valid_input) begin
+        operand_a_reg <= i_operand_a;
+        operand_b_reg <= i_operand_b;
+      end
+    end else begin
+      // Apply one 32-bit chunk add across all active term pairs.
+      for (int t = 0; t < NumTerms; t++) begin
+        partial_terms_reg[t] <= partial_terms_next[t];
+        carry_reg[t] <= carry_next[t];
+      end
+
+      if (chunk_reg == LastChunk) begin
+        // Completed all chunks for this reduction level.
+        if (level_reg == LastLevel) begin
+          // Final reduction complete.
+          o_product_result <= partial_terms_next[0][ProductWidth-1:0];
+        end else begin
+          // Move reduced terms to next level and reset chunk accumulator.
+          for (int t = 0; t < NumTerms; t++) begin
+            if (t < next_terms_current) work_terms_reg[t] <= partial_terms_next[t];
+            else work_terms_reg[t] <= '0;
+            partial_terms_reg[t] <= '0;
+            carry_reg[t] <= 1'b0;
+          end
         end
       end
     end

@@ -76,6 +76,15 @@
 #define CSR_MHARTID 0xF14   /* Hardware thread ID (read-only) */
 
 /* ========================================================================== */
+/* Custom machine CSRs for Tomasulo profiling                                 */
+/* ========================================================================== */
+#define CSR_MPERFSEL 0x7C0   /* Profiling counter selector */
+#define CSR_MPERFCTL 0x7C1   /* Profiling control (bit 0 = snapshot) */
+#define CSR_MPERFDATA 0xFC0  /* Selected profiling counter low 32 bits */
+#define CSR_MPERFDATAH 0xFC1 /* Selected profiling counter high 32 bits */
+#define CSR_MPERFCOUNT 0xFC2 /* Number of implemented profiling counters */
+
+/* ========================================================================== */
 /* mstatus bit definitions                                                    */
 /* ========================================================================== */
 #define MSTATUS_MIE (1U << 3)  /* Machine Interrupt Enable */
@@ -174,6 +183,29 @@
         __asm__ volatile("csrrw %0, " #csr ", %1" : "=r"(__val) : "r"(__val) :);                   \
         __val;                                                                                     \
     })
+
+/**
+ * Read a CSR by numeric immediate ID
+ *
+ * Use this for custom CSRs that do not have assembler mnemonics.
+ */
+#define csr_read_imm(csr_num)                                                                      \
+    ({                                                                                             \
+        uint32_t __val;                                                                            \
+        __asm__ volatile("csrr %0, %1" : "=r"(__val) : "i"(csr_num) :);                            \
+        __val;                                                                                     \
+    })
+
+/**
+ * Write a CSR by numeric immediate ID
+ *
+ * Use this for custom CSRs that do not have assembler mnemonics.
+ */
+#define csr_write_imm(csr_num, val)                                                                \
+    do {                                                                                           \
+        uint32_t __val = (uint32_t) (val);                                                         \
+        __asm__ volatile("csrw %0, %1" : : "i"(csr_num), "r"(__val) :);                            \
+    } while (0)
 
 /**
  * rdcycle - Read low 32 bits of cycle counter

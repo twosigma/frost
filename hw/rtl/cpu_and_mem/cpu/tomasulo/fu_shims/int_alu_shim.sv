@@ -33,9 +33,10 @@
  *     (controls the ALU's internal operand_b mux)
  *   - i_instruction.source_reg_2 : imm[4:0] for shift-amount in SLLI/SRLI/
  *     SRAI/BSETI/BCLRI/BINVI/BEXTI/RORI
- *   - i_link_address : pc + 4 for JAL/JALR
- *   - Branch ops hit the ALU's default case (o_write_enable = 0), producing
- *     fu_complete.valid = 0.  Branch resolution uses a separate path.
+ *   - i_link_address : pre-computed PC + 2 / PC + 4 for JAL/JALR
+ *   - Conditional branches hit the ALU's default case (o_write_enable = 0),
+ *     producing fu_complete.valid = 0. JAL/JALR still produce a link-address
+ *     result on the CDB while branch resolution uses a separate path.
  */
 module int_alu_shim (
     input logic i_clk,
@@ -43,6 +44,7 @@ module int_alu_shim (
 
     // From INT reservation station (issue output)
     input riscv_pkg::rs_issue_t i_rs_issue,
+    input logic                 i_issue_writes_cdb_hint,
 
     // CSR read data from external CSR file
     input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
@@ -74,7 +76,6 @@ module int_alu_shim (
   // ALU instantiation
   // ---------------------------------------------------------------------------
   logic [riscv_pkg::XLEN-1:0] alu_result;
-  logic                       alu_write_enable;
   logic                       alu_stall;  // unused (no MUL/DIV)
   logic                       alu_mul_completing;  // unused
 
@@ -92,10 +93,10 @@ module int_alu_shim (
       .i_immediate_i_type(i_rs_issue.imm),
       .i_is_multiply_operation(1'b0),
       .i_is_divide_operation(1'b0),
-      .i_link_address(i_rs_issue.pc + 32'd4),
+      .i_link_address(i_rs_issue.link_addr),
       .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
-      .o_write_enable(alu_write_enable),
+      .o_write_enable(),
       .o_stall_for_multiply_divide(alu_stall),
       .o_multiply_completing_next_cycle(alu_mul_completing)
   );
@@ -103,16 +104,82 @@ module int_alu_shim (
   // ---------------------------------------------------------------------------
   // Pack output into fu_complete_t
   // ---------------------------------------------------------------------------
+  // Conditional branches complete only through branch_update.
+  // JAL/JALR also produce a link-address result and must wake dependents.
+  // CSR ops pass through rs1/imm value (actual CSR read/write happens at commit).
+  logic is_csr_imm_op;
+  assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRSI) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRCI);
+
+  logic is_csr_reg_op;
+  assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSRRW) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRS) ||
+                          (i_rs_issue.op == riscv_pkg::CSRRC);
+
+  logic is_any_csr_op;
+  assign is_any_csr_op = is_csr_imm_op || is_csr_reg_op;
+
+  // ECALL/EBREAK: privileged instructions that should raise exceptions.
+  // They flow through INT_RS like other ops, but the ALU doesn't produce
+  // write_enable for them. Handle explicitly to produce CDB exception result.
+  logic is_ecall_op;
+  logic is_ebreak_op;
+  logic is_illegal_op;
+  assign is_ecall_op   = (i_rs_issue.op == riscv_pkg::ECALL);
+  assign is_ebreak_op  = (i_rs_issue.op == riscv_pkg::EBREAK);
+  assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
+
   always_comb begin
-    o_fu_complete.valid     = i_rs_issue.valid & alu_write_enable;
     o_fu_complete.tag       = i_rs_issue.rob_tag;
+    // Branch/no-branch is predecoded in the INT RS so ROB done does not need
+    // the ALU's live op decode or CSR/exception compares on this path.
+    o_fu_complete.valid     = i_rs_issue.valid & i_issue_writes_cdb_hint;
     o_fu_complete.value     = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, alu_result};
     o_fu_complete.exception = 1'b0;
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+
+    if (is_ecall_op || is_ebreak_op || is_illegal_op) begin
+      // Synchronous traps complete on CDB so the ROB can take them precisely at commit.
+      o_fu_complete.value = '0;
+      o_fu_complete.exception = 1'b1;
+      o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+          is_illegal_op ? riscv_pkg::ExcIllegalInstr[riscv_pkg::ExcCauseWidth-1:0] :
+          is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0] :
+          riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
+    end else if (is_any_csr_op) begin
+      // CSR: pass through the write operand (rs1 or zero-extended imm).
+      // Actual CSR read/write is serialized at ROB commit time.
+      if (is_csr_imm_op) o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
+      else
+        o_fu_complete.value = {
+          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
+        };
+    end
   end
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (i_rst_n && i_rs_issue.valid) begin
+      if (i_issue_writes_cdb_hint) begin
+        assert (i_rs_issue.op != riscv_pkg::BEQ && i_rs_issue.op != riscv_pkg::BNE &&
+                i_rs_issue.op != riscv_pkg::BLT && i_rs_issue.op != riscv_pkg::BGE &&
+                i_rs_issue.op != riscv_pkg::BLTU && i_rs_issue.op != riscv_pkg::BGEU)
+        else $error("int_alu_shim: writeback hint asserted for conditional branch");
+      end else begin
+        assert (i_rs_issue.op == riscv_pkg::BEQ || i_rs_issue.op == riscv_pkg::BNE ||
+                i_rs_issue.op == riscv_pkg::BLT || i_rs_issue.op == riscv_pkg::BGE ||
+                i_rs_issue.op == riscv_pkg::BLTU || i_rs_issue.op == riscv_pkg::BGEU)
+        else $error("int_alu_shim: writeback hint cleared for non-branch op");
+      end
+    end
+  end
+`endif
 
   // ALU is single-cycle for INT_RS ops; never busy
   assign o_fu_busy = 1'b0;
+
+  // (debug trace removed)
 
 endmodule : int_alu_shim

@@ -82,7 +82,7 @@ module l0_cache #(
   } cache_entry_t;
 
   cache_entry_t cache_read_entry_ex, cache_read_entry_ma;
-  // Workaround for Icarus Verilog simulator compatibility
+  // Keep the RAM output flat, then assign into the struct field.
   logic [XLEN/8-1:0][7:0] cache_read_entry_ex_data_bytes;
   assign cache_read_entry_ex.data = cache_read_entry_ex_data_bytes;
 

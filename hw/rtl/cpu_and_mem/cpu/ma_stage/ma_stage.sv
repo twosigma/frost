@@ -15,7 +15,7 @@
  */
 
 /*
-  Memory Access (MA) stage - Fifth stage of the 6-stage RISC-V pipeline.
+  Legacy Memory Access (MA) stage from the former in-order back-end.
   This module completes memory load operations by processing data read from memory
   or cache. It contains a load unit that handles different data sizes (byte, halfword,
   word) and sign/zero extension based on the instruction type. The stage receives
@@ -31,7 +31,7 @@
 module ma_stage #(
     parameter int unsigned XLEN = 32,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h28
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,

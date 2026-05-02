@@ -50,8 +50,7 @@ VALID_APPS = [
 # Iterations are calibrated for ~10 second runtime on each board
 BOARD_CONFIG = {
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000},
-    "genesys2": {"clock_freq": 133333333, "coremark_iterations": 3000},
-    "nexys_a7": {"clock_freq": 80000000, "coremark_iterations": 2000},
+    "genesys2": {"clock_freq": 133333333, "coremark_iterations": 4000},
 }
 
 
@@ -165,7 +164,7 @@ def main() -> None:
         parser.error("software_app is required unless using --list-targets")
 
     # Select hardware target (may prompt user if multiple targets)
-    # Auto-filters by vendor based on board (e.g., nexys_a7 -> Digilent, x3 -> Xilinx)
+    # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
     selected_target = select_target(
         args.vivado_path,
         args.remote_host,
