@@ -28,8 +28,9 @@ Steps:
 9. Bitstream generation
 
 All three phys_opt stages (4, 6, 8) run a hardcoded sweep over every directive
-in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore. Each sweep stops
-early as soon as a phys_opt_design pass closes timing (WNS>=0).
+in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore. Each sweep preserves
+the best-WNS pass and stops early as soon as a phys_opt_design pass closes
+timing (WNS>=0).
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -478,7 +479,8 @@ Steps (in order):
 
 Behavior:
   * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore.
-    Each sweep stops early if a directive closes timing (WNS>=0).
+    Each sweep preserves the best-WNS pass and stops early if a directive closes
+    timing (WNS>=0).
   * Pipeline early-exit at route, post_route_physopt, or second_route: when
     one of these closes timing, its outputs are promoted to final.dcp/final_*
     and remaining stages are skipped — bitstream runs next.
@@ -544,8 +546,9 @@ Examples:
     parser.add_argument(
         "--place-directive",
         choices=PLACER_DIRECTIVES,
-        default="ExtraTimingOpt",
-        help="Placer directive (default: ExtraTimingOpt)",
+        default=None,
+        help="Placer directive (default: ExtraNetDelay_high on x3, "
+        "ExtraTimingOpt otherwise)",
     )
     parser.add_argument(
         "--route-directive",
@@ -572,6 +575,11 @@ Examples:
     board_config = BOARD_CONFIG[board_name]
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
+    place_directive = args.place_directive
+    if place_directive is None:
+        place_directive = (
+            "ExtraNetDelay_high" if board_name == "x3" else "ExtraTimingOpt"
+        )
 
     # Per-step directives. The three phys_opt stages all run hardcoded sweeps
     # in the TCL and ignore the directive arg; we pass "Sweep" as a sentinel
@@ -579,7 +587,7 @@ Examples:
     step_directives = {
         "synth": args.synth_directive,
         "opt": args.opt_directive,
-        "place": args.place_directive,
+        "place": place_directive,
         "post_place_physopt": "Sweep",
         "route": args.route_directive,
         "post_route_physopt": "Sweep",

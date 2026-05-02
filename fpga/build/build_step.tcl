@@ -298,9 +298,9 @@ if {$step eq "synth"} {
     # Run phys_opt_design serially with every directive, starting with
     # AggressiveExplore. The directive arg from the caller is ignored — the
     # sweep order is fixed here. After each pass we sample the worst-case
-    # setup slack; if WNS>=0 we stop the sweep early so we don't risk a later
-    # directive regressing the closed state. Final artifacts are written once
-    # after the loop so the upstream pipeline still sees one checkpoint.
+    # setup slack and checkpoint the best-WNS design. If WNS>=0 we stop the
+    # sweep early; otherwise we still restore the best observed pass before
+    # writing the canonical outputs so a late directive cannot regress WNS.
     if {$checkpoint_path eq ""} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
@@ -321,6 +321,10 @@ if {$step eq "synth"} {
     set pass_num 1
     set passes_run 0
     set early_exit 0
+    set best_wns -999999.0
+    set best_pass 0
+    set best_directive ""
+    set best_checkpoint [file join $work_directory phys_opt_best.dcp]
     foreach sweep_directive $sweep_order {
         puts ""
         puts "=========================================="
@@ -335,6 +339,13 @@ if {$step eq "synth"} {
             set wns [get_property SLACK $worst_path]
             puts ""
             puts "  WNS after $sweep_directive: $wns ns"
+            if {$wns > $best_wns} {
+                set best_wns $wns
+                set best_pass $pass_num
+                set best_directive $sweep_directive
+                write_checkpoint -force $best_checkpoint
+                puts "  ** New best $step WNS: $best_wns ns ($best_directive, pass $best_pass/$total_passes)"
+            }
             if {$wns >= 0.0} {
                 puts "  ** Timing met — stopping $step sweep early (after $pass_num/$total_passes directives)"
                 set early_exit 1
@@ -342,6 +353,18 @@ if {$step eq "synth"} {
             }
         }
         incr pass_num
+    }
+
+    if {[file exists $best_checkpoint]} {
+        if {$best_pass != $passes_run} {
+            puts ""
+            puts "  Restoring best $step pass: $best_directive (pass $best_pass/$total_passes, WNS=$best_wns ns)"
+            close_design
+            open_checkpoint $best_checkpoint
+        } else {
+            puts ""
+            puts "  Keeping current $step pass: $best_directive (pass $best_pass/$total_passes, WNS=$best_wns ns)"
+        }
     }
 
     write_checkpoint -force $work_directory/phys_opt.dcp
