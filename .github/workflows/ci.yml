@@ -23,7 +23,8 @@ on:
 env:
   # Tool versions - single source of truth (also in Dockerfile)
   VERILATOR_VERSION: "5.046"
-  YOSYS_VERSION: "0.60"
+  YOSYS_VERSION: "0.64"
+  SBY_VERSION: "0.63"
 
 jobs:
   # Build the Docker image (shared by all jobs)
@@ -45,6 +46,7 @@ jobs:
           build-args: |
             VERILATOR_VERSION=${{ env.VERILATOR_VERSION }}
             YOSYS_VERSION=${{ env.YOSYS_VERSION }}
+            SBY_VERSION=${{ env.SBY_VERSION }}
           outputs: type=docker,dest=/tmp/frost-dev.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max

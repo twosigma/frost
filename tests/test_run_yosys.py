@@ -53,28 +53,33 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
     Defaults:
-      - Non-Xilinx targets: 7200s
+      - Generic target (synth): 10800s
+      - Other non-Xilinx targets: 7200s
       - Xilinx targets (synth_xilinx*): 1800s
 
     Environment overrides:
+      - FROST_YOSYS_GENERIC_TIMEOUT_SEC
       - FROST_YOSYS_TIMEOUT_SEC
       - FROST_YOSYS_XILINX_TIMEOUT_SEC
     """
+    default_generic_timeout = 10800
     default_timeout = 7200
     default_xilinx_timeout = 1800
 
-    env_name = (
-        "FROST_YOSYS_XILINX_TIMEOUT_SEC"
-        if synth_command.startswith("synth_xilinx")
-        else "FROST_YOSYS_TIMEOUT_SEC"
-    )
-    fallback = (
-        default_xilinx_timeout
-        if synth_command.startswith("synth_xilinx")
-        else default_timeout
-    )
+    if synth_command == "synth":
+        env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"
+        fallback = default_generic_timeout
+    elif synth_command.startswith("synth_xilinx"):
+        env_name = "FROST_YOSYS_XILINX_TIMEOUT_SEC"
+        fallback = default_xilinx_timeout
+    else:
+        env_name = "FROST_YOSYS_TIMEOUT_SEC"
+        fallback = default_timeout
 
     raw = os.environ.get(env_name)
+    if raw is None and synth_command == "synth":
+        env_name = "FROST_YOSYS_TIMEOUT_SEC"
+        raw = os.environ.get(env_name)
     if raw is None:
         return fallback
 
