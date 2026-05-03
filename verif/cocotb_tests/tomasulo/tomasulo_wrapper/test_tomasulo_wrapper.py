@@ -1050,11 +1050,22 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()  # Track valid ROB tags for safe CDB
+    # Track tags that may still appear on the MEM_RS issue output. This is
+    # intentionally separate from pending_tags: this synthetic test can mark a
+    # ROB entry done before its manually-dispatched RS entry has issued.
+    rs_live_tags: set[int] = set()
     # CDB pipeline register changes wakeup-to-issue latency. Instead of
     # cycle-exact issue checking, use an ordered FIFO: model predicts what
     # should issue, DUT must produce those issues in the same order.
     deferred_cdb: tuple[int, int] | None = None
     expected_issues: list[int] = []  # ROB tags the model expects DUT to issue
+
+    def consume_model_rs_tag(tag: int) -> None:
+        rs = model.get_rs(RS_MEM)
+        for idx, entry in enumerate(rs.entries):
+            if entry.valid and entry.rob_tag == tag:
+                rs.consume_issue(idx)
+                return
 
     for cycle in range(200):
         # Apply deferred CDB from previous cycle (matches registered CDB timing)
@@ -1081,12 +1092,14 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                         expected_tag = model_issue["rob_tag"]
                     else:
                         assert (
-                            issue["rob_tag"] in pending_tags
+                            issue["rob_tag"] in rs_live_tags
                         ), f"Cycle {cycle}: DUT issued unknown tag {issue['rob_tag']}"
                         expected_tag = issue["rob_tag"]
+                        consume_model_rs_tag(expected_tag)
                 assert (
                     issue["rob_tag"] == expected_tag
                 ), f"Cycle {cycle}: DUT issued tag {issue['rob_tag']} but model expected {expected_tag}"
+                rs_live_tags.discard(issue["rob_tag"])
             if model_issue is None:
                 model_issue = model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)
             if model_issue is not None:
@@ -1095,6 +1108,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
         else:
             # Flush clears pending issues
             expected_issues.clear()
+            rs_live_tags.clear()
             model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)  # keep model in sync
 
         # Auto-commit ROB head if done (one per cycle, matching DUT rate)
@@ -1154,6 +1168,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                     src2_value=src2_value,
                     src3_ready=True,
                 )
+                rs_live_tags.add(tag)
                 await dut_if.step()
                 dut_if.clear_alloc_request()
                 dut_if.clear_rat_rename()
@@ -1180,6 +1195,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
             dut_if.drive_flush_all()
             model.flush_all()
             pending_tags.clear()
+            rs_live_tags.clear()
             await dut_if.step()
             dut_if.clear_flush_all()
 

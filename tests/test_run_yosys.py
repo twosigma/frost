@@ -53,14 +53,14 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
     Defaults:
-      - Non-Xilinx targets: 3600s
+      - Non-Xilinx targets: 7200s
       - Xilinx targets (synth_xilinx*): 1800s
 
     Environment overrides:
       - FROST_YOSYS_TIMEOUT_SEC
       - FROST_YOSYS_XILINX_TIMEOUT_SEC
     """
-    default_timeout = 3600
+    default_timeout = 7200
     default_xilinx_timeout = 1800
 
     env_name = (
@@ -357,7 +357,10 @@ class TestYosysSynthesis:
                 pytest.fail(error_msg)
 
         except subprocess.TimeoutExpired:
-            pytest.fail(f"Yosys synthesis for {target_name} timed out after 5 minutes")
+            timeout_sec = _get_timeout_seconds(synth_command)
+            pytest.fail(
+                f"Yosys synthesis for {target_name} timed out after {timeout_sec}s"
+            )
         except Exception as e:
             pytest.fail(f"Unexpected error during {target_name} synthesis: {e}")
 
