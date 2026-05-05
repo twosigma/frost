@@ -53,9 +53,16 @@ module control_flow_tracker #(
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic            i_branch_taken,
-    input logic            i_pd_redirect,         // PD backward-branch heuristic redirect
+    input logic            i_pd_redirect,             // PD backward-branch heuristic redirect
     input logic [XLEN-1:0] i_pd_redirect_target,
-    input logic            i_prediction_used,     // BTB prediction used this cycle
+    input logic            i_prediction_used,         // BTB prediction used this cycle
+    // Slot-2 BTB prediction (Session Q): treated like a 1-cycle-late
+    // redirect (analogous to pd_redirect) — BRAM was fetching the
+    // sequential next-bundle, so cycle N+2 needs to be NOP'd.  Folds into
+    // control_flow_change so the standard control_flow_holdoff machinery
+    // covers slot-2 prediction redirects.
+    input logic            i_slot2_prediction_used,
+    input logic [XLEN-1:0] i_slot2_predicted_target,
     input logic [XLEN-1:0] i_branch_target,
     input logic [XLEN-1:0] i_trap_target,
     input logic [XLEN-1:0] i_predicted_target,
@@ -83,7 +90,8 @@ module control_flow_tracker #(
   // IF holdoff machinery suppresses stale in-flight fetch data for one cycle
   // before the post-fence sequential stream resumes.
   assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
-                                 i_pd_redirect || i_prediction_used || i_fence_i_flush;
+                                 i_pd_redirect || i_prediction_used ||
+                                 i_slot2_prediction_used || i_fence_i_flush;
 
   // ===========================================================================
   // Holdoff Registers
@@ -123,7 +131,8 @@ module control_flow_tracker #(
     (i_trap_taken && i_trap_target[1]) ||
     (i_mret_taken && i_trap_target[1]) ||
     (i_pd_redirect && i_pd_redirect_target[1]) ||
-    (i_prediction_used && i_predicted_target[1]);
+    (i_prediction_used && i_predicted_target[1]) ||
+    (i_slot2_prediction_used && i_slot2_predicted_target[1]);
 
   always_ff @(posedge i_clk) begin
     if (i_reset) o_control_flow_to_halfword_r <= 1'b0;

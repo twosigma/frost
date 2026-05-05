@@ -62,6 +62,11 @@ module c_ext_state #(
     input logic       i_sel_nop,        // IF is outputting a stale/invalid bubble this cycle
     input logic [1:0] i_instr_sideband, // Predecode sideband from IMEM BRAM
 
+    // 2-wide bundle metadata (Session F): slot-2 valid this cycle.  When set
+    // and slot-1 is RVC at lo, slot-2 has already consumed the upper half so
+    // we must NOT arm the "previously compressed at lo" buffer state.
+    input logic i_slot2_valid,
+
     // Outputs
     output logic [31:0] o_instr_buffer,
     output logic [31:0] o_next_word_buffer,  // Next word captured alongside buffer (for spanning)
@@ -272,7 +277,10 @@ module c_ext_state #(
                  !i_prediction_from_buffer_holdoff &&
                  !o_use_buffer_after_prediction &&
                  !i_pending_prediction_active) begin
-      o_prev_was_compressed_at_lo <= is_compressed_for_buffer && !i_pc_reg[1];
+      // 2-wide: when slot-1 is RVC at lo and slot-2 fired at hi, both halves
+      // of the current word are consumed this cycle so the buffer is not
+      // needed next cycle.  i_slot2_valid drops the buffer arm in that case.
+      o_prev_was_compressed_at_lo <= is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
     end
   end
 

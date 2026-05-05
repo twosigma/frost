@@ -574,16 +574,35 @@ class DispatchInterface:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_valid.value = 0
+        # Slot-2 instruction (2-wide dispatch).  Held inactive in the
+        # dispatch unit tests; slot-2 dispatch is hard-tied off until later
+        # sessions wire it through cpu_ooo.
+        self.dut.i_from_id_to_ex_2.value = 0
+        self.dut.i_valid_2.value = 0
         self.dut.i_rs1_addr.value = 0
         self.dut.i_rs2_addr.value = 0
         self.dut.i_fp_rs3_addr.value = 0
+        # Slot-2 source register addresses (2-wide dispatch).  Held at zero
+        # in the dispatch unit tests; slot-2 dispatch is hard-tied off until
+        # later sessions wire in slot-2 instruction inputs.
+        self.dut.i_rs1_addr_2.value = 0
+        self.dut.i_rs2_addr_2.value = 0
+        self.dut.i_fp_rs3_addr_2.value = 0
         self.dut.i_frm_csr.value = 0
         self.dut.i_rob_alloc_resp.value = 0
+        # Slot-2 ROB alloc resp (2-wide dispatch).
+        self.dut.i_rob_alloc_resp_2.value = 0
         self.dut.i_int_src1.value = 0
         self.dut.i_int_src2.value = 0
         self.dut.i_fp_src1.value = 0
         self.dut.i_fp_src2.value = 0
         self.dut.i_fp_src3.value = 0
+        # Slot-2 RAT lookup results (raw, before intra-bundle RAW bypass).
+        self.dut.i_int_src1_2.value = 0
+        self.dut.i_int_src2_2.value = 0
+        self.dut.i_fp_src1_2.value = 0
+        self.dut.i_fp_src2_2.value = 0
+        self.dut.i_fp_src3_2.value = 0
         self.dut.i_checkpoint_available.value = 0
         self.dut.i_checkpoint_alloc_id.value = 0
         self.dut.i_ras_tos.value = 0
@@ -597,6 +616,18 @@ class DispatchInterface:
         self.dut.i_fdiv_rs_full.value = 0
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
+        # Slot-2 "room for 2" status inputs.  Held at zero in unit tests
+        # (room for 2 always available).  Slot-2 dispatch fire gates use
+        # these but never assert until cpu_ooo wires up slot-2 instructions.
+        self.dut.i_rob_full_for_2.value = 0
+        self.dut.i_int_rs_full_for_2.value = 0
+        self.dut.i_mul_rs_full_for_2.value = 0
+        self.dut.i_mem_rs_full_for_2.value = 0
+        self.dut.i_fp_rs_full_for_2.value = 0
+        self.dut.i_fmul_rs_full_for_2.value = 0
+        self.dut.i_fdiv_rs_full_for_2.value = 0
+        self.dut.i_lq_full_for_2.value = 0
+        self.dut.i_sq_full_for_2.value = 0
         self.dut.i_flush.value = 0
         self.dut.i_hold.value = 0
 
