@@ -55,7 +55,16 @@ module reservation_station #(
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
     input riscv_pkg::rs_dispatch_t i_dispatch,
+    // Slot-2 dispatch port for 2-wide dispatch (Session C plumbing).  The
+    // dispatch unit routes slot-2 to the correct RS based on its rs_type, so
+    // each RS only sees a slot-2 packet when slot-2 actually targets it.  Held
+    // inactive by the wrapper / cpu_ooo until dispatch widens in Session D.
+    input riscv_pkg::rs_dispatch_t i_dispatch_2,
     output logic o_full,
+    // Asserted when there is room for at most 1 more entry (a 2-wide dispatch
+    // bundle would not fit).  Distinct from o_full so dispatch can
+    // independently gate slot-2 while still allowing slot-1 to fire.
+    output logic o_full_for_2,
 
     // =========================================================================
     // CDB Snoop / Wakeup
@@ -64,6 +73,8 @@ module reservation_station #(
 
     // Registered ROB-done repair wakeups from dispatch. These carry operands
     // whose CDB broadcast happened before the consumer was dispatched.
+    // Channels 1-3: slot-1 source tags.  Channels 4-6: slot-2 source tags
+    // (Session M — drops the slot2_source_done_pending placeholder).
     input logic                                        i_repair_valid_1,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_1,
     input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_1,
@@ -73,6 +84,15 @@ module reservation_station #(
     input logic                                        i_repair_valid_3,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_3,
     input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_3,
+    input logic                                        i_repair_valid_4,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_4,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_4,
+    input logic                                        i_repair_valid_5,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_5,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_5,
+    input logic                                        i_repair_valid_6,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_6,
+    input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_6,
 
     // =========================================================================
     // Issue Interface (to Functional Unit)
@@ -168,7 +188,10 @@ module reservation_station #(
       done_repair_match =
           (i_repair_valid_1 && tag == i_repair_tag_1) ||
           (i_repair_valid_2 && tag == i_repair_tag_2) ||
-          (i_repair_valid_3 && tag == i_repair_tag_3);
+          (i_repair_valid_3 && tag == i_repair_tag_3) ||
+          (i_repair_valid_4 && tag == i_repair_tag_4) ||
+          (i_repair_valid_5 && tag == i_repair_tag_5) ||
+          (i_repair_valid_6 && tag == i_repair_tag_6);
     end
   endfunction
 
@@ -181,6 +204,12 @@ module reservation_station #(
         done_repair_value = i_repair_value_2;
       end else if (i_repair_valid_3 && tag == i_repair_tag_3) begin
         done_repair_value = i_repair_value_3;
+      end else if (i_repair_valid_4 && tag == i_repair_tag_4) begin
+        done_repair_value = i_repair_value_4;
+      end else if (i_repair_valid_5 && tag == i_repair_tag_5) begin
+        done_repair_value = i_repair_value_5;
+      end else if (i_repair_valid_6 && tag == i_repair_tag_6) begin
+        done_repair_value = i_repair_value_6;
       end else begin
         done_repair_value = '0;
       end
@@ -236,6 +265,54 @@ module reservation_station #(
   wire dispatch_src3_repair_match =
       DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready && done_repair_match(
       dispatch_src3_tag
+  );
+
+  // Slot-2 dispatch field aliases (mirror of slot-1).  Slot-2 only fires when
+  // the dispatch unit has steered slot-2 to this RS instance.
+  wire dispatch_valid_2 = i_dispatch_2.valid;
+  wire [ReorderBufferTagWidth-1:0] dispatch_rob_tag_2 = i_dispatch_2.rob_tag;
+  riscv_pkg::instr_op_e dispatch_op_2;
+  assign dispatch_op_2 = i_dispatch_2.op;
+  wire dispatch_src1_ready_2 = i_dispatch_2.src1_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src1_tag_2 = i_dispatch_2.src1_tag;
+  wire [FLEN-1:0] dispatch_src1_value_2 = i_dispatch_2.src1_value;
+  wire dispatch_src2_ready_2 = i_dispatch_2.src2_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src2_tag_2 = i_dispatch_2.src2_tag;
+  wire [FLEN-1:0] dispatch_src2_value_2 = i_dispatch_2.src2_value;
+  wire dispatch_src3_ready_2 = i_dispatch_2.src3_ready;
+  wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag_2 = i_dispatch_2.src3_tag;
+  wire [FLEN-1:0] dispatch_src3_value_2 = i_dispatch_2.src3_value;
+  wire [XLEN-1:0] dispatch_imm_2 = i_dispatch_2.imm;
+  wire dispatch_use_imm_2 = i_dispatch_2.use_imm;
+  wire [2:0] dispatch_rm_2 = i_dispatch_2.rm;
+  wire [XLEN-1:0] dispatch_branch_target_2 = i_dispatch_2.branch_target;
+  wire dispatch_predicted_taken_2 = i_dispatch_2.predicted_taken;
+  wire [XLEN-1:0] dispatch_predicted_target_2 = i_dispatch_2.predicted_target;
+  wire dispatch_is_fp_mem_2 = i_dispatch_2.is_fp_mem;
+  wire dispatch_mem_needs_lq_2 = i_dispatch_2.mem_needs_lq;
+  wire dispatch_mem_needs_sq_2 = i_dispatch_2.mem_needs_sq;
+  riscv_pkg::mem_size_e dispatch_mem_size_2;
+  assign dispatch_mem_size_2 = i_dispatch_2.mem_size;
+  wire dispatch_mem_signed_2 = i_dispatch_2.mem_signed;
+  wire [11:0] dispatch_csr_addr_2 = i_dispatch_2.csr_addr;
+  wire [4:0] dispatch_csr_imm_2 = i_dispatch_2.csr_imm;
+  wire [XLEN-1:0] dispatch_pc_2 = i_dispatch_2.pc;
+  wire [XLEN-1:0] dispatch_link_addr_2 = i_dispatch_2.link_addr;
+  wire dispatch_has_checkpoint_2 = i_dispatch_2.has_checkpoint;
+  wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id_2 = i_dispatch_2.checkpoint_id;
+  wire dispatch_is_call_2 = i_dispatch_2.is_call;
+  wire dispatch_is_return_2 = i_dispatch_2.is_return;
+  wire dispatch_src1_repair_match_2 =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src1_ready_2 && done_repair_match(
+      dispatch_src1_tag_2
+  );
+  wire dispatch_src2_repair_match_2 =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src2_ready_2 && done_repair_match(
+      dispatch_src2_tag_2
+  );
+  wire dispatch_src3_repair_match_2 =
+      DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready_2 && done_repair_match(
+      dispatch_src3_tag_2
   );
 
   // ===========================================================================
@@ -332,13 +409,23 @@ module reservation_station #(
   // ===========================================================================
 
   logic full;
+  logic full_for_2;
   logic empty;
   logic [CountWidth-1:0] count;
   logic [CountWidth-1:0] count_next;
 
-  // Free entry selection
+  // Free entry selection — first and second free entries (priority order).
+  // free_idx_2 only resolves when at least 2 entries are free; the dispatch
+  // gate ensures slot-2 only fires when free_found_2 is asserted (or when
+  // slot-1 is invalid and free_found_1 is asserted, in which case slot-2
+  // takes free_idx_1).
   logic [$clog2(DEPTH)-1:0] free_idx;
   logic free_found;
+  logic [$clog2(DEPTH)-1:0] free_idx_2;
+  logic free_found_2;
+  // Effective slot-2 alloc index: free_idx_2 when slot-1 is also firing
+  // (consumes free_idx_1), else free_idx_1.
+  logic [$clog2(DEPTH)-1:0] alloc_idx_2;
 
   // Issue selection
   logic [DEPTH-1:0] entry_ready;
@@ -348,6 +435,10 @@ module reservation_station #(
 
   // Dispatch condition
   (* max_fanout = 32 *) logic dispatch_fire;
+  // Slot-2 dispatch fire condition.  Hard-tied off until Session D, but the
+  // logic must be correct: slot-2 needs room for itself, considering whether
+  // slot-1 is also consuming a slot this cycle.
+  (* max_fanout = 32 *) logic dispatch_fire_2;
 
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
@@ -362,6 +453,7 @@ module reservation_station #(
       1 + CheckpointIdWidth + 1 + 1;
 
   logic [PayloadWidth-1:0] payload_wr_data;
+  logic [PayloadWidth-1:0] payload_wr_data_2;
   logic [PayloadWidth-1:0] payload_rd_data;
 
   assign payload_wr_data = {
@@ -386,15 +478,41 @@ module reservation_station #(
     dispatch_is_return  //  1  is_return
   };
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(DEPTH)),
-      .DATA_WIDTH(PayloadWidth)
+  assign payload_wr_data_2 = {
+    32'(dispatch_op_2),
+    dispatch_imm_2,
+    dispatch_rm_2,
+    dispatch_branch_target_2,
+    dispatch_predicted_taken_2,
+    dispatch_predicted_target_2,
+    dispatch_is_fp_mem_2,
+    dispatch_mem_needs_lq_2,
+    dispatch_mem_needs_sq_2,
+    2'(dispatch_mem_size_2),
+    dispatch_mem_signed_2,
+    dispatch_csr_addr_2,
+    dispatch_csr_imm_2,
+    dispatch_pc_2,
+    dispatch_link_addr_2,
+    dispatch_has_checkpoint_2,
+    dispatch_checkpoint_id_2,
+    dispatch_is_call_2,
+    dispatch_is_return_2
+  };
+
+  // 2-write port: slot-1 dispatch (port 0) + slot-2 dispatch (port 1).
+  // Slot-2 is hard-tied off until dispatch widens (Session D), so port 1 is
+  // dormant during Session C.
+  mwp_dist_ram #(
+      .ADDR_WIDTH     ($clog2(DEPTH)),
+      .DATA_WIDTH     (PayloadWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_payload_ram (
       .i_clk,
-      .i_write_enable (dispatch_fire),
-      .i_write_address(free_idx),
+      .i_write_enable ({dispatch_fire_2, dispatch_fire}),
+      .i_write_address({alloc_idx_2, free_idx}),
       .i_read_address (issue_idx),
-      .i_write_data   (payload_wr_data),
+      .i_write_data   ({payload_wr_data_2, payload_wr_data}),
       .o_read_data    (payload_rd_data)
   );
 
@@ -445,33 +563,53 @@ module reservation_station #(
              (rs_valid[i] && !should_flush_entry(rs_rob_tag[i], i_flush_tag, i_rob_head_tag))};
       end
     end else begin
-      case ({
-        dispatch_fire, issue_fire
-      })
-        2'b10:   count_next = count + CountWidth'(1);
-        2'b01:   count_next = count - CountWidth'(1);
-        default: count_next = count;
-      endcase
+      // Net occupancy delta: +1 per dispatch (0/1/2 of slot-1/slot-2 firing)
+      // and -1 if issue fires.  Encoded as a small signed adjustment.
+      count_next = count
+                 + CountWidth'(dispatch_fire)
+                 + CountWidth'(dispatch_fire_2)
+                 - CountWidth'(issue_fire);
     end
   end
 
-  assign full  = (count == CountWidth'(DEPTH));
+  assign full = (count == CountWidth'(DEPTH));
+  // full_for_2: there is room for at most 1 more entry, so a 2-wide bundle
+  // cannot fit even if neither slot has been allocated yet.
+  assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == '0);
 
-  // --- Free entry selection (priority encoder: lowest free index) ---
+  // --- Free entry selection (priority encoder: lowest free indices) ---
+  // Single sweep finds the lowest two free indices.  Slot-1 takes free_idx,
+  // slot-2 takes free_idx_2 (when slot-1 is also firing) or free_idx (when
+  // slot-2 is alone).  Both must point at distinct invalid entries when a
+  // 2-wide dispatch fires.
   always_comb begin
-    free_idx   = '0;
-    free_found = 1'b0;
+    free_idx     = '0;
+    free_found   = 1'b0;
+    free_idx_2   = '0;
+    free_found_2 = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
-      if (!rs_valid[i] && !free_found) begin
-        free_idx   = $clog2(DEPTH)'(i);
-        free_found = 1'b1;
+      if (!rs_valid[i]) begin
+        if (!free_found) begin
+          free_idx   = $clog2(DEPTH)'(i);
+          free_found = 1'b1;
+        end else if (!free_found_2) begin
+          free_idx_2   = $clog2(DEPTH)'(i);
+          free_found_2 = 1'b1;
+        end
       end
     end
   end
 
-  // --- Dispatch fire condition ---
+  // Effective slot-2 alloc target: skip slot-1's pick when slot-1 also fires.
+  assign alloc_idx_2 = dispatch_fire ? free_idx_2 : free_idx;
+
+  // --- Dispatch fire conditions ---
   assign dispatch_fire = dispatch_valid && !full && !i_flush_all && !i_flush_en;
+  // Slot-2 fires when there is room for it given whether slot-1 also fires.
+  // Reduces to: (slot-1 firing → !full_for_2) OR (slot-1 not firing → !full).
+  assign dispatch_fire_2 = dispatch_valid_2 && !i_flush_all && !i_flush_en &&
+                           (dispatch_fire ? !full_for_2 : !full);
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
@@ -481,49 +619,68 @@ module reservation_station #(
   logic [DEPTH-1:0] src1_cdb_bypass;
   logic [DEPTH-1:0] src2_cdb_bypass;
   logic [DEPTH-1:0] src3_cdb_bypass;
-  logic [1:0] src1_repair_sel[DEPTH];
-  logic [1:0] src2_repair_sel[DEPTH];
-  logic [1:0] src3_repair_sel[DEPTH];
+  // 3-bit selector encodes 0=none, 1..6=repair channel index.
+  logic [2:0] src1_repair_sel[DEPTH];
+  logic [2:0] src2_repair_sel[DEPTH];
+  logic [2:0] src3_repair_sel[DEPTH];
 
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
       src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
-      src1_repair_sel[i] = 2'd0;
-      src2_repair_sel[i] = 2'd0;
+      src1_repair_sel[i] = 3'd0;
+      src2_repair_sel[i] = 3'd0;
       if (ISSUE_REPAIR_BYPASS && !rs_src1_ready[i]) begin
         if (i_repair_valid_1 && rs_src1_tag[i] == i_repair_tag_1) begin
-          src1_repair_sel[i] = 2'd1;
+          src1_repair_sel[i] = 3'd1;
         end else if (i_repair_valid_2 && rs_src1_tag[i] == i_repair_tag_2) begin
-          src1_repair_sel[i] = 2'd2;
+          src1_repair_sel[i] = 3'd2;
         end else if (i_repair_valid_3 && rs_src1_tag[i] == i_repair_tag_3) begin
-          src1_repair_sel[i] = 2'd3;
+          src1_repair_sel[i] = 3'd3;
+        end else if (i_repair_valid_4 && rs_src1_tag[i] == i_repair_tag_4) begin
+          src1_repair_sel[i] = 3'd4;
+        end else if (i_repair_valid_5 && rs_src1_tag[i] == i_repair_tag_5) begin
+          src1_repair_sel[i] = 3'd5;
+        end else if (i_repair_valid_6 && rs_src1_tag[i] == i_repair_tag_6) begin
+          src1_repair_sel[i] = 3'd6;
         end
       end
       if (ISSUE_REPAIR_BYPASS && !rs_src2_ready[i]) begin
         if (i_repair_valid_1 && rs_src2_tag[i] == i_repair_tag_1) begin
-          src2_repair_sel[i] = 2'd1;
+          src2_repair_sel[i] = 3'd1;
         end else if (i_repair_valid_2 && rs_src2_tag[i] == i_repair_tag_2) begin
-          src2_repair_sel[i] = 2'd2;
+          src2_repair_sel[i] = 3'd2;
         end else if (i_repair_valid_3 && rs_src2_tag[i] == i_repair_tag_3) begin
-          src2_repair_sel[i] = 2'd3;
+          src2_repair_sel[i] = 3'd3;
+        end else if (i_repair_valid_4 && rs_src2_tag[i] == i_repair_tag_4) begin
+          src2_repair_sel[i] = 3'd4;
+        end else if (i_repair_valid_5 && rs_src2_tag[i] == i_repair_tag_5) begin
+          src2_repair_sel[i] = 3'd5;
+        end else if (i_repair_valid_6 && rs_src2_tag[i] == i_repair_tag_6) begin
+          src2_repair_sel[i] = 3'd6;
         end
       end
       if (HAS_SRC3) begin
         src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
-        src3_repair_sel[i] = 2'd0;
+        src3_repair_sel[i] = 3'd0;
         if (ISSUE_REPAIR_BYPASS && !rs_src3_ready[i]) begin
           if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
-            src3_repair_sel[i] = 2'd1;
+            src3_repair_sel[i] = 3'd1;
           end else if (i_repair_valid_2 && rs_src3_tag[i] == i_repair_tag_2) begin
-            src3_repair_sel[i] = 2'd2;
+            src3_repair_sel[i] = 3'd2;
           end else if (i_repair_valid_3 && rs_src3_tag[i] == i_repair_tag_3) begin
-            src3_repair_sel[i] = 2'd3;
+            src3_repair_sel[i] = 3'd3;
+          end else if (i_repair_valid_4 && rs_src3_tag[i] == i_repair_tag_4) begin
+            src3_repair_sel[i] = 3'd4;
+          end else if (i_repair_valid_5 && rs_src3_tag[i] == i_repair_tag_5) begin
+            src3_repair_sel[i] = 3'd5;
+          end else if (i_repair_valid_6 && rs_src3_tag[i] == i_repair_tag_6) begin
+            src3_repair_sel[i] = 3'd6;
           end
         end
       end else begin
         src3_cdb_bypass[i] = 1'b0;
-        src3_repair_sel[i] = 2'd0;
+        src3_repair_sel[i] = 3'd0;
       end
     end
   end
@@ -532,14 +689,14 @@ module reservation_station #(
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       entry_ready[i] = rs_valid[i] &&
-          (rs_src1_ready[i] || src1_cdb_bypass[i] || (src1_repair_sel[i] != 2'd0))
+          (rs_src1_ready[i] || src1_cdb_bypass[i] || (src1_repair_sel[i] != 3'd0))
       // Even when an instruction uses an immediate, issue still
       // requires src2 to be ready if the opcode actually has a
       // second source (for example stores: base+imm address and
       // rs2 store data). Dispatch marks truly-unused src2
       // operands ready, so a plain src2_ready check is correct.
-      && (rs_src2_ready[i] || src2_cdb_bypass[i] || (src2_repair_sel[i] != 2'd0)) &&
-          (rs_src3_ready[i] || src3_cdb_bypass[i] || (src3_repair_sel[i] != 2'd0));
+      && (rs_src2_ready[i] || src2_cdb_bypass[i] || (src2_repair_sel[i] != 3'd0)) &&
+          (rs_src3_ready[i] || src3_cdb_bypass[i] || (src3_repair_sel[i] != 3'd0));
     end
   end
 
@@ -596,12 +753,15 @@ module reservation_station #(
                       (BYPASS_STAGE2 || can_issue_to_stage2) &&
                       !i_flush_all && !i_flush_en;
 
-  function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [1:0] sel);
+  function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [2:0] sel);
     begin
       case (sel)
-        2'd1: repair_value_for_sel = i_repair_value_1;
-        2'd2: repair_value_for_sel = i_repair_value_2;
-        2'd3: repair_value_for_sel = i_repair_value_3;
+        3'd1: repair_value_for_sel = i_repair_value_1;
+        3'd2: repair_value_for_sel = i_repair_value_2;
+        3'd3: repair_value_for_sel = i_repair_value_3;
+        3'd4: repair_value_for_sel = i_repair_value_4;
+        3'd5: repair_value_for_sel = i_repair_value_5;
+        3'd6: repair_value_for_sel = i_repair_value_6;
         default: repair_value_for_sel = '0;
       endcase
     end
@@ -615,16 +775,16 @@ module reservation_station #(
       bypass_issue.rob_tag = rs_rob_tag[issue_idx];
       bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
       bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value :
-                                ((src1_repair_sel[issue_idx] != 2'd0) ?
+                                ((src1_repair_sel[issue_idx] != 3'd0) ?
                                  repair_value_for_sel(src1_repair_sel[issue_idx]) :
           rs_src1_value[issue_idx]);
       bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value :
-                                ((src2_repair_sel[issue_idx] != 2'd0) ?
+                                ((src2_repair_sel[issue_idx] != 3'd0) ?
                                  repair_value_for_sel(src2_repair_sel[issue_idx]) :
           rs_src2_value[issue_idx]);
       if (HAS_SRC3) begin
         bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value :
-                                  ((src3_repair_sel[issue_idx] != 2'd0) ?
+                                  ((src3_repair_sel[issue_idx] != 3'd0) ?
                                    repair_value_for_sel(src3_repair_sel[issue_idx]) :
             rs_src3_value[issue_idx]);
       end
@@ -723,6 +883,7 @@ module reservation_station #(
 
   // --- Status outputs ---
   assign o_full = full;
+  assign o_full_for_2 = full_for_2;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -780,10 +941,33 @@ module reservation_station #(
           end
           rs_use_imm[free_idx] <= dispatch_use_imm;
         end
+
+        // Slot-2 dispatch write (independent index from slot-1, so the
+        // non-blocking writes never collide on a bit).  Held inactive until
+        // dispatch widens in Session D.
+        if (dispatch_fire_2) begin
+          rs_valid[alloc_idx_2] <= 1'b1;
+          if (TRACK_INT_WRITEBACK_HINT)
+            rs_writes_cdb_hint[alloc_idx_2] <= int_rs_writes_cdb(dispatch_op_2);
+
+          rs_src1_ready[alloc_idx_2] <= dispatch_src1_ready_2 ||
+              (!dispatch_src1_ready_2 && i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag) ||
+              dispatch_src1_repair_match_2;
+          rs_src2_ready[alloc_idx_2] <= dispatch_src2_ready_2 ||
+              (!dispatch_src2_ready_2 && i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag) ||
+              dispatch_src2_repair_match_2;
+          if (HAS_SRC3) begin
+            rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 ||
+                (!dispatch_src3_ready_2 && i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag) ||
+                dispatch_src3_repair_match_2;
+          end
+          rs_use_imm[alloc_idx_2] <= dispatch_use_imm_2;
+        end
       end
 
       // CDB and done-repair snoop wakeup (control: ready bits only)
-      if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
+      if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3 ||
+        i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (rs_valid[i]) begin
             if (!rs_src1_ready[i] &&
@@ -847,8 +1031,39 @@ module reservation_station #(
       end
     end
 
+    // Slot-2 dispatch: capture tags and values at alloc_idx_2.  Held inactive
+    // until dispatch widens in Session D; intra-bundle RAW (slot-2 src reads
+    // slot-1 dest) is resolved upstream in dispatch.sv before reaching the RS.
+    if (dispatch_fire_2) begin
+      rs_rob_tag[alloc_idx_2]  <= dispatch_rob_tag_2;
+
+      rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
+      if (!dispatch_src1_ready_2 && i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag)
+        rs_src1_value[alloc_idx_2] <= i_cdb.value;
+      else if (dispatch_src1_repair_match_2)
+        rs_src1_value[alloc_idx_2] <= done_repair_value(dispatch_src1_tag_2);
+      else rs_src1_value[alloc_idx_2] <= dispatch_src1_value_2;
+
+      rs_src2_tag[alloc_idx_2] <= dispatch_src2_tag_2;
+      if (!dispatch_src2_ready_2 && i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag)
+        rs_src2_value[alloc_idx_2] <= i_cdb.value;
+      else if (dispatch_src2_repair_match_2)
+        rs_src2_value[alloc_idx_2] <= done_repair_value(dispatch_src2_tag_2);
+      else rs_src2_value[alloc_idx_2] <= dispatch_src2_value_2;
+
+      if (HAS_SRC3) begin
+        rs_src3_tag[alloc_idx_2] <= dispatch_src3_tag_2;
+        if (!dispatch_src3_ready_2 && i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag)
+          rs_src3_value[alloc_idx_2] <= i_cdb.value;
+        else if (dispatch_src3_repair_match_2)
+          rs_src3_value[alloc_idx_2] <= done_repair_value(dispatch_src3_tag_2);
+        else rs_src3_value[alloc_idx_2] <= dispatch_src3_value_2;
+      end
+    end
+
     // CDB and done-repair snoop wakeup (data: capture values)
-    if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3) begin
+    if (i_cdb.valid || i_repair_valid_1 || i_repair_valid_2 || i_repair_valid_3 ||
+        i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (rs_valid[i]) begin
           if (!rs_src1_ready[i] && i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) begin
@@ -897,16 +1112,16 @@ module reservation_station #(
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_src1_value <= (src1_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+      stage2_src1_value <= (src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
           src1_repair_sel[issue_idx]
       ) : rs_src1_value[issue_idx];
-      stage2_src2_value <= (src2_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+      stage2_src2_value <= (src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
           src2_repair_sel[issue_idx]
       ) : rs_src2_value[issue_idx];
       stage2_src1_bypassed <= src1_cdb_bypass[issue_idx];
       stage2_src2_bypassed <= src2_cdb_bypass[issue_idx];
       if (HAS_SRC3) begin
-        stage2_src3_value <= (src3_repair_sel[issue_idx] != 2'd0) ? repair_value_for_sel(
+        stage2_src3_value <= (src3_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src3_repair_sel[issue_idx]
         ) : rs_src3_value[issue_idx];
         stage2_src3_bypassed <= src3_cdb_bypass[issue_idx];
@@ -960,6 +1175,16 @@ module reservation_station #(
       if (dispatch_valid && (i_flush_all || i_flush_en))
         $warning("RS: dispatch attempted during flush");
 
+      if (dispatch_valid_2 && dispatch_fire && full_for_2)
+        $warning("RS: slot-2 dispatch attempted when full_for_2 (and slot-1 firing)");
+
+      if (dispatch_valid_2 && (i_flush_all || i_flush_en))
+        $warning("RS: slot-2 dispatch attempted during flush");
+
+      // Slot-1 and slot-2 must never target the same physical entry.
+      if (dispatch_fire && dispatch_fire_2 && (free_idx == alloc_idx_2))
+        $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
+
       // Issue fires only for ready entries (fatal: indicates RTL bug)
       // Checks stage1 issue_fire (RS→stage2), not stage2 output.
       if (issue_fire && !entry_ready[issue_idx])
@@ -998,6 +1223,14 @@ module reservation_station #(
   // No dispatch when full
   always_comb begin
     if (full) assume (!dispatch_valid);
+  end
+
+  // Slot-2 dispatch follows the same flush / capacity rules.
+  always_comb begin
+    if (i_flush_all || i_flush_en) assume (!dispatch_valid_2);
+    // Slot-2 needs room for itself given whether slot-1 is also firing.
+    if (dispatch_valid && full_for_2) assume (!dispatch_valid_2);
+    if (!dispatch_valid && full) assume (!dispatch_valid_2);
   end
 
   // -------------------------------------------------------------------------
@@ -1059,6 +1292,11 @@ module reservation_station #(
       // Dispatch sets valid
       if ($past(dispatch_fire)) begin
         p_dispatch_sets_valid : assert (rs_valid[$past(free_idx)]);
+      end
+
+      // Slot-2 dispatch sets valid at alloc_idx_2.
+      if ($past(dispatch_fire_2)) begin
+        p_dispatch_2_sets_valid : assert (rs_valid[$past(alloc_idx_2)]);
       end
 
       // Issue clears valid
@@ -1135,6 +1373,12 @@ module reservation_station #(
       cover_cdb_bypass_at_dispatch :
       cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
              && dispatch_src1_tag == i_cdb.tag);
+
+      // 2-wide dispatch fires both slots in the same cycle.
+      cover_dispatch_2_wide : cover (dispatch_fire && dispatch_fire_2);
+
+      // Slot-2 fires alone (slot-1 not valid this cycle).
+      cover_dispatch_2_only : cover (dispatch_fire_2 && !dispatch_fire);
 
       // Stage2 back-to-back: consumed and refilled in the same cycle
       if (!BYPASS_STAGE2) cover_stage2_back_to_back : cover (stage2_accept && issue_fire);

@@ -102,6 +102,12 @@ module pc_controller #(
     input logic i_is_compressed,  // Combinational (for spanning detection, etc.)
     input logic i_is_compressed_for_pc,  // Registered (TIMING OPTIMIZATION: for PC increment)
 
+    // 2-wide bundle metadata (Session F).  When slot-2 fires this cycle, the
+    // bundle advances PC by slot-1 size + slot-2 size (+4/+6/+8).  When
+    // slot-2 is invalid, falls back to the 1-wide +2/+4 advance.
+    input logic i_slot2_valid,
+    input logic i_slot2_is_compressed,
+
     // Branch prediction (from branch_prediction_controller)
     input logic i_predicted_taken,  // BTB predicts taken (combinational)
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
@@ -115,6 +121,18 @@ module pc_controller #(
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     input logic i_sel_nop,
+
+    // Slot-2 BTB prediction redirect (Session Q dual-port BTB).  Behaves
+    // analogously to pd_redirect: the slot-2 lookup happens at cycle N+1
+    // when the slot-2 instruction is in IF, but BRAM at cycle N+1 was
+    // already fetching the sequential next bundle, so cycle N+2 must be
+    // NOP'd as wrong-path.  A taken slot-2 prediction redirects both pc
+    // and pc_reg to the slot-2 target immediately (just like pd_redirect),
+    // and o_slot2_redirect_q tracks the bubble cycle for the if_stage
+    // sel_nop expression.
+    input  logic            i_slot2_prediction_used,
+    input  logic [XLEN-1:0] i_slot2_predicted_target,
+    output logic            o_slot2_redirect_q,
 
     // Outputs
     output logic [XLEN-1:0] o_pc,
@@ -155,6 +173,8 @@ module pc_controller #(
       .i_pd_redirect,
       .i_pd_redirect_target,
       .i_prediction_used,
+      .i_slot2_prediction_used,
+      .i_slot2_predicted_target,
       .i_branch_target,
       .i_trap_target,
       .i_predicted_target,
@@ -169,6 +189,23 @@ module pc_controller #(
       .o_control_flow_to_halfword,
       .o_control_flow_to_halfword_r
   );
+
+  // ===========================================================================
+  // Slot-2 Redirect Bubble Register (Session Q)
+  // ===========================================================================
+  // After a slot-2 BTB-prediction redirect at cycle N+1, BRAM at cycle N+2
+  // returns the wrong-path sequential bundle.  o_slot2_redirect_q asserts
+  // for one cycle (N+2) so the if_stage sel_nop can NOP that wrong-path
+  // bundle (mirroring pd_redirect_q's role).  Cleared by reset/flush and
+  // by any higher-priority redirect that already kills the front-end state.
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
+      o_slot2_redirect_q <= 1'b0;
+    end else if (!i_stall) begin
+      o_slot2_redirect_q <= i_slot2_prediction_used;
+    end
+  end
 
   // ===========================================================================
   // PC Increment Calculator - Sequential PC Computation
@@ -194,6 +231,8 @@ module pc_controller #(
       .i_is_compressed,
       .i_is_compressed_for_pc,
       .i_sel_nop,
+      .i_slot2_valid,
+      .i_slot2_is_compressed,
 
       // Holdoff and control signals
       .i_any_holdoff_safe(o_any_holdoff_safe),
@@ -252,8 +291,14 @@ module pc_controller #(
   // harmless (higher-priority mux entries override it), but suppressing it is
   // cleaner and strictly safer.
   logic sel_prediction_r;
+  // Session Q: also suppress slot-1's registered pc_reg-handoff during the
+  // slot-2 redirect bubble.  Otherwise, when both slot-1 (on the
+  // wrong-path next-bundle PC) and slot-2 BTB hit in the same cycle,
+  // slot-1's sel_prediction_r at cycle N+2 would steer pc_reg to slot-1's
+  // target instead of holding it on the slot-2 target.
   assign sel_prediction_r = !i_reset && i_sel_prediction_r &&
-                            !pending_prediction_valid && !redirect_kill_pending_q;
+                            !pending_prediction_valid && !redirect_kill_pending_q &&
+                            !o_slot2_redirect_q;
 
   logic            pending_prediction_valid;
   logic [XLEN-1:0] pending_prediction_pc;
@@ -312,8 +357,13 @@ module pc_controller #(
   // eventually re-tags non-control-flow PCs as predicted-taken. Keep the
   // pending path restricted to the original "pc_reg would advance past o_pc"
   // case and leave ordinary registered handoffs alone.
+  // Session Q: do not arm pending_prediction when slot-2 BTB redirects in
+  // the same cycle.  Slot-2 owns next_pc/next_pc_reg this cycle; the
+  // slot-1 BTB hit (on the now-wrong-path next-bundle PC) is moot, and
+  // letting its halfword target latch a pending_prediction state would
+  // fight the slot-2 redirect bubble at cycle N+2.
   assign prediction_needs_pending =
-      i_prediction_used && !i_ras_predicted &&
+      i_prediction_used && !i_ras_predicted && !i_slot2_prediction_used &&
       (o_pc[1] || i_predicted_target[1] ||
        ((seq_next_pc_reg != o_pc) && i_prediction_requires_pc_reg_handoff));
   // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
@@ -507,6 +557,11 @@ module pc_controller #(
     else if (i_stall) next_pc = o_pc;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_pd_redirect) next_pc = i_pd_redirect_target;
+    // Slot-2 BTB prediction (Session Q): higher priority than slot-1 BTB
+    // because slot-2 is older in program order than the next bundle's
+    // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
+    // slot-1 BTB hit at pc[N+1] = sequential next bundle's slot-1 PC).
+    else if (i_slot2_prediction_used) next_pc = i_slot2_predicted_target;
     else if (i_prediction_used) next_pc = i_predicted_target;
     // During the target-holdoff bubble, keep fetch at most one word ahead of
     // the still-held target PC. Letting it run farther ahead makes pc_reg pick
@@ -559,6 +614,12 @@ module pc_controller #(
     else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
     else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
+    // Slot-2 BTB prediction (Session Q): pc_reg jumps to the slot-2 target
+    // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
+    // after the redirect is NOP'd via the standard control_flow_holdoff
+    // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
+    // the target arrives the cycle after that.
+    else if (i_slot2_prediction_used) next_pc_reg = i_slot2_predicted_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next

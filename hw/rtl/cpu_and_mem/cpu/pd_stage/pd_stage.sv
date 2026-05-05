@@ -40,6 +40,12 @@ module pd_stage #(
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
+    // Slot-2 instruction (2-wide dispatch).  IF stage's slot-2 output is
+    // hard-tied to invalid (sel_nop=1) until Session F lights up the IF
+    // widening, so slot-2 carries NOPs through PD/ID and dispatch keeps
+    // i_valid_2='0.  The backward-branch heuristic stays slot-1 only.
+    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
+    output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // Backward-branch-taken static heuristic: PD redirect to IF
     output logic o_pd_redirect,
     output logic [XLEN-1:0] o_pd_redirect_target
@@ -112,6 +118,49 @@ module pd_stage #(
   assign source_reg_2 = final_instruction[24:20];
   // F extension: rs3 for FMA is in bits [31:27] (R4-type format)
   assign fp_source_reg_3 = final_instruction[31:27];
+
+  // ===========================================================================
+  // Slot-2: RVC Decompressor + Instruction Selection + Source Extraction
+  // ===========================================================================
+  // Mirror of the slot-1 logic above, driven from i_from_if_to_pd_2.  Slot-2
+  // bypasses the backward-branch heuristic (slot-1 only by design); when slot-1
+  // is a backward branch, the IF widening (Session F) is responsible for
+  // forcing slot-2 invalid that cycle.
+
+  logic [31:0] decompressed_instr_2;
+  logic        decomp_is_compressed_2;
+  logic        decomp_illegal_2;
+
+  rvc_decompressor decompressor_inst_2 (
+      .i_instr_compressed(i_from_if_to_pd_2.raw_parcel),
+      .o_instr_expanded(decompressed_instr_2),
+      .o_is_compressed(decomp_is_compressed_2),
+      .o_illegal(decomp_illegal_2)
+  );
+
+  logic pd_sel_compressed_2;
+  assign pd_sel_compressed_2 = decomp_is_compressed_2;
+
+  logic [31:0] final_instruction_2;
+  logic [31:0] instruction_non_nop_2;
+
+  always_comb begin
+    if (pd_sel_compressed_2) instruction_non_nop_2 = decompressed_instr_2;
+    else instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
+  end
+
+  always_comb begin
+    if (i_from_if_to_pd_2.sel_nop) final_instruction_2 = riscv_pkg::NOP;
+    else final_instruction_2 = instruction_non_nop_2;
+  end
+
+  logic [4:0] source_reg_1_2;
+  logic [4:0] source_reg_2_2;
+  logic [4:0] fp_source_reg_3_2;
+
+  assign source_reg_1_2    = final_instruction_2[19:15];
+  assign source_reg_2_2    = final_instruction_2[24:20];
+  assign fp_source_reg_3_2 = final_instruction_2[31:27];
 
   // ===========================================================================
   // Backward-Branch-Taken Static Heuristic
@@ -267,6 +316,53 @@ module pd_stage #(
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
     end
     // When stalled, hold current values (implicit - no else clause)
+  end
+
+  // ===========================================================================
+  // Slot-2 Pipeline Register: PD → ID
+  // ===========================================================================
+  // Mirror of the slot-1 register above, driven from i_from_if_to_pd_2 and
+  // pd_sel_compressed_2 / final_instruction_2 / source_reg_*_2.  Stall and
+  // flush gating apply to both slots uniformly (decision #2).  pd_redirect_r
+  // squashes both slots: when the slot-1 backward-branch heuristic fires, the
+  // wrong-path instruction in PD this cycle covers slot-2 too.
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_pd_to_id_2.instruction         <= riscv_pkg::NOP;
+      o_from_pd_to_id_2.illegal_instruction <= 1'b0;
+      o_from_pd_to_id_2.btb_hit             <= 1'b0;
+      o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
+      o_from_pd_to_id_2.ras_predicted       <= 1'b0;
+    end else if (~i_pipeline_ctrl.stall) begin
+      o_from_pd_to_id_2.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                        riscv_pkg::NOP : final_instruction_2;
+      o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                                (!i_from_if_to_pd_2.sel_nop &&
+                                                pd_sel_compressed_2 &&
+                                                decomp_is_compressed_2 && decomp_illegal_2);
+      o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                    i_from_if_to_pd_2.btb_hit;
+      o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                                i_from_if_to_pd_2.btb_predicted_taken;
+      o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                          i_from_if_to_pd_2.ras_predicted;
+    end
+
+    if (~i_pipeline_ctrl.stall) begin
+      o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
+      o_from_pd_to_id_2.link_address <= i_from_if_to_pd_2.link_address;
+      o_from_pd_to_id_2.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                               5'd0 : source_reg_1_2;
+      o_from_pd_to_id_2.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                               5'd0 : source_reg_2_2;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                                  5'd0 : fp_source_reg_3_2;
+      o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
+      o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
+      o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
+      o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
+    end
   end
 
 endmodule : pd_stage

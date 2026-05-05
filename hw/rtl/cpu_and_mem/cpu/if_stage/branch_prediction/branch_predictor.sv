@@ -67,7 +67,7 @@ module branch_predictor #(
     input logic i_clk,
     input logic i_rst,
 
-    // Prediction interface (IF stage)
+    // Slot-1 prediction interface (IF stage)
     input  logic [XLEN-1:0] i_pc,                          // Current PC for lookup
     output logic            o_btb_hit,                     // BTB entry hit
     output logic            o_predicted_taken,             // Predict taken
@@ -75,6 +75,18 @@ module branch_predictor #(
     output logic            o_btb_compressed,              // Entry is for compressed instruction
     // Predicted op must still execute in IF/PD/ID
     output logic            o_btb_requires_pc_reg_handoff,
+
+    // Slot-2 prediction interface (Session Q — dual-port BTB lookup).  The
+    // slot-2 lookup shares the same single-write update port and reads from
+    // a replicated set of LUTRAM read ports indexed by slot-2's PC.  Used by
+    // 2-wide dispatch to gate or redirect on slot-2 branches; falls back to
+    // miss when slot-2 is invalid this cycle.
+    input  logic [XLEN-1:0] i_pc_2,
+    output logic            o_btb_hit_2,
+    output logic            o_predicted_taken_2,
+    output logic [XLEN-1:0] o_predicted_target_2,
+    output logic            o_btb_compressed_2,
+    output logic            o_btb_requires_pc_reg_handoff_2,
 
     // Update interface (from EX stage)
     input logic            i_update,                         // Update BTB entry
@@ -101,24 +113,31 @@ module branch_predictor #(
   // Keep valid bits in FFs for explicit reset. Move tag/target/counter to LUTRAM.
   logic btb_valid[BtbEntries];
   logic [TagBits-1:0] btb_tag_lookup;
+  logic [TagBits-1:0] btb_tag_lookup_2;  // slot-2 read port
   logic [TagBits-1:0] btb_tag_update;
   logic [XLEN-1:0] btb_target_lookup;
+  logic [XLEN-1:0] btb_target_lookup_2;
   logic [1:0] btb_counter_lookup;
+  logic [1:0] btb_counter_lookup_2;
   logic [1:0] btb_counter_update;
 
   logic [1:0] next_counter;
 
-  // Index and tag extraction for lookup
-  // Index: PC[6:2] (5 bits) - selects which of 32 entries
-  // Tag: PC[31:7] concatenated with PC[1] (26 bits) - distinguishes halfword addresses
+  // Index and tag extraction for slot-1 lookup
+  // Index: PC[6:2] (7 bits) - selects which of 128 entries
+  // Tag: PC[31:9] concatenated with PC[1] (24 bits) - distinguishes halfword addresses
   wire [BTB_INDEX_BITS-1:0] lookup_index = i_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] lookup_tag = {i_pc[XLEN-1:BTB_INDEX_BITS+2], i_pc[1]};
+
+  // Index and tag extraction for slot-2 lookup
+  wire [BTB_INDEX_BITS-1:0] lookup_index_2 = i_pc_2[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] lookup_tag_2 = {i_pc_2[XLEN-1:BTB_INDEX_BITS+2], i_pc_2[1]};
 
   // Index and tag extraction for update
   wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
 
-  // Tag RAMs (replicated for lookup/update reads)
+  // Tag RAMs (replicated for slot-1 lookup, slot-2 lookup, and update reads)
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(TagBits)
@@ -134,6 +153,18 @@ module branch_predictor #(
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(TagBits)
+  ) btb_tag_ram_lookup_2 (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(update_tag),
+      .i_read_address(lookup_index_2),
+      .o_read_data(btb_tag_lookup_2)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(TagBits)
   ) btb_tag_ram_update (
       .i_clk,
       .i_write_enable(i_update),
@@ -143,7 +174,7 @@ module branch_predictor #(
       .o_read_data(btb_tag_update)
   );
 
-  // Target RAM (lookup read only)
+  // Target RAMs (slot-1 + slot-2 read ports)
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(XLEN)
@@ -156,7 +187,19 @@ module branch_predictor #(
       .o_read_data(btb_target_lookup)
   );
 
-  // Counter RAMs (replicated for lookup/update reads)
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(XLEN)
+  ) btb_target_ram_2 (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_target),
+      .i_read_address(lookup_index_2),
+      .o_read_data(btb_target_lookup_2)
+  );
+
+  // Counter RAMs (replicated for slot-1 lookup, slot-2 lookup, update reads)
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(2)
@@ -172,6 +215,18 @@ module branch_predictor #(
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(2)
+  ) btb_counter_ram_lookup_2 (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(next_counter),
+      .i_read_address(lookup_index_2),
+      .o_read_data(btb_counter_lookup_2)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(2)
   ) btb_counter_ram_update (
       .i_clk,
       .i_write_enable(i_update),
@@ -181,9 +236,11 @@ module branch_predictor #(
       .o_read_data(btb_counter_update)
   );
 
-  // Compressed flag RAM (lookup read only)
+  // Compressed flag RAM (slot-1 + slot-2 read ports)
   logic btb_compressed_lookup;
+  logic btb_compressed_lookup_2;
   logic btb_requires_pc_reg_handoff_lookup;
+  logic btb_requires_pc_reg_handoff_lookup_2;
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(1)
@@ -199,6 +256,18 @@ module branch_predictor #(
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(1)
+  ) btb_compressed_ram_2 (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_compressed),
+      .i_read_address(lookup_index_2),
+      .o_read_data(btb_compressed_lookup_2)
+  );
+
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(1)
   ) btb_requires_pc_reg_handoff_ram (
       .i_clk,
       .i_write_enable(i_update),
@@ -208,7 +277,19 @@ module branch_predictor #(
       .o_read_data(btb_requires_pc_reg_handoff_lookup)
   );
 
-  // Combinational lookup
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(1)
+  ) btb_requires_pc_reg_handoff_ram_2 (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data(i_update_requires_pc_reg_handoff),
+      .i_read_address(lookup_index_2),
+      .o_read_data(btb_requires_pc_reg_handoff_lookup_2)
+  );
+
+  // Combinational slot-1 lookup
   wire lookup_valid = btb_valid[lookup_index];
   wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
   wire [XLEN-1:0] lookup_target = btb_target_lookup;
@@ -222,6 +303,18 @@ module branch_predictor #(
   assign o_predicted_target = lookup_target;
   assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
   assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
+
+  // Combinational slot-2 lookup (Session Q).
+  wire lookup_valid_2 = btb_valid[lookup_index_2];
+  wire [TagBits-1:0] lookup_tag_stored_2 = btb_tag_lookup_2;
+  wire [XLEN-1:0] lookup_target_2 = btb_target_lookup_2;
+  wire [1:0] lookup_counter_2 = btb_counter_lookup_2;
+
+  assign o_btb_hit_2 = lookup_valid_2 && (lookup_tag_stored_2 == lookup_tag_2);
+  assign o_predicted_taken_2 = o_btb_hit_2 && lookup_counter_2[1];
+  assign o_predicted_target_2 = lookup_target_2;
+  assign o_btb_compressed_2 = o_btb_hit_2 && btb_compressed_lookup_2;
+  assign o_btb_requires_pc_reg_handoff_2 = o_btb_hit_2 && btb_requires_pc_reg_handoff_lookup_2;
 
   // Current counter value for the entry being updated
   wire [1:0] current_counter = btb_counter_update;

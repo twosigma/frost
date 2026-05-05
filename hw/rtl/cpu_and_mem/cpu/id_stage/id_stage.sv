@@ -47,7 +47,17 @@ module id_stage #(
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
-    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
+    // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
+    // Slot-2 does NOT receive the backward-branch heuristic override (slot-1
+    // only by design — see pd_stage.sv).  Slot-2's BTB/RAS metadata from PD is
+    // always 0 because IF performs a single-port BTB lookup on slot-1's PC
+    // (decision #3); the slot-2 EX-stage path will recover from any
+    // mispredictions naturally.
+    input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
+    input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
+    input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
 );
 
   // Effective BTB metadata after applying the cold-backward-branch override.
@@ -474,6 +484,350 @@ module id_stage #(
       o_from_id_to_ex.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed;
       o_from_id_to_ex.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed;
       o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
+    end
+  end
+
+  // ===========================================================================
+  // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
+  // ===========================================================================
+  // Mirror of the slot-1 logic above.  Slot-2 carries NOPs through Session E
+  // (i_from_pd_to_id_2.instruction == NOP, sourced from a hard-tied invalid
+  // IF slot-2 output in cpu_ooo).  Slot-2 ignores the cold-backward-branch
+  // heuristic override per the design doc; its BTB/RAS metadata is whatever
+  // PD passed through from IF (always 0 today).
+
+  riscv_pkg::instr_t                      instruction_2;
+  riscv_pkg::instr_op_e                   instruction_operation_2;
+  riscv_pkg::branch_taken_op_e            branch_operation_2;
+  riscv_pkg::store_op_e                   store_operation_2;
+
+  logic                        [XLEN-1:0] immediate_i_type_2;
+  logic                        [XLEN-1:0] immediate_s_type_2;
+  logic                        [XLEN-1:0] immediate_b_type_2;
+  logic                        [XLEN-1:0] immediate_u_type_2;
+  logic                        [XLEN-1:0] immediate_j_type_2;
+
+  logic                                   is_load_instruction_2;
+  logic                                   is_load_byte_direct_2;
+  logic                                   is_load_halfword_direct_2;
+  logic                                   is_load_unsigned_direct_2;
+  logic                                   is_multiply_direct_2;
+  logic                                   is_divide_direct_2;
+  logic                                   is_csr_instruction_2;
+  logic                        [    11:0] csr_address_2;
+  logic                        [     4:0] csr_imm_2;
+  logic                                   is_amo_instruction_2;
+  logic                                   is_lr_2;
+  logic                                   is_sc_2;
+  logic                                   is_ecall_2;
+  logic                                   is_ebreak_2;
+  logic                                   is_mret_2;
+  logic                                   is_wfi_2;
+  logic                                   is_jal_direct_2;
+  logic                                   is_jalr_direct_2;
+  logic                                   is_ras_return_precomputed_2;
+  logic                                   is_ras_call_precomputed_2;
+
+  logic                        [XLEN-1:0] branch_target_precomputed_2;
+  logic                        [XLEN-1:0] jal_target_precomputed_2;
+  logic                        [XLEN-1:0] ras_expected_rs1_precomputed_2;
+  logic                        [XLEN-1:0] btb_expected_rs1_precomputed_2;
+  logic                                   btb_correct_non_jalr_precomputed_2;
+
+  assign instruction_2 = i_from_pd_to_id_2.instruction;
+
+  logic decoder_illegal_2;
+
+  instr_decoder instr_decoder_inst_2 (
+      .i_instr(instruction_2),
+      .o_instr_op(instruction_operation_2),
+      .o_store_op(store_operation_2),
+      .o_branch_taken_op(branch_operation_2),
+      .o_illegal(decoder_illegal_2)
+  );
+
+  logic is_illegal_instruction_2;
+  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
+
+  immediate_decoder #(
+      .XLEN(XLEN)
+  ) immediate_decoder_inst_2 (
+      .i_instruction(instruction_2),
+      .o_immediate_i_type(immediate_i_type_2),
+      .o_immediate_s_type(immediate_s_type_2),
+      .o_immediate_b_type(immediate_b_type_2),
+      .o_immediate_u_type(immediate_u_type_2),
+      .o_immediate_j_type(immediate_j_type_2)
+  );
+
+  instruction_type_decoder #(
+      .XLEN(XLEN)
+  ) instruction_type_decoder_inst_2 (
+      .i_instruction(instruction_2),
+      .i_immediate_i_type(immediate_i_type_2),
+      .o_is_load_instruction(is_load_instruction_2),
+      .o_is_load_byte(is_load_byte_direct_2),
+      .o_is_load_halfword(is_load_halfword_direct_2),
+      .o_is_load_unsigned(is_load_unsigned_direct_2),
+      .o_is_multiply(is_multiply_direct_2),
+      .o_is_divide(is_divide_direct_2),
+      .o_is_csr_instruction(is_csr_instruction_2),
+      .o_csr_address(csr_address_2),
+      .o_csr_imm(csr_imm_2),
+      .o_is_amo_instruction(is_amo_instruction_2),
+      .o_is_lr(is_lr_2),
+      .o_is_sc(is_sc_2),
+      .o_is_ecall(is_ecall_2),
+      .o_is_ebreak(is_ebreak_2),
+      .o_is_mret(is_mret_2),
+      .o_is_wfi(is_wfi_2),
+      .o_is_jal(is_jal_direct_2),
+      .o_is_jalr(is_jalr_direct_2),
+      .o_is_ras_return(is_ras_return_precomputed_2),
+      .o_is_ras_call(is_ras_call_precomputed_2)
+  );
+
+  branch_target_precompute #(
+      .XLEN(XLEN)
+  ) branch_target_precompute_inst_2 (
+      .i_program_counter(i_from_pd_to_id_2.program_counter),
+      .i_immediate_i_type(immediate_i_type_2),
+      .i_immediate_b_type(immediate_b_type_2),
+      .i_immediate_j_type(immediate_j_type_2),
+      .i_ras_predicted_target(i_from_pd_to_id_2.ras_predicted_target),
+      .i_btb_predicted_target(i_from_pd_to_id_2.btb_predicted_target),
+      .i_is_jal(is_jal_direct_2),
+      .o_branch_target_precomputed(branch_target_precomputed_2),
+      .o_jal_target_precomputed(jal_target_precomputed_2),
+      .o_ras_expected_rs1(ras_expected_rs1_precomputed_2),
+      .o_btb_expected_rs1(btb_expected_rs1_precomputed_2),
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2)
+  );
+
+  // F extension - slot-2 floating-point instruction detection
+  logic is_fp_load_direct_2;
+  logic is_fp_store_direct_2;
+  logic is_fp_load_double_direct_2;
+  logic is_fp_store_double_direct_2;
+  logic is_fp_compute_direct_2;
+  logic is_fp_fma_direct_2;
+  logic is_fp_instruction_direct_2;
+
+  assign is_fp_load_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                               ((instruction_2.funct3 == 3'b010) ||
+                                (instruction_2.funct3 == 3'b011));
+  assign is_fp_store_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
+                                ((instruction_2.funct3 == 3'b010) ||
+                                 (instruction_2.funct3 == 3'b011));
+  assign is_fp_load_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
+                                      (instruction_2.funct3 == 3'b011);
+  assign is_fp_store_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
+                                       (instruction_2.funct3 == 3'b011);
+  assign is_fp_compute_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_FP;
+  assign is_fp_fma_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_FMADD) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FMSUB) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FNMSUB) |
+                              (instruction_2.opcode == riscv_pkg::OPC_FNMADD);
+  assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
+                                     is_fp_compute_direct_2 | is_fp_fma_direct_2;
+
+  logic is_fp_to_int_direct_2;
+  assign is_fp_to_int_direct_2 = is_fp_compute_direct_2 && (
+      (instruction_2.funct7[6:2] == 5'b10100) |
+      (instruction_2.funct7[6:2] == 5'b11100 && instruction_2.funct3 == 3'b001) |
+      (instruction_2.funct7[6:2] == 5'b11000) |
+      (instruction_2.funct7[6:2] == 5'b11100 && instruction_2.funct3 == 3'b000)
+      );
+
+  logic is_int_to_fp_direct_2;
+  assign is_int_to_fp_direct_2 = is_fp_compute_direct_2 && (
+      (instruction_2.funct7[6:2] == 5'b11010) |
+      (instruction_2.funct7[6:2] == 5'b11110 && instruction_2.funct3 == 3'b000)
+      );
+
+  logic is_pipelined_fp_op_direct_2;
+  assign is_pipelined_fp_op_direct_2 = is_fp_fma_direct_2 |
+      (is_fp_compute_direct_2 && (
+          instruction_2.funct7[6:3] == 4'b0000 ||
+      instruction_2.funct7[6:3] == 4'b0001 ||
+      instruction_2.funct7[6:2] == 5'b01011
+      ));
+
+  logic [2:0] fp_rm_direct_2;
+  assign fp_rm_direct_2 = instruction_2.funct3;
+
+  // Slot-2 WB Bypass
+  logic wb_bypass_rs1_2;
+  logic wb_bypass_rs2_2;
+  logic [XLEN-1:0] source_reg_1_data_bypassed_2;
+  logic [XLEN-1:0] source_reg_2_data_bypassed_2;
+
+  assign wb_bypass_rs1_2 = i_from_ma_to_wb.regfile_write_enable &&
+                           |i_from_ma_to_wb.instruction.dest_reg &&
+                           (i_from_ma_to_wb.instruction.dest_reg ==
+                            i_from_pd_to_id_2.source_reg_1_early);
+  assign wb_bypass_rs2_2 = i_from_ma_to_wb.regfile_write_enable &&
+                           |i_from_ma_to_wb.instruction.dest_reg &&
+                           (i_from_ma_to_wb.instruction.dest_reg ==
+                            i_from_pd_to_id_2.source_reg_2_early);
+
+  assign source_reg_1_data_bypassed_2 = wb_bypass_rs1_2 ? i_from_ma_to_wb.regfile_write_data :
+                                                          i_rf_to_id_2.source_reg_1_data;
+  assign source_reg_2_data_bypassed_2 = wb_bypass_rs2_2 ? i_from_ma_to_wb.regfile_write_data :
+                                                          i_rf_to_id_2.source_reg_2_data;
+
+  logic fp_wb_bypass_rs1_2;
+  logic fp_wb_bypass_rs2_2;
+  logic fp_wb_bypass_rs3_2;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_1_data_bypassed_2;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_data_bypassed_2;
+  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_data_bypassed_2;
+
+  assign fp_wb_bypass_rs1_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
+                              (i_from_ma_to_wb.fp_dest_reg ==
+                               i_from_pd_to_id_2.source_reg_1_early);
+  assign fp_wb_bypass_rs2_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
+                              (i_from_ma_to_wb.fp_dest_reg ==
+                               i_from_pd_to_id_2.source_reg_2_early);
+  assign fp_wb_bypass_rs3_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
+                              (i_from_ma_to_wb.fp_dest_reg ==
+                               i_from_pd_to_id_2.fp_source_reg_3_early);
+
+  assign fp_source_reg_1_data_bypassed_2 = fp_wb_bypass_rs1_2 ?
+                                           i_from_ma_to_wb.fp_regfile_write_data :
+                                           i_fp_rf_to_id_2.fp_source_reg_1_data;
+  assign fp_source_reg_2_data_bypassed_2 = fp_wb_bypass_rs2_2 ?
+                                           i_from_ma_to_wb.fp_regfile_write_data :
+                                           i_fp_rf_to_id_2.fp_source_reg_2_data;
+  assign fp_source_reg_3_data_bypassed_2 = fp_wb_bypass_rs3_2 ?
+                                           i_from_ma_to_wb.fp_regfile_write_data :
+                                           i_fp_rf_to_id_2.fp_source_reg_3_data;
+
+  // Slot-2 x0 check
+  logic source_reg_1_is_x0_2;
+  logic source_reg_2_is_x0_2;
+  assign source_reg_1_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_1_early;
+  assign source_reg_2_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_2_early;
+
+  // Slot-2 Pipeline Register
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_id_to_ex_2.instruction               <= riscv_pkg::NOP;
+      o_from_id_to_ex_2.instruction_operation     <= riscv_pkg::ADDI;
+      o_from_id_to_ex_2.is_load_instruction       <= 1'b0;
+      o_from_id_to_ex_2.is_load_byte              <= 1'b0;
+      o_from_id_to_ex_2.is_load_halfword          <= 1'b0;
+      o_from_id_to_ex_2.is_load_unsigned          <= 1'b0;
+      o_from_id_to_ex_2.is_multiply               <= 1'b0;
+      o_from_id_to_ex_2.is_divide                 <= 1'b0;
+      o_from_id_to_ex_2.branch_operation          <= riscv_pkg::NULL;
+      o_from_id_to_ex_2.store_operation           <= riscv_pkg::STN;
+      o_from_id_to_ex_2.is_jump_and_link          <= 1'b0;
+      o_from_id_to_ex_2.is_jump_and_link_register <= 1'b0;
+      o_from_id_to_ex_2.is_csr_instruction        <= 1'b0;
+      o_from_id_to_ex_2.is_amo_instruction        <= 1'b0;
+      o_from_id_to_ex_2.is_lr                     <= 1'b0;
+      o_from_id_to_ex_2.is_sc                     <= 1'b0;
+      o_from_id_to_ex_2.is_mret                   <= 1'b0;
+      o_from_id_to_ex_2.is_wfi                    <= 1'b0;
+      o_from_id_to_ex_2.is_ecall                  <= 1'b0;
+      o_from_id_to_ex_2.is_ebreak                 <= 1'b0;
+      o_from_id_to_ex_2.is_illegal_instruction    <= 1'b0;
+      o_from_id_to_ex_2.btb_hit                   <= 1'b0;
+      o_from_id_to_ex_2.btb_predicted_taken       <= 1'b0;
+      o_from_id_to_ex_2.ras_predicted             <= 1'b0;
+      o_from_id_to_ex_2.is_ras_return             <= 1'b0;
+      o_from_id_to_ex_2.is_ras_call               <= 1'b0;
+      o_from_id_to_ex_2.btb_correct_non_jalr      <= 1'b0;
+      o_from_id_to_ex_2.is_fp_instruction         <= 1'b0;
+      o_from_id_to_ex_2.is_fp_load                <= 1'b0;
+      o_from_id_to_ex_2.is_fp_store               <= 1'b0;
+      o_from_id_to_ex_2.is_fp_load_double         <= 1'b0;
+      o_from_id_to_ex_2.is_fp_store_double        <= 1'b0;
+      o_from_id_to_ex_2.is_fp_compute             <= 1'b0;
+      o_from_id_to_ex_2.is_pipelined_fp_op        <= 1'b0;
+      o_from_id_to_ex_2.is_fp_to_int              <= 1'b0;
+      o_from_id_to_ex_2.is_int_to_fp              <= 1'b0;
+    end else if (~i_pipeline_ctrl.stall) begin
+      o_from_id_to_ex_2.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
+      o_from_id_to_ex_2.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                         instruction_operation_2;
+      o_from_id_to_ex_2.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction_2;
+      o_from_id_to_ex_2.is_load_byte <= i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct_2;
+      o_from_id_to_ex_2.is_load_halfword <= i_pipeline_ctrl.flush ? 1'b0 :
+                                            is_load_halfword_direct_2;
+      o_from_id_to_ex_2.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 :
+                                            is_load_unsigned_direct_2;
+      o_from_id_to_ex_2.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct_2;
+      o_from_id_to_ex_2.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct_2;
+      o_from_id_to_ex_2.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
+                                                                    branch_operation_2;
+      o_from_id_to_ex_2.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN :
+                                                                   store_operation_2;
+      o_from_id_to_ex_2.is_jump_and_link <= i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct_2;
+      o_from_id_to_ex_2.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                     is_jalr_direct_2;
+      o_from_id_to_ex_2.is_csr_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction_2;
+      o_from_id_to_ex_2.is_amo_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction_2;
+      o_from_id_to_ex_2.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr_2;
+      o_from_id_to_ex_2.is_sc <= i_pipeline_ctrl.flush ? 1'b0 : is_sc_2;
+      o_from_id_to_ex_2.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : is_mret_2;
+      o_from_id_to_ex_2.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi_2;
+      o_from_id_to_ex_2.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall_2;
+      o_from_id_to_ex_2.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak_2;
+      o_from_id_to_ex_2.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                  is_illegal_instruction_2;
+      o_from_id_to_ex_2.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_hit;
+      o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
+                                               i_from_pd_to_id_2.btb_predicted_taken;
+      o_from_id_to_ex_2.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 :
+                                         i_from_pd_to_id_2.ras_predicted;
+      o_from_id_to_ex_2.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
+      o_from_id_to_ex_2.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
+      o_from_id_to_ex_2.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                btb_correct_non_jalr_precomputed_2;
+      o_from_id_to_ex_2.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
+                                             is_fp_instruction_direct_2;
+      o_from_id_to_ex_2.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
+      o_from_id_to_ex_2.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
+      o_from_id_to_ex_2.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 :
+                                             is_fp_load_double_direct_2;
+      o_from_id_to_ex_2.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              is_fp_store_double_direct_2;
+      o_from_id_to_ex_2.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
+                                         (is_fp_compute_direct_2 | is_fp_fma_direct_2);
+      o_from_id_to_ex_2.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              is_pipelined_fp_op_direct_2;
+      o_from_id_to_ex_2.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct_2;
+      o_from_id_to_ex_2.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct_2;
+    end
+    if (~i_pipeline_ctrl.stall) begin
+      o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
+      o_from_id_to_ex_2.csr_address <= csr_address_2;
+      o_from_id_to_ex_2.csr_imm <= csr_imm_2;
+      o_from_id_to_ex_2.link_address <= i_from_pd_to_id_2.link_address;
+      o_from_id_to_ex_2.branch_target_precomputed <= branch_target_precomputed_2;
+      o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
+      o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
+      o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
+      o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
+      o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      o_from_id_to_ex_2.ras_predicted_target_nonzero <= |i_from_pd_to_id_2.ras_predicted_target;
+      o_from_id_to_ex_2.ras_expected_rs1 <= ras_expected_rs1_precomputed_2;
+      o_from_id_to_ex_2.btb_expected_rs1 <= btb_expected_rs1_precomputed_2;
+      o_from_id_to_ex_2.fp_rm <= fp_rm_direct_2;
+      o_from_id_to_ex_2.immediate_u_type <= immediate_u_type_2;
+      o_from_id_to_ex_2.immediate_s_type <= immediate_s_type_2;
+      o_from_id_to_ex_2.immediate_i_type <= immediate_i_type_2;
+      o_from_id_to_ex_2.immediate_b_type <= immediate_b_type_2;
+      o_from_id_to_ex_2.immediate_j_type <= immediate_j_type_2;
+      o_from_id_to_ex_2.source_reg_1_data <= source_reg_1_data_bypassed_2;
+      o_from_id_to_ex_2.source_reg_2_data <= source_reg_2_data_bypassed_2;
+      o_from_id_to_ex_2.source_reg_1_is_x0 <= source_reg_1_is_x0_2;
+      o_from_id_to_ex_2.source_reg_2_is_x0 <= source_reg_2_is_x0_2;
+      o_from_id_to_ex_2.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed_2;
+      o_from_id_to_ex_2.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed_2;
+      o_from_id_to_ex_2.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed_2;
     end
   end
 

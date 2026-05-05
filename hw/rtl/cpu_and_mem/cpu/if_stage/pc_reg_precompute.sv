@@ -45,16 +45,29 @@ module pc_reg_precompute #(
 
     // Pre-computed results for both is_compressed outcomes
     output logic [XLEN-1:0] o_pc_reg_if_compressed,
-    output logic [XLEN-1:0] o_pc_reg_if_32bit
+    output logic [XLEN-1:0] o_pc_reg_if_32bit,
+    // 2-wide dispatch additions (Session F).  When slot-2 fires, the bundle
+    // advances pc_reg by slot-1 size + slot-2 size:
+    //   RVC + RVC = +4   → reuse pc_reg_if_32bit (semantically identical)
+    //   RVC + 32b = +6   → o_pc_reg_plus_6
+    //   32b + RVC = +6   → o_pc_reg_plus_6
+    //   32b + 32b = +8   → o_pc_reg_plus_8
+    // The hold path also applies — bundles cannot advance pc_reg through a
+    // prediction-from-buffer holdoff.
+    output logic [XLEN-1:0] o_pc_reg_plus_6,
+    output logic [XLEN-1:0] o_pc_reg_plus_8
 );
 
   localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
   logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
+  logic [XLEN-1:0] pc_reg_plus_6, pc_reg_plus_8;
   assign pc_reg_plus_0 = i_pc_reg;
   assign pc_reg_plus_2 = i_pc_reg + IncC;
   assign pc_reg_plus_4 = i_pc_reg + Inc4;
+  assign pc_reg_plus_6 = i_pc_reg + 32'd6;
+  assign pc_reg_plus_8 = i_pc_reg + 32'd8;
 
   // Hold pc_reg at +0 for spanning wait, holdoff cycles
   logic pc_reg_hold;
@@ -72,5 +85,10 @@ module pc_reg_precompute #(
   //   is_32bit_spanning = spanning_eligible (all registered).
   //   hold (+0) when pc_reg_hold || spanning_eligible, else default (+4).
   assign o_pc_reg_if_32bit = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_4;
+
+  // 2-wide bundle advances.  Hold collapses both to +0 just like the 1-wide
+  // outputs above, so the downstream mux can treat them uniformly.
+  assign o_pc_reg_plus_6   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_6;
+  assign o_pc_reg_plus_8   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_8;
 
 endmodule : pc_reg_precompute

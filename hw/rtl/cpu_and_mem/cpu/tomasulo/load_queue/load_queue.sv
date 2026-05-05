@@ -57,7 +57,16 @@ module load_queue #(
     // Allocation (from Dispatch, parallel with MEM_RS dispatch)
     // =========================================================================
     input  riscv_pkg::lq_alloc_req_t i_alloc,
+    // Slot-2 allocation port for 2-wide dispatch (Session C plumbing).  Slot-2
+    // valid does NOT require slot-1 valid: the dispatch unit derives each from
+    // its own slot's mem_needs_lq, so it is legal for only slot-2 to be a load.
+    // Held inactive by the wrapper / cpu_ooo until dispatch widens (Session D).
+    input  riscv_pkg::lq_alloc_req_t i_alloc_2,
     output logic                     o_full,
+    // Asserted when there is room for at most 1 more entry (a 2-wide dispatch
+    // bundle of two loads would not fit).  Distinct from o_full so dispatch can
+    // independently gate slot-2.
+    output logic                     o_full_for_2,
 
     // =========================================================================
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
@@ -237,44 +246,60 @@ module load_queue #(
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
-  logic [PtrWidth-1:0] head_ptr;
-  logic [PtrWidth-1:0] tail_ptr;
+  logic [             PtrWidth-1:0] head_ptr;
+  logic [             PtrWidth-1:0] tail_ptr;
 
   // Index extraction (lower bits)
-  wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
+  wire  [             IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
-  logic [DEPTH-1:0] lq_valid;
-  logic [DEPTH-1:0] lq_is_fp;
-  logic [DEPTH-1:0] lq_addr_valid;
-  logic [DEPTH-1:0] lq_sign_ext;
-  logic [DEPTH-1:0] lq_is_mmio;
-  logic [DEPTH-1:0] lq_fp64_phase;
-  logic [DEPTH-1:0] lq_issued;
-  logic [DEPTH-1:0] lq_data_valid;
-  logic [DEPTH-1:0] lq_forwarded;
-  logic [DEPTH-1:0] lq_is_lr;
-  logic [DEPTH-1:0] lq_is_amo;
+  logic [                DEPTH-1:0] lq_valid;
+  logic [                DEPTH-1:0] lq_is_fp;
+  logic [                DEPTH-1:0] lq_addr_valid;
+  logic [                DEPTH-1:0] lq_sign_ext;
+  logic [                DEPTH-1:0] lq_is_mmio;
+  logic [                DEPTH-1:0] lq_fp64_phase;
+  logic [                DEPTH-1:0] lq_issued;
+  logic [                DEPTH-1:0] lq_data_valid;
+  logic [                DEPTH-1:0] lq_forwarded;
+  logic [                DEPTH-1:0] lq_is_lr;
+  logic [                DEPTH-1:0] lq_is_amo;
 
   // Per-entry multi-bit fields
-  logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
-  logic [InstrOpWidth-1:0] lq_amo_op_rd;
-  (* ram_style = "registers" *) logic [MemSizeWidth-1:0] lq_size[DEPTH];
-  logic [MemSizeWidth-1:0] lq_size_issue_cdb_rd;
-  logic [XLEN-1:0] lq_address_issue_mem_rd;
-  logic [XLEN-1:0] lq_address_amo_rd;
-  logic [XLEN-1:0] lq_amo_rs2_rd;
-  logic [IdxWidth-1:0] amo_entry_idx;
-  logic full;
+  logic [ReorderBufferTagWidth-1:0] lq_rob_tag                        [DEPTH];
+  logic [         InstrOpWidth-1:0] lq_amo_op_rd;
+  (* ram_style = "registers" *)
+  logic [         MemSizeWidth-1:0] lq_size                           [DEPTH];
+  logic [         MemSizeWidth-1:0] lq_size_issue_cdb_rd;
+  logic [                 XLEN-1:0] lq_address_issue_mem_rd;
+  logic [                 XLEN-1:0] lq_address_amo_rd;
+  logic [                 XLEN-1:0] lq_amo_rs2_rd;
+  logic [             IdxWidth-1:0] amo_entry_idx;
+  logic                             full;
+  logic                             full_for_2;
 
+  // Slot-1 / slot-2 alloc targets and write enables.  alloc_target points at
+  // the first free slot from tail_ptr; alloc_target_2 points at the second
+  // free slot.  When slot-1 is invalid but slot-2 is, slot-2 takes alloc_target.
+  logic [             PtrWidth-1:0] alloc_target_2;
+  logic                             slot1_alloc_en;
+  logic                             slot2_alloc_en;
+  logic [             IdxWidth-1:0] slot2_alloc_idx;
+
+  // Forward declarations: slot1_alloc_en / slot2_alloc_en assignments come
+  // after alloc_target_2 / full_for_2 are computed; the LUTRAM block needs
+  // both write enables here.
   // AMO op is written once at allocation and only read back for AMO execution.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(InstrOpWidth)
+  // 2 write ports: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Slot-2 is
+  // hard-tied off until dispatch widens (Session D), so port 1 is dormant.
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (IdxWidth),
+      .DATA_WIDTH     (InstrOpWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_lq_amo_op (
       .i_clk,
-      .i_write_enable (i_alloc.valid && !full),
-      .i_write_address(alloc_target[IdxWidth-1:0]),
-      .i_write_data   (i_alloc.amo_op),
+      .i_write_enable ({slot2_alloc_en, slot1_alloc_en}),
+      .i_write_address({slot2_alloc_idx, alloc_target[IdxWidth-1:0]}),
+      .i_write_data   ({i_alloc_2.amo_op, i_alloc.amo_op}),
       .i_read_address (amo_entry_idx),
       .o_read_data    (lq_amo_op_rd)
   );
@@ -525,11 +550,23 @@ module load_queue #(
   end
 
   assign full = (count == CountWidth'(DEPTH));
+  // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two loads
+  // would not fit even if neither slot has been allocated yet.
+  assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == CountWidth'(0));
 
   assign o_full = full;
+  assign o_full_for_2 = full_for_2;
   assign o_empty = empty;
   assign o_count = count;
+
+  // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
+  // valid (slot-1 might be a non-mem instruction), but if both are valid,
+  // slot-1 takes the first free slot and slot-2 takes the second.
+  assign slot1_alloc_en = i_alloc.valid && !full;
+  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
+  assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
+                                          : alloc_target[IdxWidth-1:0];
 
   // ---------------------------------------------------------------------------
   // Address-update CAM match: current-cycle (for flop writes) and
@@ -1182,7 +1219,9 @@ module load_queue #(
     end
   end
 
-  assign stage_mem_issue = !i_flush_en && sq_can_issue && !cache_hit_fast_path;
+  // Session P fix: gate stage_mem_issue on !i_flush_all too.  See comment on
+  // launch_mem_issue below for the full rationale.
+  assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
 
   // PERF: Removed the !mem_outstanding gate so the LQ can launch a new load
@@ -1202,7 +1241,14 @@ module load_queue #(
   // already holds the staged candidate stably across bus_busy stalls
   // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
   // so the mem_issue_pending second-deep stage is redundant.
-  assign launch_mem_issue = !i_flush_en && !i_mem_bus_busy && stage_mem_issue;
+  // Session P fix: also gate on !i_flush_all.  During commit-time mispredict
+  // recovery the wrapper drives speculative_flush_en=0 but speculative_flush_all=1
+  // (commit_recovery_flush_after_head path).  Without the !i_flush_all guard,
+  // a speculative wrong-path MMIO load that happens to be at ROB head when the
+  // mispredict commits can still issue this cycle and consume the FIFO byte
+  // before the next-cycle full flush clears the entry.  packet_parser exposed
+  // this race once 2-wide dispatch let speculative loads reach HEAD faster.
+  assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue;
   assign launch_mem_issue_idx = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
@@ -1511,20 +1557,34 @@ module load_queue #(
     end
   end
 
-  // Tree priority encoder: find lowest-index set bit in rotated mask
+  // Tree priority encoder: find lowest-index set bit in rotated mask, plus
+  // the second-lowest set bit (for slot-2 alloc).  Both offsets are computed
+  // in a single sweep; the second offset is invalid when fewer than 2 free
+  // slots exist, but slot-2 is gated externally by full_for_2 so the bogus
+  // index is not consumed.
+  logic [IdxWidth-1:0] lq_second_free_offset;
+  logic                lq_second_free_found;
   always_comb begin
-    lq_first_free_offset = '0;
-    lq_first_free_found  = 1'b0;
+    lq_first_free_offset  = '0;
+    lq_first_free_found   = 1'b0;
+    lq_second_free_offset = '0;
+    lq_second_free_found  = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
-      if (lq_free_rotated[i] && !lq_first_free_found) begin
-        lq_first_free_offset = IdxWidth'(i);
-        lq_first_free_found  = 1'b1;
+      if (lq_free_rotated[i]) begin
+        if (!lq_first_free_found) begin
+          lq_first_free_offset = IdxWidth'(i);
+          lq_first_free_found  = 1'b1;
+        end else if (!lq_second_free_found) begin
+          lq_second_free_offset = IdxWidth'(i);
+          lq_second_free_found  = 1'b1;
+        end
       end
     end
   end
 
-  // Add offset back to tail_ptr to get absolute alloc target
-  assign alloc_target = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
+  // Add offsets back to tail_ptr to get absolute alloc targets.
+  assign alloc_target   = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
+  assign alloc_target_2 = tail_ptr + PtrWidth'({1'b0, lq_second_free_offset});
 
   // ===========================================================================
   // Head Advancement (tree-based find-first-valid from head)
@@ -1706,13 +1766,32 @@ module load_queue #(
       // Allocation: write new entry at tail (control signals only;
       // data signals written in dedicated no-reset always_ff blocks)
       // -----------------------------------------------------------------
-      if (i_alloc.valid && !full) begin
+      // Slot-1 alloc.  Slot-2 alloc (below) writes a different physical entry,
+      // so the non-blocking writes on lq_valid/etc. never collide on a bit.
+      if (slot1_alloc_en) begin
         lq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
         lq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         lq_issued[alloc_target[IdxWidth-1:0]]     <= 1'b0;
         lq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         lq_forwarded[alloc_target[IdxWidth-1:0]]  <= 1'b0;
-        tail_ptr                                  <= alloc_target + PtrWidth'(1);
+      end
+
+      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      if (slot2_alloc_en) begin
+        lq_valid[slot2_alloc_idx]      <= 1'b1;
+        lq_addr_valid[slot2_alloc_idx] <= 1'b0;
+        lq_issued[slot2_alloc_idx]     <= 1'b0;
+        lq_data_valid[slot2_alloc_idx] <= 1'b0;
+        lq_forwarded[slot2_alloc_idx]  <= 1'b0;
+      end
+
+      // tail_ptr advances past the highest slot consumed this cycle, so the
+      // next free-search starts beyond it.  When only slot-2 fires it took
+      // alloc_target (slot1_alloc_idx), so tail still advances to alloc_target+1.
+      if (slot1_alloc_en && slot2_alloc_en) begin
+        tail_ptr <= alloc_target_2 + PtrWidth'(1);
+      end else if (slot1_alloc_en || slot2_alloc_en) begin
+        tail_ptr <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
@@ -1832,7 +1911,7 @@ module load_queue #(
   // Per-entry data: allocation writes
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    if (i_alloc.valid && !full) begin
+    if (slot1_alloc_en) begin
       lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
       lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
@@ -1840,6 +1919,16 @@ module load_queue #(
       lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
       lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
+    end
+    // Slot-2 alloc data — held inactive until dispatch widens (Session D).
+    if (slot2_alloc_en) begin
+      lq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
+      lq_size[slot2_alloc_idx]       <= i_alloc_2.size;
+      lq_is_fp[slot2_alloc_idx]      <= i_alloc_2.is_fp;
+      lq_sign_ext[slot2_alloc_idx]   <= i_alloc_2.sign_ext;
+      lq_fp64_phase[slot2_alloc_idx] <= 1'b0;
+      lq_is_lr[slot2_alloc_idx]      <= i_alloc_2.is_lr;
+      lq_is_amo[slot2_alloc_idx]     <= i_alloc_2.is_amo;
     end
     // FLD phase advance: set phase 1 after phase 0 memory response
     if (accept_mem_response && issued_is_fp &&
@@ -2127,6 +2216,13 @@ module load_queue #(
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
       if (i_alloc.valid && (i_flush_all || i_flush_en))
         $warning("LQ: allocation attempted during flush");
+      if (i_alloc_2.valid && i_alloc.valid && full_for_2)
+        $warning("LQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
+      if (i_alloc_2.valid && !i_alloc.valid && full)
+        $warning("LQ: slot-2 alloc attempted alone when full");
+      // Slot-1 and slot-2 must never target the same physical entry.
+      if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+        $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
     end
   end
 `endif
@@ -2161,6 +2257,13 @@ module load_queue #(
   // No allocation during flush
   always_comb begin
     if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
+    if (i_flush_all || i_flush_en) assume (!i_alloc_2.valid);
+  end
+
+  // Slot-2 must respect capacity given whether slot-1 is also firing.
+  always_comb begin
+    if (i_alloc.valid && full_for_2) assume (!i_alloc_2.valid);
+    if (!i_alloc.valid && full) assume (!i_alloc_2.valid);
   end
 
   // Address updates MAY arrive during flush (RS stage2 issues without
@@ -2198,6 +2301,13 @@ module load_queue #(
   // No allocation when full
   always_comb begin
     if (full) assume (!i_alloc.valid);
+  end
+
+  // The ROB tag uniqueness assumption extends to slot-2 alloc.
+  always_comb begin
+    if (i_rst_n && i_alloc.valid && i_alloc_2.valid) begin
+      assume (i_alloc.rob_tag != i_alloc_2.rob_tag);
+    end
   end
 
   // i_mem_read_valid only asserts when we have an outstanding read.

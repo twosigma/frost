@@ -244,6 +244,7 @@ class TomasuloInterface:
         """Initialize all input signals to safe defaults."""
         # ROB allocation
         self.dut.i_alloc_req.value = 0
+        self.dut.i_alloc_req_2.value = 0
 
         # FU completion requests (to CDB arbiter)
         self.clear_all_fu_completes()
@@ -281,26 +282,53 @@ class TomasuloInterface:
         self.dut.i_bypass_tag_2.value = 0
         self.dut.i_bypass_valid_3.value = 0
         self.dut.i_bypass_tag_3.value = 0
+        self.dut.i_bypass_valid_4.value = 0
+        self.dut.i_bypass_tag_4.value = 0
+        self.dut.i_bypass_valid_5.value = 0
+        self.dut.i_bypass_tag_5.value = 0
+        self.dut.i_bypass_valid_6.value = 0
+        self.dut.i_bypass_tag_6.value = 0
 
-        # RAT source lookup addresses
+        # RAT source lookup addresses - slot 1
         self.dut.i_int_src1_addr.value = 0
         self.dut.i_int_src2_addr.value = 0
         self.dut.i_fp_src1_addr.value = 0
         self.dut.i_fp_src2_addr.value = 0
         self.dut.i_fp_src3_addr.value = 0
 
-        # RAT regfile data
+        # RAT source lookup addresses - slot 2 (2-wide dispatch).  Held at
+        # zero in wrapper-level tests; slot-2 dispatch is hard-tied off.
+        self.dut.i_int_src1_addr_2.value = 0
+        self.dut.i_int_src2_addr_2.value = 0
+        self.dut.i_fp_src1_addr_2.value = 0
+        self.dut.i_fp_src2_addr_2.value = 0
+        self.dut.i_fp_src3_addr_2.value = 0
+
+        # RAT regfile data - slot 1
         self.dut.i_int_regfile_data1.value = 0
         self.dut.i_int_regfile_data2.value = 0
         self.dut.i_fp_regfile_data1.value = 0
         self.dut.i_fp_regfile_data2.value = 0
         self.dut.i_fp_regfile_data3.value = 0
 
-        # RAT rename
+        # RAT regfile data - slot 2 (2-wide dispatch)
+        self.dut.i_int_regfile_data1_2.value = 0
+        self.dut.i_int_regfile_data2_2.value = 0
+        self.dut.i_fp_regfile_data1_2.value = 0
+        self.dut.i_fp_regfile_data2_2.value = 0
+        self.dut.i_fp_regfile_data3_2.value = 0
+
+        # RAT rename - slot 1
         self.dut.i_rat_alloc_valid.value = 0
         self.dut.i_rat_alloc_dest_rf.value = 0
         self.dut.i_rat_alloc_dest_reg.value = 0
         self.dut.i_rat_alloc_rob_tag.value = 0
+
+        # RAT rename - slot 2 (held inactive in wrapper-level tests)
+        self.dut.i_rat_alloc_valid_2.value = 0
+        self.dut.i_rat_alloc_dest_rf_2.value = 0
+        self.dut.i_rat_alloc_dest_reg_2.value = 0
+        self.dut.i_rat_alloc_rob_tag_2.value = 0
 
         # RAT checkpoint save
         self.dut.i_checkpoint_save.value = 0
@@ -308,6 +336,8 @@ class TomasuloInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
+        # Slot-2-branch checkpoint flag (Session F): defensive init.
+        self.dut.i_checkpoint_save_for_slot2.value = 0
 
         # RAT checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
@@ -342,6 +372,16 @@ class TomasuloInterface:
 
         # RS dispatch
         self.dut.i_rs_dispatch.value = 0
+
+        # Slot-2 RS dispatch ports (2-wide dispatch plumbing, Session C).
+        # Wrapper-level tests drive only the legacy i_rs_dispatch port; slot-2
+        # is held inactive across all RS families.
+        self.dut.i_int_rs_dispatch_2.value = 0
+        self.dut.i_mul_rs_dispatch_2.value = 0
+        self.dut.i_mem_rs_dispatch_2.value = 0
+        self.dut.i_fp_rs_dispatch_2.value = 0
+        self.dut.i_fmul_rs_dispatch_2.value = 0
+        self.dut.i_fdiv_rs_dispatch_2.value = 0
 
         # Per-RS FU ready signals
         self.dut.i_rs_fu_ready.value = 0

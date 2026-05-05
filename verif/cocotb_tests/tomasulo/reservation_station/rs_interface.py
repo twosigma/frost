@@ -310,6 +310,11 @@ class RSInterface:
             self._clear_dispatch_flat()
         else:
             self.dut.i_dispatch.value = 0
+        # Slot-2 dispatch (2-wide dispatch plumbing, Session C).  Verilator
+        # zero-initializes top-module inputs by default so tests would pass
+        # without this, but the explicit init avoids any future X-propagation
+        # surprises if the dispatch widening lands here.
+        self.dut.i_dispatch_2.value = 0
         self.dut.i_cdb.value = 0
         self.dut.i_repair_valid_1.value = 0
         self.dut.i_repair_tag_1.value = 0
@@ -320,6 +325,15 @@ class RSInterface:
         self.dut.i_repair_valid_3.value = 0
         self.dut.i_repair_tag_3.value = 0
         self.dut.i_repair_value_3.value = 0
+        self.dut.i_repair_valid_4.value = 0
+        self.dut.i_repair_tag_4.value = 0
+        self.dut.i_repair_value_4.value = 0
+        self.dut.i_repair_valid_5.value = 0
+        self.dut.i_repair_tag_5.value = 0
+        self.dut.i_repair_value_5.value = 0
+        self.dut.i_repair_valid_6.value = 0
+        self.dut.i_repair_tag_6.value = 0
+        self.dut.i_repair_value_6.value = 0
         self.dut.i_fu_ready.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0

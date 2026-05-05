@@ -357,6 +357,7 @@ class ReorderBufferInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to default values."""
         self.dut.i_alloc_req.value = 0
+        self.dut.i_alloc_req_2.value = 0
         self.dut.i_cdb_write.value = 0
         self.dut.i_store_complete_valid.value = 0
         self.dut.i_store_complete_tag.value = 0

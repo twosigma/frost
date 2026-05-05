@@ -44,8 +44,16 @@ module branch_prediction_controller (
     input logic i_stall_registered,
     input logic i_flush,
 
-    // Current PC for BTB lookup
+    // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
+
+    // Slot-2 PC for slot-2 BTB lookup (Session Q).  Equals pc_reg + slot-1
+    // size when slot-2 is valid this cycle; the lookup is gated by
+    // i_slot2_valid so the slot-2 prediction only fires when the slot-2
+    // instruction is actually being processed in IF.
+    input logic [riscv_pkg::XLEN-1:0] i_pc_2,
+    input logic                       i_slot2_valid,
+    input logic                       i_slot2_pc_is_halfword,
 
     // Control signals for prediction gating (all should be registered for timing)
     input logic i_trap_taken,
@@ -98,6 +106,16 @@ module branch_prediction_controller (
     // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
+    // Slot-2 prediction outputs (Session Q).  Combinational: feeds
+    // pc_controller's slot-2 redirect path AND the slot-2 IF→PD metadata.
+    // A taken slot-2 prediction redirects pc[N+2] to o_slot2_predicted_target
+    // and triggers a 1-cycle bubble at cycle N+2 (the BRAM was already
+    // fetching the wrong-path sequential address at cycle N+1).
+    output logic                       o_slot2_prediction_used,
+    output logic                       o_slot2_btb_hit,
+    output logic                       o_slot2_predicted_taken,
+    output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
+
     // RAS prediction outputs (for pipeline passthrough)
     output logic o_ras_predicted,  // RAS prediction was used
     output logic [riscv_pkg::XLEN-1:0] o_ras_predicted_target,  // RAS predicted return address
@@ -110,13 +128,20 @@ module branch_prediction_controller (
   localparam int unsigned RasDepth = riscv_pkg::RasDepth;
 
   // ===========================================================================
-  // BTB Instance
+  // BTB Instance (slot-1 + slot-2 lookup ports, single update port)
   // ===========================================================================
   logic            btb_hit;
   logic            btb_predicted_taken;
   logic [XLEN-1:0] btb_predicted_target;
   logic            btb_compressed;
   logic            btb_requires_pc_reg_handoff;
+
+  // Slot-2 BTB outputs (Session Q).
+  logic            btb_hit_2;
+  logic            btb_predicted_taken_2;
+  logic [XLEN-1:0] btb_predicted_target_2;
+  logic            btb_compressed_2;
+  logic            btb_requires_pc_reg_handoff_2;
 
   assign o_prediction_requires_pc_reg_handoff = btb_requires_pc_reg_handoff;
 
@@ -126,13 +151,21 @@ module branch_prediction_controller (
       .i_clk,
       .i_rst(i_reset),
 
-      // Prediction lookup (uses current PC)
+      // Slot-1 prediction lookup (uses current fetch PC)
       .i_pc(i_pc),
       .o_btb_hit(btb_hit),
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
       .o_btb_compressed(btb_compressed),
       .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
+
+      // Slot-2 prediction lookup (uses pc_reg + slot-1 size)
+      .i_pc_2(i_pc_2),
+      .o_btb_hit_2(btb_hit_2),
+      .o_predicted_taken_2(btb_predicted_taken_2),
+      .o_predicted_target_2(btb_predicted_target_2),
+      .o_btb_compressed_2(btb_compressed_2),
+      .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
 
       // Update from EX stage
       .i_update(i_btb_update),
@@ -434,5 +467,40 @@ module branch_prediction_controller (
       o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
     end
   end
+
+  // ===========================================================================
+  // Slot-2 Prediction Gating (Session Q)
+  // ===========================================================================
+  // Slot-2 prediction reuses prediction_common (same per-cycle blockers as
+  // slot-1 — reset/trap/mret/holdoff/spanning/buffer/disabled) and adds:
+  //   - i_slot2_valid: slot-2 must actually be firing this cycle.  Slot-2
+  //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
+  //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict if the
+  //     BTB entry is marked compressed (mirrors slot-1's i_pc[1] guard).
+  //
+  // Slot-2 has no RAS lookup (decision #1 keeps slot-2 invalid when slot-1
+  // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
+  // prediction_used is purely BTB-driven.
+  logic slot2_prediction_common;
+  logic slot2_prediction_allowed;
+  // slot2_prediction_common reuses prediction_common but is computed
+  // independently so the slot-2 cone doesn't pull in slot-1's
+  // !i_pc[1] || btb_compressed term.
+  assign slot2_prediction_common = prediction_common && i_slot2_valid;
+  assign slot2_prediction_allowed = slot2_prediction_common &&
+                                    (!i_slot2_pc_is_halfword || btb_compressed_2);
+
+  logic slot2_sel_btb_prediction;
+  assign slot2_sel_btb_prediction = slot2_prediction_allowed && btb_predicted_taken_2;
+
+  // Final slot-2 prediction-used: same late-arrival gates as slot-1
+  // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
+  // suppression aligned with the slot-1 path so a same-cycle branch
+  // resolution / spanning event takes priority over a slot-2 BTB hit.
+  assign o_slot2_prediction_used = slot2_sel_btb_prediction && !i_stall &&
+                                   !i_branch_taken && !i_is_32bit_spanning;
+  assign o_slot2_btb_hit = btb_hit_2 && i_slot2_valid;
+  assign o_slot2_predicted_taken = o_slot2_prediction_used;
+  assign o_slot2_predicted_target = btb_predicted_target_2;
 
 endmodule : branch_prediction_controller

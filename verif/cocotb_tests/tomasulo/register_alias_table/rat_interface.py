@@ -119,25 +119,47 @@ class RATInterface:
         self._pending_checkpoint_free = None
         self._pending_flush_all = False
 
-        # Source lookup addresses
+        # Source lookup addresses - slot 1
         self.dut.i_int_src1_addr.value = 0
         self.dut.i_int_src2_addr.value = 0
         self.dut.i_fp_src1_addr.value = 0
         self.dut.i_fp_src2_addr.value = 0
         self.dut.i_fp_src3_addr.value = 0
 
-        # Regfile data
+        # Source lookup addresses - slot 2 (2-wide dispatch).  Verilator
+        # zero-initializes top inputs by default; this explicit init
+        # mirrors slot 1 for defensive cleanliness.
+        self.dut.i_int_src1_addr_2.value = 0
+        self.dut.i_int_src2_addr_2.value = 0
+        self.dut.i_fp_src1_addr_2.value = 0
+        self.dut.i_fp_src2_addr_2.value = 0
+        self.dut.i_fp_src3_addr_2.value = 0
+
+        # Regfile data - slot 1
         self.dut.i_int_regfile_data1.value = 0
         self.dut.i_int_regfile_data2.value = 0
         self.dut.i_fp_regfile_data1.value = 0
         self.dut.i_fp_regfile_data2.value = 0
         self.dut.i_fp_regfile_data3.value = 0
 
-        # Rename write
+        # Regfile data - slot 2
+        self.dut.i_int_regfile_data1_2.value = 0
+        self.dut.i_int_regfile_data2_2.value = 0
+        self.dut.i_fp_regfile_data1_2.value = 0
+        self.dut.i_fp_regfile_data2_2.value = 0
+        self.dut.i_fp_regfile_data3_2.value = 0
+
+        # Rename write - slot 1
         self.dut.i_alloc_valid.value = 0
         self.dut.i_alloc_dest_rf.value = 0
         self.dut.i_alloc_dest_reg.value = 0
         self.dut.i_alloc_rob_tag.value = 0
+
+        # Rename write - slot 2 (held inactive in Session B unit tests)
+        self.dut.i_alloc_valid_2.value = 0
+        self.dut.i_alloc_dest_rf_2.value = 0
+        self.dut.i_alloc_dest_reg_2.value = 0
+        self.dut.i_alloc_rob_tag_2.value = 0
 
         # Commit
         self.dut.i_commit_valid.value = 0
@@ -157,6 +179,9 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
+        # Slot-2-branch checkpoint flag (Session F): drives the snapshot
+        # overlay of slot-1's same-cycle rename.  Defensive init.
+        self.dut.i_checkpoint_save_for_slot2.value = 0
 
         # Checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
