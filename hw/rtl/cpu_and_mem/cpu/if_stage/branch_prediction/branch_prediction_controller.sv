@@ -54,6 +54,12 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic                       i_slot2_valid,
     input logic                       i_slot2_pc_is_halfword,
+    // Slot-2 instruction's compressed flag (live from instruction_aligner).
+    // Used to relax the halfword-PC predicate so a native (32-bit) slot-2
+    // branch at a halfword PC can still be predicted when the BTB entry's
+    // compressed flag matches the actual instruction size.  See the
+    // slot2_prediction_allowed assign below.
+    input logic                       i_slot2_is_compressed,
 
     // Control signals for prediction gating (all should be registered for timing)
     input logic i_trap_taken,
@@ -475,8 +481,15 @@ module branch_prediction_controller (
   // slot-1 — reset/trap/mret/holdoff/spanning/buffer/disabled) and adds:
   //   - i_slot2_valid: slot-2 must actually be firing this cycle.  Slot-2
   //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
-  //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict if the
-  //     BTB entry is marked compressed (mirrors slot-1's i_pc[1] guard).
+  //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict when the
+  //     BTB entry's compressed flag matches the live slot-2 instruction's
+  //     compressed flag.  This relaxes Session Q's stricter
+  //     "btb_compressed_2 must be 1" check (which only allowed compressed
+  //     slot-2 at a halfword PC) — Session R allows native (32-bit) slot-2
+  //     at a halfword PC too, provided the BTB entry was trained for the
+  //     same size.  A size mismatch means the BTB was trained at this PC
+  //     for a different alignment and the predicted target would mispredict
+  //     anyway, so we suppress prediction in that case.
   //
   // Slot-2 has no RAS lookup (decision #1 keeps slot-2 invalid when slot-1
   // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
@@ -488,7 +501,8 @@ module branch_prediction_controller (
   // !i_pc[1] || btb_compressed term.
   assign slot2_prediction_common = prediction_common && i_slot2_valid;
   assign slot2_prediction_allowed = slot2_prediction_common &&
-                                    (!i_slot2_pc_is_halfword || btb_compressed_2);
+                                    (!i_slot2_pc_is_halfword ||
+                                     (i_slot2_is_compressed == btb_compressed_2));
 
   logic slot2_sel_btb_prediction;
   assign slot2_sel_btb_prediction = slot2_prediction_allowed && btb_predicted_taken_2;
