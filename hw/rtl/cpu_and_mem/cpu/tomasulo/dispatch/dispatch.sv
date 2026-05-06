@@ -268,106 +268,11 @@ module dispatch (
   assign op = i_from_id_to_ex.is_illegal_instruction ? riscv_pkg::ILLEGAL :
                                                     i_from_id_to_ex.instruction_operation;
 
-  // RS routing
+  // RS routing is pre-decoded in ID and registered into from_id_to_ex_t so
+  // the dispatch fire signals do not start with a large instruction_operation
+  // case tree.
   riscv_pkg::rs_type_e rs_type;
-  always_comb begin
-    case (op)
-      // Integer ALU operations -> INT_RS
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      // Zba/Zbb/Zbs/Zbkb/Zicond -> INT_RS (1-cycle ALU)
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
-      riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR,
-      riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI,
-      riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN,
-      riscv_pkg::XNOR, riscv_pkg::CLZ,
-      riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU,
-      riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
-      // CSR instructions -> INT_RS
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      // Privileged (exceptions) -> INT_RS
-      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
-      rs_type = riscv_pkg::RS_INT;
-
-      // Multiply/divide -> MUL_RS
-      riscv_pkg::MUL, riscv_pkg::MULH,
-      riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU:
-      rs_type = riscv_pkg::RS_MUL;
-
-      // Memory operations -> MEM_RS (both INT and FP)
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
-      riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::FLD, riscv_pkg::FSD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::FENCE, riscv_pkg::FENCE_I:
-      rs_type = riscv_pkg::RS_MEM;
-
-      // FP add/sub/cmp/cvt/classify/sgnj -> FP_RS
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
-      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
-      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
-      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
-      rs_type = riscv_pkg::RS_FP;
-
-      // FP multiply/FMA -> FMUL_RS (3 sources for FMA)
-      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      rs_type = riscv_pkg::RS_FMUL;
-
-      // FP divide/sqrt -> FDIV_RS (long latency)
-      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
-      rs_type = riscv_pkg::RS_FDIV;
-
-      // Instructions that don't need RS (dispatch directly to Reorder Buffer)
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::PAUSE:
-      rs_type = riscv_pkg::RS_NONE;
-
-      default: rs_type = riscv_pkg::RS_INT;  // Default fallback
-    endcase
-  end
+  assign rs_type = riscv_pkg::rs_type_e'(i_from_id_to_ex.rs_type);
 
   // Destination register classification
   logic has_dest;
@@ -421,53 +326,20 @@ module dispatch (
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
-  always_comb begin
-    is_store_flag = (op == riscv_pkg::SB || op == riscv_pkg::SH || op == riscv_pkg::SW);
-    is_fp_store_flag = (op == riscv_pkg::FSW || op == riscv_pkg::FSD);
-    is_load_flag = i_from_id_to_ex.is_load_instruction;
-    is_fp_load_flag = i_from_id_to_ex.is_fp_load;
+  assign is_store_flag    = i_from_id_to_ex.is_int_store;
+  assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
+  assign is_load_flag     = i_from_id_to_ex.is_load_instruction;
+  assign is_fp_load_flag  = i_from_id_to_ex.is_fp_load;
+  assign is_branch_flag   = i_from_id_to_ex.is_branch_or_jump;
+  assign is_jal_flag      = i_from_id_to_ex.is_jump_and_link;
+  assign is_jalr_flag     = i_from_id_to_ex.is_jump_and_link_register;
+  assign op_has_fp_flags  = i_from_id_to_ex.has_fp_flags;
 
-    // Inlined is_branch_or_jump_op
-    is_branch_flag = (
-      op == riscv_pkg::BEQ ||
-      op == riscv_pkg::BNE ||
-      op == riscv_pkg::BLT ||
-      op == riscv_pkg::BGE ||
-      op == riscv_pkg::BLTU ||
-      op == riscv_pkg::BGEU ||
-      op == riscv_pkg::JAL ||
-      op == riscv_pkg::JALR);
-    // Inlined is_jal_op
-    is_jal_flag = (op == riscv_pkg::JAL);
-    // Inlined is_jalr_op
-    is_jalr_flag = (op == riscv_pkg::JALR);
-
-    case (op)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D, riscv_pkg::FMUL_D,
-      riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
-      op_has_fp_flags = 1'b1;
-      default: op_has_fp_flags = 1'b0;
-    endcase
-
-    // Reuse the ID-stage RAS classification so commit-time recovery matches the
-    // IF-stage RAS detector. In particular, compressed `c.jalr t0` expands to
-    // `jalr x1, x5, 0` and is a plain call in real code, not a return.
-    is_call_flag   = i_from_id_to_ex.is_ras_call;
-    is_return_flag = i_from_id_to_ex.is_ras_return;
-  end
+  // Reuse the ID-stage RAS classification so commit-time recovery matches the
+  // IF-stage RAS detector. In particular, compressed `c.jalr t0` expands to
+  // `jalr x1, x5, 0` and is a plain call in real code, not a return.
+  assign is_call_flag     = i_from_id_to_ex.is_ras_call;
+  assign is_return_flag   = i_from_id_to_ex.is_ras_return;
 
   // Memory operation size and sign
   riscv_pkg::mem_size_e mem_size;
@@ -490,7 +362,9 @@ module dispatch (
     endcase
 
     // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads)
-    mem_signed = (op == riscv_pkg::LB || op == riscv_pkg::LH);
+    mem_signed = i_from_id_to_ex.is_load_instruction &&
+                 !i_from_id_to_ex.is_load_unsigned &&
+                 (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword);
   end
 
   // FP rounding mode resolution: if instruction says DYN (3'b111), use frm CSR
@@ -583,94 +457,7 @@ module dispatch (
                                                       i_from_id_to_ex_2.instruction_operation;
 
   riscv_pkg::rs_type_e rs_type_2;
-  always_comb begin
-    case (op_2)
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
-      riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR,
-      riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI,
-      riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN,
-      riscv_pkg::XNOR, riscv_pkg::CLZ,
-      riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU,
-      riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
-      rs_type_2 = riscv_pkg::RS_INT;
-
-      riscv_pkg::MUL, riscv_pkg::MULH,
-      riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU:
-      rs_type_2 = riscv_pkg::RS_MUL;
-
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
-      riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::FLD, riscv_pkg::FSD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::FENCE, riscv_pkg::FENCE_I:
-      rs_type_2 = riscv_pkg::RS_MEM;
-
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
-      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
-      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
-      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
-      rs_type_2 = riscv_pkg::RS_FP;
-
-      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      rs_type_2 = riscv_pkg::RS_FMUL;
-
-      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
-      rs_type_2 = riscv_pkg::RS_FDIV;
-
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::PAUSE:
-      rs_type_2 = riscv_pkg::RS_NONE;
-
-      default: rs_type_2 = riscv_pkg::RS_INT;
-    endcase
-  end
+  assign rs_type_2 = riscv_pkg::rs_type_e'(i_from_id_to_ex_2.rs_type);
 
   // Slot-2 destination classification.
   logic has_dest_2;
@@ -712,50 +499,20 @@ module dispatch (
   assign uses_fp_rs1_flag_2 = i_from_id_to_ex_2.uses_fp_rs1;
   assign uses_fp_rs2_flag_2 = i_from_id_to_ex_2.uses_fp_rs2;
   assign uses_fp_rs3_flag_2 = i_from_id_to_ex_2.uses_fp_rs3;
-  assign uses_int_rs1_2     = i_from_id_to_ex_2.uses_int_rs1;
-  assign uses_int_rs2_2     = i_from_id_to_ex_2.uses_int_rs2;
+  assign uses_int_rs1_2 = i_from_id_to_ex_2.uses_int_rs1;
+  assign uses_int_rs2_2 = i_from_id_to_ex_2.uses_int_rs2;
 
-  always_comb begin
-    is_store_flag_2 = (op_2 == riscv_pkg::SB || op_2 == riscv_pkg::SH || op_2 == riscv_pkg::SW);
-    is_fp_store_flag_2 = (op_2 == riscv_pkg::FSW || op_2 == riscv_pkg::FSD);
-    is_load_flag_2 = i_from_id_to_ex_2.is_load_instruction;
-    is_fp_load_flag_2 = i_from_id_to_ex_2.is_fp_load;
-
-    is_branch_flag_2 = (
-      op_2 == riscv_pkg::BEQ ||
-      op_2 == riscv_pkg::BNE ||
-      op_2 == riscv_pkg::BLT ||
-      op_2 == riscv_pkg::BGE ||
-      op_2 == riscv_pkg::BLTU ||
-      op_2 == riscv_pkg::BGEU ||
-      op_2 == riscv_pkg::JAL ||
-      op_2 == riscv_pkg::JALR);
-    is_jal_flag_2 = (op_2 == riscv_pkg::JAL);
-    is_jalr_flag_2 = (op_2 == riscv_pkg::JALR);
-
-    case (op_2)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D, riscv_pkg::FMUL_D,
-      riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
-      op_has_fp_flags_2 = 1'b1;
-      default: op_has_fp_flags_2 = 1'b0;
-    endcase
-
-    is_call_flag_2   = i_from_id_to_ex_2.is_ras_call;
-    is_return_flag_2 = i_from_id_to_ex_2.is_ras_return;
-  end
+  assign is_store_flag_2 = i_from_id_to_ex_2.is_int_store;
+  assign is_fp_store_flag_2 =
+      i_from_id_to_ex_2.is_fp_store && !i_from_id_to_ex_2.is_illegal_instruction;
+  assign is_load_flag_2 = i_from_id_to_ex_2.is_load_instruction;
+  assign is_fp_load_flag_2 = i_from_id_to_ex_2.is_fp_load;
+  assign is_branch_flag_2 = i_from_id_to_ex_2.is_branch_or_jump;
+  assign is_jal_flag_2 = i_from_id_to_ex_2.is_jump_and_link;
+  assign is_jalr_flag_2 = i_from_id_to_ex_2.is_jump_and_link_register;
+  assign op_has_fp_flags_2 = i_from_id_to_ex_2.has_fp_flags;
+  assign is_call_flag_2 = i_from_id_to_ex_2.is_ras_call;
+  assign is_return_flag_2 = i_from_id_to_ex_2.is_ras_return;
 
   // Slot-2 memory size + sign.
   riscv_pkg::mem_size_e mem_size_2;
@@ -777,7 +534,9 @@ module dispatch (
       default: mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
     endcase
 
-    mem_signed_2 = (op_2 == riscv_pkg::LB || op_2 == riscv_pkg::LH);
+    mem_signed_2 = i_from_id_to_ex_2.is_load_instruction &&
+                   !i_from_id_to_ex_2.is_load_unsigned &&
+                   (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword);
   end
 
   // Slot-2 FP rounding mode.
@@ -1381,8 +1140,8 @@ module dispatch (
     o_rob_alloc_req.is_jal = is_jal_flag;
     o_rob_alloc_req.is_jalr = is_jalr_flag;
     o_rob_alloc_req.is_csr = i_from_id_to_ex.is_csr_instruction;
-    o_rob_alloc_req.is_fence = (op == riscv_pkg::FENCE);
-    o_rob_alloc_req.is_fence_i = (op == riscv_pkg::FENCE_I);
+    o_rob_alloc_req.is_fence = i_from_id_to_ex.is_fence;
+    o_rob_alloc_req.is_fence_i = i_from_id_to_ex.is_fence_i;
     o_rob_alloc_req.is_wfi = i_from_id_to_ex.is_wfi;
     o_rob_alloc_req.is_mret = i_from_id_to_ex.is_mret;
     o_rob_alloc_req.is_amo = i_from_id_to_ex.is_amo_instruction;
@@ -1398,8 +1157,8 @@ module dispatch (
     o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
     // CSR write data: rs1 for register-based ops, zero-extended imm for immediate ops
     o_rob_alloc_req.csr_write_data =
-      (op == riscv_pkg::CSRRWI || op == riscv_pkg::CSRRSI || op == riscv_pkg::CSRRCI) ?
-        {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.csr_imm} :
+      i_from_id_to_ex.is_csr_imm ?
+      {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.csr_imm} :
     // For register-based CSR ops, the actual rs1 value won't be known
     // until the source operand resolves. The ALU shim will handle
     // reading rs1 from the RS issue and computing the CSR result.
@@ -1435,8 +1194,8 @@ module dispatch (
     o_rob_alloc_req_2.is_jal = is_jal_flag_2;
     o_rob_alloc_req_2.is_jalr = is_jalr_flag_2;
     o_rob_alloc_req_2.is_csr = i_from_id_to_ex_2.is_csr_instruction;
-    o_rob_alloc_req_2.is_fence = (op_2 == riscv_pkg::FENCE);
-    o_rob_alloc_req_2.is_fence_i = (op_2 == riscv_pkg::FENCE_I);
+    o_rob_alloc_req_2.is_fence = i_from_id_to_ex_2.is_fence;
+    o_rob_alloc_req_2.is_fence_i = i_from_id_to_ex_2.is_fence_i;
     o_rob_alloc_req_2.is_wfi = i_from_id_to_ex_2.is_wfi;
     o_rob_alloc_req_2.is_mret = i_from_id_to_ex_2.is_mret;
     o_rob_alloc_req_2.is_amo = i_from_id_to_ex_2.is_amo_instruction;
@@ -1448,8 +1207,8 @@ module dispatch (
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
     o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;
     o_rob_alloc_req_2.csr_write_data =
-      (op_2 == riscv_pkg::CSRRWI || op_2 == riscv_pkg::CSRRSI || op_2 == riscv_pkg::CSRRCI) ?
-        {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.csr_imm} :
+      i_from_id_to_ex_2.is_csr_imm ?
+      {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.csr_imm} :
     '0;
 
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;

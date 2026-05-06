@@ -86,6 +86,8 @@ module cpu_ooo #(
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
   (* max_fanout = 32 *) logic flush_pipeline;
+  logic dispatch_flush;
+  logic full_flush_side_effect_kill;
   (* max_fanout = 32 *) logic frontend_stall;
   logic flush_for_trap;
   logic flush_for_mret;
@@ -1016,10 +1018,11 @@ module cpu_ooo #(
     end
   end
 
-  // id_valid: reads flush_pipeline/i_rst/stall_q directly instead of
+  // id_valid: reads dispatch_flush/i_rst/stall_q directly instead of
   // pipeline_ctrl fields.  This breaks a false Verilator UNOPTFLAT cycle
   // (pipeline_ctrl.stall depends on dispatch_stall which depends on
-  // id_valid, but id_valid only needs .flush/.reset/.stall_registered
+  // id_valid, but id_valid only needs .reset/.stall_registered plus the
+  // commit-mispredict dispatch kill
   // which are independent of dispatch_stall).
   logic id_valid;
   // 2-wide: NOP-filter must consider both slots.  A bundle whose slot-1 is a
@@ -1033,7 +1036,7 @@ module cpu_ooo #(
   // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
   // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
   // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
-  assign id_valid = pd_valid_q && !flush_pipeline && !i_rst &&
+  assign id_valid = pd_valid_q && !dispatch_flush && !i_rst &&
                     (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop) &&
                     !csr_in_flight &&
                     !csr_wb_pending &&
@@ -1228,6 +1231,7 @@ module cpu_ooo #(
   // ===========================================================================
 
   // ROB interface
+  riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req_raw;
   riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp;
   assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
@@ -1273,6 +1277,7 @@ module cpu_ooo #(
   /* verilator lint_on UNUSEDSIGNAL */
 
   // RAT rename - slot 1
+  logic                                        rat_alloc_valid_raw;
   logic                                        rat_alloc_valid;
   logic                                        rat_alloc_dest_rf;
   logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
@@ -1280,19 +1285,28 @@ module cpu_ooo #(
 
   // RAT rename - slot 2 (2-wide dispatch).  Dispatch holds these inactive
   // until Sessions D-F enable slot-2 dispatch.
+  logic                                        rat_alloc_valid_2_raw;
   logic                                        rat_alloc_valid_2;
   logic                                        rat_alloc_dest_rf_2;
   logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg_2;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag_2;
 
+  always_comb begin
+    rob_alloc_req = rob_alloc_req_raw;
+    rob_alloc_req.alloc_valid = rob_alloc_req_raw.alloc_valid && !full_flush_side_effect_kill;
+  end
+
+  assign rat_alloc_valid   = rat_alloc_valid_raw && !full_flush_side_effect_kill;
+  assign rat_alloc_valid_2 = rat_alloc_valid_2_raw && !full_flush_side_effect_kill;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       rob_entry_epoch <= '0;
     end else begin
-      if (rob_alloc_req.alloc_valid) begin
+      if (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready) begin
         rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
       end
-      if (rob_alloc_req_2.alloc_valid) begin
+      if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready) begin
         rob_entry_epoch[rob_alloc_resp_2.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp_2.alloc_tag];
       end
     end
@@ -1319,20 +1333,33 @@ module cpu_ooo #(
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_2;
 
   // Slot-2 ROB allocation request + response.
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2_raw;
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
+
+  always_comb begin
+    rob_alloc_req_2 = rob_alloc_req_2_raw;
+    rob_alloc_req_2.alloc_valid = rob_alloc_req_2_raw.alloc_valid && !full_flush_side_effect_kill;
+  end
 
   // Checkpoint
   logic checkpoint_available;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_alloc_id;
+  logic checkpoint_save_raw;
   logic checkpoint_save;
+  logic checkpoint_save_for_slot2_raw;
   logic checkpoint_save_for_slot2;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
   logic [riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
+  logic rob_checkpoint_valid_raw;
   logic rob_checkpoint_valid;
   logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+
+  assign checkpoint_save = checkpoint_save_raw && !full_flush_side_effect_kill;
+  assign checkpoint_save_for_slot2 = checkpoint_save_for_slot2_raw && !full_flush_side_effect_kill;
+  assign rob_checkpoint_valid = rob_checkpoint_valid_raw && !full_flush_side_effect_kill;
 
   // Resource status
   logic rob_full, rob_empty;
@@ -1860,11 +1887,11 @@ module cpu_ooo #(
       .i_frm_csr(frm_csr),
 
       // ROB
-      .o_rob_alloc_req (rob_alloc_req),
+      .o_rob_alloc_req (rob_alloc_req_raw),
       .i_rob_alloc_resp(rob_alloc_resp),
 
       // Slot-2 ROB alloc (2-wide dispatch)
-      .o_rob_alloc_req_2 (rob_alloc_req_2),
+      .o_rob_alloc_req_2 (rob_alloc_req_2_raw),
       .i_rob_alloc_resp_2(rob_alloc_resp_2),
 
       // ROB entry-done vector (slot-2 missed-CDB conservative gate, Session G)
@@ -1897,13 +1924,13 @@ module cpu_ooo #(
       .i_fp_src3_2 (fp_src3_lookup_2),
 
       // RAT rename - slot 1
-      .o_rat_alloc_valid(rat_alloc_valid),
+      .o_rat_alloc_valid(rat_alloc_valid_raw),
       .o_rat_alloc_dest_rf(rat_alloc_dest_rf),
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
 
       // RAT rename - slot 2 (held inactive by dispatch until i_valid_2=1)
-      .o_rat_alloc_valid_2(rat_alloc_valid_2),
+      .o_rat_alloc_valid_2(rat_alloc_valid_2_raw),
       .o_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
       .o_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
       .o_rat_alloc_rob_tag_2(rat_alloc_rob_tag_2),
@@ -1943,15 +1970,15 @@ module cpu_ooo #(
       // Checkpoint management
       .i_checkpoint_available(checkpoint_available),
       .i_checkpoint_alloc_id(checkpoint_alloc_id),
-      .o_checkpoint_save(checkpoint_save),
-      .o_checkpoint_save_for_slot2(checkpoint_save_for_slot2),
+      .o_checkpoint_save(checkpoint_save_raw),
+      .o_checkpoint_save_for_slot2(checkpoint_save_for_slot2_raw),
       .o_checkpoint_id(checkpoint_id),
       .o_checkpoint_branch_tag(checkpoint_branch_tag),
       .i_ras_tos(from_if_to_pd.ras_checkpoint_tos),
       .i_ras_valid_count(from_if_to_pd.ras_checkpoint_valid_count),
       .o_ras_tos(dispatch_ras_tos),
       .o_ras_valid_count(dispatch_ras_valid_count),
-      .o_rob_checkpoint_valid(rob_checkpoint_valid),
+      .o_rob_checkpoint_valid(rob_checkpoint_valid_raw),
       .o_rob_checkpoint_id(rob_checkpoint_id),
 
       // Resource status
@@ -1977,7 +2004,7 @@ module cpu_ooo #(
       .i_sq_full_for_2(sq_full_for_2),
 
       // Flush / early-recovery hold
-      .i_flush(flush_pipeline),
+      .i_flush(dispatch_flush),
       .i_hold (early_backend_recovery_hold),
 
       // Dispatch profiling status
@@ -2546,12 +2573,20 @@ module cpu_ooo #(
   // recovery phase is a hold-only bubble, not a second frontend flush.
   always_comb begin
     // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
-    // cycle after FENCE.I commits. Gate the front-end flush directly from that
-    // pulse so dispatch cannot allocate into the same cycle as a full flush.
+    // cycle after FENCE.I commits. Gate the front-end flush directly from
+    // that pulse so stale fetch state is squashed on the recovery cycle.
     flush_pipeline = early_mispredict_active || mispredict_recovery_pending ||
                      flush_for_trap ||
                      flush_for_mret || fence_i_flush;
   end
+
+  // Dispatch needs a same-cycle kill for commit-time partial recovery.
+  // Full-flush pulses are kept out of dispatch/RS write-enable cones and only
+  // mask architectural side effects: RAT rename, ROB allocation, and
+  // checkpoint save. Backend structures independently give flush priority to
+  // their valid/control state, so any stale RS/LQ/SQ data writes are dead.
+  assign dispatch_flush = mispredict_recovery_pending;
+  assign full_flush_side_effect_kill = trap_taken_reg || mret_taken_reg || fence_i_flush;
 
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
   // mispredict and FENCE.I cleanup on their existing timing.

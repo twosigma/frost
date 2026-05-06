@@ -190,6 +190,7 @@ module if_stage #(
   logic sel_compressed_2;
   logic slot1_is_branch;
   logic slot2_valid;  // matches the OUTPUT slot-2 valid sent to PD/dispatch
+  logic slot2_prediction_valid;  // live-only valid for same-cycle slot-2 BTB lookup
   logic slot2_redirect_q;  // Session Q: 1-cycle bubble after slot-2 BTB redirect
   // SESSION I fix #1: slot-2 must NOP whenever slot-1 NOPs.  IF's full sel_nop
   // covers control_flow_holdoff, pending-prediction holdoffs, reset_holdoff,
@@ -208,6 +209,7 @@ module if_stage #(
   // (e.g., 32b+RVC=+6) and land pc_reg on a mid-instruction byte.  Using
   // the OUTPUT slot-2 valid keeps pc_inc consistent with what dispatch
   // sees and forces the 1-wide path whenever the output is NOP.
+  assign slot2_prediction_valid = !sel_nop_2;
 
   // ---------------------------------------------------------------------------
   // Derived Signals and Stall State
@@ -312,15 +314,14 @@ module if_stage #(
     end
   end
 
-  // Slot-2 PC for BTB lookup (Session Q): equals pc_reg + slot-1 size.  The
-  // slot-2 lookup is gated by slot2_valid; when slot-2 is invalid this cycle
-  // (slot-1 NOP/branch, slot-2 doesn't fit, etc.) the gate forces miss.
-  // Halfword check uses slot-2 PC[1] — slot-2 starts at a halfword boundary
-  // when slot-1 is RVC at pc_reg[1]=0 (slot-2 at pc_reg+2 = halfword).
+  // Slot-2 PC for BTB lookup (Session Q).  The aligner only allows slot-2
+  // to fire when slot-1 is compressed, so a valid slot-2 always starts at
+  // pc_reg + 2.  Keep that invariant out of the live sideband path; otherwise
+  // is_compressed feeds the slot-2 BTB address and then the PC redirect mux.
   logic [XLEN-1:0] slot2_pc_for_btb;
-  assign slot2_pc_for_btb = pc_reg +
-                            (is_compressed ? riscv_pkg::PcIncrementCompressed :
-                                             riscv_pkg::PcIncrement32bit);
+  logic            slot2_pc_for_btb_is_halfword;
+  assign slot2_pc_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
+  assign slot2_pc_for_btb_is_halfword = !pc_reg[1];
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -339,8 +340,8 @@ module if_stage #(
 
       // Slot-2 PC for BTB lookup (Session Q dual-port)
       .i_pc_2(slot2_pc_for_btb),
-      .i_slot2_valid(slot2_valid),
-      .i_slot2_pc_is_halfword(slot2_pc_for_btb[1]),
+      .i_slot2_valid(slot2_prediction_valid),
+      .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
       // Session R: live is_compressed_2 lets BPC's halfword-PC predicate
       // accept native slot-2 branches when BTB's compressed flag matches.
       .i_slot2_is_compressed(is_compressed_2),
