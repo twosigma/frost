@@ -149,7 +149,10 @@ module branch_prediction_controller (
   logic            btb_compressed_2;
   logic            btb_requires_pc_reg_handoff_2;
 
-  assign o_prediction_requires_pc_reg_handoff = btb_requires_pc_reg_handoff;
+  // Taken BTB predictions always need the predicted PC to keep flowing through
+  // IF/PD/ID so the branch or stale predicted op can resolve architecturally.
+  // Avoid putting the BTB metadata RAM read on the pending-prediction arm path.
+  assign o_prediction_requires_pc_reg_handoff = btb_predicted_taken;
 
   branch_predictor #(
       .XLEN(XLEN)
