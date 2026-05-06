@@ -330,8 +330,9 @@ module pc_controller #(
   logic            halfword_target_lead_catchup;
   logic            clear_pending_prediction_state;
   logic            pending_prediction_valid_d;
-  logic            pending_prediction_allow_cross_d;
-  logic            pending_prediction_from_buffer_d;
+  // pending_prediction_allow_cross_d / pending_prediction_from_buffer_d were
+  // removed when those FFs moved to a !pending_prediction_valid speculative-
+  // capture pattern (see the timing comment near the always_ff below).
 
   assign pending_prediction_pc_hw = pending_prediction_pc[XLEN-1:1];
   assign pending_prediction_target_next_word =
@@ -505,44 +506,43 @@ module pc_controller #(
 
   always_comb begin
     pending_prediction_valid_d = pending_prediction_valid;
-    pending_prediction_allow_cross_d = pending_prediction_allow_cross;
-    pending_prediction_from_buffer_d = pending_prediction_from_buffer;
 
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
       pending_prediction_valid_d = 1'b0;
-      pending_prediction_allow_cross_d = 1'b0;
-      pending_prediction_from_buffer_d = 1'b0;
     end else if (!i_stall) begin
       if (clear_pending_prediction_state) begin
         pending_prediction_valid_d = 1'b0;
-        pending_prediction_allow_cross_d = 1'b0;
-        pending_prediction_from_buffer_d = 1'b0;
       end else if (prediction_needs_pending) begin
         pending_prediction_valid_d = 1'b1;
-        pending_prediction_allow_cross_d = o_pc[1];
-        pending_prediction_from_buffer_d = i_prediction_used_from_buffer;
       end
     end
   end
 
   always_ff @(posedge i_clk) begin
     pending_prediction_valid <= pending_prediction_valid_d;
-    pending_prediction_allow_cross <= pending_prediction_allow_cross_d;
-    pending_prediction_from_buffer <= pending_prediction_from_buffer_d;
   end
 
   // TIMING: Use !pending_prediction_valid as the CE instead of the
-  // combinational prediction_needs_pending.  This breaks the 11-level critical
-  // path from instruction-memory BRAM → decode → prediction_needs_pending → CE
-  // of these 64-bit buses.  The invariant is: prediction_needs_pending can only
-  // fire when pending_prediction_valid is 0 (fetch is held while a prediction is
+  // combinational prediction_needs_pending.  This breaks the BRAM →
+  // sel_nop_2 → seq_next_pc_reg → CARRY8 NEQ → prediction_needs_pending → CE
+  // path that drove pending_prediction_allow_cross_reg/CE to -1.303ns post-
+  // synth.  The invariant: prediction_needs_pending can only fire when
+  // pending_prediction_valid is 0 (fetch is held while a prediction is
   // pending, so no new BTB hit can occur).  Capturing speculatively every
-  // non-stalled cycle while valid is 0 means the data is ready the instant the
-  // control block sets valid.
+  // non-stalled cycle while valid is 0 means the captured data is ready the
+  // instant the control block sets valid.
+  //
+  // No explicit reset/clear: these registers are only consumed inside the
+  // pending_prediction_effective gate (i.e., when valid=1), so their value
+  // when valid=0 is don't-care.  Same pattern as pending_prediction_pc/target
+  // below — extended to allow_cross/from_buffer to lift their CE off the
+  // BRAM critical path.
   always_ff @(posedge i_clk) begin
     if (!i_stall && !pending_prediction_valid) begin
-      pending_prediction_pc     <= o_pc;
-      pending_prediction_target <= i_predicted_target;
+      pending_prediction_pc          <= o_pc;
+      pending_prediction_target      <= i_predicted_target;
+      pending_prediction_allow_cross <= o_pc[1];
+      pending_prediction_from_buffer <= i_prediction_used_from_buffer;
     end
   end
 

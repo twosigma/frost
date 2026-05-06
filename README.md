@@ -309,11 +309,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 107,779 | 1,029,600 | 10.5% |
-|   LUT as Logic | 103,118 | 1,029,600 | 10.0% |
+| CLB LUTs | 107,921 | 1,029,600 | 10.5% |
+|   LUT as Logic | 103,260 | 1,029,600 | 10.0% |
 |   LUT as Distributed RAM | 4,076 | — | — |
 |   LUT as Shift Register | 585 | — | — |
-| CLB Registers | 60,889 | 2,059,200 | 3.0% |
+| CLB Registers | 60,895 | 2,059,200 | 3.0% |
 | Block RAM Tile | 73.5 | 2,112 | 3.5% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
