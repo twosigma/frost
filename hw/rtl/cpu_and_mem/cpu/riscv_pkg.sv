@@ -572,6 +572,15 @@ package riscv_pkg;
     instr_op_e instruction_operation;
     branch_taken_op_e branch_operation;
     store_op_e store_operation;
+    // Pre-decoded reservation-station route. Stored as raw bits because
+    // rs_type_e is declared later in this package.
+    logic [2:0] rs_type;
+    logic is_int_store;
+    logic is_branch_or_jump;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_csr_imm;
+    logic has_fp_flags;
     logic is_jump_and_link;  // JAL instruction
     logic is_jump_and_link_register;  // JALR instruction
     logic is_multiply, is_divide;

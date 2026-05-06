@@ -906,6 +906,7 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_dispatch_t fmul_dispatch_pending;
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs;
   logic fmul_dispatch_dequeue;
+  logic fmul_dispatch_dequeue_room;
   logic fmul_dispatch_slot_available;
   logic fmul_dispatch_pending_flushed;
   logic fdiv_dispatch_pending_valid;
@@ -966,12 +967,12 @@ module tomasulo_wrapper #(
       o_fp_rs_count
   ) - 1) {1'b0}}, fp_dispatch_pending_valid};
 
-  assign fmul_dispatch_dequeue = fmul_dispatch_pending_valid &&
-      !fmul_rs_full_raw &&
+  assign fmul_dispatch_dequeue_room = fmul_dispatch_pending_valid && !fmul_rs_full_raw;
+  assign fmul_dispatch_dequeue = fmul_dispatch_dequeue_room &&
       !speculative_flush_all &&
       !speculative_flush_en &&
       !i_backend_recovery_hold;
-  assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue;
+  assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue_room;
   assign fmul_dispatch_pending_flushed = speculative_flush_all ||
       (speculative_flush_en &&
        fmul_dispatch_pending_valid &&
@@ -979,7 +980,7 @@ module tomasulo_wrapper #(
       fmul_dispatch_pending.rob_tag, i_flush_tag, head_tag
   ));
   assign fmul_rs_full_w = fmul_rs_full_raw ||
-                         (fmul_dispatch_pending_valid && !fmul_dispatch_dequeue);
+                         (fmul_dispatch_pending_valid && !fmul_dispatch_dequeue_room);
   assign o_fmul_rs_empty = fmul_rs_empty_raw && !fmul_dispatch_pending_valid;
   assign o_fmul_rs_count = fmul_rs_count_raw + {{($bits(
       o_fmul_rs_count

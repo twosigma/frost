@@ -367,8 +367,9 @@ module instruction_aligner #(
        (s1_c_rs1 != 5'b00000) &&
        ((s1_c_funct4 == 4'b1000) ||  // C.JR
       (s1_c_funct4 == 4'b1001)));  // C.JALR
-  assign o_slot1_is_branch = !o_sel_nop &&
-                             (o_is_compressed ? slot1_branch_compressed : slot1_branch_native);
+  logic slot1_branch_any;
+  assign slot1_branch_any  = o_is_compressed ? slot1_branch_compressed : slot1_branch_native;
+  assign o_slot1_is_branch = !o_sel_nop && slot1_branch_any;
 
   // Slot-2 is invalid when:
   //   - slot-1 itself is a NOP/bubble (sel_nop), OR
@@ -517,10 +518,18 @@ module instruction_aligner #(
   // size mismatch (BTB compressed but live is 32-bit, or vice versa)
   // suppresses prediction in BPC, retaining the original safety property
   // that drove Session Q's strict guard.
+  // Slot-2 can only fire behind a compressed slot-1.  Once !o_is_compressed
+  // forces slot-2 invalid, native slot-1 branch decoding is redundant in this
+  // gate; keeping the slot-2 path compressed-only avoids routing the native
+  // opcode compare into the PC/BTB timing cone.
+  logic slot1_compressed_branch_terminates_slot2;
+  assign slot1_compressed_branch_terminates_slot2 = o_is_compressed && slot1_branch_compressed;
+
   logic slot2_sel_nop_when_enabled;
-  assign slot2_sel_nop_when_enabled = o_sel_nop || o_slot1_is_branch ||
-                                      !slot2_fits_in_fetch ||
+  assign slot2_sel_nop_when_enabled = o_sel_nop ||
                                       !o_is_compressed ||
+                                      slot1_compressed_branch_terminates_slot2 ||
+                                      !slot2_fits_in_fetch ||
                                       ((!(slot2_pos == Slot2AtCurrentHi &&
                                           o_is_compressed_2)) &&
                                        slot2_bram_unsafe) ||

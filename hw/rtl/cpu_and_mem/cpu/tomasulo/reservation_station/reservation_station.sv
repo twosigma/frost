@@ -605,11 +605,14 @@ module reservation_station #(
   assign alloc_idx_2 = dispatch_fire ? free_idx_2 : free_idx;
 
   // --- Dispatch fire conditions ---
-  assign dispatch_fire = dispatch_valid && !full && !i_flush_all && !i_flush_en;
+  // Flush priority is handled in the sequential control block below.  Leave
+  // full/partial flush pulses out of the data/payload write-enable cone; any
+  // writes that coincide with a flush land in entries whose valid bits/count
+  // are being cleared or selectively recomputed on that same edge.
+  assign dispatch_fire = dispatch_valid && !full;
   // Slot-2 fires when there is room for it given whether slot-1 also fires.
   // Reduces to: (slot-1 firing → !full_for_2) OR (slot-1 not firing → !full).
-  assign dispatch_fire_2 = dispatch_valid_2 && !i_flush_all && !i_flush_en &&
-                           (dispatch_fire ? !full_for_2 : !full);
+  assign dispatch_fire_2 = dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full);
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
@@ -1170,19 +1173,15 @@ module reservation_station #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       // Warn on unusual dispatch conditions (non-fatal: tests exercise these)
-      if (dispatch_valid && full) $warning("RS: dispatch attempted when full");
+      if (dispatch_valid && full && !i_flush_all && !i_flush_en)
+        $warning("RS: dispatch attempted when full");
 
-      if (dispatch_valid && (i_flush_all || i_flush_en))
-        $warning("RS: dispatch attempted during flush");
-
-      if (dispatch_valid_2 && dispatch_fire && full_for_2)
+      if (dispatch_valid_2 && dispatch_fire && full_for_2 && !i_flush_all && !i_flush_en)
         $warning("RS: slot-2 dispatch attempted when full_for_2 (and slot-1 firing)");
 
-      if (dispatch_valid_2 && (i_flush_all || i_flush_en))
-        $warning("RS: slot-2 dispatch attempted during flush");
-
       // Slot-1 and slot-2 must never target the same physical entry.
-      if (dispatch_fire && dispatch_fire_2 && (free_idx == alloc_idx_2))
+      if (dispatch_fire && dispatch_fire_2 && !i_flush_all && !i_flush_en &&
+          (free_idx == alloc_idx_2))
         $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
 
       // Issue fires only for ready entries (fatal: indicates RTL bug)
@@ -1215,22 +1214,24 @@ module reservation_station #(
   // Assumptions
   // -------------------------------------------------------------------------
 
-  // No dispatch during flush
+  // Partial flushes must not present RS dispatch.  Full flushes may coincide
+  // with stale dispatch packets; the flush branch below wins and clears valid
+  // state, so those packets are ignored.
   always_comb begin
-    if (i_flush_all || i_flush_en) assume (!dispatch_valid);
+    if (i_flush_en) assume (!dispatch_valid);
   end
 
   // No dispatch when full
   always_comb begin
-    if (full) assume (!dispatch_valid);
+    if (full && !i_flush_all && !i_flush_en) assume (!dispatch_valid);
   end
 
   // Slot-2 dispatch follows the same flush / capacity rules.
   always_comb begin
-    if (i_flush_all || i_flush_en) assume (!dispatch_valid_2);
+    if (i_flush_en) assume (!dispatch_valid_2);
     // Slot-2 needs room for itself given whether slot-1 is also firing.
-    if (dispatch_valid && full_for_2) assume (!dispatch_valid_2);
-    if (!dispatch_valid && full) assume (!dispatch_valid_2);
+    if (dispatch_valid && full_for_2 && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
+    if (!dispatch_valid && full && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
   end
 
   // -------------------------------------------------------------------------

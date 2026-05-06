@@ -362,8 +362,142 @@ module id_stage #(
   logic uses_fp_rs1_pre;
   logic uses_fp_rs2_pre;
   logic uses_fp_rs3_pre;
+  logic [2:0] rs_type_pre;
+  logic is_int_store_pre;
+  logic is_branch_or_jump_pre;
+  logic is_fence_pre;
+  logic is_fence_i_pre;
+  logic is_csr_imm_pre;
+  logic has_fp_flags_pre;
 
   always_comb begin
+    case (op_for_pre_decode)
+      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
+      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
+      riscv_pkg::SRL, riscv_pkg::SRA,
+      riscv_pkg::SLT, riscv_pkg::SLTU,
+      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
+      riscv_pkg::XORI, riscv_pkg::SLTI,
+      riscv_pkg::SLTIU, riscv_pkg::SLLI,
+      riscv_pkg::SRLI, riscv_pkg::SRAI,
+      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
+      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
+      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
+      riscv_pkg::SH3ADD,
+      riscv_pkg::BSET, riscv_pkg::BCLR,
+      riscv_pkg::BINV, riscv_pkg::BEXT,
+      riscv_pkg::BSETI, riscv_pkg::BCLRI,
+      riscv_pkg::BINVI, riscv_pkg::BEXTI,
+      riscv_pkg::ANDN, riscv_pkg::ORN,
+      riscv_pkg::XNOR, riscv_pkg::CLZ,
+      riscv_pkg::CTZ, riscv_pkg::CPOP,
+      riscv_pkg::MAX, riscv_pkg::MAXU,
+      riscv_pkg::MIN, riscv_pkg::MINU,
+      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
+      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
+      riscv_pkg::ORC_B, riscv_pkg::REV8,
+      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
+      riscv_pkg::PACK, riscv_pkg::PACKH,
+      riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
+      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
+      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
+      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
+      rs_type_pre = riscv_pkg::RS_INT;
+
+      riscv_pkg::MUL, riscv_pkg::MULH,
+      riscv_pkg::MULHSU, riscv_pkg::MULHU,
+      riscv_pkg::DIV, riscv_pkg::DIVU,
+      riscv_pkg::REM, riscv_pkg::REMU:
+      rs_type_pre = riscv_pkg::RS_MUL;
+
+      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
+      riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::FLW, riscv_pkg::FSW,
+      riscv_pkg::FLD, riscv_pkg::FSD,
+      riscv_pkg::LR_W, riscv_pkg::SC_W,
+      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
+      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
+      riscv_pkg::AMOOR_W,
+      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::FENCE, riscv_pkg::FENCE_I:
+      rs_type_pre = riscv_pkg::RS_MEM;
+
+      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
+      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
+      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
+      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
+      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
+      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
+      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
+      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
+      rs_type_pre = riscv_pkg::RS_FP;
+
+      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
+      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
+      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
+      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
+      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
+      rs_type_pre = riscv_pkg::RS_FMUL;
+
+      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
+      rs_type_pre = riscv_pkg::RS_FDIV;
+
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::PAUSE:
+      rs_type_pre = riscv_pkg::RS_NONE;
+
+      default: rs_type_pre = riscv_pkg::RS_INT;
+    endcase
+
+    case (op_for_pre_decode)
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW: is_int_store_pre = 1'b1;
+      default: is_int_store_pre = 1'b0;
+    endcase
+
+    case (op_for_pre_decode)
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
+      riscv_pkg::BLTU, riscv_pkg::BGEU, riscv_pkg::JAL, riscv_pkg::JALR:
+      is_branch_or_jump_pre = 1'b1;
+      default: is_branch_or_jump_pre = 1'b0;
+    endcase
+
+    is_fence_pre = op_for_pre_decode == riscv_pkg::FENCE;
+    is_fence_i_pre = op_for_pre_decode == riscv_pkg::FENCE_I;
+    is_csr_imm_pre = op_for_pre_decode == riscv_pkg::CSRRWI ||
+                     op_for_pre_decode == riscv_pkg::CSRRSI ||
+                     op_for_pre_decode == riscv_pkg::CSRRCI;
+
+    case (op_for_pre_decode)
+      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
+      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
+      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
+      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S,
+      riscv_pkg::FNMSUB_S, riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
+      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
+      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
+      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
+      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
+      riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
+      riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
+      has_fp_flags_pre = 1'b1;
+      default: has_fp_flags_pre = 1'b0;
+    endcase
+
     case (op_for_pre_decode)
       riscv_pkg::FLW, riscv_pkg::FLD,
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
@@ -535,6 +669,13 @@ module id_stage #(
       o_from_id_to_ex.is_divide                 <= 1'b0;
       o_from_id_to_ex.branch_operation          <= riscv_pkg::NULL;
       o_from_id_to_ex.store_operation           <= riscv_pkg::STN;  // Store nothing
+      o_from_id_to_ex.rs_type                   <= riscv_pkg::RS_INT;
+      o_from_id_to_ex.is_int_store              <= 1'b0;
+      o_from_id_to_ex.is_branch_or_jump         <= 1'b0;
+      o_from_id_to_ex.is_fence                  <= 1'b0;
+      o_from_id_to_ex.is_fence_i                <= 1'b0;
+      o_from_id_to_ex.is_csr_imm                <= 1'b0;
+      o_from_id_to_ex.has_fp_flags              <= 1'b0;
       o_from_id_to_ex.is_jump_and_link          <= 1'b0;
       o_from_id_to_ex.is_jump_and_link_register <= 1'b0;
       o_from_id_to_ex.is_csr_instruction        <= 1'b0;
@@ -595,6 +736,13 @@ module id_stage #(
       o_from_id_to_ex.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
                                                                   branch_operation;
       o_from_id_to_ex.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
+      o_from_id_to_ex.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
+      o_from_id_to_ex.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      o_from_id_to_ex.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
+      o_from_id_to_ex.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
+      o_from_id_to_ex.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
+      o_from_id_to_ex.is_csr_imm <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre;
+      o_from_id_to_ex.has_fp_flags <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre;
       o_from_id_to_ex.is_jump_and_link <= i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
       o_from_id_to_ex.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
       // CSR instruction fields (Zicsr extension)
@@ -922,8 +1070,142 @@ module id_stage #(
   logic uses_fp_rs1_pre_2;
   logic uses_fp_rs2_pre_2;
   logic uses_fp_rs3_pre_2;
+  logic [2:0] rs_type_pre_2;
+  logic is_int_store_pre_2;
+  logic is_branch_or_jump_pre_2;
+  logic is_fence_pre_2;
+  logic is_fence_i_pre_2;
+  logic is_csr_imm_pre_2;
+  logic has_fp_flags_pre_2;
 
   always_comb begin
+    case (op_for_pre_decode_2)
+      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
+      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
+      riscv_pkg::SRL, riscv_pkg::SRA,
+      riscv_pkg::SLT, riscv_pkg::SLTU,
+      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
+      riscv_pkg::XORI, riscv_pkg::SLTI,
+      riscv_pkg::SLTIU, riscv_pkg::SLLI,
+      riscv_pkg::SRLI, riscv_pkg::SRAI,
+      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
+      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
+      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
+      riscv_pkg::SH3ADD,
+      riscv_pkg::BSET, riscv_pkg::BCLR,
+      riscv_pkg::BINV, riscv_pkg::BEXT,
+      riscv_pkg::BSETI, riscv_pkg::BCLRI,
+      riscv_pkg::BINVI, riscv_pkg::BEXTI,
+      riscv_pkg::ANDN, riscv_pkg::ORN,
+      riscv_pkg::XNOR, riscv_pkg::CLZ,
+      riscv_pkg::CTZ, riscv_pkg::CPOP,
+      riscv_pkg::MAX, riscv_pkg::MAXU,
+      riscv_pkg::MIN, riscv_pkg::MINU,
+      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
+      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
+      riscv_pkg::ORC_B, riscv_pkg::REV8,
+      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
+      riscv_pkg::PACK, riscv_pkg::PACKH,
+      riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
+      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
+      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
+      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
+      rs_type_pre_2 = riscv_pkg::RS_INT;
+
+      riscv_pkg::MUL, riscv_pkg::MULH,
+      riscv_pkg::MULHSU, riscv_pkg::MULHU,
+      riscv_pkg::DIV, riscv_pkg::DIVU,
+      riscv_pkg::REM, riscv_pkg::REMU:
+      rs_type_pre_2 = riscv_pkg::RS_MUL;
+
+      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
+      riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::FLW, riscv_pkg::FSW,
+      riscv_pkg::FLD, riscv_pkg::FSD,
+      riscv_pkg::LR_W, riscv_pkg::SC_W,
+      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
+      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
+      riscv_pkg::AMOOR_W,
+      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::FENCE, riscv_pkg::FENCE_I:
+      rs_type_pre_2 = riscv_pkg::RS_MEM;
+
+      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
+      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
+      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
+      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
+      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
+      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
+      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
+      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
+      rs_type_pre_2 = riscv_pkg::RS_FP;
+
+      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
+      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
+      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
+      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
+      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
+      rs_type_pre_2 = riscv_pkg::RS_FMUL;
+
+      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
+      rs_type_pre_2 = riscv_pkg::RS_FDIV;
+
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::PAUSE:
+      rs_type_pre_2 = riscv_pkg::RS_NONE;
+
+      default: rs_type_pre_2 = riscv_pkg::RS_INT;
+    endcase
+
+    case (op_for_pre_decode_2)
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW: is_int_store_pre_2 = 1'b1;
+      default: is_int_store_pre_2 = 1'b0;
+    endcase
+
+    case (op_for_pre_decode_2)
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
+      riscv_pkg::BLTU, riscv_pkg::BGEU, riscv_pkg::JAL, riscv_pkg::JALR:
+      is_branch_or_jump_pre_2 = 1'b1;
+      default: is_branch_or_jump_pre_2 = 1'b0;
+    endcase
+
+    is_fence_pre_2 = op_for_pre_decode_2 == riscv_pkg::FENCE;
+    is_fence_i_pre_2 = op_for_pre_decode_2 == riscv_pkg::FENCE_I;
+    is_csr_imm_pre_2 = op_for_pre_decode_2 == riscv_pkg::CSRRWI ||
+                       op_for_pre_decode_2 == riscv_pkg::CSRRSI ||
+                       op_for_pre_decode_2 == riscv_pkg::CSRRCI;
+
+    case (op_for_pre_decode_2)
+      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
+      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
+      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
+      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S,
+      riscv_pkg::FNMSUB_S, riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
+      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
+      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
+      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
+      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
+      riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
+      riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
+      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
+      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
+      has_fp_flags_pre_2 = 1'b1;
+      default: has_fp_flags_pre_2 = 1'b0;
+    endcase
+
     case (op_for_pre_decode_2)
       riscv_pkg::FLW, riscv_pkg::FLD,
       riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
@@ -1087,6 +1369,13 @@ module id_stage #(
       o_from_id_to_ex_2.is_divide                 <= 1'b0;
       o_from_id_to_ex_2.branch_operation          <= riscv_pkg::NULL;
       o_from_id_to_ex_2.store_operation           <= riscv_pkg::STN;
+      o_from_id_to_ex_2.rs_type                   <= riscv_pkg::RS_INT;
+      o_from_id_to_ex_2.is_int_store              <= 1'b0;
+      o_from_id_to_ex_2.is_branch_or_jump         <= 1'b0;
+      o_from_id_to_ex_2.is_fence                  <= 1'b0;
+      o_from_id_to_ex_2.is_fence_i                <= 1'b0;
+      o_from_id_to_ex_2.is_csr_imm                <= 1'b0;
+      o_from_id_to_ex_2.has_fp_flags              <= 1'b0;
       o_from_id_to_ex_2.is_jump_and_link          <= 1'b0;
       o_from_id_to_ex_2.is_jump_and_link_register <= 1'b0;
       o_from_id_to_ex_2.is_csr_instruction        <= 1'b0;
@@ -1138,6 +1427,13 @@ module id_stage #(
                                                                     branch_operation_2;
       o_from_id_to_ex_2.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN :
                                                                    store_operation_2;
+      o_from_id_to_ex_2.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
+      o_from_id_to_ex_2.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      o_from_id_to_ex_2.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
+      o_from_id_to_ex_2.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
+      o_from_id_to_ex_2.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;
+      o_from_id_to_ex_2.is_csr_imm <= i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre_2;
+      o_from_id_to_ex_2.has_fp_flags <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre_2;
       o_from_id_to_ex_2.is_jump_and_link <= i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct_2;
       o_from_id_to_ex_2.is_jump_and_link_register <= i_pipeline_ctrl.flush ? 1'b0 :
                                                      is_jalr_direct_2;
