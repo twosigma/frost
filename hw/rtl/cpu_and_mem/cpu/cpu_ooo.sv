@@ -1029,9 +1029,12 @@ module cpu_ooo #(
   // slot-2 instruction is silently dropped.  Treat the bundle as valid when
   // EITHER slot has a non-NOP instruction; dispatch handles slot-1 c.nop
   // harmlessly (alloc to ROB, no dest, no rename, silent retire).
+  // The NOP-presence check uses the registered `is_not_nop` flag computed in
+  // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
+  // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
+  // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
   assign id_valid = pd_valid_q && !flush_pipeline && !i_rst &&
-                    ((from_id_to_ex.instruction != riscv_pkg::NOP) ||
-                     (from_id_to_ex_2.instruction != riscv_pkg::NOP)) &&
+                    (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop) &&
                     !csr_in_flight &&
                     !csr_wb_pending &&
       // Re-dispatch the held ID image after real backpressure stalls,
@@ -1048,7 +1051,7 @@ module cpu_ooo #(
   // collapses.  Session F lights up real slot-2 instructions; the NOP check
   // is what gates id_valid_2 to '1 when that happens.
   logic id_valid_2;
-  assign id_valid_2 = id_valid && (from_id_to_ex_2.instruction != riscv_pkg::NOP);
+  assign id_valid_2 = id_valid && from_id_to_ex_2.is_not_nop;
 
   assign dbg_if_valid_q = if_valid_q;
   assign dbg_pd_valid_q = pd_valid_q;
