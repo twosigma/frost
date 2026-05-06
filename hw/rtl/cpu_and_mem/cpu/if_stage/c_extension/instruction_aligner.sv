@@ -436,14 +436,18 @@ module instruction_aligner #(
   // Session K: slot-2 native-branch detector — same defensive rationale as the
   // compressed-branch gate above.  Slot-2 native BRANCH/JAL/JALR shares the
   // same un-root-caused source-tag-wakeup / RAT-update-ordering risk that
-  // motivated slot2_is_compressed_branch.  Was a no-op while !o_is_compressed_2
-  // gated all 32-bit slot-2 firing; now that Session K drops that arm, this
-  // gate keeps slot-2 native branches off the live path until the underlying
-  // slot-2-branch bug is root-caused.  Slot-2's 32-bit opcode is always at
-  // o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
+  // motivated slot2_is_compressed_branch.  Slot-2's 32-bit opcode is always
+  // at o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
   // {bram_next_word[15:0], bram_current_word[31:16]} (opcode lives in the
   // low half of the assembled instruction); Slot2AtNextLo 32b is just
   // bram_next_word with the opcode at [6:0].
+  // Session Q: dual-port BTB enables slot-2 prediction; the broad
+  // slot2_is_native_branch gate was dropped, but a residual halfword
+  // sub-gate (native at Slot2AtCurrentHi) remained.
+  // Session R: BPC's halfword predicate now compares the live slot-2
+  // compressed flag against the BTB entry's compressed flag, so the residual
+  // halfword sub-gate is dropped too.  Detector retained as documentation;
+  // not used in the OR chain.
   logic [6:0] slot2_native_opcode;
   assign slot2_native_opcode = o_effective_instr_2[6:0];
   logic slot2_is_native_branch;
@@ -504,21 +508,15 @@ module instruction_aligner #(
   // stored even when slot-2 held the checkpoint).  Fix landed there.
   // Session Q: dual-port BTB now provides slot-2 prediction (per
   // `branch_prediction_controller`), so the broad slot-2-branch gates
-  // can be dropped.  One residual gate is kept: native (32-bit) slot-2
-  // branches at Slot2AtCurrentHi sit at a halfword PC (slot-1 RVC at
-  // pc_reg[1]=0 → slot-2 PC = pc_reg + 2 with [1]=1).  The BTB blocks
-  // halfword-PC predictions unless its entry is marked compressed
-  // (decision in `branch_prediction_controller.sv:slot2_prediction_allowed`),
-  // so a native slot-2 branch at this position is never predicted and
-  // every taken occurrence triggers a full mispredict-recovery.  Session Q
-  // measured -4.6% CoreMark with this case allowed; blocking it (and
-  // letting the branch retry as slot-1 of the next bundle, where its PC
-  // is word-aligned) restores the win to +5.4%.  Compressed slot-2
-  // branches at CURRENT_HI work fine — BTB entry is marked compressed
-  // and prediction proceeds.
-  logic slot2_native_branch_at_halfword;
-  assign slot2_native_branch_at_halfword = slot2_is_native_branch &&
-                                           (slot2_pos == Slot2AtCurrentHi);
+  // can be dropped.  Session R: the residual native-at-halfword gate is
+  // also dropped — `branch_prediction_controller`'s halfword-PC predicate
+  // now compares the live slot-2 instruction's compressed flag against the
+  // BTB entry's compressed flag, so native slot-2 branches at CURRENT_HI
+  // (slot-2 at pc_reg+2 with [1]=1) are predicted normally when the BTB
+  // entry was trained at that halfword PC for a 32-bit instruction.  A
+  // size mismatch (BTB compressed but live is 32-bit, or vice versa)
+  // suppresses prediction in BPC, retaining the original safety property
+  // that drove Session Q's strict guard.
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = o_sel_nop || o_slot1_is_branch ||
                                       !slot2_fits_in_fetch ||
@@ -526,7 +524,6 @@ module instruction_aligner #(
                                       ((!(slot2_pos == Slot2AtCurrentHi &&
                                           o_is_compressed_2)) &&
                                        slot2_bram_unsafe) ||
-                                      slot2_native_branch_at_halfword ||
                                       slot2_is_serialize_op;
   // SESSION I: slot-2 firing is now enabled.  if_stage.sv adds two correctness
   // gates around the aligner's view of slot2_sel_nop_when_enabled before it

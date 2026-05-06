@@ -341,6 +341,9 @@ module if_stage #(
       .i_pc_2(slot2_pc_for_btb),
       .i_slot2_valid(slot2_valid),
       .i_slot2_pc_is_halfword(slot2_pc_for_btb[1]),
+      // Session R: live is_compressed_2 lets BPC's halfword-PC predicate
+      // accept native slot-2 branches when BTB's compressed flag matches.
+      .i_slot2_is_compressed(is_compressed_2),
 
       // Control signals for prediction gating
       .i_trap_taken(i_trap_ctrl.trap_taken),
