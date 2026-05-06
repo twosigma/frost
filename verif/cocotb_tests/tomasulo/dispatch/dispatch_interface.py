@@ -325,6 +325,16 @@ FROM_ID_TO_EX_FIELDS = [
     ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
     ("btb_expected_rs1", XLEN),
+    # Pre-decoded operand-classification flags (timing optimization).
+    # Dispatch reads these instead of re-decoding instruction_operation.
+    ("has_int_dest", 1),
+    ("has_fp_dest", 1),
+    ("uses_int_rs1", 1),
+    ("uses_int_rs2", 1),
+    ("uses_fp_rs1", 1),
+    ("uses_fp_rs2", 1),
+    ("uses_fp_rs3", 1),
+    ("is_not_nop", 1),
 ]
 
 # Compute total width and per-field offsets (bit offset from LSB)
@@ -339,12 +349,381 @@ for _name, _width in FROM_ID_TO_EX_FIELDS:
 assert _offset == 0, f"Offset mismatch: {_offset}"
 
 
+# =============================================================================
+# Pre-decoded operand-classification helpers
+# =============================================================================
+# These mirror the riscv_pkg.sv functions of the same names so that
+# build_from_id_to_ex can populate the registered flags from instruction_operation
+# without each test having to set them individually.  The DUT's id_stage runs
+# the same decode and registers the result; dispatch then reads the registered
+# flag instead of re-decoding.
+_HAS_FP_DEST_OPS: frozenset[int] = frozenset(
+    {
+        FLW,
+        FLD,
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FCVT_S_W,
+        FCVT_S_WU,
+        FCVT_D_W,
+        FCVT_D_WU,
+        FCVT_S_D,
+        FCVT_D_S,
+        FMV_W_X,
+    }
+)
+
+_HAS_INT_DEST_OPS: frozenset[int] = frozenset(
+    {
+        ADD,
+        SUB,
+        AND,
+        OR,
+        XOR,
+        SLL,
+        SRL,
+        SRA,
+        SLT,
+        SLTU,
+        ADDI,
+        ANDI,
+        ORI,
+        XORI,
+        SLTI,
+        SLTIU,
+        SLLI,
+        SRLI,
+        SRAI,
+        LUI,
+        AUIPC,
+        JAL,
+        JALR,
+        SH1ADD,
+        SH2ADD,
+        SH3ADD,
+        BSET,
+        BCLR,
+        BINV,
+        BEXT,
+        BSETI,
+        BCLRI,
+        BINVI,
+        BEXTI,
+        ANDN,
+        ORN,
+        XNOR_OP,
+        CLZ,
+        CTZ,
+        CPOP,
+        MAX_OP,
+        MAXU,
+        MIN_OP,
+        MINU,
+        SEXT_B,
+        SEXT_H,
+        ROL,
+        ROR,
+        RORI,
+        ORC_B,
+        REV8,
+        CZERO_EQZ,
+        CZERO_NEZ,
+        PACK,
+        PACKH,
+        BREV8,
+        ZIP,
+        UNZIP,
+        MUL,
+        MULH,
+        MULHSU,
+        MULHU,
+        DIV,
+        DIVU,
+        REM,
+        REMU,
+        LB,
+        LH,
+        LW,
+        LBU,
+        LHU,
+        LR_W,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+        CSRRW,
+        CSRRS,
+        CSRRC,
+        CSRRWI,
+        CSRRSI,
+        CSRRCI,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCLASS_S,
+        FCLASS_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FMV_X_W,
+    }
+)
+
+_USES_FP_RS1_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCLASS_S,
+        FCLASS_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FMV_X_W,
+        FCVT_S_D,
+        FCVT_D_S,
+    }
+)
+
+_USES_FP_RS2_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FSW,
+        FSD,
+    }
+)
+
+_USES_FP_RS3_OPS: frozenset[int] = frozenset(
+    {
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+    }
+)
+
+# uses_int_rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
+_NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
+    {
+        LUI,
+        AUIPC,
+        JAL,
+        ECALL,
+        EBREAK,
+        FENCE,
+        FENCE_I,
+        WFI,
+        MRET,
+        PAUSE,
+        CSRRWI,
+        CSRRSI,
+        CSRRCI,
+    }
+)
+
+_USES_INT_RS2_OPS: frozenset[int] = frozenset(
+    {
+        BEQ,
+        BNE,
+        BLT,
+        BGE,
+        BLTU,
+        BGEU,
+        ADD,
+        SUB,
+        AND,
+        OR,
+        XOR,
+        SLL,
+        SRL,
+        SRA,
+        SLT,
+        SLTU,
+        MUL,
+        MULH,
+        MULHSU,
+        MULHU,
+        DIV,
+        DIVU,
+        REM,
+        REMU,
+        SH1ADD,
+        SH2ADD,
+        SH3ADD,
+        BSET,
+        BCLR,
+        BINV,
+        BEXT,
+        ANDN,
+        ORN,
+        XNOR_OP,
+        MAX_OP,
+        MAXU,
+        MIN_OP,
+        MINU,
+        ROL,
+        ROR,
+        CZERO_EQZ,
+        CZERO_NEZ,
+        PACK,
+        PACKH,
+        ZIP,
+        UNZIP,
+        SB,
+        SH,
+        SW,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+    }
+)
+
+
+def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
+    """Compute the seven pre-decoded flags from instruction_operation."""
+    has_fp_dest = 1 if op in _HAS_FP_DEST_OPS else 0
+    has_int_dest = 1 if op in _HAS_INT_DEST_OPS else 0
+    uses_fp_rs1 = 1 if op in _USES_FP_RS1_OPS else 0
+    uses_fp_rs2 = 1 if op in _USES_FP_RS2_OPS else 0
+    uses_fp_rs3 = 1 if op in _USES_FP_RS3_OPS else 0
+    uses_int_rs1 = 0 if (uses_fp_rs1 or op in _NOT_USES_INT_RS1_OPS) else 1
+    uses_int_rs2 = 1 if (not uses_fp_rs2 and op in _USES_INT_RS2_OPS) else 0
+    return {
+        "has_fp_dest": has_fp_dest,
+        "has_int_dest": has_int_dest,
+        "uses_fp_rs1": uses_fp_rs1,
+        "uses_fp_rs2": uses_fp_rs2,
+        "uses_fp_rs3": uses_fp_rs3,
+        "uses_int_rs1": uses_int_rs1,
+        "uses_int_rs2": uses_int_rs2,
+    }
+
+
 def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
     All fields default to 0.  Pass keyword arguments matching field names
     from the struct definition to set specific fields.
+
+    The seven pre-decoded operand-classification flags (has_int_dest,
+    has_fp_dest, uses_int_rs1/2, uses_fp_rs1/2/3) are auto-populated from
+    instruction_operation when not explicitly set, mirroring what id_stage
+    computes and registers in real hardware.
     """
+    derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
+    for name, value in derived.items():
+        kwargs.setdefault(name, value)
+
     val = 0
     for name, (offset, width) in _FROM_ID_TO_EX_OFFSETS.items():
         field_val = int(kwargs.get(name, 0))
