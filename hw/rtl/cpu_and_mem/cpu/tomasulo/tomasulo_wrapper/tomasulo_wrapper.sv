@@ -677,6 +677,12 @@ module tomasulo_wrapper #(
   logic                       done_repair_valid_4;
   logic                       done_repair_valid_5;
   logic                       done_repair_valid_6;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_1;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_2;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_3;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_4;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_5;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_6;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_1;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_2;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_3;
@@ -692,6 +698,19 @@ module tomasulo_wrapper #(
   assign done_repair_valid_5 =
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_5 && rob_entry_done[i_bypass_tag_5];
   assign done_repair_valid_6 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_6 && rob_entry_done[i_bypass_tag_6];
+
+  assign int_done_repair_valid_1 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_1 && rob_entry_done[i_bypass_tag_1];
+  assign int_done_repair_valid_2 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_2 && rob_entry_done[i_bypass_tag_2];
+  assign int_done_repair_valid_3 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_3 && rob_entry_done[i_bypass_tag_3];
+  assign int_done_repair_valid_4 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_4 && rob_entry_done[i_bypass_tag_4];
+  assign int_done_repair_valid_5 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_5 && rob_entry_done[i_bypass_tag_5];
+  assign int_done_repair_valid_6 =
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_6 && rob_entry_done[i_bypass_tag_6];
 
   // Head tag for RS partial flush
@@ -1622,22 +1641,22 @@ module tomasulo_wrapper #(
 
       // CDB snoop (from arbiter)
       .i_cdb(cdb_bus_qualified),
-      .i_repair_valid_1(done_repair_valid_1),
+      .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
-      .i_repair_valid_2(done_repair_valid_2),
+      .i_repair_valid_2(int_done_repair_valid_2),
       .i_repair_tag_2(i_bypass_tag_2),
       .i_repair_value_2(bypass_value_2),
-      .i_repair_valid_3(done_repair_valid_3),
+      .i_repair_valid_3(int_done_repair_valid_3),
       .i_repair_tag_3(i_bypass_tag_3),
       .i_repair_value_3(bypass_value_3),
-      .i_repair_valid_4(done_repair_valid_4),
+      .i_repair_valid_4(int_done_repair_valid_4),
       .i_repair_tag_4(i_bypass_tag_4),
       .i_repair_value_4(bypass_value_4),
-      .i_repair_valid_5(done_repair_valid_5),
+      .i_repair_valid_5(int_done_repair_valid_5),
       .i_repair_tag_5(i_bypass_tag_5),
       .i_repair_value_5(bypass_value_5),
-      .i_repair_valid_6(done_repair_valid_6),
+      .i_repair_valid_6(int_done_repair_valid_6),
       .i_repair_tag_6(i_bypass_tag_6),
       .i_repair_value_6(bypass_value_6),
 
@@ -1750,6 +1769,7 @@ module tomasulo_wrapper #(
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
+      .SPECULATIVE_DATA_WRITES(1'b1),
       .BYPASS_STAGE2(1'b0)
   ) u_mem_rs (
       .i_clk(i_clk),

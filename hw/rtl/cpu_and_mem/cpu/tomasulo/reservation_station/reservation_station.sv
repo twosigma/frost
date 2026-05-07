@@ -46,6 +46,7 @@ module reservation_station #(
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
+    parameter bit SPECULATIVE_DATA_WRITES = 1'b0,
     parameter bit BYPASS_STAGE2 = 1'b0
 ) (
     input logic i_clk,
@@ -426,6 +427,8 @@ module reservation_station #(
   // Effective slot-2 alloc index: free_idx_2 when slot-1 is also firing
   // (consumes free_idx_1), else free_idx_1.
   logic [$clog2(DEPTH)-1:0] alloc_idx_2;
+  logic data_write_1_en;
+  logic data_write_2_en;
 
   // Issue selection
   logic [DEPTH-1:0] entry_ready;
@@ -613,6 +616,13 @@ module reservation_station #(
   // Slot-2 fires when there is room for it given whether slot-1 also fires.
   // Reduces to: (slot-1 firing → !full_for_2) OR (slot-1 not firing → !full).
   assign dispatch_fire_2 = dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full);
+
+  // MEM_RS source-value flops otherwise inherit the full dispatch backpressure
+  // cone as a clock-enable.  When enabled, write invalid/free entries even if
+  // dispatch is blocked; rs_valid remains the architectural commit point.
+  assign data_write_1_en = SPECULATIVE_DATA_WRITES ? !full : dispatch_fire;
+  assign data_write_2_en = SPECULATIVE_DATA_WRITES ?
+                           (dispatch_fire ? !full_for_2 : !full) : dispatch_fire_2;
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
@@ -1004,7 +1014,7 @@ module reservation_station #(
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
     // Dispatch: capture tags and values at free index
-    if (dispatch_fire) begin
+    if (data_write_1_en) begin
       rs_rob_tag[free_idx]  <= dispatch_rob_tag;
 
       // Source 1 (same-cycle CDB bypass or dispatch value)
@@ -1037,7 +1047,7 @@ module reservation_station #(
     // Slot-2 dispatch: capture tags and values at alloc_idx_2.  Held inactive
     // until dispatch widens in Session D; intra-bundle RAW (slot-2 src reads
     // slot-1 dest) is resolved upstream in dispatch.sv before reaching the RS.
-    if (dispatch_fire_2) begin
+    if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2]  <= dispatch_rob_tag_2;
 
       rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
