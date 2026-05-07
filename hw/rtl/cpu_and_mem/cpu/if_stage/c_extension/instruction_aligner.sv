@@ -477,6 +477,17 @@ module instruction_aligner #(
       ((slot2_native_opcode == riscv_pkg::OPC_CSR) ||
        (slot2_native_opcode == riscv_pkg::OPC_MISC_MEM) ||
        (slot2_native_opcode == riscv_pkg::OPC_AMO));
+  // Keep FP compute/FMA ops out of slot-2. They are not CoreMark-critical, and
+  // allowing them behind a slot-1 INT/MEM op pulls FP RS backpressure into the
+  // slot-1 dispatch-enable cone. Invalidating slot-2 here makes the PC advance
+  // only past slot-1, so the FP instruction is replayed later as slot-1.
+  logic slot2_is_fp_compute_op;
+  assign slot2_is_fp_compute_op = !o_is_compressed_2 &&
+      ((slot2_native_opcode == riscv_pkg::OPC_OP_FP) ||
+       (slot2_native_opcode == riscv_pkg::OPC_FMADD) ||
+       (slot2_native_opcode == riscv_pkg::OPC_FMSUB) ||
+       (slot2_native_opcode == riscv_pkg::OPC_FNMSUB) ||
+       (slot2_native_opcode == riscv_pkg::OPC_FNMADD));
   // Session K: slot-2 STORE detector (INT STORE / FP STORE) — formerly gated
   // slot-2 STOREs because the tomasulo_wrapper's pipelined early-addr path
   // was slot-1-only and slot-2 STOREs holding SQ entries with addr_valid=0
@@ -533,7 +544,8 @@ module instruction_aligner #(
                                       ((!(slot2_pos == Slot2AtCurrentHi &&
                                           o_is_compressed_2)) &&
                                        slot2_bram_unsafe) ||
-                                      slot2_is_serialize_op;
+                                      slot2_is_serialize_op ||
+                                      slot2_is_fp_compute_op;
   // SESSION I: slot-2 firing is now enabled.  if_stage.sv adds two correctness
   // gates around the aligner's view of slot2_sel_nop_when_enabled before it
   // becomes the OUTPUT slot-2 sel_nop:

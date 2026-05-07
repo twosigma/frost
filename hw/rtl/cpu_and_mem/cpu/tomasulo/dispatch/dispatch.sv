@@ -660,7 +660,12 @@ module dispatch (
   assign need_checkpoint_2 = is_branch_flag_2;
 
   logic dispatch_valid_2;
-  assign dispatch_valid_2 = i_valid_2 && !i_flush;
+  logic slot2_fp_compute_serialized;
+  assign slot2_fp_compute_serialized =
+      (rs_type_2 == riscv_pkg::RS_FP) ||
+      (rs_type_2 == riscv_pkg::RS_FMUL) ||
+      (rs_type_2 == riscv_pkg::RS_FDIV);
+  assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
 
   // Slot-2's RS-room check.  Same-RS-as-slot-1 needs room for 2; otherwise
   // room for 1 in slot-2's RS suffices (slot-1 didn't take from that RS).
