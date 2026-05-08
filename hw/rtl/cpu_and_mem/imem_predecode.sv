@@ -56,7 +56,11 @@
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
     parameter bit USE_INIT_FILE = 1'b1,
-    parameter bit [47:0] INIT_FILE = "sw.mem"
+    parameter bit [47:0] INIT_FILE = "sw.mem",
+    parameter bit [127:0] INIT_FILE_EVEN = "sw_imem_even.mem",
+    parameter bit [119:0] INIT_FILE_ODD = "sw_imem_odd.mem",
+    parameter bit [199:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
+    parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem"
 ) (
     // Port A: Programming interface (slow clock)
     input  logic        i_port_a_clk,
@@ -157,12 +161,21 @@ module imem_predecode #(
   // =========================================================================
 `ifndef YOSYS
   // Keep the preload split out of Yosys: it expands the temporary init_mem
-  // array into registers during frontend elaboration. Vivado still needs this
-  // block so the FPGA bitstream contains the compile-time hello_world image.
+  // array into registers during frontend elaboration. Vivado reads the already
+  // split init files directly so every synthesized memory has an explicit
+  // power-up image.
+`ifndef FROST_VIVADO_SYNTH
   logic [DataWidth-1:0] init_mem[FullDepth];
+`endif
 
   initial begin
     if (USE_INIT_FILE) begin
+`ifdef FROST_VIVADO_SYNTH
+      $readmemh(INIT_FILE_EVEN, memory_even);
+      $readmemh(INIT_FILE_ODD, memory_odd);
+      $readmemh(INIT_FILE_EVEN_SIDEBAND, memory_even_sideband);
+      $readmemh(INIT_FILE_ODD_SIDEBAND, memory_odd_sideband);
+`else
       $readmemh(INIT_FILE, init_mem);
       // Distribute to even/odd banks
       for (int i = 0; i < FullDepth; i++) begin
@@ -174,6 +187,7 @@ module imem_predecode #(
           memory_odd_sideband[i>>1] = make_sideband(init_mem[i]);
         end
       end
+`endif
     end else begin
       for (int i = 0; i < HalfDepth; i++) begin
         memory_even[i] = DataWidth'(2 * i);

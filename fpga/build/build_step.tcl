@@ -216,19 +216,25 @@ if {$step eq "synth"} {
 
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
 
-    # Enable Xilinx primitive instantiations in RTL for Vivado synthesis.
-    # This keeps generic synthesis flows technology-agnostic.
+    # Enable Xilinx primitive instantiations and Vivado-specific init handling
+    # in RTL. Generic synthesis flows stay technology-agnostic.
     set current_verilog_defines [get_property verilog_define [current_fileset]]
     if {$current_verilog_defines eq ""} {
         set current_verilog_defines [list]
     }
-    if {[lsearch -exact $current_verilog_defines "FROST_XILINX_PRIMS"] < 0} {
-        lappend current_verilog_defines FROST_XILINX_PRIMS
-        set_property verilog_define $current_verilog_defines [current_fileset]
+    foreach define_name {FROST_XILINX_PRIMS FROST_VIVADO_SYNTH} {
+        if {[lsearch -exact $current_verilog_defines $define_name] < 0} {
+            lappend current_verilog_defines $define_name
+        }
     }
+    set_property verilog_define $current_verilog_defines [current_fileset]
 
     read_verilog {*}$rtl_source_files
     read_mem $project_root_directory/sw/apps/hello_world/sw.mem
+    read_mem $project_root_directory/sw/apps/hello_world/sw_imem_even.mem
+    read_mem $project_root_directory/sw/apps/hello_world/sw_imem_odd.mem
+    read_mem $project_root_directory/sw/apps/hello_world/sw_imem_even_sideband.mem
+    read_mem $project_root_directory/sw/apps/hello_world/sw_imem_odd_sideband.mem
     read_xdc $constraints_file
     set_property top $top_level_module_name [current_fileset]
 

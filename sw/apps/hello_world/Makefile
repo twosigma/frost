@@ -15,4 +15,5 @@
 # Makefile for Hello World application
 # Simple demo program that prints to UART console every second
 SRC_C   := ../../lib/src/uart.c hello_world.c
+GENERATE_IMEM_INIT := 1
 include ../../common/common.mk

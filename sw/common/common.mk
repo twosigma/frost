@@ -121,9 +121,20 @@ VERILOG_HEX_FILE        := sw.mem  # Verilog hex format for $readmemh
 RAW_BINARY_FILE         := sw.bin  # Raw binary (no ELF headers)
 VIVADO_BRAM_FILE        := sw.txt  # BRAM initialization format for Vivado
 DISASSEMBLY_FILE        := sw.S    # Human-readable disassembly
+IMEM_EVEN_INIT_FILE     := sw_imem_even.mem
+IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
+IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
+IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
+IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
+GENERATE_IMEM_INIT ?= 0
+IMEM_INIT_TARGETS :=
+ifeq ($(GENERATE_IMEM_INIT),1)
+IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
+endif
 
 # Build targets
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
+     $(IMEM_INIT_TARGETS)
 
 # Link C sources and assembly startup into ELF executable
 $(EXECUTABLE_ELF_FILE): $(SRC_C) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
@@ -146,12 +157,24 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
 
+# Generate direct Vivado init files for the split instruction memory banks.
+ifeq ($(GENERATE_IMEM_INIT),1)
+$(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
+	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
+		--depth-words 32768 \
+		--even-data $(IMEM_EVEN_INIT_FILE) \
+		--odd-data $(IMEM_ODD_INIT_FILE) \
+		--even-sideband $(IMEM_EVEN_SIDEBAND_FILE) \
+		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE)
+endif
+
 # Display memory usage statistics
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
 # Clean all build artifacts
 clean:
-	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
+	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
+	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
 
 .PHONY: all size clean
