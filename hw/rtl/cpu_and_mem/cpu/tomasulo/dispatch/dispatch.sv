@@ -1058,27 +1058,37 @@ module dispatch (
 
   always_comb begin
     if (intra_bundle_int_src1_2) begin
-      int_src1_2_eff = '{renamed: 1'b1, tag: i_rob_alloc_resp.alloc_tag, value: '0};
+      int_src1_2_eff.renamed = 1'b1;
+      int_src1_2_eff.tag     = i_rob_alloc_resp.alloc_tag;
+      int_src1_2_eff.value   = '0;
     end else begin
       int_src1_2_eff = i_int_src1_2;
     end
     if (intra_bundle_int_src2_2) begin
-      int_src2_2_eff = '{renamed: 1'b1, tag: i_rob_alloc_resp.alloc_tag, value: '0};
+      int_src2_2_eff.renamed = 1'b1;
+      int_src2_2_eff.tag     = i_rob_alloc_resp.alloc_tag;
+      int_src2_2_eff.value   = '0;
     end else begin
       int_src2_2_eff = i_int_src2_2;
     end
     if (intra_bundle_fp_src1_2) begin
-      fp_src1_2_eff = '{renamed: 1'b1, tag: i_rob_alloc_resp.alloc_tag, value: '0};
+      fp_src1_2_eff.renamed = 1'b1;
+      fp_src1_2_eff.tag     = i_rob_alloc_resp.alloc_tag;
+      fp_src1_2_eff.value   = '0;
     end else begin
       fp_src1_2_eff = i_fp_src1_2;
     end
     if (intra_bundle_fp_src2_2) begin
-      fp_src2_2_eff = '{renamed: 1'b1, tag: i_rob_alloc_resp.alloc_tag, value: '0};
+      fp_src2_2_eff.renamed = 1'b1;
+      fp_src2_2_eff.tag     = i_rob_alloc_resp.alloc_tag;
+      fp_src2_2_eff.value   = '0;
     end else begin
       fp_src2_2_eff = i_fp_src2_2;
     end
     if (intra_bundle_fp_src3_2) begin
-      fp_src3_2_eff = '{renamed: 1'b1, tag: i_rob_alloc_resp.alloc_tag, value: '0};
+      fp_src3_2_eff.renamed = 1'b1;
+      fp_src3_2_eff.tag     = i_rob_alloc_resp.alloc_tag;
+      fp_src3_2_eff.value   = '0;
     end else begin
       fp_src3_2_eff = i_fp_src3_2;
     end
