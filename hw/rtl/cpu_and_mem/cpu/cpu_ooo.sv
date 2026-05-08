@@ -44,7 +44,7 @@ module cpu_ooo #(
     // Instruction memory interface
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
-    input logic [3:0] i_instr_sideband,  // Predecode: {next_sb[1:0], current_sb[1:0]}
+    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,

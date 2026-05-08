@@ -95,6 +95,20 @@ package riscv_pkg;
     OPC_OP_FP    = 7'b1010011   // FADD.S, FSUB.S, FMUL.S, etc.
   } opc_e;
 
+  // Instruction-memory predecode sideband bits, stored per 32-bit word.
+  // The fetch interface returns two words, so its sideband bus is twice this
+  // width: {next_word_sideband, current_word_sideband}.
+  localparam int unsigned ImemSidebandWidth = 8;
+  localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
+  localparam int unsigned ImemSbIsCompressedLo = 0;
+  localparam int unsigned ImemSbIsCompressedHi = 1;
+  localparam int unsigned ImemSbCompressedControlLo = 2;
+  localparam int unsigned ImemSbCompressedControlHi = 3;
+  localparam int unsigned ImemSbNativeSerializeLo = 4;
+  localparam int unsigned ImemSbNativeSerializeHi = 5;
+  localparam int unsigned ImemSbNativeFpComputeLo = 6;
+  localparam int unsigned ImemSbNativeFpComputeHi = 7;
+
   // ===========================================================================
   // Section 2: Instruction Operations
   // ===========================================================================

@@ -84,7 +84,7 @@ module if_stage #(
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
-    input logic [3:0] i_instr_sideband,  // Predecode: {next_sb[1:0], current_sb[1:0]}
+    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
@@ -167,7 +167,7 @@ module if_stage #(
   logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
-  logic [1:0] instr_buffer_sideband;  // Predecode sideband for instruction buffer
+  logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -526,8 +526,10 @@ module if_stage #(
       .i_sel_nop(sel_nop),
       .i_slot2_valid(slot2_valid),
       // Align sideband to match instruction word selection
-      .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr_sideband[3:2] :
-                                                           i_instr_sideband[1:0]),
+      .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ?
+                            i_instr_sideband[(2*riscv_pkg::ImemSidebandWidth)-1:
+                                             riscv_pkg::ImemSidebandWidth] :
+                            i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
       .o_instr_buffer(instr_buffer),
       .o_next_word_buffer(next_word_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
