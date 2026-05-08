@@ -1757,6 +1757,10 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
       .HAS_SRC3(1'b0),
+      // Keep current RAT source tags out of the ROB-done repair value mux on
+      // the MUL dispatch write path.  Already-done operands are still repaired
+      // by the registered post-insertion snoop one cycle later.
+      .DISPATCH_REPAIR_BYPASS(1'b0),
       // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
       // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
       .SPECULATIVE_DATA_WRITES(1'b1)
@@ -2004,7 +2008,11 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      // FP-family issue latency is not Coremark-sensitive.  Prefer the
+      // registered repair snoop over same-cycle repair issue to keep
+      // rob_done/value-bypass cones out of the stage2 source-value D path.
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fp_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
@@ -2120,7 +2128,8 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth),
-      .HAS_SRC3(1'b1)
+      .HAS_SRC3(1'b1),
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fmul_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
@@ -2241,7 +2250,8 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fdiv_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),

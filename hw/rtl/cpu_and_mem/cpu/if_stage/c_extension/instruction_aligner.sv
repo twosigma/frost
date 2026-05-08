@@ -42,10 +42,10 @@ module instruction_aligner #(
 ) (
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
-    input logic [3:0] i_instr_sideband,  // {next_sb[1:0], current_sb[1:0]}
+    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Registered fetch-word parity (PC[2] from BRAM cycle)
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
-    input logic [1:0] i_instr_buffer_sideband,  // Predecode sideband for buffered word
+    input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
     input logic [31:0] i_pc_reg,  // Registered PC
 
     // C-extension state
@@ -157,17 +157,21 @@ module instruction_aligner #(
   // Use predecode sideband bits from IMEM BRAM. For buffered instructions,
   // the sideband was captured when the buffer was written.
   // Align sideband bits the same way as the instruction word.
-  // Original order: {next_sb[1:0], current_sb[1:0]}.  When fetch_word_swapped,
-  // the "current" sideband is in the upper two bits.
-  logic [1:0] aligned_current_sb, aligned_next_sb;
-  assign aligned_current_sb = fetch_word_swapped ? i_instr_sideband[3:2] : i_instr_sideband[1:0];
-  assign aligned_next_sb    = fetch_word_swapped ? i_instr_sideband[1:0] : i_instr_sideband[3:2];
+  // Original order: {next_sb, current_sb}.  When fetch_word_swapped, the
+  // "current" sideband is in the upper sideband word.
+  localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
+
+  logic [SbWidth-1:0] aligned_current_sb, aligned_next_sb;
+  assign aligned_current_sb = fetch_word_swapped ? i_instr_sideband[(2*SbWidth)-1:SbWidth] :
+                                                    i_instr_sideband[SbWidth-1:0];
+  assign aligned_next_sb    = fetch_word_swapped ? i_instr_sideband[SbWidth-1:0] :
+                                                    i_instr_sideband[(2*SbWidth)-1:SbWidth];
 
   logic is_comp_instr_lo, is_comp_instr_hi, is_comp_buf_lo, is_comp_buf_hi;
-  assign is_comp_instr_lo = aligned_current_sb[0];
-  assign is_comp_instr_hi = aligned_current_sb[1];
-  assign is_comp_buf_lo   = i_instr_buffer_sideband[0];
-  assign is_comp_buf_hi   = i_instr_buffer_sideband[1];
+  assign is_comp_instr_lo = aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
+  assign is_comp_instr_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
+  assign is_comp_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
+  assign is_comp_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
 
   // 4:1 mux for the 1-bit is_compressed result
   always_comb begin
@@ -297,9 +301,9 @@ module instruction_aligner #(
   // Slot-2 sideband-derived is_compressed.
   always_comb begin
     unique case (slot2_pos)
-      Slot2AtCurrentHi: o_is_compressed_2 = aligned_current_sb[1];
-      Slot2AtNextLo:    o_is_compressed_2 = aligned_next_sb[0];
-      Slot2AtNextHi:    o_is_compressed_2 = aligned_next_sb[1];
+      Slot2AtCurrentHi: o_is_compressed_2 = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
+      Slot2AtNextLo:    o_is_compressed_2 = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
+      Slot2AtNextHi:    o_is_compressed_2 = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi];
       default:          o_is_compressed_2 = 1'b0;
     endcase
   end
@@ -533,8 +537,50 @@ module instruction_aligner #(
   // forces slot-2 invalid, native slot-1 branch decoding is redundant in this
   // gate; keeping the slot-2 path compressed-only avoids routing the native
   // opcode compare into the PC/BTB timing cone.
+  logic slot1_compressed_control_sideband;
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:
+      slot1_compressed_control_sideband = aligned_current_sb[riscv_pkg::ImemSbCompressedControlLo];
+      2'b01:
+      slot1_compressed_control_sideband = aligned_current_sb[riscv_pkg::ImemSbCompressedControlHi];
+      2'b10:
+      slot1_compressed_control_sideband =
+          i_instr_buffer_sideband[riscv_pkg::ImemSbCompressedControlLo];
+      2'b11:
+      slot1_compressed_control_sideband =
+          i_instr_buffer_sideband[riscv_pkg::ImemSbCompressedControlHi];
+      default: slot1_compressed_control_sideband = 1'b0;
+    endcase
+  end
   logic slot1_compressed_branch_terminates_slot2;
-  assign slot1_compressed_branch_terminates_slot2 = o_is_compressed && slot1_branch_compressed;
+  assign slot1_compressed_branch_terminates_slot2 =
+      o_is_compressed && slot1_compressed_control_sideband;
+
+  logic slot2_native_serialize_sideband;
+  logic slot2_native_fp_compute_sideband;
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: begin
+        slot2_native_serialize_sideband  = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeHi];
+        slot2_native_fp_compute_sideband = aligned_current_sb[riscv_pkg::ImemSbNativeFpComputeHi];
+      end
+      Slot2AtNextLo: begin
+        slot2_native_serialize_sideband  = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeLo];
+        slot2_native_fp_compute_sideband = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeLo];
+      end
+      Slot2AtNextHi: begin
+        slot2_native_serialize_sideband  = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeHi];
+        slot2_native_fp_compute_sideband = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeHi];
+      end
+      default: begin
+        slot2_native_serialize_sideband  = 1'b0;
+        slot2_native_fp_compute_sideband = 1'b0;
+      end
+    endcase
+  end
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = o_sel_nop ||
@@ -544,8 +590,10 @@ module instruction_aligner #(
                                       ((!(slot2_pos == Slot2AtCurrentHi &&
                                           o_is_compressed_2)) &&
                                        slot2_bram_unsafe) ||
-                                      slot2_is_serialize_op ||
-                                      slot2_is_fp_compute_op;
+                                      (!o_is_compressed_2 &&
+                                       slot2_native_serialize_sideband) ||
+                                      (!o_is_compressed_2 &&
+                                       slot2_native_fp_compute_sideband);
   // SESSION I: slot-2 firing is now enabled.  if_stage.sv adds two correctness
   // gates around the aligner's view of slot2_sel_nop_when_enabled before it
   // becomes the OUTPUT slot-2 sel_nop:

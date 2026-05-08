@@ -43,10 +43,9 @@
  *     [31:0]  = word at W   (current word)
  *     [63:32] = word at W+1 (next word)
  *
- * Sideband bits (is_compressed per halfword) are stored alongside the
- * instruction data in each bank, giving 4 sideband bits per fetch:
- *     [1:0] = current word {is_compressed_hi, is_compressed_lo}
- *     [3:2] = next word    {is_compressed_hi, is_compressed_lo}
+ * Sideband bits are stored alongside each 32-bit word.  The sideband carries
+ * is-compressed and small opcode-class predecode for each halfword start,
+ * letting IF avoid re-decoding raw instruction bits on the PC timing path.
  *
  * BRAM resource impact: the two half-depth banks occupy the same total
  * BRAM as the original single bank — no additional cost.
@@ -72,12 +71,12 @@ module imem_predecode #(
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
-    output logic [3:0] o_port_b_sideband,  // {next_sb[1:0], current_sb[1:0]}
+    output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
     output logic o_port_b_bank_sel_r  // Registered fetch-word parity (PC[2] from fetch cycle)
 );
 
   localparam int unsigned DataWidth = 32;
-  localparam int unsigned SidebandWidth = 2;  // {is_compressed_hi, is_compressed_lo}
+  localparam int unsigned SidebandWidth = riscv_pkg::ImemSidebandWidth;
   localparam int unsigned HalfDepth = 2 ** (ADDR_WIDTH - 1);
   localparam int unsigned FullDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned ByteAddrBits = 2;  // 32-bit word alignment
@@ -90,11 +89,68 @@ module imem_predecode #(
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "block" *) logic [DataWidth-1:0] memory_even[HalfDepth];
   (* ram_style = "block" *) logic [DataWidth-1:0] memory_odd[HalfDepth];
-  // Keep the tiny predecode sideband out of the instruction BRAM output path.
+  // Keep the small predecode sideband out of the instruction BRAM output path.
   // It is read and registered with the same fetch address/clock as the data.
   (* ram_style = "distributed" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "distributed" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
+
+  function automatic logic compressed_control(input logic [15:0] parcel);
+    logic [2:0] funct3;
+    logic [3:0] funct4;
+    logic [4:0] rs1;
+    logic [4:0] rs2;
+    logic [1:0] op;
+    begin
+      funct3 = parcel[15:13];
+      funct4 = parcel[15:12];
+      rs1 = parcel[11:7];
+      rs2 = parcel[6:2];
+      op = parcel[1:0];
+      compressed_control =
+          ((op == 2'b01) &&
+           ((funct3 == 3'b001) || (funct3 == 3'b101) ||
+            (funct3 == 3'b110) || (funct3 == 3'b111))) ||
+          ((op == 2'b10) &&
+           (rs2 == 5'b00000) &&
+           (rs1 != 5'b00000) &&
+           ((funct4 == 4'b1000) || (funct4 == 4'b1001)));
+    end
+  endfunction
+
+  function automatic logic native_serialize(input logic [6:0] opcode);
+    begin
+      native_serialize = (opcode == riscv_pkg::OPC_CSR) ||
+                         (opcode == riscv_pkg::OPC_MISC_MEM) ||
+                         (opcode == riscv_pkg::OPC_AMO);
+    end
+  endfunction
+
+  function automatic logic native_fp_compute(input logic [6:0] opcode);
+    begin
+      native_fp_compute = (opcode == riscv_pkg::OPC_OP_FP) ||
+                          (opcode == riscv_pkg::OPC_FMADD) ||
+                          (opcode == riscv_pkg::OPC_FMSUB) ||
+                          (opcode == riscv_pkg::OPC_FNMSUB) ||
+                          (opcode == riscv_pkg::OPC_FNMADD);
+    end
+  endfunction
+
+  function automatic logic [SidebandWidth-1:0] make_sideband(input logic [31:0] word);
+    logic [SidebandWidth-1:0] sb;
+    begin
+      sb = '0;
+      sb[riscv_pkg::ImemSbIsCompressedLo] = (word[1:0] != 2'b11);
+      sb[riscv_pkg::ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
+      sb[riscv_pkg::ImemSbCompressedControlLo] = compressed_control(word[15:0]);
+      sb[riscv_pkg::ImemSbCompressedControlHi] = compressed_control(word[31:16]);
+      sb[riscv_pkg::ImemSbNativeSerializeLo] = native_serialize(word[6:0]);
+      sb[riscv_pkg::ImemSbNativeSerializeHi] = native_serialize(word[22:16]);
+      sb[riscv_pkg::ImemSbNativeFpComputeLo] = native_fp_compute(word[6:0]);
+      sb[riscv_pkg::ImemSbNativeFpComputeHi] = native_fp_compute(word[22:16]);
+      make_sideband = sb;
+    end
+  endfunction
 
   // =========================================================================
   // Initialization — split sw.mem into even/odd banks
@@ -112,20 +168,18 @@ module imem_predecode #(
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
           memory_even[i>>1] = init_mem[i];
-          memory_even_sideband[i>>1] = {(init_mem[i][17:16] != 2'b11), (init_mem[i][1:0] != 2'b11)};
+          memory_even_sideband[i>>1] = make_sideband(init_mem[i]);
         end else begin
           memory_odd[i>>1] = init_mem[i];
-          memory_odd_sideband[i>>1] = {(init_mem[i][17:16] != 2'b11), (init_mem[i][1:0] != 2'b11)};
+          memory_odd_sideband[i>>1] = make_sideband(init_mem[i]);
         end
       end
     end else begin
       for (int i = 0; i < HalfDepth; i++) begin
         memory_even[i] = DataWidth'(2 * i);
         memory_odd[i] = DataWidth'(2 * i + 1);
-        memory_even_sideband[i] = {
-          (memory_even[i][17:16] != 2'b11), (memory_even[i][1:0] != 2'b11)
-        };
-        memory_odd_sideband[i] = {(memory_odd[i][17:16] != 2'b11), (memory_odd[i][1:0] != 2'b11)};
+        memory_even_sideband[i] = make_sideband(memory_even[i]);
+        memory_odd_sideband[i] = make_sideband(memory_odd[i]);
       end
     end
   end
@@ -142,10 +196,9 @@ module imem_predecode #(
   assign port_a_half_address = port_a_word_address[ADDR_WIDTH-1:1];
   assign port_a_bank_sel     = port_a_word_address[0];
 
-  // Compute sideband from write data at write time
-  logic [1:0] write_sideband;
-  assign write_sideband[0] = (i_port_a_write_data[1:0] != 2'b11);  // is_compressed_lo
-  assign write_sideband[1] = (i_port_a_write_data[17:16] != 2'b11);  // is_compressed_hi
+  // Compute sideband from write data at write time.
+  logic [SidebandWidth-1:0] write_sideband;
+  assign write_sideband = make_sideband(i_port_a_write_data);
 
   // Port A — even bank
   always_ff @(posedge i_port_a_clk) begin
