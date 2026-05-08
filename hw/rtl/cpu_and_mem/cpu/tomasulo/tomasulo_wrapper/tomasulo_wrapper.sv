@@ -888,6 +888,42 @@ module tomasulo_wrapper #(
     end
   end
 
+  // ---------------------------------------------------------------------------
+  // Fast slot-1 "intent" signals for every RS instance.
+  // ---------------------------------------------------------------------------
+  // Each *_rs_intent_1 says "slot-1's instruction is heading for this RS",
+  // derived from the registered rs_type field on the slot-1 dispatch packet
+  // and gated only by !i_backend_recovery_hold.  These signals do NOT include
+  // any RS-full / bundle_fire_ok / rob_full / lq_full / sq_full term, so they
+  // never pull e.g. fdiv_rs/count_reg or rob/tail_ptr into another RS's
+  // alloc_idx_2 / rs_valid commit cone.  Inside each RS, alloc_idx_2 selects
+  // off i_intent_1 instead of the slow dispatch_fire.  Architecturally safe:
+  // whenever dispatch_fire_2 actually commits a slot-2 entry, the bundle is
+  // atomic, so i_intent_1 == dispatch_fire by construction.
+  wire [2:0] dispatch_slot1_rs_type_w =
+      SPLIT_RS_DISPATCH ? i_int_rs_dispatch.rs_type : i_rs_dispatch.rs_type;
+  logic int_rs_intent_1;
+  logic mul_rs_intent_1;
+  logic mem_rs_intent_1;
+  logic fp_rs_intent_1;
+  logic fmul_rs_intent_1;
+  logic fdiv_rs_intent_1;
+  assign int_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_INT) && !i_backend_recovery_hold;
+  assign mul_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_MUL) && !i_backend_recovery_hold;
+  assign mem_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_MEM) && !i_backend_recovery_hold;
+  // FP-family slot-2 dispatch is held off by dispatch.sv (slot2_fp_compute_serialized),
+  // so dispatch_fire_2 is always 0 in these RSes — alloc_idx_2 never affects
+  // a real commit.  Compute the intent anyway for clarity / consistency.
+  assign fp_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FP) && !i_backend_recovery_hold;
+  assign fmul_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FMUL) && !i_backend_recovery_hold;
+  assign fdiv_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FDIV) && !i_backend_recovery_hold;
+
   // Internal full signals for mux
   logic int_rs_full_w;
   logic mul_rs_full_w;
@@ -1628,7 +1664,23 @@ module tomasulo_wrapper #(
       .DEPTH(riscv_pkg::IntRsDepth),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
-      .TRACK_INT_WRITEBACK_HINT(1'b1)
+      // ISSUE_REPAIR_BYPASS disabled on INT_RS: the in-issue
+      //   rob_done_reg → done_repair_valid → src*_repair_sel → entry_ready
+      //   → issue_idx → 16:1 mux → stage2_src*_value/D
+      // chain is the post-mem_rs-fix worst path.  Removing it falls back to
+      // the existing CDB snoop / DISPATCH_REPAIR_BYPASS mechanisms, which
+      // means an entry whose source becomes done-via-repair waits one extra
+      // cycle (until the snoop sets rs_src_ready) before it can issue.
+      // For Coremark-relevant INT ops this case is rare — the common wakeup
+      // is a same-cycle CDB broadcast (handled by src*_cdb_bypass), not a
+      // missed-CDB repair.
+      .ISSUE_REPAIR_BYPASS(1'b0),
+      .TRACK_INT_WRITEBACK_HINT(1'b1),
+      // SPECULATIVE_DATA_WRITES decouples the per-entry data CE from the slow
+      // dispatch_fire.  Without it, INT_RS rs_*_value_reg/CE inherits the
+      // bundle_fire_ok cone and (when slot-1 is FDIV) the fdiv_rs/count_reg
+      // → fdiv_rs_full chain.  Pairs with i_intent_1 below.
+      .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -1636,6 +1688,7 @@ module tomasulo_wrapper #(
       // Dispatch
       .i_dispatch  (int_rs_dispatch),
       .i_dispatch_2(int_rs_dispatch_2),
+      .i_intent_1  (int_rs_intent_1),
       .o_full      (int_rs_full_w),
       .o_full_for_2(int_rs_full_for_2_w),
 
@@ -1703,12 +1756,16 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
+      // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
+      .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_mul_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_dispatch             (mul_rs_dispatch),
       .i_dispatch_2           (mul_rs_dispatch_2),
+      .i_intent_1             (mul_rs_intent_1),
       .o_full                 (mul_rs_full_w),
       .o_full_for_2           (mul_rs_full_for_2_w),
       .i_cdb                  (cdb_bus_qualified),
@@ -1776,6 +1833,7 @@ module tomasulo_wrapper #(
       .i_rst_n(i_rst_n),
       .i_dispatch(mem_rs_dispatch),
       .i_dispatch_2(mem_rs_dispatch_2),
+      .i_intent_1(mem_rs_intent_1),
       .o_full(mem_rs_full_w),
       .o_full_for_2(mem_rs_full_for_2_w),
       .i_cdb(cdb_bus_qualified),
@@ -1952,6 +2010,11 @@ module tomasulo_wrapper #(
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fp_rs_dispatch_to_rs),
       .i_dispatch_2           (fp_rs_dispatch_to_rs_2),
+      // FP-family RSes have slot-2 dispatch held off (see slot2_fp_compute_serialized
+      // in dispatch.sv), so dispatch_fire_2 is always 0 and alloc_idx_2 never
+      // chooses a real commit target.  i_intent_1 is wired anyway for symmetry
+      // — there is no alternate "always free_idx" code path.
+      .i_intent_1             (fp_rs_intent_1),
       .o_full                 (fp_rs_full_raw),
       .o_full_for_2           (fp_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
@@ -2063,6 +2126,7 @@ module tomasulo_wrapper #(
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fmul_rs_dispatch_to_rs),
       .i_dispatch_2           (fmul_rs_dispatch_to_rs_2),
+      .i_intent_1             (fmul_rs_intent_1),
       .o_full                 (fmul_rs_full_raw),
       .o_full_for_2           (fmul_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
@@ -2183,6 +2247,7 @@ module tomasulo_wrapper #(
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fdiv_rs_dispatch_to_rs),
       .i_dispatch_2           (fdiv_rs_dispatch_to_rs_2),
+      .i_intent_1             (fdiv_rs_intent_1),
       .o_full                 (fdiv_rs_full_raw),
       .o_full_for_2           (fdiv_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),

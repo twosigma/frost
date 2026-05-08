@@ -315,6 +315,9 @@ class RSInterface:
         # without this, but the explicit init avoids any future X-propagation
         # surprises if the dispatch widening lands here.
         self.dut.i_dispatch_2.value = 0
+        # Fast slot-1 intent (used only by SPECULATIVE_DATA_WRITES instances).
+        # Default-off mirrors the wrapper tie-off for non-speculative RSes.
+        self.dut.i_intent_1.value = 0
         self.dut.i_cdb.value = 0
         self.dut.i_repair_valid_1.value = 0
         self.dut.i_repair_tag_1.value = 0

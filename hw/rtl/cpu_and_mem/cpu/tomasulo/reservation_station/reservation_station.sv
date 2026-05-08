@@ -61,6 +61,25 @@ module reservation_station #(
     // each RS only sees a slot-2 packet when slot-2 actually targets it.  Held
     // inactive by the wrapper / cpu_ooo until dispatch widens in Session D.
     input riscv_pkg::rs_dispatch_t i_dispatch_2,
+    // Fast "slot-1 wants this RS" intent.  Driven from the registered rs_type
+    // field of the per-RS dispatch packet — does NOT include bundle_fire_ok or
+    // any other RS's full check.  Two uses:
+    //   1. alloc_idx_2 selection: ALWAYS uses i_intent_1 (regardless of
+    //      SPECULATIVE_DATA_WRITES) so the rs_valid commit + LUTRAM-addr cone
+    //      — used whenever slot-2 commits — sees a registered-rs_type input
+    //      rather than the slow dispatch_fire chain (which gathers all
+    //      i_*_rs_full bits via the bundle_fire_ok mux).  Architecturally
+    //      safe: whenever the strict slot-2 commit dispatch_fire_2 actually
+    //      fires, i_intent_1 == dispatch_fire by construction (bundle is
+    //      atomic), so the chosen entry index is identical to what the
+    //      original dispatch_fire-based mux would have picked.
+    //   2. SPECULATIVE_DATA_WRITES: data CE on rs_*_value/rs_*_tag/rs_rob_tag
+    //      gates on i_intent_1 instead of the slow dispatch_fire, so per-
+    //      entry CE doesn't inherit the same long cone.  The architectural
+    //      commit (rs_valid set) still uses the slow dispatch_fire, so a
+    //      "wrong" intent only causes a harmless speculative write into a
+    //      free entry whose rs_valid bit stays 0.
+    input logic i_intent_1,
     output logic o_full,
     // Asserted when there is room for at most 1 more entry (a 2-wide dispatch
     // bundle would not fit).  Distinct from o_full so dispatch can
@@ -605,7 +624,14 @@ module reservation_station #(
   end
 
   // Effective slot-2 alloc target: skip slot-1's pick when slot-1 also fires.
-  assign alloc_idx_2 = dispatch_fire ? free_idx_2 : free_idx;
+  // We always select with the fast i_intent_1 (slot-1 wants this RS) rather
+  // than the slow dispatch_fire — this keeps the rs_valid commit cone and
+  // LUTRAM write-address cone off the bundle_fire_ok / cross-RS-full chain.
+  // Whenever the strict slot-2 commit dispatch_fire_2 fires, the bundle is
+  // atomic so i_intent_1 == dispatch_fire by construction — the chosen entry
+  // index is identical to the original mux's choice.  Free indices are
+  // computed combinationally from rs_valid (registered) and so are also fast.
+  assign alloc_idx_2 = i_intent_1 ? free_idx_2 : free_idx;
 
   // --- Dispatch fire conditions ---
   // Flush priority is handled in the sequential control block below.  Leave
@@ -620,9 +646,11 @@ module reservation_station #(
   // MEM_RS source-value flops otherwise inherit the full dispatch backpressure
   // cone as a clock-enable.  When enabled, write invalid/free entries even if
   // dispatch is blocked; rs_valid remains the architectural commit point.
+  // For SPECULATIVE_DATA_WRITES the slot-2 enable also avoids dispatch_fire
+  // (slow) and uses i_intent_1 (fast) to pick between !full / !full_for_2.
   assign data_write_1_en = SPECULATIVE_DATA_WRITES ? !full : dispatch_fire;
   assign data_write_2_en = SPECULATIVE_DATA_WRITES ?
-                           (dispatch_fire ? !full_for_2 : !full) : dispatch_fire_2;
+                           (i_intent_1 ? !full_for_2 : !full) : dispatch_fire_2;
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
