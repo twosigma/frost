@@ -1385,6 +1385,22 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_issue_t mem_rs_issue_raw;
   riscv_pkg::rs_issue_t mem_rs_issue_w;
   logic mem_rs_next_is_sc;
+  logic mem_rs_next_issue_valid;
+  logic mem_rs_next_issue_needs_lq;
+  logic mem_rs_fu_ready_base;
+  logic mem_rs_fu_ready;
+
+  assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
+                                !(sc_pending && mem_rs_next_is_sc) &&
+                                !sc_fu_complete_reg.valid &&
+                                !mem_adapter_result_pending &&
+                                !i_backend_recovery_hold;
+
+  // SC completion owns the MEM adapter on the following cycle. It only needs
+  // to stop MEM_RS issues that can also consume that adapter path; LQ address
+  // updates are safe because the LQ result path is independently back-pressured.
+  assign mem_rs_fu_ready = mem_rs_fu_ready_base &&
+                           !(sc_fu_complete_valid && !mem_rs_next_issue_needs_lq);
 
   always_comb begin
     int_rs_issue_w = int_rs_issue_raw;
@@ -1717,7 +1733,9 @@ module tomasulo_wrapper #(
       .o_issue(int_rs_issue_raw),
       .i_fu_ready(int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
+      .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
       .o_pre_issue_needs_lq(),
 
@@ -1794,7 +1812,9 @@ module tomasulo_wrapper #(
       .o_issue                (mul_rs_issue_raw),
       .i_fu_ready             (mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid     (),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -1860,12 +1880,11 @@ module tomasulo_wrapper #(
       .i_repair_tag_6(i_bypass_tag_6),
       .i_repair_value_6(bypass_value_6),
       .o_issue(mem_rs_issue_raw),
-      .i_fu_ready(i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc) &&
-                  !sc_fu_complete_valid && !sc_fu_complete_reg.valid &&
-                  !mem_adapter_result_pending &&
-                  !i_backend_recovery_hold),
+      .i_fu_ready(mem_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid(mem_rs_next_issue_valid),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
+      .o_next_issue_needs_lq(mem_rs_next_issue_needs_lq),
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
       .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
       .i_flush_en(speculative_flush_en),
@@ -2047,7 +2066,9 @@ module tomasulo_wrapper #(
       .o_issue                (fp_rs_issue_raw),
       .i_fu_ready             (fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid     (),
       .o_next_issue_is_sc     (),                        // unused — no SC ops in FP_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -2160,7 +2181,9 @@ module tomasulo_wrapper #(
       .o_issue                (fmul_rs_issue_raw),
       .i_fu_ready             (fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid     (),
       .o_next_issue_is_sc     (),                          // unused — no SC ops in FMUL_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -2282,7 +2305,9 @@ module tomasulo_wrapper #(
       .o_issue                (fdiv_rs_issue_raw),
       .i_fu_ready             (fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid     (),
       .o_next_issue_is_sc     (),                          // unused — no SC ops in FDIV_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -2439,7 +2464,8 @@ module tomasulo_wrapper #(
 
   riscv_pkg::lq_addr_update_t lq_addr_update;
   always_comb begin
-    lq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_lq;
+    lq_addr_update.valid   = mem_rs_next_issue_valid && mem_rs_next_issue_needs_lq &&
+                              mem_rs_fu_ready_base;
     lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     lq_addr_update.address = lq_effective_addr;
     lq_addr_update.is_mmio = lq_addr_is_mmio;
