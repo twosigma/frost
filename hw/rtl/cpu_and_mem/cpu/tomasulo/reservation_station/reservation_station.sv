@@ -122,9 +122,11 @@ module reservation_station #(
     output logic                 o_issue_writes_cdb_hint,
 
     // =========================================================================
-    // SC Issue Peek (combinational, independent of i_fu_ready)
+    // Current Issue Payload Peek (combinational, independent of i_fu_ready)
     // =========================================================================
+    output logic o_next_issue_valid,
     output logic o_next_issue_is_sc,
+    output logic o_next_issue_needs_lq,
 
     // =========================================================================
     // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS with
@@ -387,7 +389,9 @@ module reservation_station #(
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed — RS may load it
   riscv_pkg::rs_issue_t bypass_issue;
   logic bypass_issue_writes_cdb_hint;
+  logic bypass_next_issue_valid;
   logic bypass_next_issue_is_sc;
+  logic bypass_next_issue_needs_lq;
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -853,13 +857,18 @@ module reservation_station #(
     end
   end
 
-  // --- SC issue peek ---
+  // --- Current issue payload peek ---
   // The generic RS reads this from stage2. MEM_RS can opt into the direct
   // issue path and peek the ready entry combinationally instead.
-  assign bypass_next_issue_is_sc = BYPASS_STAGE2 && any_ready &&
+  assign bypass_next_issue_valid = BYPASS_STAGE2 && any_ready;
+  assign bypass_next_issue_is_sc = bypass_next_issue_valid &&
                                    (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+  assign bypass_next_issue_needs_lq = bypass_next_issue_valid && pl_mem_needs_lq;
+  assign o_next_issue_valid = BYPASS_STAGE2 ? bypass_next_issue_valid : stage2_valid;
   assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
                                             : (stage2_valid && stage2_is_sc);
+  assign o_next_issue_needs_lq = BYPASS_STAGE2 ? bypass_next_issue_needs_lq
+                                               : (stage2_valid && stage2_mem_needs_lq);
 
   // Pre-issue look-ahead: expose the selected entry's rob_tag and
   // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
