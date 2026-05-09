@@ -1156,6 +1156,15 @@ module tomasulo_wrapper #(
   logic sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_forward;
 
+  logic lq_full_exact;
+  logic lq_full_for_2_exact;
+  logic lq_empty_exact;
+  logic [$clog2(riscv_pkg::LqDepth+1)-1:0] lq_count_exact;
+  logic sq_full_exact;
+  logic sq_full_for_2_exact;
+  logic sq_empty_exact;
+  logic [$clog2(riscv_pkg::SqDepth+1)-1:0] sq_count_exact;
+
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
@@ -1865,6 +1874,10 @@ module tomasulo_wrapper #(
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
       .SPECULATIVE_DATA_WRITES(1'b1),
+      // Dispatch has already checked MEM_RS exact full/full_for_2 status
+      // before asserting these per-RS valid bits. Avoid re-feeding full into
+      // the MEM_RS count update, which sits on the post-synth WNS path.
+      .TRUST_DISPATCH_VALID(1'b1),
       .BYPASS_STAGE2(1'b0)
   ) u_mem_rs (
       .i_clk(i_clk),
@@ -2496,8 +2509,10 @@ module tomasulo_wrapper #(
       // Allocation (from dispatch)
       .i_alloc(lq_alloc_req),
       .i_alloc_2(lq_alloc_req_2),
-      .o_full(o_lq_full),
-      .o_full_for_2(o_lq_full_for_2),
+      .o_full(lq_full_exact),
+      .o_full_for_2(lq_full_for_2_exact),
+      .o_dispatch_full(o_lq_full),
+      .o_dispatch_full_for_2(o_lq_full_for_2),
 
       // Address update (from MEM_RS issue)
       .i_addr_update(lq_addr_update),
@@ -2563,8 +2578,10 @@ module tomasulo_wrapper #(
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
-      .o_empty(o_lq_empty),
-      .o_count(o_lq_count),
+      .o_empty(lq_empty_exact),
+      .o_dispatch_empty(o_lq_empty),
+      .o_count(lq_count_exact),
+      .o_dispatch_count(o_lq_count),
 
       // L0 cache profile pulses
       .o_l0_hit(lq_l0_hit),
@@ -2870,8 +2887,10 @@ module tomasulo_wrapper #(
       // Allocation (from dispatch)
       .i_alloc(sq_alloc_req),
       .i_alloc_2(sq_alloc_req_2),
-      .o_full(o_sq_full),
-      .o_full_for_2(o_sq_full_for_2),
+      .o_full(sq_full_exact),
+      .o_full_for_2(sq_full_for_2_exact),
+      .o_dispatch_full(o_sq_full),
+      .o_dispatch_full_for_2(o_sq_full_for_2),
 
       // Early address update (pipelined dispatch-time base+imm).  Session L:
       // dual-ported — slot-1 and slot-2 each emit their own packet.  CAM-by-
@@ -2943,9 +2962,11 @@ module tomasulo_wrapper #(
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
-      .o_empty          (o_sq_empty),
+      .o_empty          (sq_empty_exact),
+      .o_dispatch_empty (o_sq_empty),
       .o_committed_empty(sq_committed_empty),
-      .o_count          (o_sq_count)
+      .o_count          (sq_count_exact),
+      .o_dispatch_count (o_sq_count)
   );
 
   // ===========================================================================

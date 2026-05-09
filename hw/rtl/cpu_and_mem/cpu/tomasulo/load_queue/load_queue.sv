@@ -67,6 +67,12 @@ module load_queue #(
     // bundle of two loads would not fit).  Distinct from o_full so dispatch can
     // independently gate slot-2.
     output logic                     o_full_for_2,
+    // Registered back-pressure for the CPU dispatch path.
+    // Exact o_full/o_full_for_2 stay available for local visibility and direct
+    // queue allocation; these outputs are exact after the same edge that
+    // updates the valid mask.
+    output logic                     o_dispatch_full,
+    output logic                     o_dispatch_full_for_2,
 
     // =========================================================================
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
@@ -153,7 +159,9 @@ module load_queue #(
     // Status
     // =========================================================================
     output logic                       o_empty,
+    output logic                       o_dispatch_empty,
     output logic [$clog2(DEPTH+1)-1:0] o_count,
+    output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count,
 
     // =========================================================================
     // L0 Cache Profile Pulses (one cycle each, for perf counters)
@@ -373,6 +381,10 @@ module load_queue #(
 
   logic empty;
   logic [CountWidth-1:0] count;
+  logic dispatch_full_q;
+  logic dispatch_full_for_2_q;
+  logic [CountWidth-1:0] dispatch_count_next;
+  logic [DEPTH-1:0] lq_valid_next_for_status;
 
   // Issue selection
   logic issue_cdb_found;  // Phase A: entry with data_valid
@@ -453,6 +465,7 @@ module load_queue #(
   logic [XLEN-1:0] lu_data_out;
 
   // Response acceptance/drain control
+  logic flush_all_entries;
   logic issued_entry_flushed;
   logic accept_mem_response;
   logic drop_mem_response_now;
@@ -540,8 +553,10 @@ module load_queue #(
   // ===========================================================================
   // Count, Full, Empty
   // ===========================================================================
-  // Count valid entries (not pointer distance, since partial flush can
-  // invalidate entries in the middle of the buffer)
+  // Exact local occupancy remains a live popcount so direct queue behavior
+  // recovers immediately after sparse partial flushes. Dispatch back-pressure
+  // is registered from the exact next valid mask so the CPU sees full flags
+  // one cycle later without losing usable queue entries.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -557,8 +572,12 @@ module load_queue #(
 
   assign o_full = full;
   assign o_full_for_2 = full_for_2;
+  assign o_dispatch_full = dispatch_full_q;
+  assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
+  assign o_dispatch_empty = empty;
   assign o_count = count;
+  assign o_dispatch_count = count;
 
   // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
   // valid (slot-1 might be a non-mem instruction), but if both are valid,
@@ -567,6 +586,54 @@ module load_queue #(
   assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
+
+  always_comb begin
+    lq_valid_next_for_status = lq_valid;
+
+    if (i_flush_all) begin
+      lq_valid_next_for_status = '0;
+    end else begin
+      if (i_flush_en) begin
+        if (flush_all_entries) begin
+          lq_valid_next_for_status = '0;
+        end else begin
+          for (int i = 0; i < DEPTH; i++) begin
+            if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
+              lq_valid_next_for_status[i] = 1'b0;
+            end
+          end
+        end
+      end
+
+      if (slot1_alloc_en) begin
+        lq_valid_next_for_status[alloc_target[IdxWidth-1:0]] = 1'b1;
+      end
+      if (slot2_alloc_en) begin
+        lq_valid_next_for_status[slot2_alloc_idx] = 1'b1;
+      end
+
+      if (free_entry_en) begin
+        lq_valid_next_for_status[free_entry_idx] = 1'b0;
+      end
+    end
+  end
+
+  always_comb begin
+    dispatch_count_next = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      dispatch_count_next = dispatch_count_next + CountWidth'(lq_valid_next_for_status[i]);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      dispatch_full_q <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
+    end else begin
+      dispatch_full_q <= dispatch_count_next == CountWidth'(DEPTH);
+      dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
+    end
+  end
 
   // ---------------------------------------------------------------------------
   // Address-update CAM match: current-cycle (for flop writes) and
@@ -1094,7 +1161,6 @@ module load_queue #(
   logic cache_hit_fast_path;
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
-  logic flush_all_entries;
   logic sq_no_older_store;
   assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&

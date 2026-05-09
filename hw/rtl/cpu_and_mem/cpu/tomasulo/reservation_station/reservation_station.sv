@@ -47,7 +47,13 @@ module reservation_station #(
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit SPECULATIVE_DATA_WRITES = 1'b0,
-    parameter bit BYPASS_STAGE2 = 1'b0
+    parameter bit BYPASS_STAGE2 = 1'b0,
+    parameter bit TRUST_DISPATCH_VALID = 1'b0,
+    // Optional reserve for exported dispatch back-pressure.  A non-zero value
+    // lets timing-sensitive RS instances publish conservative registered full
+    // flags from the previous occupancy instead of exact flags from count_next,
+    // keeping current-cycle dispatch valid off the exported-status flop D path.
+    parameter int unsigned DISPATCH_STATUS_RESERVE = 0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -172,6 +178,11 @@ module reservation_station #(
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
+  localparam int unsigned DispatchFullThreshold =
+      (DISPATCH_STATUS_RESERVE >= DEPTH) ? 0 : (DEPTH - DISPATCH_STATUS_RESERVE);
+  localparam int unsigned DispatchFullFor2Threshold =
+      ((DISPATCH_STATUS_RESERVE + 1) >= DEPTH) ? 0 :
+      (DEPTH - DISPATCH_STATUS_RESERVE - 1);
 
   // ===========================================================================
   // Helper Functions
@@ -437,6 +448,8 @@ module reservation_station #(
   logic empty;
   logic [CountWidth-1:0] count;
   logic [CountWidth-1:0] count_next;
+  logic dispatch_full_q;
+  logic dispatch_full_for_2_q;
 
   // Free entry selection — first and second free entries (priority order).
   // free_idx_2 only resolves when at least 2 entries are free; the dispatch
@@ -642,10 +655,12 @@ module reservation_station #(
   // full/partial flush pulses out of the data/payload write-enable cone; any
   // writes that coincide with a flush land in entries whose valid bits/count
   // are being cleared or selectively recomputed on that same edge.
-  assign dispatch_fire = dispatch_valid && !full;
+  assign dispatch_fire = TRUST_DISPATCH_VALID ? dispatch_valid : (dispatch_valid && !full);
   // Slot-2 fires when there is room for it given whether slot-1 also fires.
   // Reduces to: (slot-1 firing → !full_for_2) OR (slot-1 not firing → !full).
-  assign dispatch_fire_2 = dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full);
+  assign dispatch_fire_2 = TRUST_DISPATCH_VALID ?
+                           dispatch_valid_2 :
+                           (dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full));
 
   // MEM_RS source-value flops otherwise inherit the full dispatch backpressure
   // cone as a clock-enable.  When enabled, write invalid/free entries even if
@@ -932,8 +947,8 @@ module reservation_station #(
                                                  : stage2_writes_cdb_hint;
 
   // --- Status outputs ---
-  assign o_full = full;
-  assign o_full_for_2 = full_for_2;
+  assign o_full = dispatch_full_q;
+  assign o_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -948,11 +963,20 @@ module reservation_station #(
       rs_src1_ready <= '0;
       rs_src2_ready <= '0;
       if (HAS_SRC3) rs_src3_ready_q <= '0;
-      rs_use_imm         <= '0;
-      rs_writes_cdb_hint <= '0;
-      count              <= '0;
+      rs_use_imm            <= '0;
+      rs_writes_cdb_hint    <= '0;
+      count                 <= '0;
+      dispatch_full_q       <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
     end else begin
       count <= count_next;
+      if (DISPATCH_STATUS_RESERVE == 0) begin
+        dispatch_full_q       <= count_next == CountWidth'(DEPTH);
+        dispatch_full_for_2_q <= count_next >= CountWidth'(DEPTH - 1);
+      end else begin
+        dispatch_full_q       <= count >= CountWidth'(DispatchFullThreshold);
+        dispatch_full_for_2_q <= count >= CountWidth'(DispatchFullFor2Threshold);
+      end
 
       // Flush logic (highest priority for rs_valid)
       if (i_flush_all) begin

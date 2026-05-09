@@ -306,6 +306,7 @@ module cpu_ooo #(
   // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
   // on the rising edge of stall and restores them via stall_registered.
   logic stall_q;
+  logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
   assign frontend_stall =
@@ -314,6 +315,14 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
     else stall_q <= frontend_stall;
+  end
+
+  // Keep dispatch-valid replay gating off the high-fanout IF stall-capture
+  // flop. This has identical cycle behavior to stall_q but a much narrower
+  // fanout cone into dispatch/RS allocation.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_stall_q <= 1'b0;
+    else id_stall_q <= frontend_stall;
   end
 
   always_ff @(posedge i_clk) begin
@@ -326,11 +335,16 @@ module cpu_ooo #(
   // instruction on the first stalled cycle. Give that held image one replay
   // cycle after the fence drops; otherwise instructions like `mret` following
   // `csrw mepc, ...` are stranded in ID and overwritten by younger fetch.
+  //
+  // A CSR that writes rd needs one extra bubble for the delayed architectural
+  // writeback. Do not replay in the cycle where csr_wb_pending is high; replay
+  // one cycle later instead. This keeps csr_wb_pending off the dispatch
+  // allocation cone while preserving the delayed-WB hazard behavior.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
     else
       replay_after_serialize_stall_q <=
-        (csr_in_flight || csr_wb_pending || serializing_alloc_fire) && !flush_pipeline;
+        (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   end
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
@@ -1018,12 +1032,13 @@ module cpu_ooo #(
     end
   end
 
-  // id_valid: reads dispatch_flush/i_rst/stall_q directly instead of
+  // id_valid: reads dispatch_flush/id_stall_q directly instead of
   // pipeline_ctrl fields.  This breaks a false Verilator UNOPTFLAT cycle
   // (pipeline_ctrl.stall depends on dispatch_stall which depends on
-  // id_valid, but id_valid only needs .reset/.stall_registered plus the
-  // commit-mispredict dispatch kill
-  // which are independent of dispatch_stall).
+  // id_valid, but id_valid only needs the registered stall plus the
+  // commit-mispredict dispatch kill, which are independent of dispatch_stall).
+  // Reset clears pd_valid_q in the IF/PD valid tracker and has priority in the
+  // stateful consumers, so keep i_rst out of the dispatch allocation cone.
   logic id_valid;
   // 2-wide: NOP-filter must consider both slots.  A bundle whose slot-1 is a
   // user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
@@ -1036,16 +1051,17 @@ module cpu_ooo #(
   // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
   // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
   // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
-  assign id_valid = pd_valid_q && !dispatch_flush && !i_rst &&
-                    (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop) &&
-                    !csr_in_flight &&
-                    !csr_wb_pending &&
+  logic id_valid_base;
+  assign id_valid_base = pd_valid_q && !dispatch_flush && !csr_in_flight &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
       // allocated before csr_in_flight rises; the held ID image during the
       // fence is the younger blocked instruction that still needs exactly
-      // one valid replay cycle after the fence drops.
-      (!stall_q || replay_after_dispatch_stall_q || replay_after_serialize_stall_q);
+      // one valid replay cycle after the fence drops. csr_wb_pending does
+      // not gate id_valid directly; the replay flop above withholds replay
+      // during the delayed CSR writeback bubble.
+      (!id_stall_q || replay_after_dispatch_stall_q || replay_after_serialize_stall_q);
+  assign id_valid = id_valid_base && (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop);
 
   // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
   // also be valid this cycle — bundle constraint, decision #2 monolithic
@@ -1054,7 +1070,7 @@ module cpu_ooo #(
   // collapses.  Session F lights up real slot-2 instructions; the NOP check
   // is what gates id_valid_2 to '1 when that happens.
   logic id_valid_2;
-  assign id_valid_2 = id_valid && from_id_to_ex_2.is_not_nop;
+  assign id_valid_2 = id_valid_base && from_id_to_ex_2.is_not_nop;
 
   assign dbg_if_valid_q = if_valid_q;
   assign dbg_pd_valid_q = pd_valid_q;
