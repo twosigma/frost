@@ -1305,6 +1305,13 @@ module reservation_station #(
     if (!dispatch_valid && full && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
   end
 
+  // The wrapper drives i_intent_1 from the same per-RS slot-1 decode that
+  // produces i_dispatch.valid.  The slot-2 alloc index relies on that contract
+  // to choose the second free entry when both slots target this RS.
+  always_comb begin
+    assume (i_intent_1 == dispatch_valid);
+  end
+
   // -------------------------------------------------------------------------
   // Combinational assertions
   // -------------------------------------------------------------------------
@@ -1362,12 +1369,12 @@ module reservation_station #(
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
       // Dispatch sets valid
-      if ($past(dispatch_fire)) begin
+      if ($past(dispatch_fire) && !$past(i_flush_all) && !$past(i_flush_en)) begin
         p_dispatch_sets_valid : assert (rs_valid[$past(free_idx)]);
       end
 
       // Slot-2 dispatch sets valid at alloc_idx_2.
-      if ($past(dispatch_fire_2)) begin
+      if ($past(dispatch_fire_2) && !$past(i_flush_all) && !$past(i_flush_en)) begin
         p_dispatch_2_sets_valid : assert (rs_valid[$past(alloc_idx_2)]);
       end
 

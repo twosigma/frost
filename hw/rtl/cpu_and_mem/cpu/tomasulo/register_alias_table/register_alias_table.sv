@@ -846,7 +846,10 @@ module register_alias_table (
                            !i_checkpoint_restore &&
                            !(i_alloc_valid &&
                              !i_alloc_dest_rf &&
-                             i_alloc_dest_reg == i_commit_dest_reg);
+                             i_alloc_dest_reg == i_commit_dest_reg) &&
+                           !(i_alloc_valid_2 &&
+                             !i_alloc_dest_rf_2 &&
+                             i_alloc_dest_reg_2 == i_commit_dest_reg);
     f_commit_int_dest_reg <= i_commit_dest_reg;
     f_commit_int_was_valid <= int_rat_valid[i_commit_dest_reg];
     f_commit_int_tag_match <= int_rat_tag[i_commit_dest_reg] == i_commit_tag;
