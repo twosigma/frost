@@ -338,8 +338,12 @@ module store_queue #(
 
   logic                  full;
   logic                  full_for_2;
+  logic                  dispatch_full_q;
+  logic                  dispatch_full_for_2_q;
   logic                  empty;
   logic [CountWidth-1:0] count;
+  logic [CountWidth-1:0] dispatch_count_next;
+  logic [     DEPTH-1:0] sq_valid_next_for_status;
   logic                  committed_empty_q;
 
   // Slot-1 / slot-2 alloc targets and write enables (declared early so they
@@ -379,8 +383,8 @@ module store_queue #(
   assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == CountWidth'(0));
 
-  assign o_full = full;
-  assign o_full_for_2 = full_for_2;
+  assign o_full = dispatch_full_q;
+  assign o_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -392,6 +396,70 @@ module store_queue #(
   assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
+
+  // Exported dispatch back-pressure is registered, but still exact after the
+  // clock edge.  Mirroring the sq_valid next-state keeps the raw sq_valid
+  // popcount out of dispatch/LQ/SQ allocation cones without throwing away SQ
+  // capacity on store-heavy integer code.
+  always_comb begin
+    sq_valid_next_for_status = sq_valid;
+
+    if (i_flush_all) begin
+      sq_valid_next_for_status = '0;
+    end else begin
+      if (i_flush_en) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && !sq_committed[i] &&
+              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
+              !(i_commit_valid_comb_2 && sq_rob_tag[i] == i_commit_rob_tag_comb_2) &&
+              !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
+              !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
+              (flush_all_uncommitted || is_younger(
+                  sq_rob_tag[i], i_flush_tag, i_rob_head_tag
+              ))) begin
+            sq_valid_next_for_status[i] = 1'b0;
+          end
+        end
+      end
+
+      if (slot1_alloc_en) begin
+        sq_valid_next_for_status[alloc_target[IdxWidth-1:0]] = 1'b1;
+      end
+      if (slot2_alloc_en) begin
+        sq_valid_next_for_status[slot2_alloc_idx] = 1'b1;
+      end
+
+      if (i_sc_discard) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
+              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
+            sq_valid_next_for_status[i] = 1'b0;
+          end
+        end
+      end
+
+      if (i_mem_write_done && write_outstanding && write_completes_entry) begin
+        sq_valid_next_for_status[write_entry_idx] = 1'b0;
+      end
+    end
+  end
+
+  always_comb begin
+    dispatch_count_next = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      dispatch_count_next = dispatch_count_next + CountWidth'(sq_valid_next_for_status[i]);
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      dispatch_full_q       <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
+    end else begin
+      dispatch_full_q       <= dispatch_count_next == CountWidth'(DEPTH);
+      dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
+    end
+  end
 
   // Committed-empty: no committed-but-unwritten entries. Register this status
   // for consumers that feed MEM issue/CDB arbitration. Raw same-cycle commit
@@ -999,8 +1067,10 @@ module store_queue #(
       sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
-      sq_address[alloc_target[IdxWidth-1:0]]    <= i_alloc.address;
-      sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= i_alloc.is_mmio;
+      if (i_alloc.addr_valid) begin
+        sq_address[alloc_target[IdxWidth-1:0]] <= i_alloc.address;
+        sq_is_mmio[alloc_target[IdxWidth-1:0]] <= i_alloc.is_mmio;
+      end
     end
 
     // Slot-2 alloc — held inactive until dispatch widens (Session D).
@@ -1009,8 +1079,10 @@ module store_queue #(
       sq_size[slot2_alloc_idx]       <= i_alloc_2.size;
       sq_fp64_phase[slot2_alloc_idx] <= 1'b0;
       sq_is_sc[slot2_alloc_idx]      <= i_alloc_2.is_sc;
-      sq_address[slot2_alloc_idx]    <= i_alloc_2.address;
-      sq_is_mmio[slot2_alloc_idx]    <= i_alloc_2.is_mmio;
+      if (i_alloc_2.addr_valid) begin
+        sq_address[slot2_alloc_idx] <= i_alloc_2.address;
+        sq_is_mmio[slot2_alloc_idx] <= i_alloc_2.is_mmio;
+      end
     end
 
     // -----------------------------------------------------------------

@@ -678,12 +678,11 @@ module dispatch (
       rs_full_for_slot2 = (rs_type == riscv_pkg::RS_MUL) ? i_mul_rs_full_for_2 : i_mul_rs_full;
       riscv_pkg::RS_MEM:
       rs_full_for_slot2 = (rs_type == riscv_pkg::RS_MEM) ? i_mem_rs_full_for_2 : i_mem_rs_full;
-      riscv_pkg::RS_FP:
-      rs_full_for_slot2 = (rs_type == riscv_pkg::RS_FP) ? i_fp_rs_full_for_2 : i_fp_rs_full;
-      riscv_pkg::RS_FMUL:
-      rs_full_for_slot2 = (rs_type == riscv_pkg::RS_FMUL) ? i_fmul_rs_full_for_2 : i_fmul_rs_full;
-      riscv_pkg::RS_FDIV:
-      rs_full_for_slot2 = (rs_type == riscv_pkg::RS_FDIV) ? i_fdiv_rs_full_for_2 : i_fdiv_rs_full;
+      // Slot-2 FP compute dispatch is serialized off before the bundle gate
+      // (`dispatch_valid_2=0`), so these fullness inputs are don't-cares for
+      // slot-2.  Keeping them out of the slot-2 room mux prevents FP RS
+      // fullness from gating unrelated integer/memory dispatch packets.
+      riscv_pkg::RS_FP, riscv_pkg::RS_FMUL, riscv_pkg::RS_FDIV: rs_full_for_slot2 = 1'b0;
       riscv_pkg::RS_NONE: rs_full_for_slot2 = 1'b0;
       default: rs_full_for_slot2 = 1'b0;
     endcase

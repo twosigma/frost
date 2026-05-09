@@ -930,6 +930,7 @@ module tomasulo_wrapper #(
   logic mem_rs_full_w;
   logic fp_rs_full_w;
   logic fp_rs_full_raw;
+  logic fp_rs_dispatch_full_q;
   logic fp_rs_empty_raw;
   logic [$clog2(riscv_pkg::FpRsDepth + 1) - 1:0] fp_rs_count_raw;
   logic fmul_rs_full_w;
@@ -1000,7 +1001,7 @@ module tomasulo_wrapper #(
   assign o_int_rs_full_for_2 = int_rs_full_for_2_w;
   assign o_mul_rs_full_for_2 = mul_rs_full_for_2_w;
   assign o_mem_rs_full_for_2 = mem_rs_full_for_2_w;
-  assign o_fp_rs_full_for_2 = fp_rs_full_for_2_raw || fp_dispatch_pending_valid;
+  assign o_fp_rs_full_for_2 = fp_rs_dispatch_full_q || fp_dispatch_pending_valid;
   assign o_fmul_rs_full_for_2 = fmul_rs_full_for_2_raw || fmul_dispatch_pending_valid;
   assign o_fdiv_rs_full_for_2 = fdiv_rs_full_for_2_raw || fdiv_dispatch_pending_valid;
 
@@ -1016,7 +1017,19 @@ module tomasulo_wrapper #(
        is_younger(
       fp_dispatch_pending.rob_tag, i_flush_tag, head_tag
   ));
-  assign fp_rs_full_w = fp_rs_full_raw || fp_dispatch_pending_valid;
+  // FP add/cvt/class dispatch is not Coremark-sensitive, but its raw RS count
+  // otherwise feeds the shared dispatch/ROB allocation cone.  Export a
+  // registered, one-slot-conservative full signal; q==0 still guarantees room
+  // for the 1-deep FP pending buffer to absorb one dispatch.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all) begin
+      fp_rs_dispatch_full_q <= 1'b0;
+    end else begin
+      fp_rs_dispatch_full_q <= fp_rs_full_for_2_raw || fp_dispatch_pending_valid;
+    end
+  end
+
+  assign fp_rs_full_w = fp_rs_dispatch_full_q || fp_dispatch_pending_valid;
   assign o_fp_rs_empty = fp_rs_empty_raw && !fp_dispatch_pending_valid;
   assign o_fp_rs_count = fp_rs_count_raw + {{($bits(
       o_fp_rs_count
@@ -1197,7 +1210,7 @@ module tomasulo_wrapper #(
   // SC result computation (combinational)
   logic sc_can_fire;
   logic sc_success;
-  logic sc_fu_complete_valid;
+  logic sc_fire_now;
   logic store_issue_fire;
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
@@ -1205,15 +1218,19 @@ module tomasulo_wrapper #(
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
-  // Full-flush CDB suppression is centralized in cdb_kill. Keep it out of the
-  // MEM completion valid cone so FENCE.I/trap flush does not feed CDB select.
-  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending;
+  // Arm SC only when the MEM adapter has no competing same-cycle producer.
+  // This keeps the rare SC head-tag compare local to the SC register D path;
+  // the registered completion below owns the MEM adapter on the next cycle.
+  assign sc_fire_now = sc_can_fire &&
+                       !mem_adapter_result_pending &&
+                       !lq_fu_complete.valid &&
+                       !store_misalign_issue;
 
   // SC fu_complete generation
   riscv_pkg::fu_complete_t sc_fu_complete;
   always_comb begin
     sc_fu_complete       = '0;
-    sc_fu_complete.valid = sc_fu_complete_valid;
+    sc_fu_complete.valid = sc_fire_now;
     sc_fu_complete.tag   = sc_pending_rob_tag;
     sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
   end
@@ -1235,7 +1252,7 @@ module tomasulo_wrapper #(
 
   // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
   // The combinational chain
-  //   fence_i_committed_reg → speculative_flush_all → sc_fu_complete_valid
+  //   fence_i_committed_reg → speculative_flush_all → sc_fire_now
   //     → mem_fu_to_adapter → MEM adapter bypass → cdb_arb_in[3]
   //     → cdb_bus_reg[tag][3]
   // was the post-IntRsDepth-bump worst-violating path (-0.710 ns WNS). SC is
@@ -1273,12 +1290,10 @@ module tomasulo_wrapper #(
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
-  // LQ is blocked from firing whenever an SC is about to broadcast on MEM:
-  //   - sc_fu_complete_valid (combinational): SC arming this cycle; its
-  //     registered copy will own the adapter next cycle.
-  //   - sc_fu_complete_reg.valid: SC is owning the adapter this cycle.
+  // LQ is blocked while the registered SC completion owns MEM.  SC arming only
+  // occurs when LQ is not presenting a result, avoiding a combinational SC
+  // head-tag compare on the LQ/CDB backpressure cone.
   assign lq_result_accepted = lq_fu_complete.valid &&
-                              !sc_fu_complete_valid &&
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_issue &&
                               !mem_adapter_result_pending;
@@ -1297,8 +1312,8 @@ module tomasulo_wrapper #(
           && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
         sc_pending <= 1'b1;
       end
-      // Clear when SC fu_complete fires (accepted by adapter)
-      if (sc_fu_complete_valid) begin
+      // Clear when SC fu_complete is armed for the registered MEM path.
+      if (sc_fire_now) begin
         sc_pending <= 1'b0;
       end
       // A pending SC is speculative if it is younger than the flush boundary,
@@ -1396,11 +1411,10 @@ module tomasulo_wrapper #(
                                 !mem_adapter_result_pending &&
                                 !i_backend_recovery_hold;
 
-  // SC completion owns the MEM adapter on the following cycle. It only needs
-  // to stop MEM_RS issues that can also consume that adapter path; LQ address
-  // updates are safe because the LQ result path is independently back-pressured.
-  assign mem_rs_fu_ready = mem_rs_fu_ready_base &&
-                           !(sc_fu_complete_valid && !mem_rs_next_issue_needs_lq);
+  // Registered SC completion is already included in mem_rs_fu_ready_base.  The
+  // arming cycle is kept off the MEM_RS ready cone to avoid feeding SC tag
+  // compare into ordinary issue timing.
+  assign mem_rs_fu_ready = mem_rs_fu_ready_base;
 
   always_comb begin
     int_rs_issue_w = int_rs_issue_raw;
@@ -2514,8 +2528,8 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
-                                sc_fu_complete_reg.valid || store_misalign_issue),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_reg.valid ||
+                                store_misalign_issue),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)

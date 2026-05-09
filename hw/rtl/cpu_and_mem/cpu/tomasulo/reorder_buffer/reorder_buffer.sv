@@ -281,6 +281,8 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth:0] tail_ptr;
   logic full;
   logic full_for_2;
+  logic dispatch_full_q;
+  logic dispatch_full_for_2_q;
   logic empty;
 
   // ===========================================================================
@@ -1253,14 +1255,14 @@ module reorder_buffer (
   // Allocation response
   assign o_alloc_resp.alloc_ready = !full && !i_flush_all && !i_flush_en;
   assign o_alloc_resp.alloc_tag = tail_idx;
-  assign o_alloc_resp.full = full;
+  assign o_alloc_resp.full = dispatch_full_q;
 
   // Slot-2 response: tag is tail_idx+1 (only meaningful when slot-1 also fires).
   // alloc_ready/full are slot-2 specific so dispatch can independently gate
   // slot-2.
   assign o_alloc_resp_2.alloc_ready = !full_for_2 && !i_flush_all && !i_flush_en;
   assign o_alloc_resp_2.alloc_tag = tail_idx_2;
-  assign o_alloc_resp_2.full = full_for_2;
+  assign o_alloc_resp_2.full = dispatch_full_for_2_q;
 
   // Flush age calculation for generic partial flush (computed combinationally).
   logic [ReorderBufferTagWidth-1:0] flush_age;
@@ -1268,6 +1270,46 @@ module reorder_buffer (
 
   logic flush_after_head_commit;
   assign flush_after_head_commit = i_flush_after_head_commit;
+
+  // Exported dispatch back-pressure is registered from the exact next ROB
+  // occupancy.  That cuts the tail_ptr/full -> dispatch -> queue-allocation
+  // timing cone without reducing usable ROB capacity.  Internal allocation
+  // still uses the exact combinational full/full_for_2 signals above.
+  logic [ReorderBufferTagWidth:0] dispatch_tail_next;
+  logic [ReorderBufferTagWidth:0] dispatch_head_next;
+  logic [ReorderBufferTagWidth:0] dispatch_count_next;
+  always_comb begin
+    dispatch_tail_next = tail_ptr;
+    if (i_flush_all) begin
+      dispatch_tail_next = head_ptr;
+    end else if (i_flush_en) begin
+      if (flush_after_head_commit) begin
+        dispatch_tail_next = head_ptr;
+      end else begin
+        dispatch_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
+      end
+    end else if (alloc_en) begin
+      dispatch_tail_next = tail_ptr + {{ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2, !alloc_en_2};
+    end
+
+    dispatch_head_next = head_ptr;
+    if (commit_en && !i_flush_all) begin
+      dispatch_head_next =
+          head_ptr + ({{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire});
+    end
+  end
+  assign dispatch_count_next = dispatch_tail_next - dispatch_head_next;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      dispatch_full_q       <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
+    end else begin
+      dispatch_full_q <= (dispatch_count_next == ReorderBufferDepth[ReorderBufferTagWidth:0]);
+      dispatch_full_for_2_q <=
+          dispatch_count_next >= (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
+    end
+  end
 
   // Allocation write - tail pointer management
   always_ff @(posedge i_clk) begin
@@ -1905,8 +1947,8 @@ module reorder_buffer (
   // Status Outputs
   // ===========================================================================
 
-  assign o_full = full;
-  assign o_full_for_2 = full_for_2;
+  assign o_full = dispatch_full_q;
+  assign o_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_count = count;
 
