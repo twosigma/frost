@@ -435,21 +435,6 @@ module register_alias_table (
   assign o_ras_valid_count = restored_ras_valid_count;
 
   // ===========================================================================
-  // Checkpoint Availability (Priority Encoder)
-  // ===========================================================================
-
-  always_comb begin
-    o_checkpoint_available = 1'b0;
-    o_checkpoint_alloc_id  = '0;
-    for (int i = NumCheckpoints - 1; i >= 0; i--) begin
-      if (!checkpoint_valid[i]) begin
-        o_checkpoint_available = 1'b1;
-        o_checkpoint_alloc_id  = i[CheckpointIdWidth-1:0];
-      end
-    end
-  end
-
-  // ===========================================================================
   // Source Lookup (Combinational)
   // ===========================================================================
 
@@ -708,7 +693,9 @@ module register_alias_table (
 
   // Combinational pre-merge: single next-state avoids NBA priority conflicts
   // between save, free, and bulk flush mask.
-  logic [NumCheckpoints-1:0] checkpoint_valid_next;
+  logic [   NumCheckpoints-1:0] checkpoint_valid_next;
+  logic                         checkpoint_available_next;
+  logic [CheckpointIdWidth-1:0] checkpoint_alloc_id_next;
 
   always_comb begin
     if (!i_rst_n || i_flush_all) begin
@@ -726,8 +713,21 @@ module register_alias_table (
     end
   end
 
+  always_comb begin
+    checkpoint_available_next = 1'b0;
+    checkpoint_alloc_id_next  = '0;
+    for (int i = NumCheckpoints - 1; i >= 0; i--) begin
+      if (!checkpoint_valid_next[i]) begin
+        checkpoint_available_next = 1'b1;
+        checkpoint_alloc_id_next  = i[CheckpointIdWidth-1:0];
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
-    checkpoint_valid <= checkpoint_valid_next;
+    checkpoint_valid       <= checkpoint_valid_next;
+    o_checkpoint_available <= checkpoint_available_next;
+    o_checkpoint_alloc_id  <= checkpoint_alloc_id_next;
   end
 
   // ===========================================================================

@@ -72,6 +72,12 @@ module store_queue #(
     // two stores would not fit).  Distinct from o_full so dispatch can
     // independently gate slot-2.
     output logic                     o_full_for_2,
+    // Registered back-pressure for the CPU dispatch path.
+    // Exact o_full/o_full_for_2 remain available for local visibility and
+    // direct queue allocation; these outputs are exact after the same edge
+    // that updates the valid mask.
+    output logic                     o_dispatch_full,
+    output logic                     o_dispatch_full_for_2,
 
     // =========================================================================
     // Early Address Update (from pipelined dispatch-time address computation)
@@ -172,8 +178,10 @@ module store_queue #(
     // Status
     // =========================================================================
     output logic                       o_empty,
+    output logic                       o_dispatch_empty,
     output logic                       o_committed_empty,  // No committed entries pending write
-    output logic [$clog2(DEPTH+1)-1:0] o_count
+    output logic [$clog2(DEPTH+1)-1:0] o_count,
+    output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count
 );
 
   // ===========================================================================
@@ -338,9 +346,9 @@ module store_queue #(
 
   logic                  full;
   logic                  full_for_2;
+  logic                  empty;
   logic                  dispatch_full_q;
   logic                  dispatch_full_for_2_q;
-  logic                  empty;
   logic [CountWidth-1:0] count;
   logic [CountWidth-1:0] dispatch_count_next;
   logic [     DEPTH-1:0] sq_valid_next_for_status;
@@ -370,6 +378,10 @@ module store_queue #(
   // ===========================================================================
   // Count, Full, Empty
   // ===========================================================================
+  // Exact local occupancy remains a live popcount so direct queue behavior
+  // recovers immediately after sparse partial flushes. Dispatch back-pressure
+  // is registered from the exact next valid mask so the CPU sees full flags
+  // one cycle later without losing usable queue entries.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -383,10 +395,14 @@ module store_queue #(
   assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == CountWidth'(0));
 
-  assign o_full = dispatch_full_q;
-  assign o_full_for_2 = dispatch_full_for_2_q;
+  assign o_full = full;
+  assign o_full_for_2 = full_for_2;
+  assign o_dispatch_full = dispatch_full_q;
+  assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
+  assign o_dispatch_empty = empty;
   assign o_count = count;
+  assign o_dispatch_count = count;
 
   // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
   // valid; if both fire, slot-1 (older) takes the first free slot from
@@ -397,10 +413,6 @@ module store_queue #(
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
-  // Exported dispatch back-pressure is registered, but still exact after the
-  // clock edge.  Mirroring the sq_valid next-state keeps the raw sq_valid
-  // popcount out of dispatch/LQ/SQ allocation cones without throwing away SQ
-  // capacity on store-heavy integer code.
   always_comb begin
     sq_valid_next_for_status = sq_valid;
 
@@ -453,10 +465,10 @@ module store_queue #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
-      dispatch_full_q       <= 1'b0;
+      dispatch_full_q <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
-      dispatch_full_q       <= dispatch_count_next == CountWidth'(DEPTH);
+      dispatch_full_q <= dispatch_count_next == CountWidth'(DEPTH);
       dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
     end
   end
