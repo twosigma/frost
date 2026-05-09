@@ -1199,6 +1199,12 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         dut_if.clear_dispatch()
         dut_if.clear_cdb()
 
+    if prev_model_issue_info is not None:
+        issue = dut_if.read_issue()
+        assert issue["valid"], "Final drain: model issued but DUT did not"
+        check_issue(issue, prev_model_issue, "final drain")
+        model.consume_issue(prev_model_issue_info[0])
+
     # Final count check
     assert (
         dut_if.count == model.count()
@@ -1327,6 +1333,11 @@ async def test_random_with_flush(dut: Any) -> None:
         dut_if.clear_cdb()
         dut_if.clear_flush_all()
         dut_if.clear_partial_flush()
+
+    if prev_model_issue_info is not None:
+        issue = dut_if.read_issue()
+        assert issue["valid"], "Final drain: model issued but DUT did not"
+        model.consume_issue(prev_model_issue_info[0])
 
     # Final count check
     assert (
