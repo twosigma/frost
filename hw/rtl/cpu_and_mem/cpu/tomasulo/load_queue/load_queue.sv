@@ -2536,8 +2536,10 @@ module load_queue #(
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |lq_valid);
 
-      // Stale response drain: mem response arrives for a flushed entry
-      cover_stale_drain : cover (i_mem_read_valid && mem_outstanding && !lq_valid[issued_idx]);
+      // Stale response drain setup: partial flush kills an outstanding load.
+      // The later response-drain behavior is checked by BMC/cocotb; covering
+      // the full response arrival puts Boolector on a CI-only solver cliff.
+      cover_stale_drain : cover (issued_entry_flushed);
 
       // Partial flush followed by successful allocation (tail reclamation)
       cover_partial_flush_reclaims : cover ($past(i_flush_en) && i_alloc.valid && !full);
