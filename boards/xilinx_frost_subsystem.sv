@@ -59,12 +59,15 @@ module xilinx_frost_subsystem #(
   logic [31:0] instruction_memory_write_data;
   logic [31:0] instruction_memory_read_data;
 
-  // Hold the programming IP in reset briefly after FPGA configuration so it
-  // cannot issue a spurious BRAM write before the first real JTAG transaction.
-  logic [ 4:0] programming_reset_counter = '0;
+  // Hold the programming IP and CPU in reset briefly after the board-level reset
+  // releases so clocks are stable before any BRAM write or instruction fetch.
+  logic [15:0] programming_reset_counter = '0;
   logic        programming_reset_n = 1'b0;
   always_ff @(posedge i_clk_div4) begin
-    if (!programming_reset_n) begin
+    if (!i_rst_n) begin
+      programming_reset_counter <= '0;
+      programming_reset_n <= 1'b0;
+    end else if (!programming_reset_n) begin
       programming_reset_counter <= programming_reset_counter + 1'b1;
       if (&programming_reset_counter) begin
         programming_reset_n <= 1'b1;
@@ -74,15 +77,16 @@ module xilinx_frost_subsystem #(
 
   logic       instruction_memory_program_enable;
   logic [3:0] instruction_memory_program_write_enable;
-  assign instruction_memory_program_enable = programming_reset_n & instruction_memory_enable;
+  assign instruction_memory_program_enable = i_rst_n & programming_reset_n &
+                                             instruction_memory_enable;
   assign instruction_memory_program_write_enable =
-      instruction_memory_write_enable & {4{programming_reset_n}};
+      instruction_memory_write_enable & {4{i_rst_n & programming_reset_n}};
 
   // JTAG-to-AXI bridge IP - converts JTAG commands to AXI transactions
   // Runs on divided clock to match JTAG frequency requirements
   jtag_axi_0 jtag_to_axi_bridge (
       .aclk(i_clk_div4),
-      .aresetn(programming_reset_n),
+      .aresetn(i_rst_n & programming_reset_n),
       // AXI master write address channel
       .m_axi_awaddr(axi_write_address),
       .m_axi_awprot(axi_write_protection),
@@ -113,7 +117,7 @@ module xilinx_frost_subsystem #(
   // Provides memory-mapped access to instruction memory for programming
   axi_bram_ctrl_0 axi_to_bram_controller (
       .s_axi_aclk   (i_clk_div4),
-      .s_axi_aresetn(programming_reset_n),
+      .s_axi_aresetn(i_rst_n & programming_reset_n),
       // AXI slave write address channel
       .s_axi_awaddr (axi_write_address),
       .s_axi_awprot (axi_write_protection),
