@@ -835,13 +835,17 @@ module load_queue #(
   // prioritize an eligible ROB-head load over the normal physical-order scan.
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
+  logic [ReorderBufferTagWidth-1:0] head_mem_stored_rob_tag;
   logic head_mem_update_found;
   logic [IdxWidth-1:0] head_mem_update_idx;
+  logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
   always_comb begin
-    head_mem_stored_found = 1'b0;
-    head_mem_stored_idx   = '0;
-    head_mem_update_found = 1'b0;
-    head_mem_update_idx   = '0;
+    head_mem_stored_found   = 1'b0;
+    head_mem_stored_idx     = '0;
+    head_mem_stored_rob_tag = '0;
+    head_mem_update_found   = 1'b0;
+    head_mem_update_idx     = '0;
+    head_mem_update_rob_tag = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (!head_mem_stored_found &&
           lq_valid[i] &&
@@ -853,8 +857,9 @@ module load_queue #(
           !lq_is_mmio[i] &&
           !lq_is_lr[i] &&
           !lq_is_amo[i]) begin
-        head_mem_stored_found = 1'b1;
-        head_mem_stored_idx   = IdxWidth'(i);
+        head_mem_stored_found   = 1'b1;
+        head_mem_stored_idx     = IdxWidth'(i);
+        head_mem_stored_rob_tag = lq_rob_tag[i];
       end
 
       if (!head_mem_update_found &&
@@ -866,8 +871,9 @@ module load_queue #(
           !in_flight_mask[i] &&
           !lq_is_lr[i] &&
           !lq_is_amo[i]) begin
-        head_mem_update_found = 1'b1;
-        head_mem_update_idx   = IdxWidth'(i);
+        head_mem_update_found   = 1'b1;
+        head_mem_update_idx     = IdxWidth'(i);
+        head_mem_update_rob_tag = lq_rob_tag[i];
       end
     end
   end
@@ -1044,9 +1050,9 @@ module load_queue #(
   // address RAM read address does not depend on i_addr_update.valid.
   always_comb begin
     stored_issue_idx      = head_mem_stored_found ? head_mem_stored_idx : stored_scan_idx;
-    stored_issue_rob_tag  = head_mem_stored_found ? i_rob_head_tag : stored_scan_rob_tag;
+    stored_issue_rob_tag  = head_mem_stored_found ? head_mem_stored_rob_tag : stored_scan_rob_tag;
 
-    update_issue_rob_tag  = head_mem_update_found ? i_rob_head_tag : update_scan_rob_tag;
+    update_issue_rob_tag  = head_mem_update_found ? head_mem_update_rob_tag : update_scan_rob_tag;
 
     issue_mem_found       = 1'b0;
     issue_mem_idx         = '0;

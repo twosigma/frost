@@ -2177,6 +2177,10 @@ module reorder_buffer (
   // alloc_valid not asserted during flush (matches existing simulation assertion)
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
+    assume (!(i_alloc_req.alloc_valid && full));
+    assume (!(i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid));
+    assume (!(i_alloc_req_2.alloc_valid && full_for_2));
+    assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
   // -------------------------------------------------------------------------
