@@ -26,6 +26,7 @@ module x3_frost (
 
   // Clock generation using Xilinx MMCM and clock dividers
   logic main_clock, divided_clock_by_4;
+  logic mmcm_locked;
   logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
 
   // Convert differential clock input to single-ended
@@ -57,7 +58,7 @@ module x3_frost (
       .PWRDWN  (1'b0),                                // Don't power down
       .CLKIN2  (1'b0),
       .CLKINSEL(1'b1),                                // Select CLKIN1
-      .LOCKED  (  /*not connected*/)
+      .LOCKED  (mmcm_locked)
   );
 
   // Global clock buffer with optional divide (divide by 1 = no division)
@@ -91,13 +92,13 @@ module x3_frost (
 
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
   // Clock: 300 MHz (reduced from 322.265625 MHz for timing closure)
-  // X3 has no push-button reset, so always keep reset deasserted
+  // X3 has no push-button reset; hold the subsystem in reset until the MMCM is locked.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
-      .i_rst_n(1'b1),  // No external reset on X3
+      .i_rst_n(mmcm_locked),
       .o_uart_tx,
       .i_uart_rx
   );

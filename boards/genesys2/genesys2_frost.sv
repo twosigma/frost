@@ -30,6 +30,7 @@ module genesys2_frost (
 
   // Clock generation using Xilinx MMCM primitive
   logic main_clock, divided_clock_by_4;
+  logic mmcm_locked;
   logic differential_clock_200mhz_buffered, clock_feedback, clock_from_mmcm, clock_div4_from_mmcm;
 
   // Convert differential clock input to single-ended
@@ -59,7 +60,7 @@ module genesys2_frost (
       .PWRDWN  (1'b0),                                // Don't power down
       .CLKIN2  (1'b0),
       .CLKINSEL(1'b1),                                // Select CLKIN1
-      .LOCKED  (  /*not connected*/)
+      .LOCKED  (mmcm_locked)
   );
 
   // Global clock buffer for low-skew distribution
@@ -81,7 +82,7 @@ module genesys2_frost (
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
-      .i_rst_n(i_pb_resetn),
+      .i_rst_n(i_pb_resetn & mmcm_locked),
       .o_uart_tx,
       .i_uart_rx
   );
