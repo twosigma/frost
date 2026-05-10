@@ -310,17 +310,17 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 109,256 | 1,029,600 | 10.6% |
-|   LUT as Logic | 99,480 | 1,029,600 | 9.7% |
-|   LUT as Distributed RAM | 9,192 | — | — |
+| CLB LUTs | 104,223 | 1,029,600 | 10.1% |
+|   LUT as Logic | 94,583 | 1,029,600 | 9.2% |
+|   LUT as Distributed RAM | 9,056 | — | — |
 |   LUT as Shift Register | 584 | — | — |
-| CLB Registers | 61,092 | 2,059,200 | 3.0% |
+| CLB Registers | 60,952 | 2,059,200 | 3.0% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,497 | 128,700 | 3.5% |
-| F7 Muxes | 3,014 | 514,800 | 0.6% |
-| F8 Muxes | 681 | 257,400 | 0.3% |
+| CARRY8 | 4,504 | 128,700 | 3.5% |
+| F7 Muxes | 3,000 | 514,800 | 0.6% |
+| F8 Muxes | 674 | 257,400 | 0.3% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
@@ -329,15 +329,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 104,549 | 203,800 | 51.3% |
-|   LUT as Logic | 93,449 | 203,800 | 45.9% |
+| Slice LUTs | 103,895 | 203,800 | 51.0% |
+|   LUT as Logic | 92,795 | 203,800 | 45.5% |
 |   LUT as Distributed RAM | 10,588 | — | — |
 |   LUT as Shift Register | 512 | — | — |
-| Slice Registers | 61,271 | 407,600 | 15.0% |
+| Slice Registers | 61,136 | 407,600 | 15.0% |
 | Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
-| F7 Muxes | 2,985 | 101,900 | 2.9% |
-| F8 Muxes | 598 | 50,950 | 1.2% |
+| F7 Muxes | 3,004 | 101,900 | 3.0% |
+| F8 Muxes | 664 | 50,950 | 1.3% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |

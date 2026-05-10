@@ -730,6 +730,8 @@ module dispatch (
   logic dispatch_fire;
   logic slot1_can_fire;  // Slot-1 standalone gate (unchanged)
   logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
+  logic slot2_resources_ok;
+  logic slot2_bundle_ok;
   logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
   logic int_rs_dispatch_fire;
   logic mul_rs_dispatch_fire;
@@ -766,38 +768,37 @@ module dispatch (
   // RS i_repair_valid_4/5/6.  An already-done slot-2 source is repaired the
   // cycle after dispatch, just like slot-1.
 
-  assign slot2_can_fire =
-      slot1_can_fire &&
-      dispatch_valid_2 &&
-      !is_branch_flag &&                              // slot-1 not a branch
+  assign slot2_resources_ok = !is_branch_flag &&  // slot-1 not a branch
       !i_rob_full_for_2 &&
       !rs_full_for_slot2 &&
       !(need_lq_2 && lq_full_for_slot2) &&
       !(need_sq_2 && sq_full_for_slot2) &&
       !(need_checkpoint_2 && !i_checkpoint_available);
+  assign slot2_can_fire = slot1_can_fire && dispatch_valid_2 && slot2_resources_ok;
+  assign slot2_bundle_ok = !dispatch_valid_2 || slot2_resources_ok;
   // Whole bundle fires together — either both fire or neither.  When
   // slot-2 isn't valid, the OR collapses to 1 and the bundle gate matches
   // slot-1's standalone gate.
-  assign bundle_fire_ok = slot1_can_fire && (!dispatch_valid_2 || slot2_can_fire);
+  assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
   assign dispatch_fire = bundle_fire_ok;
   assign int_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
   assign mul_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_MUL) && !i_mul_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
   assign mem_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_MEM) && !i_mem_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
   assign fp_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
   assign fmul_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FMUL) && !i_fmul_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
   assign fdiv_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FDIV) && !i_fdiv_rs_full &&
-      (!dispatch_valid_2 || slot2_can_fire);
+      slot2_bundle_ok;
 
   // Slot-2 per-RS dispatch fire signals.  Each gates on bundle_fire_ok plus
   // slot-2's specific RS family.  Like the slot-1 per-RS signals, only the
