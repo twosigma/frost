@@ -350,8 +350,8 @@ module store_queue #(
   logic                  dispatch_full_q;
   logic                  dispatch_full_for_2_q;
   logic [CountWidth-1:0] count;
+  logic                  sq_dispatch_write_decr;
   logic [CountWidth-1:0] dispatch_count_next;
-  logic [     DEPTH-1:0] sq_valid_next_for_status;
   logic                  committed_empty_q;
 
   // Slot-1 / slot-2 alloc targets and write enables (declared early so they
@@ -380,8 +380,12 @@ module store_queue #(
   // ===========================================================================
   // Exact local occupancy remains a live popcount so direct queue behavior
   // recovers immediately after sparse partial flushes. Dispatch back-pressure
-  // is registered from the exact next valid mask so the CPU sees full flags
-  // one cycle later without losing usable queue entries.
+  // accounts for same-cycle allocation/write-drain as a small count delta
+  // instead of rebuilding the whole next valid mask and popcounting it again.
+  // Partial flush and SC-discard clears are intentionally not included here:
+  // ignoring them can only leave dispatch back-pressure asserted for an extra
+  // cycle after recovery, and keeps ROB-head/flush-age logic out of these
+  // status flops.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -414,53 +418,15 @@ module store_queue #(
                                           : alloc_target[IdxWidth-1:0];
 
   always_comb begin
-    sq_valid_next_for_status = sq_valid;
-
-    if (i_flush_all) begin
-      sq_valid_next_for_status = '0;
-    end else begin
-      if (i_flush_en) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_committed[i] &&
-              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
-              !(i_commit_valid_comb_2 && sq_rob_tag[i] == i_commit_rob_tag_comb_2) &&
-              !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
-              !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
-              (flush_all_uncommitted || is_younger(
-                  sq_rob_tag[i], i_flush_tag, i_rob_head_tag
-              ))) begin
-            sq_valid_next_for_status[i] = 1'b0;
-          end
-        end
-      end
-
-      if (slot1_alloc_en) begin
-        sq_valid_next_for_status[alloc_target[IdxWidth-1:0]] = 1'b1;
-      end
-      if (slot2_alloc_en) begin
-        sq_valid_next_for_status[slot2_alloc_idx] = 1'b1;
-      end
-
-      if (i_sc_discard) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
-              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
-            sq_valid_next_for_status[i] = 1'b0;
-          end
-        end
-      end
-
-      if (i_mem_write_done && write_outstanding && write_completes_entry) begin
-        sq_valid_next_for_status[write_entry_idx] = 1'b0;
-      end
+    sq_dispatch_write_decr = 1'b0;
+    if (i_mem_write_done && write_outstanding && write_completes_entry) begin
+      sq_dispatch_write_decr = 1'b1;
     end
   end
 
   always_comb begin
-    dispatch_count_next = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      dispatch_count_next = dispatch_count_next + CountWidth'(sq_valid_next_for_status[i]);
-    end
+    dispatch_count_next = count + CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
+                          CountWidth'(sq_dispatch_write_decr);
   end
 
   always_ff @(posedge i_clk) begin
