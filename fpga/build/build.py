@@ -223,13 +223,31 @@ def extract_timing_from_report(timing_rpt_path: Path) -> dict:
     return result
 
 
-def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
+def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -> bool:
     """Compile hello_world application for initial BRAM contents."""
     app_dir = project_root / "sw" / "apps" / "hello_world"
 
     if not app_dir.exists():
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
         return False
+
+    # Keep board builds isolated; Vivado reads these files during synthesis.
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs = {
+        "EXECUTABLE_ELF_FILE": output_dir / "sw.elf",
+        "VERILOG_HEX_FILE": output_dir / "sw.mem",
+        "RAW_BINARY_FILE": output_dir / "sw.bin",
+        "VIVADO_BRAM_FILE": output_dir / "sw.txt",
+        "DISASSEMBLY_FILE": output_dir / "sw.S",
+        "IMEM_EVEN_INIT_FILE": output_dir / "sw_imem_even.mem",
+        "IMEM_ODD_INIT_FILE": output_dir / "sw_imem_odd.mem",
+        "IMEM_EVEN_SIDEBAND_FILE": output_dir / "sw_imem_even_sideband.mem",
+        "IMEM_ODD_SIDEBAND_FILE": output_dir / "sw_imem_odd_sideband.mem",
+    }
+
+    for output_path in outputs.values():
+        output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
@@ -238,16 +256,13 @@ def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
 
     try:
         print(f"Compiling hello_world with FPGA_CPU_CLK_FREQ={clock_freq}...")
-        subprocess.run(
-            ["make", "clean"],
-            cwd=app_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        make_args = [
+            "make",
+            f"FPGA_CPU_CLK_FREQ={clock_freq}",
+            *[f"{name}={path}" for name, path in outputs.items()],
+        ]
         result = subprocess.run(
-            ["make"],
+            make_args,
             cwd=app_dir,
             env=env,
             capture_output=False,
@@ -257,10 +272,13 @@ def compile_hello_world(project_root: Path, clock_freq: int) -> bool:
         if result.returncode != 0:
             return False
 
-        sw_mem = app_dir / "sw.mem"
-        if not sw_mem.exists():
-            print("Error: sw.mem not created for hello_world", file=sys.stderr)
-            return False
+        for output_path in outputs.values():
+            if not output_path.exists():
+                print(
+                    f"Error: {output_path.name} not created for hello_world",
+                    file=sys.stderr,
+                )
+                return False
 
         return True
 
@@ -316,6 +334,7 @@ def run_step(
     step: str,
     directive: str,
     vivado_path: str,
+    software_mem_dir: Path | None = None,
     retiming: bool = False,
     keep_temps: bool = False,
 ) -> tuple[bool, float | None, str]:
@@ -361,6 +380,8 @@ def run_step(
         str(input_checkpoint) if input_checkpoint else "",
         "1" if retiming else "0",
     ]
+    if software_mem_dir is not None:
+        vivado_command.append(str(software_mem_dir))
 
     result = subprocess.run(vivado_command, cwd=work_dir)
 
@@ -606,11 +627,19 @@ Examples:
         print(f"# Directives: {', '.join(directives_summary)}")
     print(f"{'#'*70}")
 
+    main_work = script_dir / board_name / "work"
+    software_mem_dir = main_work / "hello_world"
+
     # Compile hello_world (skip if resuming from a checkpoint)
     if args.start_at == "synth":
-        if not compile_hello_world(project_root, clock_freq):
+        if not compile_hello_world(project_root, software_mem_dir, clock_freq):
             print("Error: Failed to compile hello_world", file=sys.stderr)
             sys.exit(1)
+    else:
+        print(
+            f"Skipping hello_world compile because build starts at "
+            f"'{args.start_at}'; BRAM contents are already in the checkpoint."
+        )
 
     # Determine which steps to run
     start_idx = STEPS.index(args.start_at)
@@ -624,7 +653,6 @@ Examples:
     print(f"\nSteps to run: {' -> '.join(steps_to_run)}")
 
     # Check required checkpoint for start step
-    main_work = script_dir / board_name / "work"
     required_checkpoint = STEP_REQUIRES_CHECKPOINT[args.start_at]
     if required_checkpoint:
         checkpoint_path = main_work / required_checkpoint
@@ -647,6 +675,7 @@ Examples:
             step,
             directive,
             args.vivado_path,
+            software_mem_dir=software_mem_dir if step == "synth" else None,
             retiming=retiming,
             keep_temps=args.keep_temps,
         )
