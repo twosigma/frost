@@ -758,27 +758,33 @@ module tomasulo_wrapper #(
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
   // when the adapter is idle.  In production cpu_ooo ties them to '0.
-  riscv_pkg::fu_complete_t   cdb_arb_in                                     [riscv_pkg::NumFus];
+  riscv_pkg::fu_complete_t   cdb_arb_in_0;
+  riscv_pkg::fu_complete_t   cdb_arb_in_1;
+  riscv_pkg::fu_complete_t   cdb_arb_in_2;
+  riscv_pkg::fu_complete_t   cdb_arb_in_3;
+  riscv_pkg::fu_complete_t   cdb_arb_in_4;
+  riscv_pkg::fu_complete_t   cdb_arb_in_5;
+  riscv_pkg::fu_complete_t   cdb_arb_in_6;
   always_comb begin
-    cdb_arb_in[0] = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
-    cdb_arb_in[1] = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
-    cdb_arb_in[2] = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
-    cdb_arb_in[3] = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
-    cdb_arb_in[4] = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
-    cdb_arb_in[5] = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
-    cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
+    cdb_arb_in_0 = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
+    cdb_arb_in_1 = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
+    cdb_arb_in_2 = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
+    cdb_arb_in_3 = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
+    cdb_arb_in_4 = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
+    cdb_arb_in_5 = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
+    cdb_arb_in_6 = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
   end
 
   cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
       .i_rst_n        (i_rst_n),
-      .i_fu_complete_0(cdb_arb_in[0]),
-      .i_fu_complete_1(cdb_arb_in[1]),
-      .i_fu_complete_2(cdb_arb_in[2]),
-      .i_fu_complete_3(cdb_arb_in[3]),
-      .i_fu_complete_4(cdb_arb_in[4]),
-      .i_fu_complete_5(cdb_arb_in[5]),
-      .i_fu_complete_6(cdb_arb_in[6]),
+      .i_fu_complete_0(cdb_arb_in_0),
+      .i_fu_complete_1(cdb_arb_in_1),
+      .i_fu_complete_2(cdb_arb_in_2),
+      .i_fu_complete_3(cdb_arb_in_3),
+      .i_fu_complete_4(cdb_arb_in_4),
+      .i_fu_complete_5(cdb_arb_in_5),
+      .i_fu_complete_6(cdb_arb_in_6),
       .i_kill         (cdb_kill),
       .o_cdb          (cdb_bus_comb),
       .o_grant        (o_cdb_grant),
@@ -1233,7 +1239,8 @@ module tomasulo_wrapper #(
   assign sc_fire_now = sc_can_fire &&
                        !mem_adapter_result_pending &&
                        !lq_fu_complete.valid &&
-                       !store_misalign_issue;
+                       !store_misalign_issue &&
+                       !store_misalign_fu_complete_reg.valid;
 
   // SC fu_complete generation
   riscv_pkg::fu_complete_t sc_fu_complete;
@@ -1290,12 +1297,53 @@ module tomasulo_wrapper #(
         riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
   end
 
+  // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
+  //   stage2_src1_bypassed → src1+imm → align check → store_misalign_fu_complete
+  //   .valid → mem_fu_to_adapter → mem adapter passthrough → cdb_arb_in[3]
+  //   → cdb_bus_reg[tag]
+  // was the second-worst path family on x3.  Misaligned stores are exceptions
+  // (CoreMark has none), so the resulting 1-cycle delay on the misalign-CDB
+  // path is negligible.  Plain LQ results still take the fast combinational
+  // path through mem_fu_to_adapter below.
+  // Partial-flush kill: if the misaligned store's tag is younger than a
+  // partial flush boundary, drop it.  Mirrors the partial_flush_input /
+  // partial_flush_held checks inside fu_cdb_adapter so the registered version
+  // never delivers a CDB completion for a flushed ROB entry.
+  logic store_misalign_input_flushed;
+  logic store_misalign_held_flushed;
+  assign store_misalign_input_flushed = speculative_flush_en &&
+      store_misalign_fu_complete.valid &&
+      is_younger(
+      store_misalign_fu_complete.tag, i_flush_tag, head_tag
+  );
+  riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
+  assign store_misalign_held_flushed = speculative_flush_en &&
+      store_misalign_fu_complete_reg.valid &&
+      is_younger(
+      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
+  );
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all || store_misalign_held_flushed) begin
+      store_misalign_fu_complete_reg.valid <= 1'b0;
+    end else begin
+      store_misalign_fu_complete_reg.valid <=
+          store_misalign_fu_complete.valid && !store_misalign_input_flushed;
+    end
+
+    store_misalign_fu_complete_reg.tag <= store_misalign_fu_complete.tag;
+    store_misalign_fu_complete_reg.value <= store_misalign_fu_complete.value;
+    store_misalign_fu_complete_reg.exception <= store_misalign_fu_complete.exception;
+    store_misalign_fu_complete_reg.exc_cause <= store_misalign_fu_complete.exc_cause;
+    store_misalign_fu_complete_reg.fp_flags <= store_misalign_fu_complete.fp_flags;
+  end
+
   // MUX: SC > misaligned store exception > LQ for MEM adapter input.
   // Aligned plain stores mark the ROB done directly and do not occupy CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
     if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
-    else if (store_misalign_fu_complete.valid) mem_fu_to_adapter = store_misalign_fu_complete;
+    else if (store_misalign_fu_complete_reg.valid)
+      mem_fu_to_adapter = store_misalign_fu_complete_reg;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
@@ -1305,6 +1353,7 @@ module tomasulo_wrapper #(
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_issue &&
+                              !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
@@ -2544,7 +2593,8 @@ module tomasulo_wrapper #(
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
       .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_reg.valid ||
-                                store_misalign_issue),
+                                store_misalign_issue ||
+                                store_misalign_fu_complete_reg.valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
@@ -3674,8 +3724,12 @@ module tomasulo_wrapper #(
       // SQ allocation
       cover_sq_alloc : cover (sq_alloc_req.valid);
 
-      // SQ memory write issued
+`ifdef FORMAL_DEEP_COVER
+      // Full dispatch -> commit -> SQ memory-write integration path. This is
+      // intentionally kept out of the default wrapper cover task because the
+      // SQ itself covers memory writes and this path dominates CI runtime.
       cover_sq_mem_write : cover (o_sq_mem_write_en);
+`endif
 
       // SQ commit
       cover_sq_commit : cover (sq_commit_valid);
