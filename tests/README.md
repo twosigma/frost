@@ -209,7 +209,12 @@ pytest test_riscv_torture.py -v -m slow
 
 ### `test_run_yosys.py`
 
-Runs Yosys synthesis to verify the design can be synthesized without errors. Uses open-source tools only (no Xilinx IP cores).
+Runs Yosys synthesis checks. The generic target intentionally stops after Yosys
+coarse synthesis, which verifies vendor-agnostic elaboration, procedural
+lowering, memory inference, and structural checks without defining Xilinx
+primitives. It does not prove that the full CPU maps all the way to ASIC gates
+or a non-Xilinx FPGA fabric. The Xilinx targets still run full Yosys synthesis
+for 7-series, UltraScale, and UltraScale+.
 
 **Standalone Usage:**
 
