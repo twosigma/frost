@@ -1,9 +1,10 @@
 # Store Queue
 
-The SQ holds in-flight stores from dispatch until the ROB commits
-them, at which point the head entry writes to memory. Stores are
-non-speculative: nothing leaves the SQ until commit, so flushed
-speculative stores never reach the bus.
+The SQ holds in-flight stores from dispatch until the ROB commits them, at
+which point the head entry writes to memory. It has independent slot-1 and
+slot-2 allocation ports for 2-wide dispatch. Stores are non-speculative:
+nothing leaves the SQ until commit, so flushed speculative stores never reach
+the bus.
 
 ## What makes stores interesting
 
@@ -40,6 +41,14 @@ the MMIO address range on the muxed data-memory address — that
 recomputation used to pull the LQ issue cone into the BRAM write
 enable whenever no store was firing.
 
+## 2-wide allocation
+
+When both dispatch slots allocate stores, slot 1 takes the older free entry and
+slot 2 takes the next free entry, preserving program order through the SQ. When
+only slot 2 is a store, it takes the first free entry. The `full_for_2` output
+lets dispatch block a two-store bundle when only one entry is free while still
+allowing a single-store dispatch to proceed.
+
 ## Widen-commit slot 2
 
 The SQ accepts a parallel slot-2 commit port
@@ -74,8 +83,8 @@ writeback can read different entries on the same cycle.
 
 ## Verification
 
-Cocotb tests cover allocation, address/data update, every store
-size, FSD two-phase, store-to-load forwarding, MMIO bypass,
-partial/full flush, SC discard, and constrained random. Inline
-formal properties cover pointer/count consistency, write
-prerequisites, the committed-survives-flush invariant, and forwarding.
+Cocotb tests cover allocation including 2-wide cases, address/data update,
+every store size, FSD two-phase, store-to-load forwarding, MMIO bypass,
+partial/full flush, SC discard, and constrained random. Inline formal
+properties cover pointer/count consistency, write prerequisites, the
+committed-survives-flush invariant, and forwarding.

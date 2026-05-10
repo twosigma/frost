@@ -5,6 +5,8 @@ with different depths for INT (16), MUL (4), MEM (8), FP (6),
 FMUL (4), and FDIV (2) operations. Each instance tracks operand
 readiness for its slice of the instruction stream and issues to a
 functional unit when both sources (or all three, for FMA) are ready.
+Each RS accepts slot-1 and slot-2 dispatch packets so a 2-wide bundle can place
+two entries into the same station when there is room.
 
 INT_RS is sized to absorb the bursty ALU arrivals that dominate
 CoreMark — CoreMark profiling showed INT RS full ~7% of the time
@@ -31,9 +33,13 @@ because they need parallel CAM-style access for CDB tag comparison
 across all entries. The read-once payload (operation, immediate,
 rounding mode, branch target, prediction metadata, CSR address, …)
 is written once at dispatch and read once at issue, so it lives in
-distributed RAM with a single write port and a single read port.
+distributed RAM with dispatch write ports and a single issue read port.
 This saves a substantial number of flip-flops compared to keeping
 the whole entry in registers.
+
+The payload RAM has parallel dispatch write ports for slot 1 and slot 2. The RS
+reports both `full` and `full_for_2`; dispatch uses the latter when both slots
+target the same station.
 
 ## Pre-issue look-ahead
 
@@ -63,7 +69,7 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests cover dispatch, CDB wakeup for each source slot,
-same-cycle bypass, issue priority, FU ready gating, immediate
-bypass, and partial/full flush. Inline formal properties prove
-the dispatch / issue / wakeup / flush invariants.
+Cocotb tests cover dispatch, 2-wide allocation, CDB wakeup for each source
+slot, same-cycle bypass, issue priority, FU ready gating, immediate bypass, and
+partial/full flush. Inline formal properties prove the dispatch / issue /
+wakeup / flush invariants.

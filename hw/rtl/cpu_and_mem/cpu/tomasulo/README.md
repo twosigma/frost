@@ -4,15 +4,15 @@ The Tomasulo back-end replaces the in-order EX / MA / WB pipeline with
 dynamic instruction scheduling, register renaming, speculation, and
 out-of-order completion — while preserving precise exceptions and the
 existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zihintpause).
-The front-end (IF / PD / ID, branch predictor, RAS, RVC) and the
-functional units (ALU, multiplier, divider, FPU) are reused unchanged
-from the in-order core.
+The front-end (IF / PD / ID, branch predictor, RAS, RVC) supplies up to two
+decoded instructions per cycle; the functional units (ALU, multiplier, divider,
+FPU) are reused through OOO shims.
 
 ```
-   IF → PD → ID → dispatch ──► ROB                ┌─► commit ─► regfile / SQ /
-                  rename       (32 entries)       │             trap entry / redirect
-                  resource    + RAT (INT+FP,
-                  alloc        8 ckpts)
+   IF → PD → ID → 2-wide dispatch ─► ROB          ┌─► commit ─► regfile / SQ /
+                  rename/resource     (32 entries)│             trap entry / redirect
+                  allocation         + RAT (INT+FP,
+                                      8 ckpts)
                                   │
                                   ▼
                          ┌────────────────────────┐
@@ -39,7 +39,7 @@ from the in-order core.
 | Submodule                                                          | Role |
 |--------------------------------------------------------------------|------|
 | [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below, plus inline routing / SC FSM / commit & CDB pipelining |
-| [`dispatch/`](dispatch/README.md)                                  | Combinational rename + resource allocation hub |
+| [`dispatch/`](dispatch/README.md)                                  | 2-wide combinational rename + resource allocation hub |
 | [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |
 | [`reservation_station/`](reservation_station/README.md)            | Generic RS, instantiated 6× |
@@ -142,6 +142,22 @@ read sources from the appropriate RAT per source slot.
 If an FP instruction's `rm` field is `DYN`, dispatch substitutes the
 current `frm` CSR value into the RS entry — capturing it in program
 order so subsequent `frm` writes don't affect in-flight FP ops.
+
+### 2-wide dispatch
+
+Dispatch accepts slot 1 plus an optional slot 2 from ID. The bundle fires
+atomically: slot 2 only allocates when slot 1 also allocates and every targeted
+structure has room for the bundle. If both slots target the same ROB, RS, LQ,
+or SQ resource, dispatch uses the corresponding "room for 2" status; otherwise
+plain full checks are enough.
+
+Slot 1 control flow terminates the bundle. Slot 2 has its own RAT lookups,
+destination rename, ROB allocation, RS packet, and done-repair channels. A
+slot-2 source that reads slot 1's destination is redirected to slot 1's just
+allocated ROB tag inside dispatch, so same-bundle RAW dependencies behave like
+ordinary renamed dependencies. The checkpoint pool remains single-save-per-cycle
+because slot 1 branch/jump instructions suppress slot 2; when slot 2 is the
+control-flow instruction, the checkpoint snapshot overlays slot 1's rename.
 
 ### 2-wide commit
 

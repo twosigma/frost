@@ -2,9 +2,9 @@
 
 The LQ tracks every in-flight load from dispatch through memory access
 to CDB broadcast. It also owns the L0 data cache, the LR/SC
-reservation register, and the AMO read-modify-write path. Loads
-allocate in program order at dispatch and free when their result is
-broadcast on the CDB.
+reservation register, and the AMO read-modify-write path. Loads allocate in
+program order at dispatch, with independent slot-1 and slot-2 allocation ports
+for 2-wide bundles, and free when their result is broadcast on the CDB.
 
 ## What makes loads interesting
 
@@ -105,6 +105,10 @@ SQ forwards, and AMO write-completion. The split lets a memory
 response for the previously-issued load and a cache hit on the
 newly-captured load land in the same cycle without colliding.
 
+Allocation metadata has separate slot-1 and slot-2 write paths. When both slots
+allocate loads, slot 1 takes the older free entry and slot 2 takes the next free
+entry; when only slot 2 is a load, it takes the first free entry.
+
 ## Performance counters
 
 The LQ emits pulses for the wrapper's performance counters so the
@@ -119,8 +123,8 @@ still live alongside the decomposition.
 
 ## Verification
 
-Cocotb tests cover allocation, address update, every load size,
-SQ forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing, partial
-and full flush, AMO read-modify-write, LR/SC reservation, and
-constrained-random stress. Inline formal properties prove pointer
-invariants, issue prerequisites, MMIO ordering, and flush behavior.
+Cocotb tests cover allocation including 2-wide cases, address update, every
+load size, SQ forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing,
+partial and full flush, AMO read-modify-write, LR/SC reservation, and
+constrained-random stress. Inline formal properties prove pointer invariants,
+issue prerequisites, MMIO ordering, and flush behavior.

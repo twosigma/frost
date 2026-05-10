@@ -1,14 +1,14 @@
 # FROST CPU
 
-`cpu_ooo.sv` is the top-level RISC-V CPU module. It pairs an unchanged
+`cpu_ooo.sv` is the top-level RISC-V CPU module. It pairs a 2-wide
 in-order front-end (IF / PD / ID, branch predictor, RAS, RVC) with a
 Tomasulo out-of-order back-end (in [`tomasulo/`](tomasulo/README.md)).
 The reused functional units (ALU, multiplier, divider, FPU) live under
 `ex_stage/` and are wrapped by FU shims for OOO use.
 
 ```
-   IF → PD → ID → dispatch → tomasulo_wrapper → commit → regfiles
-                              (ROB / RAT / RS×6 / LQ+L0$ / SQ / CDB)
+   IF → PD → ID → 2-wide dispatch → tomasulo_wrapper → commit → regfiles
+                                     (ROB / RAT / RS×6 / LQ+L0$ / SQ / CDB)
 ```
 
 ## What lives in cpu_ooo.sv
@@ -67,6 +67,16 @@ prediction stays fresh.
 
 It also owns the performance counters (~23 of them, banked into
 groups to keep readout fanout under control).
+
+### 2-wide dispatch integration
+
+The front-end carries two instruction packets through IF, PD, and ID. Dispatch
+then fires slot 1 plus an optional slot 2 as an atomic bundle when the ROB,
+target RS, LQ/SQ, and checkpoint pool have room. Slot 1 control flow terminates
+the bundle; slot 2 can still be ordinary integer or memory work, or a
+BTB-predicted branch/JALR when the slot-2 BTB lookup hits. Native 32-bit slot-2
+branches at halfword PCs are supported when the BTB entry was trained for that
+instruction size.
 
 ### Memory port arbitration
 

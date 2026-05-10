@@ -137,7 +137,7 @@ pytest test_arch_compliance.py -v -m slow
 
 ### `test_riscv_tests.py`
 
-Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and OOO commit cases that arch_test's single-instruction focus does not cover.
+Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and 2-wide dispatch/OOO commit cases that arch_test's single-instruction focus does not cover.
 
 **Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
 
