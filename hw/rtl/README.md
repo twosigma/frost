@@ -1,7 +1,7 @@
 # FROST RTL
 
 This directory contains the synthesizable SystemVerilog for FROST. The current
-CPU is a Tomasulo out-of-order RV32GCB implementation with an in-order
+CPU is a Tomasulo out-of-order RV32GCB implementation with a 2-wide in-order
 IF/PD/ID front-end, register renaming, dynamic scheduling, precise in-order
 commit, machine-mode traps, and separate instruction/data memory ports.
 
@@ -20,7 +20,7 @@ frost.sv
     data RAM
     MMIO timer/UART/FIFOs
     cpu_ooo.sv
-      IF -> PD -> ID -> dispatch
+      IF -> PD -> ID -> 2-wide dispatch
                          ROB / RAT / RS / LQ / SQ / CDB
                          FU shims around ALU, MUL/DIV, FPU
                          2-wide commit -> INT/FP regfiles
@@ -31,12 +31,13 @@ The front-end is still staged as IF, PD, and ID:
 
 | Stage | Main Files | Role |
 |-------|------------|------|
-| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB/RAS prediction, RVC parcel alignment |
-| PD | `cpu_and_mem/cpu/pd_stage/` | RVC decompression, instruction selection, early source extraction |
-| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR reads |
+| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB/RAS prediction including slot-2 BTB lookup, RVC parcel alignment |
+| PD | `cpu_and_mem/cpu/pd_stage/` | RVC decompression, instruction selection, early source extraction for both dispatch slots |
+| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR reads, two registered dispatch packets |
 
-After ID, `dispatch/dispatch.sv` allocates Tomasulo resources and sends work
-to `tomasulo/tomasulo_wrapper.sv`. The wrapper owns the ROB, RATs,
+After ID, `dispatch/dispatch.sv` allocates Tomasulo resources for one or two
+instructions per cycle and sends work to `tomasulo/tomasulo_wrapper.sv`. The
+wrapper owns the ROB, RATs,
 reservation stations, load/store queues, CDB arbiter, FU shims, and profiling
 counters. See [cpu/README.md](cpu_and_mem/cpu/README.md) and
 [cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed

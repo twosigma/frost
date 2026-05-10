@@ -9,8 +9,9 @@ resolution and exception handling.
 
 A 32-entry circular buffer with head and tail pointers (extra MSB
 wrap bit so full and empty are distinguishable). Allocation is
-in-order at dispatch, completion is out-of-order via the CDB
-(or directly for plain stores), and commit is in-order at the head.
+in-order at dispatch, with slot 1 and slot 2 able to allocate adjacent entries
+in the same cycle. Completion is out-of-order via the CDB (or directly for
+plain stores), and commit is in-order at the head.
 
 INT and FP instructions share a single buffer with a `dest_rf` flag
 to distinguish them. There's no need for separate INT/FP queues —
@@ -19,10 +20,10 @@ the constraint is in-order *commit*, not in-order *execution*.
 ### Storage strategy
 
 Multi-bit fields (PC, value, dest reg, branch target, exception
-cause, FP flags, …) live in distributed RAM. Single-write fields
-(written only at allocation) use a 1-write-port LUTRAM; multi-write
-fields (allocation + CDB or branch resolution) use a 2-write-port
-LUTRAM with a Live Value Table. The 1-bit packed flags
+cause, FP flags, …) live in distributed RAM. Allocation-only fields
+use paired allocation write ports for slot 1 and slot 2; fields also
+updated by CDB or branch resolution use multi-write LUTRAMs with a Live
+Value Table. The 1-bit packed flags
 (`valid`, `done`, `exception`, branch flags, etc.) stay in flip-flops
 because they need per-entry clear on partial flush.
 
@@ -32,6 +33,14 @@ wrapper's FMUL operand-repair queue — implemented as multiple LUTRAM
 instances with identical writes and different read addresses.
 
 This saves several thousand FFs vs. a pure-FF design.
+
+## Two-wide allocation
+
+Dispatch provides a primary allocation request and an optional slot-2 request.
+Slot 2 only allocates when slot 1 also allocates, and `full_for_2` blocks the
+pair when only one ROB entry is free. Slot 1 receives the current tail tag;
+slot 2 receives `tail+1`, preserving program order for later commit and
+checkpoint age comparisons.
 
 ## Serializing instructions
 

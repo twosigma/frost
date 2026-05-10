@@ -77,7 +77,11 @@ The FPGA tooling is organized into three main workflows:
 
 ## Building
 
-The build script runs a 6-step Vivado pipeline (synth, opt, place, post-place phys_opt, route, post-route phys_opt). Each step uses the `Default` directive unless overridden via `--*-directive` flags. Steps can be started/stopped at any point using checkpoints.
+The build script runs the Vivado implementation pipeline and compiles
+`hello_world` into board-local initial BRAM contents before synthesis. Each
+step uses the configured default directive unless overridden via
+`--*-directive` flags. Steps can be started/stopped at any point using
+checkpoints.
 
 ```bash
 # Full build with default directives
