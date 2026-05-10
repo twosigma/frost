@@ -384,7 +384,6 @@ module load_queue #(
   logic dispatch_full_q;
   logic dispatch_full_for_2_q;
   logic [CountWidth-1:0] dispatch_count_next;
-  logic [DEPTH-1:0] lq_valid_next_for_status;
 
   // Issue selection
   logic issue_cdb_found;  // Phase A: entry with data_valid
@@ -418,6 +417,7 @@ module load_queue #(
   logic sq_check_is_lr_q;
   logic sq_check_is_amo_q;
   logic sq_check_no_older_store_q;
+  logic [DEPTH-1:0] sq_check_in_flight_mask;
   logic sq_check_capture;
   logic sq_check_replace;
   logic sq_check_entry_valid;
@@ -555,8 +555,11 @@ module load_queue #(
   // ===========================================================================
   // Exact local occupancy remains a live popcount so direct queue behavior
   // recovers immediately after sparse partial flushes. Dispatch back-pressure
-  // is registered from the exact next valid mask so the CPU sees full flags
-  // one cycle later without losing usable queue entries.
+  // accounts for same-cycle allocation/free as a small count delta instead of
+  // rebuilding the whole next valid mask and popcounting it again. Partial
+  // flush clears are intentionally not included here: ignoring them can only
+  // leave dispatch back-pressure asserted for an extra cycle after recovery,
+  // and keeps ROB-head/flush-age logic out of these status flops.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -588,41 +591,8 @@ module load_queue #(
                                           : alloc_target[IdxWidth-1:0];
 
   always_comb begin
-    lq_valid_next_for_status = lq_valid;
-
-    if (i_flush_all) begin
-      lq_valid_next_for_status = '0;
-    end else begin
-      if (i_flush_en) begin
-        if (flush_all_entries) begin
-          lq_valid_next_for_status = '0;
-        end else begin
-          for (int i = 0; i < DEPTH; i++) begin
-            if (lq_valid[i] && is_younger(lq_rob_tag[i], i_flush_tag, i_rob_head_tag)) begin
-              lq_valid_next_for_status[i] = 1'b0;
-            end
-          end
-        end
-      end
-
-      if (slot1_alloc_en) begin
-        lq_valid_next_for_status[alloc_target[IdxWidth-1:0]] = 1'b1;
-      end
-      if (slot2_alloc_en) begin
-        lq_valid_next_for_status[slot2_alloc_idx] = 1'b1;
-      end
-
-      if (free_entry_en) begin
-        lq_valid_next_for_status[free_entry_idx] = 1'b0;
-      end
-    end
-  end
-
-  always_comb begin
-    dispatch_count_next = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      dispatch_count_next = dispatch_count_next + CountWidth'(lq_valid_next_for_status[i]);
-    end
+    dispatch_count_next = count + CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
+                          CountWidth'(free_entry_en);
   end
 
   always_ff @(posedge i_clk) begin
@@ -754,17 +724,13 @@ module load_queue #(
     end
   end
 
-  // Mask of the entry already claimed by the sq_check staging register.
-  // With back-to-back issue enabled, sq_check_capture can fire in the same
-  // cycle that the previous candidate launches, so the priority encoder must
-  // avoid re-picking the entry already held in sq_check_idx before
-  // lq_issued becomes visible.
+  // Mask of the entry already claimed by the sq_check staging register.  Keep
+  // this as registered one-hot state instead of deriving it from sq_check_idx
+  // with a live equality compare.  The derived compare put sq_check_idx on the
+  // issue-selection -> sq_check_payload_en control path, which is exactly the
+  // post-synth WNS limiter on x3.
   logic [DEPTH-1:0] in_flight_mask;
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      in_flight_mask[i] = sq_check_pending && (sq_check_idx == IdxWidth'(i));
-    end
-  end
+  assign in_flight_mask = sq_check_in_flight_mask;
 
   // Phase B: per-entry memory issue eligibility (parallel).
   // Split stored-address entries from the single entry whose address arrives
@@ -1700,6 +1666,7 @@ module load_queue #(
   logic sq_check_pending_next;
   logic sq_check_no_older_store_next;
   logic sq_check_phase2_next;
+  logic [DEPTH-1:0] sq_check_in_flight_mask_next;
   logic sq_check_flushed;
   assign sq_check_flushed = i_flush_en && sq_check_pending && (flush_all_entries || is_younger(
       sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
@@ -1709,20 +1676,25 @@ module load_queue #(
     sq_check_pending_next        = sq_check_pending;
     sq_check_no_older_store_next = sq_check_no_older_store_q;
     sq_check_phase2_next         = sq_check_phase2;
+    sq_check_in_flight_mask_next = sq_check_in_flight_mask;
 
     if (sq_check_flushed) begin
       sq_check_pending_next        = 1'b0;
       sq_check_no_older_store_next = 1'b0;
       sq_check_phase2_next         = 1'b0;
+      sq_check_in_flight_mask_next = '0;
     end else if (sq_check_capture || sq_check_replace) begin
-      sq_check_pending_next        = 1'b1;
-      sq_check_no_older_store_next = i_sq_empty;
-      sq_check_phase2_next         = i_sq_empty;
+      sq_check_pending_next                           = 1'b1;
+      sq_check_no_older_store_next                    = i_sq_empty;
+      sq_check_phase2_next                            = i_sq_empty;
+      sq_check_in_flight_mask_next                    = '0;
+      sq_check_in_flight_mask_next[sq_check_idx_next] = 1'b1;
     end else if (sq_check_pending &&
                  (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                   launch_mem_issue || misalign_bypass_fire)) begin
       // launch_mem_issue keeps the slot held through bus_busy stalls.
-      sq_check_pending_next = 1'b0;
+      sq_check_pending_next        = 1'b0;
+      sq_check_in_flight_mask_next = '0;
     end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
       sq_check_phase2_next = 1'b1;
     end else if (o_sq_check_valid && !sq_check_phase2) begin
@@ -1766,16 +1738,30 @@ module load_queue #(
       .Q (sq_check_phase2),
       .R (!i_rst_n || i_flush_all)
   );
+
+  for (genvar g_sq_mask = 0; g_sq_mask < DEPTH; g_sq_mask++) begin : gen_sq_check_in_flight_mask_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_in_flight_mask_ff (
+        .C (i_clk),
+        .CE(1'b1),
+        .D (sq_check_in_flight_mask_next[g_sq_mask]),
+        .Q (sq_check_in_flight_mask[g_sq_mask]),
+        .R (!i_rst_n || i_flush_all)
+    );
+  end
 `else
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       sq_check_pending          <= 1'b0;
       sq_check_no_older_store_q <= 1'b0;
       sq_check_phase2           <= 1'b0;
+      sq_check_in_flight_mask   <= '0;
     end else begin
       sq_check_pending          <= sq_check_pending_next;
       sq_check_no_older_store_q <= sq_check_no_older_store_next;
       sq_check_phase2           <= sq_check_phase2_next;
+      sq_check_in_flight_mask   <= sq_check_in_flight_mask_next;
     end
   end
 `endif
