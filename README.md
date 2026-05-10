@@ -8,12 +8,12 @@ An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tom
 
 There are many RISC-V cores. Here's what makes FROST different:
 
-- **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
+- **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
 - **Solid performance** — 2.83 CoreMark/MHz (848 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
-- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
+- **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
 ## Features
@@ -99,7 +99,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Portable design** — pure generic RTL with no vendor-specific primitives, suitable for any FPGA or ASIC target
+- **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
 
@@ -254,7 +254,7 @@ WAVES=1 ./tests/test_run_cocotb.py cpu
 ### Running Synthesis
 
 ```bash
-# Open-source synthesis (Yosys)
+# Open-source RTL synthesis checks (Yosys)
 ./tests/test_run_yosys.py
 
 # FPGA synthesis (Vivado)
@@ -273,7 +273,7 @@ Running `pytest tests/` exercises:
 - **Random instruction torture tests** — 20 randomly generated RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
-- **Yosys synthesis** — RTL synthesizes cleanly for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+ targets
+- **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
 - **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
 
 ### FPGA Deployment

@@ -6,8 +6,9 @@ IF/PD/ID front-end, register renaming, dynamic scheduling, precise in-order
 commit, machine-mode traps, and separate instruction/data memory ports.
 
 The RTL is intended to stay portable: the core uses generic SystemVerilog and
-is built in CI with Verilator for simulation and Yosys for synthesis checks.
-Vivado board builds live under `fpga/` and `boards/`.
+is built in CI with Verilator for simulation plus Yosys for vendor-agnostic
+coarse synthesis checks. Full board synthesis is currently Xilinx-focused and
+lives under `fpga/` and `boards/`.
 
 `frost.f` is the source of truth for file ordering and inclusion.
 
@@ -104,7 +105,7 @@ From the repo root:
 ./tests/test_run_cocotb.py hello_world
 ./tests/test_run_cocotb.py cpu
 
-# Open-source synthesis check
+# Open-source RTL synthesis checks
 ./tests/test_run_yosys.py
 
 # Vivado FPGA builds
