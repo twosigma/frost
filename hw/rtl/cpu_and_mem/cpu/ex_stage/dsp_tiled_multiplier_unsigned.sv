@@ -61,6 +61,7 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned ChunkBits = (NumChunks <= 1) ? 1 : $clog2(NumChunks);
 
   logic [PaddedWidth-1:0] aligned_term_comb[NumTerms];
+  logic [PaddedWidth-1:0] aligned_terms_reg[NumTerms];
 
   logic [PaddedWidth-1:0] work_terms_reg[NumTerms];
   logic [PaddedWidth-1:0] partial_terms_reg[NumTerms];
@@ -73,6 +74,7 @@ module dsp_tiled_multiplier_unsigned #(
 
   logic busy;
   logic load_terms_pending;
+  logic work_terms_pending;
   logic [LevelBits-1:0] level_reg;
   logic [ChunkBits-1:0] chunk_reg;
 
@@ -160,17 +162,21 @@ module dsp_tiled_multiplier_unsigned #(
       o_valid_output <= 1'b0;
       busy <= 1'b0;
       load_terms_pending <= 1'b0;
+      work_terms_pending <= 1'b0;
       level_reg <= '0;
       chunk_reg <= '0;
     end else begin
       o_valid_output <= 1'b0;
 
       if (!busy) begin
-        if (load_terms_pending) begin
+        if (work_terms_pending) begin
           busy <= 1'b1;
           level_reg <= '0;
           chunk_reg <= '0;
+          work_terms_pending <= 1'b0;
+        end else if (load_terms_pending) begin
           load_terms_pending <= 1'b0;
+          work_terms_pending <= 1'b1;
         end else if (i_valid_input) begin
           load_terms_pending <= 1'b1;
         end
@@ -200,11 +206,15 @@ module dsp_tiled_multiplier_unsigned #(
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!busy) begin
-      if (load_terms_pending) begin
+      if (work_terms_pending) begin
         for (int t = 0; t < NumTerms; t++) begin
-          work_terms_reg[t] <= aligned_term_comb[t];
+          work_terms_reg[t] <= aligned_terms_reg[t];
           partial_terms_reg[t] <= '0;
           carry_reg[t] <= 1'b0;
+        end
+      end else if (load_terms_pending) begin
+        for (int t = 0; t < NumTerms; t++) begin
+          aligned_terms_reg[t] <= aligned_term_comb[t];
         end
       end else if (i_valid_input) begin
         operand_a_reg <= i_operand_a;
