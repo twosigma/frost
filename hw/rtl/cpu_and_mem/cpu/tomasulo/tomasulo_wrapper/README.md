@@ -63,11 +63,12 @@ need to clear their hold registers on the same cycle as a grant.
 
 ### Dispatch routing
 
-A small case statement on `i_rs_dispatch.rs_type` decodes the
-incoming dispatch into per-RS valid signals. All six RS instances
-share the same dispatch payload bus — only the valid strobe is
-gated. This keeps the routing fanout small and lets the dispatch
-unit emit a single struct.
+Dispatch now emits already-routed per-RS packets for slot 1 and slot 2. The
+wrapper forwards those packets to the matching RS instances and supplies each
+resource's ordinary full status plus "full for 2" status back to dispatch, so a
+2-wide bundle only fires when same-resource pairs have two free entries. The LQ
+and SQ receive matching slot-1/slot-2 allocation packets and preserve program
+order by assigning slot 1 to the older free entry when both slots allocate.
 
 ### Flush coordination
 

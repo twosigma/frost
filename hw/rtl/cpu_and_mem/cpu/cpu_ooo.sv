@@ -44,7 +44,7 @@ module cpu_ooo #(
     // Instruction memory interface
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
-    input logic [3:0] i_instr_sideband,  // Predecode: {next_sb[1:0], current_sb[1:0]}
+    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
@@ -86,6 +86,8 @@ module cpu_ooo #(
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
   (* max_fanout = 32 *) logic flush_pipeline;
+  logic dispatch_flush;
+  logic full_flush_side_effect_kill;
   (* max_fanout = 32 *) logic frontend_stall;
   logic flush_for_trap;
   logic flush_for_mret;
@@ -304,14 +306,25 @@ module cpu_ooo #(
   // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
   // on the rising edge of stall and restores them via stall_registered.
   logic stall_q;
+  logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
+  logic replay_after_serialize_stall_next;
   assign frontend_stall =
       (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
     else stall_q <= frontend_stall;
+  end
+
+  // Keep dispatch-valid replay gating off the high-fanout IF stall-capture
+  // flop. This has identical cycle behavior to stall_q but a much narrower
+  // fanout cone into dispatch/RS allocation.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
+    else if (replay_after_serialize_stall_next) id_stall_q <= 1'b0;
+    else id_stall_q <= frontend_stall;
   end
 
   always_ff @(posedge i_clk) begin
@@ -324,11 +337,18 @@ module cpu_ooo #(
   // instruction on the first stalled cycle. Give that held image one replay
   // cycle after the fence drops; otherwise instructions like `mret` following
   // `csrw mepc, ...` are stranded in ID and overwritten by younger fetch.
+  //
+  // A CSR that writes rd needs one extra bubble for the delayed architectural
+  // writeback. Do not replay in the cycle where csr_wb_pending is high; clear
+  // id_stall_q on that edge so the held ID image is valid one cycle later.
+  // replay_after_serialize_stall_q remains as a debug tap only; dispatch valid
+  // uses !id_stall_q so this CSR-release pulse is not a launch flop on the
+  // dispatch/alloc timing cone.
+  assign replay_after_serialize_stall_next =
+      (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
-    else
-      replay_after_serialize_stall_q <=
-        (csr_in_flight || csr_wb_pending || serializing_alloc_fire) && !flush_pipeline;
+    else replay_after_serialize_stall_q <= replay_after_serialize_stall_next;
   end
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
@@ -391,6 +411,15 @@ module cpu_ooo #(
   logic pd_redirect;
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
+
+  // Slot-2 inter-stage signals (2-wide dispatch).  Slot-2 IF widening lands
+  // in Session F; until then from_if_to_pd_2 is hard-tied to a NOP-equivalent
+  // (sel_nop=1, all other fields '0) so PD/ID propagate NOPs and dispatch
+  // sees i_valid_2='0.  The wiring is in place so Session F only has to
+  // light up IF's slot-2 output.
+  riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
+  riscv_pkg::from_pd_to_id_t from_pd_to_id_2;
+  riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
 
   // Temporary debug mirrors for cocotb control-flow tracing.
   logic dbg_if_ras_predicted  /* verilator public_flat_rd */;
@@ -572,11 +601,12 @@ module cpu_ooo #(
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
-      .o_from_if_to_pd(from_if_to_pd)
+      .o_from_if_to_pd(from_if_to_pd),
+      .o_from_if_to_pd_2(from_if_to_pd_2)
   );
 
   // ===========================================================================
-  // Stage 2: Pre-Decode (PD) — UNCHANGED
+  // Stage 2: Pre-Decode (PD)
   // ===========================================================================
 
   pd_stage #(
@@ -586,6 +616,8 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_if_to_pd(from_if_to_pd),
       .o_from_pd_to_id(from_pd_to_id),
+      .i_from_if_to_pd_2(from_if_to_pd_2),
+      .o_from_pd_to_id_2(from_pd_to_id_2),
       .o_pd_redirect(pd_redirect),
       .o_pd_redirect_target(pd_redirect_target)
   );
@@ -605,7 +637,10 @@ module cpu_ooo #(
   // address — matching program order since slot 2 has tag T+1 > slot 1
   // has tag T.
   localparam int unsigned IntRfWrPorts = 2;
-  logic                      [           4*XLEN-1:0] int_rf_read_data;
+  // 8 INT read ports: slot-1 ID rs1/rs2, slot-1 dispatch rs1/rs2, slot-2 ID
+  // rs1/rs2, slot-2 dispatch rs1/rs2.  Session G wires slot-2 dispatch reads
+  // through to the RAT's i_int_regfile_data*_2 inputs.
+  logic                      [           8*XLEN-1:0] int_rf_read_data;
   logic                      [     IntRfWrPorts-1:0] int_rf_write_enable;
   logic                      [   IntRfWrPorts*5-1:0] int_rf_write_addr;
   logic                      [IntRfWrPorts*XLEN-1:0] int_rf_write_data;
@@ -613,15 +648,22 @@ module cpu_ooo #(
   logic                                              int_rf_wb_bypass_id_rs2;
   logic                                              int_rf_wb_bypass_dispatch_rs1;
   logic                                              int_rf_wb_bypass_dispatch_rs2;
+  logic                                              int_rf_wb_bypass_id_rs1_2;
+  logic                                              int_rf_wb_bypass_id_rs2_2;
+  logic                                              int_rf_wb_bypass_dispatch_rs1_2;
+  logic                                              int_rf_wb_bypass_dispatch_rs2_2;
   logic                      [             XLEN-1:0] int_rf_dispatch_rs1_data;
   logic                      [             XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs1_data_2;
+  logic                      [             XLEN-1:0] int_rf_dispatch_rs2_data_2;
 
   riscv_pkg::rf_to_fwd_t                             rf_to_fwd;
+  riscv_pkg::rf_to_fwd_t                             rf_to_fwd_2;
   riscv_pkg::from_ma_to_wb_t                         from_ma_to_wb_commit;
 
   generic_regfile #(
       .DATA_WIDTH(XLEN),
-      .NUM_READ_PORTS(4),
+      .NUM_READ_PORTS(8),
       .NUM_WRITE_PORTS(IntRfWrPorts),
       .HARDWIRE_ZERO(1)
   ) regfile_inst (
@@ -631,6 +673,10 @@ module cpu_ooo #(
       .i_write_data(int_rf_write_data),
       .i_stall(1'b0),  // OOO: commit writes must not be blocked by front-end stall
       .i_read_addr({
+        from_id_to_ex_2.instruction.source_reg_2,
+        from_id_to_ex_2.instruction.source_reg_1,
+        from_pd_to_id_2.source_reg_2_early,
+        from_pd_to_id_2.source_reg_1_early,
         from_id_to_ex.instruction.source_reg_2,
         from_id_to_ex.instruction.source_reg_1,
         from_pd_to_id.source_reg_2_early,
@@ -695,11 +741,61 @@ module cpu_ooo #(
   assign int_rf_dispatch_rs2_data    = int_rf_wb_bypass_dispatch_rs2 ? int_bypass_data_dp_rs2 :
                                        int_rf_read_data[4*XLEN-1:3*XLEN];
 
+  // Slot-2 ID-stage widen-commit bypass — same structure as slot-1 above.
+  logic int_hit_id_rs1_2_p1, int_hit_id_rs1_2_p0;
+  logic int_hit_id_rs2_2_p1, int_hit_id_rs2_2_p0;
+  logic int_hit_dp_rs1_2_p1, int_hit_dp_rs1_2_p0;
+  logic int_hit_dp_rs2_2_p1, int_hit_dp_rs2_2_p0;
+
+  assign int_hit_id_rs1_2_p1 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_pd_to_id_2.source_reg_1_early);
+  assign int_hit_id_rs1_2_p0 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_pd_to_id_2.source_reg_1_early);
+  assign int_hit_id_rs2_2_p1 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_pd_to_id_2.source_reg_2_early);
+  assign int_hit_id_rs2_2_p0 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_pd_to_id_2.source_reg_2_early);
+
+  assign int_hit_dp_rs1_2_p1 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign int_hit_dp_rs1_2_p0 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign int_hit_dp_rs2_2_p1 = port1_int_we && |port1_int_addr &&
+                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign int_hit_dp_rs2_2_p0 = port0_int_we && |port0_int_addr &&
+                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_2);
+
+  assign int_rf_wb_bypass_id_rs1_2 = int_hit_id_rs1_2_p1 || int_hit_id_rs1_2_p0;
+  assign int_rf_wb_bypass_id_rs2_2 = int_hit_id_rs2_2_p1 || int_hit_id_rs2_2_p0;
+  assign int_rf_wb_bypass_dispatch_rs1_2 = int_hit_dp_rs1_2_p1 || int_hit_dp_rs1_2_p0;
+  assign int_rf_wb_bypass_dispatch_rs2_2 = int_hit_dp_rs2_2_p1 || int_hit_dp_rs2_2_p0;
+
+  logic [XLEN-1:0] int_bypass_data_id_rs1_2;
+  logic [XLEN-1:0] int_bypass_data_id_rs2_2;
+  logic [XLEN-1:0] int_bypass_data_dp_rs1_2;
+  logic [XLEN-1:0] int_bypass_data_dp_rs2_2;
+  assign int_bypass_data_id_rs1_2 = int_hit_id_rs1_2_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_id_rs2_2 = int_hit_id_rs2_2_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs1_2 = int_hit_dp_rs1_2_p1 ? port1_int_data : port0_int_data;
+  assign int_bypass_data_dp_rs2_2 = int_hit_dp_rs2_2_p1 ? port1_int_data : port0_int_data;
+
+  assign rf_to_fwd_2.source_reg_1_data = int_rf_wb_bypass_id_rs1_2 ? int_bypass_data_id_rs1_2 :
+                                         int_rf_read_data[5*XLEN-1:4*XLEN];
+  assign rf_to_fwd_2.source_reg_2_data = int_rf_wb_bypass_id_rs2_2 ? int_bypass_data_id_rs2_2 :
+                                         int_rf_read_data[6*XLEN-1:5*XLEN];
+  assign int_rf_dispatch_rs1_data_2 = int_rf_wb_bypass_dispatch_rs1_2 ? int_bypass_data_dp_rs1_2 :
+                                      int_rf_read_data[7*XLEN-1:6*XLEN];
+  assign int_rf_dispatch_rs2_data_2 = int_rf_wb_bypass_dispatch_rs2_2 ? int_bypass_data_dp_rs2_2 :
+                                      int_rf_read_data[8*XLEN-1:7*XLEN];
+
   // FP register file.  Same 2-write-port topology as the INT regfile for
   // widen-commit.  FpW is declared up near the INT regfile for forward-
   // reference reasons (INT port0_fp_data uses it for sizing).
   localparam int unsigned FpRfWrPorts = 2;
-  logic                     [          6*FpW-1:0] fp_rf_read_data;
+  // 12 FP read ports: slot-1 ID rs1/rs2/rs3, slot-1 dispatch rs1/rs2/rs3,
+  // slot-2 ID rs1/rs2/rs3, slot-2 dispatch rs1/rs2/rs3.  Session G wires
+  // slot-2 dispatch reads through to the RAT's i_fp_regfile_data*_2.
+  logic                     [         12*FpW-1:0] fp_rf_read_data;
   logic                     [    FpRfWrPorts-1:0] fp_rf_write_enable;
   logic                     [  FpRfWrPorts*5-1:0] fp_rf_write_addr;
   logic                     [FpRfWrPorts*FpW-1:0] fp_rf_write_data;
@@ -709,15 +805,25 @@ module cpu_ooo #(
   logic                                           fp_rf_wb_bypass_dispatch_rs1;
   logic                                           fp_rf_wb_bypass_dispatch_rs2;
   logic                                           fp_rf_wb_bypass_dispatch_rs3;
+  logic                                           fp_rf_wb_bypass_id_rs1_2;
+  logic                                           fp_rf_wb_bypass_id_rs2_2;
+  logic                                           fp_rf_wb_bypass_id_rs3_2;
+  logic                                           fp_rf_wb_bypass_dispatch_rs1_2;
+  logic                                           fp_rf_wb_bypass_dispatch_rs2_2;
+  logic                                           fp_rf_wb_bypass_dispatch_rs3_2;
   logic                     [            FpW-1:0] fp_rf_dispatch_rs1_data;
   logic                     [            FpW-1:0] fp_rf_dispatch_rs2_data;
   logic                     [            FpW-1:0] fp_rf_dispatch_rs3_data;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs1_data_2;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs2_data_2;
+  logic                     [            FpW-1:0] fp_rf_dispatch_rs3_data_2;
 
   riscv_pkg::fp_rf_to_fwd_t                       fp_rf_to_fwd;
+  riscv_pkg::fp_rf_to_fwd_t                       fp_rf_to_fwd_2;
 
   generic_regfile #(
       .DATA_WIDTH(FpW),
-      .NUM_READ_PORTS(6),
+      .NUM_READ_PORTS(12),
       .NUM_WRITE_PORTS(FpRfWrPorts),
       .HARDWIRE_ZERO(0)
   ) fp_regfile_inst (
@@ -727,6 +833,12 @@ module cpu_ooo #(
       .i_write_data(fp_rf_write_data),
       .i_stall(1'b0),  // OOO: commit writes must not be blocked by front-end stall
       .i_read_addr({
+        from_id_to_ex_2.instruction.funct7[6:2],
+        from_id_to_ex_2.instruction.source_reg_2,
+        from_id_to_ex_2.instruction.source_reg_1,
+        from_pd_to_id_2.fp_source_reg_3_early,
+        from_pd_to_id_2.source_reg_2_early,
+        from_pd_to_id_2.source_reg_1_early,
         from_id_to_ex.instruction.funct7[6:2],
         from_id_to_ex.instruction.source_reg_2,
         from_id_to_ex.instruction.source_reg_1,
@@ -789,6 +901,68 @@ module cpu_ooo #(
   assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_bypass_data_dp_rs3 :
                                    fp_rf_read_data[6*FpW-1:5*FpW];
 
+  // Slot-2 ID-stage FP widen-commit bypass — same structure as slot-1 above.
+  logic fp_hit_id_rs1_2_p1, fp_hit_id_rs1_2_p0;
+  logic fp_hit_id_rs2_2_p1, fp_hit_id_rs2_2_p0;
+  logic fp_hit_id_rs3_2_p1, fp_hit_id_rs3_2_p0;
+  logic fp_hit_dp_rs1_2_p1, fp_hit_dp_rs1_2_p0;
+  logic fp_hit_dp_rs2_2_p1, fp_hit_dp_rs2_2_p0;
+  logic fp_hit_dp_rs3_2_p1, fp_hit_dp_rs3_2_p0;
+
+  assign fp_hit_id_rs1_2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id_2.source_reg_1_early);
+  assign fp_hit_id_rs1_2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id_2.source_reg_1_early);
+  assign fp_hit_id_rs2_2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id_2.source_reg_2_early);
+  assign fp_hit_id_rs2_2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id_2.source_reg_2_early);
+  assign fp_hit_id_rs3_2_p1 = port1_fp_we &&
+                              (port1_fp_addr == from_pd_to_id_2.fp_source_reg_3_early);
+  assign fp_hit_id_rs3_2_p0 = port0_fp_we &&
+                              (port0_fp_addr == from_pd_to_id_2.fp_source_reg_3_early);
+
+  assign fp_hit_dp_rs1_2_p1 = port1_fp_we &&
+                              (port1_fp_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign fp_hit_dp_rs1_2_p0 = port0_fp_we &&
+                              (port0_fp_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign fp_hit_dp_rs2_2_p1 = port1_fp_we &&
+                              (port1_fp_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign fp_hit_dp_rs2_2_p0 = port0_fp_we &&
+                              (port0_fp_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign fp_hit_dp_rs3_2_p1 = port1_fp_we &&
+                              (port1_fp_addr == from_id_to_ex_2.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs3_2_p0 = port0_fp_we &&
+                              (port0_fp_addr == from_id_to_ex_2.instruction.funct7[6:2]);
+
+  assign fp_rf_wb_bypass_id_rs1_2 = fp_hit_id_rs1_2_p1 || fp_hit_id_rs1_2_p0;
+  assign fp_rf_wb_bypass_id_rs2_2 = fp_hit_id_rs2_2_p1 || fp_hit_id_rs2_2_p0;
+  assign fp_rf_wb_bypass_id_rs3_2 = fp_hit_id_rs3_2_p1 || fp_hit_id_rs3_2_p0;
+  assign fp_rf_wb_bypass_dispatch_rs1_2 = fp_hit_dp_rs1_2_p1 || fp_hit_dp_rs1_2_p0;
+  assign fp_rf_wb_bypass_dispatch_rs2_2 = fp_hit_dp_rs2_2_p1 || fp_hit_dp_rs2_2_p0;
+  assign fp_rf_wb_bypass_dispatch_rs3_2 = fp_hit_dp_rs3_2_p1 || fp_hit_dp_rs3_2_p0;
+
+  logic [FpW-1:0] fp_bypass_data_id_rs1_2, fp_bypass_data_id_rs2_2, fp_bypass_data_id_rs3_2;
+  logic [FpW-1:0] fp_bypass_data_dp_rs1_2, fp_bypass_data_dp_rs2_2, fp_bypass_data_dp_rs3_2;
+  assign fp_bypass_data_id_rs1_2 = fp_hit_id_rs1_2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_id_rs2_2 = fp_hit_id_rs2_2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_id_rs3_2 = fp_hit_id_rs3_2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs1_2 = fp_hit_dp_rs1_2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs2_2 = fp_hit_dp_rs2_2_p1 ? port1_fp_data : port0_fp_data;
+  assign fp_bypass_data_dp_rs3_2 = fp_hit_dp_rs3_2_p1 ? port1_fp_data : port0_fp_data;
+
+  assign fp_rf_to_fwd_2.fp_source_reg_1_data = fp_rf_wb_bypass_id_rs1_2 ?
+                                               fp_bypass_data_id_rs1_2 :
+                                               fp_rf_read_data[7*FpW-1:6*FpW];
+  assign fp_rf_to_fwd_2.fp_source_reg_2_data = fp_rf_wb_bypass_id_rs2_2 ?
+                                               fp_bypass_data_id_rs2_2 :
+                                               fp_rf_read_data[8*FpW-1:7*FpW];
+  assign fp_rf_to_fwd_2.fp_source_reg_3_data = fp_rf_wb_bypass_id_rs3_2 ?
+                                               fp_bypass_data_id_rs3_2 :
+                                               fp_rf_read_data[9*FpW-1:8*FpW];
+  assign fp_rf_dispatch_rs1_data_2 = fp_rf_wb_bypass_dispatch_rs1_2 ? fp_bypass_data_dp_rs1_2 :
+                                     fp_rf_read_data[10*FpW-1:9*FpW];
+  assign fp_rf_dispatch_rs2_data_2 = fp_rf_wb_bypass_dispatch_rs2_2 ? fp_bypass_data_dp_rs2_2 :
+                                     fp_rf_read_data[11*FpW-1:10*FpW];
+  assign fp_rf_dispatch_rs3_data_2 = fp_rf_wb_bypass_dispatch_rs3_2 ? fp_bypass_data_dp_rs3_2 :
+                                     fp_rf_read_data[12*FpW-1:11*FpW];
+
   // ===========================================================================
   // Stage 3: Instruction Decode (ID)
   // ===========================================================================
@@ -824,7 +998,14 @@ module cpu_ooo #(
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
-      .o_from_id_to_ex(from_id_to_ex)
+      .o_from_id_to_ex(from_id_to_ex),
+      // Slot-2 (2-wide dispatch).  i_from_pd_to_id_2 carries NOPs through
+      // Session E, so o_from_id_to_ex_2 settles to NOP register state and
+      // dispatch's i_valid_2='0 keeps the slot-2 cone collapsed.
+      .i_from_pd_to_id_2(from_pd_to_id_2),
+      .i_rf_to_id_2(rf_to_fwd_2),
+      .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
+      .o_from_id_to_ex_2(from_id_to_ex_2)
   );
 
   // ===========================================================================
@@ -855,22 +1036,47 @@ module cpu_ooo #(
     end
   end
 
-  // id_valid: reads flush_pipeline/i_rst/stall_q directly instead of
+  // id_valid: reads dispatch_flush/id_stall_q directly instead of
   // pipeline_ctrl fields.  This breaks a false Verilator UNOPTFLAT cycle
   // (pipeline_ctrl.stall depends on dispatch_stall which depends on
-  // id_valid, but id_valid only needs .flush/.reset/.stall_registered
-  // which are independent of dispatch_stall).
+  // id_valid, but id_valid only needs the registered stall plus the
+  // commit-mispredict dispatch kill, which are independent of dispatch_stall).
+  // Reset clears pd_valid_q in the IF/PD valid tracker and has priority in the
+  // stateful consumers, so keep i_rst out of the dispatch allocation cone.
   logic id_valid;
-  assign id_valid = pd_valid_q && !flush_pipeline && !i_rst &&
-                    (from_id_to_ex.instruction != riscv_pkg::NOP) &&
-                    !csr_in_flight &&
-                    !csr_wb_pending &&
+  // 2-wide: NOP-filter must consider both slots.  A bundle whose slot-1 is a
+  // user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
+  // carries a real instruction must still dispatch — otherwise the front-end
+  // has already advanced PC by +4 (because slot2_valid was 1 in IF) and the
+  // slot-2 instruction is silently dropped.  Treat the bundle as valid when
+  // EITHER slot has a non-NOP instruction; dispatch handles slot-1 c.nop
+  // harmlessly (alloc to ROB, no dest, no rename, silent retire).
+  // The NOP-presence check uses the registered `is_not_nop` flag computed in
+  // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
+  // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
+  // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
+  logic id_valid_base;
+  assign id_valid_base = pd_valid_q && !dispatch_flush && !csr_in_flight &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
       // allocated before csr_in_flight rises; the held ID image during the
       // fence is the younger blocked instruction that still needs exactly
-      // one valid replay cycle after the fence drops.
-      (!stall_q || replay_after_dispatch_stall_q || replay_after_serialize_stall_q);
+      // one valid replay cycle after the fence drops. CSR-release replay is
+      // encoded by clearing id_stall_q one cycle early above; dispatch-stall
+      // replay still needs an explicit pulse because the resource stall's
+      // release cannot be known until this cycle.
+      (!id_stall_q || replay_after_dispatch_stall_q);
+  assign id_valid = id_valid_base && (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop);
+
+  // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
+  // also be valid this cycle — bundle constraint, decision #2 monolithic
+  // stall).  In Session E the IF→PD→ID slot-2 path carries NOPs (IF slot-2
+  // hard-tied invalid), so id_valid_2 stays '0 and the dispatch slot-2 cone
+  // collapses.  Session F lights up real slot-2 instructions; the NOP check
+  // is what gates id_valid_2 to '1 when that happens.
+  logic id_valid_2;
+  assign id_valid_2 = id_valid_base && from_id_to_ex_2.is_not_nop;
+
   assign dbg_if_valid_q = if_valid_q;
   assign dbg_pd_valid_q = pd_valid_q;
   assign dbg_id_valid = id_valid;
@@ -1046,6 +1252,7 @@ module cpu_ooo #(
   // ===========================================================================
 
   // ROB interface
+  riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req_raw;
   riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp;
   assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
@@ -1072,52 +1279,121 @@ module cpu_ooo #(
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_vec;
 
-  // RAT lookup
+  // RAT lookup - slot 1
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
   riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
-  // RAT rename
+  // RAT lookup - slot 2 (2-wide dispatch).  Slot-2 source addresses are
+  // hard-tied off until ID widening lands in Session E; the lookups are
+  // wired but their outputs are unused this session.
+  logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
+  logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr_2, fp_src2_addr_2, fp_src3_addr_2;
+  /* verilator lint_off UNUSEDSIGNAL */
+  riscv_pkg::rat_lookup_t int_src1_lookup_2, int_src2_lookup_2;
+  riscv_pkg::rat_lookup_t fp_src1_lookup_2, fp_src2_lookup_2, fp_src3_lookup_2;
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  // RAT rename - slot 1
+  logic                                        rat_alloc_valid_raw;
   logic                                        rat_alloc_valid;
   logic                                        rat_alloc_dest_rf;
   logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
 
+  // RAT rename - slot 2 (2-wide dispatch).  Dispatch holds these inactive
+  // until Sessions D-F enable slot-2 dispatch.
+  logic                                        rat_alloc_valid_2_raw;
+  logic                                        rat_alloc_valid_2;
+  logic                                        rat_alloc_dest_rf_2;
+  logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg_2;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag_2;
+
+  always_comb begin
+    rob_alloc_req = rob_alloc_req_raw;
+    rob_alloc_req.alloc_valid = rob_alloc_req_raw.alloc_valid && !full_flush_side_effect_kill;
+  end
+
+  assign rat_alloc_valid   = rat_alloc_valid_raw && !full_flush_side_effect_kill;
+  assign rat_alloc_valid_2 = rat_alloc_valid_2_raw && !full_flush_side_effect_kill;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       rob_entry_epoch <= '0;
-    end else if (rob_alloc_req.alloc_valid) begin
-      rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
+    end else begin
+      if (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready) begin
+        rob_entry_epoch[rob_alloc_resp.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp.alloc_tag];
+      end
+      if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready) begin
+        rob_entry_epoch[rob_alloc_resp_2.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp_2.alloc_tag];
+      end
     end
   end
 
   // RS dispatch
-  riscv_pkg::rs_dispatch_t                                        int_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        mul_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        fp_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        fmul_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        fdiv_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        split_rs_dispatch_dbg;
+  riscv_pkg::rs_dispatch_t int_rs_dispatch;
+  riscv_pkg::rs_dispatch_t mul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t fp_rs_dispatch;
+  riscv_pkg::rs_dispatch_t fmul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch;
+  riscv_pkg::rs_dispatch_t split_rs_dispatch_dbg;
+
+  // Slot-2 RS dispatch packets (2-wide dispatch, Session D back-end side).
+  // Driven by dispatch and consumed by the wrapper.  Slot-2 dispatch valids
+  // are held low until cpu_ooo lights up the IF-side slot-2 path in
+  // Session F (i_valid_2 stays 0 in this session).
+  riscv_pkg::rs_dispatch_t int_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t mul_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t fp_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t fmul_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_2;
+
+  // Slot-2 ROB allocation request + response.
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2_raw;
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
+  riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
+
+  always_comb begin
+    rob_alloc_req_2 = rob_alloc_req_2_raw;
+    rob_alloc_req_2.alloc_valid = rob_alloc_req_2_raw.alloc_valid && !full_flush_side_effect_kill;
+  end
 
   // Checkpoint
-  logic                                                           checkpoint_available;
-  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] checkpoint_alloc_id;
-  logic                                                           checkpoint_save;
-  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
-  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
-  logic                    [           riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
-  logic                    [             riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
-  logic                                                           rob_checkpoint_valid;
-  logic                    [    riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+  logic checkpoint_available;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_alloc_id;
+  logic checkpoint_save_raw;
+  logic checkpoint_save;
+  logic checkpoint_save_for_slot2_raw;
+  logic checkpoint_save_for_slot2;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
+  logic [riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
+  logic [riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
+  logic rob_checkpoint_valid_raw;
+  logic rob_checkpoint_valid;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+
+  assign checkpoint_save = checkpoint_save_raw && !full_flush_side_effect_kill;
+  assign checkpoint_save_for_slot2 = checkpoint_save_for_slot2_raw && !full_flush_side_effect_kill;
+  assign rob_checkpoint_valid = rob_checkpoint_valid_raw && !full_flush_side_effect_kill;
 
   // Resource status
   logic rob_full, rob_empty;
   logic int_rs_full, mul_rs_full, mem_rs_full;
   logic fp_rs_full, fmul_rs_full, fdiv_rs_full;
   logic lq_full, sq_full;
+
+  // Slot-2 "room for 2" status from the wrapper.  Used by dispatch to gate
+  // slot-2 fire when slot-1 is also targeting the same structure.
+  logic rob_full_for_2;
+  logic int_rs_full_for_2, mul_rs_full_for_2, mem_rs_full_for_2;
+  logic fp_rs_full_for_2, fmul_rs_full_for_2, fdiv_rs_full_for_2;
+  logic lq_full_for_2, sq_full_for_2;
 
   // Branch update
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
@@ -1205,6 +1481,10 @@ module cpu_ooo #(
   logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
+  // Slot-2 done-repair channels (Session M).
+  logic dispatch_bypass_valid_4, dispatch_bypass_valid_5, dispatch_bypass_valid_6;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0]
+      dispatch_bypass_tag_4, dispatch_bypass_tag_5, dispatch_bypass_tag_6;
 
   // Checkpoint restore (from flush controller)
   logic checkpoint_restore;
@@ -1241,9 +1521,14 @@ module cpu_ooo #(
     else checkpoint_in_use <= checkpoint_in_use_next;
   end
 
-  // Owner tag tracking (only updates on save)
+  // Owner tag tracking (only updates on save).  Use checkpoint_branch_tag
+  // rather than rob_alloc_resp.alloc_tag so slot-2 branches store their own
+  // ROB tag (not slot-1's).  Without this, the owner-tag check at branch
+  // resolution (`checkpoint_owner_tag[ckpt] == rs_issue_int.rob_tag`) and at
+  // commit fallback fails for slot-2 branches, suppressing branch resolution
+  // and deadlocking the ROB head.
   always_ff @(posedge i_clk) begin
-    if (rob_checkpoint_valid) checkpoint_owner_tag[rob_checkpoint_id] <= rob_alloc_resp.alloc_tag;
+    if (rob_checkpoint_valid) checkpoint_owner_tag[rob_checkpoint_id] <= checkpoint_branch_tag;
   end
 
   // Flush-time checkpoint reclaim: free checkpoints owned by flushed entries.
@@ -1307,8 +1592,13 @@ module cpu_ooo #(
       .i_fu_complete_6('0),
 
       // ROB allocation
-      .i_alloc_req (rob_alloc_req),
+      .i_alloc_req(rob_alloc_req),
       .o_alloc_resp(rob_alloc_resp),
+      // Slot-2 alloc plumbed end-to-end (Session D back-end side).  The
+      // dispatch unit holds alloc_valid_2='0 until i_valid_2 from ID lights
+      // up in Session E, so the ROB sees inert traffic in this session.
+      .i_alloc_req_2(rob_alloc_req_2),
+      .o_alloc_resp_2(rob_alloc_resp_2),
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -1367,6 +1657,7 @@ module cpu_ooo #(
       // ROB status
       .o_fence_i_flush(fence_i_flush),
       .o_rob_full(rob_full),
+      .o_rob_full_for_2(rob_full_for_2),
       .o_rob_empty(rob_empty),
       .o_rob_count(rob_count),
       .o_head_tag(head_tag),
@@ -1377,7 +1668,7 @@ module cpu_ooo #(
       .i_read_tag(rob_read_tag),
       .o_read_done(rob_read_done),
       .o_read_value(rob_read_value),
-      .o_rob_entry_done_vec(),
+      .o_rob_entry_done_vec(rob_entry_done_vec),
       .i_rob_entry_epoch(rob_entry_epoch),
       .i_bypass_valid_1(dispatch_bypass_valid_1),
       .i_bypass_tag_1(dispatch_bypass_tag_1),
@@ -1388,8 +1679,17 @@ module cpu_ooo #(
       .i_bypass_valid_3(dispatch_bypass_valid_3),
       .i_bypass_tag_3(dispatch_bypass_tag_3),
       .o_bypass_value_3(),
+      .i_bypass_valid_4(dispatch_bypass_valid_4),
+      .i_bypass_tag_4(dispatch_bypass_tag_4),
+      .o_bypass_value_4(),
+      .i_bypass_valid_5(dispatch_bypass_valid_5),
+      .i_bypass_tag_5(dispatch_bypass_tag_5),
+      .o_bypass_value_5(),
+      .i_bypass_valid_6(dispatch_bypass_valid_6),
+      .i_bypass_tag_6(dispatch_bypass_tag_6),
+      .o_bypass_value_6(),
 
-      // RAT source lookups
+      // RAT source lookups - slot 1
       .i_int_src1_addr(int_src1_addr),
       .i_int_src2_addr(int_src2_addr),
       .o_int_src1(int_src1_lookup),
@@ -1401,18 +1701,44 @@ module cpu_ooo #(
       .o_fp_src2(fp_src2_lookup),
       .o_fp_src3(fp_src3_lookup),
 
-      // RAT regfile data
+      // RAT source lookups - slot 2 (2-wide dispatch)
+      .i_int_src1_addr_2(int_src1_addr_2),
+      .i_int_src2_addr_2(int_src2_addr_2),
+      .o_int_src1_2(int_src1_lookup_2),
+      .o_int_src2_2(int_src2_lookup_2),
+      .i_fp_src1_addr_2(fp_src1_addr_2),
+      .i_fp_src2_addr_2(fp_src2_addr_2),
+      .i_fp_src3_addr_2(fp_src3_addr_2),
+      .o_fp_src1_2(fp_src1_lookup_2),
+      .o_fp_src2_2(fp_src2_lookup_2),
+      .o_fp_src3_2(fp_src3_lookup_2),
+
+      // RAT regfile data - slot 1
       .i_int_regfile_data1(int_rf_dispatch_rs1_data),
       .i_int_regfile_data2(int_rf_dispatch_rs2_data),
       .i_fp_regfile_data1 (fp_rf_dispatch_rs1_data),
       .i_fp_regfile_data2 (fp_rf_dispatch_rs2_data),
       .i_fp_regfile_data3 (fp_rf_dispatch_rs3_data),
 
-      // RAT rename
+      // RAT regfile data - slot 2 (Session G: now wired through the
+      // dispatch-stage slot-2 reads with widen-commit bypass).
+      .i_int_regfile_data1_2(int_rf_dispatch_rs1_data_2),
+      .i_int_regfile_data2_2(int_rf_dispatch_rs2_data_2),
+      .i_fp_regfile_data1_2 (fp_rf_dispatch_rs1_data_2),
+      .i_fp_regfile_data2_2 (fp_rf_dispatch_rs2_data_2),
+      .i_fp_regfile_data3_2 (fp_rf_dispatch_rs3_data_2),
+
+      // RAT rename - slot 1
       .i_rat_alloc_valid(rat_alloc_valid),
       .i_rat_alloc_dest_rf(rat_alloc_dest_rf),
       .i_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .i_rat_alloc_rob_tag(rat_alloc_rob_tag),
+
+      // RAT rename - slot 2 (2-wide dispatch; held inactive by dispatch)
+      .i_rat_alloc_valid_2(rat_alloc_valid_2),
+      .i_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
+      .i_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
+      .i_rat_alloc_rob_tag_2(rat_alloc_rob_tag_2),
 
       // RAT checkpoint save
       .i_checkpoint_save(checkpoint_save),
@@ -1420,6 +1746,7 @@ module cpu_ooo #(
       .i_checkpoint_branch_tag(checkpoint_branch_tag),
       .i_ras_tos(dispatch_ras_tos),
       .i_ras_valid_count(dispatch_ras_valid_count),
+      .i_checkpoint_save_for_slot2(checkpoint_save_for_slot2),
 
       // RAT checkpoint restore
       .i_checkpoint_restore(checkpoint_restore),
@@ -1446,12 +1773,22 @@ module cpu_ooo #(
       .i_fp_rs_dispatch(fp_rs_dispatch),
       .i_fmul_rs_dispatch(fmul_rs_dispatch),
       .i_fdiv_rs_dispatch(fdiv_rs_dispatch),
+      // Slot-2 RS dispatch — driven from dispatch unit (Session D).  Slot-2
+      // dispatch valids stay low until ID widening in Session E asserts
+      // i_valid_2; the wrapper just forwards what dispatch produces.
+      .i_int_rs_dispatch_2(int_rs_dispatch_2),
+      .i_mul_rs_dispatch_2(mul_rs_dispatch_2),
+      .i_mem_rs_dispatch_2(mem_rs_dispatch_2),
+      .i_fp_rs_dispatch_2(fp_rs_dispatch_2),
+      .i_fmul_rs_dispatch_2(fmul_rs_dispatch_2),
+      .i_fdiv_rs_dispatch_2(fdiv_rs_dispatch_2),
       .o_rs_full(),
 
       // RS issue + status (INT_RS)
       .o_rs_issue(rs_issue_int),
       .i_rs_fu_ready(1'b1),
       .o_int_rs_full(int_rs_full),
+      .o_int_rs_full_for_2(int_rs_full_for_2),
       .o_rs_empty(rs_empty),
       .o_rs_count(rs_count),
 
@@ -1459,6 +1796,7 @@ module cpu_ooo #(
       .o_mul_rs_issue(rs_issue_mul),
       .i_mul_rs_fu_ready(1'b1),
       .o_mul_rs_full(mul_rs_full),
+      .o_mul_rs_full_for_2(mul_rs_full_for_2),
       .o_mul_rs_empty(),
       .o_mul_rs_count(),
 
@@ -1466,6 +1804,7 @@ module cpu_ooo #(
       .o_mem_rs_issue(rs_issue_mem),
       .i_mem_rs_fu_ready(1'b1),
       .o_mem_rs_full(mem_rs_full),
+      .o_mem_rs_full_for_2(mem_rs_full_for_2),
       .o_mem_rs_empty(),
       .o_mem_rs_count(),
 
@@ -1473,6 +1812,7 @@ module cpu_ooo #(
       .o_fp_rs_issue(rs_issue_fp),
       .i_fp_rs_fu_ready(1'b1),
       .o_fp_rs_full(fp_rs_full),
+      .o_fp_rs_full_for_2(fp_rs_full_for_2),
       .o_fp_rs_empty(),
       .o_fp_rs_count(),
 
@@ -1480,6 +1820,7 @@ module cpu_ooo #(
       .o_fmul_rs_issue(rs_issue_fmul),
       .i_fmul_rs_fu_ready(1'b1),
       .o_fmul_rs_full(fmul_rs_full),
+      .o_fmul_rs_full_for_2(fmul_rs_full_for_2),
       .o_fmul_rs_empty(),
       .o_fmul_rs_count(),
 
@@ -1487,6 +1828,7 @@ module cpu_ooo #(
       .o_fdiv_rs_issue(rs_issue_fdiv),
       .i_fdiv_rs_fu_ready(1'b1),
       .o_fdiv_rs_full(fdiv_rs_full),
+      .o_fdiv_rs_full_for_2(fdiv_rs_full_for_2),
       .o_fdiv_rs_empty(),
       .o_fdiv_rs_count(),
 
@@ -1510,10 +1852,12 @@ module cpu_ooo #(
       .i_lq_mem_read_valid(lq_mem_read_valid),
 
       // LQ/SQ status
-      .o_lq_full (lq_full),
+      .o_lq_full(lq_full),
+      .o_lq_full_for_2(lq_full_for_2),
       .o_lq_empty(lq_empty),
       .o_lq_count(lq_count),
-      .o_sq_full (sq_full),
+      .o_sq_full(sq_full),
+      .o_sq_full_for_2(sq_full_for_2),
       .o_sq_empty(sq_empty),
       .o_sq_count(sq_count),
 
@@ -1545,17 +1889,36 @@ module cpu_ooo #(
       .i_from_id_to_ex(from_id_to_ex),
       .i_valid(id_valid),
 
+      // Slot-2 instruction (2-wide dispatch).  ID/PD widening lands in
+      // Session E; until IF widening lands in Session F the slot-2
+      // path carries NOPs (IF slot-2 hard-tied invalid), so id_valid_2
+      // stays '0 and the slot-2 dispatch cone collapses.
+      .i_from_id_to_ex_2(from_id_to_ex_2),
+      .i_valid_2(id_valid_2),
+
       .i_rs1_addr(from_id_to_ex.instruction.source_reg_1),
       .i_rs2_addr(from_id_to_ex.instruction.source_reg_2),
       .i_fp_rs3_addr(from_id_to_ex.instruction.funct7[6:2]),
 
+      // Slot-2 source register addresses (2-wide dispatch).
+      .i_rs1_addr_2(from_id_to_ex_2.instruction.source_reg_1),
+      .i_rs2_addr_2(from_id_to_ex_2.instruction.source_reg_2),
+      .i_fp_rs3_addr_2(from_id_to_ex_2.instruction.funct7[6:2]),
+
       .i_frm_csr(frm_csr),
 
       // ROB
-      .o_rob_alloc_req (rob_alloc_req),
+      .o_rob_alloc_req (rob_alloc_req_raw),
       .i_rob_alloc_resp(rob_alloc_resp),
 
-      // RAT lookups
+      // Slot-2 ROB alloc (2-wide dispatch)
+      .o_rob_alloc_req_2 (rob_alloc_req_2_raw),
+      .i_rob_alloc_resp_2(rob_alloc_resp_2),
+
+      // ROB entry-done vector (slot-2 missed-CDB conservative gate, Session G)
+      .i_rob_entry_done(rob_entry_done_vec),
+
+      // RAT lookups - slot 1
       .o_int_src1_addr(int_src1_addr),
       .o_int_src2_addr(int_src2_addr),
       .o_fp_src1_addr (fp_src1_addr),
@@ -1568,11 +1931,30 @@ module cpu_ooo #(
       .i_fp_src2 (fp_src2_lookup),
       .i_fp_src3 (fp_src3_lookup),
 
-      // RAT rename
-      .o_rat_alloc_valid(rat_alloc_valid),
+      // RAT lookups - slot 2 (2-wide dispatch)
+      .o_int_src1_addr_2(int_src1_addr_2),
+      .o_int_src2_addr_2(int_src2_addr_2),
+      .o_fp_src1_addr_2 (fp_src1_addr_2),
+      .o_fp_src2_addr_2 (fp_src2_addr_2),
+      .o_fp_src3_addr_2 (fp_src3_addr_2),
+
+      .i_int_src1_2(int_src1_lookup_2),
+      .i_int_src2_2(int_src2_lookup_2),
+      .i_fp_src1_2 (fp_src1_lookup_2),
+      .i_fp_src2_2 (fp_src2_lookup_2),
+      .i_fp_src3_2 (fp_src3_lookup_2),
+
+      // RAT rename - slot 1
+      .o_rat_alloc_valid(rat_alloc_valid_raw),
       .o_rat_alloc_dest_rf(rat_alloc_dest_rf),
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
+
+      // RAT rename - slot 2 (held inactive by dispatch until i_valid_2=1)
+      .o_rat_alloc_valid_2(rat_alloc_valid_2_raw),
+      .o_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
+      .o_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
+      .o_rat_alloc_rob_tag_2(rat_alloc_rob_tag_2),
 
       // ROB done-entry repair read request
       .o_bypass_valid_1(dispatch_bypass_valid_1),
@@ -1581,6 +1963,12 @@ module cpu_ooo #(
       .o_bypass_tag_2  (dispatch_bypass_tag_2),
       .o_bypass_valid_3(dispatch_bypass_valid_3),
       .o_bypass_tag_3  (dispatch_bypass_tag_3),
+      .o_bypass_valid_4(dispatch_bypass_valid_4),
+      .o_bypass_tag_4  (dispatch_bypass_tag_4),
+      .o_bypass_valid_5(dispatch_bypass_valid_5),
+      .o_bypass_tag_5  (dispatch_bypass_tag_5),
+      .o_bypass_valid_6(dispatch_bypass_valid_6),
+      .o_bypass_tag_6  (dispatch_bypass_tag_6),
 
       // RS dispatch
       .o_rs_dispatch(),
@@ -1591,17 +1979,27 @@ module cpu_ooo #(
       .o_fmul_rs_dispatch(fmul_rs_dispatch),
       .o_fdiv_rs_dispatch(fdiv_rs_dispatch),
 
+      // Slot-2 RS dispatch (2-wide dispatch).  All packets are inert
+      // (.valid=0) until i_valid_2 lights up in Session E.
+      .o_int_rs_dispatch_2 (int_rs_dispatch_2),
+      .o_mul_rs_dispatch_2 (mul_rs_dispatch_2),
+      .o_mem_rs_dispatch_2 (mem_rs_dispatch_2),
+      .o_fp_rs_dispatch_2  (fp_rs_dispatch_2),
+      .o_fmul_rs_dispatch_2(fmul_rs_dispatch_2),
+      .o_fdiv_rs_dispatch_2(fdiv_rs_dispatch_2),
+
       // Checkpoint management
       .i_checkpoint_available(checkpoint_available),
       .i_checkpoint_alloc_id(checkpoint_alloc_id),
-      .o_checkpoint_save(checkpoint_save),
+      .o_checkpoint_save(checkpoint_save_raw),
+      .o_checkpoint_save_for_slot2(checkpoint_save_for_slot2_raw),
       .o_checkpoint_id(checkpoint_id),
       .o_checkpoint_branch_tag(checkpoint_branch_tag),
       .i_ras_tos(from_if_to_pd.ras_checkpoint_tos),
       .i_ras_valid_count(from_if_to_pd.ras_checkpoint_valid_count),
       .o_ras_tos(dispatch_ras_tos),
       .o_ras_valid_count(dispatch_ras_valid_count),
-      .o_rob_checkpoint_valid(rob_checkpoint_valid),
+      .o_rob_checkpoint_valid(rob_checkpoint_valid_raw),
       .o_rob_checkpoint_id(rob_checkpoint_id),
 
       // Resource status
@@ -1615,8 +2013,19 @@ module cpu_ooo #(
       .i_lq_full(lq_full),
       .i_sq_full(sq_full),
 
+      // Slot-2 "room for 2" status from the wrapper.
+      .i_rob_full_for_2(rob_full_for_2),
+      .i_int_rs_full_for_2(int_rs_full_for_2),
+      .i_mul_rs_full_for_2(mul_rs_full_for_2),
+      .i_mem_rs_full_for_2(mem_rs_full_for_2),
+      .i_fp_rs_full_for_2(fp_rs_full_for_2),
+      .i_fmul_rs_full_for_2(fmul_rs_full_for_2),
+      .i_fdiv_rs_full_for_2(fdiv_rs_full_for_2),
+      .i_lq_full_for_2(lq_full_for_2),
+      .i_sq_full_for_2(sq_full_for_2),
+
       // Flush / early-recovery hold
-      .i_flush(flush_pipeline),
+      .i_flush(dispatch_flush),
       .i_hold (early_backend_recovery_hold),
 
       // Dispatch profiling status
@@ -2185,12 +2594,20 @@ module cpu_ooo #(
   // recovery phase is a hold-only bubble, not a second frontend flush.
   always_comb begin
     // fence_i_flush is already a registered 1-cycle pulse from the ROB, one
-    // cycle after FENCE.I commits. Gate the front-end flush directly from that
-    // pulse so dispatch cannot allocate into the same cycle as a full flush.
+    // cycle after FENCE.I commits. Gate the front-end flush directly from
+    // that pulse so stale fetch state is squashed on the recovery cycle.
     flush_pipeline = early_mispredict_active || mispredict_recovery_pending ||
                      flush_for_trap ||
                      flush_for_mret || fence_i_flush;
   end
+
+  // Dispatch needs a same-cycle kill for commit-time partial recovery.
+  // Full-flush pulses are kept out of dispatch/RS write-enable cones and only
+  // mask architectural side effects: RAT rename, ROB allocation, and
+  // checkpoint save. Backend structures independently give flush priority to
+  // their valid/control state, so any stale RS/LQ/SQ data writes are dead.
+  assign dispatch_flush = mispredict_recovery_pending;
+  assign full_flush_side_effect_kill = trap_taken_reg || mret_taken_reg || fence_i_flush;
 
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
   // mispredict and FENCE.I cleanup on their existing timing.

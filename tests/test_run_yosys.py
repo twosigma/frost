@@ -49,11 +49,17 @@ def _compile_hello_world(root_dir: Path) -> bool:
         sys.path.pop(0)
 
 
+def _is_generic_synth_command(synth_command: str) -> bool:
+    """Return true for Yosys' generic synth command, with optional flags."""
+    command = synth_command.strip()
+    return command == "synth" or command.startswith("synth ")
+
+
 def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
     Defaults:
-      - Generic target (synth): 10800s
+      - Generic target (synth): 1800s
       - Other non-Xilinx targets: 7200s
       - Xilinx targets (synth_xilinx*): 1800s
 
@@ -62,11 +68,11 @@ def _get_timeout_seconds(synth_command: str) -> int:
       - FROST_YOSYS_TIMEOUT_SEC
       - FROST_YOSYS_XILINX_TIMEOUT_SEC
     """
-    default_generic_timeout = 10800
+    default_generic_timeout = 1800
     default_timeout = 7200
     default_xilinx_timeout = 1800
 
-    if synth_command == "synth":
+    if _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"
         fallback = default_generic_timeout
     elif synth_command.startswith("synth_xilinx"):
@@ -77,7 +83,7 @@ def _get_timeout_seconds(synth_command: str) -> int:
         fallback = default_timeout
 
     raw = os.environ.get(env_name)
-    if raw is None and synth_command == "synth":
+    if raw is None and _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_TIMEOUT_SEC"
         raw = os.environ.get(env_name)
     if raw is None:
@@ -95,8 +101,14 @@ def _get_timeout_seconds(synth_command: str) -> int:
 
 # Synthesis targets for pytest runs
 # Additional targets can be run manually: ./test_run_yosys.py --target <name>
+#
+# Full generic `synth` maps RAMs and wide state arrays into generic flops and
+# gates.  For the full CPU that can spend hours in repeated OPT passes before
+# ABC.  Keep the generic target as a technology-independent front-end/coarse
+# synthesis check; the Xilinx targets below still exercise complete synthesis.
+GENERIC_SYNTH_COMMAND = "synth -top cpu_and_mem -run coarse"
 SYNTHESIS_TARGETS = [
-    ("generic", "synth", "Generic/ASIC (technology-independent)"),
+    ("generic", GENERIC_SYNTH_COMMAND, "Generic/ASIC (coarse synthesis)"),
     ("xilinx_7series", "synth_xilinx -family xc7", "Xilinx 7-series"),
     ("xilinx_ultrascale", "synth_xilinx -family xcu", "Xilinx UltraScale"),
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
@@ -425,7 +437,11 @@ This script can also be run via pytest:
             targets = matching
         else:
             # Allow any Yosys synth_* target
-            synth_cmd = f"synth_{args.target}" if args.target != "generic" else "synth"
+            synth_cmd = (
+                GENERIC_SYNTH_COMMAND
+                if args.target == "generic"
+                else f"synth_{args.target}"
+            )
             targets = [(args.target, synth_cmd, args.target)]
     else:
         targets = SYNTHESIS_TARGETS

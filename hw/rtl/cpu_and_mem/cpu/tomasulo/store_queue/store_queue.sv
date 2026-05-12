@@ -60,12 +60,37 @@ module store_queue #(
     // Allocation (from Dispatch, parallel with MEM_RS dispatch)
     // =========================================================================
     input  riscv_pkg::sq_alloc_req_t i_alloc,
+    // Slot-2 allocation port for 2-wide dispatch (Session C plumbing).  Slot-2
+    // valid does NOT require slot-1 valid: dispatch derives each from its own
+    // slot's mem_needs_sq, so it is legal for only slot-2 to be a store.  When
+    // both fire, slot-1 is older than slot-2 in program order and must be
+    // allocated to a lower physical position so the in-order commit/drain at
+    // head_idx delivers stores to memory in program order.
+    input  riscv_pkg::sq_alloc_req_t i_alloc_2,
     output logic                     o_full,
+    // Asserted when there is room for at most 1 more entry (a 2-wide bundle of
+    // two stores would not fit).  Distinct from o_full so dispatch can
+    // independently gate slot-2.
+    output logic                     o_full_for_2,
+    // Registered back-pressure for the CPU dispatch path.
+    // Exact o_full/o_full_for_2 remain available for local visibility and
+    // direct queue allocation; these outputs are exact after the same edge
+    // that updates the valid mask.
+    output logic                     o_dispatch_full,
+    output logic                     o_dispatch_full_for_2,
 
     // =========================================================================
     // Early Address Update (from pipelined dispatch-time address computation)
     // =========================================================================
+    // Session L: dual-ported.  Slot-1 and slot-2 each have their own
+    // pipelined-early-addr stage in tomasulo_wrapper, so two distinct
+    // rob_tags can update sq_addr_valid + sq_address in the same cycle.
+    // The CAM scans below run independently — each finds at most one
+    // match by rob_tag, and rob_tags across the two updates are always
+    // distinct (different ROB entries), so the NBA writes never collide
+    // on a bit.
     input riscv_pkg::sq_addr_update_t i_early_addr_update,
+    input riscv_pkg::sq_addr_update_t i_early_addr_update_2,
 
     // =========================================================================
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
@@ -153,8 +178,10 @@ module store_queue #(
     // Status
     // =========================================================================
     output logic                       o_empty,
+    output logic                       o_dispatch_empty,
     output logic                       o_committed_empty,  // No committed entries pending write
-    output logic [$clog2(DEPTH+1)-1:0] o_count
+    output logic [$clog2(DEPTH+1)-1:0] o_count,
+    output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count
 );
 
   // ===========================================================================
@@ -318,9 +345,21 @@ module store_queue #(
   // ===========================================================================
 
   logic                  full;
+  logic                  full_for_2;
   logic                  empty;
+  logic                  dispatch_full_q;
+  logic                  dispatch_full_for_2_q;
   logic [CountWidth-1:0] count;
+  logic                  sq_dispatch_write_decr;
+  logic [CountWidth-1:0] dispatch_count_next;
   logic                  committed_empty_q;
+
+  // Slot-1 / slot-2 alloc targets and write enables (declared early so they
+  // are available to LUTRAM port lists if needed; assignments come below).
+  logic [  PtrWidth-1:0] alloc_target_2;
+  logic                  slot1_alloc_en;
+  logic                  slot2_alloc_en;
+  logic [  IdxWidth-1:0] slot2_alloc_idx;
 
   // Memory write tracking
   logic                  write_outstanding;  // One outstanding write at a time
@@ -339,6 +378,14 @@ module store_queue #(
   // ===========================================================================
   // Count, Full, Empty
   // ===========================================================================
+  // Exact local occupancy remains a live popcount so direct queue behavior
+  // recovers immediately after sparse partial flushes. Dispatch back-pressure
+  // accounts for same-cycle allocation/write-drain as a small count delta
+  // instead of rebuilding the whole next valid mask and popcounting it again.
+  // Partial flush and SC-discard clears are intentionally not included here:
+  // ignoring them can only leave dispatch back-pressure asserted for an extra
+  // cycle after recovery, and keeps ROB-head/flush-age logic out of these
+  // status flops.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -347,11 +394,50 @@ module store_queue #(
   end
 
   assign full = (count == CountWidth'(DEPTH));
+  // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two
+  // stores would not fit even if neither slot has been allocated yet.
+  assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == CountWidth'(0));
 
   assign o_full = full;
+  assign o_full_for_2 = full_for_2;
+  assign o_dispatch_full = dispatch_full_q;
+  assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
+  assign o_dispatch_empty = empty;
   assign o_count = count;
+  assign o_dispatch_count = count;
+
+  // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
+  // valid; if both fire, slot-1 (older) takes the first free slot from
+  // tail_ptr and slot-2 (younger) takes the second so the SQ's in-order
+  // commit/drain at head_idx writes stores to memory in program order.
+  assign slot1_alloc_en = i_alloc.valid && !full;
+  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
+  assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
+                                          : alloc_target[IdxWidth-1:0];
+
+  always_comb begin
+    sq_dispatch_write_decr = 1'b0;
+    if (i_mem_write_done && write_outstanding && write_completes_entry) begin
+      sq_dispatch_write_decr = 1'b1;
+    end
+  end
+
+  always_comb begin
+    dispatch_count_next = count + CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
+                          CountWidth'(sq_dispatch_write_decr);
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      dispatch_full_q <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
+    end else begin
+      dispatch_full_q <= dispatch_count_next == CountWidth'(DEPTH);
+      dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
+    end
+  end
 
   // Committed-empty: no committed-but-unwritten entries. Register this status
   // for consumers that feed MEM issue/CDB arbitration. Raw same-cycle commit
@@ -657,20 +743,33 @@ module store_queue #(
     end
   end
 
-  // Tree priority encoder: find lowest-index set bit in rotated mask
+  // Tree priority encoder: find lowest-index and second-lowest set bits in
+  // rotated mask.  Both offsets are computed in a single sweep; the second is
+  // invalid when fewer than 2 free slots exist, but slot-2 is gated externally
+  // by full_for_2 so the bogus index is not consumed.
+  logic [IdxWidth-1:0] sq_second_free_offset;
+  logic                sq_second_free_found;
   always_comb begin
-    sq_first_free_offset = '0;
-    sq_first_free_found  = 1'b0;
+    sq_first_free_offset  = '0;
+    sq_first_free_found   = 1'b0;
+    sq_second_free_offset = '0;
+    sq_second_free_found  = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
-      if (sq_free_rotated[i] && !sq_first_free_found) begin
-        sq_first_free_offset = IdxWidth'(i);
-        sq_first_free_found  = 1'b1;
+      if (sq_free_rotated[i]) begin
+        if (!sq_first_free_found) begin
+          sq_first_free_offset = IdxWidth'(i);
+          sq_first_free_found  = 1'b1;
+        end else if (!sq_second_free_found) begin
+          sq_second_free_offset = IdxWidth'(i);
+          sq_second_free_found  = 1'b1;
+        end
       end
     end
   end
 
-  // Add offset back to tail_ptr to get absolute alloc target
-  assign alloc_target = tail_ptr + PtrWidth'({1'b0, sq_first_free_offset});
+  // Add offsets back to tail_ptr to get absolute alloc targets.
+  assign alloc_target   = tail_ptr + PtrWidth'({1'b0, sq_first_free_offset});
+  assign alloc_target_2 = tail_ptr + PtrWidth'({1'b0, sq_second_free_offset});
 
   // ===========================================================================
   // Head Advancement (tree-based find-first-valid from head)
@@ -736,12 +835,30 @@ module store_queue #(
       // -----------------------------------------------------------------
       // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
-      if (i_alloc.valid && !full) begin
+      // Slot-1 alloc.  Slot-2 alloc (below) writes a different physical entry,
+      // so the non-blocking writes never collide on a bit.
+      if (slot1_alloc_en) begin
         sq_addr_valid[alloc_target[IdxWidth-1:0]] <= i_alloc.addr_valid;
         sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
         sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
         sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
-        tail_ptr                                  <= alloc_target + PtrWidth'(1);
+      end
+
+      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      if (slot2_alloc_en) begin
+        sq_addr_valid[slot2_alloc_idx] <= i_alloc_2.addr_valid;
+        sq_data_valid[slot2_alloc_idx] <= 1'b0;
+        sq_committed[slot2_alloc_idx]  <= 1'b0;
+        sq_sent[slot2_alloc_idx]       <= 1'b0;
+      end
+
+      // tail_ptr advances past the highest slot consumed this cycle.  Pure
+      // search hint, so when only slot-2 fires (slot-1 invalid) it took
+      // alloc_target and tail still advances to alloc_target+1.
+      if (slot1_alloc_en && slot2_alloc_en) begin
+        tail_ptr <= alloc_target_2 + PtrWidth'(1);
+      end else if (slot1_alloc_en || slot2_alloc_en) begin
+        tail_ptr <= alloc_target + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
@@ -751,6 +868,18 @@ module store_queue #(
         for (int i = 0; i < DEPTH; i++) begin
           if (sq_valid[i] && !sq_addr_valid[i] &&
               sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
+            sq_addr_valid[i] <= 1'b1;
+          end
+        end
+      end
+
+      // Session L: slot-2 early addr update (control).  rob_tags across the
+      // two updates are always distinct (different ROB entries) so this
+      // independent loop cannot collide with the slot-1 loop above.
+      if (i_early_addr_update_2.valid) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (sq_valid[i] && !sq_addr_valid[i] &&
+              sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
             sq_addr_valid[i] <= 1'b1;
           end
         end
@@ -872,8 +1001,12 @@ module store_queue #(
         // after the flush instead of compacting the tail in this cycle.
       end
 
-      if (i_alloc.valid && !full) begin
+      if (slot1_alloc_en) begin
         sq_valid[alloc_target[IdxWidth-1:0]] <= 1'b1;
+      end
+      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      if (slot2_alloc_en) begin
+        sq_valid[slot2_alloc_idx] <= 1'b1;
       end
 
       // Failed SC invalidates its uncommitted SQ entry.
@@ -907,13 +1040,27 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Allocation: write per-entry data for new entry at tail
     // -----------------------------------------------------------------
-    if (i_alloc.valid && !full) begin
+    if (slot1_alloc_en) begin
       sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
       sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
       sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
       sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
-      sq_address[alloc_target[IdxWidth-1:0]]    <= i_alloc.address;
-      sq_is_mmio[alloc_target[IdxWidth-1:0]]    <= i_alloc.is_mmio;
+      if (i_alloc.addr_valid) begin
+        sq_address[alloc_target[IdxWidth-1:0]] <= i_alloc.address;
+        sq_is_mmio[alloc_target[IdxWidth-1:0]] <= i_alloc.is_mmio;
+      end
+    end
+
+    // Slot-2 alloc — held inactive until dispatch widens (Session D).
+    if (slot2_alloc_en) begin
+      sq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
+      sq_size[slot2_alloc_idx]       <= i_alloc_2.size;
+      sq_fp64_phase[slot2_alloc_idx] <= 1'b0;
+      sq_is_sc[slot2_alloc_idx]      <= i_alloc_2.is_sc;
+      if (i_alloc_2.addr_valid) begin
+        sq_address[slot2_alloc_idx] <= i_alloc_2.address;
+        sq_is_mmio[slot2_alloc_idx] <= i_alloc_2.is_mmio;
+      end
     end
 
     // -----------------------------------------------------------------
@@ -924,6 +1071,18 @@ module store_queue #(
         if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
           sq_address[i] <= i_early_addr_update.address;
           sq_is_mmio[i] <= i_early_addr_update.is_mmio;
+        end
+      end
+    end
+
+    // Session L: slot-2 early addr update (data).  Distinct-rob_tag invariant
+    // again guarantees no collision with the slot-1 loop above.
+    if (i_early_addr_update_2.valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (sq_valid[i] && !sq_addr_valid[i] &&
+            sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
+          sq_address[i] <= i_early_addr_update_2.address;
+          sq_is_mmio[i] <= i_early_addr_update_2.is_mmio;
         end
       end
     end
@@ -961,6 +1120,14 @@ module store_queue #(
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
       if (i_alloc.valid && (i_flush_all || i_flush_en))
         $warning("SQ: allocation attempted during flush");
+      if (i_alloc_2.valid && i_alloc.valid && full_for_2)
+        $warning("SQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
+      if (i_alloc_2.valid && !i_alloc.valid && full)
+        $warning("SQ: slot-2 alloc attempted alone when full");
+      if (i_alloc_2.valid && (i_flush_all || i_flush_en))
+        $warning("SQ: slot-2 alloc attempted during flush");
+      if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
+        $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
     end
   end
 `endif
@@ -1007,6 +1174,14 @@ module store_queue #(
   // No allocation during flush
   always_comb begin
     if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
+    if (i_flush_all || i_flush_en) assume (!i_alloc_2.valid);
+  end
+
+  // Slot-2 must respect capacity given whether slot-1 is also firing.
+  always_comb begin
+    if (i_alloc.valid && full_for_2) assume (!i_alloc_2.valid);
+    if (!i_alloc.valid && full) assume (!i_alloc_2.valid);
+    if (i_alloc.valid && i_alloc_2.valid) assume (i_alloc.rob_tag != i_alloc_2.rob_tag);
   end
 
   // Address/data updates MAY arrive during flush (RS stage2 issues without

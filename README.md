@@ -8,12 +8,12 @@ An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tom
 
 There are many RISC-V cores. Here's what makes FROST different:
 
-- **Fully open-source toolchain** — works with Verilator and Yosys. No vendor lock-in or expensive commercial tools required.
+- **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 2.53 CoreMark/MHz (760 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with register renaming, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Solid performance** — 2.83 CoreMark/MHz (848 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
-- **No vendor primitives** — pure portable RTL that works on any target. Synthesis tested via Yosys for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+. Board wrappers provided for Kintex-7 and UltraScale+.
+- **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
 ## Features
@@ -24,7 +24,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   In-order front-end                                                         │
-│   ┌────┐   ┌────┐   ┌────┐    dispatch / rename / resource alloc             │
+│   ┌────┐   ┌────┐   ┌────┐    2-wide dispatch / rename / resource alloc      │
 │   │ IF │──>│ PD │──>│ ID │──────────────────────────────┐                    │
 │   └────┘   └────┘   └────┘                              │                    │
 │     ▲      C-ext     CSR rd                             ▼                    │
@@ -85,20 +85,21 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, and combinational CSR reads at decode
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
+- **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
 - **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
 - **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
 - **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
-- **Branch prediction** with 32-entry 2-bit BTB (trained for both conditional branches and JAL), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
+- **Branch prediction** with 32-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
 - **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Portable design** — pure generic RTL with no vendor-specific primitives, suitable for any FPGA or ASIC target
+- **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
 
@@ -253,7 +254,7 @@ WAVES=1 ./tests/test_run_cocotb.py cpu
 ### Running Synthesis
 
 ```bash
-# Open-source synthesis (Yosys)
+# Open-source RTL synthesis checks (Yosys)
 ./tests/test_run_yosys.py
 
 # FPGA synthesis (Vivado)
@@ -272,7 +273,7 @@ Running `pytest tests/` exercises:
 - **Random instruction torture tests** — 20 randomly generated RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
-- **Yosys synthesis** — RTL synthesizes cleanly for generic (ASIC), Xilinx 7-series, UltraScale, and UltraScale+ targets
+- **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
 - **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
 
 ### FPGA Deployment
@@ -309,17 +310,17 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 83,397 | 1,029,600 | 8.1% |
-|   LUT as Logic | 79,987 | 1,029,600 | 7.8% |
-|   LUT as Distributed RAM | 2,892 | — | — |
+| CLB LUTs | 106,127 | 1,029,600 | 10.3% |
+|   LUT as Logic | 96,557 | 1,029,600 | 9.4% |
+|   LUT as Distributed RAM | 9,052 | — | — |
 |   LUT as Shift Register | 518 | — | — |
-| CLB Registers | 60,670 | 2,059,200 | 3.0% |
-| Block RAM Tile | 73.5 | 2,112 | 3.5% |
+| CLB Registers | 62,877 | 2,059,200 | 3.0% |
+| Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,441 | 128,700 | 3.5% |
-| F7 Muxes | 2,250 | 514,800 | 0.4% |
-| F8 Muxes | 236 | 257,400 | 0.1% |
+| CARRY8 | 4,504 | 128,700 | 3.5% |
+| F7 Muxes | 3,000 | 514,800 | 0.6% |
+| F8 Muxes | 674 | 257,400 | 0.3% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
@@ -328,15 +329,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 79,647 | 203,800 | 39.1% |
-|   LUT as Logic | 75,875 | 203,800 | 37.2% |
-|   LUT as Distributed RAM | 3,260 | — | — |
-|   LUT as Shift Register | 512 | — | — |
-| Slice Registers | 59,416 | 407,600 | 14.6% |
-| Block RAM Tile | 73.5 | 445 | 16.5% |
+| Slice LUTs | 105,016 | 203,800 | 51.5% |
+|   LUT as Logic | 93,917 | 203,800 | 46.1% |
+|   LUT as Distributed RAM | 10,588 | — | — |
+|   LUT as Shift Register | 511 | — | — |
+| Slice Registers | 61,749 | 407,600 | 15.2% |
+| Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
-| F7 Muxes | 2,308 | 101,900 | 2.3% |
-| F8 Muxes | 235 | 50,950 | 0.5% |
+| F7 Muxes | 2,979 | 101,900 | 2.9% |
+| F8 Muxes | 647 | 50,950 | 1.3% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |
@@ -368,7 +369,7 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **G extension** | Shorthand for IMAFD                              |
 | **IF**          | Instruction Fetch stage                          |
 | **PD**          | Pre-Decode stage (C extension decompression)     |
-| **ID**          | Instruction Decode + dispatch / rename           |
+| **ID**          | Instruction Decode feeding 2-wide dispatch       |
 | **OOO**         | Out-of-order execution                           |
 | **Tomasulo**    | OOO scheduling algorithm with register renaming  |
 | **ROB**         | Reorder Buffer (32-entry, in-order commit)       |

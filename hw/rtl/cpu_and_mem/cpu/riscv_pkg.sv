@@ -95,6 +95,20 @@ package riscv_pkg;
     OPC_OP_FP    = 7'b1010011   // FADD.S, FSUB.S, FMUL.S, etc.
   } opc_e;
 
+  // Instruction-memory predecode sideband bits, stored per 32-bit word.
+  // The fetch interface returns two words, so its sideband bus is twice this
+  // width: {next_word_sideband, current_word_sideband}.
+  localparam int unsigned ImemSidebandWidth = 8;
+  localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
+  localparam int unsigned ImemSbIsCompressedLo = 0;
+  localparam int unsigned ImemSbIsCompressedHi = 1;
+  localparam int unsigned ImemSbCompressedControlLo = 2;
+  localparam int unsigned ImemSbCompressedControlHi = 3;
+  localparam int unsigned ImemSbNativeSerializeLo = 4;
+  localparam int unsigned ImemSbNativeSerializeHi = 5;
+  localparam int unsigned ImemSbNativeFpComputeLo = 6;
+  localparam int unsigned ImemSbNativeFpComputeHi = 7;
+
   // ===========================================================================
   // Section 2: Instruction Operations
   // ===========================================================================
@@ -572,6 +586,15 @@ package riscv_pkg;
     instr_op_e instruction_operation;
     branch_taken_op_e branch_operation;
     store_op_e store_operation;
+    // Pre-decoded reservation-station route. Stored as raw bits because
+    // rs_type_e is declared later in this package.
+    logic [2:0] rs_type;
+    logic is_int_store;
+    logic is_branch_or_jump;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_csr_imm;
+    logic has_fp_flags;
     logic is_jump_and_link;  // JAL instruction
     logic is_jump_and_link_register;  // JALR instruction
     logic is_multiply, is_divide;
@@ -639,6 +662,26 @@ package riscv_pkg;
     // For JALR, we use btb_expected_rs1 (same algebraic transformation as RAS).
     logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
     logic [XLEN-1:0] btb_expected_rs1;  // btb_predicted_target - imm_i (for JALR)
+    // TIMING OPTIMIZATION: Pre-decoded operand-classification flags.
+    // Dispatch consumes these as registered FF outputs instead of re-decoding
+    // `instruction_operation` through case statements.  Removes 3-4 LUT levels
+    // (and the fanout-57 single-bit decode net) at the start of the worst path
+    // from ID/EX register to RS write port.  Set to 0 on flush/reset; an
+    // illegal instruction is treated as ILLEGAL (all flags 0) to mirror the
+    // override dispatch applies via op = is_illegal ? ILLEGAL : instr_op.
+    logic has_int_dest;
+    logic has_fp_dest;
+    logic uses_int_rs1;
+    logic uses_int_rs2;
+    logic uses_fp_rs1;
+    logic uses_fp_rs2;
+    logic uses_fp_rs3;
+    // Pre-computed `instruction != NOP` flag.  Registered in id_stage so the
+    // 32-bit compare in cpu_ooo's id_valid/id_valid_2 (which fanned out into
+    // dispatch_stall and the RS write CE cone) collapses to a 1-bit OR.  Was
+    // the dominant slot-2 critical path after the has_*_dest pre-decode
+    // shifted the worst path from instruction_operation to source_reg_1.
+    logic is_not_nop;
   } from_id_to_ex_t;
 
   // Combinational outputs from Execute stage
@@ -1977,6 +2020,62 @@ package riscv_pkg;
 
       default: uses_fp_rs3 = 1'b0;
     endcase
+  endfunction
+
+  // Helper function to determine if instruction uses INT rs1
+  // INT rs1 is used by most instructions except: pure FP compute (which use FP rs1),
+  // PC-relative ops (LUI/AUIPC/JAL), system ops (ECALL/EBREAK/FENCE/WFI/MRET/PAUSE),
+  // and CSR immediate forms which encode an immediate in the rs1 field.
+  function automatic logic uses_int_rs1(instr_op_e op);
+    if (uses_fp_rs1(op)) begin
+      uses_int_rs1 = 1'b0;
+    end else begin
+      case (op)
+        LUI, AUIPC, JAL,
+        ECALL, EBREAK,
+        FENCE, FENCE_I,
+        WFI, MRET, PAUSE,
+        CSRRWI, CSRRSI, CSRRCI,
+        ILLEGAL:
+        uses_int_rs1 = 1'b0;
+        default: uses_int_rs1 = 1'b1;
+      endcase
+    end
+  endfunction
+
+  // Helper function to determine if instruction uses INT rs2
+  // Branches, R-type integer ALU, integer stores, AMO/SC consume rs2.
+  // FP stores (FSW/FSD) use FP rs2 for the data path, not INT rs2.
+  function automatic logic uses_int_rs2(instr_op_e op);
+    if (uses_fp_rs2(op)) begin
+      uses_int_rs2 = 1'b0;
+    end else begin
+      case (op)
+        // Conditional branches
+        BEQ, BNE, BLT, BGE, BLTU, BGEU,
+        // R-type integer ALU (have rs2)
+        ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
+        // M-extension
+        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+        // B-extension with rs2
+        SH1ADD, SH2ADD, SH3ADD,
+        BSET, BCLR, BINV, BEXT,
+        ANDN, ORN, XNOR,
+        MAX, MAXU, MIN, MINU,
+        ROL, ROR,
+        CZERO_EQZ, CZERO_NEZ,
+        PACK, PACKH,
+        ZIP, UNZIP,
+        // Integer stores
+        SB, SH, SW,
+        // Atomics (rs2 is source value for AMO/SC)
+        SC_W,
+        AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
+        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W:
+        uses_int_rs2 = 1'b1;
+        default: uses_int_rs2 = 1'b0;
+      endcase
+    end
   endfunction
 
   // ---------------------------------------------------------------------------

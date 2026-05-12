@@ -2,17 +2,18 @@
 
 The RAT maps architectural registers (x0–x31, f0–f31) to in-flight
 ROB tags. It's read by dispatch on every cycle to look up source
-operands, written by dispatch to rename destinations, and cleared
+operands for both dispatch slots, written by dispatch to rename destinations,
+and cleared
 by ROB commit when the architectural value catches up.
 
 INT and FP have separate tables, both with the same `{valid, tag}`
 entry format. x0 is hardwired — reads always return zero, writes
 are silently ignored.
 
-Up to five sources are looked up per cycle: rs1 + rs2 from INT, plus
-fs1 + fs2 + fs3 from FP for FMA. Each lookup returns either the
-regfile value (if the architectural register is current) or the ROB
-tag of the producing instruction (if it's renamed and still in flight).
+Up to ten sources are looked up per cycle: two INT sources and three FP
+sources for each dispatch slot. Each lookup returns either the regfile value
+(if the architectural register is current) or the ROB tag of the producing
+instruction (if it's renamed and still in flight).
 
 ## Branch checkpoints
 
@@ -29,6 +30,11 @@ RAM — saving roughly a thousand flip-flops compared to keeping them
 in registers — while the active RATs stay in FFs because they need
 parallel lookup, parallel CDB-driven invalidation, and bulk parallel
 overwrite on restore.
+
+For 2-wide dispatch, slot 1 and slot 2 have separate rename write ports. If
+slot 2 is the control-flow instruction that owns the checkpoint, the checkpoint
+snapshot overlays slot 1's same-cycle rename before saving, so recovery returns
+to the state visible immediately before slot 2.
 
 ## Stale rename detection
 
@@ -73,7 +79,7 @@ gets reclaimed without going through the per-slot port.
 
 ## Verification
 
-Cocotb tests cover lookup, rename, commit clear, checkpoint
-save/restore/free, x0 invariants, and bulk reclaim. Inline formal
-properties prove the x0 invariant, the rename / commit / restore
-state transitions, and the absence of double-allocation.
+Cocotb tests cover lookup, 2-wide rename, commit clear, checkpoint
+save/restore/free, x0 invariants, and bulk reclaim. Inline formal properties
+prove the x0 invariant, the rename / commit / restore state transitions, and
+the absence of double-allocation.

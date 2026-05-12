@@ -62,6 +62,15 @@ module reorder_buffer (
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
+    // Slot-2 allocation (2-wide dispatch, Session A foundation).  Slot 2 is
+    // the second-in-program-order entry of a dispatch bundle: tail_idx+1.
+    // Contract from dispatch: i_alloc_req_2.alloc_valid only asserts when
+    // i_alloc_req.alloc_valid is also set this cycle.  Until dispatch is
+    // widened, this port is hard-tied off in cpu_ooo so behavior is
+    // unchanged from the 1-wide baseline.
+    input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req_2,
+    output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp_2,
+
     // =========================================================================
     // CDB Write Interface (from Functional Units via CDB)
     // =========================================================================
@@ -177,8 +186,12 @@ module reorder_buffer (
     // Status Outputs
     // =========================================================================
     output logic                                      o_full,
+    // Asserted when there is room for at most 1 more entry (i.e., a 2-wide
+    // dispatch bundle would not fit).  Distinct from o_full so dispatch can
+    // independently gate slot-2 while still allowing slot-1 to fire.
+    output logic                                      o_full_for_2,
     output logic                                      o_empty,
-    output logic [riscv_pkg::ReorderBufferTagWidth:0] o_count,  // Number of valid entries
+    output logic [riscv_pkg::ReorderBufferTagWidth:0] o_count,       // Number of valid entries
 
     // Head entry information (for external commit coordination)
     output logic                        [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
@@ -199,12 +212,19 @@ module reorder_buffer (
     // =========================================================================
     // Dispatch Bypass Read Ports (async value read for renamed-but-done sources)
     // =========================================================================
+    // Channels 1-3: slot-1 sources.  Channels 4-6: slot-2 sources (Session M).
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_2,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_4,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_4,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_5,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_5,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_6,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_6,
 
     // Buffered FMUL dispatch repair ports (wrapper-local async reads)
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_1,
@@ -260,6 +280,9 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth:0] head_ptr;
   logic [ReorderBufferTagWidth:0] tail_ptr;
   logic full;
+  logic full_for_2;
+  logic dispatch_full_q;
+  logic dispatch_full_for_2_q;
   logic empty;
 
   // ===========================================================================
@@ -294,6 +317,8 @@ module reorder_buffer (
   // Derived pointer values (without wrap bit)
   logic [ReorderBufferTagWidth-1:0] head_idx;
   logic [ReorderBufferTagWidth-1:0] tail_idx;
+  // Slot-2 alloc target, wraps within ReorderBufferTagWidth modulus.
+  logic [ReorderBufferTagWidth-1:0] tail_idx_2;
 
   // Status signals (full and empty declared above for forward ref)
   logic [ReorderBufferTagWidth:0] count;
@@ -435,10 +460,16 @@ module reorder_buffer (
 
   assign head_idx = head_ptr[ReorderBufferTagWidth-1:0];
   assign tail_idx = tail_ptr[ReorderBufferTagWidth-1:0];
+  assign tail_idx_2 = tail_idx + 1'b1;
 
   // Full when pointers are equal except for MSB (wrap bit differs)
   assign full = (head_ptr[ReorderBufferTagWidth] != tail_ptr[ReorderBufferTagWidth]) &&
                 (head_idx == tail_idx);
+
+  // full_for_2: there is room for at most 1 more entry, so a 2-wide bundle
+  // would not fit.  Used to gate slot-2 alloc independently from slot-1.
+  // Excludes commit-this-cycle gains (matches o_full's conservative model).
+  assign full_for_2 = full || (count == ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
 
   // Empty when pointers are exactly equal (including wrap bit)
   assign empty = (head_ptr == tail_ptr);
@@ -607,7 +638,32 @@ module reorder_buffer (
   // ===========================================================================
 
   logic alloc_en;
+  logic alloc_en_2;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_status;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_status;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_valid;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_valid;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_control;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_control;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_branch_bits;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_branch_bits;
   assign alloc_en = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  // Slot-2 alloc requires slot-1 to also fire (slot-2 lives at tail_idx+1
+  // by construction).  full_for_2 covers the "only 1 free slot" case.
+  assign alloc_en_2 = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                      !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_status = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_status = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                             !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_valid = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_valid = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                            !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_control = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_control = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                              !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_branch_bits = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_branch_bits = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                                  !full_for_2 && !i_flush_all && !i_flush_en;
 
   logic cdb_ram_wr_en;
   logic cdb_state_wr_en;
@@ -619,6 +675,7 @@ module reorder_buffer (
 
   // Allocation data precomputation for fields with instruction-type-dependent values
   logic [FLEN-1:0] alloc_value_data;
+  logic [FLEN-1:0] alloc_value_data_2;
   always_comb begin
     // Save the sequential fall-through/link address for all branches and jumps.
     // Commit-time redirect can then use the exact saved address instead of
@@ -626,17 +683,33 @@ module reorder_buffer (
     if (i_alloc_req.is_branch) alloc_value_data = {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
     else alloc_value_data = '0;
   end
+  always_comb begin
+    if (i_alloc_req_2.is_branch)
+      alloc_value_data_2 = {{(FLEN - XLEN) {1'b0}}, i_alloc_req_2.link_addr};
+    else alloc_value_data_2 = '0;
+  end
 
   logic [XLEN-1:0] alloc_branch_target_data;
-  assign alloc_branch_target_data = i_alloc_req.is_jal ? i_alloc_req.branch_target : '0;
+  logic [XLEN-1:0] alloc_branch_target_data_2;
+  assign alloc_branch_target_data   = i_alloc_req.is_jal ? i_alloc_req.branch_target : '0;
+  assign alloc_branch_target_data_2 = i_alloc_req_2.is_jal ? i_alloc_req_2.branch_target : '0;
 
+  // Per design decision #1, only one slot in a bundle can be a branch, so
+  // i_checkpoint_valid (single-port) applies to whichever slot is the branch.
+  // alloc_has_checkpoint_data fires only for that slot; the other gets '0.
   logic [CheckpointIdWidth-1:0] alloc_checkpoint_id_data;
+  logic [CheckpointIdWidth-1:0] alloc_checkpoint_id_data_2;
   assign alloc_checkpoint_id_data = (i_checkpoint_valid && i_alloc_req.is_branch) ?
                                      i_checkpoint_id : '0;
+  assign alloc_checkpoint_id_data_2 = (i_checkpoint_valid && i_alloc_req_2.is_branch) ?
+                                      i_checkpoint_id : '0;
   logic alloc_has_checkpoint_data;
-  assign alloc_has_checkpoint_data = i_checkpoint_valid && i_alloc_req.is_branch;
+  logic alloc_has_checkpoint_data_2;
+  assign alloc_has_checkpoint_data   = i_checkpoint_valid && i_alloc_req.is_branch;
+  assign alloc_has_checkpoint_data_2 = i_checkpoint_valid && i_alloc_req_2.is_branch;
 
   logic [HeadMetaWidth-1:0] alloc_head_meta_data;
+  logic [HeadMetaWidth-1:0] alloc_head_meta_data_2;
   assign alloc_head_meta_data = {
     i_alloc_req.dest_rf,
     i_alloc_req.dest_valid,
@@ -661,6 +734,30 @@ module reorder_buffer (
     i_alloc_req.has_fp_flags,
     RsTypeWidth'(i_alloc_req.rs_type)
   };
+  assign alloc_head_meta_data_2 = {
+    i_alloc_req_2.dest_rf,
+    i_alloc_req_2.dest_valid,
+    i_alloc_req_2.is_store,
+    i_alloc_req_2.is_fp_store,
+    i_alloc_req_2.is_branch,
+    i_alloc_req_2.predicted_taken,
+    i_alloc_req_2.is_call,
+    i_alloc_req_2.is_return,
+    i_alloc_req_2.is_jal,
+    i_alloc_req_2.is_jalr,
+    alloc_has_checkpoint_data_2,
+    i_alloc_req_2.is_csr,
+    i_alloc_req_2.is_fence,
+    i_alloc_req_2.is_fence_i,
+    i_alloc_req_2.is_wfi,
+    i_alloc_req_2.is_mret,
+    i_alloc_req_2.is_amo,
+    i_alloc_req_2.is_lr,
+    i_alloc_req_2.is_sc,
+    i_alloc_req_2.is_compressed,
+    i_alloc_req_2.has_fp_flags,
+    RsTypeWidth'(i_alloc_req_2.rs_type)
+  };
 
   // ===========================================================================
   // Distributed RAM Instances
@@ -669,149 +766,161 @@ module reorder_buffer (
   // These use sdp_dist_ram — one write port, one async read port.
   // ---------------------------------------------------------------------------
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  // 2-write port: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Slot-2 is
+  // hard-tied off until dispatch widens, so port 1 is dormant during Session A.
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_pc (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.pc),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
       .i_read_address (head_idx),
       .o_read_data    (head_pc)
   );
 
   // Widen-commit replica: head+1 read port for pc.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_pc_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.pc),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_pc)
   );
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(RegAddrWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (RegAddrWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_dest_reg (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.dest_reg),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
       .i_read_address (head_idx),
       .o_read_data    (head_dest_reg)
   );
 
   // Widen-commit replica: head+1 read port for dest_reg.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(RegAddrWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (RegAddrWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_dest_reg_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.dest_reg),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_dest_reg)
   );
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_predicted_target (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.predicted_target),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
       .i_read_address (head_idx),
       .o_read_data    (head_predicted_target)
   );
 
   // Widen-commit replica: head+1 read port for predicted_target.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_predicted_target_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.predicted_target),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_predicted_target)
   );
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(CheckpointIdWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (CheckpointIdWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_checkpoint_id (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_checkpoint_id_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
       .i_read_address (head_idx),
       .o_read_data    (head_checkpoint_id)
   );
 
   // Widen-commit replica: head+1 read port for checkpoint_id.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(CheckpointIdWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (CheckpointIdWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_checkpoint_id_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_checkpoint_id_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_checkpoint_id)
   );
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(HeadMetaWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (HeadMetaWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_head_meta (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_head_meta_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
       .i_read_address (head_idx),
       .o_read_data    (head_meta_rd_data)
   );
 
   // Widen-commit replica: head+1 read port for head_meta.  This feeds the
   // head_next_* hazard flags consumed by the 2-wide commit gate.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(HeadMetaWidth)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (HeadMetaWidth),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_head_meta_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_head_meta_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_meta_rd_data)
   );
 
   // ---------------------------------------------------------------------------
   // Multi-write-port fields (allocation + CDB or branch update).
-  // These use mwp_dist_ram with 2 write ports.
-  // Port 0 = allocation (lower priority), Port 1 = CDB/branch (higher priority).
+  // These use mwp_dist_ram with 3 write ports for 2-wide alloc support.
+  // Port 0 = slot-1 alloc, Port 1 = slot-2 alloc, Port 2 = CDB (highest pri).
   // ---------------------------------------------------------------------------
 
-  // rob_value: 2 write ports (alloc + CDB), 2 read ports (head + RAT bypass).
+  // rob_value: 3 write ports (alloc1 + alloc2 + CDB), 2 read ports (head + RAT bypass).
   // Two instances with identical writes, different read addresses.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_head (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (head_idx),
       .o_read_data    (head_value)
   );
@@ -820,12 +929,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_head_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_value)
   );
@@ -833,12 +942,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_rat (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_read_tag),
       .o_read_data    (o_read_value)
   );
@@ -847,12 +956,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_bypass_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_bypass_tag_1),
       .o_read_data    (o_bypass_value_1)
   );
@@ -860,12 +969,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_bypass_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_bypass_tag_2),
       .o_read_data    (o_bypass_value_2)
   );
@@ -873,25 +982,65 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_bypass_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_bypass_tag_3),
       .o_read_data    (o_bypass_value_3)
+  );
+
+  // Slot-2 done-repair bypass read ports (Session M).
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(3)
+  ) u_rob_value_bypass_4 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address (i_bypass_tag_4),
+      .o_read_data    (o_bypass_value_4)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
+  ) u_rob_value_bypass_5 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address (i_bypass_tag_5),
+      .o_read_data    (o_bypass_value_5)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(3)
+  ) u_rob_value_bypass_6 (
+      .i_clk,
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address (i_bypass_tag_6),
+      .o_read_data    (o_bypass_value_6)
+  );
+
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (FLEN),
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_fmul_pending_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_fmul_pending_bypass_tag_1),
       .o_read_data    (o_fmul_pending_bypass_value_1)
   );
@@ -899,12 +1048,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_fmul_pending_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_fmul_pending_bypass_tag_2),
       .o_read_data    (o_fmul_pending_bypass_value_2)
   );
@@ -912,26 +1061,26 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_value_fmul_pending_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address (i_fmul_pending_bypass_tag_3),
       .o_read_data    (o_fmul_pending_bypass_value_3)
   );
 
-  // rob_exc_cause: 2 write ports (alloc='0 + CDB), 1 read port (head)
+  // rob_exc_cause: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_exc_cause (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0)}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
       .i_read_address (head_idx),
       .o_read_data    (head_exc_cause)
   );
@@ -940,26 +1089,26 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_exc_cause_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0)}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_exc_cause)
   );
 
-  // rob_fp_flags: 2 write ports (alloc='0 + CDB), 1 read port (head)
+  // rob_fp_flags: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_fp_flags (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0)}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
       .i_read_address (head_idx),
       .o_read_data    (head_fp_flags)
   );
@@ -968,12 +1117,12 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(2)
+      .NUM_WRITE_PORTS(3)
   ) u_rob_fp_flags_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0)}),
+      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_fp_flags)
   );
@@ -983,27 +1132,29 @@ module reorder_buffer (
   // branches/JALR write their resolved target on branch update. Split the
   // field across two single-write memories and select at the head instead of
   // paying the timing cost of a 2-write-port LVT RAM here.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal (
       .i_clk,
-      .i_write_enable (alloc_en && i_alloc_req.is_jal),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_branch_target_data),
+      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
       .i_read_address (head_idx),
       .o_read_data    (head_branch_target_jal)
   );
 
   // Widen-commit replica: head+1 read port for branch_target_jal.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_branch_target_jal_next (
       .i_clk,
-      .i_write_enable (alloc_en && i_alloc_req.is_jal),
-      .i_write_address(tail_idx),
-      .i_write_data   (alloc_branch_target_data),
+      .i_write_enable ({alloc_en_2 && i_alloc_req_2.is_jal, alloc_en && i_alloc_req.is_jal}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_branch_target_jal)
   );
@@ -1034,79 +1185,85 @@ module reorder_buffer (
   );
 
   // CSR address RAM (12-bit, written at allocation)
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(12)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (12),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_addr (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_addr),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
       .i_read_address (head_idx),
       .o_read_data    (head_csr_addr)
   );
 
   // Widen-commit replica: head+1 read port for csr_addr.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(12)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (12),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_addr_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_addr),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_csr_addr)
   );
 
   // CSR op RAM (3-bit funct3, written at allocation)
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(3)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (3),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_op (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_op),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
       .i_read_address (head_idx),
       .o_read_data    (head_csr_op)
   );
 
   // Widen-commit replica: head+1 read port for csr_op.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(3)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (3),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_op_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_op),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_csr_op)
   );
 
   // CSR write data RAM (32-bit, written at allocation)
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_write_data (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_write_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
       .i_read_address (head_idx),
       .o_read_data    (head_csr_write_data)
   );
 
   // Widen-commit replica: head+1 read port for csr_write_data.
-  sdp_dist_ram #(
-      .ADDR_WIDTH(ReorderBufferTagWidth),
-      .DATA_WIDTH(XLEN)
+  mwp_dist_ram #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
   ) u_rob_csr_write_data_next (
       .i_clk,
-      .i_write_enable (alloc_en),
-      .i_write_address(tail_idx),
-      .i_write_data   (i_alloc_req.csr_write_data),
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_csr_write_data)
   );
@@ -1118,7 +1275,14 @@ module reorder_buffer (
   // Allocation response
   assign o_alloc_resp.alloc_ready = !full && !i_flush_all && !i_flush_en;
   assign o_alloc_resp.alloc_tag = tail_idx;
-  assign o_alloc_resp.full = full;
+  assign o_alloc_resp.full = dispatch_full_q;
+
+  // Slot-2 response: tag is tail_idx+1 (only meaningful when slot-1 also fires).
+  // alloc_ready/full are slot-2 specific so dispatch can independently gate
+  // slot-2.
+  assign o_alloc_resp_2.alloc_ready = !full_for_2 && !i_flush_all && !i_flush_en;
+  assign o_alloc_resp_2.alloc_tag = tail_idx_2;
+  assign o_alloc_resp_2.full = dispatch_full_for_2_q;
 
   // Flush age calculation for generic partial flush (computed combinationally).
   logic [ReorderBufferTagWidth-1:0] flush_age;
@@ -1126,6 +1290,59 @@ module reorder_buffer (
 
   logic flush_after_head_commit;
   assign flush_after_head_commit = i_flush_after_head_commit;
+
+  // Exported dispatch back-pressure is registered from the exact next ROB
+  // occupancy.  That cuts the tail_ptr/full -> dispatch -> queue-allocation
+  // timing cone without reducing usable ROB capacity.  Internal allocation
+  // still uses the exact combinational full/full_for_2 signals above.
+  logic [ReorderBufferTagWidth:0] dispatch_tail_next;
+  logic [ReorderBufferTagWidth:0] dispatch_head_next;
+  logic [ReorderBufferTagWidth:0] dispatch_count_next;
+  logic [ReorderBufferTagWidth:0] dispatch_alloc_delta;
+  logic [ReorderBufferTagWidth:0] dispatch_commit_delta;
+  assign dispatch_alloc_delta = {
+    {ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2_status, !alloc_en_2_status
+  };
+  assign dispatch_commit_delta = {{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire};
+  always_comb begin
+    dispatch_tail_next  = tail_ptr;
+    dispatch_head_next  = head_ptr;
+    dispatch_count_next = count;
+
+    if (i_flush_all || i_flush_en) begin
+      if (i_flush_all) begin
+        dispatch_tail_next = head_ptr;
+      end else if (flush_after_head_commit) begin
+        dispatch_tail_next = head_ptr;
+      end else begin
+        dispatch_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
+      end
+
+      if (commit_en && !i_flush_all) begin
+        dispatch_head_next = head_ptr + dispatch_commit_delta;
+      end
+
+      dispatch_count_next = dispatch_tail_next - dispatch_head_next;
+    end else begin
+      if (commit_en) begin
+        dispatch_count_next = dispatch_count_next - dispatch_commit_delta;
+      end
+      if (alloc_en_status) begin
+        dispatch_count_next = dispatch_count_next + dispatch_alloc_delta;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      dispatch_full_q       <= 1'b0;
+      dispatch_full_for_2_q <= 1'b0;
+    end else begin
+      dispatch_full_q <= (dispatch_count_next == ReorderBufferDepth[ReorderBufferTagWidth:0]);
+      dispatch_full_for_2_q <=
+          dispatch_count_next >= (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
+    end
+  end
 
   // Allocation write - tail pointer management
   always_ff @(posedge i_clk) begin
@@ -1145,8 +1362,9 @@ module reorder_buffer (
         tail_ptr <= head_ptr + {1'b0, flush_age} + 1'b1;
       end
     end else if (alloc_en) begin
-      // Normal allocation: advance tail
-      tail_ptr <= tail_ptr + 1'b1;
+      // Normal allocation: advance tail by 1 (slot-1 only) or 2 (both slots).
+      // alloc_en_2 implies alloc_en by construction, so the OR is implicit.
+      tail_ptr <= tail_ptr + {{ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2, !alloc_en_2};
     end
   end
 
@@ -1169,7 +1387,7 @@ module reorder_buffer (
       // ---------------------------------------------------------------------
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
-      if (alloc_en) begin
+      if (alloc_en_control) begin
         // Initialize control fields for new entry
         rob_exception[tail_idx] <= 1'b0;
 
@@ -1187,6 +1405,23 @@ module reorder_buffer (
           rob_done[tail_idx] <= 1'b1;
         end else begin
           rob_done[tail_idx] <= 1'b0;
+        end
+      end
+
+      // Slot-2 alloc — same logic at tail_idx_2.  Different write addresses
+      // (tail_idx vs tail_idx_2) so no priority arbitration needed.
+      if (alloc_en_2_control) begin
+        rob_exception[tail_idx_2] <= 1'b0;
+
+        if (i_alloc_req_2.is_jal) begin
+          rob_done[tail_idx_2] <= 1'b1;
+        end else if (i_alloc_req_2.is_jalr) begin
+          rob_done[tail_idx_2] <= 1'b0;
+        end else if (i_alloc_req_2.is_wfi || i_alloc_req_2.is_fence ||
+                     i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret) begin
+          rob_done[tail_idx_2] <= 1'b1;
+        end else begin
+          rob_done[tail_idx_2] <= 1'b0;
         end
       end
 
@@ -1242,8 +1477,11 @@ module reorder_buffer (
         end
       end
 
-      if (alloc_en) begin
+      if (alloc_en_valid) begin
         rob_valid[tail_idx] <= 1'b1;
+      end
+      if (alloc_en_2_valid) begin
+        rob_valid[tail_idx_2] <= 1'b1;
       end
 
       // Commit deallocation: invalidate the committed entry (head pointer
@@ -1265,7 +1503,7 @@ module reorder_buffer (
     // -------------------------------------------------------------------
     // Allocation Write (multi-write/head-independent data fields)
     // -------------------------------------------------------------------
-    if (alloc_en) begin
+    if (alloc_en_branch_bits) begin
       rob_branch_taken[tail_idx]    <= 1'b0;
       rob_mispredicted[tail_idx]    <= 1'b0;
       rob_early_recovered[tail_idx] <= 1'b0;
@@ -1276,6 +1514,19 @@ module reorder_buffer (
         rob_branch_taken[tail_idx] <= 1'b1;
         rob_mispredicted[tail_idx] <= !i_alloc_req.predicted_taken ||
                                       (i_alloc_req.predicted_target != i_alloc_req.branch_target);
+      end
+    end
+
+    if (alloc_en_2_branch_bits) begin
+      rob_branch_taken[tail_idx_2]    <= 1'b0;
+      rob_mispredicted[tail_idx_2]    <= 1'b0;
+      rob_early_recovered[tail_idx_2] <= 1'b0;
+
+      if (i_alloc_req_2.is_jal) begin
+        rob_branch_taken[tail_idx_2] <= 1'b1;
+        rob_mispredicted[tail_idx_2] <=
+            !i_alloc_req_2.predicted_taken ||
+            (i_alloc_req_2.predicted_target != i_alloc_req_2.branch_target);
       end
     end
 
@@ -1729,7 +1980,8 @@ module reorder_buffer (
   // Status Outputs
   // ===========================================================================
 
-  assign o_full = full;
+  assign o_full = dispatch_full_q;
+  assign o_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_count = count;
 
@@ -1861,11 +2113,28 @@ module reorder_buffer (
     end
   end
 
+  // Slot-2 must respect the "slot-1 also valid" contract and the full_for_2 gate.
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid) begin
+      $error("Reorder Buffer: Slot-2 alloc valid without slot-1!");
+    end
+  end
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_req_2.alloc_valid && full_for_2) begin
+      $error("Reorder Buffer: Slot-2 alloc attempted when full_for_2!");
+    end
+  end
+
   // Check that dispatch doesn't allocate during flush (invariant: dispatch must be stalled)
   // Note: alloc_ready also deasserts during flush, but dispatch should be independently stalled
   always @(posedge i_clk) begin
     if (i_rst_n && i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: Allocation attempted during flush!");
+    end
+  end
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)) begin
+      $error("Reorder Buffer: Slot-2 alloc attempted during flush!");
     end
   end
 
@@ -1941,6 +2210,10 @@ module reorder_buffer (
   // alloc_valid not asserted during flush (matches existing simulation assertion)
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
+    assume (!(i_alloc_req.alloc_valid && full));
+    assume (!(i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid));
+    assume (!(i_alloc_req_2.alloc_valid && full_for_2));
+    assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
   // -------------------------------------------------------------------------

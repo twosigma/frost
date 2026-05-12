@@ -84,7 +84,7 @@ module if_stage #(
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
-    input logic [3:0] i_instr_sideband,  // Predecode: {next_sb[1:0], current_sb[1:0]}
+    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
@@ -97,7 +97,11 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
-    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
+    // Slot-2 IF→PD packet (2-wide dispatch, Session F).  When slot-2 is invalid
+    // this cycle (slot-1 is a NOP/branch, slot-2 doesn't fit, etc.), sel_nop is
+    // asserted and PD/ID propagate it as a NOP so dispatch sees i_valid_2='0.
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2
 );
 
   // ===========================================================================
@@ -112,6 +116,7 @@ module if_stage #(
   logic prediction_used_r;  // Registered: Prediction was applied
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
   logic prediction_used;  // Current prediction being used
+  logic prediction_used_for_pc;  // Stall-ungated PC mux select
   logic prediction_holdoff;  // Block prediction (stale data)
   logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
   logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
@@ -120,6 +125,13 @@ module if_stage #(
   logic sel_prediction_r;  // Select registered prediction target
   logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
+
+  // Slot-2 BTB prediction signals (Session Q dual-port BTB).
+  logic slot2_btb_hit;
+  logic slot2_predicted_taken;
+  logic [XLEN-1:0] slot2_predicted_target;
+  logic slot2_prediction_used;
+  logic slot2_prediction_used_for_pc;
 
   // RAS (Return Address Stack) signals
   logic ras_predicted;  // RAS prediction was used
@@ -157,7 +169,7 @@ module if_stage #(
   logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
-  logic [1:0] instr_buffer_sideband;  // Predecode sideband for instruction buffer
+  logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -171,15 +183,45 @@ module if_stage #(
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
 
+  // Slot-2 outputs from instruction_aligner (2-wide dispatch).
+  logic [15:0] raw_parcel_2;
+  logic [31:0] effective_instr_2;
+  logic is_compressed_2;
+  logic sel_nop_2_aligner;  // raw output from instruction_aligner
+  logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
+  logic sel_compressed_2;
+  logic slot1_is_branch;
+  logic slot2_valid;  // matches the OUTPUT slot-2 valid sent to PD/dispatch
+  logic slot2_prediction_valid;  // live-only valid for same-cycle slot-2 BTB lookup
+  logic slot2_redirect_q;  // Session Q: 1-cycle bubble after slot-2 BTB redirect
+  // SESSION I fix #1: slot-2 must NOP whenever slot-1 NOPs.  IF's full sel_nop
+  // covers control_flow_holdoff, pending-prediction holdoffs, reset_holdoff,
+  // and flush — all conditions where the live BRAM data may not match
+  // pc_reg's word and the alignment math is unreliable for slot-2.  The
+  // aligner's narrow o_sel_nop (= sel_nop_align) only covers mid-32bit and
+  // the prediction holdoffs, missing the rest.
+  assign sel_nop_2 = sel_nop_2_aligner || sel_nop;
+  // SESSION I fix #2: pc_controller and c_ext_state must see the SAME slot-2
+  // valid that PD/dispatch see.  During stall replay the live aligner gate
+  // can disagree with the saved sel_nop_2_saved (the gate uses live BRAM
+  // which has drifted, while saved was captured at stall start when BRAM
+  // was correct).  pc_controller's slot2_valid had been hardwired to the
+  // live !sel_nop_2; combined with is_compressed_fast (saved-aware) and
+  // is_compressed_2 (live), pc_inc could pick the wrong bundle advance
+  // (e.g., 32b+RVC=+6) and land pc_reg on a mid-instruction byte.  Using
+  // the OUTPUT slot-2 valid keeps pc_inc consistent with what dispatch
+  // sees and forces the 1-wide path whenever the output is NOP.
+  assign slot2_prediction_valid = !sel_nop_2;
+
   // ---------------------------------------------------------------------------
   // Derived Signals and Stall State
   // ---------------------------------------------------------------------------
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   logic ras_instruction_valid;
   logic ras_instruction_valid_live;
-  (* keep = "true", max_fanout = 32 *) logic if_stage_stall;
-  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
-  (* keep = "true" *) logic pc_controller_stall;
+  (* keep = "true", max_fanout = 32 *)logic if_stage_stall;
+  (* keep = "true", max_fanout = 32 *)logic if_stage_stall_registered;
+  (* keep = "true" *)logic pc_controller_stall;
 
   // TIMING OPTIMIZATION: Pass raw instruction to aligner, not flush-gated.
   // This breaks the timing path: flush -> is_compressed -> pc_increment -> PC.
@@ -274,6 +316,15 @@ module if_stage #(
     end
   end
 
+  // Slot-2 PC for BTB lookup (Session Q).  The aligner only allows slot-2
+  // to fire when slot-1 is compressed, so a valid slot-2 always starts at
+  // pc_reg + 2.  Keep that invariant out of the live sideband path; otherwise
+  // is_compressed feeds the slot-2 BTB address and then the PC redirect mux.
+  logic [XLEN-1:0] slot2_pc_for_btb;
+  logic            slot2_pc_for_btb_is_halfword;
+  assign slot2_pc_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
+  assign slot2_pc_for_btb_is_halfword = !pc_reg[1];
+
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
@@ -288,6 +339,14 @@ module if_stage #(
 
       // Current PC for BTB lookup
       .i_pc(pc),
+
+      // Slot-2 PC for BTB lookup (Session Q dual-port)
+      .i_pc_2(slot2_pc_for_btb),
+      .i_slot2_valid(slot2_prediction_valid),
+      .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
+      // Session R: live is_compressed_2 lets BPC's halfword-PC predicate
+      // accept native slot-2 branches when BTB's compressed flag matches.
+      .i_slot2_is_compressed(is_compressed_2),
 
       // Control signals for prediction gating
       .i_trap_taken(i_trap_ctrl.trap_taken),
@@ -335,11 +394,19 @@ module if_stage #(
 
       // Control outputs
       .o_prediction_used(prediction_used),
+      .o_prediction_used_for_pc(prediction_used_for_pc),
       .o_prediction_holdoff(prediction_holdoff),
       .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
       .o_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
+
+      // Slot-2 prediction outputs (Session Q)
+      .o_slot2_prediction_used(slot2_prediction_used),
+      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      .o_slot2_btb_hit(slot2_btb_hit),
+      .o_slot2_predicted_taken(slot2_predicted_taken),
+      .o_slot2_predicted_target(slot2_predicted_target),
 
       // RAS prediction outputs
       .o_ras_predicted(ras_predicted),
@@ -382,12 +449,20 @@ module if_stage #(
       // behavior but is computed locally in instruction_aligner for better timing.
       .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
+      // 2-wide bundle metadata (Session F).  Drives the +6/+8 PC advance
+      // selection inside pc_increment_calculator.  SESSION I fix: pass the
+      // OUTPUT slot-2 valid + is_compressed_2 (= replay-aware via stall
+      // capture register), not the live aligner outputs.  This keeps PC
+      // inc consistent with what dispatch sees during stall replay.
+      .i_slot2_valid(slot2_valid),
+      .i_slot2_is_compressed(o_from_if_to_pd_2.sel_compressed),
 
       // Branch prediction (from branch_prediction_controller)
       .i_predicted_taken(btb_predicted_taken),
       .i_predicted_target(btb_predicted_target),
       .i_predicted_target_r(btb_predicted_target_r),
       .i_prediction_used(prediction_used),
+      .i_prediction_used_for_pc(prediction_used_for_pc),
       .i_ras_predicted(ras_predicted),
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
@@ -395,6 +470,12 @@ module if_stage #(
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_sel_nop(sel_nop),
+
+      // Slot-2 BTB prediction redirect (Session Q dual-port BTB)
+      .i_slot2_prediction_used(slot2_prediction_used),
+      .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      .i_slot2_predicted_target(slot2_predicted_target),
+      .o_slot2_redirect_q(slot2_redirect_q),
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
@@ -449,9 +530,12 @@ module if_stage #(
 
       .i_is_compressed(is_compressed),
       .i_sel_nop(sel_nop),
+      .i_slot2_valid(slot2_valid),
       // Align sideband to match instruction word selection
-      .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr_sideband[3:2] :
-                                                           i_instr_sideband[1:0]),
+      .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ?
+                            i_instr_sideband[(2*riscv_pkg::ImemSidebandWidth)-1:
+                                             riscv_pkg::ImemSidebandWidth] :
+                            i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
       .o_instr_buffer(instr_buffer),
       .o_next_word_buffer(next_word_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
@@ -513,7 +597,16 @@ module if_stage #(
       .o_is_compressed_fast(is_compressed_fast),
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
-      .o_use_instr_buffer(use_instr_buffer)
+      .o_use_instr_buffer(use_instr_buffer),
+
+      // Slot-2 outputs (Session F).  sel_nop_2 already folds in slot-1 sel_nop,
+      // slot-1 branch detection, and the doesn't-fit cases.
+      .o_raw_parcel_2(raw_parcel_2),
+      .o_effective_instr_2(effective_instr_2),
+      .o_is_compressed_2(is_compressed_2),
+      .o_sel_nop_2(sel_nop_2_aligner),
+      .o_sel_compressed_2(sel_compressed_2),
+      .o_slot1_is_branch(slot1_is_branch)
   );
 
   // RAS prediction stale cycle: only when prediction came from RAS (not BTB-only).
@@ -543,11 +636,16 @@ module if_stage #(
   // pd_redirect_q overrides the !prediction_holdoff exemption: when a PD
   // redirect caused the holdoff, the arriving BRAM data is stale even if a
   // spurious wrong-path BTB hit set prediction_holdoff.
+  // Session Q: slot2_redirect_q has the same role as pd_redirect_q for the
+  // slot-2 BTB redirect bubble — BRAM was fetching the sequential
+  // wrong-path bundle when the slot-2 prediction fired, so the cycle
+  // following the redirect must NOP even if prediction_holdoff is set.
   assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
-                   (control_flow_holdoff && (!prediction_holdoff || pd_redirect_q));
+                   (control_flow_holdoff &&
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
 
   // ===========================================================================
   // Stall State Registers
@@ -696,9 +794,13 @@ module if_stage #(
   // pc_controller/branch_prediction_controller → prediction_used.
   // One cycle delay is correct: prediction redirects PC this cycle, new
   // fetch data arrives next cycle, so c_ext_state reset aligns with it.
+  // Session Q: include slot-2 prediction so c_ext_state also resets its
+  // buffer state across slot-2 BTB redirects (the bubble cycle following
+  // a slot-2 prediction has stale BRAM data and the buffer state should
+  // not survive across the redirect).
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) prediction_reset_c_ext <= 1'b0;
-    else prediction_reset_c_ext <= prediction_used;
+    else prediction_reset_c_ext <= prediction_used || slot2_prediction_used;
   end
 
   // Only replay saved IF outputs when the stalled cycle carried a real,
@@ -881,5 +983,182 @@ module if_stage #(
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
+
+  // ===========================================================================
+  // Slot-2 IF→PD Packet (2-wide dispatch — Session F)
+  // ===========================================================================
+  // Slot-2 follows slot-1 sequentially in program order: PC and link address
+  // are simply slot-1's plus the slot-1 / slot-2 sizes.  No BTB lookup is
+  // performed for slot-2 (decision #3, single-port BTB on slot-1 PC) and no
+  // RAS prediction is consumed for slot-2 (decision #1: slot-2 is invalid
+  // when slot-1 is a branch, so slot-1 cannot have pushed/popped RAS in the
+  // same cycle).
+  //
+  // Stall handling mirrors slot-1's stall_capture_reg pattern: during stall
+  // the BRAM moves on, so we replay the captured-at-stall-start values until
+  // unstall (gated by replay_saved_if_outputs).  sel_nop_2 has the same
+  // flush-to-1 behaviour as sel_nop and folds in slot-1 sel_nop, slot-1
+  // branch detection, and the slot-2 doesn't-fit case.
+
+  logic [15:0] raw_parcel_2_saved;
+  logic [31:0] effective_instr_2_sc;
+  logic        sel_compressed_2_sc;
+  logic        sel_nop_2_saved;
+
+  // Slot-2's live raw parcel is on the BRAM -> PD decompressor path.  Keep
+  // only a saved register here and let the final replay mux below select it;
+  // the generic stall_capture_reg would add an unnecessary live-data mux
+  // before the replay mux.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      raw_parcel_2_saved <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      raw_parcel_2_saved <= raw_parcel_2;
+    end
+  end
+
+  stall_capture_reg #(
+      .WIDTH(32)
+  ) u_effective_instr_2_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(effective_instr_2),
+      .o_data(effective_instr_2_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_sel_compressed_2_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(sel_compressed_2),
+      .o_data(sel_compressed_2_sc)
+  );
+
+  // Mirror sel_nop_saved: flush forces 1, stall-entry latches the live value.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      sel_nop_2_saved <= 1'b1;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      sel_nop_2_saved <= sel_nop_2;
+    end
+  end
+
+  // Slot-2 PC = slot-1 PC + slot-1 size; slot-2 link = slot-2 PC + slot-2 size.
+  // Use the stall-replayed slot-1 PC and is_compressed_for_link so slot-2's
+  // PC stays aligned with slot-1's even across stall boundaries.
+  logic [XLEN-1:0] slot2_pc_live;
+  logic [XLEN-1:0] slot2_link_live;
+  assign slot2_pc_live   = instruction_pc +
+                           (is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                            riscv_pkg::PcIncrement32bit);
+  assign slot2_link_live = slot2_pc_live +
+                           (is_compressed_2 ? riscv_pkg::PcIncrementCompressed :
+                                              riscv_pkg::PcIncrement32bit);
+
+  logic [XLEN-1:0] slot2_pc_sc;
+  logic [XLEN-1:0] slot2_link_sc;
+  assign slot2_pc_sc   = instruction_pc_sc +
+                         (sel_compressed_sc ? riscv_pkg::PcIncrementCompressed :
+                                              riscv_pkg::PcIncrement32bit);
+  assign slot2_link_sc = slot2_pc_sc +
+                         (sel_compressed_2_sc ? riscv_pkg::PcIncrementCompressed :
+                                                riscv_pkg::PcIncrement32bit);
+
+  // Slot-2 IF→PD packet assembly.
+  assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
+  assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
+  assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
+                                            sel_compressed_2;
+  // SESSION I fix #2: drive slot2_valid (= what feeds pc_increment_calculator
+  // and c_ext_state) from the OUTPUT sel_nop_2, not the live aligner value.
+  // See the comment block where sel_nop_2_aligner is declared above.
+  assign slot2_valid = !o_from_if_to_pd_2.sel_nop;
+  assign o_from_if_to_pd_2.effective_instr = replay_saved_if_outputs ? effective_instr_2_sc :
+                                             effective_instr_2;
+  assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
+  assign o_from_if_to_pd_2.link_address = replay_saved_if_outputs ? slot2_link_sc : slot2_link_live;
+
+  // BTB metadata (Session Q): slot-2 has its own BTB lookup port now.  The
+  // metadata flows combinationally — slot-2 lookup happens at the same
+  // cycle as slot-2 is in IF, so no register is needed (unlike slot-1's
+  // prediction_used_r which delays slot-1 BTB results by 1 cycle to align
+  // with the BRAM-fetched instruction's arrival).  Stall replay uses
+  // captured-at-stall-start values like the rest of the slot-2 packet.
+  //
+  // CRITICAL: stamp predicted_taken iff slot-2 prediction actually
+  // redirected fetch (slot2_prediction_used).  A BTB hit with counter
+  // saying not-taken (predicted_taken_2 == 0) is stamped with btb_hit=1
+  // and predicted_taken=0, which is consistent with fetch staying on the
+  // sequential path.  EX-stage mispredict detection will fire correctly
+  // for direction or target mismatch.
+  logic            slot2_btb_hit_sc;
+  logic            slot2_predicted_taken_sc;
+  logic [XLEN-1:0] slot2_predicted_target_sc;
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_slot2_btb_hit_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(slot2_btb_hit),
+      .o_data(slot2_btb_hit_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_slot2_predicted_taken_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(slot2_predicted_taken),
+      .o_data(slot2_predicted_taken_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(XLEN)
+  ) u_slot2_predicted_target_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(slot2_predicted_target),
+      .o_data(slot2_predicted_target_sc)
+  );
+
+  // Clear slot-2 BTB metadata when slot-2 is NOPing this cycle.
+  logic slot2_sel_nop_effective;
+  assign slot2_sel_nop_effective = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
+  assign o_from_if_to_pd_2.btb_hit = slot2_sel_nop_effective ? 1'b0 :
+                                     (replay_saved_if_outputs ? slot2_btb_hit_sc :
+                                      slot2_btb_hit);
+  assign o_from_if_to_pd_2.btb_predicted_taken = slot2_sel_nop_effective ? 1'b0 :
+                                     (replay_saved_if_outputs ? slot2_predicted_taken_sc :
+                                      slot2_predicted_taken);
+  assign o_from_if_to_pd_2.btb_predicted_target = replay_saved_if_outputs ?
+                                                  slot2_predicted_target_sc :
+                                                  slot2_predicted_target;
+
+  // RAS metadata: slot-2 cannot itself drive a RAS prediction (slot-1 owns
+  // the lookup).  RAS state-snapshot fields, however, must reflect the RAS
+  // state BEFORE slot-2 enters, which equals the state before slot-1 because
+  // slot-1 is guaranteed not to be a call/return when slot-2 fires (decision
+  // #1: slot-1 branch terminates the bundle).  Mirror slot-1's snapshot.
+  assign o_from_if_to_pd_2.ras_predicted = 1'b0;
+  assign o_from_if_to_pd_2.ras_predicted_target = '0;
+  assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
+  assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
 
 endmodule : if_stage

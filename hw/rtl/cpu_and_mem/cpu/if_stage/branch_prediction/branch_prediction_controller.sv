@@ -44,8 +44,22 @@ module branch_prediction_controller (
     input logic i_stall_registered,
     input logic i_flush,
 
-    // Current PC for BTB lookup
+    // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
+
+    // Slot-2 PC for slot-2 BTB lookup (Session Q).  Equals pc_reg + slot-1
+    // size when slot-2 is valid this cycle; the lookup is gated by
+    // i_slot2_valid so the slot-2 prediction only fires when the slot-2
+    // instruction is actually being processed in IF.
+    input logic [riscv_pkg::XLEN-1:0] i_pc_2,
+    input logic                       i_slot2_valid,
+    input logic                       i_slot2_pc_is_halfword,
+    // Slot-2 instruction's compressed flag (live from instruction_aligner).
+    // Used to relax the halfword-PC predicate so a native (32-bit) slot-2
+    // branch at a halfword PC can still be predicted when the BTB entry's
+    // compressed flag matches the actual instruction size.  See the
+    // slot2_prediction_allowed assign below.
+    input logic                       i_slot2_is_compressed,
 
     // Control signals for prediction gating (all should be registered for timing)
     input logic i_trap_taken,
@@ -91,12 +105,24 @@ module branch_prediction_controller (
 
     // Control outputs
     output logic o_prediction_used,  // Prediction used this cycle (for pc_controller)
+    output logic o_prediction_used_for_pc,  // Stall-ungated PC mux select
     output logic o_prediction_holdoff,  // One cycle after prediction (for c_ext_state)
     output logic o_btb_only_prediction_holdoff,  // Holdoff when BTB (not RAS) predicted
     output logic o_sel_prediction_r,  // Registered sel_prediction (for pc_controller pc_reg)
     output logic o_prediction_requires_pc_reg_handoff,
     // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
+
+    // Slot-2 prediction outputs (Session Q).  Combinational: feeds
+    // pc_controller's slot-2 redirect path AND the slot-2 IF→PD metadata.
+    // A taken slot-2 prediction redirects pc[N+2] to o_slot2_predicted_target
+    // and triggers a 1-cycle bubble at cycle N+2 (the BRAM was already
+    // fetching the wrong-path sequential address at cycle N+1).
+    output logic                       o_slot2_prediction_used,
+    output logic                       o_slot2_prediction_used_for_pc,
+    output logic                       o_slot2_btb_hit,
+    output logic                       o_slot2_predicted_taken,
+    output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
 
     // RAS prediction outputs (for pipeline passthrough)
     output logic o_ras_predicted,  // RAS prediction was used
@@ -110,7 +136,7 @@ module branch_prediction_controller (
   localparam int unsigned RasDepth = riscv_pkg::RasDepth;
 
   // ===========================================================================
-  // BTB Instance
+  // BTB Instance (slot-1 + slot-2 lookup ports, single update port)
   // ===========================================================================
   logic            btb_hit;
   logic            btb_predicted_taken;
@@ -118,7 +144,17 @@ module branch_prediction_controller (
   logic            btb_compressed;
   logic            btb_requires_pc_reg_handoff;
 
-  assign o_prediction_requires_pc_reg_handoff = btb_requires_pc_reg_handoff;
+  // Slot-2 BTB outputs (Session Q).
+  logic            btb_hit_2;
+  logic            btb_predicted_taken_2;
+  logic [XLEN-1:0] btb_predicted_target_2;
+  logic            btb_compressed_2;
+  logic            btb_requires_pc_reg_handoff_2;
+
+  // Taken BTB predictions always need the predicted PC to keep flowing through
+  // IF/PD/ID so the branch or stale predicted op can resolve architecturally.
+  // Avoid putting the BTB metadata RAM read on the pending-prediction arm path.
+  assign o_prediction_requires_pc_reg_handoff = btb_predicted_taken;
 
   branch_predictor #(
       .XLEN(XLEN)
@@ -126,13 +162,21 @@ module branch_prediction_controller (
       .i_clk,
       .i_rst(i_reset),
 
-      // Prediction lookup (uses current PC)
+      // Slot-1 prediction lookup (uses current fetch PC)
       .i_pc(i_pc),
       .o_btb_hit(btb_hit),
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
       .o_btb_compressed(btb_compressed),
       .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
+
+      // Slot-2 prediction lookup (uses pc_reg + slot-1 size)
+      .i_pc_2(i_pc_2),
+      .o_btb_hit_2(btb_hit_2),
+      .o_predicted_taken_2(btb_predicted_taken_2),
+      .o_predicted_target_2(btb_predicted_target_2),
+      .o_btb_compressed_2(btb_compressed_2),
+      .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
 
       // Update from EX stage
       .i_update(i_btb_update),
@@ -318,18 +362,20 @@ module branch_prediction_controller (
   // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
   // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
+  logic prediction_used_for_pc;
   // Only "use" a prediction when IF can actually consume it. A prediction that
   // fires on the first stall cycle is especially dangerous for halfword target
   // handoff: the branch bytes can keep moving through IF while the PC/metadata
   // bookkeeping stays behind by one instruction.
-  assign prediction_used_effective = sel_prediction && !i_stall &&
-                                     !i_branch_taken && !i_is_32bit_spanning;
+  assign prediction_used_for_pc = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
   assign o_predicted_taken = sel_ras_prediction || btb_predicted_taken;
   assign o_predicted_target = sel_ras_prediction ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
+  assign o_prediction_used_for_pc = prediction_used_for_pc;
 
   // Detect prediction to halfword-aligned address
   logic predicted_target_is_halfword;
@@ -434,5 +480,49 @@ module branch_prediction_controller (
       o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
     end
   end
+
+  // ===========================================================================
+  // Slot-2 Prediction Gating (Session Q)
+  // ===========================================================================
+  // Slot-2 prediction reuses prediction_common (same per-cycle blockers as
+  // slot-1 — reset/trap/mret/holdoff/spanning/buffer/disabled) and adds:
+  //   - i_slot2_valid: slot-2 must actually be firing this cycle.  Slot-2
+  //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
+  //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict when the
+  //     BTB entry's compressed flag matches the live slot-2 instruction's
+  //     compressed flag.  This relaxes Session Q's stricter
+  //     "btb_compressed_2 must be 1" check (which only allowed compressed
+  //     slot-2 at a halfword PC) — Session R allows native (32-bit) slot-2
+  //     at a halfword PC too, provided the BTB entry was trained for the
+  //     same size.  A size mismatch means the BTB was trained at this PC
+  //     for a different alignment and the predicted target would mispredict
+  //     anyway, so we suppress prediction in that case.
+  //
+  // Slot-2 has no RAS lookup (decision #1 keeps slot-2 invalid when slot-1
+  // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
+  // prediction_used is purely BTB-driven.
+  logic slot2_prediction_common;
+  logic slot2_prediction_allowed;
+  // slot2_prediction_common reuses prediction_common but is computed
+  // independently so the slot-2 cone doesn't pull in slot-1's
+  // !i_pc[1] || btb_compressed term.
+  assign slot2_prediction_common = prediction_common && i_slot2_valid;
+  assign slot2_prediction_allowed = slot2_prediction_common &&
+                                    (!i_slot2_pc_is_halfword ||
+                                     (i_slot2_is_compressed == btb_compressed_2));
+
+  logic slot2_sel_btb_prediction;
+  assign slot2_sel_btb_prediction = slot2_prediction_allowed && btb_predicted_taken_2;
+
+  // Final slot-2 prediction-used: same late-arrival gates as slot-1
+  // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
+  // suppression aligned with the slot-1 path so a same-cycle branch
+  // resolution / spanning event takes priority over a slot-2 BTB hit.
+  assign o_slot2_prediction_used_for_pc =
+      slot2_sel_btb_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
+  assign o_slot2_btb_hit = btb_hit_2 && i_slot2_valid;
+  assign o_slot2_predicted_taken = o_slot2_prediction_used;
+  assign o_slot2_predicted_target = btb_predicted_target_2;
 
 endmodule : branch_prediction_controller

@@ -62,6 +62,12 @@ module pc_increment_calculator #(
     input logic i_is_compressed_for_pc,
     input logic i_sel_nop,  // IF outputs NOP (stale BRAM data — is_compressed unreliable)
 
+    // 2-wide bundle metadata (Session F).  When slot-2 is valid this cycle
+    // (slot-1 not a branch, slot-2 fits, etc.), the bundle advances by
+    // slot-1 size + slot-2 size: total +4/+6/+8.
+    input logic i_slot2_valid,         // Slot-2 contributes to PC advance
+    input logic i_slot2_is_compressed, // Slot-2 is RVC
+
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
@@ -113,9 +119,32 @@ module pc_increment_calculator #(
   localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
-  logic [XLEN-1:0] next_pc_plus_2, next_pc_plus_4;
+  // 1-wide options (existing) plus 2-wide bundle options (+6 / +8).
+  logic [XLEN-1:0] next_pc_plus_2, next_pc_plus_4, next_pc_plus_6, next_pc_plus_8;
   assign next_pc_plus_2 = i_pc + IncC;
   assign next_pc_plus_4 = i_pc + Inc4;
+  assign next_pc_plus_6 = i_pc + 32'd6;
+  assign next_pc_plus_8 = i_pc + 32'd8;
+
+  // Default-case 2-wide bundle advance: select +2/+4/+6/+8 based on slot-1
+  // size, slot-2 valid, and slot-2 size.  The select drives only the final
+  // mux — both adder chains settle from i_pc independently.
+  logic [XLEN-1:0] bundle_seq_next_pc;
+  always_comb begin
+    if (!i_slot2_valid) begin
+      bundle_seq_next_pc = pc_inc_comb_sel_2 ? next_pc_plus_2 : next_pc_plus_4;
+    end else begin
+      unique case ({
+        i_is_compressed, i_slot2_is_compressed
+      })
+        2'b11:   bundle_seq_next_pc = next_pc_plus_4;  // RVC + RVC
+        2'b10:   bundle_seq_next_pc = next_pc_plus_6;  // RVC + 32b
+        2'b01:   bundle_seq_next_pc = next_pc_plus_6;  // 32b + RVC
+        2'b00:   bundle_seq_next_pc = next_pc_plus_8;  // 32b + 32b
+        default: bundle_seq_next_pc = next_pc_plus_4;
+      endcase
+    end
+  end
 
   // Compute next_sequential_pc (raw sequential PC before corrections)
   logic [XLEN-1:0] next_sequential_pc;
@@ -123,12 +152,10 @@ module pc_increment_calculator #(
     casez ({
       pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
     })
-      3'b1??: next_sequential_pc = next_pc_plus_4;
-      3'b01?: next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
-      3'b001: next_sequential_pc = next_pc_plus_2;  // halfword: +2
-      default: begin
-        next_sequential_pc = pc_inc_comb_sel_2 ? next_pc_plus_2 : next_pc_plus_4;
-      end
+      3'b1??:  next_sequential_pc = next_pc_plus_4;
+      3'b01?:  next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+      3'b001:  next_sequential_pc = next_pc_plus_2;  // halfword: +2
+      default: next_sequential_pc = bundle_seq_next_pc;
     endcase
   end
 
@@ -161,6 +188,8 @@ module pc_increment_calculator #(
   // inside the submodule while the is_compressed MUX stays outside.
   logic [XLEN-1:0] pc_reg_if_compressed;
   logic [XLEN-1:0] pc_reg_if_32bit;
+  logic [XLEN-1:0] pc_reg_plus_6;
+  logic [XLEN-1:0] pc_reg_plus_8;
 
   (* dont_touch = "yes" *) pc_reg_precompute #(
       .XLEN(XLEN)
@@ -172,18 +201,43 @@ module pc_increment_calculator #(
       .i_spanning_in_progress           (i_spanning_in_progress),
       .i_spanning_eligible              (i_spanning_eligible),
       .o_pc_reg_if_compressed           (pc_reg_if_compressed),
-      .o_pc_reg_if_32bit                (pc_reg_if_32bit)
+      .o_pc_reg_if_32bit                (pc_reg_if_32bit),
+      .o_pc_reg_plus_6                  (pc_reg_plus_6),
+      .o_pc_reg_plus_8                  (pc_reg_plus_8)
   );
 
-  // Final: select based on live is_compressed. Only this 2:1 mux is on the
-  // BRAM→o_pc_reg critical path — the CARRY8 chains settle from registered
-  // i_pc_reg well before BRAM data arrives.
+  // Final: select based on live is_compressed and slot-2 metadata.  Only the
+  // final mux is on the BRAM→o_pc_reg critical path — the CARRY8 chains
+  // settle from registered i_pc_reg well before BRAM data arrives.
   //
   // When sel_nop is active, the BRAM data is stale (wrong address after a
-  // redirect) so is_compressed is unreliable. Force +2 (compressed) to
-  // prevent pc_reg from overshooting a pending prediction branch PC.
+  // redirect) so is_compressed/slot-2 are unreliable.  Force +2 (compressed,
+  // slot-2 invalid) to prevent pc_reg from overshooting a pending prediction
+  // branch PC.
+  //
+  // 2-wide: when slot-2 is valid this cycle, use the bundle advance:
+  //   RVC + RVC = +4 (= pc_reg_if_32bit, semantically identical)
+  //   RVC + 32b = +6
+  //   32b + RVC = +6
+  //   32b + 32b = +8
   logic [XLEN-1:0] pc_reg_normal;
-  assign pc_reg_normal = (i_is_compressed || i_sel_nop) ? pc_reg_if_compressed : pc_reg_if_32bit;
+  always_comb begin
+    if (i_sel_nop) begin
+      pc_reg_normal = pc_reg_if_compressed;  // +2 / hold per existing rules
+    end else if (!i_slot2_valid) begin
+      pc_reg_normal = i_is_compressed ? pc_reg_if_compressed : pc_reg_if_32bit;
+    end else begin
+      unique case ({
+        i_is_compressed, i_slot2_is_compressed
+      })
+        2'b11:   pc_reg_normal = pc_reg_if_32bit;  // +4
+        2'b10:   pc_reg_normal = pc_reg_plus_6;
+        2'b01:   pc_reg_normal = pc_reg_plus_6;
+        2'b00:   pc_reg_normal = pc_reg_plus_8;
+        default: pc_reg_normal = pc_reg_if_32bit;
+      endcase
+    end
+  end
 
   // ===========================================================================
   // Special PC Corrections

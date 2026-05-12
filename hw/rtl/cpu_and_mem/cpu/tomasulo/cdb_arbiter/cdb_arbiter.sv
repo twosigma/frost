@@ -70,16 +70,6 @@ module cdb_arbiter (
     output logic [riscv_pkg::NumFus-1:0] o_grant_raw
 );
 
-  // Build internal array from individual ports
-  riscv_pkg::fu_complete_t i_fu_complete[riscv_pkg::NumFus];
-  assign i_fu_complete[0] = i_fu_complete_0;
-  assign i_fu_complete[1] = i_fu_complete_1;
-  assign i_fu_complete[2] = i_fu_complete_2;
-  assign i_fu_complete[3] = i_fu_complete_3;
-  assign i_fu_complete[4] = i_fu_complete_4;
-  assign i_fu_complete[5] = i_fu_complete_5;
-  assign i_fu_complete[6] = i_fu_complete_6;
-
   // Valid vector for convenience (used by formal assertions)
   logic                    [riscv_pkg::NumFus-1:0] valid_vec;
 
@@ -90,9 +80,13 @@ module cdb_arbiter (
   riscv_pkg::fu_complete_t                         winner_data;
 
   always_comb begin
-    for (int i = 0; i < riscv_pkg::NumFus; i++) begin
-      valid_vec[i] = i_fu_complete[i].valid;
-    end
+    valid_vec[riscv_pkg::FU_ALU]    = i_fu_complete_0.valid;
+    valid_vec[riscv_pkg::FU_MUL]    = i_fu_complete_1.valid;
+    valid_vec[riscv_pkg::FU_DIV]    = i_fu_complete_2.valid;
+    valid_vec[riscv_pkg::FU_MEM]    = i_fu_complete_3.valid;
+    valid_vec[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid;
+    valid_vec[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid;
+    valid_vec[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid;
   end
 
   always_comb begin
@@ -101,40 +95,40 @@ module cdb_arbiter (
     winner_data = '0;
     o_grant_raw = '0;
 
-    if (i_fu_complete[riscv_pkg::FU_MUL].valid) begin
+    if (i_fu_complete_1.valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_MUL;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_MUL];
+      winner_data                    = i_fu_complete_1;
       o_grant_raw[riscv_pkg::FU_MUL] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_MEM].valid) begin
+    end else if (i_fu_complete_3.valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_MEM;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_MEM];
+      winner_data                    = i_fu_complete_3;
       o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_ALU].valid) begin
+    end else if (i_fu_complete_0.valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_ALU;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_ALU];
+      winner_data                    = i_fu_complete_0;
       o_grant_raw[riscv_pkg::FU_ALU] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_DIV].valid) begin
+    end else if (i_fu_complete_2.valid) begin
       found                          = 1'b1;
       winner_idx                     = riscv_pkg::FU_DIV;
-      winner_data                    = i_fu_complete[riscv_pkg::FU_DIV];
+      winner_data                    = i_fu_complete_2;
       o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_DIV].valid) begin
+    end else if (i_fu_complete_6.valid) begin
       found                             = 1'b1;
       winner_idx                        = riscv_pkg::FU_FP_DIV;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_DIV];
+      winner_data                       = i_fu_complete_6;
       o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_MUL].valid) begin
+    end else if (i_fu_complete_5.valid) begin
       found                             = 1'b1;
       winner_idx                        = riscv_pkg::FU_FP_MUL;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_MUL];
+      winner_data                       = i_fu_complete_5;
       o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
-    end else if (i_fu_complete[riscv_pkg::FU_FP_ADD].valid) begin
+    end else if (i_fu_complete_4.valid) begin
       found                             = 1'b1;
       winner_idx                        = riscv_pkg::FU_FP_ADD;
-      winner_data                       = i_fu_complete[riscv_pkg::FU_FP_ADD];
+      winner_data                       = i_fu_complete_4;
       o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end

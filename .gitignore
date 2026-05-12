@@ -59,6 +59,7 @@ dump.fst
 # Compiled software (regenerated on demand by test/build/load scripts)
 sw.mem
 sw.txt
+sw_imem_*.mem
 sw/apps/*/sw.S
 
 # mypy

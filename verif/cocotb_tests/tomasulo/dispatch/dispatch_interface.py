@@ -280,6 +280,13 @@ FROM_ID_TO_EX_FIELDS = [
     ("instruction_operation", OP_WIDTH),
     ("branch_operation", BRANCH_OP_WIDTH),
     ("store_operation", STORE_OP_WIDTH),
+    ("rs_type", RS_TYPE_WIDTH),
+    ("is_int_store", 1),
+    ("is_branch_or_jump", 1),
+    ("is_fence", 1),
+    ("is_fence_i", 1),
+    ("is_csr_imm", 1),
+    ("has_fp_flags", 1),
     ("is_jump_and_link", 1),
     ("is_jump_and_link_register", 1),
     ("is_multiply", 1),
@@ -325,6 +332,16 @@ FROM_ID_TO_EX_FIELDS = [
     ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
     ("btb_expected_rs1", XLEN),
+    # Pre-decoded operand-classification flags (timing optimization).
+    # Dispatch reads these instead of re-decoding instruction_operation.
+    ("has_int_dest", 1),
+    ("has_fp_dest", 1),
+    ("uses_int_rs1", 1),
+    ("uses_int_rs2", 1),
+    ("uses_fp_rs1", 1),
+    ("uses_fp_rs2", 1),
+    ("uses_fp_rs3", 1),
+    ("is_not_nop", 1),
 ]
 
 # Compute total width and per-field offsets (bit offset from LSB)
@@ -339,12 +356,623 @@ for _name, _width in FROM_ID_TO_EX_FIELDS:
 assert _offset == 0, f"Offset mismatch: {_offset}"
 
 
+# =============================================================================
+# Pre-decoded operand-classification helpers
+# =============================================================================
+# These mirror the riscv_pkg.sv functions of the same names so that
+# build_from_id_to_ex can populate the registered flags from instruction_operation
+# without each test having to set them individually.  The DUT's id_stage runs
+# the same decode and registers the result; dispatch then reads the registered
+# flag instead of re-decoding.
+_HAS_FP_DEST_OPS: frozenset[int] = frozenset(
+    {
+        FLW,
+        FLD,
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FCVT_S_W,
+        FCVT_S_WU,
+        FCVT_D_W,
+        FCVT_D_WU,
+        FCVT_S_D,
+        FCVT_D_S,
+        FMV_W_X,
+    }
+)
+
+_HAS_INT_DEST_OPS: frozenset[int] = frozenset(
+    {
+        ADD,
+        SUB,
+        AND,
+        OR,
+        XOR,
+        SLL,
+        SRL,
+        SRA,
+        SLT,
+        SLTU,
+        ADDI,
+        ANDI,
+        ORI,
+        XORI,
+        SLTI,
+        SLTIU,
+        SLLI,
+        SRLI,
+        SRAI,
+        LUI,
+        AUIPC,
+        JAL,
+        JALR,
+        SH1ADD,
+        SH2ADD,
+        SH3ADD,
+        BSET,
+        BCLR,
+        BINV,
+        BEXT,
+        BSETI,
+        BCLRI,
+        BINVI,
+        BEXTI,
+        ANDN,
+        ORN,
+        XNOR_OP,
+        CLZ,
+        CTZ,
+        CPOP,
+        MAX_OP,
+        MAXU,
+        MIN_OP,
+        MINU,
+        SEXT_B,
+        SEXT_H,
+        ROL,
+        ROR,
+        RORI,
+        ORC_B,
+        REV8,
+        CZERO_EQZ,
+        CZERO_NEZ,
+        PACK,
+        PACKH,
+        BREV8,
+        ZIP,
+        UNZIP,
+        MUL,
+        MULH,
+        MULHSU,
+        MULHU,
+        DIV,
+        DIVU,
+        REM,
+        REMU,
+        LB,
+        LH,
+        LW,
+        LBU,
+        LHU,
+        LR_W,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+        CSRRW,
+        CSRRS,
+        CSRRC,
+        CSRRWI,
+        CSRRSI,
+        CSRRCI,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCLASS_S,
+        FCLASS_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FMV_X_W,
+    }
+)
+
+_USES_FP_RS1_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCLASS_S,
+        FCLASS_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FMV_X_W,
+        FCVT_S_D,
+        FCVT_D_S,
+    }
+)
+
+_USES_FP_RS2_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FSW,
+        FSD,
+    }
+)
+
+_USES_FP_RS3_OPS: frozenset[int] = frozenset(
+    {
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+    }
+)
+
+# uses_int_rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
+_NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
+    {
+        LUI,
+        AUIPC,
+        JAL,
+        ECALL,
+        EBREAK,
+        FENCE,
+        FENCE_I,
+        WFI,
+        MRET,
+        PAUSE,
+        CSRRWI,
+        CSRRSI,
+        CSRRCI,
+    }
+)
+
+_USES_INT_RS2_OPS: frozenset[int] = frozenset(
+    {
+        BEQ,
+        BNE,
+        BLT,
+        BGE,
+        BLTU,
+        BGEU,
+        ADD,
+        SUB,
+        AND,
+        OR,
+        XOR,
+        SLL,
+        SRL,
+        SRA,
+        SLT,
+        SLTU,
+        MUL,
+        MULH,
+        MULHSU,
+        MULHU,
+        DIV,
+        DIVU,
+        REM,
+        REMU,
+        SH1ADD,
+        SH2ADD,
+        SH3ADD,
+        BSET,
+        BCLR,
+        BINV,
+        BEXT,
+        ANDN,
+        ORN,
+        XNOR_OP,
+        MAX_OP,
+        MAXU,
+        MIN_OP,
+        MINU,
+        ROL,
+        ROR,
+        CZERO_EQZ,
+        CZERO_NEZ,
+        PACK,
+        PACKH,
+        ZIP,
+        UNZIP,
+        SB,
+        SH,
+        SW,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+    }
+)
+
+_RS_MUL_OPS: frozenset[int] = frozenset(
+    {MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU}
+)
+
+_RS_MEM_OPS: frozenset[int] = frozenset(
+    {
+        LB,
+        LH,
+        LW,
+        LBU,
+        LHU,
+        SB,
+        SH,
+        SW,
+        FLW,
+        FSW,
+        FLD,
+        FSD,
+        LR_W,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+        FENCE,
+        FENCE_I,
+    }
+)
+
+_RS_FP_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FADD_D,
+        FSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_S_W,
+        FCVT_S_WU,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FCVT_D_W,
+        FCVT_D_WU,
+        FCVT_S_D,
+        FCVT_D_S,
+        FMV_X_W,
+        FMV_W_X,
+        FCLASS_S,
+        FCLASS_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+    }
+)
+
+_RS_FMUL_OPS: frozenset[int] = frozenset(
+    {
+        FMUL_S,
+        FMUL_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+    }
+)
+
+_RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
+
+_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, PAUSE})
+
+_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW})
+
+_BRANCH_OR_JUMP_OPS: frozenset[int] = frozenset(
+    {BEQ, BNE, BLT, BGE, BLTU, BGEU, JAL, JALR}
+)
+
+_CSR_IMM_OPS: frozenset[int] = frozenset({CSRRWI, CSRRSI, CSRRCI})
+
+_HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
+    {
+        FADD_S,
+        FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
+        FADD_D,
+        FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
+        FMIN_S,
+        FMAX_S,
+        FMIN_D,
+        FMAX_D,
+        FEQ_S,
+        FLT_S,
+        FLE_S,
+        FEQ_D,
+        FLT_D,
+        FLE_D,
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_S_W,
+        FCVT_S_WU,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FCVT_D_W,
+        FCVT_D_WU,
+        FCVT_S_D,
+        FCVT_D_S,
+        FCLASS_S,
+        FCLASS_D,
+        FSGNJ_S,
+        FSGNJN_S,
+        FSGNJX_S,
+        FSGNJ_D,
+        FSGNJN_D,
+        FSGNJX_D,
+        FMV_X_W,
+        FMV_W_X,
+    }
+)
+
+_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU})
+_LOAD_BYTE_OPS: frozenset[int] = frozenset({LB, LBU})
+_LOAD_HALFWORD_OPS: frozenset[int] = frozenset({LH, LHU})
+_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU})
+_MUL_OPS: frozenset[int] = frozenset({MUL, MULH, MULHSU, MULHU})
+_DIV_OPS: frozenset[int] = frozenset({DIV, DIVU, REM, REMU})
+_CSR_OPS: frozenset[int] = frozenset({CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI})
+_AMO_OPS: frozenset[int] = frozenset(
+    {
+        LR_W,
+        SC_W,
+        AMOSWAP_W,
+        AMOADD_W,
+        AMOXOR_W,
+        AMOAND_W,
+        AMOOR_W,
+        AMOMIN_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMAXU_W,
+    }
+)
+_FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
+_FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD})
+_FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
+    _FP_LOAD_OPS
+    | _FP_STORE_OPS
+    | _HAS_FP_FLAGS_OPS
+    | _HAS_FP_DEST_OPS
+    | _USES_FP_RS1_OPS
+    | _USES_FP_RS2_OPS
+    | _USES_FP_RS3_OPS
+)
+_FP_COMPUTE_OPS: frozenset[int] = _HAS_FP_FLAGS_OPS
+_FP_TO_INT_OPS: frozenset[int] = frozenset(
+    {FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FMV_X_W}
+)
+_INT_TO_FP_OPS: frozenset[int] = frozenset(
+    {FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FMV_W_X}
+)
+
+
+def _derive_rs_type(op: int) -> int:
+    """Compute the pre-decoded RS type from instruction_operation."""
+    if op in _RS_NONE_OPS:
+        return RS_NONE
+    if op in _RS_MUL_OPS:
+        return RS_MUL
+    if op in _RS_MEM_OPS:
+        return RS_MEM
+    if op in _RS_FP_OPS:
+        return RS_FP
+    if op in _RS_FMUL_OPS:
+        return RS_FMUL
+    if op in _RS_FDIV_OPS:
+        return RS_FDIV
+    return RS_INT
+
+
+def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
+    """Compute pre-decoded dispatch fields from instruction_operation."""
+    has_fp_dest = 1 if op in _HAS_FP_DEST_OPS else 0
+    has_int_dest = 1 if op in _HAS_INT_DEST_OPS else 0
+    uses_fp_rs1 = 1 if op in _USES_FP_RS1_OPS else 0
+    uses_fp_rs2 = 1 if op in _USES_FP_RS2_OPS else 0
+    uses_fp_rs3 = 1 if op in _USES_FP_RS3_OPS else 0
+    uses_int_rs1 = 0 if (uses_fp_rs1 or op in _NOT_USES_INT_RS1_OPS) else 1
+    uses_int_rs2 = 1 if (not uses_fp_rs2 and op in _USES_INT_RS2_OPS) else 0
+    return {
+        "has_fp_dest": has_fp_dest,
+        "has_int_dest": has_int_dest,
+        "uses_fp_rs1": uses_fp_rs1,
+        "uses_fp_rs2": uses_fp_rs2,
+        "uses_fp_rs3": uses_fp_rs3,
+        "uses_int_rs1": uses_int_rs1,
+        "uses_int_rs2": uses_int_rs2,
+        "rs_type": _derive_rs_type(op),
+        "is_int_store": 1 if op in _INT_STORE_OPS else 0,
+        "is_branch_or_jump": 1 if op in _BRANCH_OR_JUMP_OPS else 0,
+        "is_fence": 1 if op == FENCE else 0,
+        "is_fence_i": 1 if op == FENCE_I else 0,
+        "is_csr_imm": 1 if op in _CSR_IMM_OPS else 0,
+        "has_fp_flags": 1 if op in _HAS_FP_FLAGS_OPS else 0,
+        "is_load_instruction": 1 if op in _LOAD_OPS else 0,
+        "is_load_byte": 1 if op in _LOAD_BYTE_OPS else 0,
+        "is_load_halfword": 1 if op in _LOAD_HALFWORD_OPS else 0,
+        "is_load_unsigned": 1 if op in _LOAD_UNSIGNED_OPS else 0,
+        "is_jump_and_link": 1 if op == JAL else 0,
+        "is_jump_and_link_register": 1 if op == JALR else 0,
+        "is_multiply": 1 if op in _MUL_OPS else 0,
+        "is_divide": 1 if op in _DIV_OPS else 0,
+        "is_csr_instruction": 1 if op in _CSR_OPS else 0,
+        "is_amo_instruction": 1 if op in _AMO_OPS else 0,
+        "is_lr": 1 if op == LR_W else 0,
+        "is_sc": 1 if op == SC_W else 0,
+        "is_mret": 1 if op == MRET else 0,
+        "is_wfi": 1 if op == WFI else 0,
+        "is_ecall": 1 if op == ECALL else 0,
+        "is_ebreak": 1 if op == EBREAK else 0,
+        "is_fp_instruction": 1 if op in _FP_INSTRUCTION_OPS else 0,
+        "is_fp_load": 1 if op in _FP_LOAD_OPS else 0,
+        "is_fp_store": 1 if op in _FP_STORE_OPS else 0,
+        "is_fp_load_double": 1 if op == FLD else 0,
+        "is_fp_store_double": 1 if op == FSD else 0,
+        "is_fp_compute": 1 if op in _FP_COMPUTE_OPS else 0,
+        "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
+        "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
+        "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
+    }
+
+
 def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
     All fields default to 0.  Pass keyword arguments matching field names
     from the struct definition to set specific fields.
+
+    Pre-decoded dispatch fields are auto-populated from instruction_operation
+    when not explicitly set, mirroring what id_stage computes and registers in
+    real hardware.
     """
+    derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
+    for name, value in derived.items():
+        kwargs.setdefault(name, value)
+
     val = 0
     for name, (offset, width) in _FROM_ID_TO_EX_OFFSETS.items():
         field_val = int(kwargs.get(name, 0))
@@ -574,16 +1202,35 @@ class DispatchInterface:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_valid.value = 0
+        # Slot-2 instruction (2-wide dispatch).  Held inactive in the
+        # dispatch unit tests; slot-2 dispatch is hard-tied off until later
+        # sessions wire it through cpu_ooo.
+        self.dut.i_from_id_to_ex_2.value = 0
+        self.dut.i_valid_2.value = 0
         self.dut.i_rs1_addr.value = 0
         self.dut.i_rs2_addr.value = 0
         self.dut.i_fp_rs3_addr.value = 0
+        # Slot-2 source register addresses (2-wide dispatch).  Held at zero
+        # in the dispatch unit tests; slot-2 dispatch is hard-tied off until
+        # later sessions wire in slot-2 instruction inputs.
+        self.dut.i_rs1_addr_2.value = 0
+        self.dut.i_rs2_addr_2.value = 0
+        self.dut.i_fp_rs3_addr_2.value = 0
         self.dut.i_frm_csr.value = 0
         self.dut.i_rob_alloc_resp.value = 0
+        # Slot-2 ROB alloc resp (2-wide dispatch).
+        self.dut.i_rob_alloc_resp_2.value = 0
         self.dut.i_int_src1.value = 0
         self.dut.i_int_src2.value = 0
         self.dut.i_fp_src1.value = 0
         self.dut.i_fp_src2.value = 0
         self.dut.i_fp_src3.value = 0
+        # Slot-2 RAT lookup results (raw, before intra-bundle RAW bypass).
+        self.dut.i_int_src1_2.value = 0
+        self.dut.i_int_src2_2.value = 0
+        self.dut.i_fp_src1_2.value = 0
+        self.dut.i_fp_src2_2.value = 0
+        self.dut.i_fp_src3_2.value = 0
         self.dut.i_checkpoint_available.value = 0
         self.dut.i_checkpoint_alloc_id.value = 0
         self.dut.i_ras_tos.value = 0
@@ -597,6 +1244,18 @@ class DispatchInterface:
         self.dut.i_fdiv_rs_full.value = 0
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
+        # Slot-2 "room for 2" status inputs.  Held at zero in unit tests
+        # (room for 2 always available).  Slot-2 dispatch fire gates use
+        # these but never assert until cpu_ooo wires up slot-2 instructions.
+        self.dut.i_rob_full_for_2.value = 0
+        self.dut.i_int_rs_full_for_2.value = 0
+        self.dut.i_mul_rs_full_for_2.value = 0
+        self.dut.i_mem_rs_full_for_2.value = 0
+        self.dut.i_fp_rs_full_for_2.value = 0
+        self.dut.i_fmul_rs_full_for_2.value = 0
+        self.dut.i_fdiv_rs_full_for_2.value = 0
+        self.dut.i_lq_full_for_2.value = 0
+        self.dut.i_sq_full_for_2.value = 0
         self.dut.i_flush.value = 0
         self.dut.i_hold.value = 0
 

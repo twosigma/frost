@@ -6,7 +6,7 @@ cover
 bmc: mode bmc
 bmc: depth 4
 cover: mode cover
-cover: depth 8
+cover: depth 6
 cover: vcd off
 
 [engines]

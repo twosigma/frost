@@ -407,6 +407,9 @@ The default CPU clock is 300 MHz. Override for different hardware:
 make FPGA_CPU_CLK_FREQ=100000000  # 100 MHz
 ```
 
+Board-aware loaders set `FPGA_CPU_CLK_FREQ` automatically so timing printouts
+and benchmark normalization match the target board.
+
 ## Memory Map
 
 Defined in `common/link.ld`:

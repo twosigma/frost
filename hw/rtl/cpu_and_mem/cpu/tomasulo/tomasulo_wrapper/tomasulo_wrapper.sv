@@ -60,6 +60,12 @@ module tomasulo_wrapper #(
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
+    // Slot-2 allocation port for 2-wide dispatch (Session A foundation).
+    // Hard-tied off by cpu_ooo until dispatch is widened in later sessions.
+    // Contract: alloc_valid_2 only asserts when alloc_valid is also set.
+    input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req_2,
+    output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp_2,
+
     // =========================================================================
     // FU Completion Test Injection (active when internal adapter is idle)
     // =========================================================================
@@ -155,6 +161,7 @@ module tomasulo_wrapper #(
     // =========================================================================
     output logic                                        o_fence_i_flush,
     output logic                                        o_rob_full,
+    output logic                                        o_rob_full_for_2,
     output logic                                        o_rob_empty,
     output logic [  riscv_pkg::ReorderBufferTagWidth:0] o_rob_count,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_tag,
@@ -173,6 +180,7 @@ module tomasulo_wrapper #(
     // =========================================================================
     // Dispatch Done-Entry Bypass (generic source ports)
     // =========================================================================
+    // Channels 1-3: slot-1 source tags.  Channels 4-6: slot-2 source tags.
     input  logic                                        i_bypass_valid_1,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
@@ -182,10 +190,20 @@ module tomasulo_wrapper #(
     input  logic                                        i_bypass_valid_3,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_3,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_3,
+    input  logic                                        i_bypass_valid_4,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_4,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_4,
+    input  logic                                        i_bypass_valid_5,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_5,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_5,
+    input  logic                                        i_bypass_valid_6,
+    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_6,
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_6,
 
     // =========================================================================
     // RAT Source Lookups (combinational)
     // =========================================================================
+    // Slot-1 source lookups
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr,
     output riscv_pkg::rat_lookup_t                               o_int_src1,
@@ -198,20 +216,48 @@ module tomasulo_wrapper #(
     output riscv_pkg::rat_lookup_t                               o_fp_src2,
     output riscv_pkg::rat_lookup_t                               o_fp_src3,
 
-    // RAT Regfile data
+    // Slot-2 source lookups (2-wide dispatch).  Currently driven from
+    // cpu_ooo as zero address until ID widening lands in Session E.
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src1_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src2_2,
+
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src1_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src2_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src3_addr_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src1_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src2_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src3_2,
+
+    // RAT Regfile data - slot 1
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1,
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data1,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data3,
 
+    // RAT Regfile data - slot 2 (2-wide dispatch)
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1_2,
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data1_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data2_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data3_2,
+
     // =========================================================================
     // RAT Rename (from Dispatch)
     // =========================================================================
+    // Slot 1
     input logic                                        i_rat_alloc_valid,
     input logic                                        i_rat_alloc_dest_rf,
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_rat_alloc_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rat_alloc_rob_tag,
+
+    // Slot 2 (2-wide dispatch).  Hard-tied off in cpu_ooo until Sessions D-F.
+    input logic                                        i_rat_alloc_valid_2,
+    input logic                                        i_rat_alloc_dest_rf_2,
+    input logic [         riscv_pkg::RegAddrWidth-1:0] i_rat_alloc_dest_reg_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rat_alloc_rob_tag_2,
 
     // =========================================================================
     // RAT Checkpoint Save (from Dispatch on branch allocation)
@@ -221,6 +267,9 @@ module tomasulo_wrapper #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
+    // Slot-2-branch checkpoint flag (Session F gap fix #6): RAT overlays
+    // slot-1's same-cycle rename onto the snapshot when this asserts.
+    input logic                                        i_checkpoint_save_for_slot2,
 
     // =========================================================================
     // RAT Checkpoint Restore (from flush controller on misprediction)
@@ -255,6 +304,16 @@ module tomasulo_wrapper #(
     input riscv_pkg::rs_dispatch_t i_fp_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_fmul_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_fdiv_rs_dispatch,
+    // Slot-2 RS dispatch ports (2-wide dispatch, Session C plumbing).  The
+    // dispatch unit drives the slot-2 packet on the port for the RS family
+    // matching slot-2's rs_type; cpu_ooo holds these inactive until later
+    // sessions widen ID/PD/IF.
+    input riscv_pkg::rs_dispatch_t i_int_rs_dispatch_2,
+    input riscv_pkg::rs_dispatch_t i_mul_rs_dispatch_2,
+    input riscv_pkg::rs_dispatch_t i_mem_rs_dispatch_2,
+    input riscv_pkg::rs_dispatch_t i_fp_rs_dispatch_2,
+    input riscv_pkg::rs_dispatch_t i_fmul_rs_dispatch_2,
+    input riscv_pkg::rs_dispatch_t i_fdiv_rs_dispatch_2,
     output logic o_rs_full,
 
     // =========================================================================
@@ -267,6 +326,7 @@ module tomasulo_wrapper #(
     // RS Status (INT_RS)
     // =========================================================================
     output logic                                       o_int_rs_full,
+    output logic                                       o_int_rs_full_for_2,
     output logic                                       o_rs_empty,
     output logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] o_rs_count,
 
@@ -276,6 +336,7 @@ module tomasulo_wrapper #(
     output riscv_pkg::rs_issue_t                                           o_mul_rs_issue,
     input  logic                                                           i_mul_rs_fu_ready,
     output logic                                                           o_mul_rs_full,
+    output logic                                                           o_mul_rs_full_for_2,
     output logic                                                           o_mul_rs_empty,
     output logic                 [$clog2(riscv_pkg::MulRsDepth + 1) - 1:0] o_mul_rs_count,
 
@@ -285,6 +346,7 @@ module tomasulo_wrapper #(
     output riscv_pkg::rs_issue_t                                           o_mem_rs_issue,
     input  logic                                                           i_mem_rs_fu_ready,
     output logic                                                           o_mem_rs_full,
+    output logic                                                           o_mem_rs_full_for_2,
     output logic                                                           o_mem_rs_empty,
     output logic                 [$clog2(riscv_pkg::MemRsDepth + 1) - 1:0] o_mem_rs_count,
 
@@ -294,6 +356,7 @@ module tomasulo_wrapper #(
     output riscv_pkg::rs_issue_t                                          o_fp_rs_issue,
     input  logic                                                          i_fp_rs_fu_ready,
     output logic                                                          o_fp_rs_full,
+    output logic                                                          o_fp_rs_full_for_2,
     output logic                                                          o_fp_rs_empty,
     output logic                 [$clog2(riscv_pkg::FpRsDepth + 1) - 1:0] o_fp_rs_count,
 
@@ -303,6 +366,7 @@ module tomasulo_wrapper #(
     output riscv_pkg::rs_issue_t                                            o_fmul_rs_issue,
     input  logic                                                            i_fmul_rs_fu_ready,
     output logic                                                            o_fmul_rs_full,
+    output logic                                                            o_fmul_rs_full_for_2,
     output logic                                                            o_fmul_rs_empty,
     output logic                 [$clog2(riscv_pkg::FmulRsDepth + 1) - 1:0] o_fmul_rs_count,
 
@@ -312,6 +376,7 @@ module tomasulo_wrapper #(
     output riscv_pkg::rs_issue_t                                            o_fdiv_rs_issue,
     input  logic                                                            i_fdiv_rs_fu_ready,
     output logic                                                            o_fdiv_rs_full,
+    output logic                                                            o_fdiv_rs_full_for_2,
     output logic                                                            o_fdiv_rs_empty,
     output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count,
 
@@ -344,6 +409,7 @@ module tomasulo_wrapper #(
     // Load Queue: Status
     // =========================================================================
     output logic                                    o_lq_full,
+    output logic                                    o_lq_full_for_2,
     output logic                                    o_lq_empty,
     output logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count,
 
@@ -351,6 +417,7 @@ module tomasulo_wrapper #(
     // Store Queue: Status
     // =========================================================================
     output logic                                    o_sq_full,
+    output logic                                    o_sq_full_for_2,
     output logic                                    o_sq_empty,
     output logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count,
 
@@ -603,9 +670,19 @@ module tomasulo_wrapper #(
   // tags.  One cycle later, already-done entries are broadcast to RS operands
   // that missed the original CDB wakeup.
   logic [riscv_pkg::FLEN-1:0] bypass_value_1, bypass_value_2, bypass_value_3;
+  logic [riscv_pkg::FLEN-1:0] bypass_value_4, bypass_value_5, bypass_value_6;
   logic                       done_repair_valid_1;
   logic                       done_repair_valid_2;
   logic                       done_repair_valid_3;
+  logic                       done_repair_valid_4;
+  logic                       done_repair_valid_5;
+  logic                       done_repair_valid_6;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_1;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_2;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_3;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_4;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_5;
+  (* max_fanout = 32 *)logic                       int_done_repair_valid_6;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_1;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_2;
   logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_3;
@@ -616,6 +693,25 @@ module tomasulo_wrapper #(
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_2 && rob_entry_done[i_bypass_tag_2];
   assign done_repair_valid_3 =
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_3 && rob_entry_done[i_bypass_tag_3];
+  assign done_repair_valid_4 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_4 && rob_entry_done[i_bypass_tag_4];
+  assign done_repair_valid_5 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_5 && rob_entry_done[i_bypass_tag_5];
+  assign done_repair_valid_6 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_6 && rob_entry_done[i_bypass_tag_6];
+
+  assign int_done_repair_valid_1 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_1 && rob_entry_done[i_bypass_tag_1];
+  assign int_done_repair_valid_2 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_2 && rob_entry_done[i_bypass_tag_2];
+  assign int_done_repair_valid_3 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_3 && rob_entry_done[i_bypass_tag_3];
+  assign int_done_repair_valid_4 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_4 && rob_entry_done[i_bypass_tag_4];
+  assign int_done_repair_valid_5 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_5 && rob_entry_done[i_bypass_tag_5];
+  assign int_done_repair_valid_6 =
+      ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_6 && rob_entry_done[i_bypass_tag_6];
 
   // Head tag for RS partial flush
   (* max_fanout = 32 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
@@ -662,27 +758,33 @@ module tomasulo_wrapper #(
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
   // when the adapter is idle.  In production cpu_ooo ties them to '0.
-  riscv_pkg::fu_complete_t   cdb_arb_in                                     [riscv_pkg::NumFus];
+  riscv_pkg::fu_complete_t   cdb_arb_in_0;
+  riscv_pkg::fu_complete_t   cdb_arb_in_1;
+  riscv_pkg::fu_complete_t   cdb_arb_in_2;
+  riscv_pkg::fu_complete_t   cdb_arb_in_3;
+  riscv_pkg::fu_complete_t   cdb_arb_in_4;
+  riscv_pkg::fu_complete_t   cdb_arb_in_5;
+  riscv_pkg::fu_complete_t   cdb_arb_in_6;
   always_comb begin
-    cdb_arb_in[0] = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
-    cdb_arb_in[1] = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
-    cdb_arb_in[2] = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
-    cdb_arb_in[3] = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
-    cdb_arb_in[4] = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
-    cdb_arb_in[5] = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
-    cdb_arb_in[6] = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
+    cdb_arb_in_0 = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
+    cdb_arb_in_1 = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
+    cdb_arb_in_2 = div_adapter_to_arbiter.valid ? div_adapter_to_arbiter : i_fu_complete_2;
+    cdb_arb_in_3 = mem_adapter_to_arbiter.valid ? mem_adapter_to_arbiter : i_fu_complete_3;
+    cdb_arb_in_4 = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
+    cdb_arb_in_5 = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
+    cdb_arb_in_6 = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
   end
 
   cdb_arbiter u_cdb_arbiter (
       .i_clk          (i_clk),
       .i_rst_n        (i_rst_n),
-      .i_fu_complete_0(cdb_arb_in[0]),
-      .i_fu_complete_1(cdb_arb_in[1]),
-      .i_fu_complete_2(cdb_arb_in[2]),
-      .i_fu_complete_3(cdb_arb_in[3]),
-      .i_fu_complete_4(cdb_arb_in[4]),
-      .i_fu_complete_5(cdb_arb_in[5]),
-      .i_fu_complete_6(cdb_arb_in[6]),
+      .i_fu_complete_0(cdb_arb_in_0),
+      .i_fu_complete_1(cdb_arb_in_1),
+      .i_fu_complete_2(cdb_arb_in_2),
+      .i_fu_complete_3(cdb_arb_in_3),
+      .i_fu_complete_4(cdb_arb_in_4),
+      .i_fu_complete_5(cdb_arb_in_5),
+      .i_fu_complete_6(cdb_arb_in_6),
       .i_kill         (cdb_kill),
       .o_cdb          (cdb_bus_comb),
       .o_grant        (o_cdb_grant),
@@ -738,6 +840,16 @@ module tomasulo_wrapper #(
   (* max_fanout = 32 *) logic fmul_rs_dispatch_valid;
   (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid;
 
+  // Slot-2 per-RS dispatch valid signals (2-wide dispatch, Session C plumbing).
+  // The dispatch unit drives only one of the slot-2 inputs (the one for slot-2's
+  // rs_type); the rest are inactive.
+  (* max_fanout = 32 *) logic int_rs_dispatch_valid_2;
+  (* max_fanout = 32 *) logic mul_rs_dispatch_valid_2;
+  (* max_fanout = 32 *) logic mem_rs_dispatch_valid_2;
+  (* max_fanout = 32 *) logic fp_rs_dispatch_valid_2;
+  (* max_fanout = 32 *) logic fmul_rs_dispatch_valid_2;
+  (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid_2;
+
   wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
   (* max_fanout = 32 *) logic legacy_dispatch_valid;
   assign legacy_dispatch_valid = i_rs_dispatch.valid && !i_backend_recovery_hold;
@@ -760,12 +872,71 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Slot-2 dispatch routing.  The dispatch unit (Sessions D-F) decodes slot-2's
+  // rs_type and asserts the matching i_*_rs_dispatch_2.valid; the wrapper
+  // simply gates each by !backend_recovery_hold.  Legacy non-split mode does
+  // not support slot-2, so all slot-2 valids are zero in that case.
+  always_comb begin
+    if (SPLIT_RS_DISPATCH) begin
+      int_rs_dispatch_valid_2  = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      mul_rs_dispatch_valid_2  = i_mul_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      mem_rs_dispatch_valid_2  = i_mem_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      fp_rs_dispatch_valid_2   = i_fp_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      fmul_rs_dispatch_valid_2 = i_fmul_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      fdiv_rs_dispatch_valid_2 = i_fdiv_rs_dispatch_2.valid && !i_backend_recovery_hold;
+    end else begin
+      int_rs_dispatch_valid_2  = 1'b0;
+      mul_rs_dispatch_valid_2  = 1'b0;
+      mem_rs_dispatch_valid_2  = 1'b0;
+      fp_rs_dispatch_valid_2   = 1'b0;
+      fmul_rs_dispatch_valid_2 = 1'b0;
+      fdiv_rs_dispatch_valid_2 = 1'b0;
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Fast slot-1 "intent" signals for every RS instance.
+  // ---------------------------------------------------------------------------
+  // Each *_rs_intent_1 says "slot-1's instruction is heading for this RS",
+  // derived from the registered rs_type field on the slot-1 dispatch packet
+  // and gated only by !i_backend_recovery_hold.  These signals do NOT include
+  // any RS-full / bundle_fire_ok / rob_full / lq_full / sq_full term, so they
+  // never pull e.g. fdiv_rs/count_reg or rob/tail_ptr into another RS's
+  // alloc_idx_2 / rs_valid commit cone.  Inside each RS, alloc_idx_2 selects
+  // off i_intent_1 instead of the slow dispatch_fire.  Architecturally safe:
+  // whenever dispatch_fire_2 actually commits a slot-2 entry, the bundle is
+  // atomic, so i_intent_1 == dispatch_fire by construction.
+  wire [2:0] dispatch_slot1_rs_type_w =
+      SPLIT_RS_DISPATCH ? i_int_rs_dispatch.rs_type : i_rs_dispatch.rs_type;
+  logic int_rs_intent_1;
+  logic mul_rs_intent_1;
+  logic mem_rs_intent_1;
+  logic fp_rs_intent_1;
+  logic fmul_rs_intent_1;
+  logic fdiv_rs_intent_1;
+  assign int_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_INT) && !i_backend_recovery_hold;
+  assign mul_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_MUL) && !i_backend_recovery_hold;
+  assign mem_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_MEM) && !i_backend_recovery_hold;
+  // FP-family slot-2 dispatch is held off by dispatch.sv (slot2_fp_compute_serialized),
+  // so dispatch_fire_2 is always 0 in these RSes — alloc_idx_2 never affects
+  // a real commit.  Compute the intent anyway for clarity / consistency.
+  assign fp_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FP) && !i_backend_recovery_hold;
+  assign fmul_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FMUL) && !i_backend_recovery_hold;
+  assign fdiv_rs_intent_1 =
+      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FDIV) && !i_backend_recovery_hold;
+
   // Internal full signals for mux
   logic int_rs_full_w;
   logic mul_rs_full_w;
   logic mem_rs_full_w;
   logic fp_rs_full_w;
   logic fp_rs_full_raw;
+  logic fp_rs_dispatch_full_q;
   logic fp_rs_empty_raw;
   logic [$clog2(riscv_pkg::FpRsDepth + 1) - 1:0] fp_rs_count_raw;
   logic fmul_rs_full_w;
@@ -776,6 +947,17 @@ module tomasulo_wrapper #(
   logic fdiv_rs_full_raw;
   logic fdiv_rs_empty_raw;
   logic [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] fdiv_rs_count_raw;
+
+  // Per-RS full_for_2 outputs.  Plumbed through to consumers so dispatch
+  // (Session D) can independently gate slot-2.  FP-family RS instances buffer
+  // dispatch through a 1-deep pending stage, so their effective full_for_2
+  // also accounts for the pending slot.
+  logic int_rs_full_for_2_w;
+  logic mul_rs_full_for_2_w;
+  logic mem_rs_full_for_2_w;
+  logic fp_rs_full_for_2_raw;
+  logic fmul_rs_full_for_2_raw;
+  logic fdiv_rs_full_for_2_raw;
   logic fp_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fp_dispatch_pending;
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs;
@@ -786,6 +968,7 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_dispatch_t fmul_dispatch_pending;
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs;
   logic fmul_dispatch_dequeue;
+  logic fmul_dispatch_dequeue_room;
   logic fmul_dispatch_slot_available;
   logic fmul_dispatch_pending_flushed;
   logic fdiv_dispatch_pending_valid;
@@ -816,6 +999,18 @@ module tomasulo_wrapper #(
   assign o_fmul_rs_full = fmul_rs_full_w;
   assign o_fdiv_rs_full = fdiv_rs_full_w;
 
+  // Per-RS full_for_2 output ports (Session C plumbing).  For FP family RSes
+  // the pending-buffer occupies an extra "virtual" slot, so dispatch must
+  // treat the FP RS as full_for_2 whenever pending is occupied (the bypass
+  // path for slot-2 has no buffer of its own).  The non-FP RSes simply
+  // forward the RS-internal full_for_2 signal.
+  assign o_int_rs_full_for_2 = int_rs_full_for_2_w;
+  assign o_mul_rs_full_for_2 = mul_rs_full_for_2_w;
+  assign o_mem_rs_full_for_2 = mem_rs_full_for_2_w;
+  assign o_fp_rs_full_for_2 = fp_rs_dispatch_full_q || fp_dispatch_pending_valid;
+  assign o_fmul_rs_full_for_2 = fmul_rs_full_for_2_raw || fmul_dispatch_pending_valid;
+  assign o_fdiv_rs_full_for_2 = fdiv_rs_full_for_2_raw || fdiv_dispatch_pending_valid;
+
   assign fp_dispatch_dequeue = fp_dispatch_pending_valid &&
       !fp_rs_full_raw &&
       !speculative_flush_all &&
@@ -828,18 +1023,30 @@ module tomasulo_wrapper #(
        is_younger(
       fp_dispatch_pending.rob_tag, i_flush_tag, head_tag
   ));
-  assign fp_rs_full_w = fp_rs_full_raw || fp_dispatch_pending_valid;
+  // FP add/cvt/class dispatch is not Coremark-sensitive, but its raw RS count
+  // otherwise feeds the shared dispatch/ROB allocation cone.  Export a
+  // registered, one-slot-conservative full signal; q==0 still guarantees room
+  // for the 1-deep FP pending buffer to absorb one dispatch.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all) begin
+      fp_rs_dispatch_full_q <= 1'b0;
+    end else begin
+      fp_rs_dispatch_full_q <= fp_rs_full_for_2_raw || fp_dispatch_pending_valid;
+    end
+  end
+
+  assign fp_rs_full_w = fp_rs_dispatch_full_q || fp_dispatch_pending_valid;
   assign o_fp_rs_empty = fp_rs_empty_raw && !fp_dispatch_pending_valid;
   assign o_fp_rs_count = fp_rs_count_raw + {{($bits(
       o_fp_rs_count
   ) - 1) {1'b0}}, fp_dispatch_pending_valid};
 
-  assign fmul_dispatch_dequeue = fmul_dispatch_pending_valid &&
-      !fmul_rs_full_raw &&
+  assign fmul_dispatch_dequeue_room = fmul_dispatch_pending_valid && !fmul_rs_full_raw;
+  assign fmul_dispatch_dequeue = fmul_dispatch_dequeue_room &&
       !speculative_flush_all &&
       !speculative_flush_en &&
       !i_backend_recovery_hold;
-  assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue;
+  assign fmul_dispatch_slot_available = !fmul_dispatch_pending_valid || fmul_dispatch_dequeue_room;
   assign fmul_dispatch_pending_flushed = speculative_flush_all ||
       (speculative_flush_en &&
        fmul_dispatch_pending_valid &&
@@ -847,7 +1054,7 @@ module tomasulo_wrapper #(
       fmul_dispatch_pending.rob_tag, i_flush_tag, head_tag
   ));
   assign fmul_rs_full_w = fmul_rs_full_raw ||
-                         (fmul_dispatch_pending_valid && !fmul_dispatch_dequeue);
+                         (fmul_dispatch_pending_valid && !fmul_dispatch_dequeue_room);
   assign o_fmul_rs_empty = fmul_rs_empty_raw && !fmul_dispatch_pending_valid;
   assign o_fmul_rs_count = fmul_rs_count_raw + {{($bits(
       o_fmul_rs_count
@@ -955,6 +1162,15 @@ module tomasulo_wrapper #(
   logic sq_all_older_addrs_known;
   riscv_pkg::sq_forward_result_t sq_forward;
 
+  logic lq_full_exact;
+  logic lq_full_for_2_exact;
+  logic lq_empty_exact;
+  logic [$clog2(riscv_pkg::LqDepth+1)-1:0] lq_count_exact;
+  logic sq_full_exact;
+  logic sq_full_for_2_exact;
+  logic sq_empty_exact;
+  logic [$clog2(riscv_pkg::SqDepth+1)-1:0] sq_count_exact;
+
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
 
@@ -1009,7 +1225,7 @@ module tomasulo_wrapper #(
   // SC result computation (combinational)
   logic sc_can_fire;
   logic sc_success;
-  logic sc_fu_complete_valid;
+  logic sc_fire_now;
   logic store_issue_fire;
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
@@ -1017,15 +1233,20 @@ module tomasulo_wrapper #(
   assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
-  // Full-flush CDB suppression is centralized in cdb_kill. Keep it out of the
-  // MEM completion valid cone so FENCE.I/trap flush does not feed CDB select.
-  assign sc_fu_complete_valid = sc_can_fire && !mem_adapter_result_pending;
+  // Arm SC only when the MEM adapter has no competing same-cycle producer.
+  // This keeps the rare SC head-tag compare local to the SC register D path;
+  // the registered completion below owns the MEM adapter on the next cycle.
+  assign sc_fire_now = sc_can_fire &&
+                       !mem_adapter_result_pending &&
+                       !lq_fu_complete.valid &&
+                       !store_misalign_issue &&
+                       !store_misalign_fu_complete_reg.valid;
 
   // SC fu_complete generation
   riscv_pkg::fu_complete_t sc_fu_complete;
   always_comb begin
     sc_fu_complete       = '0;
-    sc_fu_complete.valid = sc_fu_complete_valid;
+    sc_fu_complete.valid = sc_fire_now;
     sc_fu_complete.tag   = sc_pending_rob_tag;
     sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
   end
@@ -1047,7 +1268,7 @@ module tomasulo_wrapper #(
 
   // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
   // The combinational chain
-  //   fence_i_committed_reg → speculative_flush_all → sc_fu_complete_valid
+  //   fence_i_committed_reg → speculative_flush_all → sc_fire_now
   //     → mem_fu_to_adapter → MEM adapter bypass → cdb_arb_in[3]
   //     → cdb_bus_reg[tag][3]
   // was the post-IntRsDepth-bump worst-violating path (-0.710 ns WNS). SC is
@@ -1076,23 +1297,63 @@ module tomasulo_wrapper #(
         riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
   end
 
+  // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
+  //   stage2_src1_bypassed → src1+imm → align check → store_misalign_fu_complete
+  //   .valid → mem_fu_to_adapter → mem adapter passthrough → cdb_arb_in[3]
+  //   → cdb_bus_reg[tag]
+  // was the second-worst path family on x3.  Misaligned stores are exceptions
+  // (CoreMark has none), so the resulting 1-cycle delay on the misalign-CDB
+  // path is negligible.  Plain LQ results still take the fast combinational
+  // path through mem_fu_to_adapter below.
+  // Partial-flush kill: if the misaligned store's tag is younger than a
+  // partial flush boundary, drop it.  Mirrors the partial_flush_input /
+  // partial_flush_held checks inside fu_cdb_adapter so the registered version
+  // never delivers a CDB completion for a flushed ROB entry.
+  logic store_misalign_input_flushed;
+  logic store_misalign_held_flushed;
+  assign store_misalign_input_flushed = speculative_flush_en &&
+      store_misalign_fu_complete.valid &&
+      is_younger(
+      store_misalign_fu_complete.tag, i_flush_tag, head_tag
+  );
+  riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
+  assign store_misalign_held_flushed = speculative_flush_en &&
+      store_misalign_fu_complete_reg.valid &&
+      is_younger(
+      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
+  );
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all || store_misalign_held_flushed) begin
+      store_misalign_fu_complete_reg.valid <= 1'b0;
+    end else begin
+      store_misalign_fu_complete_reg.valid <=
+          store_misalign_fu_complete.valid && !store_misalign_input_flushed;
+    end
+
+    store_misalign_fu_complete_reg.tag <= store_misalign_fu_complete.tag;
+    store_misalign_fu_complete_reg.value <= store_misalign_fu_complete.value;
+    store_misalign_fu_complete_reg.exception <= store_misalign_fu_complete.exception;
+    store_misalign_fu_complete_reg.exc_cause <= store_misalign_fu_complete.exc_cause;
+    store_misalign_fu_complete_reg.fp_flags <= store_misalign_fu_complete.fp_flags;
+  end
+
   // MUX: SC > misaligned store exception > LQ for MEM adapter input.
   // Aligned plain stores mark the ROB done directly and do not occupy CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
     if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
-    else if (store_misalign_fu_complete.valid) mem_fu_to_adapter = store_misalign_fu_complete;
+    else if (store_misalign_fu_complete_reg.valid)
+      mem_fu_to_adapter = store_misalign_fu_complete_reg;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
-  // LQ is blocked from firing whenever an SC is about to broadcast on MEM:
-  //   - sc_fu_complete_valid (combinational): SC arming this cycle; its
-  //     registered copy will own the adapter next cycle.
-  //   - sc_fu_complete_reg.valid: SC is owning the adapter this cycle.
+  // LQ is blocked while the registered SC completion owns MEM.  SC arming only
+  // occurs when LQ is not presenting a result, avoiding a combinational SC
+  // head-tag compare on the LQ/CDB backpressure cone.
   assign lq_result_accepted = lq_fu_complete.valid &&
-                              !sc_fu_complete_valid &&
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_issue &&
+                              !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
   always_ff @(posedge i_clk) begin
@@ -1109,8 +1370,8 @@ module tomasulo_wrapper #(
           && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
         sc_pending <= 1'b1;
       end
-      // Clear when SC fu_complete fires (accepted by adapter)
-      if (sc_fu_complete_valid) begin
+      // Clear when SC fu_complete is armed for the registered MEM path.
+      if (sc_fire_now) begin
         sc_pending <= 1'b0;
       end
       // A pending SC is speculative if it is younger than the flush boundary,
@@ -1197,6 +1458,21 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_issue_t mem_rs_issue_raw;
   riscv_pkg::rs_issue_t mem_rs_issue_w;
   logic mem_rs_next_is_sc;
+  logic mem_rs_next_issue_valid;
+  logic mem_rs_next_issue_needs_lq;
+  logic mem_rs_fu_ready_base;
+  logic mem_rs_fu_ready;
+
+  assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
+                                !(sc_pending && mem_rs_next_is_sc) &&
+                                !sc_fu_complete_reg.valid &&
+                                !mem_adapter_result_pending &&
+                                !i_backend_recovery_hold;
+
+  // Registered SC completion is already included in mem_rs_fu_ready_base.  The
+  // arming cycle is kept off the MEM_RS ready cone to avoid feeding SC tag
+  // compare into ordinary issue timing.
+  assign mem_rs_fu_ready = mem_rs_fu_ready_base;
 
   always_comb begin
     int_rs_issue_w = int_rs_issue_raw;
@@ -1228,8 +1504,10 @@ module tomasulo_wrapper #(
       .i_rst_n(i_rst_n),
 
       // Allocation
-      .i_alloc_req (i_alloc_req),
+      .i_alloc_req(i_alloc_req),
       .o_alloc_resp(o_alloc_resp),
+      .i_alloc_req_2(i_alloc_req_2),
+      .o_alloc_resp_2(o_alloc_resp_2),
 
       // CDB (from arbiter)
       .i_cdb_write(cdb_write_from_arbiter),
@@ -1291,6 +1569,7 @@ module tomasulo_wrapper #(
       // Status
       .o_fence_i_flush(o_fence_i_flush),
       .o_full         (o_rob_full),
+      .o_full_for_2   (o_rob_full_for_2),
       .o_empty        (o_rob_empty),
       .o_count        (o_rob_count),
       .o_head_tag     (o_head_tag),
@@ -1312,6 +1591,12 @@ module tomasulo_wrapper #(
       .o_bypass_value_2(bypass_value_2),
       .i_bypass_tag_3  (i_bypass_tag_3),
       .o_bypass_value_3(bypass_value_3),
+      .i_bypass_tag_4  (i_bypass_tag_4),
+      .o_bypass_value_4(bypass_value_4),
+      .i_bypass_tag_5  (i_bypass_tag_5),
+      .o_bypass_value_5(bypass_value_5),
+      .i_bypass_tag_6  (i_bypass_tag_6),
+      .o_bypass_value_6(bypass_value_6),
 
       // Buffered FMUL repair reads
       .i_fmul_pending_bypass_tag_1  (fmul_dispatch_pending.src1_tag),
@@ -1325,6 +1610,9 @@ module tomasulo_wrapper #(
   assign o_bypass_value_1 = bypass_value_1;
   assign o_bypass_value_2 = bypass_value_2;
   assign o_bypass_value_3 = bypass_value_3;
+  assign o_bypass_value_4 = bypass_value_4;
+  assign o_bypass_value_5 = bypass_value_5;
+  assign o_bypass_value_6 = bypass_value_6;
 
   // ===========================================================================
   // Register Alias Table Instance
@@ -1333,7 +1621,7 @@ module tomasulo_wrapper #(
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
-      // Source lookups
+      // Source lookups - slot 1
       .i_int_src1_addr(i_int_src1_addr),
       .i_int_src2_addr(i_int_src2_addr),
       .o_int_src1     (o_int_src1),
@@ -1345,18 +1633,43 @@ module tomasulo_wrapper #(
       .o_fp_src2      (o_fp_src2),
       .o_fp_src3      (o_fp_src3),
 
-      // Regfile data
+      // Source lookups - slot 2 (2-wide dispatch)
+      .i_int_src1_addr_2(i_int_src1_addr_2),
+      .i_int_src2_addr_2(i_int_src2_addr_2),
+      .o_int_src1_2     (o_int_src1_2),
+      .o_int_src2_2     (o_int_src2_2),
+      .i_fp_src1_addr_2 (i_fp_src1_addr_2),
+      .i_fp_src2_addr_2 (i_fp_src2_addr_2),
+      .i_fp_src3_addr_2 (i_fp_src3_addr_2),
+      .o_fp_src1_2      (o_fp_src1_2),
+      .o_fp_src2_2      (o_fp_src2_2),
+      .o_fp_src3_2      (o_fp_src3_2),
+
+      // Regfile data - slot 1
       .i_int_regfile_data1(i_int_regfile_data1),
       .i_int_regfile_data2(i_int_regfile_data2),
       .i_fp_regfile_data1 (i_fp_regfile_data1),
       .i_fp_regfile_data2 (i_fp_regfile_data2),
       .i_fp_regfile_data3 (i_fp_regfile_data3),
 
-      // Rename
+      // Regfile data - slot 2 (2-wide dispatch)
+      .i_int_regfile_data1_2(i_int_regfile_data1_2),
+      .i_int_regfile_data2_2(i_int_regfile_data2_2),
+      .i_fp_regfile_data1_2 (i_fp_regfile_data1_2),
+      .i_fp_regfile_data2_2 (i_fp_regfile_data2_2),
+      .i_fp_regfile_data3_2 (i_fp_regfile_data3_2),
+
+      // Rename - slot 1
       .i_alloc_valid   (i_rat_alloc_valid),
       .i_alloc_dest_rf (i_rat_alloc_dest_rf),
       .i_alloc_dest_reg(i_rat_alloc_dest_reg),
       .i_alloc_rob_tag (i_rat_alloc_rob_tag),
+
+      // Rename - slot 2 (2-wide dispatch)
+      .i_alloc_valid_2   (i_rat_alloc_valid_2),
+      .i_alloc_dest_rf_2 (i_rat_alloc_dest_rf_2),
+      .i_alloc_dest_reg_2(i_rat_alloc_dest_reg_2),
+      .i_alloc_rob_tag_2 (i_rat_alloc_rob_tag_2),
 
       // Commit clear (pipelined — breaks ROB → RAT critical path)
       .i_commit_valid     (commit_bus_q_valid),
@@ -1373,11 +1686,12 @@ module tomasulo_wrapper #(
       .i_commit_tag_2       (commit_q_2_tag),
 
       // Checkpoint save
-      .i_checkpoint_save      (i_checkpoint_save),
-      .i_checkpoint_id        (i_checkpoint_id),
-      .i_checkpoint_branch_tag(i_checkpoint_branch_tag),
-      .i_ras_tos              (i_ras_tos),
-      .i_ras_valid_count      (i_ras_valid_count),
+      .i_checkpoint_save          (i_checkpoint_save),
+      .i_checkpoint_id            (i_checkpoint_id),
+      .i_checkpoint_branch_tag    (i_checkpoint_branch_tag),
+      .i_ras_tos                  (i_ras_tos),
+      .i_ras_valid_count          (i_ras_valid_count),
+      .i_checkpoint_save_for_slot2(i_checkpoint_save_for_slot2),
 
       // Checkpoint restore
       .i_checkpoint_restore            (i_checkpoint_restore),
@@ -1416,6 +1730,7 @@ module tomasulo_wrapper #(
 
   // INT_RS dispatch with routed valid
   riscv_pkg::rs_dispatch_t int_rs_dispatch;
+  riscv_pkg::rs_dispatch_t int_rs_dispatch_2;
   logic                    int_rs_issue_writes_cdb_hint;
   // Head-wait diagnostic observation from INT_RS (combinational scan of
   // rs_valid/rs_rob_tag against head_tag). Used to decompose head_wait_int
@@ -1424,40 +1739,75 @@ module tomasulo_wrapper #(
   logic                    int_rs_head_rs_ready;
   logic                    int_rs_head_in_stage2;
   always_comb begin
-    int_rs_dispatch       = SPLIT_RS_DISPATCH ? i_int_rs_dispatch : i_rs_dispatch;
-    int_rs_dispatch.valid = int_rs_dispatch_valid;
+    int_rs_dispatch         = SPLIT_RS_DISPATCH ? i_int_rs_dispatch : i_rs_dispatch;
+    int_rs_dispatch.valid   = int_rs_dispatch_valid;
+
+    // Slot-2 only carries a meaningful packet in SPLIT mode; the legacy
+    // i_rs_dispatch port is single-slot, so slot-2 is hard-zero otherwise.
+    int_rs_dispatch_2       = SPLIT_RS_DISPATCH ? i_int_rs_dispatch_2 : '0;
+    int_rs_dispatch_2.valid = int_rs_dispatch_valid_2;
   end
 
   reservation_station #(
       .DEPTH(riscv_pkg::IntRsDepth),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
-      .TRACK_INT_WRITEBACK_HINT(1'b1)
+      // ISSUE_REPAIR_BYPASS disabled on INT_RS: the in-issue
+      //   rob_done_reg → done_repair_valid → src*_repair_sel → entry_ready
+      //   → issue_idx → 16:1 mux → stage2_src*_value/D
+      // chain is the post-mem_rs-fix worst path.  Removing it falls back to
+      // the existing CDB snoop / DISPATCH_REPAIR_BYPASS mechanisms, which
+      // means an entry whose source becomes done-via-repair waits one extra
+      // cycle (until the snoop sets rs_src_ready) before it can issue.
+      // For Coremark-relevant INT ops this case is rare — the common wakeup
+      // is a same-cycle CDB broadcast (handled by src*_cdb_bypass), not a
+      // missed-CDB repair.
+      .ISSUE_REPAIR_BYPASS(1'b0),
+      .TRACK_INT_WRITEBACK_HINT(1'b1),
+      // SPECULATIVE_DATA_WRITES decouples the per-entry data CE from the slow
+      // dispatch_fire.  Without it, INT_RS rs_*_value_reg/CE inherits the
+      // bundle_fire_ok cone and (when slot-1 is FDIV) the fdiv_rs/count_reg
+      // → fdiv_rs_full chain.  Pairs with i_intent_1 below.
+      .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
       // Dispatch
-      .i_dispatch(int_rs_dispatch),
-      .o_full    (int_rs_full_w),
+      .i_dispatch  (int_rs_dispatch),
+      .i_dispatch_2(int_rs_dispatch_2),
+      .i_intent_1  (int_rs_intent_1),
+      .o_full      (int_rs_full_w),
+      .o_full_for_2(int_rs_full_for_2_w),
 
       // CDB snoop (from arbiter)
       .i_cdb(cdb_bus_qualified),
-      .i_repair_valid_1(done_repair_valid_1),
+      .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
-      .i_repair_valid_2(done_repair_valid_2),
+      .i_repair_valid_2(int_done_repair_valid_2),
       .i_repair_tag_2(i_bypass_tag_2),
       .i_repair_value_2(bypass_value_2),
-      .i_repair_valid_3(done_repair_valid_3),
+      .i_repair_valid_3(int_done_repair_valid_3),
       .i_repair_tag_3(i_bypass_tag_3),
       .i_repair_value_3(bypass_value_3),
+      .i_repair_valid_4(int_done_repair_valid_4),
+      .i_repair_tag_4(i_bypass_tag_4),
+      .i_repair_value_4(bypass_value_4),
+      .i_repair_valid_5(int_done_repair_valid_5),
+      .i_repair_tag_5(i_bypass_tag_5),
+      .i_repair_value_5(bypass_value_5),
+      .i_repair_valid_6(int_done_repair_valid_6),
+      .i_repair_tag_6(i_bypass_tag_6),
+      .i_repair_value_6(bypass_value_6),
 
       // Issue (to internal wire for ALU shim)
       .o_issue(int_rs_issue_raw),
       .i_fu_ready(int_rs_fu_ready),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused — no SC ops in INT_RS
+      .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
       .o_pre_issue_needs_lq(),
 
@@ -1485,19 +1835,33 @@ module tomasulo_wrapper #(
   // MUL_RS (depth 4): Integer multiply/divide
   // ---------------------------------------------------------------------------
   riscv_pkg::rs_dispatch_t mul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t mul_rs_dispatch_2;
   always_comb begin
-    mul_rs_dispatch       = SPLIT_RS_DISPATCH ? i_mul_rs_dispatch : i_rs_dispatch;
-    mul_rs_dispatch.valid = mul_rs_dispatch_valid;
+    mul_rs_dispatch         = SPLIT_RS_DISPATCH ? i_mul_rs_dispatch : i_rs_dispatch;
+    mul_rs_dispatch.valid   = mul_rs_dispatch_valid;
+
+    mul_rs_dispatch_2       = SPLIT_RS_DISPATCH ? i_mul_rs_dispatch_2 : '0;
+    mul_rs_dispatch_2.valid = mul_rs_dispatch_valid_2;
   end
 
   reservation_station #(
       .DEPTH(riscv_pkg::MulRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      // Keep current RAT source tags out of the ROB-done repair value mux on
+      // the MUL dispatch write path.  Already-done operands are still repaired
+      // by the registered post-insertion snoop one cycle later.
+      .DISPATCH_REPAIR_BYPASS(1'b0),
+      // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
+      // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
+      .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_mul_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_dispatch             (mul_rs_dispatch),
+      .i_dispatch_2           (mul_rs_dispatch_2),
+      .i_intent_1             (mul_rs_intent_1),
       .o_full                 (mul_rs_full_w),
+      .o_full_for_2           (mul_rs_full_for_2_w),
       .i_cdb                  (cdb_bus_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
@@ -1508,10 +1872,21 @@ module tomasulo_wrapper #(
       .i_repair_valid_3       (done_repair_valid_3),
       .i_repair_tag_3         (i_bypass_tag_3),
       .i_repair_value_3       (bypass_value_3),
+      .i_repair_valid_4       (done_repair_valid_4),
+      .i_repair_tag_4         (i_bypass_tag_4),
+      .i_repair_value_4       (bypass_value_4),
+      .i_repair_valid_5       (done_repair_valid_5),
+      .i_repair_tag_5         (i_bypass_tag_5),
+      .i_repair_value_5       (bypass_value_5),
+      .i_repair_valid_6       (done_repair_valid_6),
+      .i_repair_tag_6         (i_bypass_tag_6),
+      .i_repair_value_6       (bypass_value_6),
       .o_issue                (mul_rs_issue_raw),
       .i_fu_ready             (mul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid     (),
       .o_next_issue_is_sc     (),                       // unused — no SC ops in MUL_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -1533,9 +1908,13 @@ module tomasulo_wrapper #(
   // MEM_RS (depth 8): Loads/stores (both INT and FP)
   // ---------------------------------------------------------------------------
   riscv_pkg::rs_dispatch_t mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
   always_comb begin
-    mem_rs_dispatch       = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
-    mem_rs_dispatch.valid = mem_rs_dispatch_valid;
+    mem_rs_dispatch         = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
+    mem_rs_dispatch.valid   = mem_rs_dispatch_valid;
+
+    mem_rs_dispatch_2       = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch_2 : '0;
+    mem_rs_dispatch_2.valid = mem_rs_dispatch_valid_2;
   end
 
   reservation_station #(
@@ -1543,12 +1922,20 @@ module tomasulo_wrapper #(
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
+      .SPECULATIVE_DATA_WRITES(1'b1),
+      // Dispatch has already checked MEM_RS exact full/full_for_2 status
+      // before asserting these per-RS valid bits. Avoid re-feeding full into
+      // the MEM_RS count update, which sits on the post-synth WNS path.
+      .TRUST_DISPATCH_VALID(1'b1),
       .BYPASS_STAGE2(1'b0)
   ) u_mem_rs (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
       .i_dispatch(mem_rs_dispatch),
+      .i_dispatch_2(mem_rs_dispatch_2),
+      .i_intent_1(mem_rs_intent_1),
       .o_full(mem_rs_full_w),
+      .o_full_for_2(mem_rs_full_for_2_w),
       .i_cdb(cdb_bus_qualified),
       .i_repair_valid_1(done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
@@ -1559,13 +1946,21 @@ module tomasulo_wrapper #(
       .i_repair_valid_3(done_repair_valid_3),
       .i_repair_tag_3(i_bypass_tag_3),
       .i_repair_value_3(bypass_value_3),
+      .i_repair_valid_4(done_repair_valid_4),
+      .i_repair_tag_4(i_bypass_tag_4),
+      .i_repair_value_4(bypass_value_4),
+      .i_repair_valid_5(done_repair_valid_5),
+      .i_repair_tag_5(i_bypass_tag_5),
+      .i_repair_value_5(bypass_value_5),
+      .i_repair_valid_6(done_repair_valid_6),
+      .i_repair_tag_6(i_bypass_tag_6),
+      .i_repair_value_6(bypass_value_6),
       .o_issue(mem_rs_issue_raw),
-      .i_fu_ready(i_mem_rs_fu_ready && !(sc_pending && mem_rs_next_is_sc) &&
-                  !sc_fu_complete_valid && !sc_fu_complete_reg.valid &&
-                  !mem_adapter_result_pending &&
-                  !i_backend_recovery_hold),
+      .i_fu_ready(mem_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
+      .o_next_issue_valid(mem_rs_next_issue_valid),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
+      .o_next_issue_needs_lq(mem_rs_next_issue_needs_lq),
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
       .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
       .i_flush_en(speculative_flush_en),
@@ -1602,7 +1997,10 @@ module tomasulo_wrapper #(
       wrapper_done_repair_match =
           (done_repair_valid_1 && tag == i_bypass_tag_1) ||
           (done_repair_valid_2 && tag == i_bypass_tag_2) ||
-          (done_repair_valid_3 && tag == i_bypass_tag_3);
+          (done_repair_valid_3 && tag == i_bypass_tag_3) ||
+          (done_repair_valid_4 && tag == i_bypass_tag_4) ||
+          (done_repair_valid_5 && tag == i_bypass_tag_5) ||
+          (done_repair_valid_6 && tag == i_bypass_tag_6);
     end
   endfunction
 
@@ -1615,6 +2013,12 @@ module tomasulo_wrapper #(
         wrapper_done_repair_value = bypass_value_2;
       end else if (done_repair_valid_3 && tag == i_bypass_tag_3) begin
         wrapper_done_repair_value = bypass_value_3;
+      end else if (done_repair_valid_4 && tag == i_bypass_tag_4) begin
+        wrapper_done_repair_value = bypass_value_4;
+      end else if (done_repair_valid_5 && tag == i_bypass_tag_5) begin
+        wrapper_done_repair_value = bypass_value_5;
+      end else if (done_repair_valid_6 && tag == i_bypass_tag_6) begin
+        wrapper_done_repair_value = bypass_value_6;
       end else begin
         wrapper_done_repair_value = '0;
       end
@@ -1658,7 +2062,9 @@ module tomasulo_wrapper #(
       fp_dispatch_pending <= fp_rs_dispatch;
     end else if (fp_dispatch_pending_valid &&
                  (cdb_bus_qualified.valid || done_repair_valid_1 ||
-                  done_repair_valid_2 || done_repair_valid_3)) begin
+                  done_repair_valid_2 || done_repair_valid_3 ||
+                  done_repair_valid_4 || done_repair_valid_5 ||
+                  done_repair_valid_6)) begin
       if (!fp_dispatch_pending.src1_ready && cdb_bus_qualified.valid &&
           fp_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fp_dispatch_pending.src1_ready <= 1'b1;
@@ -1683,14 +2089,37 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Slot-2 FP dispatch bypasses the 1-deep dispatch_pending buffer used by
+  // slot-1 (the buffer absorbs FP RS-full transients).  For Session C the
+  // dispatch unit (cpu_ooo) hard-ties slot-2 to invalid, so this bypass path
+  // is dormant.  Session D-onwards will decide whether to grow the pending
+  // buffer to 2-deep or to gate slot-2 FP dispatch on FP RS room directly.
+  riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs_2;
+  always_comb begin
+    fp_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fp_rs_dispatch_2 : '0;
+    fp_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fp_rs_dispatch_to_rs_2.rm);
+    fp_rs_dispatch_to_rs_2.valid = fp_rs_dispatch_valid_2;
+  end
+
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      // FP-family issue latency is not Coremark-sensitive.  Prefer the
+      // registered repair snoop over same-cycle repair issue to keep
+      // rob_done/value-bypass cones out of the stage2 source-value D path.
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fp_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fp_rs_dispatch_to_rs),
+      .i_dispatch_2           (fp_rs_dispatch_to_rs_2),
+      // FP-family RSes have slot-2 dispatch held off (see slot2_fp_compute_serialized
+      // in dispatch.sv), so dispatch_fire_2 is always 0 and alloc_idx_2 never
+      // chooses a real commit target.  i_intent_1 is wired anyway for symmetry
+      // — there is no alternate "always free_idx" code path.
+      .i_intent_1             (fp_rs_intent_1),
       .o_full                 (fp_rs_full_raw),
+      .o_full_for_2           (fp_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
@@ -1701,10 +2130,21 @@ module tomasulo_wrapper #(
       .i_repair_valid_3       (done_repair_valid_3),
       .i_repair_tag_3         (i_bypass_tag_3),
       .i_repair_value_3       (bypass_value_3),
+      .i_repair_valid_4       (done_repair_valid_4),
+      .i_repair_tag_4         (i_bypass_tag_4),
+      .i_repair_value_4       (bypass_value_4),
+      .i_repair_valid_5       (done_repair_valid_5),
+      .i_repair_tag_5         (i_bypass_tag_5),
+      .i_repair_value_5       (bypass_value_5),
+      .i_repair_valid_6       (done_repair_valid_6),
+      .i_repair_tag_6         (i_bypass_tag_6),
+      .i_repair_value_6       (bypass_value_6),
       .o_issue                (fp_rs_issue_raw),
       .i_fu_ready             (fp_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                       // unused — no SC ops in FP_RS
+      .o_next_issue_valid     (),
+      .o_next_issue_is_sc     (),                        // unused — no SC ops in FP_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -1775,14 +2215,26 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Slot-2 FMUL bypass — same caveats as FP_RS slot-2.
+  riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs_2;
+  always_comb begin
+    fmul_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fmul_rs_dispatch_2 : '0;
+    fmul_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fmul_rs_dispatch_to_rs_2.rm);
+    fmul_rs_dispatch_to_rs_2.valid = fmul_rs_dispatch_valid_2;
+  end
+
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth),
-      .HAS_SRC3(1'b1)
+      .HAS_SRC3(1'b1),
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fmul_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fmul_rs_dispatch_to_rs),
+      .i_dispatch_2           (fmul_rs_dispatch_to_rs_2),
+      .i_intent_1             (fmul_rs_intent_1),
       .o_full                 (fmul_rs_full_raw),
+      .o_full_for_2           (fmul_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
@@ -1793,10 +2245,21 @@ module tomasulo_wrapper #(
       .i_repair_valid_3       (done_repair_valid_3),
       .i_repair_tag_3         (i_bypass_tag_3),
       .i_repair_value_3       (bypass_value_3),
+      .i_repair_valid_4       (done_repair_valid_4),
+      .i_repair_tag_4         (i_bypass_tag_4),
+      .i_repair_value_4       (bypass_value_4),
+      .i_repair_valid_5       (done_repair_valid_5),
+      .i_repair_tag_5         (i_bypass_tag_5),
+      .i_repair_value_5       (bypass_value_5),
+      .i_repair_valid_6       (done_repair_valid_6),
+      .i_repair_tag_6         (i_bypass_tag_6),
+      .i_repair_value_6       (bypass_value_6),
       .o_issue                (fmul_rs_issue_raw),
       .i_fu_ready             (fmul_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                        // unused — no SC ops in FMUL_RS
+      .o_next_issue_valid     (),
+      .o_next_issue_is_sc     (),                          // unused — no SC ops in FMUL_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -1845,7 +2308,9 @@ module tomasulo_wrapper #(
       fdiv_dispatch_pending <= fdiv_rs_dispatch;
     end else if (fdiv_dispatch_pending_valid &&
                  (cdb_bus_qualified.valid || done_repair_valid_1 ||
-                  done_repair_valid_2 || done_repair_valid_3)) begin
+                  done_repair_valid_2 || done_repair_valid_3 ||
+                  done_repair_valid_4 || done_repair_valid_5 ||
+                  done_repair_valid_6)) begin
       if (!fdiv_dispatch_pending.src1_ready && cdb_bus_qualified.valid &&
           fdiv_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fdiv_dispatch_pending.src1_ready <= 1'b1;
@@ -1874,14 +2339,26 @@ module tomasulo_wrapper #(
     end
   end
 
+  // Slot-2 FDIV bypass — same caveats as FP_RS slot-2.
+  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_to_rs_2;
+  always_comb begin
+    fdiv_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fdiv_rs_dispatch_2 : '0;
+    fdiv_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fdiv_rs_dispatch_to_rs_2.rm);
+    fdiv_rs_dispatch_to_rs_2.valid = fdiv_rs_dispatch_valid_2;
+  end
+
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth),
-      .HAS_SRC3(1'b0)
+      .HAS_SRC3(1'b0),
+      .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fdiv_rs (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_dispatch             (fdiv_rs_dispatch_to_rs),
+      .i_dispatch_2           (fdiv_rs_dispatch_to_rs_2),
+      .i_intent_1             (fdiv_rs_intent_1),
       .o_full                 (fdiv_rs_full_raw),
+      .o_full_for_2           (fdiv_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
@@ -1892,10 +2369,21 @@ module tomasulo_wrapper #(
       .i_repair_valid_3       (done_repair_valid_3),
       .i_repair_tag_3         (i_bypass_tag_3),
       .i_repair_value_3       (bypass_value_3),
+      .i_repair_valid_4       (done_repair_valid_4),
+      .i_repair_tag_4         (i_bypass_tag_4),
+      .i_repair_value_4       (bypass_value_4),
+      .i_repair_valid_5       (done_repair_valid_5),
+      .i_repair_tag_5         (i_bypass_tag_5),
+      .i_repair_value_5       (bypass_value_5),
+      .i_repair_valid_6       (done_repair_valid_6),
+      .i_repair_tag_6         (i_bypass_tag_6),
+      .i_repair_value_6       (bypass_value_6),
       .o_issue                (fdiv_rs_issue_raw),
       .i_fu_ready             (fdiv_rs_fu_ready),
       .o_issue_writes_cdb_hint(),
-      .o_next_issue_is_sc     (),                        // unused — no SC ops in FDIV_RS
+      .o_next_issue_valid     (),
+      .o_next_issue_is_sc     (),                          // unused — no SC ops in FDIV_RS
+      .o_next_issue_needs_lq  (),
       .o_pre_issue_rob_tag    (),
       .o_pre_issue_needs_lq   (),
       .i_flush_en             (speculative_flush_en),
@@ -2002,24 +2490,41 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Load Queue: Allocation from Dispatch
   // ===========================================================================
+  // Helper to derive an lq_alloc_req from a per-slot mem_rs_dispatch packet.
+  // Same logic for slot-1 and slot-2; the only difference is which packet
+  // and which routed valid signal feeds in.
+  function automatic riscv_pkg::lq_alloc_req_t make_lq_alloc(
+      input logic valid_routed, input riscv_pkg::rs_dispatch_t dispatch);
+    riscv_pkg::lq_alloc_req_t r;
+    begin
+      r.valid = valid_routed && dispatch.mem_needs_lq;
+      r.rob_tag = dispatch.rob_tag;
+      r.is_fp = dispatch.is_fp_mem;
+      r.size = dispatch.mem_size;
+      r.sign_ext = dispatch.mem_signed;
+      r.is_lr = (dispatch.op == riscv_pkg::LR_W);
+      r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP_W)
+                || (dispatch.op == riscv_pkg::AMOADD_W)
+                || (dispatch.op == riscv_pkg::AMOXOR_W)
+                || (dispatch.op == riscv_pkg::AMOAND_W)
+                || (dispatch.op == riscv_pkg::AMOOR_W)
+                || (dispatch.op == riscv_pkg::AMOMIN_W)
+                || (dispatch.op == riscv_pkg::AMOMAX_W)
+                || (dispatch.op == riscv_pkg::AMOMINU_W)
+                || (dispatch.op == riscv_pkg::AMOMAXU_W);
+      r.amo_op = dispatch.op;
+      make_lq_alloc = r;
+    end
+  endfunction
+
   riscv_pkg::lq_alloc_req_t lq_alloc_req;
+  riscv_pkg::lq_alloc_req_t lq_alloc_req_2;
   always_comb begin
-    lq_alloc_req.valid = mem_rs_dispatch_valid && mem_rs_dispatch.mem_needs_lq;
-    lq_alloc_req.rob_tag = mem_rs_dispatch.rob_tag;
-    lq_alloc_req.is_fp = mem_rs_dispatch.is_fp_mem;
-    lq_alloc_req.size = mem_rs_dispatch.mem_size;
-    lq_alloc_req.sign_ext = mem_rs_dispatch.mem_signed;
-    lq_alloc_req.is_lr = (mem_rs_dispatch.op == riscv_pkg::LR_W);
-    lq_alloc_req.is_amo   = (mem_rs_dispatch.op == riscv_pkg::AMOSWAP_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOADD_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOXOR_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOAND_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOOR_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOMIN_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOMAX_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOMINU_W)
-                           || (mem_rs_dispatch.op == riscv_pkg::AMOMAXU_W);
-    lq_alloc_req.amo_op = mem_rs_dispatch.op;
+    lq_alloc_req   = make_lq_alloc(mem_rs_dispatch_valid, mem_rs_dispatch);
+    // Slot-2 LQ alloc derived from slot-2's mem_rs_dispatch packet.  Held
+    // inactive until dispatch widens (Session D) — cpu_ooo ties the slot-2
+    // mem_rs_dispatch_2 input to '0 in the meantime.
+    lq_alloc_req_2 = make_lq_alloc(mem_rs_dispatch_valid_2, mem_rs_dispatch_2);
   end
 
   // ===========================================================================
@@ -2035,7 +2540,8 @@ module tomasulo_wrapper #(
 
   riscv_pkg::lq_addr_update_t lq_addr_update;
   always_comb begin
-    lq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_lq;
+    lq_addr_update.valid   = mem_rs_next_issue_valid && mem_rs_next_issue_needs_lq &&
+                              mem_rs_fu_ready_base;
     lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     lq_addr_update.address = lq_effective_addr;
     lq_addr_update.is_mmio = lq_addr_is_mmio;
@@ -2051,7 +2557,11 @@ module tomasulo_wrapper #(
 
       // Allocation (from dispatch)
       .i_alloc(lq_alloc_req),
-      .o_full (o_lq_full),
+      .i_alloc_2(lq_alloc_req_2),
+      .o_full(lq_full_exact),
+      .o_full_for_2(lq_full_for_2_exact),
+      .o_dispatch_full(o_lq_full),
+      .o_dispatch_full_for_2(o_lq_full_for_2),
 
       // Address update (from MEM_RS issue)
       .i_addr_update(lq_addr_update),
@@ -2082,8 +2592,9 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_valid ||
-                                sc_fu_complete_reg.valid || store_misalign_issue),
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_reg.valid ||
+                                store_misalign_issue ||
+                                store_misalign_fu_complete_reg.valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
@@ -2117,8 +2628,10 @@ module tomasulo_wrapper #(
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
-      .o_empty(o_lq_empty),
-      .o_count(o_lq_count),
+      .o_empty(lq_empty_exact),
+      .o_dispatch_empty(o_lq_empty),
+      .o_count(lq_count_exact),
+      .o_dispatch_count(o_lq_count),
 
       // L0 cache profile pulses
       .o_l0_hit(lq_l0_hit),
@@ -2161,18 +2674,33 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Store Queue: Allocation from Dispatch
   // ===========================================================================
+  // Helper to derive an sq_alloc_req from a per-slot mem_rs_dispatch packet.
+  // Address is computed in a pipelined stage (see early_addr_update below) to
+  // break the critical RAT → dispatch → 32-bit adder → SQ path, so it stays
+  // empty at alloc time for both slots.
+  function automatic riscv_pkg::sq_alloc_req_t make_sq_alloc(
+      input logic valid_routed, input riscv_pkg::rs_dispatch_t dispatch);
+    riscv_pkg::sq_alloc_req_t r;
+    begin
+      r.valid       = valid_routed && dispatch.mem_needs_sq;
+      r.rob_tag     = dispatch.rob_tag;
+      r.is_fp       = dispatch.is_fp_mem;
+      r.size        = dispatch.mem_size;
+      r.is_sc       = (dispatch.op == riscv_pkg::SC_W);
+      r.addr_valid  = 1'b0;
+      r.address     = '0;
+      r.is_mmio     = 1'b0;
+      make_sq_alloc = r;
+    end
+  endfunction
+
   riscv_pkg::sq_alloc_req_t sq_alloc_req;
+  riscv_pkg::sq_alloc_req_t sq_alloc_req_2;
   always_comb begin
-    sq_alloc_req.valid   = mem_rs_dispatch_valid && mem_rs_dispatch.mem_needs_sq;
-    sq_alloc_req.rob_tag = mem_rs_dispatch.rob_tag;
-    sq_alloc_req.is_fp   = mem_rs_dispatch.is_fp_mem;
-    sq_alloc_req.size    = mem_rs_dispatch.mem_size;
-    sq_alloc_req.is_sc   = (mem_rs_dispatch.op == riscv_pkg::SC_W);
-    // Address is computed in a pipelined stage (see early_addr_update below)
-    // to break the critical RAT → dispatch → 32-bit adder → SQ path.
-    sq_alloc_req.addr_valid = 1'b0;
-    sq_alloc_req.address    = '0;
-    sq_alloc_req.is_mmio    = 1'b0;
+    sq_alloc_req   = make_sq_alloc(mem_rs_dispatch_valid, mem_rs_dispatch);
+    // Slot-2 SQ alloc derived from slot-2's mem_rs_dispatch packet.  Held
+    // inactive until dispatch widens (Session D).
+    sq_alloc_req_2 = make_sq_alloc(mem_rs_dispatch_valid_2, mem_rs_dispatch_2);
   end
 
   // ===========================================================================
@@ -2180,6 +2708,11 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8 adder → SQ
   // critical path by deferring the 32-bit addition by one cycle.
+  // Session L: dual-ported.  Slot-1 and slot-2 each have their own
+  // {valid, rob_tag, base, imm, repair_*}_q register set, their own adders, and
+  // their own update packet to the SQ; SQ accepts both updates per cycle on
+  // distinct rob_tags so there is no NBA collision.  Removes the slot-2 STORE
+  // back-pressure that motivated `slot2_is_store_op` in instruction_aligner.sv.
   logic sq_early_addr_valid_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_q;
@@ -2188,6 +2721,16 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_rob_tag_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_src1_tag_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_q;
+
+  // Slot-2 mirror (Session L)
+  logic sq_early_addr_valid_2_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_2_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_2_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_imm_2_q;
+  logic sq_early_addr_repair_valid_2_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_rob_tag_2_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_src1_tag_2_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_2_q;
 
   logic sq_early_addr_repair_match;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base;
@@ -2204,6 +2747,15 @@ module tomasulo_wrapper #(
     end else if (done_repair_valid_3 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_3) begin
       sq_early_addr_repair_match = 1'b1;
       sq_early_addr_repair_base  = bypass_value_3[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_4 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_4) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_4[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_5 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_5) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_5[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_6) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = bypass_value_6[riscv_pkg::XLEN-1:0];
     end
   end
 
@@ -2211,10 +2763,59 @@ module tomasulo_wrapper #(
                                      sq_early_addr_repair_match &&
                                      !i_flush_all && !i_flush_en;
 
+  // Slot-2 repair match — snoops the same 3 CDB channels (Session L).  Both
+  // slots can independently match on the same broadcast tag in the rare case
+  // where both stores rename to the same source tag (e.g. both stores read the
+  // same arch reg with no intervening write); each computes its own address
+  // because base is shared but imm differs.
+  logic sq_early_addr_repair_match_2;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_2;
+  logic sq_early_addr_repair_fire_2;
+  always_comb begin
+    sq_early_addr_repair_match_2 = 1'b0;
+    sq_early_addr_repair_base_2  = '0;
+    if (done_repair_valid_1 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_1) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_1[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_2 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_2) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_2[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_3 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_3) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_3[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_4 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_4) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_4[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_5 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_5) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_5[riscv_pkg::XLEN-1:0];
+    end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_6) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = bypass_value_6[riscv_pkg::XLEN-1:0];
+    end
+  end
+
+  assign sq_early_addr_repair_fire_2 = sq_early_addr_repair_valid_2_q &&
+                                       sq_early_addr_repair_match_2 &&
+                                       !i_flush_all && !i_flush_en;
+
+  // Slot-2 alloc-accepted gate mirrors store_queue.sv slot2_alloc_en logic:
+  //   slot2 alloc fires iff i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full)
+  //   where slot1_alloc_en = i_alloc.valid && !full.
+  // The SQ-full propagation through dispatch is already conservative, so this
+  // mirrors the slot-1 belt-and-suspenders pattern; it ensures we never stamp
+  // an early-addr update for an entry the SQ refused to allocate.
+  logic slot2_sq_alloc_accepted;
+  assign slot2_sq_alloc_accepted = sq_alloc_req_2.valid &&
+                                   ((sq_alloc_req.valid && !o_sq_full) ?
+                                    !o_sq_full_for_2 : !o_sq_full);
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_flush_en) begin
       sq_early_addr_valid_q <= 1'b0;
       sq_early_addr_repair_valid_q <= 1'b0;
+      sq_early_addr_valid_2_q <= 1'b0;
+      sq_early_addr_repair_valid_2_q <= 1'b0;
     end else begin
       sq_early_addr_valid_q <= sq_alloc_req.valid && !o_sq_full && mem_rs_dispatch.src1_ready;
       sq_early_addr_rob_tag_q <= mem_rs_dispatch.rob_tag;
@@ -2227,6 +2828,17 @@ module tomasulo_wrapper #(
       sq_early_addr_repair_rob_tag_q <= mem_rs_dispatch.rob_tag;
       sq_early_addr_repair_src1_tag_q <= mem_rs_dispatch.src1_tag;
       sq_early_addr_repair_imm_q <= mem_rs_dispatch.imm;
+
+      // Slot-2 (Session L)
+      sq_early_addr_valid_2_q <= slot2_sq_alloc_accepted && mem_rs_dispatch_2.src1_ready;
+      sq_early_addr_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
+      sq_early_addr_base_2_q <= mem_rs_dispatch_2.src1_value[riscv_pkg::XLEN-1:0];
+      sq_early_addr_imm_2_q <= mem_rs_dispatch_2.imm;
+
+      sq_early_addr_repair_valid_2_q <= slot2_sq_alloc_accepted && !mem_rs_dispatch_2.src1_ready;
+      sq_early_addr_repair_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
+      sq_early_addr_repair_src1_tag_2_q <= mem_rs_dispatch_2.src1_tag;
+      sq_early_addr_repair_imm_2_q <= mem_rs_dispatch_2.imm;
     end
   end
 
@@ -2235,6 +2847,13 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
   assign sq_early_effective_addr = sq_early_addr_base_q + sq_early_addr_imm_q;
   assign sq_early_repair_effective_addr = sq_early_addr_repair_base + sq_early_addr_repair_imm_q;
+
+  // Slot-2 adder (Session L)
+  logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr_2;
+  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
+  assign sq_early_effective_addr_2 = sq_early_addr_base_2_q + sq_early_addr_imm_2_q;
+  assign sq_early_repair_effective_addr_2 = sq_early_addr_repair_base_2 +
+                                            sq_early_addr_repair_imm_2_q;
 
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   always_comb begin
@@ -2249,6 +2868,23 @@ module tomasulo_wrapper #(
       sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
       sq_early_addr_update.address = sq_early_effective_addr;
       sq_early_addr_update.is_mmio = (sq_early_effective_addr >= MmioBase);
+    end
+  end
+
+  // Slot-2 packet (Session L)
+  riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
+  always_comb begin
+    sq_early_addr_update_2 = '0;
+    if (sq_early_addr_repair_fire_2) begin
+      sq_early_addr_update_2.valid   = 1'b1;
+      sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
+      sq_early_addr_update_2.address = sq_early_repair_effective_addr_2;
+      sq_early_addr_update_2.is_mmio = (sq_early_repair_effective_addr_2 >= MmioBase);
+    end else begin
+      sq_early_addr_update_2.valid   = sq_early_addr_valid_2_q;
+      sq_early_addr_update_2.rob_tag = sq_early_addr_rob_tag_2_q;
+      sq_early_addr_update_2.address = sq_early_effective_addr_2;
+      sq_early_addr_update_2.is_mmio = (sq_early_effective_addr_2 >= MmioBase);
     end
   end
 
@@ -2300,10 +2936,18 @@ module tomasulo_wrapper #(
 
       // Allocation (from dispatch)
       .i_alloc(sq_alloc_req),
-      .o_full (o_sq_full),
+      .i_alloc_2(sq_alloc_req_2),
+      .o_full(sq_full_exact),
+      .o_full_for_2(sq_full_for_2_exact),
+      .o_dispatch_full(o_sq_full),
+      .o_dispatch_full_for_2(o_sq_full_for_2),
 
-      // Early address update (pipelined dispatch-time base+imm)
-      .i_early_addr_update(sq_early_addr_update),
+      // Early address update (pipelined dispatch-time base+imm).  Session L:
+      // dual-ported — slot-1 and slot-2 each emit their own packet.  CAM-by-
+      // rob_tag in SQ targets distinct entries (different rob_tags), so no NBA
+      // collision across the two updates.
+      .i_early_addr_update  (sq_early_addr_update),
+      .i_early_addr_update_2(sq_early_addr_update_2),
 
       // Address update (from MEM_RS issue)
       .i_addr_update(sq_addr_update),
@@ -2368,9 +3012,11 @@ module tomasulo_wrapper #(
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
-      .o_empty          (o_sq_empty),
+      .o_empty          (sq_empty_exact),
+      .o_dispatch_empty (o_sq_empty),
       .o_committed_empty(sq_committed_empty),
-      .o_count          (o_sq_count)
+      .o_count          (sq_count_exact),
+      .o_dispatch_count (o_sq_count)
   );
 
   // ===========================================================================
@@ -2677,9 +3323,14 @@ module tomasulo_wrapper #(
 
   // No rename during full flush
   always_comb assume (!(i_rat_alloc_valid && i_flush_all));
+  always_comb assume (!(i_rat_alloc_valid_2 && i_flush_all));
 
   // No rename during checkpoint restore
   always_comb assume (!(i_rat_alloc_valid && i_checkpoint_restore));
+  always_comb assume (!(i_rat_alloc_valid_2 && i_checkpoint_restore));
+
+  // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
+  // destination (no formal assumption needed).
 
   // Checkpoint save and restore are mutually exclusive
   always_comb assume (!(i_checkpoint_save && i_checkpoint_restore));
@@ -2710,9 +3361,10 @@ module tomasulo_wrapper #(
     if (i_checkpoint_restore) assume (f_cp_valid[i_checkpoint_restore_id]);
   end
 
-  // Dispatch never renames x0 to INT
+  // Dispatch never renames x0 to INT (either slot)
   always_comb begin
     if (i_rat_alloc_valid && !i_rat_alloc_dest_rf) assume (i_rat_alloc_dest_reg != '0);
+    if (i_rat_alloc_valid_2 && !i_rat_alloc_dest_rf_2) assume (i_rat_alloc_dest_reg_2 != '0);
   end
 
   // Dispatch tag coordination
@@ -3072,8 +3724,12 @@ module tomasulo_wrapper #(
       // SQ allocation
       cover_sq_alloc : cover (sq_alloc_req.valid);
 
-      // SQ memory write issued
+`ifdef FORMAL_DEEP_COVER
+      // Full dispatch -> commit -> SQ memory-write integration path. This is
+      // intentionally kept out of the default wrapper cover task because the
+      // SQ itself covers memory writes and this path dominates CI runtime.
       cover_sq_mem_write : cover (o_sq_mem_write_en);
+`endif
 
       // SQ commit
       cover_sq_commit : cover (sq_commit_valid);

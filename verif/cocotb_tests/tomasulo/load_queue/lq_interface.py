@@ -191,6 +191,10 @@ class LQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
+        # Slot-2 alloc (2-wide dispatch plumbing, Session C).  Defensive init
+        # for the same reason as i_alloc — Verilator zero-inits top-module
+        # inputs but explicit init avoids future X-propagation surprises.
+        self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_sq_all_older_addrs_known.value = 0
         self.dut.i_sq_forward.value = 0

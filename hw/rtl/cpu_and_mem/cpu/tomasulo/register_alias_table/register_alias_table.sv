@@ -23,13 +23,22 @@
  * Features:
  *   - Separate INT (x0-x31) and FP (f0-f31) rename tables
  *   - x0 hardwired: always returns {renamed=0, value=0}, writes ignored
- *   - 5 source lookups: 2 INT, 3 FP (third for FMA src3)
- *   - Single rename write port (from dispatch)
+ *   - 10 source lookups: 5 per dispatch slot for 2-wide dispatch
+ *     (slot-1 + slot-2, each with 2 INT + 3 FP addresses)
+ *   - Two rename write ports (slot 1 + slot 2) with slot-2 wins on
+ *     same-architectural-register collision (slot 2 is the newer producer
+ *     in program order)
  *   - Commit clear (from ROB) with tag match guard
  *   - 8-slot checkpoint storage for branch speculation recovery
  *   - Checkpoint save/restore/free for misprediction recovery
  *   - RAS state capture in checkpoints
  *   - Full flush (exception) clears all rename state
+ *
+ * Slot-2 alloc contract (per 2-wide dispatch design doc, Session B):
+ *   - i_alloc_valid_2 implies i_alloc_valid (slot 2 only fires when slot 1
+ *     also fires).  Enforced by assertion.
+ *   - Intra-bundle RAW (slot-2 source reads slot-1 dest) is handled in the
+ *     dispatch unit, not in the RAT — the RAT does not see that case.
  *
  * Storage:
  *   Active INT/FP RATs use flip-flops for bulk parallel write on checkpoint
@@ -50,13 +59,13 @@ module register_alias_table (
     // =========================================================================
     // Source Lookup Interface (combinational reads, from Dispatch)
     // =========================================================================
-    // INT source lookups
+    // INT source lookups - slot 1
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr,
     output riscv_pkg::rat_lookup_t                               o_int_src1,
     output riscv_pkg::rat_lookup_t                               o_int_src2,
 
-    // FP source lookups
+    // FP source lookups - slot 1
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src1_addr,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src2_addr,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src3_addr,
@@ -64,20 +73,50 @@ module register_alias_table (
     output riscv_pkg::rat_lookup_t                               o_fp_src2,
     output riscv_pkg::rat_lookup_t                               o_fp_src3,
 
-    // Regfile read data (from register files, for value passthrough)
+    // INT source lookups - slot 2 (2-wide dispatch)
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src1_2,
+    output riscv_pkg::rat_lookup_t                               o_int_src2_2,
+
+    // FP source lookups - slot 2 (2-wide dispatch)
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src1_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src2_addr_2,
+    input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_fp_src3_addr_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src1_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src2_2,
+    output riscv_pkg::rat_lookup_t                               o_fp_src3_2,
+
+    // Regfile read data - slot 1 (for value passthrough)
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1,
     input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data1,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data2,
     input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data3,
 
+    // Regfile read data - slot 2 (for value passthrough)
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data1_2,
+    input logic [riscv_pkg::XLEN-1:0] i_int_regfile_data2_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data1_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data2_2,
+    input logic [riscv_pkg::FLEN-1:0] i_fp_regfile_data3_2,
+
     // =========================================================================
     // Rename Write Interface (from Dispatch, synchronous)
     // =========================================================================
+    // Slot 1 alloc (primary).
     input logic                                        i_alloc_valid,
     input logic                                        i_alloc_dest_rf,   // 0=INT, 1=FP
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag,
+
+    // Slot 2 alloc (2-wide dispatch).  Contract: alloc_valid_2 only asserts
+    // when alloc_valid (slot 1) also asserts.  When both slots write the same
+    // architectural register, slot 2 wins (newer producer in program order).
+    input logic                                        i_alloc_valid_2,
+    input logic                                        i_alloc_dest_rf_2,
+    input logic [         riscv_pkg::RegAddrWidth-1:0] i_alloc_dest_reg_2,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_rob_tag_2,
 
     // =========================================================================
     // Commit Interface (from ROB commit output, synchronous)
@@ -109,6 +148,11 @@ module register_alias_table (
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
+    // 2-wide dispatch (Session F): when slot-2 is the branch and slot-1 is a
+    // non-branch with a valid destination, the snapshot must reflect the post-
+    // slot-1-rename state so recovery from a slot-2 misprediction restores
+    // slot-1's mapping.  Drive this when checkpoint_save fires for slot-2.
+    input logic                                        i_checkpoint_save_for_slot2,
 
     // =========================================================================
     // Checkpoint Restore Interface (from flush controller on misprediction)
@@ -184,11 +228,18 @@ module register_alias_table (
 
   // INT RAT: separate valid and tag arrays
   logic [           NumIntRegs-1:0] int_rat_valid;
-  logic [ReorderBufferTagWidth-1:0] int_rat_tag   [NumIntRegs];
+  logic [ReorderBufferTagWidth-1:0] int_rat_tag               [NumIntRegs];
 
   // FP RAT: separate valid and tag arrays
   logic [            NumFpRegs-1:0] fp_rat_valid;
-  logic [ReorderBufferTagWidth-1:0] fp_rat_tag    [ NumFpRegs];
+  logic [ReorderBufferTagWidth-1:0] fp_rat_tag                [ NumFpRegs];
+
+  // 2-wide alloc collision: both slots target the same architectural
+  // register.  Slot 2 wins (newer producer); slot 1's write is suppressed.
+  logic                             slot1_collides_with_slot2;
+  assign slot1_collides_with_slot2 = i_alloc_valid_2 &&
+                                     (i_alloc_dest_rf == i_alloc_dest_rf_2) &&
+                                     (i_alloc_dest_reg == i_alloc_dest_reg_2);
 
 `ifndef SYNTHESIS
   // Targeted debug tap for x10/a0 rename state during CoreMark investigation.
@@ -272,16 +323,51 @@ module register_alias_table (
   // Each entry = {valid, alloc_epoch, tag} packed into RatEntryWidth bits
   // INT entries at [IntRatSnapshotWidth-1:0],
   // FP entries at [RatSnapshotWidth-1:IntRatSnapshotWidth]
+  //
+  // Slot-2-branch overlay: when i_checkpoint_save_for_slot2 asserts, slot-1's
+  // same-cycle rename is part of the snapshot we want to restore from on
+  // slot-2 misprediction.  ckpt_rat_wr_data is composed from FF values that
+  // do not reflect this cycle's slot-1 write, so for the architectural
+  // register slot-1 just renamed we must overlay slot-1's tag and the post-
+  // toggle epoch.  Slot-2's own rename is intentionally NOT in the snapshot
+  // (we want to roll it back).  The contract slot_2_alloc → slot_1_alloc
+  // already guarantees i_alloc_valid is true whenever
+  // i_checkpoint_save_for_slot2 is true.
+  logic                             slot2_overlay_int;
+  logic                             slot2_overlay_fp;
+  logic [ReorderBufferTagWidth-1:0] slot2_overlay_tag;
+  logic                             slot2_overlay_epoch_next;
+  assign slot2_overlay_int = i_checkpoint_save_for_slot2 && i_alloc_valid &&
+                             !i_alloc_dest_rf && (i_alloc_dest_reg != '0);
+  assign slot2_overlay_fp = i_checkpoint_save_for_slot2 && i_alloc_valid && i_alloc_dest_rf;
+  assign slot2_overlay_tag = i_alloc_rob_tag;
+  // The ROB toggles entry_epoch[slot1_tag] at this cycle's posedge.  The
+  // snapshot is the next-cycle restore image, so encode the post-toggle
+  // value here.
+  assign slot2_overlay_epoch_next = ~i_rob_entry_epoch[i_alloc_rob_tag];
+
   always_comb begin
     for (int i = 0; i < NumIntRegs; i++) begin
-      ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {
-        int_rat_valid[i], i_rob_entry_epoch[int_rat_tag[i]], int_rat_tag[i]
-      };
+      if (slot2_overlay_int && (i_alloc_dest_reg == RegAddrWidth'(i))) begin
+        ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {
+          1'b1, slot2_overlay_epoch_next, slot2_overlay_tag
+        };
+      end else begin
+        ckpt_rat_wr_data[i*RatEntryWidth+:RatEntryWidth] = {
+          int_rat_valid[i], i_rob_entry_epoch[int_rat_tag[i]], int_rat_tag[i]
+        };
+      end
     end
     for (int i = 0; i < NumFpRegs; i++) begin
-      ckpt_rat_wr_data[IntRatSnapshotWidth+i*RatEntryWidth+:RatEntryWidth] = {
-        fp_rat_valid[i], i_rob_entry_epoch[fp_rat_tag[i]], fp_rat_tag[i]
-      };
+      if (slot2_overlay_fp && (i_alloc_dest_reg == RegAddrWidth'(i))) begin
+        ckpt_rat_wr_data[IntRatSnapshotWidth+i*RatEntryWidth+:RatEntryWidth] = {
+          1'b1, slot2_overlay_epoch_next, slot2_overlay_tag
+        };
+      end else begin
+        ckpt_rat_wr_data[IntRatSnapshotWidth+i*RatEntryWidth+:RatEntryWidth] = {
+          fp_rat_valid[i], i_rob_entry_epoch[fp_rat_tag[i]], fp_rat_tag[i]
+        };
+      end
     end
   end
 
@@ -349,21 +435,6 @@ module register_alias_table (
   assign o_ras_valid_count = restored_ras_valid_count;
 
   // ===========================================================================
-  // Checkpoint Availability (Priority Encoder)
-  // ===========================================================================
-
-  always_comb begin
-    o_checkpoint_available = 1'b0;
-    o_checkpoint_alloc_id  = '0;
-    for (int i = NumCheckpoints - 1; i >= 0; i--) begin
-      if (!checkpoint_valid[i]) begin
-        o_checkpoint_available = 1'b1;
-        o_checkpoint_alloc_id  = i[CheckpointIdWidth-1:0];
-      end
-    end
-  end
-
-  // ===========================================================================
   // Source Lookup (Combinational)
   // ===========================================================================
 
@@ -427,6 +498,72 @@ module register_alias_table (
       o_fp_src3 = {1'b1, fp_rat_tag[i_fp_src3_addr], i_fp_regfile_data3};
     end else begin
       o_fp_src3 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3};
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Slot-2 source lookups (2-wide dispatch).  Mirror of slot-1 logic above.
+  // Reads observe the *current* RAT state — intra-bundle RAW (slot 2 reads
+  // slot 1's just-allocated dest) is resolved by the dispatch unit before
+  // the lookup result is consumed downstream.
+  // ---------------------------------------------------------------------------
+
+  // INT source 1 (slot 2)
+  always_comb begin
+    if (i_int_src1_addr_2 == '0) begin
+      o_int_src1_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
+    end else if (int_rat_valid[i_int_src1_addr_2] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr_2]]) begin
+      o_int_src1_2 = {
+        1'b1, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
+      };
+    end else begin
+      o_int_src1_2 = {
+        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
+      };
+    end
+  end
+
+  // INT source 2 (slot 2)
+  always_comb begin
+    if (i_int_src2_addr_2 == '0) begin
+      o_int_src2_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
+    end else if (int_rat_valid[i_int_src2_addr_2] &&
+                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr_2]]) begin
+      o_int_src2_2 = {
+        1'b1, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
+      };
+    end else begin
+      o_int_src2_2 = {
+        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
+      };
+    end
+  end
+
+  // FP source 1 (slot 2)
+  always_comb begin
+    if (fp_rat_valid[i_fp_src1_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr_2]]) begin
+      o_fp_src1_2 = {1'b1, fp_rat_tag[i_fp_src1_addr_2], i_fp_regfile_data1_2};
+    end else begin
+      o_fp_src1_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data1_2};
+    end
+  end
+
+  // FP source 2 (slot 2)
+  always_comb begin
+    if (fp_rat_valid[i_fp_src2_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr_2]]) begin
+      o_fp_src2_2 = {1'b1, fp_rat_tag[i_fp_src2_addr_2], i_fp_regfile_data2_2};
+    end else begin
+      o_fp_src2_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data2_2};
+    end
+  end
+
+  // FP source 3 (slot 2, for FMA)
+  always_comb begin
+    if (fp_rat_valid[i_fp_src3_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr_2]]) begin
+      o_fp_src3_2 = {1'b1, fp_rat_tag[i_fp_src3_addr_2], i_fp_regfile_data3_2};
+    end else begin
+      o_fp_src3_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3_2};
     end
   end
 
@@ -508,9 +645,15 @@ module register_alias_table (
 
       // ---------------------------------------------------------------
       // Rename write: new instruction's destination mapping
-      // Rename takes priority over commit to the same register
+      // Rename takes priority over commit to the same register.
+      //
+      // 2-wide write-collision: if both slots write the same architectural
+      // register (same dest_rf + same dest_reg), slot 2 wins because it is
+      // the newer producer in program order.  Implemented by suppressing
+      // slot 1's write when slot 2 targets the same register; slot 2's
+      // write below then unconditionally installs the newer mapping.
       // ---------------------------------------------------------------
-      if (i_alloc_valid) begin
+      if (i_alloc_valid && !slot1_collides_with_slot2) begin
         if (!i_alloc_dest_rf) begin
           // INT rename (x0 writes are ignored)
           if (i_alloc_dest_reg != '0) begin
@@ -523,6 +666,24 @@ module register_alias_table (
           fp_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
         end
       end
+
+      // Slot-2 rename write.  Per the alloc_2-implies-alloc contract this
+      // can only fire when slot 1 also fires.  No internal collision check
+      // is needed here: any same-register conflict has already been
+      // resolved by suppressing slot 1's write above.
+      if (i_alloc_valid_2) begin
+        if (!i_alloc_dest_rf_2) begin
+          // INT rename (x0 writes are ignored)
+          if (i_alloc_dest_reg_2 != '0) begin
+            int_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+            int_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
+          end
+        end else begin
+          // FP rename
+          fp_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
+          fp_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
+        end
+      end
     end
   end
 
@@ -532,7 +693,9 @@ module register_alias_table (
 
   // Combinational pre-merge: single next-state avoids NBA priority conflicts
   // between save, free, and bulk flush mask.
-  logic [NumCheckpoints-1:0] checkpoint_valid_next;
+  logic [   NumCheckpoints-1:0] checkpoint_valid_next;
+  logic                         checkpoint_available_next;
+  logic [CheckpointIdWidth-1:0] checkpoint_alloc_id_next;
 
   always_comb begin
     if (!i_rst_n || i_flush_all) begin
@@ -550,8 +713,21 @@ module register_alias_table (
     end
   end
 
+  always_comb begin
+    checkpoint_available_next = 1'b0;
+    checkpoint_alloc_id_next  = '0;
+    for (int i = NumCheckpoints - 1; i >= 0; i--) begin
+      if (!checkpoint_valid_next[i]) begin
+        checkpoint_available_next = 1'b1;
+        checkpoint_alloc_id_next  = i[CheckpointIdWidth-1:0];
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
-    checkpoint_valid <= checkpoint_valid_next;
+    checkpoint_valid       <= checkpoint_valid_next;
+    o_checkpoint_available <= checkpoint_available_next;
+    o_checkpoint_alloc_id  <= checkpoint_alloc_id_next;
   end
 
   // ===========================================================================
@@ -574,6 +750,27 @@ module register_alias_table (
     end
   end
 
+  // Note: slot-2 RAT alloc CAN fire without slot-1 RAT alloc when slot-1 is
+  // a no-destination instruction (e.g., a store) and slot-2 has a destination.
+  // The original Session B assertion required slot-2 → slot-1 RAT alloc, but
+  // that assumed slot-1 always has a destination, which isn't true once slot-2
+  // actually fires (Session F).  The ROB-side contract (slot-2 ROB → slot-1
+  // ROB) is enforced separately in the ROB.
+
+  // No slot-2 rename during flush_all
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_valid_2 && i_flush_all) begin
+      $error("RAT: Slot-2 rename attempted during flush_all!");
+    end
+  end
+
+  // No slot-2 rename during checkpoint_restore
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_valid_2 && i_checkpoint_restore) begin
+      $error("RAT: Slot-2 rename attempted during checkpoint restore!");
+    end
+  end
+
   // Checkpoint save should target a free slot
   always @(posedge i_clk) begin
     if (i_rst_n && i_checkpoint_save && checkpoint_valid[i_checkpoint_id]) begin
@@ -588,10 +785,17 @@ module register_alias_table (
     end
   end
 
-  // No INT rename to x0
+  // No INT rename to x0 (slot 1)
   always @(posedge i_clk) begin
     if (i_rst_n && i_alloc_valid && !i_alloc_dest_rf && i_alloc_dest_reg == '0) begin
-      $error("RAT: Rename write to INT x0 attempted!");
+      $error("RAT: Rename write to INT x0 attempted (slot 1)!");
+    end
+  end
+
+  // No INT rename to x0 (slot 2)
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_valid_2 && !i_alloc_dest_rf_2 && i_alloc_dest_reg_2 == '0) begin
+      $error("RAT: Rename write to INT x0 attempted (slot 2)!");
     end
   end
 
@@ -642,7 +846,10 @@ module register_alias_table (
                            !i_checkpoint_restore &&
                            !(i_alloc_valid &&
                              !i_alloc_dest_rf &&
-                             i_alloc_dest_reg == i_commit_dest_reg);
+                             i_alloc_dest_reg == i_commit_dest_reg) &&
+                           !(i_alloc_valid_2 &&
+                             !i_alloc_dest_rf_2 &&
+                             i_alloc_dest_reg_2 == i_commit_dest_reg);
     f_commit_int_dest_reg <= i_commit_dest_reg;
     f_commit_int_was_valid <= int_rat_valid[i_commit_dest_reg];
     f_commit_int_tag_match <= int_rat_tag[i_commit_dest_reg] == i_commit_tag;
@@ -659,11 +866,20 @@ module register_alias_table (
   // Structural constraints (assumes)
   // -------------------------------------------------------------------------
 
-  // No rename during flush_all or checkpoint_restore
+  // No rename during flush_all or checkpoint_restore (slot 1)
   always_comb begin
     assume (!(i_alloc_valid && i_flush_all));
     assume (!(i_alloc_valid && i_checkpoint_restore));
   end
+
+  // No rename during flush_all or checkpoint_restore (slot 2)
+  always_comb begin
+    assume (!(i_alloc_valid_2 && i_flush_all));
+    assume (!(i_alloc_valid_2 && i_checkpoint_restore));
+  end
+
+  // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
+  // destination (no formal assumption needed).
 
   // Checkpoint save and restore not simultaneous
   always_comb begin
@@ -683,10 +899,13 @@ module register_alias_table (
     end
   end
 
-  // Dispatch never renames x0 (INT)
+  // Dispatch never renames x0 (INT) on either slot
   always_comb begin
     if (i_alloc_valid && !i_alloc_dest_rf) begin
       assume (i_alloc_dest_reg != '0);
+    end
+    if (i_alloc_valid_2 && !i_alloc_dest_rf_2) begin
+      assume (i_alloc_dest_reg_2 != '0);
     end
   end
 
@@ -735,7 +954,9 @@ module register_alias_table (
         p_restore_reclaims_ckpts : assert (checkpoint_valid == '0);
       end
 
-      // After INT rename (non-x0), entry is valid with correct tag
+      // After INT rename (non-x0), entry is valid with correct tag.
+      // When slot-2 writes the same dest, slot-2 wins — skip the slot-1
+      // tag check in that case (covered by p_rename_sets_int_slot2_wins).
       if ($past(
               i_alloc_valid
           ) && !$past(
@@ -746,6 +967,8 @@ module register_alias_table (
               i_flush_all
           ) && !$past(
               i_checkpoint_restore
+          ) && !$past(
+              slot1_collides_with_slot2
           )) begin
         p_rename_sets_int :
         assert (int_rat_valid[$past(
@@ -757,7 +980,7 @@ module register_alias_table (
         ));
       end
 
-      // After FP rename, entry is valid with correct tag
+      // After FP rename, entry is valid with correct tag.
       if ($past(
               i_alloc_valid
           ) && $past(
@@ -766,6 +989,8 @@ module register_alias_table (
               i_flush_all
           ) && !$past(
               i_checkpoint_restore
+          ) && !$past(
+              slot1_collides_with_slot2
           )) begin
         p_rename_sets_fp :
         assert (fp_rat_valid[$past(
@@ -774,6 +999,50 @@ module register_alias_table (
             i_alloc_dest_reg
         )] == $past(
             i_alloc_rob_tag
+        ));
+      end
+
+      // Slot-2 INT rename: entry is valid with slot-2's tag.  Slot-2's
+      // write is unconditional given i_alloc_valid_2 (no collision check
+      // because slot-1 was suppressed when slots collide).
+      if ($past(
+              i_alloc_valid_2
+          ) && !$past(
+              i_alloc_dest_rf_2
+          ) && $past(
+              i_alloc_dest_reg_2
+          ) != '0 && !$past(
+              i_flush_all
+          ) && !$past(
+              i_checkpoint_restore
+          )) begin
+        p_rename_sets_int_slot2 :
+        assert (int_rat_valid[$past(
+            i_alloc_dest_reg_2
+        )] && int_rat_tag[$past(
+            i_alloc_dest_reg_2
+        )] == $past(
+            i_alloc_rob_tag_2
+        ));
+      end
+
+      // Slot-2 FP rename: entry is valid with slot-2's tag.
+      if ($past(
+              i_alloc_valid_2
+          ) && $past(
+              i_alloc_dest_rf_2
+          ) && !$past(
+              i_flush_all
+          ) && !$past(
+              i_checkpoint_restore
+          )) begin
+        p_rename_sets_fp_slot2 :
+        assert (fp_rat_valid[$past(
+            i_alloc_dest_reg_2
+        )] && fp_rat_tag[$past(
+            i_alloc_dest_reg_2
+        )] == $past(
+            i_alloc_rob_tag_2
         ));
       end
 

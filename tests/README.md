@@ -137,7 +137,7 @@ pytest test_arch_compliance.py -v -m slow
 
 ### `test_riscv_tests.py`
 
-Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and OOO commit cases that arch_test's single-instruction focus does not cover.
+Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and 2-wide dispatch/OOO commit cases that arch_test's single-instruction focus does not cover.
 
 **Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
 
@@ -209,7 +209,12 @@ pytest test_riscv_torture.py -v -m slow
 
 ### `test_run_yosys.py`
 
-Runs Yosys synthesis to verify the design can be synthesized without errors. Uses open-source tools only (no Xilinx IP cores).
+Runs Yosys synthesis checks. The generic target intentionally stops after Yosys
+coarse synthesis, which verifies vendor-agnostic elaboration, procedural
+lowering, memory inference, and structural checks without defining Xilinx
+primitives. It does not prove that the full CPU maps all the way to ASIC gates
+or a non-Xilinx FPGA fabric. The Xilinx targets still run full Yosys synthesis
+for 7-series, UltraScale, and UltraScale+.
 
 **Standalone Usage:**
 

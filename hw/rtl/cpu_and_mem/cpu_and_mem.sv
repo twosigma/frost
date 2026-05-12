@@ -108,8 +108,8 @@ module cpu_and_mem #(
   // CPU interface signals
   logic [31:0] program_counter;
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
-  logic [ 3:0] instruction_sideband;  // Predecode: {next_sb[1:0], current_sb[1:0]}
-  logic        instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
+  logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
+  logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
@@ -202,10 +202,9 @@ module cpu_and_mem #(
   // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
 
   // Memory 0: Instruction memory with predecode sideband
-  // Stores 32-bit instruction data + 2-bit is_compressed sideband per word.
-  // Sideband bits are computed at write time and arrive at the same Tco as
-  // instruction data on the fetch port, eliminating the combinational
-  // is_compressed LUT from the BRAM -> PC critical path.
+  // Stores 32-bit instruction data plus a small predecode sideband per word.
+  // Sideband bits are computed at write time and keep common IF classification
+  // checks off the raw instruction-data -> PC critical path.
   // Port A: Instruction programming only (div4 clock, write only)
   // Port B: Instruction fetch (main clock, read only)
   imem_predecode #(

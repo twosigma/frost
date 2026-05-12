@@ -161,7 +161,12 @@ class SQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
+        # Slot-2 alloc (2-wide dispatch plumbing, Session C).  Defensive init
+        # for the same reason as i_alloc.
+        self.dut.i_alloc_2.value = 0
         self.dut.i_early_addr_update.value = 0
+        # Slot-2 early-addr update (Session L: dual-ported SQ early addr).
+        self.dut.i_early_addr_update_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_data_update.value = 0
         self.dut.i_commit_valid.value = 0

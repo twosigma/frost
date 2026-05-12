@@ -126,10 +126,10 @@ proc flatten_rtl_file_list {file_list_path project_root} {
 # Argument Parsing
 # =============================================================================
 
-# Arguments: board_name step directive checkpoint_path retiming
+# Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir?
 if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
-    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming>"
+    puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir?"
     puts ""
     puts "Steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
@@ -140,6 +140,7 @@ set step [lindex $argv 1]
 set directive [lindex $argv 2]
 set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
+set software_mem_directory ""
 
 if {$board_name ne "x3" && $board_name ne "genesys2"} {
     puts "Error: Invalid board name '$board_name'"
@@ -172,6 +173,11 @@ set project_root_directory [file dirname $script_directory/../../../]
 set board_specific_directory [file join $project_root_directory boards/$board_name]
 set rtl_file_list [file join $board_specific_directory ${board_name}_frost.f]
 set constraints_file [file join $board_specific_directory constr/${board_name}.xdc]
+if {$argc >= 6} {
+    set software_mem_directory [file normalize [lindex $argv 5]]
+} else {
+    set software_mem_directory [file join $project_root_directory sw/apps/hello_world]
+}
 
 puts "=========================================="
 puts "Board: $board_name"
@@ -179,6 +185,7 @@ puts "Step: $step"
 puts "Directive: $directive"
 puts "FPGA Part: $fpga_part_number"
 puts "Work directory: $work_directory"
+puts "Software memory directory: $software_mem_directory"
 if {$checkpoint_path ne ""} {
     puts "Input checkpoint: $checkpoint_path"
 }
@@ -216,19 +223,25 @@ if {$step eq "synth"} {
 
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
 
-    # Enable Xilinx primitive instantiations in RTL for Vivado synthesis.
-    # This keeps generic synthesis flows technology-agnostic.
+    # Enable Xilinx primitive instantiations and Vivado-specific init handling
+    # in RTL. Generic synthesis flows stay technology-agnostic.
     set current_verilog_defines [get_property verilog_define [current_fileset]]
     if {$current_verilog_defines eq ""} {
         set current_verilog_defines [list]
     }
-    if {[lsearch -exact $current_verilog_defines "FROST_XILINX_PRIMS"] < 0} {
-        lappend current_verilog_defines FROST_XILINX_PRIMS
-        set_property verilog_define $current_verilog_defines [current_fileset]
+    foreach define_name {FROST_XILINX_PRIMS FROST_VIVADO_SYNTH} {
+        if {[lsearch -exact $current_verilog_defines $define_name] < 0} {
+            lappend current_verilog_defines $define_name
+        }
     }
+    set_property verilog_define $current_verilog_defines [current_fileset]
 
     read_verilog {*}$rtl_source_files
-    read_mem $project_root_directory/sw/apps/hello_world/sw.mem
+    read_mem [file join $software_mem_directory sw.mem]
+    read_mem [file join $software_mem_directory sw_imem_even.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_sideband.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
     read_xdc $constraints_file
     set_property top $top_level_module_name [current_fileset]
 
