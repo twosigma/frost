@@ -113,6 +113,7 @@ module pc_controller #(
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
     input logic [XLEN-1:0] i_predicted_target_r,  // Predicted target address (registered)
     input logic i_prediction_used,  // Prediction actually used this cycle
+    input logic i_prediction_used_for_pc,  // Stall-ungated select for PC D mux only
     input logic i_ras_predicted,  // Prediction came from RAS/return detection
     input logic i_sel_prediction_r,  // Registered prediction used (for pc_reg)
     // Predicted op must still execute in IF/PD/ID
@@ -131,6 +132,7 @@ module pc_controller #(
     // and o_slot2_redirect_q tracks the bubble cycle for the if_stage
     // sel_nop expression.
     input  logic            i_slot2_prediction_used,
+    input  logic            i_slot2_prediction_used_for_pc,
     input  logic [XLEN-1:0] i_slot2_predicted_target,
     output logic            o_slot2_redirect_q,
 
@@ -308,9 +310,11 @@ module pc_controller #(
   logic            prediction_needs_pending;
   logic            use_pending_prediction_for_pc_reg;
   logic            pending_prediction_crossing_pc_reg;
+  logic            pending_prediction_crossing_pc_reg_pc_mux;
   logic            pending_prediction_cross_handoff;
   logic            pending_prediction_target_handoff;
   logic            pending_prediction_allow_cross;
+  (* keep = "true", max_fanout = 16 *)logic            pending_prediction_allow_cross_pc_mux_q;
   logic            stale_pending_prediction;
   logic            hold_pending_prediction_fetch;
   logic            hold_pending_prediction_consume_fetch;
@@ -387,6 +391,11 @@ module pc_controller #(
       pending_prediction_allow_cross &&
       (pc_reg_hw < pending_prediction_pc_hw) &&
       (seq_next_pc_reg_hw_q >= pending_prediction_pc_hw);
+  assign pending_prediction_crossing_pc_reg_pc_mux =
+      pending_prediction_effective &&
+      pending_prediction_allow_cross_pc_mux_q &&
+      (pc_reg_hw < pending_prediction_pc_hw) &&
+      (seq_next_pc_reg_hw_q >= pending_prediction_pc_hw);
   assign pending_prediction_cross_handoff =
       pending_prediction_effective &&
       pending_prediction_allow_cross &&
@@ -414,13 +423,13 @@ module pc_controller #(
   // state/output version back across the IF control logic.
   assign pending_prediction_cross_handoff_pc_mux =
       pending_prediction_effective &&
-      pending_prediction_allow_cross &&
-      pending_prediction_crossing_pc_reg;
+      pending_prediction_allow_cross_pc_mux_q &&
+      pending_prediction_crossing_pc_reg_pc_mux;
   assign pending_prediction_target_handoff_pc_mux =
       pending_prediction_effective &&
-      (pending_prediction_allow_cross ?
+      (pending_prediction_allow_cross_pc_mux_q ?
            ((o_pc_reg == pending_prediction_pc) &&
-            !pending_prediction_crossing_pc_reg) :
+            !pending_prediction_crossing_pc_reg_pc_mux) :
            ((o_pc_reg == pending_prediction_pc) &&
             pending_prediction_pc_ready_q));
   assign use_pending_prediction_for_pc_reg_pc_mux =
@@ -539,10 +548,11 @@ module pc_controller #(
   // BRAM critical path.
   always_ff @(posedge i_clk) begin
     if (!i_stall && !pending_prediction_valid) begin
-      pending_prediction_pc          <= o_pc;
-      pending_prediction_target      <= i_predicted_target;
-      pending_prediction_allow_cross <= o_pc[1];
-      pending_prediction_from_buffer <= i_prediction_used_from_buffer;
+      pending_prediction_pc                   <= o_pc;
+      pending_prediction_target               <= i_predicted_target;
+      pending_prediction_allow_cross          <= o_pc[1];
+      pending_prediction_allow_cross_pc_mux_q <= o_pc[1];
+      pending_prediction_from_buffer          <= i_prediction_used_from_buffer;
     end
   end
 
@@ -554,15 +564,14 @@ module pc_controller #(
     if (i_reset) next_pc = '0;
     else if (trap_or_mret) next_pc = i_trap_target;
     else if (i_fence_i_flush) next_pc = i_fence_i_target;
-    else if (i_stall) next_pc = o_pc;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_pd_redirect) next_pc = i_pd_redirect_target;
     // Slot-2 BTB prediction (Session Q): higher priority than slot-1 BTB
     // because slot-2 is older in program order than the next bundle's
     // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
     // slot-1 BTB hit at pc[N+1] = sequential next bundle's slot-1 PC).
-    else if (i_slot2_prediction_used) next_pc = i_slot2_predicted_target;
-    else if (i_prediction_used) next_pc = i_predicted_target;
+    else if (i_slot2_prediction_used_for_pc) next_pc = i_slot2_predicted_target;
+    else if (i_prediction_used_for_pc) next_pc = i_predicted_target;
     // During the target-holdoff bubble, keep fetch at most one word ahead of
     // the still-held target PC. Letting it run farther ahead makes pc_reg pick
     // up instruction-size metadata from the wrong word; freezing it on the
@@ -583,7 +592,7 @@ module pc_controller #(
       // word instead of the following word.
       next_pc =
           pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
-          ((pending_prediction_allow_cross &&
+          ((pending_prediction_allow_cross_pc_mux_q &&
             pending_prediction_target_handoff_pc_mux &&
             !pending_prediction_from_buffer) ?
                seq_next_pc : pending_prediction_target);
@@ -594,7 +603,8 @@ module pc_controller #(
       // word immediately.
       next_pc = seq_next_pc + riscv_pkg::PcIncrementCompressed;
     else if (hold_pending_prediction_fetch_pc_mux)
-      next_pc = pending_prediction_allow_cross ? pending_prediction_target : pending_prediction_pc;
+      next_pc = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+          pending_prediction_pc;
     else next_pc = seq_next_pc;
   end
 
@@ -611,7 +621,6 @@ module pc_controller #(
     if (i_reset) next_pc_reg = '0;
     else if (trap_or_mret) next_pc_reg = i_trap_target;
     else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
-    else if (i_stall) next_pc_reg = o_pc_reg;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
     else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
     // Slot-2 BTB prediction (Session Q): pc_reg jumps to the slot-2 target
@@ -619,13 +628,13 @@ module pc_controller #(
     // after the redirect is NOP'd via the standard control_flow_holdoff
     // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
     // the target arrives the cycle after that.
-    else if (i_slot2_prediction_used) next_pc_reg = i_slot2_predicted_target;
+    else if (i_slot2_prediction_used_for_pc) next_pc_reg = i_slot2_predicted_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
     else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
-    else if (pending_prediction_effective && !pending_prediction_allow_cross &&
+    else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux)
       next_pc_reg = pending_prediction_pc;
     else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
@@ -635,9 +644,14 @@ module pc_controller #(
   end
 
   // PC registers
+  logic pc_update_en;
+  assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
+
   always_ff @(posedge i_clk) begin
-    o_pc <= next_pc;
-    o_pc_reg <= next_pc_reg;
+    if (pc_update_en) begin
+      o_pc     <= next_pc;
+      o_pc_reg <= next_pc_reg;
+    end
   end
 
 `ifndef SYNTHESIS

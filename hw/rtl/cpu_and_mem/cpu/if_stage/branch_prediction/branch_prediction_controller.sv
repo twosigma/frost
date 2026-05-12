@@ -105,6 +105,7 @@ module branch_prediction_controller (
 
     // Control outputs
     output logic o_prediction_used,  // Prediction used this cycle (for pc_controller)
+    output logic o_prediction_used_for_pc,  // Stall-ungated PC mux select
     output logic o_prediction_holdoff,  // One cycle after prediction (for c_ext_state)
     output logic o_btb_only_prediction_holdoff,  // Holdoff when BTB (not RAS) predicted
     output logic o_sel_prediction_r,  // Registered sel_prediction (for pc_controller pc_reg)
@@ -118,6 +119,7 @@ module branch_prediction_controller (
     // and triggers a 1-cycle bubble at cycle N+2 (the BRAM was already
     // fetching the wrong-path sequential address at cycle N+1).
     output logic                       o_slot2_prediction_used,
+    output logic                       o_slot2_prediction_used_for_pc,
     output logic                       o_slot2_btb_hit,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
@@ -360,18 +362,20 @@ module branch_prediction_controller (
   // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
   // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
+  logic prediction_used_for_pc;
   // Only "use" a prediction when IF can actually consume it. A prediction that
   // fires on the first stall cycle is especially dangerous for halfword target
   // handoff: the branch bytes can keep moving through IF while the PC/metadata
   // bookkeeping stays behind by one instruction.
-  assign prediction_used_effective = sel_prediction && !i_stall &&
-                                     !i_branch_taken && !i_is_32bit_spanning;
+  assign prediction_used_for_pc = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
   assign o_predicted_taken = sel_ras_prediction || btb_predicted_taken;
   assign o_predicted_target = sel_ras_prediction ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
+  assign o_prediction_used_for_pc = prediction_used_for_pc;
 
   // Detect prediction to halfword-aligned address
   logic predicted_target_is_halfword;
@@ -514,8 +518,9 @@ module branch_prediction_controller (
   // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
   // suppression aligned with the slot-1 path so a same-cycle branch
   // resolution / spanning event takes priority over a slot-2 BTB hit.
-  assign o_slot2_prediction_used = slot2_sel_btb_prediction && !i_stall &&
-                                   !i_branch_taken && !i_is_32bit_spanning;
+  assign o_slot2_prediction_used_for_pc =
+      slot2_sel_btb_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
   assign o_slot2_btb_hit = btb_hit_2 && i_slot2_valid;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
   assign o_slot2_predicted_target = btb_predicted_target_2;

@@ -639,11 +639,31 @@ module reorder_buffer (
 
   logic alloc_en;
   logic alloc_en_2;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_status;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_status;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_valid;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_valid;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_control;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_control;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_branch_bits;
+  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_branch_bits;
   assign alloc_en = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
   // Slot-2 alloc requires slot-1 to also fire (slot-2 lives at tail_idx+1
   // by construction).  full_for_2 covers the "only 1 free slot" case.
   assign alloc_en_2 = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
                       !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_status = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_status = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                             !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_valid = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_valid = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                            !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_control = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_control = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                              !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en_branch_bits = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2_branch_bits = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
+                                  !full_for_2 && !i_flush_all && !i_flush_en;
 
   logic cdb_ram_wr_en;
   logic cdb_state_wr_en;
@@ -1278,27 +1298,40 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth:0] dispatch_tail_next;
   logic [ReorderBufferTagWidth:0] dispatch_head_next;
   logic [ReorderBufferTagWidth:0] dispatch_count_next;
+  logic [ReorderBufferTagWidth:0] dispatch_alloc_delta;
+  logic [ReorderBufferTagWidth:0] dispatch_commit_delta;
+  assign dispatch_alloc_delta = {
+    {ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2_status, !alloc_en_2_status
+  };
+  assign dispatch_commit_delta = {{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire};
   always_comb begin
-    dispatch_tail_next = tail_ptr;
-    if (i_flush_all) begin
-      dispatch_tail_next = head_ptr;
-    end else if (i_flush_en) begin
-      if (flush_after_head_commit) begin
+    dispatch_tail_next  = tail_ptr;
+    dispatch_head_next  = head_ptr;
+    dispatch_count_next = count;
+
+    if (i_flush_all || i_flush_en) begin
+      if (i_flush_all) begin
+        dispatch_tail_next = head_ptr;
+      end else if (flush_after_head_commit) begin
         dispatch_tail_next = head_ptr;
       end else begin
         dispatch_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
       end
-    end else if (alloc_en) begin
-      dispatch_tail_next = tail_ptr + {{ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2, !alloc_en_2};
-    end
 
-    dispatch_head_next = head_ptr;
-    if (commit_en && !i_flush_all) begin
-      dispatch_head_next =
-          head_ptr + ({{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire});
+      if (commit_en && !i_flush_all) begin
+        dispatch_head_next = head_ptr + dispatch_commit_delta;
+      end
+
+      dispatch_count_next = dispatch_tail_next - dispatch_head_next;
+    end else begin
+      if (commit_en) begin
+        dispatch_count_next = dispatch_count_next - dispatch_commit_delta;
+      end
+      if (alloc_en_status) begin
+        dispatch_count_next = dispatch_count_next + dispatch_alloc_delta;
+      end
     end
   end
-  assign dispatch_count_next = dispatch_tail_next - dispatch_head_next;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -1354,7 +1387,7 @@ module reorder_buffer (
       // ---------------------------------------------------------------------
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
-      if (alloc_en) begin
+      if (alloc_en_control) begin
         // Initialize control fields for new entry
         rob_exception[tail_idx] <= 1'b0;
 
@@ -1377,7 +1410,7 @@ module reorder_buffer (
 
       // Slot-2 alloc — same logic at tail_idx_2.  Different write addresses
       // (tail_idx vs tail_idx_2) so no priority arbitration needed.
-      if (alloc_en_2) begin
+      if (alloc_en_2_control) begin
         rob_exception[tail_idx_2] <= 1'b0;
 
         if (i_alloc_req_2.is_jal) begin
@@ -1444,10 +1477,10 @@ module reorder_buffer (
         end
       end
 
-      if (alloc_en) begin
+      if (alloc_en_valid) begin
         rob_valid[tail_idx] <= 1'b1;
       end
-      if (alloc_en_2) begin
+      if (alloc_en_2_valid) begin
         rob_valid[tail_idx_2] <= 1'b1;
       end
 
@@ -1470,7 +1503,7 @@ module reorder_buffer (
     // -------------------------------------------------------------------
     // Allocation Write (multi-write/head-independent data fields)
     // -------------------------------------------------------------------
-    if (alloc_en) begin
+    if (alloc_en_branch_bits) begin
       rob_branch_taken[tail_idx]    <= 1'b0;
       rob_mispredicted[tail_idx]    <= 1'b0;
       rob_early_recovered[tail_idx] <= 1'b0;
@@ -1484,7 +1517,7 @@ module reorder_buffer (
       end
     end
 
-    if (alloc_en_2) begin
+    if (alloc_en_2_branch_bits) begin
       rob_branch_taken[tail_idx_2]    <= 1'b0;
       rob_mispredicted[tail_idx_2]    <= 1'b0;
       rob_early_recovered[tail_idx_2] <= 1'b0;
