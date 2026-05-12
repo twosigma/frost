@@ -309,6 +309,7 @@ module cpu_ooo #(
   logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
+  logic replay_after_serialize_stall_next;
   assign frontend_stall =
       (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall) && !flush_pipeline;
@@ -321,7 +322,8 @@ module cpu_ooo #(
   // flop. This has identical cycle behavior to stall_q but a much narrower
   // fanout cone into dispatch/RS allocation.
   always_ff @(posedge i_clk) begin
-    if (i_rst) id_stall_q <= 1'b0;
+    if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
+    else if (replay_after_serialize_stall_next) id_stall_q <= 1'b0;
     else id_stall_q <= frontend_stall;
   end
 
@@ -337,14 +339,16 @@ module cpu_ooo #(
   // `csrw mepc, ...` are stranded in ID and overwritten by younger fetch.
   //
   // A CSR that writes rd needs one extra bubble for the delayed architectural
-  // writeback. Do not replay in the cycle where csr_wb_pending is high; replay
-  // one cycle later instead. This keeps csr_wb_pending off the dispatch
-  // allocation cone while preserving the delayed-WB hazard behavior.
+  // writeback. Do not replay in the cycle where csr_wb_pending is high; clear
+  // id_stall_q on that edge so the held ID image is valid one cycle later.
+  // replay_after_serialize_stall_q remains as a debug tap only; dispatch valid
+  // uses !id_stall_q so this CSR-release pulse is not a launch flop on the
+  // dispatch/alloc timing cone.
+  assign replay_after_serialize_stall_next =
+      (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
-    else
-      replay_after_serialize_stall_q <=
-        (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
+    else replay_after_serialize_stall_q <= replay_after_serialize_stall_next;
   end
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
@@ -1057,10 +1061,11 @@ module cpu_ooo #(
       // and after CSR serialization fences. The CSR itself has already
       // allocated before csr_in_flight rises; the held ID image during the
       // fence is the younger blocked instruction that still needs exactly
-      // one valid replay cycle after the fence drops. csr_wb_pending does
-      // not gate id_valid directly; the replay flop above withholds replay
-      // during the delayed CSR writeback bubble.
-      (!id_stall_q || replay_after_dispatch_stall_q || replay_after_serialize_stall_q);
+      // one valid replay cycle after the fence drops. CSR-release replay is
+      // encoded by clearing id_stall_q one cycle early above; dispatch-stall
+      // replay still needs an explicit pulse because the resource stall's
+      // release cannot be known until this cycle.
+      (!id_stall_q || replay_after_dispatch_stall_q);
   assign id_valid = id_valid_base && (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop);
 
   // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to

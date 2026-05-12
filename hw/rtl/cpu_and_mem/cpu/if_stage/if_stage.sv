@@ -116,6 +116,7 @@ module if_stage #(
   logic prediction_used_r;  // Registered: Prediction was applied
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
   logic prediction_used;  // Current prediction being used
+  logic prediction_used_for_pc;  // Stall-ungated PC mux select
   logic prediction_holdoff;  // Block prediction (stale data)
   logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
   logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
@@ -130,6 +131,7 @@ module if_stage #(
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
   logic slot2_prediction_used;
+  logic slot2_prediction_used_for_pc;
 
   // RAS (Return Address Stack) signals
   logic ras_predicted;  // RAS prediction was used
@@ -392,6 +394,7 @@ module if_stage #(
 
       // Control outputs
       .o_prediction_used(prediction_used),
+      .o_prediction_used_for_pc(prediction_used_for_pc),
       .o_prediction_holdoff(prediction_holdoff),
       .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
@@ -400,6 +403,7 @@ module if_stage #(
 
       // Slot-2 prediction outputs (Session Q)
       .o_slot2_prediction_used(slot2_prediction_used),
+      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .o_slot2_btb_hit(slot2_btb_hit),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
@@ -458,6 +462,7 @@ module if_stage #(
       .i_predicted_target(btb_predicted_target),
       .i_predicted_target_r(btb_predicted_target_r),
       .i_prediction_used(prediction_used),
+      .i_prediction_used_for_pc(prediction_used_for_pc),
       .i_ras_predicted(ras_predicted),
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
@@ -468,6 +473,7 @@ module if_stage #(
 
       // Slot-2 BTB prediction redirect (Session Q dual-port BTB)
       .i_slot2_prediction_used(slot2_prediction_used),
+      .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target(slot2_predicted_target),
       .o_slot2_redirect_q(slot2_redirect_q),
 
@@ -994,22 +1000,22 @@ module if_stage #(
   // flush-to-1 behaviour as sel_nop and folds in slot-1 sel_nop, slot-1
   // branch detection, and the slot-2 doesn't-fit case.
 
-  logic [15:0] raw_parcel_2_sc;
+  logic [15:0] raw_parcel_2_saved;
   logic [31:0] effective_instr_2_sc;
   logic        sel_compressed_2_sc;
   logic        sel_nop_2_saved;
 
-  stall_capture_reg #(
-      .WIDTH(16)
-  ) u_raw_parcel_2_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(raw_parcel_2),
-      .o_data(raw_parcel_2_sc)
-  );
+  // Slot-2's live raw parcel is on the BRAM -> PD decompressor path.  Keep
+  // only a saved register here and let the final replay mux below select it;
+  // the generic stall_capture_reg would add an unnecessary live-data mux
+  // before the replay mux.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      raw_parcel_2_saved <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      raw_parcel_2_saved <= raw_parcel_2;
+    end
+  end
 
   stall_capture_reg #(
       .WIDTH(32)
@@ -1066,7 +1072,7 @@ module if_stage #(
                                                 riscv_pkg::PcIncrement32bit);
 
   // Slot-2 IF→PD packet assembly.
-  assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_sc : raw_parcel_2;
+  assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
   assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
                                             sel_compressed_2;
