@@ -342,7 +342,6 @@ module reorder_buffer (
   logic [XLEN-1:0] head_branch_target_jal;  // JAL target written at allocation
   logic [XLEN-1:0] head_branch_target_resolved;  // branch/JALR target written at resolution
   logic head_predicted_taken;
-  logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
   logic head_early_recovered;
   logic head_is_call;  // TODO: wire to BPU update at commit
@@ -392,7 +391,6 @@ module reorder_buffer (
   logic [XLEN-1:0] head_next_branch_target_jal;
   logic [XLEN-1:0] head_next_branch_target_resolved;
   logic head_next_predicted_taken;
-  logic [XLEN-1:0] head_next_predicted_target;
   logic head_next_mispredicted;
   logic head_next_early_recovered;
   logic head_next_is_call;
@@ -516,10 +514,10 @@ module reorder_buffer (
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
   // The RAM-backed multi-bit fields (pc, dest_reg, value, branch_target_*,
-  // predicted_target, checkpoint_id, meta, csr_*, exc_cause, fp_flags) are
-  // driven by dedicated read-port replicas instantiated alongside the head
-  // RAMs below.  1-bit packed-vector fields share the existing FF storage
-  // and are indexed at head_next_idx for free.
+  // checkpoint_id, meta, csr_*, exc_cause, fp_flags) are driven by dedicated
+  // read-port replicas instantiated alongside the head RAMs below.  1-bit
+  // packed-vector fields share the existing FF storage and are indexed at
+  // head_next_idx for free.
   assign head_next_idx = head_idx + 1'b1;
   assign head_next_valid = rob_valid[head_next_idx];
   assign head_next_done = rob_done[head_next_idx];
@@ -820,33 +818,6 @@ module reorder_buffer (
       .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
       .i_read_address (head_next_idx),
       .o_read_data    (head_next_dest_reg)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_predicted_target (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_predicted_target)
-  );
-
-  // Widen-commit replica: head+1 read port for predicted_target.
-  mwp_dist_ram #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_predicted_target_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_predicted_target)
   );
 
   mwp_dist_ram #(
@@ -1373,9 +1344,9 @@ module reorder_buffer (
   // ===========================================================================
 
   // Handle allocation, CDB writes, branch updates, and flush for FF-backed fields.
-  // Multi-bit fields (pc, dest_reg, value, branch_target, predicted_target,
-  // checkpoint_id, exc_cause, fp_flags, head-only metadata) are handled by
-  // distributed RAM above.
+  // Multi-bit fields (pc, dest_reg, value, branch_target, checkpoint_id,
+  // exc_cause, fp_flags, head-only metadata) are handled by distributed RAM
+  // above.
   // -------------------------------------------------------------------------
   // Control signals (rob_valid, rob_done, rob_exception) -- need reset
   // -------------------------------------------------------------------------
