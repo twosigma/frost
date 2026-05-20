@@ -30,7 +30,8 @@ Steps:
 All three phys_opt stages (4, 6, 8) run a hardcoded sweep over every directive
 in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore. Each sweep preserves
 the best-WNS pass and stops early as soon as a phys_opt_design pass closes
-timing (WNS>=0).
+timing (WNS>=0). Repeated phys_opt sweeps write the current best checkpoint
+and reports after every completed sweep iteration.
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -295,10 +296,22 @@ def copy_results_to_main_work(
     main_work: Path,
     checkpoint_name: str,
     report_prefix: str,
+    source_report_prefix: str | None = None,
 ) -> None:
     """Copy checkpoint and reports from step work dir to main work directory."""
     # Copy checkpoint (rename to standard name)
-    for dcp in work_dir.glob("*.dcp"):
+    checkpoint_candidates = []
+    if source_report_prefix:
+        checkpoint_candidates.append(work_dir / f"{source_report_prefix}.dcp")
+    checkpoint_candidates.append(work_dir / checkpoint_name)
+    checkpoint_candidates.extend(sorted(work_dir.glob("*.dcp")))
+    seen_checkpoints = set()
+    for dcp in checkpoint_candidates:
+        if dcp in seen_checkpoints:
+            continue
+        seen_checkpoints.add(dcp)
+        if not dcp.exists() or dcp.name.endswith("_best.dcp"):
+            continue
         dst = main_work / checkpoint_name
         shutil.copy2(dcp, dst)
         print(f"  Checkpoint: {dst}")
@@ -311,7 +324,18 @@ def copy_results_to_main_work(
         "_high_fanout.rpt",
         "_failing_paths.csv",
     ]:
-        for rpt in work_dir.glob(f"*{suffix}"):
+        report_candidates = []
+        if source_report_prefix:
+            report_candidates.append(work_dir / f"{source_report_prefix}{suffix}")
+        report_candidates.append(work_dir / f"{report_prefix}{suffix}")
+        report_candidates.extend(sorted(work_dir.glob(f"*{suffix}")))
+        seen_reports = set()
+        for rpt in report_candidates:
+            if rpt in seen_reports:
+                continue
+            seen_reports.add(rpt)
+            if not rpt.exists():
+                continue
             dst = main_work / f"{report_prefix}{suffix}"
             shutil.copy2(rpt, dst)
             break
@@ -420,7 +444,13 @@ def run_step(
     print(f"  Output: {checkpoint_name} + {report_prefix}_*.rpt")
 
     # Copy results to main work directory
-    copy_results_to_main_work(work_dir, main_work, checkpoint_name, report_prefix)
+    copy_results_to_main_work(
+        work_dir,
+        main_work,
+        checkpoint_name,
+        report_prefix,
+        source_report_prefix=tcl_report_prefix,
+    )
 
     # Clean up temp directory
     if not keep_temps:
@@ -501,7 +531,8 @@ Steps (in order):
 Behavior:
   * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore.
     Each sweep preserves the best-WNS pass and stops early if a directive closes
-    timing (WNS>=0).
+    timing (WNS>=0). Repeated sweeps write the current best checkpoint and
+    reports after every completed sweep iteration.
   * Pipeline early-exit at route, post_route_physopt, or second_route: when
     one of these closes timing, its outputs are promoted to final.dcp/final_*
     and remaining stages are skipped — bitstream runs next.
