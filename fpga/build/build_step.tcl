@@ -209,6 +209,49 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
+proc write_physopt_iteration_outputs {work_directory step board_name physopt_uncertainty best_wns continue_sweeps} {
+    if {$physopt_uncertainty ne ""} {
+        set_x3_setup_uncertainty $board_name 0.0 "$step report"
+    }
+
+    set checkpoint_file [file join $work_directory phys_opt.dcp]
+    set timing_file [file join $work_directory phys_opt_timing.rpt]
+    set util_file [file join $work_directory phys_opt_util.rpt]
+    set high_fanout_file [file join $work_directory phys_opt_high_fanout.rpt]
+    set failing_paths_file [file join $work_directory phys_opt_failing_paths.csv]
+
+    write_checkpoint -force $checkpoint_file
+    report_timing_summary -file $timing_file
+    report_utilization -file $util_file
+    report_high_fanout_nets -timing -load_types -max_nets 50 -file $high_fanout_file
+    write_failing_paths_csv $failing_paths_file $timing_file
+
+    set main_work_directory [file join [file dirname $work_directory] work]
+    file mkdir $main_work_directory
+
+    set main_checkpoint_name ${step}.dcp
+    set main_report_prefix $step
+    set timing_met [expr {$best_wns ne "" && $best_wns >= 0.0}]
+    if {$step eq "post_second_route_physopt" || ($step eq "post_route_physopt" && $timing_met)} {
+        set main_checkpoint_name final.dcp
+        set main_report_prefix final
+    }
+
+    file copy -force $checkpoint_file [file join $main_work_directory $main_checkpoint_name]
+    foreach suffix [list _timing.rpt _util.rpt _high_fanout.rpt _failing_paths.csv] {
+        file copy -force [file join $work_directory "phys_opt$suffix"] [file join $main_work_directory "$main_report_prefix$suffix"]
+    }
+
+    puts ""
+    puts "  Wrote completed $step iteration output:"
+    puts "    $checkpoint_file"
+    puts "    [file join $main_work_directory $main_checkpoint_name]"
+
+    if {$continue_sweeps && $physopt_uncertainty ne ""} {
+        set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step overconstraint"
+    }
+}
+
 # =============================================================================
 # Argument Parsing
 # =============================================================================
@@ -400,7 +443,9 @@ if {$step eq "synth"} {
     # sweep order is fixed here. Physopt repeats full sweeps until an entire
     # sweep fails to improve WNS or, for same-WNS sweeps, TNS by a meaningful
     # amount. Inside a sweep, every WNS/TNS improvement is kept so small gains
-    # can stack across later directives.
+    # can stack across later directives. After each completed sweep iteration,
+    # the current best checkpoint and reports are written to both the step work
+    # directory and the board's main work directory.
     if {$checkpoint_path eq ""} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
@@ -599,56 +644,50 @@ if {$step eq "synth"} {
             incr pass_num
         }
 
+        set continue_sweeps 0
         if {$early_exit} {
-            break
-        }
-        if {!$repeat_sweeps} {
-            break
-        }
-        if {!$sweep_kept_improvement} {
+            set continue_sweeps 0
+        } elseif {!$repeat_sweeps} {
+            set continue_sweeps 0
+        } elseif {!$sweep_kept_improvement} {
             puts ""
             puts "  No WNS/TNS improvement during $step sweep iteration $sweep_num; stopping after convergence"
-            break
-        }
-
-        set sweep_wns_delta [expr {$best_wns - $sweep_start_wns}]
-        set sweep_tns_delta ""
-        if {$best_tns ne "" && $sweep_start_tns ne ""} {
-            set sweep_tns_delta [expr {$best_tns - $sweep_start_tns}]
-        }
-        set repeat_for_wns [expr {$best_wns > ($sweep_start_wns + $wns_tie_epsilon)}]
-        set repeat_for_tns 0
-        if {$sweep_tns_delta ne "" && abs($best_wns - $sweep_start_wns) <= $wns_tie_epsilon} {
-            set repeat_for_tns [expr {$sweep_tns_delta > $tns_repeat_epsilon}]
-        }
-        if {!$repeat_for_wns && !$repeat_for_tns} {
-            puts ""
-            if {$sweep_tns_delta ne ""} {
-                puts "  Kept best $step improvement from sweep $sweep_num, but sweep delta WNS=[format %.3f $sweep_wns_delta] ns, TNS=[format %.3f $sweep_tns_delta] ns is below repeat threshold; stopping repeated sweeps"
-            } else {
-                puts "  Kept best $step improvement from sweep $sweep_num, but sweep WNS delta=[format %.3f $sweep_wns_delta] ns is below repeat threshold; stopping repeated sweeps"
-            }
-            break
-        }
-        if {$max_sweeps ne "0" && $sweep_num >= $max_sweeps} {
-            puts ""
-            puts "  Reached max repeated $step sweeps ($max_sweeps); stopping"
-            break
-        }
-
-        puts ""
-        if {$sweep_tns_delta ne ""} {
-            puts "  $step sweep iteration $sweep_num improved enough to repeat (WNS delta=[format %.3f $sweep_wns_delta] ns, TNS delta=[format %.3f $sweep_tns_delta] ns); starting another sweep from best checkpoint"
+            set continue_sweeps 0
         } else {
-            puts "  $step sweep iteration $sweep_num improved enough to repeat (WNS delta=[format %.3f $sweep_wns_delta] ns); starting another sweep from best checkpoint"
+            set sweep_wns_delta [expr {$best_wns - $sweep_start_wns}]
+            set sweep_tns_delta ""
+            if {$best_tns ne "" && $sweep_start_tns ne ""} {
+                set sweep_tns_delta [expr {$best_tns - $sweep_start_tns}]
+            }
+            set repeat_for_wns [expr {$best_wns > ($sweep_start_wns + $wns_tie_epsilon)}]
+            set repeat_for_tns 0
+            if {$sweep_tns_delta ne "" && abs($best_wns - $sweep_start_wns) <= $wns_tie_epsilon} {
+                set repeat_for_tns [expr {$sweep_tns_delta > $tns_repeat_epsilon}]
+            }
+            if {!$repeat_for_wns && !$repeat_for_tns} {
+                puts ""
+                if {$sweep_tns_delta ne ""} {
+                    puts "  Kept best $step improvement from sweep $sweep_num, but sweep delta WNS=[format %.3f $sweep_wns_delta] ns, TNS=[format %.3f $sweep_tns_delta] ns is below repeat threshold; stopping repeated sweeps"
+                } else {
+                    puts "  Kept best $step improvement from sweep $sweep_num, but sweep WNS delta=[format %.3f $sweep_wns_delta] ns is below repeat threshold; stopping repeated sweeps"
+                }
+                set continue_sweeps 0
+            } elseif {$max_sweeps ne "0" && $sweep_num >= $max_sweeps} {
+                puts ""
+                puts "  Reached max repeated $step sweeps ($max_sweeps); stopping"
+                set continue_sweeps 0
+            } else {
+                puts ""
+                if {$sweep_tns_delta ne ""} {
+                    puts "  $step sweep iteration $sweep_num improved enough to repeat (WNS delta=[format %.3f $sweep_wns_delta] ns, TNS delta=[format %.3f $sweep_tns_delta] ns); starting another sweep from best checkpoint"
+                } else {
+                    puts "  $step sweep iteration $sweep_num improved enough to repeat (WNS delta=[format %.3f $sweep_wns_delta] ns); starting another sweep from best checkpoint"
+                }
+                set continue_sweeps 1
+            }
         }
-        close_design
-        open_checkpoint $best_checkpoint
-        incr sweep_num
-    }
 
-    if {[file exists $best_checkpoint]} {
-        if {$repeat_sweeps || $best_pass != $total_passes_run} {
+        if {[file exists $best_checkpoint]} {
             puts ""
             if {$best_pass == 0} {
                 puts "  Restoring best $step checkpoint: input checkpoint (WNS=$best_wns ns, TNS=$best_tns ns)"
@@ -657,21 +696,16 @@ if {$step eq "synth"} {
             }
             close_design
             open_checkpoint $best_checkpoint
-        } else {
-            puts ""
-            puts "  Keeping current $step pass: $best_directive (directive $best_pass/$total_directives, WNS=$best_wns ns, TNS=$best_tns ns)"
         }
-    }
 
-    if {$physopt_uncertainty ne ""} {
-        set_x3_setup_uncertainty $board_name 0.0 "$step report"
-    }
+        write_physopt_iteration_outputs $work_directory $step $board_name $physopt_uncertainty $best_wns $continue_sweeps
 
-    write_checkpoint -force $work_directory/phys_opt.dcp
-    report_timing_summary -file $work_directory/phys_opt_timing.rpt
-    report_utilization -file $work_directory/phys_opt_util.rpt
-    report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/phys_opt_high_fanout.rpt
-    write_failing_paths_csv $work_directory/phys_opt_failing_paths.csv $work_directory/phys_opt_timing.rpt
+        if {!$continue_sweeps} {
+            break
+        }
+
+        incr sweep_num
+    }
 
     if {$early_exit} {
         puts "** DONE — $step sweep complete ($total_passes_run total directives, stopped early on closure)"
