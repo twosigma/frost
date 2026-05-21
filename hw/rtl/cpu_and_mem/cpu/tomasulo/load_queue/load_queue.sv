@@ -90,6 +90,14 @@ module load_queue #(
     // =========================================================================
     output logic o_sq_check_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
+    // Second replica of o_sq_check_addr — drives the upper half of the SQ
+    // disambiguation CAM (entries 4..7).  Splitting the address broadcast
+    // across two anchor FFs lets the placer spread the per-entry compare
+    // CARRY8 chains across two physical regions instead of cramming them
+    // all around a single source.  Replica register lives in LQ under a
+    // dont_touch attribute so opt_design -merge_equivalent_drivers cannot
+    // fold it back into o_sq_check_addr.  Functionally identical value.
+    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr_b,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
     output riscv_pkg::mem_size_e o_sq_check_size,
     input logic i_sq_all_older_addrs_known,
@@ -408,7 +416,21 @@ module load_queue #(
   logic sq_check_pending;
   logic [IdxWidth-1:0] sq_check_idx;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
-  logic [XLEN-1:0] sq_check_addr_q;
+  // max_fanout: drives ~170 destinations in the SQ disambiguation CAM
+  // (per-entry addr compare + byte-mask + age qualification + cross-entry
+  // reduction).  Single-source FF was the lone -0.178 ns post-synth path
+  // on x3 with ~70% routing dominance.  Replicate per fanout=16 so each
+  // copy lives near a small cluster of SQ-side consumers.  Pair with the
+  // sq_check_addr_q_b port-split replica (drives entries 4..7 in the SQ);
+  // sq_check_addr_q now drives entries 0..3.
+  (* max_fanout = 16 *) logic [XLEN-1:0] sq_check_addr_q;
+  // Port-split replica: same D/CE as sq_check_addr_q.  dont_touch + keep so
+  // opt_design's -merge_equivalent_drivers cannot fold this back into
+  // sq_check_addr_q.  Drives the upper-half of the SQ CAM via the
+  // o_sq_check_addr_b port, giving the placer a second anchor point for
+  // the CARRY8 chains and per-entry compare LUTs.
+  (* dont_touch = "true", keep = "true", max_fanout = 16 *)
+  logic [XLEN-1:0] sq_check_addr_q_b;
   riscv_pkg::mem_size_e sq_check_size_q;
   logic sq_check_is_fp_q;
   logic sq_check_sign_ext_q;
@@ -1100,6 +1122,11 @@ module load_queue #(
   // Removing the addr/tag/size MUX breaks the cross-module timing path:
   //   SQ sq_valid → o_mem_write_en → LQ i_mem_bus_busy → o_sq_check_valid
   //   → addr MUX → SQ i_sq_check_addr → CARRY8 compare → o_sq_forward_reg
+  // Port-split replica drives the upper-half of the SQ CAM (entries 4..7).
+  // Value is identical to o_sq_check_addr — the split is for placement
+  // freedom only, not a functional difference.
+  assign o_sq_check_addr_b = sq_check_addr_q_b;
+
   always_comb begin
     o_sq_check_valid   = 1'b0;
     o_sq_check_addr    = sq_check_addr_q;
@@ -2090,16 +2117,24 @@ module load_queue #(
     );
   end
 
-  for (genvar g_sq_addr = 0; g_sq_addr < XLEN; g_sq_addr++) begin : gen_sq_check_addr_ff
-    FDRE #(
-        .INIT(1'b0)
-    ) sq_check_addr_ff (
-        .C (i_clk),
-        .CE(sq_check_payload_en),
-        .D (sq_check_addr_next[g_sq_addr]),
-        .Q (sq_check_addr_q[g_sq_addr]),
-        .R (1'b0)
-    );
+  // sq_check_addr_q: use standard always_ff (NOT explicit FDRE prims) so
+  // Vivado can auto-replicate this 32-bit register.  The SQ disambiguation
+  // CAM (in u_sq, computing o_sq_forward.match) consumes every bit of
+  // sq_check_addr_q across all SQ entries, byte-mask checks, and age
+  // qualification — ~170 loads per bit.  Pinning to a single FDRE primitive
+  // per bit blocked fanout replication and pushed routing to ~70% of the
+  // path delay, producing the lone -0.178 ns post-synth outlier (15 LUT
+  // levels, mostly long routes).  Leaving the FDREs for the other sq_check_*
+  // fields below — they're narrower and have lower fanout.
+  always_ff @(posedge i_clk) begin
+    if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
+  end
+
+  // Port-split replica: drives the upper-half of the SQ CAM (entries 4..7).
+  // Same D/CE/timing as sq_check_addr_q — dont_touch (on the decl) prevents
+  // opt_design from re-merging the two registers.
+  always_ff @(posedge i_clk) begin
+    if (sq_check_payload_en) sq_check_addr_q_b <= sq_check_addr_next;
   end
 
   for (genvar g_sq_size = 0; g_sq_size < MemSizeWidth; g_sq_size++) begin : gen_sq_check_size_ff
@@ -2179,6 +2214,7 @@ module load_queue #(
       sq_check_idx          <= sq_check_idx_next;
       sq_check_rob_tag_q    <= sq_check_rob_tag_next;
       sq_check_addr_q       <= sq_check_addr_next;
+      sq_check_addr_q_b     <= sq_check_addr_next;
       sq_check_size_q       <= sq_check_size_next;
       sq_check_is_fp_q      <= sq_check_is_fp_next;
       sq_check_sign_ext_q   <= sq_check_sign_ext_next;

@@ -173,6 +173,11 @@ class SQInterface:
         self.dut.i_commit_rob_tag.value = 0
         self.dut.i_sq_check_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
+        # Port-split replica — same value as i_sq_check_addr (drives upper
+        # half of the SQ CAM, entries DEPTH/2..DEPTH-1).  Test interface
+        # mirrors the wrapper-level wiring where both ports get the same
+        # value from sister LQ-side registers.
+        self.dut.i_sq_check_addr_b.value = 0
         self.dut.i_sq_check_rob_tag.value = 0
         self.dut.i_sq_check_size.value = 0
         self.dut.i_mem_write_done.value = 0
@@ -264,6 +269,9 @@ class SQInterface:
         """Drive forwarding check from LQ."""
         self.dut.i_sq_check_valid.value = 1
         self.dut.i_sq_check_addr.value = addr & MASK32
+        # Mirror the address on the port-split replica so upper-half SQ
+        # entries (DEPTH/2..DEPTH-1) see the same address as the lower half.
+        self.dut.i_sq_check_addr_b.value = addr & MASK32
         self.dut.i_sq_check_rob_tag.value = rob_tag & MASK_TAG
         self.dut.i_sq_check_size.value = size
 

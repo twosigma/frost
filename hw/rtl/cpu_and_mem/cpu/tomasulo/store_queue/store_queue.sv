@@ -129,6 +129,12 @@ module store_queue #(
     // =========================================================================
     input logic i_sq_check_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
+    // Second copy of the same address driven by a dont_touch'd LQ-side
+    // replica register.  Used for the upper-half of the SQ CAM (entries
+    // DEPTH/2..DEPTH-1) so the per-entry CARRY8 compare chains can split
+    // across two physical anchor points instead of all routing from a
+    // single source FF.  Functionally identical to i_sq_check_addr.
+    input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_b,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sq_check_rob_tag,
     input riscv_pkg::mem_size_e i_sq_check_size,
     output logic o_sq_all_older_addrs_known,
@@ -193,6 +199,7 @@ module store_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
+  localparam int unsigned WordAddrWidth = XLEN - 2;
 
 `ifndef SYNTHESIS
   localparam logic [XLEN-1:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -227,6 +234,84 @@ module store_queue #(
       store_age     = {1'b0, store_tag} - {1'b0, head};
       load_age      = {1'b0, load_tag} - {1'b0, head};
       is_older_than = store_age < load_age;
+    end
+  endfunction
+
+  function automatic logic word_addr_eq(input logic [WordAddrWidth-1:0] lhs,
+                                        input logic [WordAddrWidth-1:0] rhs);
+    logic [WordAddrWidth-1:0] diff;
+    logic [5:0] group_has_diff;
+    begin
+      diff = lhs ^ rhs;
+      group_has_diff[0] = |diff[4:0];
+      group_has_diff[1] = |diff[9:5];
+      group_has_diff[2] = |diff[14:10];
+      group_has_diff[3] = |diff[19:15];
+      group_has_diff[4] = |diff[24:20];
+      group_has_diff[5] = |diff[29:25];
+      word_addr_eq = ~(|group_has_diff);
+    end
+  endfunction
+
+  function automatic logic full_addr_eq(input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs);
+    logic [XLEN-1:0] diff;
+    logic [6:0] group_has_diff;
+    begin
+      diff = lhs ^ rhs;
+      group_has_diff[0] = |diff[4:0];
+      group_has_diff[1] = |diff[9:5];
+      group_has_diff[2] = |diff[14:10];
+      group_has_diff[3] = |diff[19:15];
+      group_has_diff[4] = |diff[24:20];
+      group_has_diff[5] = |diff[29:25];
+      group_has_diff[6] = |diff[31:30];
+      full_addr_eq = ~(|group_has_diff);
+    end
+  endfunction
+
+  function automatic logic [4:0] inc5(input logic [4:0] value, input logic carry_in);
+    logic carry1;
+    logic carry2;
+    logic carry3;
+    logic carry4;
+    begin
+      carry1 = carry_in & value[0];
+      carry2 = carry1 & value[1];
+      carry3 = carry2 & value[2];
+      carry4 = carry3 & value[3];
+      inc5   = value ^ {carry4, carry3, carry2, carry1, carry_in};
+    end
+  endfunction
+
+  function automatic logic word_addr_inc_eq(input logic [WordAddrWidth-1:0] base,
+                                            input logic [WordAddrWidth-1:0] target);
+    logic [5:0] group_all_ones;
+    logic [5:0] carry_in;
+    logic [5:0] group_has_diff;
+    begin
+      group_all_ones[0] = &base[4:0];
+      group_all_ones[1] = &base[9:5];
+      group_all_ones[2] = &base[14:10];
+      group_all_ones[3] = &base[19:15];
+      group_all_ones[4] = &base[24:20];
+      group_all_ones[5] = &base[29:25];
+
+      carry_in[0] = 1'b1;
+      carry_in[1] = group_all_ones[0];
+      carry_in[2] = group_all_ones[0] & group_all_ones[1];
+      carry_in[3] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2];
+      carry_in[4] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] & group_all_ones[3];
+      carry_in[5] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] &
+                    group_all_ones[3] & group_all_ones[4];
+
+      group_has_diff[0] = |(target[4:0] ^ inc5(base[4:0], carry_in[0]));
+      group_has_diff[1] = |(target[9:5] ^ inc5(base[9:5], carry_in[1]));
+      group_has_diff[2] = |(target[14:10] ^ inc5(base[14:10], carry_in[2]));
+      group_has_diff[3] = |(target[19:15] ^ inc5(base[19:15], carry_in[3]));
+      group_has_diff[4] = |(target[24:20] ^ inc5(base[24:20], carry_in[4]));
+      group_has_diff[5] = |(target[29:25] ^ inc5(base[29:25], carry_in[5]));
+
+      word_addr_inc_eq = ~(|group_has_diff);
     end
   endfunction
 
@@ -511,6 +596,15 @@ module store_queue #(
     logic store_committed;
     logic [3:0] store_byte_mask;
     logic [3:0] load_byte_mask;
+    // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
+    // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
+    // (driven by sister registers in LQ), but the two source FFs let the
+    // placer split the per-entry CARRY8 compare chains across two physical
+    // anchor points.  Without this split, all per-entry compares routed
+    // from a single source FF, contributing ~0.2 ns route hops on the
+    // -0.178 ns post-synth path (LQ → SQ CAM → output FF).
+    logic [XLEN-1:0] sq_check_addr_for_entry;
+    logic [WordAddrWidth-1:0] sq_check_word_for_entry;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       same_word = 1'b0;
@@ -521,6 +615,10 @@ module store_queue #(
       store_committed = 1'b0;
       store_byte_mask = 4'b0000;
       load_byte_mask = fwd_load_byte_mask;
+      // (i < DEPTH/2) is constant per loop iteration after synth unroll —
+      // the select collapses to a wire-pick of one of the two address ports.
+      sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
+      sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
       fwd_entry_age[i] = {1'b0, sq_rob_tag[i]} - {1'b0, i_rob_head_tag};
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
@@ -544,7 +642,7 @@ module store_queue #(
 
         // Check for address overlap
         if (sq_addr_valid[i]) begin
-          same_word = (sq_address[i][XLEN-1:2] == i_sq_check_addr[XLEN-1:2]);
+          same_word = word_addr_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
           store_byte_mask = gen_byte_en(sq_address[i][1:0], riscv_pkg::mem_size_e'(sq_size[i]));
 
           // Non-double accesses only conflict when their byte ranges overlap.
@@ -553,14 +651,12 @@ module store_queue #(
                        (|(store_byte_mask & load_byte_mask)));
 
           // DOUBLE store: also overlaps at word addr+4
-          double_hi_match =
-              (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              ((sq_address[i][XLEN-1:2] + 30'(1)) == i_sq_check_addr[XLEN-1:2]);
+          double_hi_match = (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) &&
+              word_addr_inc_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
 
           // DOUBLE load: check if store is at the +4 word
-          load_double_hi =
-              (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              (sq_address[i][XLEN-1:2] == (i_sq_check_addr[XLEN-1:2] + 30'(1)));
+          load_double_hi = (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
+              word_addr_inc_eq(sq_check_word_for_entry, sq_address[i][XLEN-1:2]);
 
           if (base_match || double_hi_match || load_double_hi) begin
             fwd_conflict_mask[i] = 1'b1;
@@ -568,10 +664,10 @@ module store_queue #(
             // Forwarding: only non-MMIO stores with valid data
             if (sq_data_valid[i] && !sq_is_mmio[i]) begin
               // Case 1: exact address, same size, WORD or DOUBLE
-              if (base_match &&
-                  (sq_address[i] == i_sq_check_addr) &&
-                  (sq_size[i] == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
-                  (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
+              if (base_match && full_addr_eq(
+                      sq_address[i], sq_check_addr_for_entry
+                  ) && (sq_size[i] == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
+                      (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
                 fwd_entry_extract_type[i] = 2'd0;  // EXACT
                 // Case 2: FLW at FSD base address → forward low word
