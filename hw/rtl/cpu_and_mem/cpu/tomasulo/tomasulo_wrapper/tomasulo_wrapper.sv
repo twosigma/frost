@@ -1157,6 +1157,12 @@ module tomasulo_wrapper #(
   // ===========================================================================
   logic sq_check_valid;
   logic [riscv_pkg::XLEN-1:0] sq_check_addr;
+  // Port-split replica of sq_check_addr — same value, sourced from a
+  // dont_touch'd LQ-side replica register so opt_design cannot merge it
+  // back into sq_check_addr.  Used by u_sq for the upper half of its CAM
+  // (entries DEPTH/2..DEPTH-1) to give the placer two anchor points for
+  // the per-entry compare chains.
+  logic [riscv_pkg::XLEN-1:0] sq_check_addr_b;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_check_rob_tag;
   riscv_pkg::mem_size_e sq_check_size;
   logic sq_all_older_addrs_known;
@@ -2089,17 +2095,16 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Slot-2 FP dispatch bypasses the 1-deep dispatch_pending buffer used by
-  // slot-1 (the buffer absorbs FP RS-full transients).  For Session C the
-  // dispatch unit (cpu_ooo) hard-ties slot-2 to invalid, so this bypass path
-  // is dormant.  Session D-onwards will decide whether to grow the pending
-  // buffer to 2-deep or to gate slot-2 FP dispatch on FP RS room directly.
+  // Slot-2 FP dispatch is permanently held off by slot2_fp_compute_serialized
+  // in dispatch.sv — fp_rs_dispatch_fire_2 is always 0.  Hard-zero the entire
+  // slot-2 packet to the FP RS so Vivado does NOT trace the dispatch unit's
+  // slot-2 bypass cone (RAT tag → ROB-done bypass → bypass mux) into the FP
+  // RS rs_src*_value FF D inputs.  This dead-but-wired combinational path
+  // was the 14-15 LUT-level critical path (~76% routing) hitting WNS at the
+  // FP RAT lookup.  Coremark uses no FP, and slot-2 FP dispatch is dormant,
+  // so suppressing the wires is functionally a no-op.
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs_2;
-  always_comb begin
-    fp_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fp_rs_dispatch_2 : '0;
-    fp_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fp_rs_dispatch_to_rs_2.rm);
-    fp_rs_dispatch_to_rs_2.valid = fp_rs_dispatch_valid_2;
-  end
+  assign fp_rs_dispatch_to_rs_2 = '0;
 
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
@@ -2215,13 +2220,12 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Slot-2 FMUL bypass — same caveats as FP_RS slot-2.
+  // Slot-2 FMUL is permanently held off by slot2_fp_compute_serialized.
+  // Hard-zero the slot-2 packet so Vivado cuts the dead combinational cone
+  // from RAT/ROB-bypass into u_fmul_rs/rs_src*_value/D — same rationale as
+  // fp_rs_dispatch_to_rs_2 above.
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs_2;
-  always_comb begin
-    fmul_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fmul_rs_dispatch_2 : '0;
-    fmul_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fmul_rs_dispatch_to_rs_2.rm);
-    fmul_rs_dispatch_to_rs_2.valid = fmul_rs_dispatch_valid_2;
-  end
+  assign fmul_rs_dispatch_to_rs_2 = '0;
 
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth),
@@ -2339,13 +2343,12 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Slot-2 FDIV bypass — same caveats as FP_RS slot-2.
+  // Slot-2 FDIV is permanently held off by slot2_fp_compute_serialized.
+  // Hard-zero the slot-2 packet so Vivado cuts the dead combinational cone
+  // from RAT/ROB-bypass into u_fdiv_rs/rs_src*_value/D — same rationale as
+  // fp_rs_dispatch_to_rs_2 above.
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_to_rs_2;
-  always_comb begin
-    fdiv_rs_dispatch_to_rs_2       = SPLIT_RS_DISPATCH ? i_fdiv_rs_dispatch_2 : '0;
-    fdiv_rs_dispatch_to_rs_2.rm    = resolve_dispatch_rm(fdiv_rs_dispatch_to_rs_2.rm);
-    fdiv_rs_dispatch_to_rs_2.valid = fdiv_rs_dispatch_valid_2;
-  end
+  assign fdiv_rs_dispatch_to_rs_2 = '0;
 
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth),
@@ -2573,6 +2576,7 @@ module tomasulo_wrapper #(
       // SQ disambiguation (internal wiring to store_queue)
       .o_sq_check_valid          (sq_check_valid),
       .o_sq_check_addr           (sq_check_addr),
+      .o_sq_check_addr_b         (sq_check_addr_b),
       .o_sq_check_rob_tag        (sq_check_rob_tag),
       .o_sq_check_size           (sq_check_size),
       .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
@@ -2980,6 +2984,7 @@ module tomasulo_wrapper #(
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),
       .i_sq_check_addr           (sq_check_addr),
+      .i_sq_check_addr_b         (sq_check_addr_b),
       .i_sq_check_rob_tag        (sq_check_rob_tag),
       .i_sq_check_size           (sq_check_size),
       .o_sq_all_older_addrs_known(sq_all_older_addrs_known),

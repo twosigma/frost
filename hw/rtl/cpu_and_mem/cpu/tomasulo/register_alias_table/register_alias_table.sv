@@ -226,7 +226,12 @@ module register_alias_table (
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
   // ===========================================================================
 
-  // INT RAT: separate valid and tag arrays
+  // INT RAT: separate valid and tag arrays.
+  // NOTE: max_fanout intentionally NOT applied here.  RAT tag bits feed the
+  // same-cycle dispatch combinational cone (RAT lookup → ROB-done check →
+  // dispatch bypass mux → RS dispatch packet).  Forcing replication inserts
+  // LUT1 buffers between the FF and consumers, which adds 1 logic level on
+  // this already-long (14 LUT-level) path and worsens WNS measurably.
   logic [           NumIntRegs-1:0] int_rat_valid;
   logic [ReorderBufferTagWidth-1:0] int_rat_tag               [NumIntRegs];
 

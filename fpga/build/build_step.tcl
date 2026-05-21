@@ -399,7 +399,7 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    opt_design -merge_equivalent_drivers -hier_fanout_limit 512
+    # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
 
     write_checkpoint -force $work_directory/post_opt.dcp
