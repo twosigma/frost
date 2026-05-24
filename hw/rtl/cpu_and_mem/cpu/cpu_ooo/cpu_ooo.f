@@ -43,6 +43,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/frontend_validity_tracke
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/misprediction_flush_controller.sv
 
 # OOO CPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv
