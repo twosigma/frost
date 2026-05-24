@@ -2,10 +2,8 @@
 # RV32IMACBFD + Zicsr, with IF/PD/ID front-end and Tomasulo back-end
 
 # Package with all type definitions and pipeline interconnect structures
+# (includes the cpu_ooo-internal recovery capture structs).
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-
-# OOO-core-internal types shared by cpu_ooo and its extracted glue submodules
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo_pkg.sv
 
 # Pipeline Stage 1: Instruction Fetch (IF)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f

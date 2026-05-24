@@ -38,13 +38,13 @@ module branch_resolution #(
     input logic i_early_mispredict_active,
     input logic i_early_backend_recovery_pending,
     input logic i_mispredict_recovery_pending,
-    input cpu_ooo_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
+    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
     input logic i_flush_for_trap,
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0]
-        i_checkpoint_owner_tag[riscv_pkg::NumCheckpoints],
+    input logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0]
+        i_checkpoint_owner_tag,
 
     output riscv_pkg::reorder_buffer_branch_update_t            o_branch_update,
     output logic                                                o_branch_resolved_correct,
@@ -61,12 +61,12 @@ module branch_resolution #(
   logic early_mispredict_active;
   logic early_backend_recovery_pending;
   logic mispredict_recovery_pending;
-  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic flush_for_trap;
   logic flush_for_mret;
   logic fence_i_flush;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag[riscv_pkg::NumCheckpoints];
+  logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   assign rs_issue_int                   = i_rs_issue_int;
   assign head_tag                       = i_head_tag;
   assign early_mispredict_tag           = i_early_mispredict_tag;
@@ -78,7 +78,7 @@ module branch_resolution #(
   assign flush_for_mret                 = i_flush_for_mret;
   assign fence_i_flush                  = i_fence_i_flush;
   assign checkpoint_in_use              = i_checkpoint_in_use;
-  always_comb checkpoint_owner_tag = i_checkpoint_owner_tag;
+  assign checkpoint_owner_tag           = i_checkpoint_owner_tag;
 
   logic suppress_branch_resolution;
   logic branch_issue_is_flushed;

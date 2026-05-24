@@ -721,7 +721,7 @@ module cpu_ooo #(
   logic flush_all;
   logic commit_recovery_flush_after_head;
   (* max_fanout = 32 *) logic mispredict_recovery_pending;
-  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic frontend_state_flush;
 
   // CDB
@@ -797,7 +797,10 @@ module cpu_ooo #(
   // Track checkpoint → ROB tag mapping for flush-time reclaim.
   // When a partial flush fires, checkpoints belonging to younger-than-flush-tag
   // branches must be freed to prevent checkpoint slot exhaustion.
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag[riscv_pkg::NumCheckpoints];
+  // Packed 2D (not unpacked) so it can cross module ports to branch_resolution /
+  // misprediction_flush_controller (yosys read_verilog -sv rejects unpacked-array
+  // ports). Element access is identical and the flattened storage is unchanged.
+  logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
 
   // Pre-merge checkpoint_in_use: matches RAT checkpoint_valid priorities
@@ -1520,7 +1523,7 @@ module cpu_ooo #(
   // (the recovery struct mispredict_commit_q and the flush/checkpoint controls
   // are declared near the top; these few were section-local).
   logic correct_branch_commit_pending;
-  cpu_ooo_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_flush_free_mask;
   logic flush_after_head;
 

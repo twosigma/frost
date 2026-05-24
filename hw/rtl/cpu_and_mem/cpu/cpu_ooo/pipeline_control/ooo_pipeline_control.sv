@@ -46,7 +46,7 @@ module ooo_pipeline_control #(
     input logic i_csr_commit_fire,
     input logic i_correct_branch_commit_pending,
     input logic i_mispredict_recovery_pending,
-    input cpu_ooo_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
+    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit,
     input logic i_trap_taken,
     input logic i_mret_taken,
@@ -84,7 +84,7 @@ module ooo_pipeline_control #(
   logic csr_commit_fire;
   logic correct_branch_commit_pending;
   logic mispredict_recovery_pending;
-  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   riscv_pkg::reorder_buffer_commit_t rob_commit;
   logic trap_taken;
   logic mret_taken;

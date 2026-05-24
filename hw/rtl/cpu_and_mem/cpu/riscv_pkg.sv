@@ -2126,4 +2126,44 @@ package riscv_pkg;
 
 `endif  // SYNTHESIS
 
+  // ---------------------------------------------------------------------------
+  // cpu_ooo-internal recovery capture structs
+  // ---------------------------------------------------------------------------
+  // Shared between cpu_ooo and its branch-recovery / commit / from_ex_comb glue
+  // submodules. Kept here (rather than a separate cpu_ooo_pkg) because yosys's
+  // read_verilog -sv frontend cannot resolve cross-package `riscv_pkg::Member`
+  // references inside another package's typedef.
+
+  // Captured at the cycle a mispredicted branch is detected; drives the
+  // commit-time recovery redirect, BTB update, and RAS restore.
+  typedef struct packed {
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic has_checkpoint;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] redirect_pc;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_call;
+    logic is_return;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } mispredict_commit_capture_t;
+
+  // Captured for a correctly-predicted branch commit; drives the BTB update
+  // (no PC redirect) using registered commit data.
+  typedef struct packed {
+    logic [ReorderBufferTagWidth-1:0] tag;
+    logic [CheckpointIdWidth-1:0] checkpoint_id;
+    logic [XLEN-1:0] pc;
+    logic [XLEN-1:0] branch_target;
+    logic branch_taken;
+    logic is_branch;
+    logic is_jal;
+    logic is_jalr;
+    logic is_compressed;
+  } correct_branch_commit_capture_t;
+
 endpackage : riscv_pkg
