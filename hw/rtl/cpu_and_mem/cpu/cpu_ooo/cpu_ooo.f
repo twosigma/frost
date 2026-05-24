@@ -39,6 +39,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/frontend_validity_tracker.sv
 
 # OOO CPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv
