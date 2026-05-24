@@ -586,8 +586,8 @@ Examples:
     parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
-        default="PerformanceOptimized",
-        help="Synthesis directive (default: PerformanceOptimized)",
+        default="AlternateRoutability",
+        help="Synthesis directive (default: AlternateRoutability)",
     )
     parser.add_argument(
         "--opt-directive",
@@ -605,9 +605,9 @@ Examples:
     parser.add_argument(
         "--route-directive",
         choices=ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES,
-        default="AggressiveExplore",
+        default="NoTimingRelaxation",
         help="Router directive — used for both route (with -tns_cleanup) and "
-        "second_route (without) (default: AggressiveExplore)",
+        "second_route (without) (default: NoTimingRelaxation)",
     )
     parser.add_argument(
         "--physopt-directive",
