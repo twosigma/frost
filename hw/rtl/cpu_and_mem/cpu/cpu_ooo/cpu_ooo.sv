@@ -1135,22 +1135,7 @@ module cpu_ooo #(
   logic flush_all;
   logic commit_recovery_flush_after_head;
   (* max_fanout = 32 *) logic mispredict_recovery_pending;
-  typedef struct packed {
-    logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
-    logic has_checkpoint;
-    logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
-    logic [XLEN-1:0] redirect_pc;
-    logic [XLEN-1:0] pc;
-    logic [XLEN-1:0] branch_target;
-    logic branch_taken;
-    logic is_branch;
-    logic is_call;
-    logic is_return;
-    logic is_jal;
-    logic is_jalr;
-    logic is_compressed;
-  } mispredict_commit_capture_t;
-  mispredict_commit_capture_t mispredict_commit_q;
+  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic frontend_state_flush;
 
   // CDB
@@ -1782,18 +1767,6 @@ module cpu_ooo #(
   logic branch_issue_checkpoint_live;
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
-  typedef struct packed {
-    logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag;
-    logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
-    logic [XLEN-1:0] pc;
-    logic [XLEN-1:0] branch_target;
-    logic branch_taken;
-    logic is_branch;
-    logic is_jal;
-    logic is_jalr;
-    logic is_compressed;
-  } correct_branch_commit_capture_t;
-
   logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
   always_comb begin
     branch_issue_checkpoint_live = 1'b1;
@@ -2275,7 +2248,7 @@ module cpu_ooo #(
   // Breaks the rob_exception → commit_en → BTB write critical path (same pattern
   // as mispredict_commit_q above).
   logic correct_branch_commit_pending;
-  correct_branch_commit_capture_t correct_branch_commit_q;
+  cpu_ooo_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
 
   // Correct branch: predicted correctly AND not early-recovered (which was a misprediction)
   wire commit_is_correct_branch = rob_commit_correct_branch_raw;
