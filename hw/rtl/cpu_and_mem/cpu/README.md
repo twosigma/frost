@@ -36,59 +36,29 @@ dispatch-stall aggregation core.
 | `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, the one-deep blocked-load replay register, and the MMIO load/read sidebands. |
 | `ex_comb_synthesizer` | `recovery/` | Synthesizes the `from_ex_comb_t` the IF stage expects (redirect / BTB update / RAS restore), multiplexing the early-recovery, commit-recovery, and correct-branch-commit sources. |
 | `perf_counter_aggregator` | `perf/` | The ~23 top-level performance counters (accumulate / snapshot / mux to the CSR read port). |
-| `cpu_ooo_pkg` | `cpu_ooo/` | Internal capture structs shared between `cpu_ooo` and the recovery / commit / `from_ex_comb` glue. |
+| `branch_resolution` | `branch_recovery/` | Resolves branch/jump issue from INT_RS (wraps `branch_jump_unit`), with flush/checkpoint suppression of wrong-path issues, and produces the ROB `branch_update`. |
+| `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. |
+| `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/MRET/FENCE.I, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. |
+| `ooo_pipeline_control` | `pipeline_control/` | Front-end stall / serialization aggregation, the CSR / branch in-flight counters, post-flush BRAM holdoff, the registered trap/MRET pulse + target, the prediction-disable gate, and the `pipeline_ctrl_t` assembly. |
+| `cpu_ooo_pkg` | `cpu_ooo/` | Internal capture structs shared between `cpu_ooo` and the branch-recovery / commit / `from_ex_comb` glue. |
 
-## Still inline in cpu_ooo.sv
+## What remains inline in cpu_ooo.sv
 
-These blocks remain at the top level because each one consumes signals from
-both the in-order front-end and the OOO back-end. They are the natural next
-candidates for extraction.
+After the extractions above, `cpu_ooo.sv` is mostly submodule instantiation and
+wiring. What is still inline is the glue that is too small or too instance-local
+to warrant its own module: the ROB-head bypass read for CSR write data, the
+RAT-allocation / checkpoint-save gating around the `tomasulo_wrapper` instance,
+the CSR-file and trap-unit commit glue, the reset-done counter, and the
+front-end debug mirror taps (`dbg_*`, kept here so cocotb's hierarchical probes
+resolve at the `cpu_ooo` level).
 
-### Early misprediction recovery
-
-A two-phase fast path that triggers as soon as `branch_jump_unit`
-resolves a conditional-branch misprediction, instead of waiting for
-the branch to retire. Phase 1 redirects the front-end and atomically
-restores the RAT from the branch's checkpoint; phase 2 (one cycle
-later) drives the partial flush into the OOO back-end. This cuts the
-typical conditional-branch misprediction penalty from ~15 cycles to
-~2.
-
-JALR mispredictions still go through the slow commit-time path
-because the JALR target depends on rs1, which may itself be in
-flight. Older unresolved branches retain their checkpoints across
-the recovery, so they can still trigger their own recovery if they
-later mispredict.
-
-### Commit-time misprediction & flush controller
-
-Detects mispredictions at commit, distinguishes them from branches
-already early-recovered, and drives the global flush / checkpoint /
-BTB-update machinery into the OOO back-end. Also handles the
-exception, MRET, and FENCE.I commit paths, which all funnel into a
-prioritized flush hierarchy (`flush_all` for traps and FENCE.I,
-`flush_en` + tag for partial mispredict flushes).
-
-A historical note in the inline comments: BTB-cold JAL sites used to
-mispredict on every execution, costing thousands of bubbles per
-benchmark run. Pulling JAL into the commit-time BTB-update path
-turns that into a one-time cost per JAL site. Early recovery does
-its BTB update unconditionally for the same reason.
-
-### Pipeline control
-
-The OOO back-end stalls almost exclusively at dispatch, so this
-block aggregates the various stall sources (ROB / RS / LQ / SQ /
-checkpoint exhaustion) and special-cases the few instructions that
-need extra serialization. CSRs block dispatch of any younger
-instruction until they commit; an unresolved older branch blocks
-fetch of a younger unpredicted JALR/return so the indirect target
-prediction stays fresh.
-
-The IF/PD/ID control-flow detection that feeds these serialization/prediction
-hints now lives in `frontend_validity_tracker`, and the ~23 performance
-counters moved to `perf_counter_aggregator`; the dispatch-stall aggregation
-core is what remains here.
+The branch-resolution → early-recovery → commit-time-flush cluster (the fast
+~2-cycle conditional-branch misprediction path and the prioritized
+trap/MRET/FENCE.I/mispredict flush hierarchy) now lives under
+[`cpu_ooo/branch_recovery/`](cpu_ooo/). One historical note worth keeping:
+BTB-cold JAL sites used to mispredict on every execution; pulling JAL into the
+commit-time BTB-update path turns that into a one-time cost per JAL site, and
+early recovery does its BTB update unconditionally for the same reason.
 
 ### 2-wide dispatch integration
 
