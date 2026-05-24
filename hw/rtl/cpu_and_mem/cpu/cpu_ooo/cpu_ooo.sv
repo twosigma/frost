@@ -88,7 +88,6 @@ module cpu_ooo #(
   (* max_fanout = 32 *) logic flush_pipeline;
   logic dispatch_flush;
   logic full_flush_side_effect_kill;
-  (* max_fanout = 32 *) logic frontend_stall;
   logic flush_for_trap;
   logic flush_for_mret;
   riscv_pkg::dispatch_status_t dispatch_status;
@@ -110,7 +109,6 @@ module cpu_ooo #(
   // picks up the wrong CDB value.
   logic csr_in_flight;
   logic csr_wb_pending;
-  logic branch_in_flight;
   localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
   logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
   // Front-end control-flow hints driven by frontend_validity_tracker and
@@ -120,244 +118,65 @@ module cpu_ooo #(
   logic front_end_indirect_control_flow_pending;
   logic pd_unpredicted_control_flow;
   logic id_unpredicted_control_flow;
-  logic front_end_prediction_fence_pending;
   logic prediction_fence_branch;
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
   logic disable_branch_prediction_ooo;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
-  logic branch_alloc_fire;
-  logic branch_commit_fire;
   logic branch_resolved_correct;  // branch resolved correctly at execute time
   logic branch_unresolved_decrement;  // resolve event for unresolved counter
 
-  // CSR results are only architecturally available at commit, so hold the
-  // front-end after dispatching a CSR until it completes.
-  //
-  // Register serializing_alloc_fire to break the UNOPTFLAT combinational
-  // loop: dispatch_fire → serializing_alloc_fire → pipeline_ctrl.stall →
-  // IF stage → dispatch_fire.  The 1-cycle delay is safe because
-  // csr_in_flight (also registered) provides the long-duration stall;
-  // serializing_alloc_fire_q covers the same cycle once csr_in_flight
-  // rises.
-  logic serializing_alloc_fire_comb;
-  assign serializing_alloc_fire_comb = rob_alloc_req.alloc_valid && rob_alloc_req.is_csr;
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
-    else serializing_alloc_fire <= serializing_alloc_fire_comb;
-  end
-  // Keep the in-flight counter aligned to the same predicate that allocates
-  // speculative checkpoints so commit-time free/recovery bookkeeping balances.
-  assign branch_alloc_fire = rob_checkpoint_valid;
-  logic branch_unresolved_alloc_fire;
-  assign branch_unresolved_alloc_fire =
-      rob_alloc_req.alloc_valid && rob_alloc_req.is_branch && !rob_alloc_req.is_jal;
-  assign branch_commit_fire = correct_branch_commit_pending ||
-                             (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
-    else if (csr_commit_fire) csr_in_flight <= 1'b0;
-    else if (rob_alloc_req.alloc_valid && rob_alloc_req.is_csr) csr_in_flight <= 1'b1;
-  end
-
-  // The counter is balanced at commit time (same as original) to keep the
-  // ROB / RS / LQ / SQ resource accounting correct for back-to-back branches
-  // that slip through the 1-cycle stall propagation window.
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_in_flight_count <= '0;
-    end else begin
-      case ({
-        branch_alloc_fire, branch_commit_fire
-      })
-        2'b10: branch_in_flight_count <= branch_in_flight_count + 1'b1;
-        2'b01:
-        if (branch_in_flight_count != '0) branch_in_flight_count <= branch_in_flight_count - 1'b1;
-        default: branch_in_flight_count <= branch_in_flight_count;
-      endcase
-    end
-  end
-
-  assign branch_in_flight = (branch_in_flight_count != '0);
-
-  // Track the number of branches that have dispatched but not yet resolved.
-  // Incremented at dispatch (branch_alloc_fire), decremented at execute
-  // (branch_unresolved_decrement), reset on flush.  This counter is separate
-  // from branch_in_flight_count (which balances at commit) and is used
-  // solely for the prediction-disable and front-end-stall signals.
-  // When all dispatched branches have resolved, prediction can safely
-  // re-enable even though the branches haven't committed yet.
-  logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
-  logic branch_unresolved;
-  logic branch_unresolved_is_one;
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_unresolved_count  <= '0;
-      branch_unresolved_is_one <= 1'b0;
-    end else begin
-      case ({
-        branch_unresolved_alloc_fire, branch_unresolved_decrement
-      })
-        2'b10: begin
-          branch_unresolved_count  <= branch_unresolved_count + 1'b1;
-          branch_unresolved_is_one <= (branch_unresolved_count == '0);
-        end
-        2'b01: begin
-          if (branch_unresolved_count != '0) begin
-            branch_unresolved_count  <= branch_unresolved_count - 1'b1;
-            branch_unresolved_is_one <= (branch_unresolved_count == BranchInFlightCountWidth'(2));
-          end
-        end
-        default: begin
-          branch_unresolved_count  <= branch_unresolved_count;
-          branch_unresolved_is_one <= branch_unresolved_is_one;
-        end
-      endcase
-    end
-  end
-  assign branch_unresolved = (branch_unresolved_count != '0);
-
-  // The existing in-order front-end prediction machinery is not robust to a
-  // younger predicted redirect arriving behind an older unresolved branch/jump.
-  // Suppress new predictions once an unpredicted control-flow op has advanced
-  // into PD/ID. Do not let an IF-stage branch self-lock prediction off
-  // forever: in hot loops that creates a circular dependency where the current
-  // branch is always "unpredicted" only because prediction is already
-  // disabled.
-  assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
-                                              id_unpredicted_control_flow;
-  // The prediction fence (front_end_prediction_fence_pending) is removed from
-  // this gate.  Disabling prediction while an unpredicted branch/JAL sits in
-  // PD/ID serialized the front-end on every cold-BTB branch, wasting ~20% of
-  // cycles.  The OOO checkpoint system already handles recovery from wrong-
-  // path speculation past unpredicted branches; checkpoint_full is < 0.1%.
-  // The separate front_end_cf_serialize_stall still protects against the
-  // dangerous case of speculating past unpredicted indirect jumps (JALR).
-  assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
-                                         csr_in_flight ||
-                                         serializing_alloc_fire;
-
-  // If an older unresolved branch/jump is still in flight, the shared
-  // in-order front-end cannot safely march a younger *unpredicted*
-  // indirect control-flow instruction through IF/PD/ID. Direct branches/JALs
-  // already have enough predictor metadata to keep the front-end moving; the
-  // riskier case is an unresolved older branch plus a younger unpredicted
-  // indirect redirect (JALR/return).
-  logic front_end_cf_serialize_stall_comb;
-  logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
-  assign front_end_cf_serialize_stall_comb =
-      branch_unresolved && front_end_indirect_control_flow_pending;
-
-  // This stall is a front-end serialization fence, not an architectural
-  // requirement. Register it so the branch_in_flight + IF/PD/ID control-flow
-  // decode cone does not sit directly on the main pipeline stall path.
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) front_end_cf_serialize_stall <= 1'b0;
-    else front_end_cf_serialize_stall <= front_end_cf_serialize_stall_comb;
-  end
-
-  // Registered stall for IF stage stall-capture registers.
-  // The IF stage saves combinational outputs (BRAM data, is_compressed, etc.)
-  // on the rising edge of stall and restores them via stall_registered.
+  // Pipeline-control outputs consumed by other submodules (re-declared here as
+  // wires; the producing logic lives in ooo_pipeline_control). The in-flight
+  // counters and prediction-fence intermediates are internal to that module.
+  logic front_end_cf_serialize_stall;
   logic stall_q;
   logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
-  logic replay_after_serialize_stall_next;
-  assign frontend_stall =
-      (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
-       front_end_cf_serialize_stall) && !flush_pipeline;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) stall_q <= 1'b0;
-    else stall_q <= frontend_stall;
-  end
-
-  // Keep dispatch-valid replay gating off the high-fanout IF stall-capture
-  // flop. This has identical cycle behavior to stall_q but a much narrower
-  // fanout cone into dispatch/RS allocation.
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
-    else if (replay_after_serialize_stall_next) id_stall_q <= 1'b0;
-    else id_stall_q <= frontend_stall;
-  end
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) replay_after_dispatch_stall_q <= 1'b0;
-    else replay_after_dispatch_stall_q <= dispatch_stall && !flush_pipeline;
-  end
-
-  // CSR serialization stalls are asserted a cycle after the serializing CSR
-  // allocates, so the ID register already contains the younger blocked
-  // instruction on the first stalled cycle. Give that held image one replay
-  // cycle after the fence drops; otherwise instructions like `mret` following
-  // `csrw mepc, ...` are stranded in ID and overwritten by younger fetch.
-  //
-  // A CSR that writes rd needs one extra bubble for the delayed architectural
-  // writeback. Do not replay in the cycle where csr_wb_pending is high; clear
-  // id_stall_q on that edge so the held ID image is valid one cycle later.
-  // replay_after_serialize_stall_q remains as a debug tap only; dispatch valid
-  // uses !id_stall_q so this CSR-release pulse is not a launch flop on the
-  // dispatch/alloc timing cone.
-  assign replay_after_serialize_stall_next =
-      (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
-    else replay_after_serialize_stall_q <= replay_after_serialize_stall_next;
-  end
-
-  // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale
-  // for one cycle after a flush/redirect. Suppress the valid tracker during
-  // this cycle to prevent stale instructions from being dispatched.
   logic [1:0] post_flush_holdoff_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) post_flush_holdoff_q <= '0;
-    else if (!pipeline_ctrl.stall)
-      if (flush_pipeline)
-        // One cycle is sufficient here: PD/ID are explicitly flushed in the
-        // redirect cycle, and the next cycle is the only stale BRAM return.
-        // Holding longer drops real target instructions after control-flow
-        // redirects, especially at compressed function entries.
-        post_flush_holdoff_q <= 2'd1;
-      else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
-  end
-
-  // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle. PD/ID
-  // still flush immediately, but IF and Tomasulo pay an extra recovery bubble
-  // to break the long ROB/trap -> redirect/backend-flush cones.
   logic trap_taken_reg, mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      trap_taken_reg <= 1'b0;
-      mret_taken_reg <= 1'b0;
-    end else begin
-      trap_taken_reg <= trap_taken;
-      mret_taken_reg <= mret_taken;
-    end
-  end
 
-  always_ff @(posedge i_clk) begin
-    if (trap_taken || mret_taken) trap_target_reg <= trap_target;
-  end
-
-  // Front-end stall: dispatch back-pressure or CSR serialization
-  // Front-end flush: misprediction or trap at commit
-  always_comb begin
-    pipeline_ctrl = '0;
-    pipeline_ctrl.reset = i_rst;
-    pipeline_ctrl.stall = frontend_stall;
-    pipeline_ctrl.stall_registered = stall_q;
-    // Only true execution/backpressure stalls belong in stall_for_trap_check.
-    // Front-end CSR serialization fences must not suppress IF-stage
-    // control-flow cleanup on redirects, or stale C-extension state can
-    // survive a branch/return flush.
-    pipeline_ctrl.stall_for_trap_check = dispatch_stall;
-    pipeline_ctrl.flush = flush_pipeline;
-    pipeline_ctrl.trap_taken_registered = trap_taken_reg;
-    pipeline_ctrl.mret_taken_registered = mret_taken_reg;
-  end
+  ooo_pipeline_control #(
+      .XLEN(XLEN)
+  ) ooo_pipeline_control_inst (
+      .i_clk,
+      .i_rst,
+      .i_rob_alloc_req(rob_alloc_req),
+      .i_rob_checkpoint_valid(rob_checkpoint_valid),
+      .i_csr_commit_fire(csr_commit_fire),
+      .i_correct_branch_commit_pending(correct_branch_commit_pending),
+      .i_mispredict_recovery_pending(mispredict_recovery_pending),
+      .i_mispredict_commit_q(mispredict_commit_q),
+      .i_rob_commit(rob_commit),
+      .i_trap_taken(trap_taken),
+      .i_mret_taken(mret_taken),
+      .i_trap_target(trap_target),
+      .i_dispatch_stall(dispatch_stall),
+      .i_csr_wb_pending(csr_wb_pending),
+      .i_branch_unresolved_decrement(branch_unresolved_decrement),
+      .i_front_end_indirect_control_flow_pending(front_end_indirect_control_flow_pending),
+      .i_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
+      .i_id_unpredicted_control_flow(id_unpredicted_control_flow),
+      .i_disable_branch_prediction(i_disable_branch_prediction),
+      .i_flush_pipeline(flush_pipeline),
+      .o_pipeline_ctrl(pipeline_ctrl),
+      .o_serializing_alloc_fire(serializing_alloc_fire),
+      .o_csr_in_flight(csr_in_flight),
+      .o_branch_in_flight_count(branch_in_flight_count),
+      .o_disable_branch_prediction_ooo(disable_branch_prediction_ooo),
+      .o_front_end_cf_serialize_stall(front_end_cf_serialize_stall),
+      .o_stall_q(stall_q),
+      .o_id_stall_q(id_stall_q),
+      .o_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
+      .o_replay_after_serialize_stall_q(replay_after_serialize_stall_q),
+      .o_post_flush_holdoff_q(post_flush_holdoff_q),
+      .o_trap_taken_reg(trap_taken_reg),
+      .o_mret_taken_reg(mret_taken_reg),
+      .o_trap_target_reg(trap_target_reg)
+  );
 
   // ===========================================================================
   // Inter-stage signals
