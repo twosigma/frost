@@ -31,5 +31,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 # Trap unit (exception/interrupt handling)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 
+# OOO core glue submodules (extracted from cpu_ooo top-level)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
+
 # OOO CPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv
