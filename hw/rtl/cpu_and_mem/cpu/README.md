@@ -40,7 +40,12 @@ dispatch-stall aggregation core.
 | `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/MRET/FENCE.I, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. |
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stall / serialization aggregation, the CSR / branch in-flight counters, post-flush BRAM holdoff, the registered trap/MRET pulse + target, the prediction-disable gate, and the `pipeline_ctrl_t` assembly. |
-| `cpu_ooo_pkg` | `cpu_ooo/` | Internal capture structs shared between `cpu_ooo` and the branch-recovery / commit / `from_ex_comb` glue. |
+
+The branch-recovery / commit / `from_ex_comb` submodules share two capture
+structs (`mispredict_commit_capture_t`, `correct_branch_commit_capture_t`) that
+live in `riscv_pkg` (yosys's `read_verilog -sv` cannot resolve cross-package
+type references inside another package's typedef, so a separate `cpu_ooo_pkg`
+was not viable).
 
 ## What remains inline in cpu_ooo.sv
 
@@ -74,7 +79,7 @@ instruction size.
 
 | Path                                | Status        | What it is |
 |-------------------------------------|---------------|------------|
-| [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration), `cpu_ooo_pkg`, and the OOO-core glue submodules extracted from the top level (see the table above). |
+| [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
 | [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. See its README for everything inside. |
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
