@@ -310,17 +310,17 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 106,780 | 1,029,600 | 10.4% |
-|   LUT as Logic | 97,258 | 1,029,600 | 9.4% |
-|   LUT as Distributed RAM | 9,004 | — | — |
-|   LUT as Shift Register | 518 | — | — |
-| CLB Registers | 63,195 | 2,059,200 | 3.1% |
+| CLB LUTs | 109,049 | 1,029,600 | 10.6% |
+|   LUT as Logic | 99,558 | 1,029,600 | 9.7% |
+|   LUT as Distributed RAM | 8,980 | — | — |
+|   LUT as Shift Register | 511 | — | — |
+| CLB Registers | 63,636 | 2,059,200 | 3.1% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,420 | 128,700 | 3.4% |
-| F7 Muxes | 2,963 | 514,800 | 0.6% |
-| F8 Muxes | 649 | 257,400 | 0.2% |
+| CARRY8 | 4,362 | 128,700 | 3.4% |
+| F7 Muxes | 34 | 514,800 | 0.0% |
+| F8 Muxes | 0 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
