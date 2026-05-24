@@ -412,11 +412,13 @@ module cpu_ooo #(
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
 
-  // Slot-2 inter-stage signals (2-wide dispatch).  Slot-2 IF widening lands
-  // in Session F; until then from_if_to_pd_2 is hard-tied to a NOP-equivalent
-  // (sel_nop=1, all other fields '0) so PD/ID propagate NOPs and dispatch
-  // sees i_valid_2='0.  The wiring is in place so Session F only has to
-  // light up IF's slot-2 output.
+  // Slot-2 inter-stage signals (2-wide dispatch).  IF extracts a real slot-2
+  // instruction whenever the bundle allows it; from_if_to_pd_2 carries it
+  // (sel_nop=1 only when there is no valid second instruction this cycle) and
+  // PD/ID propagate it to dispatch, which fires slot-2 subject to the bundle
+  // restrictions (slot-1 taken control flow ends the bundle, slot-2 cannot be
+  // an FP-compute op, and slot-2 is blocked when a renamed source is already
+  // done since slot-2 has no done-repair path).
   riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
   riscv_pkg::from_pd_to_id_t from_pd_to_id_2;
   riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
@@ -999,9 +1001,9 @@ module cpu_ooo #(
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
       .o_from_id_to_ex(from_id_to_ex),
-      // Slot-2 (2-wide dispatch).  i_from_pd_to_id_2 carries NOPs through
-      // Session E, so o_from_id_to_ex_2 settles to NOP register state and
-      // dispatch's i_valid_2='0 keeps the slot-2 cone collapsed.
+      // Slot-2 (2-wide dispatch).  i_from_pd_to_id_2 carries the real second
+      // instruction of the bundle; o_from_id_to_ex_2 is its decoded form, and
+      // dispatch raises i_valid_2 when slot-2 is present and allowed to fire.
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
@@ -1070,10 +1072,9 @@ module cpu_ooo #(
 
   // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
   // also be valid this cycle — bundle constraint, decision #2 monolithic
-  // stall).  In Session E the IF→PD→ID slot-2 path carries NOPs (IF slot-2
-  // hard-tied invalid), so id_valid_2 stays '0 and the dispatch slot-2 cone
-  // collapses.  Session F lights up real slot-2 instructions; the NOP check
-  // is what gates id_valid_2 to '1 when that happens.
+  // stall).  The is_not_nop check gates id_valid_2 to '1 whenever IF supplied
+  // a real second instruction; it stays '0 only when the bundle has no valid
+  // slot-2 this cycle (the slot-2 path then carries a NOP).
   logic id_valid_2;
   assign id_valid_2 = id_valid_base && from_id_to_ex_2.is_not_nop;
 
@@ -1287,9 +1288,9 @@ module cpu_ooo #(
   riscv_pkg::rat_lookup_t int_src1_lookup, int_src2_lookup;
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
-  // RAT lookup - slot 2 (2-wide dispatch).  Slot-2 source addresses are
-  // hard-tied off until ID widening lands in Session E; the lookups are
-  // wired but their outputs are unused this session.
+  // RAT lookup - slot 2 (2-wide dispatch).  The integer lookups feed slot-2
+  // rename in dispatch.  The FP lookups are wired but unused (slot-2 cannot be
+  // an FP-compute op), hence the UNUSEDSIGNAL waiver below.
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr_2, fp_src2_addr_2, fp_src3_addr_2;
   /* verilator lint_off UNUSEDSIGNAL */
@@ -1304,8 +1305,8 @@ module cpu_ooo #(
   logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
 
-  // RAT rename - slot 2 (2-wide dispatch).  Dispatch holds these inactive
-  // until Sessions D-F enable slot-2 dispatch.
+  // RAT rename - slot 2 (2-wide dispatch).  Dispatch drives these when slot-2
+  // fires with a register destination.
   logic                                        rat_alloc_valid_2_raw;
   logic                                        rat_alloc_valid_2;
   logic                                        rat_alloc_dest_rf_2;
@@ -1342,10 +1343,9 @@ module cpu_ooo #(
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch;
   riscv_pkg::rs_dispatch_t split_rs_dispatch_dbg;
 
-  // Slot-2 RS dispatch packets (2-wide dispatch, Session D back-end side).
-  // Driven by dispatch and consumed by the wrapper.  Slot-2 dispatch valids
-  // are held low until cpu_ooo lights up the IF-side slot-2 path in
-  // Session F (i_valid_2 stays 0 in this session).
+  // Slot-2 RS dispatch packets (2-wide dispatch, back-end side).
+  // Driven by dispatch and consumed by the wrapper.  A packet's valid asserts
+  // when slot-2 fires and routes to that RS family.
   riscv_pkg::rs_dispatch_t int_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t mul_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
@@ -1594,9 +1594,9 @@ module cpu_ooo #(
       // ROB allocation
       .i_alloc_req(rob_alloc_req),
       .o_alloc_resp(rob_alloc_resp),
-      // Slot-2 alloc plumbed end-to-end (Session D back-end side).  The
-      // dispatch unit holds alloc_valid_2='0 until i_valid_2 from ID lights
-      // up in Session E, so the ROB sees inert traffic in this session.
+      // Slot-2 alloc plumbed end-to-end (back-end side).  The dispatch unit
+      // raises alloc_valid_2 when slot-2 fires, allocating a second ROB entry
+      // (tail+1) in the same cycle as slot-1.
       .i_alloc_req_2(rob_alloc_req_2),
       .o_alloc_resp_2(rob_alloc_resp_2),
 
@@ -1734,7 +1734,7 @@ module cpu_ooo #(
       .i_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .i_rat_alloc_rob_tag(rat_alloc_rob_tag),
 
-      // RAT rename - slot 2 (2-wide dispatch; held inactive by dispatch)
+      // RAT rename - slot 2 (2-wide dispatch; dispatch raises valid_2 on fire)
       .i_rat_alloc_valid_2(rat_alloc_valid_2),
       .i_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
       .i_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
@@ -1752,7 +1752,6 @@ module cpu_ooo #(
       .i_checkpoint_restore(checkpoint_restore),
       .i_checkpoint_restore_id(checkpoint_restore_id),
       .i_checkpoint_restore_reclaim_all(checkpoint_restore_reclaim_all),
-      .i_checkpoint_reclaim_mask(checkpoint_reclaim_mask),
       .i_checkpoint_flush_free_mask(checkpoint_flush_free_mask),
       .o_ras_tos(restored_ras_tos),
       .o_ras_valid_count(restored_ras_valid_count),
@@ -1773,9 +1772,8 @@ module cpu_ooo #(
       .i_fp_rs_dispatch(fp_rs_dispatch),
       .i_fmul_rs_dispatch(fmul_rs_dispatch),
       .i_fdiv_rs_dispatch(fdiv_rs_dispatch),
-      // Slot-2 RS dispatch — driven from dispatch unit (Session D).  Slot-2
-      // dispatch valids stay low until ID widening in Session E asserts
-      // i_valid_2; the wrapper just forwards what dispatch produces.
+      // Slot-2 RS dispatch — driven from dispatch unit.  The wrapper just
+      // forwards what dispatch produces; valids assert when slot-2 fires.
       .i_int_rs_dispatch_2(int_rs_dispatch_2),
       .i_mul_rs_dispatch_2(mul_rs_dispatch_2),
       .i_mem_rs_dispatch_2(mem_rs_dispatch_2),
@@ -1889,10 +1887,9 @@ module cpu_ooo #(
       .i_from_id_to_ex(from_id_to_ex),
       .i_valid(id_valid),
 
-      // Slot-2 instruction (2-wide dispatch).  ID/PD widening lands in
-      // Session E; until IF widening lands in Session F the slot-2
-      // path carries NOPs (IF slot-2 hard-tied invalid), so id_valid_2
-      // stays '0 and the slot-2 dispatch cone collapses.
+      // Slot-2 instruction (2-wide dispatch).  Carries the real second
+      // instruction of the bundle; id_valid_2 is '1 whenever IF supplied one
+      // and '0 only when the bundle has no valid slot-2 this cycle.
       .i_from_id_to_ex_2(from_id_to_ex_2),
       .i_valid_2(id_valid_2),
 
@@ -1950,7 +1947,7 @@ module cpu_ooo #(
       .o_rat_alloc_dest_reg(rat_alloc_dest_reg),
       .o_rat_alloc_rob_tag(rat_alloc_rob_tag),
 
-      // RAT rename - slot 2 (held inactive by dispatch until i_valid_2=1)
+      // RAT rename - slot 2 (dispatch asserts valid_2 when slot-2 fires)
       .o_rat_alloc_valid_2(rat_alloc_valid_2_raw),
       .o_rat_alloc_dest_rf_2(rat_alloc_dest_rf_2),
       .o_rat_alloc_dest_reg_2(rat_alloc_dest_reg_2),
@@ -1979,8 +1976,8 @@ module cpu_ooo #(
       .o_fmul_rs_dispatch(fmul_rs_dispatch),
       .o_fdiv_rs_dispatch(fdiv_rs_dispatch),
 
-      // Slot-2 RS dispatch (2-wide dispatch).  All packets are inert
-      // (.valid=0) until i_valid_2 lights up in Session E.
+      // Slot-2 RS dispatch (2-wide dispatch).  At most one packet has .valid=1
+      // per cycle — the RS family slot-2 routes to when it fires.
       .o_int_rs_dispatch_2 (int_rs_dispatch_2),
       .o_mul_rs_dispatch_2 (mul_rs_dispatch_2),
       .o_mem_rs_dispatch_2 (mem_rs_dispatch_2),
@@ -2675,10 +2672,6 @@ module cpu_ooo #(
     end
   end
 
-  // Checkpoint reclaim mask for RAT (unused — reclaim_all is 0)
-  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_reclaim_mask;
-  assign checkpoint_reclaim_mask = '0;
-
   // Bulk flush free mask: register on flush_en, apply one cycle later.
   // When flush_after_head, free ALL in-use checkpoints (the age comparison
   // wraps and misses everything).  Otherwise, free only younger checkpoints.
@@ -2802,7 +2795,7 @@ module cpu_ooo #(
   // Memory Interface
   // ===========================================================================
   // Route LQ/SQ memory requests to the external data memory port.
-  // Priority: SQ writes > queued LQ reads > AMO writes
+  // Priority: SQ writes > AMO writes > queued LQ reads
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
   // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →

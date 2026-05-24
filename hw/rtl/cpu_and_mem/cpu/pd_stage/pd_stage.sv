@@ -40,10 +40,10 @@ module pd_stage #(
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
-    // Slot-2 instruction (2-wide dispatch).  IF stage's slot-2 output is
-    // hard-tied to invalid (sel_nop=1) until Session F lights up the IF
-    // widening, so slot-2 carries NOPs through PD/ID and dispatch keeps
-    // i_valid_2='0.  The backward-branch heuristic stays slot-1 only.
+    // Slot-2 instruction (2-wide dispatch).  IF supplies a real second
+    // instruction when the bundle has one (sel_nop=1 only when it does not),
+    // and PD decompresses/extracts it the same as slot-1.  The backward-branch
+    // heuristic stays slot-1 only.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // Backward-branch-taken static heuristic: PD redirect to IF
@@ -124,8 +124,8 @@ module pd_stage #(
   // ===========================================================================
   // Mirror of the slot-1 logic above, driven from i_from_if_to_pd_2.  Slot-2
   // bypasses the backward-branch heuristic (slot-1 only by design); when slot-1
-  // is a backward branch, the IF widening (Session F) is responsible for
-  // forcing slot-2 invalid that cycle.
+  // is a backward branch, IF forces slot-2 invalid that cycle (slot-1 taken
+  // control flow ends the bundle).
 
   logic [31:0] decompressed_instr_2;
   logic        decomp_is_compressed_2;

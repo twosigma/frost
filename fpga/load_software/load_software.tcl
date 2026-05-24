@@ -25,9 +25,10 @@ set software_application_name [lindex $argv 1]
 set hw_target [lindex $argv 2]
 
 # Valid software applications (alphabetically sorted)
-set valid_apps [list c_ext_test call_stress coremark csr_test freertos_demo \
-                     hello_world isa_test memory_test packet_parser \
-                     print_clock_speed spanning_test strings_test uart_echo]
+set valid_apps [list branch_pred_test c_ext_test call_stress coremark csr_test \
+                     freertos_demo hello_world isa_test memory_test packet_parser \
+                     print_clock_speed ras_stress_test ras_test spanning_test \
+                     strings_test uart_echo]
 
 if { [lsearch -exact $valid_apps $software_application_name] == -1 } {
     puts "Error: Invalid software app '$software_application_name'"

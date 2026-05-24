@@ -20,10 +20,10 @@
  * Tracks source operand readiness and issues instructions to functional
  * units when all operands are available. The same module is instantiated
  * for each RS type with different depths:
- *   INT_RS=8, MUL_RS=4, MEM_RS=8, FP_RS=6, FMUL_RS=4, FDIV_RS=2
+ *   INT_RS=16, MUL_RS=4, MEM_RS=8, FP_RS=6, FMUL_RS=4, FDIV_RS=2
  *
  * Features:
- *   - Parameterized depth (2-8 entries, all FF-based)
+ *   - Parameterized depth (2-16 entries)
  *   - Optional third source operand (enabled only for FMA instructions)
  *   - CDB and done-repair snoop for operand wakeup with same-cycle dispatch bypass
  *   - Priority-encoder issue selection (lowest index first)
@@ -35,9 +35,10 @@
  *   src_value, use_imm, rob_tag) remain in FFs because they need
  *   parallel CDB tag comparison, broadcast-write, and flush scan.
  *   Payload fields (op, imm, rm, branch/prediction/mem/csr/pc) live
- *   in a single-port distributed RAM (sdp_dist_ram): written once at
- *   dispatch, read once at issue.  Valid bits in FFs gate all reads,
- *   so stale LUTRAM data behind flushed entries is harmless.
+ *   in distributed RAM (mwp_dist_ram, 2 write ports for slot-1/slot-2
+ *   dispatch): written at dispatch, read once at issue.  Valid bits in
+ *   FFs gate all reads, so stale LUTRAM data behind flushed entries is
+ *   harmless.
  */
 
 module reservation_station #(
@@ -47,7 +48,6 @@ module reservation_station #(
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit SPECULATIVE_DATA_WRITES = 1'b0,
-    parameter bit BYPASS_STAGE2 = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Optional reserve for exported dispatch back-pressure.  A non-zero value
     // lets timing-sensitive RS instances publish conservative registered full
@@ -62,10 +62,9 @@ module reservation_station #(
     // Dispatch Interface (from Dispatch Unit)
     // =========================================================================
     input riscv_pkg::rs_dispatch_t i_dispatch,
-    // Slot-2 dispatch port for 2-wide dispatch (Session C plumbing).  The
-    // dispatch unit routes slot-2 to the correct RS based on its rs_type, so
-    // each RS only sees a slot-2 packet when slot-2 actually targets it.  Held
-    // inactive by the wrapper / cpu_ooo until dispatch widens in Session D.
+    // Slot-2 dispatch port for 2-wide dispatch.  The dispatch unit routes
+    // slot-2 to the correct RS based on its rs_type, so each RS only sees a
+    // slot-2 packet with .valid=1 when slot-2 actually targets it.
     input riscv_pkg::rs_dispatch_t i_dispatch_2,
     // Fast "slot-1 wants this RS" intent.  Driven from the registered rs_type
     // field of the per-RS dispatch packet — does NOT include bundle_fire_ok or
@@ -135,8 +134,8 @@ module reservation_station #(
     output logic o_next_issue_needs_lq,
 
     // =========================================================================
-    // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS with
-    // BYPASS_STAGE2=0, these expose the rob_tag and mem_needs_lq of the
+    // Pre-issue look-ahead (1 cycle before o_issue fires). For MEM_RS,
+    // these expose the rob_tag and mem_needs_lq of the
     // entry being captured into stage2 this cycle, so the LQ can pre-compute
     // the addr_update CAM match and register it before the issue fires.
     // =========================================================================
@@ -398,11 +397,6 @@ module reservation_station #(
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
   logic stage2_accept;  // Stage2 content consumed by FU this cycle
   logic can_issue_to_stage2;  // Stage2 is empty or being consumed — RS may load it
-  riscv_pkg::rs_issue_t bypass_issue;
-  logic bypass_issue_writes_cdb_hint;
-  logic bypass_next_issue_valid;
-  logic bypass_next_issue_is_sc;
-  logic bypass_next_issue_needs_lq;
 
   // ===========================================================================
   // Storage -- FF-based control + LUTRAM-based payload
@@ -474,9 +468,8 @@ module reservation_station #(
 
   // Dispatch condition
   (* max_fanout = 32 *) logic dispatch_fire;
-  // Slot-2 dispatch fire condition.  Hard-tied off until Session D, but the
-  // logic must be correct: slot-2 needs room for itself, considering whether
-  // slot-1 is also consuming a slot this cycle.
+  // Slot-2 dispatch fire condition.  Slot-2 needs room for itself, considering
+  // whether slot-1 is also consuming a slot this cycle.
   (* max_fanout = 32 *) logic dispatch_fire_2;
 
   // ===========================================================================
@@ -540,8 +533,8 @@ module reservation_station #(
   };
 
   // 2-write port: slot-1 dispatch (port 0) + slot-2 dispatch (port 1).
-  // Slot-2 is hard-tied off until dispatch widens (Session D), so port 1 is
-  // dormant during Session C.
+  // Port 1 writes when slot-2 dispatches into this RS in the same cycle as
+  // slot-1.
   mwp_dist_ram #(
       .ADDR_WIDTH     ($clog2(DEPTH)),
       .DATA_WIDTH     (PayloadWidth),
@@ -783,19 +776,16 @@ module reservation_station #(
   end
   assign o_head_query_in_rs = |head_query_match;
   assign o_head_query_rs_ready = |(head_query_match & entry_ready);
-  // BYPASS_STAGE2: stage2_valid is forced to 0, so the match never fires.
-  assign o_head_query_in_stage2 = !BYPASS_STAGE2 && stage2_valid &&
-                                   (stage2_rob_tag == i_head_query_tag);
+  assign o_head_query_in_stage2 = stage2_valid && (stage2_rob_tag == i_head_query_tag);
 
   // --- Stage 2 control ---
   // Flush squash: stage2 holds an instruction younger than the flush boundary.
-  assign stage2_should_flush = !BYPASS_STAGE2 && stage2_valid && (i_flush_all ||
-      (i_flush_en && should_flush_entry(
+  assign stage2_should_flush = stage2_valid && (i_flush_all || (i_flush_en && should_flush_entry(
       stage2_rob_tag, i_flush_tag, i_rob_head_tag
   )));
 
   // Stage2 content consumed by downstream FU this cycle (one-shot pulse).
-  assign stage2_accept = !BYPASS_STAGE2 && stage2_valid && i_fu_ready && !stage2_should_flush;
+  assign stage2_accept = stage2_valid && i_fu_ready && !stage2_should_flush;
 
   // RS may load stage2 when it is empty or being consumed this cycle.
   assign can_issue_to_stage2 = !stage2_valid || stage2_accept;
@@ -809,9 +799,7 @@ module reservation_station #(
   // ready scan above still sees pre-flush state combinationally in the same
   // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
   // misprediction/trap flush cycle.
-  assign issue_fire = any_ready && i_fu_ready &&
-                      (BYPASS_STAGE2 || can_issue_to_stage2) &&
-                      !i_flush_all && !i_flush_en;
+  assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
 
   function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [2:0] sel);
     begin
@@ -827,63 +815,11 @@ module reservation_station #(
     end
   endfunction
 
-  always_comb begin
-    bypass_issue                 = '0;
-    bypass_issue_writes_cdb_hint = 1'b0;
-    if (BYPASS_STAGE2) begin
-      bypass_issue.valid = any_ready && i_fu_ready && !i_flush_all && !i_flush_en;
-      bypass_issue.rob_tag = rs_rob_tag[issue_idx];
-      bypass_issue.op = riscv_pkg::instr_op_e'(pl_op_bits);
-      bypass_issue.src1_value = src1_cdb_bypass[issue_idx] ? i_cdb.value :
-                                ((src1_repair_sel[issue_idx] != 3'd0) ?
-                                 repair_value_for_sel(src1_repair_sel[issue_idx]) :
-          rs_src1_value[issue_idx]);
-      bypass_issue.src2_value = src2_cdb_bypass[issue_idx] ? i_cdb.value :
-                                ((src2_repair_sel[issue_idx] != 3'd0) ?
-                                 repair_value_for_sel(src2_repair_sel[issue_idx]) :
-          rs_src2_value[issue_idx]);
-      if (HAS_SRC3) begin
-        bypass_issue.src3_value = src3_cdb_bypass[issue_idx] ? i_cdb.value :
-                                  ((src3_repair_sel[issue_idx] != 3'd0) ?
-                                   repair_value_for_sel(src3_repair_sel[issue_idx]) :
-            rs_src3_value[issue_idx]);
-      end
-      bypass_issue.imm = pl_imm;
-      bypass_issue.use_imm = rs_use_imm[issue_idx];
-      bypass_issue.rm = pl_rm;
-      bypass_issue.branch_target = pl_branch_target;
-      bypass_issue.predicted_taken = pl_predicted_taken;
-      bypass_issue.predicted_target = pl_predicted_target;
-      bypass_issue.is_fp_mem = pl_is_fp_mem;
-      bypass_issue.mem_needs_lq = pl_mem_needs_lq;
-      bypass_issue.mem_needs_sq = pl_mem_needs_sq;
-      bypass_issue.mem_size = riscv_pkg::mem_size_e'(pl_mem_size_bits);
-      bypass_issue.mem_signed = pl_mem_signed;
-      bypass_issue.csr_addr = pl_csr_addr;
-      bypass_issue.csr_imm = pl_csr_imm;
-      bypass_issue.pc = pl_pc;
-      bypass_issue.link_addr = pl_link_addr;
-      bypass_issue.has_checkpoint = pl_has_checkpoint;
-      bypass_issue.checkpoint_id = pl_checkpoint_id;
-      bypass_issue.is_call = pl_is_call;
-      bypass_issue.is_return = pl_is_return;
-      bypass_issue_writes_cdb_hint  = TRACK_INT_WRITEBACK_HINT ?
-                                      rs_writes_cdb_hint[issue_idx] : 1'b0;
-    end
-  end
-
   // --- Current issue payload peek ---
-  // The generic RS reads this from stage2. MEM_RS can opt into the direct
-  // issue path and peek the ready entry combinationally instead.
-  assign bypass_next_issue_valid = BYPASS_STAGE2 && any_ready;
-  assign bypass_next_issue_is_sc = bypass_next_issue_valid &&
-                                   (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
-  assign bypass_next_issue_needs_lq = bypass_next_issue_valid && pl_mem_needs_lq;
-  assign o_next_issue_valid = BYPASS_STAGE2 ? bypass_next_issue_valid : stage2_valid;
-  assign o_next_issue_is_sc = BYPASS_STAGE2 ? bypass_next_issue_is_sc
-                                            : (stage2_valid && stage2_is_sc);
-  assign o_next_issue_needs_lq = BYPASS_STAGE2 ? bypass_next_issue_needs_lq
-                                               : (stage2_valid && stage2_mem_needs_lq);
+  // The generic RS reads this from stage2.
+  assign o_next_issue_valid = stage2_valid;
+  assign o_next_issue_is_sc = stage2_valid && stage2_is_sc;
+  assign o_next_issue_needs_lq = stage2_valid && stage2_mem_needs_lq;
 
   // Pre-issue look-ahead: expose the selected entry's rob_tag and
   // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
@@ -908,43 +844,36 @@ module reservation_station #(
   //   - CDB results for flushed tags are discarded by the ROB/RS flush logic.
   // The internal stage2_accept signal still checks stage2_should_flush so
   // that the stage2 pipeline register is correctly cleared on the next edge.
-  assign o_issue.valid = BYPASS_STAGE2 ? bypass_issue.valid : (stage2_valid && i_fu_ready);
-  assign o_issue.rob_tag = BYPASS_STAGE2 ? bypass_issue.rob_tag : stage2_rob_tag;
-  assign o_issue.op = BYPASS_STAGE2 ? bypass_issue.op : stage2_op;
+  assign o_issue.valid = stage2_valid && i_fu_ready;
+  assign o_issue.rob_tag = stage2_rob_tag;
+  assign o_issue.op = stage2_op;
   // For CDB-bypassed sources, substitute the CDB value captured at issue
   // time.  All inputs are registered, so this MUX is off the critical path.
-  assign o_issue.src1_value = BYPASS_STAGE2 ? bypass_issue.src1_value
-                              : (stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value);
-  assign o_issue.src2_value = BYPASS_STAGE2 ? bypass_issue.src2_value
-                              : (stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value);
+  assign o_issue.src1_value = stage2_src1_bypassed ? stage2_cdb_value : stage2_src1_value;
+  assign o_issue.src2_value = stage2_src2_bypassed ? stage2_cdb_value : stage2_src2_value;
   assign o_issue.src3_value = HAS_SRC3 ?
-                              (BYPASS_STAGE2 ? bypass_issue.src3_value
-                              : (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value)) : '0;
-  assign o_issue.imm = BYPASS_STAGE2 ? bypass_issue.imm : stage2_imm;
-  assign o_issue.use_imm = BYPASS_STAGE2 ? bypass_issue.use_imm : stage2_use_imm;
-  assign o_issue.rm = BYPASS_STAGE2 ? bypass_issue.rm : stage2_rm;
-  assign o_issue.branch_target = BYPASS_STAGE2 ? bypass_issue.branch_target : stage2_branch_target;
-  assign o_issue.predicted_taken = BYPASS_STAGE2 ? bypass_issue.predicted_taken :
-                                                   stage2_predicted_taken;
-  assign o_issue.predicted_target = BYPASS_STAGE2 ? bypass_issue.predicted_target :
-                                                    stage2_predicted_target;
-  assign o_issue.is_fp_mem = BYPASS_STAGE2 ? bypass_issue.is_fp_mem : stage2_is_fp_mem;
-  assign o_issue.mem_needs_lq = BYPASS_STAGE2 ? bypass_issue.mem_needs_lq : stage2_mem_needs_lq;
-  assign o_issue.mem_needs_sq = BYPASS_STAGE2 ? bypass_issue.mem_needs_sq : stage2_mem_needs_sq;
-  assign o_issue.mem_size = BYPASS_STAGE2 ? bypass_issue.mem_size : stage2_mem_size;
-  assign o_issue.mem_signed = BYPASS_STAGE2 ? bypass_issue.mem_signed : stage2_mem_signed;
-  assign o_issue.csr_addr = BYPASS_STAGE2 ? bypass_issue.csr_addr : stage2_csr_addr;
-  assign o_issue.csr_imm = BYPASS_STAGE2 ? bypass_issue.csr_imm : stage2_csr_imm;
-  assign o_issue.pc = BYPASS_STAGE2 ? bypass_issue.pc : stage2_pc;
-  assign o_issue.link_addr = BYPASS_STAGE2 ? bypass_issue.link_addr : stage2_link_addr;
-  assign o_issue.has_checkpoint = BYPASS_STAGE2 ? bypass_issue.has_checkpoint :
-                                                  stage2_has_checkpoint;
-  assign o_issue.checkpoint_id = BYPASS_STAGE2 ? bypass_issue.checkpoint_id : stage2_checkpoint_id;
-  assign o_issue.is_call = BYPASS_STAGE2 ? bypass_issue.is_call : stage2_is_call;
-  assign o_issue.is_return = BYPASS_STAGE2 ? bypass_issue.is_return : stage2_is_return;
+                              (stage2_src3_bypassed ? stage2_cdb_value : stage2_src3_value) : '0;
+  assign o_issue.imm = stage2_imm;
+  assign o_issue.use_imm = stage2_use_imm;
+  assign o_issue.rm = stage2_rm;
+  assign o_issue.branch_target = stage2_branch_target;
+  assign o_issue.predicted_taken = stage2_predicted_taken;
+  assign o_issue.predicted_target = stage2_predicted_target;
+  assign o_issue.is_fp_mem = stage2_is_fp_mem;
+  assign o_issue.mem_needs_lq = stage2_mem_needs_lq;
+  assign o_issue.mem_needs_sq = stage2_mem_needs_sq;
+  assign o_issue.mem_size = stage2_mem_size;
+  assign o_issue.mem_signed = stage2_mem_signed;
+  assign o_issue.csr_addr = stage2_csr_addr;
+  assign o_issue.csr_imm = stage2_csr_imm;
+  assign o_issue.pc = stage2_pc;
+  assign o_issue.link_addr = stage2_link_addr;
+  assign o_issue.has_checkpoint = stage2_has_checkpoint;
+  assign o_issue.checkpoint_id = stage2_checkpoint_id;
+  assign o_issue.is_call = stage2_is_call;
+  assign o_issue.is_return = stage2_is_return;
 
-  assign o_issue_writes_cdb_hint = BYPASS_STAGE2 ? bypass_issue_writes_cdb_hint
-                                                 : stage2_writes_cdb_hint;
+  assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
 
   // --- Status outputs ---
   assign o_full = dispatch_full_q;
@@ -1017,8 +946,8 @@ module reservation_station #(
         end
 
         // Slot-2 dispatch write (independent index from slot-1, so the
-        // non-blocking writes never collide on a bit).  Held inactive until
-        // dispatch widens in Session D.
+        // non-blocking writes never collide on a bit).  Fires when slot-2
+        // dispatches into this RS.
         if (dispatch_fire_2) begin
           rs_valid[alloc_idx_2] <= 1'b1;
           if (TRACK_INT_WRITEBACK_HINT)
@@ -1105,9 +1034,9 @@ module reservation_station #(
       end
     end
 
-    // Slot-2 dispatch: capture tags and values at alloc_idx_2.  Held inactive
-    // until dispatch widens in Session D; intra-bundle RAW (slot-2 src reads
-    // slot-1 dest) is resolved upstream in dispatch.sv before reaching the RS.
+    // Slot-2 dispatch: capture tags and values at alloc_idx_2.  Intra-bundle
+    // RAW (slot-2 src reads slot-1 dest) is resolved upstream in dispatch.sv
+    // before reaching the RS.
     if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2]  <= dispatch_rob_tag_2;
 
@@ -1170,8 +1099,6 @@ module reservation_station #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      stage2_valid <= 1'b0;
-    end else if (BYPASS_STAGE2) begin
       stage2_valid <= 1'b0;
     end else if (stage2_should_flush) begin
       // Flush squash: clear stage2. No refill is possible here because
@@ -1356,7 +1283,7 @@ module reservation_station #(
 
   // Stage2 output valid implies stage2 is occupied
   always_comb begin
-    if (i_rst_n && o_issue.valid && !BYPASS_STAGE2) begin
+    if (i_rst_n && o_issue.valid) begin
       p_stage2_output_coherent : assert (stage2_valid);
     end
   end
@@ -1460,14 +1387,13 @@ module reservation_station #(
       cover_dispatch_2_only : cover (dispatch_fire_2 && !dispatch_fire);
 
       // Stage2 back-to-back: consumed and refilled in the same cycle
-      if (!BYPASS_STAGE2) cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
+      cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
 
       // Stage2 flush squash
-      if (!BYPASS_STAGE2) cover_stage2_flush : cover (stage2_should_flush);
+      cover_stage2_flush : cover (stage2_should_flush);
 
       // Stage2 blocked (FU not ready)
-      if (!BYPASS_STAGE2)
-        cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
+      cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
     end
   end
 

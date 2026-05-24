@@ -61,10 +61,10 @@ module dispatch (
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex,
     input logic                      i_valid,          // Instruction is valid (not flushed/bubbled)
 
-    // Slot-2 instruction input (2-wide dispatch).  Until ID widening lands in
-    // Session E the cpu_ooo holds i_valid_2='0 and i_from_id_to_ex_2='0, so
-    // the slot-2 dispatch cone collapses to all-zeros and bundle_fire_ok
-    // reduces to slot-1's existing fire condition.
+    // Slot-2 instruction input (2-wide dispatch).  i_valid_2 is high whenever
+    // the front-end supplied a real second instruction; when it is '0 (no
+    // valid slot-2 this cycle) bundle_fire_ok reduces to slot-1's fire
+    // condition.
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
     input logic                      i_valid_2,
 
@@ -74,10 +74,9 @@ module dispatch (
     input logic [riscv_pkg::RegAddrWidth-1:0] i_rs2_addr,
     input logic [riscv_pkg::RegAddrWidth-1:0] i_fp_rs3_addr,
 
-    // Slot-2 source register addresses (2-wide dispatch).  Currently driven
-    // from cpu_ooo as zero until ID widening lands in Session E.  The
-    // intra-bundle RAW bypass below depends on these compares; with all
-    // zeros and slot-1 not writing x0, the bypass is always false.
+    // Slot-2 source register addresses (2-wide dispatch).  The intra-bundle
+    // RAW bypass below compares these against slot-1's destination so a slot-2
+    // source that reads slot-1's result picks up slot-1's fresh ROB tag.
     input logic [riscv_pkg::RegAddrWidth-1:0] i_rs1_addr_2,
     input logic [riscv_pkg::RegAddrWidth-1:0] i_rs2_addr_2,
     input logic [riscv_pkg::RegAddrWidth-1:0] i_fp_rs3_addr_2,
@@ -146,10 +145,8 @@ module dispatch (
     output logic [         riscv_pkg::RegAddrWidth-1:0] o_rat_alloc_dest_reg,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_rat_alloc_rob_tag,
 
-    // Slot 2 (2-wide dispatch).  Held inactive in this session — slot-2
-    // dispatch is still hard-tied off in cpu_ooo until ID/PD/IF widening
-    // lands in Sessions D-F.  Plumbed end-to-end so RAT and wrapper see a
-    // stable interface.
+    // Slot 2 (2-wide dispatch).  o_rat_alloc_valid_2 asserts when slot-2 fires
+    // with a register destination, renaming it in the same cycle as slot-1.
     output logic                                        o_rat_alloc_valid_2,
     output logic                                        o_rat_alloc_dest_rf_2,
     output logic [         riscv_pkg::RegAddrWidth-1:0] o_rat_alloc_dest_reg_2,
@@ -187,8 +184,7 @@ module dispatch (
 
     // Slot-2 per-RS dispatch packets (2-wide dispatch).  The dispatch unit
     // routes slot-2 to the RS family matching its rs_type and asserts
-    // .valid only on that one packet.  Sessions D+ enable these once cpu_ooo
-    // stops hard-tying slot-2 invalid.
+    // .valid only on that one packet when slot-2 fires.
     output riscv_pkg::rs_dispatch_t o_int_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch_2,
@@ -449,8 +445,8 @@ module dispatch (
   // Slot-2 Instruction Classification (mirrors slot-1 above)
   // ===========================================================================
   // Decoded the same way as slot-1 but driven from i_from_id_to_ex_2 / i_valid_2.
-  // While slot-2 is hard-tied to '0 in cpu_ooo (Sessions D-E), all of these
-  // signals collapse to defaults and feed an all-zero slot-2 dispatch packet.
+  // When the bundle has no valid slot-2 (i_valid_2='0), these signals collapse
+  // to defaults and feed an all-zero slot-2 dispatch packet.
 
   riscv_pkg::instr_op_e op_2;
   assign op_2 = i_from_id_to_ex_2.is_illegal_instruction ? riscv_pkg::ILLEGAL :
@@ -1020,9 +1016,7 @@ module dispatch (
   // this override slot-2 would race against an unrenamed (stale) source.
   //
   // Per design doc decision #6, RAT proper does not see this case; it is
-  // resolved entirely inside dispatch.  Slot-2 outputs are unused this
-  // session (slot-2 dispatch isn't wired to per-RS builders yet) but the
-  // bypass logic is in place for Sessions C-D.
+  // resolved entirely inside dispatch, feeding the per-RS slot-2 builders.
 
   // Slot-1 dest match conditions, factored once.  has_dest=1 implies dest
   // is non-x0 for INT (per the dest_reg='0 -> has_dest=0 path) and any

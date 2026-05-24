@@ -343,7 +343,6 @@ class TomasuloInterface:
         self.dut.i_checkpoint_restore.value = 0
         self.dut.i_checkpoint_restore_id.value = 0
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
-        self.dut.i_checkpoint_reclaim_mask.value = 0
 
         # RAT checkpoint free
         self.dut.i_checkpoint_free.value = 0
