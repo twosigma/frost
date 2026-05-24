@@ -127,7 +127,7 @@ For manual Vivado project setup:
    - `boards/xilinx_frost_subsystem.sv` (common subsystem)
    - The board-specific wrapper (e.g., `genesys2/genesys2_frost.sv`)
 3. Add the constraint file from `constr/`
-4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) - see `fpga/build/build.tcl` for configuration
+4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) - see `fpga/build/build_step.tcl` for configuration
 5. Set the top module (e.g., `genesys2_frost`)
 6. Run synthesis and implementation
 7. Generate the bitstream
@@ -163,8 +163,8 @@ After the FPGA is programmed with the bitstream:
 
 | Signal       | Direction | Pin  | Description                            |
 |--------------|-----------|------|----------------------------------------|
-| `i_sysclk_p` | Input     | AL23 | 300 MHz differential clock (positive) |
-| `i_sysclk_n` | Input     | AK23 | 300 MHz differential clock (negative) |
+| `i_sysclk_p` | Input     | AK23 | 300 MHz differential clock (positive) |
+| `i_sysclk_n` | Input     | AL23 | 300 MHz differential clock (negative) |
 | `o_uart_tx`  | Output    | AP24 | UART transmit for debug console        |
 | `i_uart_rx`  | Input     | AR24 | UART receive for debug console input   |
 
@@ -206,7 +206,7 @@ To add support for a new Xilinx FPGA board:
 4. Instantiate `xilinx_frost_subsystem` with your clocks and reset
 5. Create a constraint file with your board's pin assignments
 6. Update the file list (`.f` file) to include the subsystem
-7. Update `fpga/build/build.tcl` to handle the new board name
+7. Update `fpga/build/build_step.tcl` to handle the new board name
 8. Update this README with the new board's specifications
 
 Key considerations:

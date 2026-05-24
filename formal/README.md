@@ -8,7 +8,7 @@ Formal verification uses SMT solvers to mathematically prove that properties hol
 |------|---------|
 | **SymbiYosys (sby)** | Formal verification frontend - orchestrates Yosys + solvers |
 | **Yosys** | RTL synthesis and preparation for SMT encoding |
-| **Z3** | SMT solver (bounded model checking engine) |
+| **Boolector / Z3** | SMT solvers (the `smtbmc` engine; each `.sby` selects one) |
 
 ## How It Works
 

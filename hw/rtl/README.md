@@ -36,11 +36,11 @@ The front-end is still staged as IF, PD, and ID:
 | PD | `cpu_and_mem/cpu/pd_stage/` | RVC decompression, instruction selection, early source extraction for both dispatch slots |
 | ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR reads, two registered dispatch packets |
 
-After ID, `dispatch/dispatch.sv` allocates Tomasulo resources for one or two
-instructions per cycle and sends work to `tomasulo/tomasulo_wrapper.sv`. The
-wrapper owns the ROB, RATs,
-reservation stations, load/store queues, CDB arbiter, FU shims, and profiling
-counters. See [cpu/README.md](cpu_and_mem/cpu/README.md) and
+After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
+or two instructions per cycle and sends work to
+`tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,
+RATs, reservation stations, load/store queues, CDB arbiter, FU shims, and
+profiling counters. See [cpu/README.md](cpu_and_mem/cpu/README.md) and
 [cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed
 backend notes.
 
@@ -51,6 +51,7 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
 | `cpu_and_mem/cpu/cpu_ooo.sv` | In use | CPU integration top for the Tomasulo core |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, CDB, dispatch glue, FU shims |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |

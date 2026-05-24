@@ -4,7 +4,8 @@ The LQ tracks every in-flight load from dispatch through memory access
 to CDB broadcast. It also owns the L0 data cache, the LR/SC
 reservation register, and the AMO read-modify-write path. Loads allocate in
 program order at dispatch, with independent slot-1 and slot-2 allocation ports
-for 2-wide bundles, and free when their result is broadcast on the CDB.
+for 2-wide bundles (slot-2 is wired up but held inactive by the wrapper until
+dispatch widens), and free when their result is broadcast on the CDB.
 
 ## What makes loads interesting
 
@@ -27,13 +28,14 @@ lo/hi in the LUTRAM so each phase writes only its half.
 
 ## L0 cache
 
-The L0 is a 128-entry direct-mapped write-through cache, preserved
-from the in-order core but moved inside the LQ. It's a hit-path
-optimization: loads check it in parallel with SQ disambiguation, and
-a hit returns the result the same cycle. Stores invalidate matching
-lines on commit (the SQ pulses an invalidate back to the LQ), which
-keeps the cache coherent without needing a write-through path of its
-own.
+The L0 is a 128-entry direct-mapped cache, filled on memory
+response, preserved from the in-order core but moved inside the LQ.
+It's a hit-path optimization: loads check it in parallel with SQ
+disambiguation, and a hit returns the result the same cycle. Stores
+invalidate matching lines on commit (the SQ pulses an invalidate back
+to the LQ), and AMO write-completion invalidates the AMO's line too;
+both share the single invalidate port. That keeps the cache coherent
+without needing a write-through path of its own.
 
 Two things the cache intentionally *doesn't* do:
 
@@ -43,10 +45,11 @@ Two things the cache intentionally *doesn't* do:
   hot across mispredict recovery roughly doubles the steady-state hit
   rate on CoreMark (36.5% → 72.4%).
 - **No same-cycle fill → lookup bypass.** Forwarding the in-flight
-  fill into a same-cycle lookup dragged the back-end flush cone into
-  `data_memory`'s write-enable path. A same-cycle hit on the just-filled
-  line becomes a one-cycle-delayed hit instead; the LUTRAM is current
-  next cycle regardless.
+  fill into a same-cycle lookup dragged the back-end flush cone
+  (`i_flush_en` → `accept_mem_response` → fill → bypass → hit →
+  `o_mem_read_en`) into `data_memory`'s address read pin. A same-cycle
+  hit on the just-filled line becomes a one-cycle-delayed hit instead;
+  the LUTRAM is current next cycle regardless.
 
 ## Issue and completion bypasses
 
@@ -95,13 +98,21 @@ can interleave.
 
 ## Storage strategy
 
-Hybrid FF + LUTRAM. Control fields and the address need parallel
-CAM-style scan (for tag match on address update, oldest-first issue
-selection, partial flush invalidation), so they stay in flip-flops.
-The 64-bit data payload lives in distributed RAM split lo/hi (to
-support FLD's two-phase fills), each half in a 2-write-port LUTRAM:
-port 0 is reserved for memory response, port 1 handles cache hits,
-SQ forwards, and AMO write-completion. The split lets a memory
+Hybrid FF + LUTRAM. The per-entry 1-bit control flags, `rob_tag`, and
+`size` need parallel CAM-style scan (tag match on address update,
+oldest-first issue selection, partial flush invalidation), so they
+stay in flip-flops. The wider per-entry payloads ride in distributed
+RAM, read only after their valid bit is set: the address (single-port
+LUTRAM, replicated for the memory-issue and AMO read ports), the AMO
+`rs2` operand (single-port), and the AMO op (2-write-port LUTRAM for
+the slot-1/slot-2 alloc ports). The address-update CAM matches against
+`rob_tag`, not the address itself; the resolved address is then written
+into the address LUTRAM.
+
+The 64-bit load-result payload lives in its own distributed RAM split
+lo/hi (to support FLD's two-phase fills), each half in a 2-write-port
+LUTRAM: port 0 is reserved for memory response, port 1 handles cache
+hits, SQ forwards, and AMO write-completion. The split lets a memory
 response for the previously-issued load and a cache hit on the
 newly-captured load land in the same cycle without colliding.
 
@@ -123,8 +134,9 @@ still live alongside the decomposition.
 
 ## Verification
 
-Cocotb tests cover allocation including 2-wide cases, address update, every
-load size, SQ forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing,
-partial and full flush, AMO read-modify-write, LR/SC reservation, and
+Cocotb tests cover allocation (slot-1; the slot-2 alloc port is held
+inactive and not yet exercised), address update, every load size, SQ
+forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing, partial and
+full flush, AMO read-modify-write, LR/SC reservation, and
 constrained-random stress. Inline formal properties prove pointer invariants,
 issue prerequisites, MMIO ordering, and flush behavior.

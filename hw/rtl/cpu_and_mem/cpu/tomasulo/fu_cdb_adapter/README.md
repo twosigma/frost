@@ -12,7 +12,12 @@ FU slot.
 - **Back-pressure** to the FU shim / RS via `o_result_pending`, so
   the RS stalls new issues while a result is waiting for CDB access.
 - **Zero-latency pass-through** when the arbiter grants on the same
-  cycle the FU result arrives — no register on the common case.
+  cycle the FU result arrives — no register on the common case. This
+  is the default; setting the `REGISTER_OUTPUT` parameter disables it
+  so every result is captured into the register first (output stays
+  invalid in the idle cycle). The wrapper uses `REGISTER_OUTPUT=1`
+  for the long-latency / non-critical FUs (DIV, FP add/mul/div) where
+  the pass-through valid cone hurts timing.
 - **Partial-flush support.** Held results whose tag is younger than
   the partial-flush boundary are dropped, and a same-cycle
   pass-through of a younger result is suppressed locally. Full-flush
@@ -35,8 +40,16 @@ There's one state bit (`result_pending`):
 - **Pending, granted, no new input**: clear; back to idle.
 - **Pending, granted, new input arrives**: latch the new input;
   stay pending. (This back-to-back behavior is gated by the
-  `ALLOW_GRANT_REFILL` parameter — the wrapper sets it to 0 for the
-  MEM adapter so SC commit ordering can serialize correctly.)
+  `ALLOW_GRANT_REFILL` parameter — the wrapper sets it to 0 for every
+  adapter except the ALU, e.g. on the MEM adapter so SC commit
+  ordering can serialize correctly. With refill disabled, a grant
+  always clears to idle even if a new input is present.)
+
+The two "idle, input arrives" cases above assume the default
+pass-through mode. When `REGISTER_OUTPUT` is set there is no
+combinational pass-through: a valid idle input always latches into
+the register (even if granted that cycle) and is presented from
+PENDING the following cycle, so results take one extra cycle.
 
 ## Verification
 
@@ -44,6 +57,7 @@ The whole reason this module is small enough to be slightly
 interesting is that its state space is also small enough to formally
 verify exhaustively. The `` `ifdef FORMAL `` block proves all the
 state transitions, the tag/value/exception stability while pending,
-the pass-through correctness, the flush semantics, and the
-back-pressure invariants — plus cover properties for the
-multi-cycle pending case and back-to-back grants.
+the pass-through correctness (and the registered-output mode's
+idle-invalid output), the flush semantics, and the back-pressure
+invariants — plus cover properties for the multi-cycle pending case
+and back-to-back grants.

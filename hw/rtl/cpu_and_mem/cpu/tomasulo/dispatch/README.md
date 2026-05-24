@@ -16,10 +16,14 @@ state is the registered done-repair request path for already-completed sources.
 ## 2-wide bundle rules
 
 Slot 1 is the anchor. Slot 2 can fire only when slot 1 also fires, slot 2 is
-valid, slot 1 is not a branch or jump, and every targeted structure has enough
-space for the bundle. When both slots target the same resource family, dispatch
-uses the "full for 2" status from the wrapper; otherwise each slot uses the
-plain full status for its own ROB, RS, LQ, SQ, and checkpoint needs. The whole
+valid, slot 1 is not a branch or jump, slot 2 is not an FP-compute op (one
+targeting the FP, FMUL, or FDIV RS — FP loads/stores go to MEM_RS and are
+allowed), and every targeted structure has enough space for the bundle. An
+FP-compute slot 2 is serialized off (`dispatch_valid_2` is forced low); slot 1
+still fires alone and slot 2 is re-presented next cycle. When both slots target
+the same resource family, dispatch uses the "full for 2" status from the
+wrapper; otherwise each slot uses the plain full status for its own ROB, RS, LQ,
+SQ, and checkpoint needs. The whole
 bundle fires or stalls together, so downstream state never sees slot 2 without
 slot 1.
 
@@ -52,9 +56,9 @@ value into the RS entry, capturing the rounding mode in program order so later
 Any exhausted back-end resource stalls dispatch: ROB full, target RS full, LQ
 full for loads/AMOs, SQ full for stores/SCs, or no checkpoint available for
 branches/JALRs. Slot 2 also checks whether the pair has enough room when both
-slots need the same resource. The status output reports the selected stall
-reason so `cpu_ooo.sv` can increment per-cause performance counters without
-re-deriving the conditions.
+slots need the same resource. The status output reports independent per-cause
+stall flags (any combination may assert in one cycle) so `cpu_ooo.sv` can
+increment per-cause performance counters without re-deriving the conditions.
 
 ## RS routing
 

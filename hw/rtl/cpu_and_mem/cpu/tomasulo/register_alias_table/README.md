@@ -26,7 +26,8 @@ in a single cycle.
 There are 8 checkpoint slots. With 4–8 branches typically in flight
 at a time, exhaustion is rare; when it happens dispatch stalls until
 a slot frees. The checkpoint snapshots themselves live in distributed
-RAM — saving roughly a thousand flip-flops compared to keeping them
+RAM — 8 slots × (64 entries × 7 bits + 12 metadata bits), saving
+several thousand flip-flops compared to keeping them
 in registers — while the active RATs stay in FFs because they need
 parallel lookup, parallel CDB-driven invalidation, and bulk parallel
 overwrite on restore.
@@ -79,7 +80,11 @@ gets reclaimed without going through the per-slot port.
 
 ## Verification
 
-Cocotb tests cover lookup, 2-wide rename, commit clear, checkpoint
-save/restore/free, x0 invariants, and bulk reclaim. Inline formal properties
-prove the x0 invariant, the rename / commit / restore state transitions, and
-the absence of double-allocation.
+Cocotb tests cover lookup, rename (including overwrite and rename-over-commit
+precedence), commit clear, checkpoint save/restore/free, checkpoint exhaustion,
+flush-all, regfile value passthrough, and x0 invariants. (The slot-2 rename,
+slot-2 commit, and bulk-free mask ports are exercised by integration tests, not
+the unit suite, which holds them at zero.) Inline formal properties prove the x0
+invariant, the slot-1 and slot-2 rename state transitions, the commit-clear
+state transition, and that flush/reset clear the active RATs and checkpoint
+valid bits.

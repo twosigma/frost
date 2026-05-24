@@ -12,8 +12,9 @@ This directory contains the complete infrastructure for building, programming, a
 │   ┌──────────────┐     ┌──────────────────┐     ┌───────────────────────┐   │
 │   │  RTL Source  │────>│  build/build.py  │────>│  Bitstream (.bit)     │   │
 │   │  (hw/rtl/)   │     │                  │     │  (build/<board>/work/)│   │
-│   └──────────────┘     │  6-Step Pipeline │     └───────────┬───────────┘   │
-│                        │  with per-step   │                 │               │
+│   └──────────────┘     │  Multi-Step      │     └───────────┬───────────┘   │
+│                        │  pipeline with   │                 │               │
+│                        │  per-step        │                 │               │
 │                        │  directive select│                 │               │
 │                        └──────────────────┘                 v               │
 │                                              ┌──────────────────────────┐   │
@@ -165,7 +166,6 @@ Load software into instruction memory without regenerating the bitstream. This e
 | `branch_pred_test`  | Branch predictor verification (45 tests)             |
 | `ras_test`          | Return Address Stack (RAS) comprehensive test suite  |
 | `ras_stress_test`   | Stress test mixing calls, returns, and branches      |
-| `fpu_assembly_test` | FPU assembly hazard tests                            |
 | `print_clock_speed` | Clock speed measurement utility                      |
 
 The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.
@@ -271,20 +271,33 @@ To program or load software on a remote FPGA:
      - Generate CPU clock and /4 clock using MMCM
      - Instantiate `xilinx_frost_subsystem` (see `boards/xilinx_frost_subsystem.sv`)
    - `constr/<board>.xdc` - Pin assignments and timing constraints
-   - `ip/` - Copy Xilinx IP cores from an existing board (Vivado will auto-migrate)
-   - `<board>_frost.f` - File list for synthesis
+   - `<board>_frost.f` - File list for synthesis (include the subsystem and core)
 
-2. Update `build/build_step.tcl` to handle the new board name
+   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) are created on the fly
+   during synthesis by `build/build_step.tcl`, so no per-board `ip/` directory is
+   needed.
 
-3. Update `program_bitstream/program_bitstream.tcl` with the bitstream path
+2. Add the board (FPGA part, clock frequency) to:
+   - `BOARD_CONFIG` in `build/build.py` and in `load_software/load_software.py`
+   - the board-name argument `choices` in `build/build.py`,
+     `program_bitstream/program_bitstream.py`, and `load_software/load_software.py`
+   - the board/part handling in `build/build_step.tcl`
+
+3. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
+   so the programming and loading scripts can auto-select its JTAG target
 
 4. See `boards/README.md` for detailed instructions and board comparison
 
 ### Adding a New Application
 
-1. Compile your application to produce `sw/apps/<app>/sw.txt` (hex format, one 32-bit word per line)
+1. Add a `sw/apps/<app>/` directory whose `make` produces `sw.txt` (hex format,
+   one 32-bit word per line) and `sw.mem`
 
-2. Load it:
+2. Register the app name in both `VALID_APPS` in
+   `load_software/load_software.py` and the `valid_apps` list in
+   `load_software/load_software.tcl` (the loader rejects unknown app names)
+
+3. Load it (the loader compiles the app for the target board automatically):
    ```bash
    ./fpga/load_software/load_software.py <board> <app>
    ```

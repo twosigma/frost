@@ -66,17 +66,23 @@ verif/
 │   ├── test_directed_atomics.py  # LR.W/SC.W atomic operation tests
 │   ├── test_directed_traps.py    # ECALL, EBREAK, MRET, interrupt tests
 │   ├── test_compressed.py # C extension compressed instruction tests
+│   ├── test_directed_multicycle.py  # Back-to-back DIV/FP-DIV and load-use hazard tests
 │   ├── test_state.py      # Test state management (pipeline tracking)
 │   ├── cpu_model.py       # CPU software reference model
 │   ├── instruction_generator.py  # Random instruction generation
+│   ├── instruction_executor.py  # Execute-and-model helper (encode/model/drive)
 │   ├── test_real_program.py  # Integration tests with real programs
-│   └── test_helpers.py    # Test infrastructure helpers
+│   ├── test_helpers.py    # Test infrastructure helpers
+│   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
+│                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)
 ├── models/                # Reference models for verification
 │   ├── alu_model.py       # ALU operations reference model
 │   ├── branch_model.py    # Branch decision model
+│   ├── fp_model.py        # IEEE 754 single/double-precision FP model
 │   └── memory_model.py    # Memory subsystem model
 ├── encoders/              # RISC-V instruction encoding
 │   ├── instruction_encode.py  # Binary instruction encoders
+│   ├── compressed_encode.py   # RV32C compressed (16-bit) encoders
 │   └── op_tables.py       # Instruction mapping tables
 ├── monitors/              # Runtime verification monitors
 │   └── monitors.py        # Register, PC, and memory monitors
@@ -98,8 +104,10 @@ The primary test orchestration that:
 - Manages expected value queues for verification monitors
 - Handles pipeline effects (stalls, flushes, branch mispredictions)
 
-Key class:
-- `TestConfig`: Dataclass for test configuration (passed explicitly, not global state)
+Key entry point:
+- `run_random_regression()`: Shared regression driver wrapped by the `@cocotb.test()` functions (`test_random_riscv_regression`, `test_random_riscv_regression_force_one_address`, and the FP variants)
+
+`TestConfig` (the dataclass for test configuration, passed explicitly rather than via global state) is defined in `test_common.py`.
 
 #### Test State (`test_state.py`)
 Manages CPU state tracking across pipeline stages:
@@ -199,24 +207,26 @@ Real-time verification monitors that continuously check (`monitors.py`):
 | `use_structured_logging`       | False   | Enable rich formatted debug output                 |
 | `constrain_addresses_to_memory`| False   | Limit generated addresses to allocated space       |
 | `force_one_address`            | False   | Use rs1=0 and imm=0 to stress memory hazards       |
+| `compressed_ratio`             | 0.0     | Ratio of compressed (C extension) ALU instructions |
 
 ### Enabling Advanced Features
 
 To customize test behavior, pass a `TestConfig` instance to the test:
 
 ```python
-from cocotb_tests.test_cpu import TestConfig, test_random_riscv_regression_main
+from cocotb_tests.test_common import TestConfig
+from cocotb_tests.test_cpu import run_random_regression
 
 # Enable structured logging for debugging
 config = TestConfig(use_structured_logging=True)
-await test_random_riscv_regression_main(dut, config=config)
+await run_random_regression(dut, config=config)
 
 # Constrain addresses and run fewer iterations
 config = TestConfig(
     num_loops=1000,
     constrain_addresses_to_memory=True,
 )
-await test_random_riscv_regression_main(dut, config=config)
+await run_random_regression(dut, config=config)
 ```
 
 Structured logging output example:
@@ -235,7 +245,7 @@ Run the default random instruction test:
 
 Run with forced single address (stress memory hazards):
 ```bash
-TESTCASE=test_random_riscv_regression_force_one_address ./tests/test_run_cocotb.py cpu
+./tests/test_run_cocotb.py cpu --testcase test_random_riscv_regression_force_one_address
 ```
 
 Run integration tests with real programs:
@@ -245,12 +255,12 @@ Run integration tests with real programs:
 
 Run directed test for LR.W/SC.W atomic instructions:
 ```bash
-TESTCASE=test_directed_lr_sc ./tests/test_run_cocotb.py cpu
+./tests/test_run_cocotb.py cpu --testcase test_directed_lr_sc
 ```
 
 Run directed test for trap handling (ECALL, EBREAK, MRET):
 ```bash
-TESTCASE=test_directed_trap_handling ./tests/test_run_cocotb.py cpu
+./tests/test_run_cocotb.py cpu --testcase test_directed_trap_handling
 ```
 
 ### Customizing for Different DUT Implementations

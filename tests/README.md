@@ -49,19 +49,19 @@ Applications are compiled automatically before simulation—no manual build step
 
 ```bash
 # Basic usage
-./test_run_cocotb.py cpu                           # Run CPU verification test
+./test_run_cocotb.py tomasulo_test                 # Run CPU correctness test
 ./test_run_cocotb.py hello_world                   # Run Hello World program
 ./test_run_cocotb.py isa_test                      # Run ISA compliance tests
 ./test_run_cocotb.py freertos_demo                 # Run FreeRTOS demo
 
 # Reproducibility options
-./test_run_cocotb.py cpu --random-seed=12345       # Use specific seed
-./test_run_cocotb.py cpu --testcase=test_random    # Run specific test function
+./test_run_cocotb.py cdb_arbiter --random-seed=12345                       # Use specific seed
+./test_run_cocotb.py cdb_arbiter --testcase=test_random_multi_fu_stress    # Run specific test function
 
 # Seed sweep (parallel random seed testing)
-./test_run_cocotb.py cpu --seed-sweep 10          # Run 10 seeds in parallel
-./test_run_cocotb.py cpu --seed-sweep 20 --max-workers 4          # Limit parallelism
-./test_run_cocotb.py cpu --seed-sweep 10 --testcase test_random   # Sweep specific test
+./test_run_cocotb.py cdb_arbiter --seed-sweep 10          # Run 10 seeds in parallel
+./test_run_cocotb.py cdb_arbiter --seed-sweep 20 --max-workers 4          # Limit parallelism
+./test_run_cocotb.py cdb_arbiter --seed-sweep 10 --testcase test_random_multi_fu_stress   # Sweep specific test
 ```
 
 **Seed Sweep Mode:**
@@ -80,7 +80,7 @@ Passing seeds: [123456789, 234567890, ...]
 Failing seeds: [987654321]
 
 To reproduce a failure, run:
-  ./test_run_cocotb.py cpu --random-seed=987654321
+  ./test_run_cocotb.py cdb_arbiter --random-seed=987654321
 ============================================================
 ```
 
@@ -102,7 +102,7 @@ pytest test_run_cocotb.py -s                       # Show live output
 
 Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite on Frost. Each test compiles an assembly test case, runs it in Verilator simulation, extracts the signature from UART output, and compares it against Spike-generated golden references.
 
-**Supported extensions:** I, M, A, F, D, C, B, K, Zicond, Zifencei (400+ tests total)
+**Supported extensions:** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints (400+ tests total)
 
 **Standalone Usage:**
 
@@ -132,7 +132,7 @@ pytest test_arch_compliance.py -v -m slow
 **Notes:**
 - Verilator only
 - Tests with >5000 test cases are filtered by default (12 tests with 7K-14K cases that take >30 min each). Use `--no-sim-filter` for hardware validation runs
-- In CI, runs as 10 parallel jobs (one per extension) via GitHub Actions matrix strategy
+- In CI, runs as 14 parallel jobs (one per extension) via GitHub Actions matrix strategy, plus 12 additional jobs that each run one slow F/D test excluded by the size filter
 - Simulation uses 2MB memory override (`-GMEM_SIZE_BYTES=2097152`) to fit large test data sections
 
 ### `test_riscv_tests.py`
@@ -219,7 +219,9 @@ for 7-series, UltraScale, and UltraScale+.
 **Standalone Usage:**
 
 ```bash
-./test_run_yosys.py                                # Run synthesis
+./test_run_yosys.py                                # Run all default targets (generic + Xilinx)
+./test_run_yosys.py --target generic               # Run only the generic/ASIC coarse synthesis
+./test_run_yosys.py --target ice40                 # Run any Yosys synth_* target by name
 ./test_run_yosys.py --verbose                      # Show full Yosys output
 ```
 
@@ -265,12 +267,12 @@ pytest -k "not slow"                               # Skip slow tests
 
 ### Environment Variables
 
-| Variable      | Description                      | Default      |
-|---------------|----------------------------------|--------------|
-| `SIM`         | Simulator to use                 | `verilator`  |
-| `TESTCASE`    | Specific test function to run    | (all)      |
-| `RANDOM_SEED` | Random seed for reproducibility  | (random)   |
-| `WAVES`       | Generate waveform file (1/0)     | `0`        |
+| Variable             | Description                                          | Default      |
+|----------------------|------------------------------------------------------|--------------|
+| `SIM`                | Simulator to use                                     | `verilator`  |
+| `COCOTB_TEST_FILTER` | Regex selecting test functions to run (set by `--testcase`) | (all)      |
+| `COCOTB_RANDOM_SEED` | Random seed for reproducibility (set by `--random-seed`)    | (random)   |
+| `WAVES`              | Generate waveform file (1/0)                         | `0`        |
 
 ## Test Output
 
@@ -308,13 +310,14 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 
 All tests are run automatically in CI. Tests gracefully skip if required tools are not installed.
 
-Architecture compliance tests run as 10 parallel GitHub Actions jobs (one per extension) using a matrix strategy with `fail-fast: false`, so all extensions are tested even if one fails. These are separate from the main Cocotb test job to avoid blocking it with long-running FP tests.
+Architecture compliance tests run as 14 parallel GitHub Actions jobs (one per extension), plus 12 individual jobs for slow F/D tests excluded by the size filter, using a matrix strategy with `fail-fast: false`, so all extensions are tested even if one fails. These are separate from the main Cocotb test job to avoid blocking it with long-running FP tests.
 
 ### Test Markers
 
 ```python
 @pytest.mark.cocotb       # RTL simulation tests
 @pytest.mark.synthesis    # Synthesis tests
+@pytest.mark.formal       # Formal verification tests
 @pytest.mark.slow         # Long-running tests
 ```
 

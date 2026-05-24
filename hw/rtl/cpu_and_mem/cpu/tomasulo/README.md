@@ -4,12 +4,15 @@ The Tomasulo back-end replaces the in-order EX / MA / WB pipeline with
 dynamic instruction scheduling, register renaming, speculation, and
 out-of-order completion — while preserving precise exceptions and the
 existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zihintpause).
-The front-end (IF / PD / ID, branch predictor, RAS, RVC) supplies up to two
-decoded instructions per cycle; the functional units (ALU, multiplier, divider,
-FPU) are reused through OOO shims.
+The front-end (IF / PD / ID, branch predictor, RAS, RVC) supplies decoded
+instructions to dispatch; the functional units (ALU, multiplier, divider,
+FPU) are reused through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
+on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
+two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
+commit two at a time (with a few slot-2 restrictions). See the 2-wide notes below.
 
 ```
-   IF → PD → ID → 2-wide dispatch ─► ROB          ┌─► commit ─► regfile / SQ /
+   IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
                   rename/resource     (32 entries)│             trap entry / redirect
                   allocation         + RAT (INT+FP,
                                       8 ckpts)
@@ -77,7 +80,7 @@ but keeps the design simple and provably correct.
 ### Two-tier branch recovery
 
 Branches and JALRs reserve a RAT checkpoint at dispatch (full INT +
-FP RAT snapshot + RAS top + valid count, 4 slots).
+FP RAT snapshot + RAS top + valid count, 8 slots).
 
 Conditional-branch mispredictions resolve in `branch_jump_unit` and
 trigger a fast two-phase recovery directly from `cpu_ooo.sv`: the
@@ -92,7 +95,8 @@ age-based partial flush primitive everywhere downstream.
 
 ### Serializing instructions
 
-A small FSM in the ROB pins certain instructions at the commit head:
+A small FSM in the ROB pins most of these instructions at the commit head
+(atomics are instead ordered at LQ/SQ issue, see the last row):
 
 | Class               | Behavior |
 |---------------------|----------|
@@ -100,7 +104,7 @@ A small FSM in the ROB pins certain instructions at the commit head:
 | **CSR**             | Read result rides the CDB; the side effect is applied at commit via a `csr_file` handshake. |
 | **FENCE / FENCE.I** | Drains the SQ before commit. FENCE.I additionally pulses a one-cycle pipeline + icache flush. |
 | **MRET**            | Hand-shakes with `trap_unit`; redirect PC = `mepc`. |
-| **AMO / SC**        | Fires only at head with the SQ committed-empty (no older stores in flight). |
+| **AMO / LR / SC**   | Head-ordered atomics, not stalled by the ROB FSM. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight) — AMO is gated at LQ issue, SC at the wrapper's reservation check; LR fires at the head. |
 
 ### Single-CDB arbitration
 
@@ -145,6 +149,11 @@ order so subsequent `frm` writes don't affect in-flight FP ops.
 
 ### 2-wide dispatch
 
+The front-end fetches 64 bits per cycle; the instruction aligner extracts
+slot 1 and, when a second instruction fits, slot 2 — compressed or 32-bit,
+including a pair that spans the fetch-word boundary — so `id_valid_2` asserts
+whenever a real second instruction is present.
+
 Dispatch accepts slot 1 plus an optional slot 2 from ID. The bundle fires
 atomically: slot 2 only allocates when slot 1 also allocates and every targeted
 structure has room for the bundle. If both slots target the same ROB, RS, LQ,
@@ -152,12 +161,15 @@ or SQ resource, dispatch uses the corresponding "room for 2" status; otherwise
 plain full checks are enough.
 
 Slot 1 control flow terminates the bundle. Slot 2 has its own RAT lookups,
-destination rename, ROB allocation, RS packet, and done-repair channels. A
-slot-2 source that reads slot 1's destination is redirected to slot 1's just
-allocated ROB tag inside dispatch, so same-bundle RAW dependencies behave like
-ordinary renamed dependencies. The checkpoint pool remains single-save-per-cycle
-because slot 1 branch/jump instructions suppress slot 2; when slot 2 is the
-control-flow instruction, the checkpoint snapshot overlays slot 1's rename.
+destination rename, ROB allocation, and RS packet. A slot-2 source that reads
+slot 1's destination is redirected to slot 1's just allocated ROB tag inside
+dispatch, so same-bundle RAW dependencies behave like ordinary renamed
+dependencies. Slot 2 has no done-repair path of its own; instead it is
+conservatively blocked from firing whenever one of its renamed sources has
+already completed (those operands would otherwise miss the CDB wake). The
+checkpoint pool remains single-save-per-cycle because slot 1 branch/jump
+instructions suppress slot 2; when slot 2 is the control-flow instruction, the
+checkpoint snapshot overlays slot 1's rename.
 
 ### 2-wide commit
 
@@ -179,8 +191,8 @@ Two bypass paths shorten commit and completion latency:
   (or head+1), the value flows into the commit mux the same cycle
   instead of waiting for the `rob_done[head]` flop to update. Cuts
   one cycle off the common ordinary-completion path. Excluded for
-  exception / branch / CSR / FENCE / WFI / MRET, which still use
-  the commit-time serial path.
+  exception / branch / CSR / FENCE / FENCE.I / WFI / MRET, which still
+  use the commit-time serial path.
 - **LQ addr-update + completion bypasses.** MEM_RS issues a
   pre-issue look-ahead one cycle early so the LQ's address-update
   CAM match is registered before real issue, making entries appear
