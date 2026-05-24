@@ -2412,71 +2412,23 @@ module cpu_ooo #(
   // The IF stage expects from_ex_comb_t for branch redirect, BTB update,
   // and RAS restore. In OOO mode, these come from ROB commit.
 
-  always_comb begin
-    from_ex_comb_synth = '0;
-
-    if (early_mispredict_active) begin
-      // Early misprediction recovery: redirect PC and update BTB
-      from_ex_comb_synth.branch_taken                       = 1'b1;
-      from_ex_comb_synth.branch_target_address              = early_mispredict_redirect_pc;
-
-      // Early recovery only handles checkpointed conditional branches, so the
-      // BTB update and RAS restore are unconditional on this path.
-      from_ex_comb_synth.btb_update                         = 1'b1;
-      from_ex_comb_synth.btb_update_pc                      = early_mispredict_pc;
-      from_ex_comb_synth.btb_update_target                  = early_mispredict_branch_target;
-      from_ex_comb_synth.btb_update_taken                   = early_mispredict_branch_taken;
-      from_ex_comb_synth.btb_update_compressed              = early_mispredict_is_compressed;
-      from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-
-      from_ex_comb_synth.ras_misprediction                  = 1'b1;
-      from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
-      from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
-    end else if (mispredict_recovery_pending) begin
-      // Commit-time fallback misprediction recovery.
-      from_ex_comb_synth.branch_taken          = 1'b1;
-      from_ex_comb_synth.branch_target_address = mispredict_commit_q.redirect_pc;
-
-      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
-        // BTB update for conditional branches AND JAL. Previously JAL was
-        // excluded, causing every execution of a BTB-cold JAL to mispredict
-        // (~6500 total in CoreMark). Including JAL trains the BTB so only
-        // the first execution of each unique JAL site mispredicts (~100).
-        from_ex_comb_synth.btb_update                         = 1'b1;
-        from_ex_comb_synth.btb_update_pc                      = mispredict_commit_q.pc;
-        from_ex_comb_synth.btb_update_target                  = mispredict_commit_q.branch_target;
-        from_ex_comb_synth.btb_update_taken                   = mispredict_commit_q.branch_taken;
-        from_ex_comb_synth.btb_update_compressed              = mispredict_commit_q.is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
-
-      if (mispredict_commit_q.has_checkpoint) begin
-        from_ex_comb_synth.ras_misprediction       = 1'b1;
-        from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
-        from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        if (mispredict_commit_q.is_return) begin
-          from_ex_comb_synth.ras_pop_after_restore = 1'b1;
-        end else if (mispredict_commit_q.is_call) begin
-          from_ex_comb_synth.ras_push_after_restore = 1'b1;
-          from_ex_comb_synth.ras_push_address_after_restore = mispredict_commit_q.pc +
-              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
-        end
-      end
-    end else if (correct_branch_commit_pending) begin
-      // Correctly-predicted branch commit: update BTB (no PC redirect).
-      // Uses registered commit data to break rob_exception → BTB critical path.
-      if (correct_branch_commit_q.is_branch && !correct_branch_commit_q.is_jal &&
-          !correct_branch_commit_q.is_jalr) begin
-        from_ex_comb_synth.btb_update = 1'b1;
-        from_ex_comb_synth.btb_update_pc = correct_branch_commit_q.pc;
-        from_ex_comb_synth.btb_update_target = correct_branch_commit_q.branch_target;
-        from_ex_comb_synth.btb_update_taken = correct_branch_commit_q.branch_taken;
-        from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q.is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
-
-    end
-  end
+  ex_comb_synthesizer #(
+      .XLEN(XLEN)
+  ) ex_comb_synthesizer_inst (
+      .i_early_mispredict_active(early_mispredict_active),
+      .i_early_mispredict_redirect_pc(early_mispredict_redirect_pc),
+      .i_early_mispredict_pc(early_mispredict_pc),
+      .i_early_mispredict_branch_target(early_mispredict_branch_target),
+      .i_early_mispredict_branch_taken(early_mispredict_branch_taken),
+      .i_early_mispredict_is_compressed(early_mispredict_is_compressed),
+      .i_restored_ras_tos(restored_ras_tos),
+      .i_restored_ras_valid_count(restored_ras_valid_count),
+      .i_mispredict_recovery_pending(mispredict_recovery_pending),
+      .i_mispredict_commit_q(mispredict_commit_q),
+      .i_correct_branch_commit_pending(correct_branch_commit_pending),
+      .i_correct_branch_commit_q(correct_branch_commit_q),
+      .o_from_ex_comb(from_ex_comb_synth)
+  );
 
   // ===========================================================================
   // Memory Interface
