@@ -21,6 +21,19 @@ also a same-cycle dispatch bypass — if the source's tag matches the
 CDB broadcast on the same cycle the entry is dispatched, the entry
 captures the value immediately without waiting a cycle.
 
+Alongside the CDB there is a six-channel done-repair snoop
+(`i_repair_valid_1..6` / `i_repair_tag_1..6` / `i_repair_value_1..6`):
+registered wakeups from dispatch that carry operands whose CDB
+broadcast landed before the consumer was dispatched and so were
+missed by the live snoop. The post-insertion repair snoop runs on
+resident entries every cycle; two parameters additionally fold repair
+into the fast paths — `DISPATCH_REPAIR_BYPASS` lets an entry capture a
+repaired value at insertion, and `ISSUE_REPAIR_BYPASS` lets a repair
+match satisfy the ready check and supply the value at issue. The
+timing-critical instances disable one or both of these to keep the
+repair fan-in off their dispatch/issue cones and fall back to the
+post-insertion snoop.
+
 Issue selection is a simple lowest-index priority encode over ready
 entries. That's not strict FIFO order, but it's a close enough
 approximation for the depths used here that the slightly older
@@ -69,7 +82,9 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests cover dispatch, 2-wide allocation, CDB wakeup for each source
+Cocotb tests cover dispatch, CDB wakeup for each source
 slot, same-cycle bypass, issue priority, FU ready gating, immediate bypass, and
-partial/full flush. Inline formal properties prove the dispatch / issue /
-wakeup / flush invariants.
+partial/full flush. The cocotb bench drives only slot 1 (slot-2 dispatch and
+`i_intent_1` are tied off), so 2-wide allocation is exercised in formal instead:
+inline formal properties prove the dispatch / issue / wakeup / flush invariants
+and cover both-slots and slot-2-alone dispatch.

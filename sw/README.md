@@ -11,6 +11,7 @@ sw/
 ├── common/           # Shared build infrastructure
 │   ├── common.mk     # Common Makefile definitions
 │   ├── crt0.S        # C runtime startup (runs before main)
+│   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
 │   └── link.ld       # Linker script (memory layout)
 ├── lib/              # Reusable libraries
 │   ├── include/      # Header files
@@ -182,7 +183,7 @@ uint32_t elapsed = read_timer() - start;  // Measure elapsed cycles
 
 uint64_t start64 = read_timer64();        // Read full 64-bit cycle counter
 // ... long-running work ...
-uint64_t elapsed64 = read_timer64() - start64;  // For benchmarks >13 seconds
+uint64_t elapsed64 = read_timer64() - start64;  // For benchmarks >14 seconds
 
 delay_ticks(1000);                        // Busy-wait for N cycles
 delay_1_second();                         // Wait ~1 second
@@ -190,7 +191,7 @@ delay_1_second();                         // Wait ~1 second
 
 **Note:** Timer functionality is implemented using the Zicntr CSR cycle counter,
 providing single-instruction access (faster than MMIO). Use `read_timer64()` for
-long-running benchmarks to avoid 32-bit overflow (which occurs after ~13 seconds
+long-running benchmarks to avoid 32-bit overflow (which occurs after ~14 seconds
 at 300 MHz).
 
 ### FIFO (`lib/include/fifo.h`)
@@ -335,9 +336,13 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `print_clock_speed/` | Clock frequency measurement utility |
 | `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
 | `ras_test/` | Return Address Stack verification (deep nesting, coroutines, alignment) |
+| `riscv_tests/` | Upstream riscv-tests ISA suite + benchmark harness (parameterized by `TEST_SRC`; run via `./tests/test_riscv_tests.py`) |
+| `riscv_torture/` | Randomized riscv-torture harness; signatures compared against Spike (run via `./tests/test_riscv_torture.py`) |
 | `spanning_test/` | 32-bit instruction fetch across word boundary verification |
 | `sprintf_test/` | sprintf/snprintf formatting test suite (~200 cases) |
 | `strings_test/` | String/ctype/stdlib library test suite |
+| `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
+| `tomasulo_test/` | Tomasulo correctness test -- RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
 
 ## Building
@@ -382,7 +387,8 @@ make
 ./sw/apps/clean_all_apps.py
 ```
 
-This removes all build artifacts (sw.elf, sw.mem, sw.bin, sw.txt, sw.S) from every application directory.
+This removes all build artifacts (sw.elf, sw.mem, sw.bin, sw.txt, sw.S, and any
+split-bank `sw_imem_*.mem` files) from every application directory.
 
 ### Build Outputs
 
@@ -417,7 +423,7 @@ Defined in `common/link.ld`:
 | Region | Address      | Size  | Description                   |
 |--------|--------------|-------|-------------------------------|
 | ROM    | `0x00000000` | 96 KB | Code and read-only data       |
-| RAM    | `0x00018000` | 32 KB | Variables, BSS, and stack     |
+| RAM    | `0x00018000` | 32 KB | Variables, BSS, heap, and stack |
 | MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals |
 
 ### Peripheral Addresses

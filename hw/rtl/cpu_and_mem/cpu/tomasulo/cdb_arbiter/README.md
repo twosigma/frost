@@ -26,11 +26,16 @@ kill here — rather than replicating it inside every `fu_cdb_adapter`
 output cone — keeps the broadly-fanned flush signal from routing
 through each adapter's critical path.
 
-A raw pre-kill `o_grant_raw` is also exported so FU shims can still
-pop their FIFOs under kill (the entries are being cleared by the
-shim's own flush input on the same edge, so popping is harmless).
-This avoids pulling `cdb_kill` back into every shim's FIFO
-next-state cone.
+A raw pre-kill `o_grant_raw` is also exported: it mirrors the
+priority-encoder result even during kill, whereas `o_grant` is forced
+to zero. It is intended as a flush-independent "would be granted"
+signal for FU shims that pop their FIFOs under kill (the entries are
+being cleared by the shim's own flush input on the same edge, so
+popping is harmless), keeping `cdb_kill` out of the shim FIFO
+next-state cone. As wired today the wrapper leaves `o_grant_raw`
+unconnected — shims instead take the kill-gated `o_grant`
+(`o_cdb_grant`) and auto-drain flushed FIFO heads on their own — so
+the port is currently driven but unused.
 
 ## Verification
 

@@ -31,7 +31,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     │      expand                          ┌─────────────────────────────┐   │
 │     │                                      │   ROB  (32 entries)         │   │
 │     │   ┌─────────────┐                    │   RAT  (INT + FP, 8 ckpts)  │   │
-│     │   │ BTB (32×2b) │                    └──────────────┬──────────────┘   │
+│     │   │ BTB (128×2b)│                    └──────────────┬──────────────┘   │
 │     │   │ RAS (8)     │                                   │ issue            │
 │     │   └─────────────┘                                   ▼                  │
 │     │                          ┌──────────────────────────────────────────┐  │
@@ -94,7 +94,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
-- **Branch prediction** with 32-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
+- **Branch prediction** with 128-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
 - **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
@@ -380,7 +380,7 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **CDB**         | Common Data Bus (single-lane result broadcast)   |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **BTB**         | Branch Target Buffer (32-entry branch predictor) |
+| **BTB**         | Branch Target Buffer (128-entry branch predictor) |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |

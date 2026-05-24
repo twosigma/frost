@@ -14,9 +14,12 @@ Two things: forwarding and ordering.
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
 load address, the SQ scans all entries combinationally for a
 matching older store. If one is found and the sizes are compatible,
-the SQ forwards the data directly to the LQ — no memory access. If
+the SQ forwards the data to the LQ — no memory access. If
 the sizes don't match, or some older store address isn't known yet,
-the SQ tells the LQ to wait.
+the SQ tells the LQ to wait. The scan is combinational but the
+result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`)
+is registered, so the LQ sees it one cycle after raising
+`i_sq_check_valid`; this breaks the MEM_RS → SQ scan → LQ → BRAM path.
 
 **Ordering.** Stores commit in program order from the SQ head. The
 head fires when it's both committed (by the ROB) and has its address
@@ -45,9 +48,24 @@ enable whenever no store was firing.
 
 When both dispatch slots allocate stores, slot 1 takes the older free entry and
 slot 2 takes the next free entry, preserving program order through the SQ. When
-only slot 2 is a store, it takes the first free entry. The `full_for_2` output
+only slot 2 is a store, it takes the first free entry. The `o_full_for_2` output
 lets dispatch block a two-store bundle when only one entry is free while still
 allowing a single-store dispatch to proceed.
+
+The free-entry search is no longer an O(DEPTH) serial scan: the free mask is
+barrel-rotated so `tail_ptr` maps to index 0, a tree priority encoder picks the
+first and second free offsets in one sweep, and the offsets are added back to
+`tail_ptr`. Head advancement uses the same rotate → tree-encode → add-back form
+over `sq_valid`. Partial flush leaves sparse holes rather than compacting the
+tail; the next allocation reuses the reclaimed slots.
+
+`o_full`, `o_full_for_2`, `o_empty`, and `o_count` are exact combinational
+status for local visibility. The CPU dispatch path instead consumes the
+registered `o_dispatch_full` / `o_dispatch_full_for_2` back-pressure (and
+`o_dispatch_empty` / `o_dispatch_count`), which account for same-cycle
+allocation and write-drain as a count delta; partial-flush and SC-discard
+clears are deliberately omitted, so they can only hold back-pressure one extra
+cycle, never under-report fullness.
 
 ## Widen-commit slot 2
 
@@ -79,7 +97,16 @@ Hybrid FF + LUTRAM, same idea as the LQ. Control fields stay in
 flip-flops for parallel CAM-style scan; the 64-bit data payload
 lives in two duplicated LUTRAM instances (identical writes,
 different read addresses) so the forwarding scan and the head
-writeback can read different entries on the same cycle.
+writeback can read different entries on the same cycle. The
+forwarding scan finds the match index from the FF fields, then reads
+`sq_data` from one LUTRAM at that single address.
+
+The forwarding-check address arrives on two functionally-identical
+ports, `i_sq_check_addr` and `i_sq_check_addr_b` (a `dont_touch`'d
+LQ-side replica). Entries in the lower half compare against the
+first, the upper half against the second, so the per-entry CARRY8
+compare chains split across two physical anchor points instead of
+fanning out from one source FF.
 
 ## Verification
 

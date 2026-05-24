@@ -23,7 +23,7 @@ underlying FU's pipeline depth:
   `branch_jump_unit` at top level — but JAL and JALR write their
   link addresses through here.
 - **`fp_add_shim`** and **`fp_mul_shim`** wrap shallow FPU pipelines
-  (~2–14 cycles) with one in-flight op at a time. A single tag
+  (~2–10 cycles) with one in-flight op at a time. A single tag
   register and a one-hot subunit selector are enough. Both NaN-box
   single-precision results.
 - **`int_muldiv_shim`** drives both the multiplier and the divider
@@ -64,5 +64,4 @@ authoritative occupancy tracker — the stale bits are ignored until
 the next push to that slot overwrites them. Clearing on pop would
 pull `i_*_accepted` (which depends on the cross-FU CDB arbiter grant
 cone, which depends on `mispredict_recovery_pending`) into each
-FIFO register's next-state logic, which previously surfaced as
-~140 ps of WNS.
+FIFO register's next-state logic, hurting timing on the flush cone.

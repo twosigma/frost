@@ -27,8 +27,9 @@ Value Table. The 1-bit packed flags
 (`valid`, `done`, `exception`, branch flags, etc.) stay in flip-flops
 because they need per-entry clear on partial flush.
 
-The `value` field has several read ports — head (for commit), RAT
-bypass, three dispatch-time bypass reads, and three more for the
+The `value` field has several read ports — head (for commit), head+1
+(for widen-commit), RAT bypass, six dispatch-time bypass reads (three
+for slot-1 sources, three for slot-2 sources), and three more for the
 wrapper's FMUL operand-repair queue — implemented as multiple LUTRAM
 instances with identical writes and different read addresses.
 
@@ -48,7 +49,7 @@ A small FSM holds the commit head when the head entry needs external
 coordination:
 
 ```
-SERIAL_IDLE ──► WAIT_SQ      (FENCE / FENCE.I / AMO / SC, drain SQ)
+SERIAL_IDLE ──► WAIT_SQ      (FENCE / FENCE.I, drain committed SQ entries)
             ├─► CSR_EXEC     (CSR side effect handshake)
             ├─► MRET_EXEC    (MRET handshake with trap_unit)
             ├─► WFI_WAIT     (stall until interrupt pending)
@@ -61,6 +62,11 @@ applied only when the entry reaches the head and the `csr_file`
 handshake completes — that way a flushed CSR never mutates
 architectural state. FENCE.I additionally pulses a one-cycle
 pipeline + icache flush after commit.
+
+AMO / LR / SC have no serial state of their own: their store ordering
+is enforced at LQ issue time (the load waits for the ROB head plus a
+committed-empty SQ), so once the CDB marks the entry done it commits
+through the ordinary path.
 
 ## Two-wide commit
 
@@ -76,9 +82,9 @@ Slot 2 is a stripped-down sibling of slot 1. It carries only the
 regfile retire, store-commit, and RAT clear payload; it never drives
 mispredict / checkpoint / redirect paths because the hazard gate
 guarantees those conditions can't happen on head+1 when slot 2
-fires. Two duplicate RAMs (`_next` variants of the head-meta / pc /
-dest / value / predicted-target / checkpoint-id RAMs) give slot 2
-its own read ports at `head_idx + 1`.
+fires. A `_next` replica of each head RAM (head-meta, pc, dest, value,
+predicted-target, checkpoint-id, branch-target, exc-cause, fp-flags,
+csr-*) gives slot 2 its own read port at `head_idx + 1`.
 
 The regfiles take two write ports (a 2-write-port distributed RAM
 with a Live Value Table); when both slots target the same

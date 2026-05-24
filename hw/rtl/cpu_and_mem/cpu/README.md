@@ -94,7 +94,9 @@ struct that the IF stage expects, multiplexing among the early-recovery,
 commit-time-recovery, and correctly-predicted-branch sources.
 Commit-time regfile muxing turns ROB commit into INT or FP regfile
 writes (with a special case to pull CSR read data from the
-combinational `csr_file` read instead of the ROB's value field).
+`csr_file`'s registered, one-cycle-delayed read instead of the ROB's
+value field — this keeps the commit CSR address off the same-cycle
+regfile/dispatch source-value path).
 
 ## Directory contents
 
@@ -103,7 +105,7 @@ combinational `csr_file` read instead of the ROB's value field).
 | [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. See its README for everything inside. |
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
-| `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR reads happen in ID; writes commit through the ROB serializing FSM. |
+| `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |
 | `control/`                          | **Mostly legacy** | Only `trap_unit.sv` is reused. The forwarding/hazard units are in-order leftovers — Tomasulo handles those natively. |
 | `ex_stage/`                         | **Repurposed** | `branch_jump_unit.sv` is instantiated directly at top level. ALU/MUL/DIV/FPU are reused via the FU shims in `tomasulo/fu_shims/`. |
 | `ma_stage/`, `cache/`               | **Legacy**    | In-order memory access stage and L0 cache. Replaced by the LQ + SQ + `lq_l0_cache` inside `tomasulo/`. Not in `cpu_ooo.f`. |
