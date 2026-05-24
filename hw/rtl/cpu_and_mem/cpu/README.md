@@ -13,16 +13,36 @@ The reused functional units (ALU, multiplier, divider, FPU) live under
 
 ## What lives in cpu_ooo.sv
 
-The module is mostly straightforward instantiation and wiring of the
-front-end stages, the dispatch unit, `tomasulo_wrapper`, the CSR file,
-the trap unit, and a standalone `branch_jump_unit` for combinational
-branch resolution.
+`cpu_ooo` and its private glue submodules live under
+[`cpu_ooo/`](cpu_ooo/). The module instantiates the front-end stages, the
+dispatch unit, `tomasulo_wrapper`, the CSR file, the trap unit, a standalone
+`branch_jump_unit` for combinational branch resolution, and the OOO-core glue
+submodules below.
 
-What makes it interesting is the inline integration logic that
-straddles the front-end / back-end boundary — roughly half of the
-file. The blocks below could plausibly become their own modules
-later, but currently they live here because each one consumes
-signals from both the in-order front-end and the OOO back-end.
+Much of the front-end / back-end integration logic that used to sit inline has
+been factored into those submodules (no functional change — pure boundary
+moves). What remains inline in `cpu_ooo.sv` is the most tightly
+front-end/back-end-coupled control: branch resolution, early-misprediction
+recovery, the commit-time misprediction & flush controller, and the
+dispatch-stall aggregation core.
+
+### OOO-core glue submodules (`cpu_ooo/`)
+
+| Submodule | Dir | What it does |
+|-----------|-----|------------|
+| `ooo_register_files` | `register_files/` | INT + FP architectural register files (two write ports for widen-commit) plus the same-cycle write-back bypass feeding ID and dispatch. |
+| `frontend_validity_tracker` | `frontend_control/` | Staged IF/PD valid tracking (NOP-bubble filtering), the `id_valid`/`id_valid_2` dispatch enables, and IF/PD/ID (unpredicted) control-flow detection that drives the prediction-fence / serialization hints. |
+| `commit_actions` | `commit/` | Widen-commit INT/FP regfile write-port muxing from ROB commit, the delayed CSR writeback, the `csr_commit_fire`/`csr_wb_pending` handshakes, retire valid, and the instret increment. |
+| `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, the one-deep blocked-load replay register, and the MMIO load/read sidebands. |
+| `ex_comb_synthesizer` | `recovery/` | Synthesizes the `from_ex_comb_t` the IF stage expects (redirect / BTB update / RAS restore), multiplexing the early-recovery, commit-recovery, and correct-branch-commit sources. |
+| `perf_counter_aggregator` | `perf/` | The ~23 top-level performance counters (accumulate / snapshot / mux to the CSR read port). |
+| `cpu_ooo_pkg` | `cpu_ooo/` | Internal capture structs shared between `cpu_ooo` and the recovery / commit / `from_ex_comb` glue. |
+
+## Still inline in cpu_ooo.sv
+
+These blocks remain at the top level because each one consumes signals from
+both the in-order front-end and the OOO back-end. They are the natural next
+candidates for extraction.
 
 ### Early misprediction recovery
 
@@ -65,8 +85,10 @@ instruction until they commit; an unresolved older branch blocks
 fetch of a younger unpredicted JALR/return so the indirect target
 prediction stays fresh.
 
-It also owns the performance counters (~23 of them, banked into
-groups to keep readout fanout under control).
+The IF/PD/ID control-flow detection that feeds these serialization/prediction
+hints now lives in `frontend_validity_tracker`, and the ~23 performance
+counters moved to `perf_counter_aggregator`; the dispatch-stall aggregation
+core is what remains here.
 
 ### 2-wide dispatch integration
 
@@ -78,30 +100,11 @@ BTB-predicted branch/JALR when the slot-2 BTB lookup hits. Native 32-bit slot-2
 branches at halfword PCs are supported when the BTB entry was trained for that
 instruction size.
 
-### Memory port arbitration
-
-A small fixed-priority arbiter — SQ writes > AMO writes > LQ reads —
-multiplexing the single external data memory port. Loads that arrive
-while the bus is busy are held in a one-deep request register and
-replayed when the bus frees up. The MMIO load-address side-band
-strobe is generated here from the data memory address against the
-platform's MMIO address range.
-
-### Other inline blocks
-
-`from_ex_comb` synthesis assembles the redirect / BTB-update / RAS-restore
-struct that the IF stage expects, multiplexing among the early-recovery,
-commit-time-recovery, and correctly-predicted-branch sources.
-Commit-time regfile muxing turns ROB commit into INT or FP regfile
-writes (with a special case to pull CSR read data from the
-`csr_file`'s registered, one-cycle-delayed read instead of the ROB's
-value field — this keeps the commit CSR address off the same-cycle
-regfile/dispatch source-value path).
-
 ## Directory contents
 
 | Path                                | Status        | What it is |
 |-------------------------------------|---------------|------------|
+| [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration), `cpu_ooo_pkg`, and the OOO-core glue submodules extracted from the top level (see the table above). |
 | [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. See its README for everything inside. |
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
