@@ -527,136 +527,14 @@ module tomasulo_wrapper #(
   assign o_commit_2_valid_raw      = commit_2_valid_raw;
   assign o_commit_2_store_like_raw = commit_2_store_like_raw;
 
-  localparam int unsigned WrapperPerfCounterCount = 60;
-  localparam int unsigned PerfHeadWaitTotal = 0;
-  localparam int unsigned PerfHeadWaitInt = 1;
-  localparam int unsigned PerfHeadWaitBranch = 2;
-  localparam int unsigned PerfHeadWaitMul = 3;
-  localparam int unsigned PerfHeadWaitMemLoad = 4;
-  localparam int unsigned PerfHeadWaitMemStore = 5;
-  localparam int unsigned PerfHeadWaitMemAmo = 6;
-  localparam int unsigned PerfHeadWaitFp = 7;
-  localparam int unsigned PerfHeadWaitFmul = 8;
-  localparam int unsigned PerfHeadWaitFdiv = 9;
-  localparam int unsigned PerfCommitBlockedCsr = 10;
-  localparam int unsigned PerfCommitBlockedFence = 11;
-  localparam int unsigned PerfCommitBlockedWfi = 12;
-  localparam int unsigned PerfCommitBlockedMret = 13;
-  localparam int unsigned PerfCommitBlockedTrap = 14;
-  localparam int unsigned PerfIntBackpressure = 15;
-  localparam int unsigned PerfMulBackpressure = 16;
-  localparam int unsigned PerfMemResultBackpressure = 17;
-  localparam int unsigned PerfFpAddBackpressure = 18;
-  localparam int unsigned PerfFmulBackpressure = 19;
-  localparam int unsigned PerfFdivBackpressure = 20;
-  localparam int unsigned PerfMemDisambiguationWait = 21;
-  localparam int unsigned PerfSqCommittedPending = 22;
-  localparam int unsigned PerfSqMemWriteFire = 23;
-  localparam int unsigned PerfLqMemReadFire = 24;
-  localparam int unsigned PerfRobOccupancySum = 25;
-  localparam int unsigned PerfLqOccupancySum = 26;
-  localparam int unsigned PerfSqOccupancySum = 27;
-  localparam int unsigned PerfIntRsOccupancySum = 28;
-  localparam int unsigned PerfMulRsOccupancySum = 29;
-  localparam int unsigned PerfMemRsOccupancySum = 30;
-  localparam int unsigned PerfFpRsOccupancySum = 31;
-  localparam int unsigned PerfFmulRsOccupancySum = 32;
-  localparam int unsigned PerfFdivRsOccupancySum = 33;
-  localparam int unsigned PerfLqL0Hit = 34;
-  localparam int unsigned PerfLqL0Fill = 35;
-  // Diagnostic: widen-commit viability. Fires when single-wide commit is
-  // retiring head and the next ROB entry would also have been retirable.
-  localparam int unsigned PerfHeadAndNextDone = 36;
-  // Diagnostic: head_wait_mem_load partition. A head load waiting while
-  // the LQ has a memory response in flight (real cache miss latency).
-  localparam int unsigned PerfHeadWaitLoadOutstanding = 37;
-  // Diagnostic: head_wait_mem_load partition. A head load waiting while no
-  // mem response is in flight (stuck on SQ disambig, issue-ready, or L0
-  // arbitration). This is the bucket widen-commit / LQ issue fixes could
-  // attack; straight latency reduction cannot.
-  localparam int unsigned PerfHeadWaitLoadNoOutstanding = 38;
-  // Diagnostic: ungated "head+1 done" — fires whether or not commit_en is
-  // high. Subtract PerfHeadAndNextDone to see drain-behind-stalled-head
-  // opportunity (ROB has done entries stacking behind a waiting head).
-  localparam int unsigned PerfHeadPlusOneDone = 39;
-  // Diagnostic: widen-commit fire-rate predictor. Tighter than
-  // PerfHeadAndNextDone because the hazard gate (serial ops, head+1 branches,
-  // FENCE.I, exceptions, AMO/LR/SC, head-mispredict) is already applied.
-  // This is the opportunity upper bound.
-  localparam int unsigned PerfCommit2Opportunity = 40;
-  // Diagnostic: ACTUAL widen-commit fire count.  commit_2_opportunity
-  // ANDed with the master enable and the cpu_ooo pending-write FIFO
-  // back-pressure.  The gap between opportunity and fire_actual is the
-  // fraction blocked by FIFO pressure.
-  localparam int unsigned PerfCommit2FireActual = 41;
-  // Head-load sub-bucket split of head_wait_load_no_outstanding (the 27.7%
-  // bucket post widen-commit).  Each sub-counter fires inside the parent
-  // bucket so the four should roughly sum to head_wait_load_no_outstanding.
-  //   AddrPending   : head load in LQ with address not yet computed
-  //                   (rs1/MEM_RS dep chain)
-  //   SqDisambig    : in LQ with address, blocked by SQ address disambig
-  //   BusBlocked    : in LQ with address, blocked by bus / arbitration
-  //                   (not SQ disambig)
-  //   CdbWait       : in LQ with data ready, waiting for cdb_stage capture
-  //   PostLq        : LQ entry already freed, CDB pipeline draining to ROB
-  //                   (cdb_stage -> mem_adapter -> cdb_arbiter -> rob_done)
-  localparam int unsigned PerfHeadLoadAddrPending = 42;
-  localparam int unsigned PerfHeadLoadSqDisambig = 43;
-  localparam int unsigned PerfHeadLoadBusBlocked = 44;
-  localparam int unsigned PerfHeadLoadCdbWait = 45;
-  localparam int unsigned PerfHeadLoadPostLq = 46;
-  //   BusBlocked sub-buckets (mutually exclusive partition of bus_blocked):
-  //   BbIssued   : head already launched, waiting for response (edge case)
-  //   BbBusBusy  : i_mem_bus_busy (SQ write / AMO write / backend recovery)
-  //   BbAmo      : older AMO pending (blocks younger loads via prefix-OR)
-  //   BbSqWait   : in sq_check but !sq_check_phase2 (one-cycle phase2 delay)
-  //   BbStaging  : remainder (pre-sq_check capture stage, drop-response, etc.)
-  localparam int unsigned PerfHeadLoadBbIssued = 47;
-  localparam int unsigned PerfHeadLoadBbBusBusy = 48;
-  localparam int unsigned PerfHeadLoadBbAmo = 49;
-  localparam int unsigned PerfHeadLoadBbSqWait = 50;
-  localparam int unsigned PerfHeadLoadBbStaging = 51;
-  // head_wait_int decomposition (partitions head_wait_int exactly):
-  //   OperandWait      : INT_RS has head's entry, some source operand not ready
-  //                      (dep chain shadow — a producer is still in flight)
-  //   RsReadyNotIssued : INT_RS has head's entry, all operands ready, but it
-  //                      hasn't been selected (fu_ready blocked, or lower RS
-  //                      idx took priority)
-  //   Stage2           : past RS, parked in the INT_RS stage2 register
-  //                      (fu_ready blocked or in-flight-cycle of ALU)
-  //   PostRs           : past RS and stage2, draining through shim/adapter/
-  //                      cdb_arbiter/cdb_bus_reg on its way to rob_done
-  localparam int unsigned PerfHeadIntOperandWait = 52;
-  localparam int unsigned PerfHeadIntRsReadyNotIssued = 53;
-  localparam int unsigned PerfHeadIntStage2 = 54;
-  localparam int unsigned PerfHeadIntPostRs = 55;
-  // Widen-commit blocker decomposition. Sum of these four equals
-  // (head_and_next_done - commit_2_opportunity) — the "hazard gap" where
-  // commit is firing 1-wide even though head+1 is also done.
-  localparam int unsigned PerfCommit2BlockedHeadSerial = 56;
-  localparam int unsigned PerfCommit2BlockedNextSerial = 57;
-  localparam int unsigned PerfCommit2BlockedNextBranchMispred = 58;
-  localparam int unsigned PerfCommit2BlockedNextBranchCorrect = 59;
-
-  logic [63:0] perf_live[WrapperPerfCounterCount];
-  logic [63:0] perf_snapshot[WrapperPerfCounterCount];
-  logic [63:0] perf_inc[WrapperPerfCounterCount];
-  logic [63:0] perf_inc_q[WrapperPerfCounterCount];
-  localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
-  (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
-  (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
-  (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;
-  (* max_fanout = 768 *)logic perf_snapshot_capture_bank3;
+  // Back-end profiling counters (params, storage, accumulate/snapshot/mux) live
+  // in tomasulo_perf_counters; instantiated below.
 
   // Expose both the raw and registered commit buses.
-  assign o_commit_comb               = commit_bus;
-  assign o_commit                    = commit_bus_q_qualified;
-  assign o_commit_comb_2             = commit_bus_2;
-  assign o_commit_2                  = commit_bus_2_q_qualified;
-  assign perf_snapshot_capture_bank0 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank1 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank2 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank3 = i_perf_snapshot_capture;
+  assign o_commit_comb             = commit_bus;
+  assign o_commit                  = commit_bus_q_qualified;
+  assign o_commit_comb_2           = commit_bus_2;
+  assign o_commit_2                = commit_bus_2_q_qualified;
 
   // ROB entry valid/done vectors: ROB -> RAT/dispatch
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;
@@ -3124,172 +3002,57 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Backend Profiling Counters
   // ===========================================================================
-  always_comb begin
-    for (int i = 0; i < WrapperPerfCounterCount; i++) begin
-      perf_inc[i] = '0;
-    end
-
-    perf_inc[PerfHeadWaitTotal] = {{63{1'b0}}, rob_perf_events.head_wait_total};
-    perf_inc[PerfHeadWaitInt] = {{63{1'b0}}, rob_perf_events.head_wait_int};
-    perf_inc[PerfHeadWaitBranch] = {{63{1'b0}}, rob_perf_events.head_wait_branch};
-    perf_inc[PerfHeadWaitMul] = {{63{1'b0}}, rob_perf_events.head_wait_mul};
-    perf_inc[PerfHeadWaitMemLoad] = {{63{1'b0}}, rob_perf_events.head_wait_mem_load};
-    perf_inc[PerfHeadWaitMemStore] = {{63{1'b0}}, rob_perf_events.head_wait_mem_store};
-    perf_inc[PerfHeadWaitMemAmo] = {{63{1'b0}}, rob_perf_events.head_wait_mem_amo};
-    perf_inc[PerfHeadWaitFp] = {{63{1'b0}}, rob_perf_events.head_wait_fp};
-    perf_inc[PerfHeadWaitFmul] = {{63{1'b0}}, rob_perf_events.head_wait_fmul};
-    perf_inc[PerfHeadWaitFdiv] = {{63{1'b0}}, rob_perf_events.head_wait_fdiv};
-    perf_inc[PerfCommitBlockedCsr] = {{63{1'b0}}, rob_perf_events.commit_blocked_csr};
-    perf_inc[PerfCommitBlockedFence] = {{63{1'b0}}, rob_perf_events.commit_blocked_fence};
-    perf_inc[PerfCommitBlockedWfi] = {{63{1'b0}}, rob_perf_events.commit_blocked_wfi};
-    perf_inc[PerfCommitBlockedMret] = {{63{1'b0}}, rob_perf_events.commit_blocked_mret};
-    perf_inc[PerfCommitBlockedTrap] = {{63{1'b0}}, rob_perf_events.commit_blocked_trap};
-
-    perf_inc[PerfIntBackpressure] = {{63{1'b0}}, (!int_rs_fu_ready && !o_rs_empty)};
-    perf_inc[PerfMulBackpressure] = {{63{1'b0}}, (!mul_rs_fu_ready && !o_mul_rs_empty)};
-    perf_inc[PerfMemResultBackpressure] = {
-      {63{1'b0}}, (mem_fu_to_adapter.valid && mem_adapter_result_pending)
-    };
-    perf_inc[PerfFpAddBackpressure] = {{63{1'b0}}, (!fp_rs_fu_ready && !o_fp_rs_empty)};
-    perf_inc[PerfFmulBackpressure] = {{63{1'b0}}, (!fmul_rs_fu_ready && !o_fmul_rs_empty)};
-    perf_inc[PerfFdivBackpressure] = {{63{1'b0}}, (!fdiv_rs_fu_ready && !o_fdiv_rs_empty)};
-    perf_inc[PerfMemDisambiguationWait] = {
-      {63{1'b0}}, (sq_check_valid && !sq_all_older_addrs_known)
-    };
-    perf_inc[PerfSqCommittedPending] = {{63{1'b0}}, !sq_committed_empty};
-    perf_inc[PerfSqMemWriteFire] = {{63{1'b0}}, o_sq_mem_write_en};
-    perf_inc[PerfLqMemReadFire] = {{63{1'b0}}, o_lq_mem_read_en};
-    perf_inc[PerfRobOccupancySum] = {{(64 - $bits(o_rob_count)) {1'b0}}, o_rob_count};
-    perf_inc[PerfLqOccupancySum] = {{(64 - $bits(o_lq_count)) {1'b0}}, o_lq_count};
-    perf_inc[PerfSqOccupancySum] = {{(64 - $bits(o_sq_count)) {1'b0}}, o_sq_count};
-    perf_inc[PerfIntRsOccupancySum] = {{(64 - $bits(o_rs_count)) {1'b0}}, o_rs_count};
-    perf_inc[PerfMulRsOccupancySum] = {{(64 - $bits(o_mul_rs_count)) {1'b0}}, o_mul_rs_count};
-    perf_inc[PerfMemRsOccupancySum] = {{(64 - $bits(o_mem_rs_count)) {1'b0}}, o_mem_rs_count};
-    perf_inc[PerfFpRsOccupancySum] = {{(64 - $bits(o_fp_rs_count)) {1'b0}}, o_fp_rs_count};
-    perf_inc[PerfFmulRsOccupancySum] = {{(64 - $bits(o_fmul_rs_count)) {1'b0}}, o_fmul_rs_count};
-    perf_inc[PerfFdivRsOccupancySum] = {{(64 - $bits(o_fdiv_rs_count)) {1'b0}}, o_fdiv_rs_count};
-    perf_inc[PerfLqL0Hit] = {{63{1'b0}}, lq_l0_hit};
-    perf_inc[PerfLqL0Fill] = {{63{1'b0}}, lq_l0_fill};
-    perf_inc[PerfHeadAndNextDone] = {{63{1'b0}}, rob_perf_events.head_and_next_done};
-    perf_inc[PerfHeadWaitLoadOutstanding] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && lq_mem_outstanding)
-    };
-    perf_inc[PerfHeadWaitLoadNoOutstanding] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding)
-    };
-    perf_inc[PerfHeadPlusOneDone] = {{63{1'b0}}, rob_perf_events.head_plus_one_done};
-    perf_inc[PerfCommit2Opportunity] = {{63{1'b0}}, rob_perf_events.commit_2_opportunity};
-    perf_inc[PerfCommit2FireActual] = {{63{1'b0}}, rob_perf_events.commit_2_fire_actual};
-    // Head-load sub-buckets: gate with parent head_wait_mem_load && !mem_outstanding
-    // so they split head_wait_load_no_outstanding exactly.
-    perf_inc[PerfHeadLoadAddrPending] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_addr_pending)
-    };
-    perf_inc[PerfHeadLoadSqDisambig] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_sq_disambig)
-    };
-    perf_inc[PerfHeadLoadBusBlocked] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bus_blocked)
-    };
-    perf_inc[PerfHeadLoadCdbWait] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_cdb_wait)
-    };
-    perf_inc[PerfHeadLoadPostLq] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_post_lq)
-    };
-    // bus_blocked sub-buckets: same gating as parent bus_blocked bucket.
-    perf_inc[PerfHeadLoadBbIssued] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_issued)
-    };
-    perf_inc[PerfHeadLoadBbBusBusy] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_bus_busy)
-    };
-    perf_inc[PerfHeadLoadBbAmo] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_amo)
-    };
-    perf_inc[PerfHeadLoadBbSqWait] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_sq_wait)
-    };
-    perf_inc[PerfHeadLoadBbStaging] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
-    };
-    // head_wait_int decomposition — mutually exclusive partition of the
-    // parent bucket. Gated on rob_perf_events.head_wait_int so all four
-    // sub-counters sum (to within scan latency) to head_wait_int.
-    perf_inc[PerfHeadIntOperandWait] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_int && int_rs_head_in_rs && !int_rs_head_rs_ready)
-    };
-    perf_inc[PerfHeadIntRsReadyNotIssued] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_int && int_rs_head_in_rs && int_rs_head_rs_ready)
-    };
-    perf_inc[PerfHeadIntStage2] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_int && !int_rs_head_in_rs && int_rs_head_in_stage2)
-    };
-    perf_inc[PerfHeadIntPostRs] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_int && !int_rs_head_in_rs && !int_rs_head_in_stage2)
-    };
-    // Widen-commit blocker decomposition — all four are gated in the ROB
-    // on (commit_en && head_next_valid_done), so their sum equals the gap
-    // between head_and_next_done and commit_2_opportunity.
-    perf_inc[PerfCommit2BlockedHeadSerial] = {
-      {63{1'b0}}, rob_perf_events.commit_2_blocked_head_serial
-    };
-    perf_inc[PerfCommit2BlockedNextSerial] = {
-      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_serial
-    };
-    perf_inc[PerfCommit2BlockedNextBranchMispred] = {
-      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_branch_mispred
-    };
-    perf_inc[PerfCommit2BlockedNextBranchCorrect] = {
-      {63{1'b0}}, rob_perf_events.commit_2_blocked_next_branch_correct
-    };
-  end
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      for (int i = 0; i < WrapperPerfCounterCount; i++) begin
-        perf_inc_q[i] <= '0;
-        perf_live[i] <= '0;
-        perf_snapshot[i] <= '0;
-      end
-    end else begin
-      for (int i = 0; i < WrapperPerfCounterCount; i++) begin
-        perf_inc_q[i] <= perf_inc[i];
-        perf_live[i]  <= perf_live[i] + perf_inc_q[i];
-        if (i < PerfSnapshotBankSpan) begin
-          if (perf_snapshot_capture_bank0) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
-          end
-        end else if (i < (2 * PerfSnapshotBankSpan)) begin
-          if (perf_snapshot_capture_bank1) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
-          end
-        end else if (i < (3 * PerfSnapshotBankSpan)) begin
-          if (perf_snapshot_capture_bank2) begin
-            perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
-          end
-        end else if (perf_snapshot_capture_bank3) begin
-          perf_snapshot[i] <= perf_live[i] + perf_inc_q[i];
-        end
-      end
-    end
-  end
-
-  always_comb begin
-    o_perf_counter_data = '0;
-    if (i_perf_counter_select < 8'(WrapperPerfCounterCount)) begin
-      o_perf_counter_data = perf_snapshot[i_perf_counter_select[5:0]];
-    end
-  end
+  // The 60 back-end profiling counters live in tomasulo_perf_counters.
+  tomasulo_perf_counters tomasulo_perf_counters_inst (
+      .i_clk,
+      .i_rst_n,
+      .i_rob_perf_events(rob_perf_events),
+      .i_int_rs_fu_ready(int_rs_fu_ready),
+      .i_o_rs_empty(o_rs_empty),
+      .i_mul_rs_fu_ready(mul_rs_fu_ready),
+      .i_o_mul_rs_empty(o_mul_rs_empty),
+      .i_mem_fu_to_adapter(mem_fu_to_adapter),
+      .i_mem_adapter_result_pending(mem_adapter_result_pending),
+      .i_fp_rs_fu_ready(fp_rs_fu_ready),
+      .i_o_fp_rs_empty(o_fp_rs_empty),
+      .i_fmul_rs_fu_ready(fmul_rs_fu_ready),
+      .i_o_fmul_rs_empty(o_fmul_rs_empty),
+      .i_fdiv_rs_fu_ready(fdiv_rs_fu_ready),
+      .i_o_fdiv_rs_empty(o_fdiv_rs_empty),
+      .i_sq_check_valid(sq_check_valid),
+      .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
+      .i_sq_committed_empty(sq_committed_empty),
+      .i_o_sq_mem_write_en(o_sq_mem_write_en),
+      .i_o_lq_mem_read_en(o_lq_mem_read_en),
+      .i_o_rob_count(o_rob_count),
+      .i_o_lq_count(o_lq_count),
+      .i_o_sq_count(o_sq_count),
+      .i_o_rs_count(o_rs_count),
+      .i_o_mul_rs_count(o_mul_rs_count),
+      .i_o_mem_rs_count(o_mem_rs_count),
+      .i_o_fp_rs_count(o_fp_rs_count),
+      .i_o_fmul_rs_count(o_fmul_rs_count),
+      .i_o_fdiv_rs_count(o_fdiv_rs_count),
+      .i_lq_l0_hit(lq_l0_hit),
+      .i_lq_l0_fill(lq_l0_fill),
+      .i_lq_mem_outstanding(lq_mem_outstanding),
+      .i_lq_head_load_addr_pending(lq_head_load_addr_pending),
+      .i_lq_head_load_sq_disambig(lq_head_load_sq_disambig),
+      .i_lq_head_load_bus_blocked(lq_head_load_bus_blocked),
+      .i_lq_head_load_cdb_wait(lq_head_load_cdb_wait),
+      .i_lq_head_load_post_lq(lq_head_load_post_lq),
+      .i_lq_head_load_bb_issued(lq_head_load_bb_issued),
+      .i_lq_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
+      .i_lq_head_load_bb_amo(lq_head_load_bb_amo),
+      .i_lq_head_load_bb_sq_wait(lq_head_load_bb_sq_wait),
+      .i_lq_head_load_bb_staging(lq_head_load_bb_staging),
+      .i_int_rs_head_in_rs(int_rs_head_in_rs),
+      .i_int_rs_head_rs_ready(int_rs_head_rs_ready),
+      .i_int_rs_head_in_stage2(int_rs_head_in_stage2),
+      .i_perf_snapshot_capture(i_perf_snapshot_capture),
+      .i_perf_counter_select(i_perf_counter_select),
+      .o_perf_counter_data(o_perf_counter_data)
+  );
 
 
   // ===========================================================================
