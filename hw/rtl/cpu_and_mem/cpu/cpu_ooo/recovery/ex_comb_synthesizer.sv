@@ -42,12 +42,12 @@ module ex_comb_synthesizer #(
     input logic [  riscv_pkg::RasPtrBits:0] i_restored_ras_valid_count,
 
     // Commit-time misprediction recovery path.
-    input logic                                    i_mispredict_recovery_pending,
-    input cpu_ooo_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
+    input logic                                  i_mispredict_recovery_pending,
+    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
 
     // Correctly-predicted branch commit path (BTB update only).
-    input logic                                        i_correct_branch_commit_pending,
-    input cpu_ooo_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
+    input logic                                      i_correct_branch_commit_pending,
+    input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
 
     output riscv_pkg::from_ex_comb_t o_from_ex_comb
 );
@@ -62,9 +62,9 @@ module ex_comb_synthesizer #(
   logic [riscv_pkg::RasPtrBits-1:0] restored_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] restored_ras_valid_count;
   logic mispredict_recovery_pending;
-  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic correct_branch_commit_pending;
-  cpu_ooo_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
   assign early_mispredict_active        = i_early_mispredict_active;
   assign early_mispredict_redirect_pc   = i_early_mispredict_redirect_pc;
   assign early_mispredict_pc            = i_early_mispredict_pc;

@@ -52,14 +52,14 @@ module misprediction_flush_controller #(
     input logic i_fence_i_flush,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_younger_than_flush,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0]
-        i_checkpoint_owner_tag[riscv_pkg::NumCheckpoints],
+    input logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0]
+        i_checkpoint_owner_tag,
 
-    output cpu_ooo_pkg::mispredict_commit_capture_t o_mispredict_commit_q,
+    output riscv_pkg::mispredict_commit_capture_t o_mispredict_commit_q,
     output logic o_mispredict_recovery_pending,
     output logic [XLEN-1:0] o_fence_i_target_pc,
     output logic o_correct_branch_commit_pending,
-    output cpu_ooo_pkg::correct_branch_commit_capture_t o_correct_branch_commit_q,
+    output riscv_pkg::correct_branch_commit_capture_t o_correct_branch_commit_q,
     output logic o_flush_pipeline,
     output logic o_dispatch_flush,
     output logic o_full_flush_side_effect_kill,
@@ -94,7 +94,7 @@ module misprediction_flush_controller #(
   logic fence_i_flush;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_younger_than_flush;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag[riscv_pkg::NumCheckpoints];
+  logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   assign rob_commit_misprediction_raw   = i_rob_commit_misprediction_raw;
   assign rob_commit_correct_branch_raw  = i_rob_commit_correct_branch_raw;
   assign rob_commit_comb                = i_rob_commit_comb;
@@ -111,10 +111,10 @@ module misprediction_flush_controller #(
   assign fence_i_flush                  = i_fence_i_flush;
   assign checkpoint_in_use              = i_checkpoint_in_use;
   assign checkpoint_younger_than_flush  = i_checkpoint_younger_than_flush;
-  always_comb checkpoint_owner_tag = i_checkpoint_owner_tag;
+  assign checkpoint_owner_tag           = i_checkpoint_owner_tag;
 
   // Outputs produced below (also read internally); wired to o_* at the end.
-  cpu_ooo_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic mispredict_recovery_pending;
   logic [XLEN-1:0] fence_i_target_pc;
   logic flush_pipeline;
@@ -178,7 +178,7 @@ module misprediction_flush_controller #(
 
   // Register correctly-predicted branch commit for BTB update + checkpoint free.
   logic correct_branch_commit_pending;
-  cpu_ooo_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
 
   // Correct branch: predicted correctly AND not early-recovered (a misprediction)
   wire commit_is_correct_branch = rob_commit_correct_branch_raw;
