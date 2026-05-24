@@ -33,6 +33,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 
 # OOO core glue submodules (extracted from cpu_ooo top-level)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
 
 # OOO CPU top-level integration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv
