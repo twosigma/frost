@@ -32,4 +32,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 
 # OOO CPU top-level integration
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv
