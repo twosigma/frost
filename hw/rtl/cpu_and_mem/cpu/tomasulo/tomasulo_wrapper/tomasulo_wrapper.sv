@@ -60,8 +60,7 @@ module tomasulo_wrapper #(
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
-    // Slot-2 allocation port for 2-wide dispatch (Session A foundation).
-    // Hard-tied off by cpu_ooo until dispatch is widened in later sessions.
+    // Slot-2 allocation port for 2-wide dispatch.
     // Contract: alloc_valid_2 only asserts when alloc_valid is also set.
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req_2,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp_2,
@@ -216,8 +215,8 @@ module tomasulo_wrapper #(
     output riscv_pkg::rat_lookup_t                               o_fp_src2,
     output riscv_pkg::rat_lookup_t                               o_fp_src3,
 
-    // Slot-2 source lookups (2-wide dispatch).  Currently driven from
-    // cpu_ooo as zero address until ID widening lands in Session E.
+    // Slot-2 source lookups (2-wide dispatch).  Driven with slot-2's source
+    // addresses; the integer results feed slot-2 rename in dispatch.
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src1_addr_2,
     input  logic                   [riscv_pkg::RegAddrWidth-1:0] i_int_src2_addr_2,
     output riscv_pkg::rat_lookup_t                               o_int_src1_2,
@@ -253,7 +252,7 @@ module tomasulo_wrapper #(
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_rat_alloc_dest_reg,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rat_alloc_rob_tag,
 
-    // Slot 2 (2-wide dispatch).  Hard-tied off in cpu_ooo until Sessions D-F.
+    // Slot 2 (2-wide dispatch).  valid_2 asserts when slot-2 renames a dest.
     input logic                                        i_rat_alloc_valid_2,
     input logic                                        i_rat_alloc_dest_rf_2,
     input logic [         riscv_pkg::RegAddrWidth-1:0] i_rat_alloc_dest_reg_2,
@@ -277,7 +276,6 @@ module tomasulo_wrapper #(
     input  logic                                    i_checkpoint_restore,
     input  logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
     input  logic                                    i_checkpoint_restore_reclaim_all,
-    input  logic [   riscv_pkg::NumCheckpoints-1:0] i_checkpoint_reclaim_mask,
     input  logic [   riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
     output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
@@ -304,10 +302,9 @@ module tomasulo_wrapper #(
     input riscv_pkg::rs_dispatch_t i_fp_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_fmul_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_fdiv_rs_dispatch,
-    // Slot-2 RS dispatch ports (2-wide dispatch, Session C plumbing).  The
-    // dispatch unit drives the slot-2 packet on the port for the RS family
-    // matching slot-2's rs_type; cpu_ooo holds these inactive until later
-    // sessions widen ID/PD/IF.
+    // Slot-2 RS dispatch ports (2-wide dispatch).  The dispatch unit drives
+    // the slot-2 packet on the port for the RS family matching slot-2's
+    // rs_type, asserting .valid only there when slot-2 fires.
     input riscv_pkg::rs_dispatch_t i_int_rs_dispatch_2,
     input riscv_pkg::rs_dispatch_t i_mul_rs_dispatch_2,
     input riscv_pkg::rs_dispatch_t i_mem_rs_dispatch_2,
@@ -872,10 +869,10 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Slot-2 dispatch routing.  The dispatch unit (Sessions D-F) decodes slot-2's
-  // rs_type and asserts the matching i_*_rs_dispatch_2.valid; the wrapper
-  // simply gates each by !backend_recovery_hold.  Legacy non-split mode does
-  // not support slot-2, so all slot-2 valids are zero in that case.
+  // Slot-2 dispatch routing.  The dispatch unit decodes slot-2's rs_type and
+  // asserts the matching i_*_rs_dispatch_2.valid; the wrapper simply gates each
+  // by !backend_recovery_hold.  Legacy non-split mode does not support slot-2,
+  // so all slot-2 valids are zero in that case.
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
       int_rs_dispatch_valid_2  = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
@@ -1703,7 +1700,6 @@ module tomasulo_wrapper #(
       .i_checkpoint_restore            (i_checkpoint_restore),
       .i_checkpoint_restore_id         (i_checkpoint_restore_id),
       .i_checkpoint_restore_reclaim_all(i_checkpoint_restore_reclaim_all),
-      .i_checkpoint_reclaim_mask       (i_checkpoint_reclaim_mask),
       .i_checkpoint_flush_free_mask    (i_checkpoint_flush_free_mask),
       .o_ras_tos                       (o_ras_tos),
       .o_ras_valid_count               (o_ras_valid_count),
@@ -1730,7 +1726,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
 
   // ---------------------------------------------------------------------------
-  // INT_RS (depth 8): Integer ALU ops, branches, CSR
+  // INT_RS (depth 16): Integer ALU ops, branches, CSR
   // ---------------------------------------------------------------------------
   // Packed struct port connections.
 
@@ -1932,8 +1928,7 @@ module tomasulo_wrapper #(
       // Dispatch has already checked MEM_RS exact full/full_for_2 status
       // before asserting these per-RS valid bits. Avoid re-feeding full into
       // the MEM_RS count update, which sits on the post-synth WNS path.
-      .TRUST_DISPATCH_VALID(1'b1),
-      .BYPASS_STAGE2(1'b0)
+      .TRUST_DISPATCH_VALID(1'b1)
   ) u_mem_rs (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
@@ -2524,9 +2519,8 @@ module tomasulo_wrapper #(
   riscv_pkg::lq_alloc_req_t lq_alloc_req_2;
   always_comb begin
     lq_alloc_req   = make_lq_alloc(mem_rs_dispatch_valid, mem_rs_dispatch);
-    // Slot-2 LQ alloc derived from slot-2's mem_rs_dispatch packet.  Held
-    // inactive until dispatch widens (Session D) — cpu_ooo ties the slot-2
-    // mem_rs_dispatch_2 input to '0 in the meantime.
+    // Slot-2 LQ alloc derived from slot-2's mem_rs_dispatch packet; valid when
+    // slot-2 is a load.
     lq_alloc_req_2 = make_lq_alloc(mem_rs_dispatch_valid_2, mem_rs_dispatch_2);
   end
 
@@ -2702,8 +2696,8 @@ module tomasulo_wrapper #(
   riscv_pkg::sq_alloc_req_t sq_alloc_req_2;
   always_comb begin
     sq_alloc_req   = make_sq_alloc(mem_rs_dispatch_valid, mem_rs_dispatch);
-    // Slot-2 SQ alloc derived from slot-2's mem_rs_dispatch packet.  Held
-    // inactive until dispatch widens (Session D).
+    // Slot-2 SQ alloc derived from slot-2's mem_rs_dispatch packet; valid when
+    // slot-2 is a store.
     sq_alloc_req_2 = make_sq_alloc(mem_rs_dispatch_valid_2, mem_rs_dispatch_2);
   end
 

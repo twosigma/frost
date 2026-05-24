@@ -32,13 +32,13 @@
  *
  * Storage Strategy:
  *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
- *   data_valid, issued, is_lr, is_amo, rob_tag, address, size, etc.)
- *   remain in FFs for CAM-style parallel tag search, per-entry
+ *   data_valid, issued, is_lr, is_amo, rob_tag, size, etc.) remain in
+ *   FFs for CAM-style parallel tag search (matched on rob_tag), per-entry
  *   invalidation, and oldest-first priority scan.
- *   lq_data (load result payload) lives in distributed RAM
+ *   The load address (sdp_dist_ram) and load-result payload lq_data
  *   (mwp_dist_ram, split lo/hi for FLD partial writes, 2 write ports
- *   for primary + AMO overlap).  Valid bits in FFs gate all reads;
- *   stale LUTRAM data behind flushed entries is harmless.
+ *   for primary + AMO overlap) live in distributed RAM.  Valid bits in
+ *   FFs gate all reads; stale LUTRAM data behind flushed entries is harmless.
  *
  * Internal load_unit instance:
  *   Byte/halfword extraction and sign extension for LB/LBU/LH/LHU.
@@ -57,10 +57,9 @@ module load_queue #(
     // Allocation (from Dispatch, parallel with MEM_RS dispatch)
     // =========================================================================
     input  riscv_pkg::lq_alloc_req_t i_alloc,
-    // Slot-2 allocation port for 2-wide dispatch (Session C plumbing).  Slot-2
-    // valid does NOT require slot-1 valid: the dispatch unit derives each from
-    // its own slot's mem_needs_lq, so it is legal for only slot-2 to be a load.
-    // Held inactive by the wrapper / cpu_ooo until dispatch widens (Session D).
+    // Slot-2 allocation port for 2-wide dispatch.  Slot-2 valid does NOT
+    // require slot-1 valid: the dispatch unit derives each from its own slot's
+    // mem_needs_lq, so it is legal for only slot-2 to be a load.
     input  riscv_pkg::lq_alloc_req_t i_alloc_2,
     output logic                     o_full,
     // Asserted when there is room for at most 1 more entry (a 2-wide dispatch
@@ -305,8 +304,8 @@ module load_queue #(
   // after alloc_target_2 / full_for_2 are computed; the LUTRAM block needs
   // both write enables here.
   // AMO op is written once at allocation and only read back for AMO execution.
-  // 2 write ports: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Slot-2 is
-  // hard-tied off until dispatch widens (Session D), so port 1 is dormant.
+  // 2 write ports: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Port 1
+  // writes when a slot-2 load allocates in the same cycle as slot-1.
   mwp_dist_ram #(
       .ADDR_WIDTH     (IdxWidth),
       .DATA_WIDTH     (InstrOpWidth),
@@ -1861,7 +1860,7 @@ module load_queue #(
         lq_forwarded[alloc_target[IdxWidth-1:0]]  <= 1'b0;
       end
 
-      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      // Slot-2 alloc — fires when a slot-2 load allocates this cycle.
       if (slot2_alloc_en) begin
         lq_valid[slot2_alloc_idx]      <= 1'b1;
         lq_addr_valid[slot2_alloc_idx] <= 1'b0;
@@ -2005,7 +2004,7 @@ module load_queue #(
       lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
       lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
     end
-    // Slot-2 alloc data — held inactive until dispatch widens (Session D).
+    // Slot-2 alloc data — fires when a slot-2 load allocates this cycle.
     if (slot2_alloc_en) begin
       lq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
       lq_size[slot2_alloc_idx]       <= i_alloc_2.size;

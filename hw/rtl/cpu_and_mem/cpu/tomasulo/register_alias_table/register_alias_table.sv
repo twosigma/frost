@@ -160,8 +160,6 @@ module register_alias_table (
     input logic i_checkpoint_restore,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_restore_id,
     input logic i_checkpoint_restore_reclaim_all,
-    // Which slots to free on reclaim
-    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_reclaim_mask,
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 

@@ -838,11 +838,11 @@ module id_stage #(
   // ===========================================================================
   // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
   // ===========================================================================
-  // Mirror of the slot-1 logic above.  Slot-2 carries NOPs through Session E
-  // (i_from_pd_to_id_2.instruction == NOP, sourced from a hard-tied invalid
-  // IF slot-2 output in cpu_ooo).  Slot-2 ignores the cold-backward-branch
-  // heuristic override per the design doc; its BTB/RAS metadata is whatever
-  // PD passed through from IF (always 0 today).
+  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2's real
+  // second instruction (i_from_pd_to_id_2.instruction is a NOP only when the
+  // bundle has no valid slot-2 this cycle).  Slot-2 ignores the cold-backward-
+  // branch heuristic override per the design doc; its BTB/RAS metadata is
+  // whatever PD passed through from IF.
 
   riscv_pkg::instr_t                      instruction_2;
   riscv_pkg::instr_op_e                   instruction_operation_2;

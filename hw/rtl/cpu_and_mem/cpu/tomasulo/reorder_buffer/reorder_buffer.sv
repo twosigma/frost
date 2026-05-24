@@ -62,12 +62,10 @@ module reorder_buffer (
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp,
 
-    // Slot-2 allocation (2-wide dispatch, Session A foundation).  Slot 2 is
-    // the second-in-program-order entry of a dispatch bundle: tail_idx+1.
+    // Slot-2 allocation (2-wide dispatch).  Slot 2 is the second-in-program-
+    // order entry of a dispatch bundle: tail_idx+1.
     // Contract from dispatch: i_alloc_req_2.alloc_valid only asserts when
-    // i_alloc_req.alloc_valid is also set this cycle.  Until dispatch is
-    // widened, this port is hard-tied off in cpu_ooo so behavior is
-    // unchanged from the 1-wide baseline.
+    // i_alloc_req.alloc_valid is also set this cycle.
     input  riscv_pkg::reorder_buffer_alloc_req_t  i_alloc_req_2,
     output riscv_pkg::reorder_buffer_alloc_resp_t o_alloc_resp_2,
 
@@ -766,8 +764,8 @@ module reorder_buffer (
   // These use sdp_dist_ram — one write port, one async read port.
   // ---------------------------------------------------------------------------
 
-  // 2-write port: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Slot-2 is
-  // hard-tied off until dispatch widens, so port 1 is dormant during Session A.
+  // 2-write port: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Port 1
+  // writes when slot-2 allocates its ROB entry in the same cycle as slot-1.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),

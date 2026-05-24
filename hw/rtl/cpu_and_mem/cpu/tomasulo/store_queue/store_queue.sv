@@ -940,7 +940,7 @@ module store_queue #(
         sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
       end
 
-      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      // Slot-2 alloc — fires when a slot-2 store allocates this cycle.
       if (slot2_alloc_en) begin
         sq_addr_valid[slot2_alloc_idx] <= i_alloc_2.addr_valid;
         sq_data_valid[slot2_alloc_idx] <= 1'b0;
@@ -1100,7 +1100,7 @@ module store_queue #(
       if (slot1_alloc_en) begin
         sq_valid[alloc_target[IdxWidth-1:0]] <= 1'b1;
       end
-      // Slot-2 alloc — held inactive until dispatch widens (Session D).
+      // Slot-2 alloc — fires when a slot-2 store allocates this cycle.
       if (slot2_alloc_en) begin
         sq_valid[slot2_alloc_idx] <= 1'b1;
       end
@@ -1147,7 +1147,7 @@ module store_queue #(
       end
     end
 
-    // Slot-2 alloc — held inactive until dispatch widens (Session D).
+    // Slot-2 alloc — fires when a slot-2 store allocates this cycle.
     if (slot2_alloc_en) begin
       sq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
       sq_size[slot2_alloc_idx]       <= i_alloc_2.size;
