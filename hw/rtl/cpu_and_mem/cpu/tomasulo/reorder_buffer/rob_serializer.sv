@@ -24,9 +24,7 @@
 // o_csr_start / o_mret_start, and assertions); serial_state_next is internal.
 // serial_state_e lives in riscv_pkg so the ROB and this module share the type.
 // =============================================================================
-module rob_serializer
-  import riscv_pkg::*;
-(
+module rob_serializer (
     input logic i_clk,
     input logic i_rst_n,
     input logic i_flush_all,
@@ -48,18 +46,18 @@ module rob_serializer
     input logic head_is_amo,
     input logic head_is_lr,
 
-    output serial_state_e o_serial_state,
+    output riscv_pkg::serial_state_e o_serial_state,
     output logic o_commit_stall
 );
 
-  serial_state_e serial_state, serial_state_next;
+  riscv_pkg::serial_state_e serial_state, serial_state_next;
   logic commit_stall;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      serial_state <= SERIAL_IDLE;
+      serial_state <= riscv_pkg::SERIAL_IDLE;
     end else if (i_flush_all) begin
-      serial_state <= SERIAL_IDLE;
+      serial_state <= riscv_pkg::SERIAL_IDLE;
     end else begin
       serial_state <= serial_state_next;
     end
@@ -70,41 +68,41 @@ module rob_serializer
     commit_stall = 1'b0;
 
     case (serial_state)
-      SERIAL_IDLE: begin
+      riscv_pkg::SERIAL_IDLE: begin
         if (head_ready && !i_commit_hold && !i_early_recovery_en &&
                           !i_flush_en    && !i_flush_all) begin
           // Check for serializing instructions at head
           if (head_exception) begin
             // Exception: wait for trap unit
-            serial_state_next = SERIAL_TRAP_WAIT;
+            serial_state_next = riscv_pkg::SERIAL_TRAP_WAIT;
             commit_stall = 1'b1;
           end else if (head_is_wfi) begin
             // WFI: wait for interrupt
             if (i_interrupt_pending) begin
               // Interrupt pending, WFI can commit immediately
-              serial_state_next = SERIAL_IDLE;
+              serial_state_next = riscv_pkg::SERIAL_IDLE;
               commit_stall = 1'b0;
             end else begin
-              serial_state_next = SERIAL_WFI_WAIT;
+              serial_state_next = riscv_pkg::SERIAL_WFI_WAIT;
               commit_stall = 1'b1;
             end
           end else if (head_is_csr) begin
             // CSR: need to execute at commit
-            serial_state_next = SERIAL_CSR_EXEC;
+            serial_state_next = riscv_pkg::SERIAL_CSR_EXEC;
             commit_stall = 1'b1;
           end else if (head_is_fence || head_is_fence_i) begin
             // FENCE/FENCE.I: wait for committed SQ entries to drain
             if (i_sq_committed_empty) begin
               // No committed entries pending write, can commit
-              serial_state_next = SERIAL_IDLE;
+              serial_state_next = riscv_pkg::SERIAL_IDLE;
               commit_stall = 1'b0;
             end else begin
-              serial_state_next = SERIAL_WAIT_SQ;
+              serial_state_next = riscv_pkg::SERIAL_WAIT_SQ;
               commit_stall = 1'b1;
             end
           end else if (head_is_mret) begin
             // MRET: signal trap unit
-            serial_state_next = SERIAL_MRET_EXEC;
+            serial_state_next = riscv_pkg::SERIAL_MRET_EXEC;
             commit_stall = 1'b1;
           end else if (head_is_amo || head_is_lr) begin
             // AMO/LR: ordering enforced at LQ issue time (waits for ROB head +
@@ -115,53 +113,53 @@ module rob_serializer
         end
       end
 
-      SERIAL_WAIT_SQ: begin
+      riscv_pkg::SERIAL_WAIT_SQ: begin
         commit_stall = 1'b1;
         if (i_sq_committed_empty) begin
           // Committed SQ entries drained, can commit
-          serial_state_next = SERIAL_IDLE;
+          serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
       end
 
-      SERIAL_CSR_EXEC: begin
+      riscv_pkg::SERIAL_CSR_EXEC: begin
         commit_stall = 1'b1;
         if (i_csr_done) begin
           // CSR complete, can commit
-          serial_state_next = SERIAL_IDLE;
+          serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
       end
 
-      SERIAL_MRET_EXEC: begin
+      riscv_pkg::SERIAL_MRET_EXEC: begin
         commit_stall = 1'b1;
         if (i_mret_done) begin
           // MRET complete, can commit
-          serial_state_next = SERIAL_IDLE;
+          serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
       end
 
-      SERIAL_WFI_WAIT: begin
+      riscv_pkg::SERIAL_WFI_WAIT: begin
         commit_stall = 1'b1;
         if (i_interrupt_pending) begin
           // Interrupt arrived, WFI can commit
-          serial_state_next = SERIAL_IDLE;
+          serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
       end
 
-      SERIAL_TRAP_WAIT: begin
+      riscv_pkg::SERIAL_TRAP_WAIT: begin
         commit_stall = 1'b1;
         if (i_trap_taken) begin
           // Trap unit has taken the exception, flush will follow
-          serial_state_next = SERIAL_IDLE;
+          serial_state_next = riscv_pkg::SERIAL_IDLE;
           // Note: i_flush_all will reset state machine
         end
       end
 
       default: begin
-        serial_state_next = SERIAL_IDLE;
+        serial_state_next = riscv_pkg::SERIAL_IDLE;
       end
     endcase
   end

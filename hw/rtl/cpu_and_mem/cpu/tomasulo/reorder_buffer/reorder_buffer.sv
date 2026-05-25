@@ -434,14 +434,8 @@ module reorder_buffer (
   logic head_next_ok_2wide;
   logic commit_2_gate;
 
-  // Serializing instruction state machine
-  // serial_state_e + its SERIAL_* values now live in riscv_pkg; import the
-  // members so the ~44 bare SERIAL_* references below resolve unchanged.
-  import riscv_pkg::serial_state_e;
-  import riscv_pkg::SERIAL_IDLE, riscv_pkg::SERIAL_WAIT_SQ, riscv_pkg::SERIAL_CSR_EXEC,
-      riscv_pkg::SERIAL_MRET_EXEC, riscv_pkg::SERIAL_WFI_WAIT, riscv_pkg::SERIAL_TRAP_WAIT;
-
-  serial_state_e serial_state;  // driven by rob_serializer (next-state is internal there)
+  // Serializing instruction state machine.
+  riscv_pkg::serial_state_e serial_state;  // driven by rob_serializer
 
   // Misprediction detection at commit
   logic commit_misprediction;
@@ -1627,7 +1621,7 @@ module reorder_buffer (
   // ===========================================================================
 
   // CSR execution signal - asserted when entering CSR_EXEC state
-  assign o_csr_start = (serial_state == SERIAL_IDLE) && head_ready &&
+  assign o_csr_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
                        !i_commit_hold &&
                        !i_early_recovery_en &&
                        head_is_csr && !head_exception &&
@@ -1637,7 +1631,7 @@ module reorder_buffer (
   // Note: !i_flush_en/!i_flush_all intentionally omitted — flush signals are
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
-  assign o_mret_start = (serial_state == SERIAL_IDLE) && head_ready &&
+  assign o_mret_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
                         head_is_mret && !head_exception;
@@ -1650,10 +1644,10 @@ module reorder_buffer (
   // Note: !i_flush_all intentionally omitted from the combinational term.
   // flush_all is derived from trap_taken which is derived from o_trap_pending;
   // gating by !i_flush_all creates an oscillating combinational loop.
-  // The registered term (serial_state == SERIAL_TRAP_WAIT) sustains the signal
+  // The registered term sustains the signal
   // across clock edges; the combinational term provides same-cycle detection.
   assign o_trap_pending =
-      (serial_state == SERIAL_TRAP_WAIT) ||
+      (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
@@ -1939,12 +1933,16 @@ module reorder_buffer (
     end
 
     if (head_ready && commit_stall && !i_flush_all) begin
-      o_perf_events.commit_blocked_csr = head_is_csr || (serial_state == SERIAL_CSR_EXEC);
+      o_perf_events.commit_blocked_csr =
+          head_is_csr || (serial_state == riscv_pkg::SERIAL_CSR_EXEC);
       o_perf_events.commit_blocked_fence =
-          head_is_fence || head_is_fence_i || (serial_state == SERIAL_WAIT_SQ);
-      o_perf_events.commit_blocked_wfi = head_is_wfi || (serial_state == SERIAL_WFI_WAIT);
-      o_perf_events.commit_blocked_mret = head_is_mret || (serial_state == SERIAL_MRET_EXEC);
-      o_perf_events.commit_blocked_trap = head_exception || (serial_state == SERIAL_TRAP_WAIT);
+          head_is_fence || head_is_fence_i || (serial_state == riscv_pkg::SERIAL_WAIT_SQ);
+      o_perf_events.commit_blocked_wfi =
+          head_is_wfi || (serial_state == riscv_pkg::SERIAL_WFI_WAIT);
+      o_perf_events.commit_blocked_mret =
+          head_is_mret || (serial_state == riscv_pkg::SERIAL_MRET_EXEC);
+      o_perf_events.commit_blocked_trap =
+          head_exception || (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
     end
 
     // Widen-commit viability: single-wide commit is firing this cycle AND
@@ -2080,7 +2078,7 @@ module reorder_buffer (
 
   // Check serialization state transitions are valid
   always @(posedge i_clk) begin
-    if (i_rst_n && serial_state != SERIAL_IDLE && !head_ready) begin
+    if (i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE && !head_ready) begin
       $warning("Reorder Buffer: Serialization state %0d but head not ready", serial_state);
     end
   end
@@ -2188,12 +2186,14 @@ module reorder_buffer (
 
       // o_csr_start only in IDLE with CSR at head
       if ($past(o_csr_start)) begin
-        p_csr_start_contract : assert ($past(serial_state) == SERIAL_IDLE && $past(head_is_csr));
+        p_csr_start_contract :
+        assert ($past(serial_state) == riscv_pkg::SERIAL_IDLE && $past(head_is_csr));
       end
 
       // o_mret_start only in IDLE with MRET at head
       if ($past(o_mret_start)) begin
-        p_mret_start_contract : assert ($past(serial_state) == SERIAL_IDLE && $past(head_is_mret));
+        p_mret_start_contract :
+        assert ($past(serial_state) == riscv_pkg::SERIAL_IDLE && $past(head_is_mret));
       end
 
       // o_fence_i_flush is registered (one cycle after commit of FENCE.I)
@@ -2210,7 +2210,7 @@ module reorder_buffer (
       p_reset_clears_ptrs : assert (head_ptr == '0 && tail_ptr == '0);
 
       // After reset, serial_state is IDLE
-      p_reset_serial_idle : assert (serial_state == SERIAL_IDLE);
+      p_reset_serial_idle : assert (serial_state == riscv_pkg::SERIAL_IDLE);
     end
   end
 
@@ -2230,16 +2230,16 @@ module reorder_buffer (
       cover_partial_flush : cover (i_flush_en);
 
       // CSR serialization completes
-      cover_csr_serialize : cover (serial_state == SERIAL_CSR_EXEC && i_csr_done);
+      cover_csr_serialize : cover (serial_state == riscv_pkg::SERIAL_CSR_EXEC && i_csr_done);
 
       // WFI wakes on interrupt
-      cover_wfi_wakeup : cover (serial_state == SERIAL_WFI_WAIT && i_interrupt_pending);
+      cover_wfi_wakeup : cover (serial_state == riscv_pkg::SERIAL_WFI_WAIT && i_interrupt_pending);
 
       // MRET completes
-      cover_mret_complete : cover (serial_state == SERIAL_MRET_EXEC && i_mret_done);
+      cover_mret_complete : cover (serial_state == riscv_pkg::SERIAL_MRET_EXEC && i_mret_done);
 
       // Exception triggers trap
-      cover_exception_trap : cover (serial_state == SERIAL_TRAP_WAIT);
+      cover_exception_trap : cover (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
 
       // FENCE.I commit generates flush pulse
       cover_fence_i_flush : cover (o_fence_i_flush);
