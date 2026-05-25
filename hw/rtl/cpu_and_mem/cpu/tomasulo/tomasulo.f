@@ -11,6 +11,7 @@ $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_2r.sv
 
 # Reorder Buffer
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 
 # Register Alias Table
