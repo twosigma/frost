@@ -16,6 +16,7 @@ smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
+read -sv rob_serializer.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -sv reservation_station.sv
@@ -25,8 +26,15 @@ read -sv int_alu_shim.sv
 read -sv int_muldiv_shim.sv
 read -sv load_unit.sv
 read -sv lq_l0_cache.sv
+read -sv lq_issue_selector.sv
 read -sv -DFROST_YOSYS load_queue.sv
+read -sv sq_forwarding_unit.sv
 read -sv store_queue.sv
+read -sv tomasulo_perf_counters.sv
+read -sv sq_early_addr_pipeline.sv
+read -sv commit_bus_pipeline.sv
+read -sv dispatch_rs_router.sv
+read -sv sc_pending_unit.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
@@ -64,6 +72,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
@@ -73,8 +82,15 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv

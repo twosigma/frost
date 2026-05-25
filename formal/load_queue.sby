@@ -17,6 +17,7 @@ read -sv sdp_dist_ram.sv
 read -sv mwp_dist_ram.sv
 read -sv load_unit.sv
 read -sv lq_l0_cache.sv
+read -sv lq_issue_selector.sv
 read -formal -sv load_queue.sv
 prep -top load_queue
 
@@ -26,4 +27,5 @@ prep -top load_queue
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

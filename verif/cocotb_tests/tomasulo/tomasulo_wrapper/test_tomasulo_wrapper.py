@@ -4281,7 +4281,7 @@ async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
     dut_if.set_fu_ready(RS_MEM, False)
 
     assert int(dut.sc_pending.value), "sc_pending should be set"
-    assert int(dut.sc_pending_rob_tag.value) == tag_sc
+    assert int(dut.sc_pending_unit_inst.sc_pending_rob_tag.value) == tag_sc
 
     # --- Phase 6: Partial flush with tag=branch (younger than SC) ---
     # speculative_flush_all = i_flush_all || i_flush_en, so any partial flush

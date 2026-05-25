@@ -200,6 +200,7 @@ module store_queue #(
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
   localparam int unsigned WordAddrWidth = XLEN - 2;
+  localparam int unsigned MemSizeWidth = 2;
 
 `ifndef SYNTHESIS
   localparam logic [XLEN-1:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -548,6 +549,17 @@ module store_queue #(
 
   assign o_committed_empty = committed_empty_q;
 
+  logic [DEPTH*ReorderBufferTagWidth-1:0] sq_rob_tag_flat;
+  logic [DEPTH*XLEN-1:0] sq_address_flat;
+  logic [DEPTH*MemSizeWidth-1:0] sq_size_flat;
+
+  for (genvar g_sq_flat = 0; g_sq_flat < DEPTH; g_sq_flat++) begin : gen_sq_flat
+    assign sq_rob_tag_flat[g_sq_flat*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
+        sq_rob_tag[g_sq_flat];
+    assign sq_address_flat[g_sq_flat*XLEN+:XLEN] = sq_address[g_sq_flat];
+    assign sq_size_flat[g_sq_flat*MemSizeWidth+:MemSizeWidth] = sq_size[g_sq_flat];
+  end
+
   // ===========================================================================
   // Store-to-Load Forwarding -> sq_forwarding_unit.sv (pure boundary move).
   // The SQ data-RAM forwarding read (addressed by fwd_match_idx) stays here.
@@ -573,9 +585,9 @@ module store_queue #(
       .sq_data_valid             (sq_data_valid),
       .sq_is_mmio                (sq_is_mmio),
       .sq_committed              (sq_committed),
-      .sq_rob_tag                (sq_rob_tag),
-      .sq_address                (sq_address),
-      .sq_size                   (sq_size),
+      .sq_rob_tag_flat           (sq_rob_tag_flat),
+      .sq_address_flat           (sq_address_flat),
+      .sq_size_flat              (sq_size_flat),
       .sq_data_fwd_rd            (sq_data_fwd_rd),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
       .o_sq_forward              (o_sq_forward),

@@ -39,7 +39,7 @@ module lq_issue_selector #(
     input logic [DEPTH-1:0] sq_check_in_flight_mask,
     input logic [DEPTH-1:0] addr_update_pre_match_q,
     input logic [DEPTH-1:0] rob_head_match_q,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH],
+    input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic i_sq_committed_empty,
 
@@ -203,7 +203,7 @@ module lq_issue_selector #(
           !lq_is_amo[i]) begin
         head_mem_stored_found   = 1'b1;
         head_mem_stored_idx     = IdxWidth'(i);
-        head_mem_stored_rob_tag = lq_rob_tag[i];
+        head_mem_stored_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
       end
 
       if (!head_mem_update_found &&
@@ -217,7 +217,7 @@ module lq_issue_selector #(
           !lq_is_amo[i]) begin
         head_mem_update_found   = 1'b1;
         head_mem_update_idx     = IdxWidth'(i);
-        head_mem_update_rob_tag = lq_rob_tag[i];
+        head_mem_update_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
       end
     end
   end

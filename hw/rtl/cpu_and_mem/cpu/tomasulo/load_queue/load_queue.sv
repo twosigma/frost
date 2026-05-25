@@ -715,6 +715,12 @@ module load_queue #(
   logic head_mem_update_found;
   logic [IdxWidth-1:0] head_mem_update_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
+  logic [DEPTH*ReorderBufferTagWidth-1:0] lq_rob_tag_flat;
+
+  for (genvar g_lq_tag = 0; g_lq_tag < DEPTH; g_lq_tag++) begin : gen_lq_rob_tag_flat
+    assign lq_rob_tag_flat[g_lq_tag*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
+        lq_rob_tag[g_lq_tag];
+  end
 
   lq_issue_selector #(
       .DEPTH(DEPTH)
@@ -729,7 +735,7 @@ module load_queue #(
       .sq_check_in_flight_mask(sq_check_in_flight_mask),
       .addr_update_pre_match_q(addr_update_pre_match_q),
       .rob_head_match_q(rob_head_match_q),
-      .lq_rob_tag(lq_rob_tag),
+      .lq_rob_tag_flat(lq_rob_tag_flat),
       .head_idx(head_idx),
       .i_sq_committed_empty(i_sq_committed_empty),
       .o_issue_cdb_found(issue_cdb_found),

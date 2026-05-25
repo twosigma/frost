@@ -54,9 +54,9 @@ module sq_forwarding_unit #(
     input logic [DEPTH-1:0] sq_data_valid,
     input logic [DEPTH-1:0] sq_is_mmio,
     input logic [DEPTH-1:0] sq_committed,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_rob_tag[DEPTH],
-    input logic [riscv_pkg::XLEN-1:0] sq_address[DEPTH],
-    input riscv_pkg::mem_size_e sq_size[DEPTH],
+    input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
+    input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
+    input logic [(DEPTH*2)-1:0] sq_size_flat,
     input logic [riscv_pkg::FLEN-1:0] sq_data_fwd_rd,
 
     output logic o_sq_all_older_addrs_known,
@@ -69,6 +69,7 @@ module sq_forwarding_unit #(
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
+  localparam int unsigned MemSizeWidth = 2;
   localparam int unsigned WordAddrWidth = XLEN - 2;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
@@ -200,6 +201,9 @@ module sq_forwarding_unit #(
     logic store_committed;
     logic [3:0] store_byte_mask;
     logic [3:0] load_byte_mask;
+    logic [ReorderBufferTagWidth-1:0] entry_rob_tag;
+    logic [XLEN-1:0] entry_address;
+    riscv_pkg::mem_size_e entry_size;
     // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
     // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
     // (driven by sister registers in LQ), but the two source FFs let the
@@ -221,9 +225,12 @@ module sq_forwarding_unit #(
       load_byte_mask = fwd_load_byte_mask;
       // (i < DEPTH/2) is constant per loop iteration after synth unroll —
       // the select collapses to a wire-pick of one of the two address ports.
+      entry_rob_tag = sq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
+      entry_address = sq_address_flat[i*XLEN+:XLEN];
+      entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
       sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
       sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
-      fwd_entry_age[i] = {1'b0, sq_rob_tag[i]} - {1'b0, i_rob_head_tag};
+      fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, i_rob_head_tag};
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
@@ -234,8 +241,8 @@ module sq_forwarding_unit #(
       // arrives so the load cannot slip through the one-cycle sq_committed lag.
       // Widen-commit extends the same guard to slot 2.
       store_committed = sq_committed[i] ||
-                        (i_commit_valid && (sq_rob_tag[i] == i_commit_rob_tag)) ||
-                        (i_commit_valid_2 && (sq_rob_tag[i] == i_commit_rob_tag_2));
+                        (i_commit_valid && (entry_rob_tag == i_commit_rob_tag)) ||
+                        (i_commit_valid_2 && (entry_rob_tag == i_commit_rob_tag_2));
       older_store = sq_valid[i] && (store_committed || (fwd_entry_age[i] < fwd_load_age));
 
       if (older_store) begin
@@ -246,21 +253,21 @@ module sq_forwarding_unit #(
 
         // Check for address overlap
         if (sq_addr_valid[i]) begin
-          same_word = word_addr_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
-          store_byte_mask = gen_byte_en(sq_address[i][1:0], riscv_pkg::mem_size_e'(sq_size[i]));
+          same_word = word_addr_eq(entry_address[XLEN-1:2], sq_check_word_for_entry);
+          store_byte_mask = gen_byte_en(entry_address[1:0], entry_size);
 
           // Non-double accesses only conflict when their byte ranges overlap.
-          base_match = same_word && ((sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) ||
+          base_match = same_word && ((entry_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
                        (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
                        (|(store_byte_mask & load_byte_mask)));
 
           // DOUBLE store: also overlaps at word addr+4
-          double_hi_match = (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
+          double_hi_match = (entry_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
+              word_addr_inc_eq(entry_address[XLEN-1:2], sq_check_word_for_entry);
 
           // DOUBLE load: check if store is at the +4 word
           load_double_hi = (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(sq_check_word_for_entry, sq_address[i][XLEN-1:2]);
+              word_addr_inc_eq(sq_check_word_for_entry, entry_address[XLEN-1:2]);
 
           if (base_match || double_hi_match || load_double_hi) begin
             fwd_conflict_mask[i] = 1'b1;
@@ -269,15 +276,15 @@ module sq_forwarding_unit #(
             if (sq_data_valid[i] && !sq_is_mmio[i]) begin
               // Case 1: exact address, same size, WORD or DOUBLE
               if (base_match && full_addr_eq(
-                      sq_address[i], sq_check_addr_for_entry
-                  ) && (sq_size[i] == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
+                      entry_address, sq_check_addr_for_entry
+                  ) && (entry_size == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
                       (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
                 fwd_entry_extract_type[i] = 2'd0;  // EXACT
                 // Case 2: FLW at FSD base address → forward low word
               end else if (base_match &&
                   (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD) &&
-                  (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE)) begin
+                  (entry_size == riscv_pkg::MEM_SIZE_DOUBLE)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
                 fwd_entry_extract_type[i] = 2'd1;  // LO_WORD
                 // Case 3: FLW at FSD addr+4 → forward high word
