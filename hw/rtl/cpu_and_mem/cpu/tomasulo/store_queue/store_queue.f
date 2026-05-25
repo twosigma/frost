@@ -7,5 +7,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 # RAM primitives (sq_data LUTRAM)
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 
-# Module
+# Module (+ extracted store-to-load forwarding submodule)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
