@@ -17,16 +17,18 @@ verbatim, so the flattened design is unchanged:
 | `commit_bus_pipeline` | `commit_bus/` | The four `always_ff` that register the combinational ROB commit bus into `commit_bus_q` / `commit_bus_2_q` plus the decomposed `commit_q_*` fields. |
 | `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. |
 | `dispatch_rs_router` | `dispatch_routing/` | Combinational decode of the dispatch packet(s) into per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent" signals. |
+| `sc_pending_unit` | `atomics/` | Store-conditional resolution: the SC pending-register FSM (set at MEM_RS SC issue, cleared on fire / flush / age), its rob_tag+addr capture, the fire/success decode, and the `sc_fu_complete` packet. |
 
 The per-RS dispatch-valid nets in `dispatch_rs_router` carry `(* max_fanout =
 32 *)`; the attribute is preserved both in the submodule and on the wrapper-side
 receiving nets (where the fanout to the RS instances occurs), so it survives
 flattened or hierarchical synthesis.
 
-The remaining inline glue (the SC / atomics FSM, flush coordination, the FMUL
-repair queue, FU-shim wiring) stays in the wrapper: it is tightly coupled to the
-integration and carries load-bearing synthesis attributes (`max_fanout`,
-`keep`) whose placement is best left undisturbed.
+The remaining inline glue (the store-misalign + MEM-adapter mux around
+`sc_pending_unit`, flush coordination, the FMUL repair queue, FU-shim wiring)
+stays in the wrapper: it is tightly coupled to the integration and carries
+load-bearing synthesis attributes (`max_fanout`, `keep`) whose placement is best
+left undisturbed.
 
 ## Why it's not a passive harness
 
@@ -45,6 +47,10 @@ dedicated FMUL bypass ports on the ROB so any operand that completed
 while the entry was queued gets a fresh value.
 
 ### SC state machine
+
+The SC pending FSM and its fire/success decode live in
+`atomics/sc_pending_unit.sv`; the surrounding store-misalign path and MEM-adapter
+mux described below stay in the wrapper.
 
 Store-conditional execution is split between MEM_RS issue and
 ROB-head commit. The MEM_RS issues the SC like a normal store; the
