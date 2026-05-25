@@ -21,6 +21,13 @@ result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`)
 is registered, so the LQ sees it one cycle after raising
 `i_sq_check_valid`; this breaks the MEM_RS → SQ scan → LQ → BRAM path.
 
+The forwarding scan itself (per-entry qualification, newest-match priority
+select, and the output register) lives in
+[`sq_forwarding_unit.sv`](sq_forwarding_unit.sv) — a pure boundary move out of
+`store_queue.sv`. It reads the SQ entry-array state and emits the forwarding
+read index `o_fwd_match_idx`; the `sq_data` LUTRAM read at that index stays in
+`store_queue.sv` and feeds the data back for the registered output.
+
 **Ordering.** Stores commit in program order from the SQ head. The
 head fires when it's both committed (by the ROB) and has its address
 and data ready. FSD on the 32-bit bus takes two phases (low word at
