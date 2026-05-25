@@ -41,7 +41,7 @@ commit two at a time (with a few slot-2 restrictions). See the 2-wide notes belo
 
 | Submodule                                                          | Role |
 |--------------------------------------------------------------------|------|
-| [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below, plus inline routing / SC FSM / commit & CDB pipelining |
+| [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below; back-end integration. Its extracted glue submodules live in `perf/`, `commit_bus/`, `dispatch_routing/`, `store_addr/`, `atomics/` |
 | [`dispatch/`](dispatch/README.md)                                  | 2-wide combinational rename + resource allocation hub |
 | [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |
@@ -51,6 +51,12 @@ commit two at a time (with a few slot-2 restrictions). See the 2-wide notes belo
 | [`cdb_arbiter/`](cdb_arbiter/README.md)                            | Single-lane CDB priority arbiter |
 | [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
 | [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |
+
+Several of the larger modules nest extracted submodules (pure RTL boundary
+moves, no functional change): `store_queue/sq_forwarding_unit`,
+`load_queue/lq_issue_selector`, and `reorder_buffer/rob_serializer` (whose
+`serial_state_e` enum lives in `riscv_pkg` so the ROB and submodule share it).
+Each is documented in its parent module's README.
 
 The CPU top-level (`../cpu_ooo.sv`) instantiates `tomasulo_wrapper`
 plus `dispatch` and the front-end stages, and contains a few large
