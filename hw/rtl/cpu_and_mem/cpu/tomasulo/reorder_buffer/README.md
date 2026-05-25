@@ -45,7 +45,9 @@ checkpoint age comparisons.
 
 ## Serializing instructions
 
-A small FSM holds the commit head when the head entry needs external
+A small FSM (extracted to [`rob_serializer.sv`](rob_serializer.sv) as a pure
+boundary move; its `serial_state_e` type moved to `riscv_pkg` so the ROB and
+the submodule share it) holds the commit head when the head entry needs external
 coordination:
 
 ```
