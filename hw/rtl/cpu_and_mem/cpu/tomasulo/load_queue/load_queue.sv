@@ -704,164 +704,52 @@ module load_queue #(
   end
 
   // ===========================================================================
-  // Issue Selection (parallel qualification + tree priority encoders)
+  // Issue Selection -> lq_issue_selector.sv (pure boundary move).  issue_cdb_idx
+  // still drives the LQ data LUTRAM read below; that RAM stays here.
   // ===========================================================================
-  // TIMING: Restructured from a single serial loop (16 logic levels due to
-  // inter-iteration dependencies through issue_mem_found/block_younger_mem) into
-  // parallel per-entry qualification masks followed by tree-based find-first-one
-  // encoders (~7-8 logic levels).
-  //
-  // Phase A: Oldest entry with data_valid (ready for CDB broadcast).
-  //          FLD: both phases must be complete (data_valid=1).
-  // Phase B: Oldest entry with addr_valid && !issued && !data_valid,
-  //          ready for SQ disambiguation and potential memory issue.
-  //          MMIO/LR require ROB head; AMO also needs SQ committed-empty.
-
-  // Pre-computed circular scan indices (head-relative order)
-  logic [IdxWidth-1:0] scan_idx[DEPTH];
-  always_comb begin
-    for (int unsigned j = 0; j < DEPTH; j++) begin
-      scan_idx[j] = IdxWidth'(head_idx + IdxWidth'(j));
-    end
-  end
-
-  // Phase A: per-entry CDB readiness (parallel, no inter-entry dependency)
-  logic [DEPTH-1:0] cdb_ready_mask;
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      cdb_ready_mask[i] = lq_valid[scan_idx[i]] && lq_data_valid[scan_idx[i]];
-    end
-  end
-
-  // Phase A: tree priority encoder — find oldest CDB-ready entry
-  always_comb begin
-    issue_cdb_found = 1'b0;
-    issue_cdb_idx   = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (cdb_ready_mask[i] && !issue_cdb_found) begin
-        issue_cdb_found = 1'b1;
-        issue_cdb_idx   = scan_idx[i];
-      end
-    end
-  end
-
-  // Mask of the entry already claimed by the sq_check staging register.  Keep
-  // this as registered one-hot state instead of deriving it from sq_check_idx
-  // with a live equality compare.  The derived compare put sq_check_idx on the
-  // issue-selection -> sq_check_payload_en control path, which is exactly the
-  // post-synth WNS limiter on x3.
-  logic [DEPTH-1:0] in_flight_mask;
-  assign in_flight_mask = sq_check_in_flight_mask;
-
-  // Phase B: per-entry memory issue eligibility (parallel).
-  // Split stored-address entries from the single entry whose address arrives
-  // this cycle.  The late i_addr_update.valid then only selects between two
-  // pre-encoded candidates instead of driving the full scan and address RAM
-  // read cone.
-  logic [DEPTH-1:0] mem_eligible_stored_phys;
-  logic [DEPTH-1:0] mem_eligible_update_phys;
-  logic [DEPTH-1:0] mem_eligible_stored_mask;
-  logic [DEPTH-1:0] mem_eligible_update_mask;
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      mem_eligible_stored_phys[i] =
-          lq_valid[i] &&
-          lq_addr_valid[i] &&
-          !lq_issued[i] &&
-          !lq_data_valid[i] &&
-          !in_flight_mask[i] &&
-          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
-          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
-          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
-
-      mem_eligible_update_phys[i] =
-          lq_valid[i] &&
-          addr_update_pre_match_q[i] &&
-          !lq_issued[i] &&
-          !lq_data_valid[i] &&
-          !in_flight_mask[i] &&
-          (!lq_is_lr[i]   || rob_head_match_q[i]) &&
-          (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
-    end
-  end
-  assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
-  assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
-
-  // AMO blocking: identify scan positions with pending (unresolved) AMOs.
-  // A pending older AMO must block younger memory ops until its write
-  // phase completes and the slot becomes data-valid.
-  logic [DEPTH-1:0] pending_amo_phys;
-  logic [DEPTH-1:0] pending_amo_at;
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      pending_amo_phys[i] = lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i];
-    end
-  end
-  assign pending_amo_at = rotate_mask_from_head(pending_amo_phys, head_idx);
-
-  // Prefix-OR: compute "has older pending AMO" for each scan position
-  logic [DEPTH-1:0] blocked_by_amo;
-  /* verilator lint_off ALWCOMBORDER */
-  always_comb begin
-    blocked_by_amo[0] = 1'b0;
-    for (int unsigned i = 1; i < DEPTH; i++) begin
-      blocked_by_amo[i] = blocked_by_amo[i-1] | pending_amo_at[i-1];
-    end
-  end
-  /* verilator lint_on ALWCOMBORDER */
-
-  // Final Phase B masks: eligible AND not blocked by older AMO.
   logic [DEPTH-1:0] mem_issue_stored_mask;
   logic [DEPTH-1:0] mem_issue_update_mask;
-  assign mem_issue_stored_mask = mem_eligible_stored_mask & ~blocked_by_amo;
-  assign mem_issue_update_mask = mem_eligible_update_mask & ~blocked_by_amo;
-
-  // The sparse queue can reuse reclaimed holes after flushes, so physical
-  // queue order is not always identical to ROB age.  To avoid starving the
-  // oldest architectural load behind a younger blocked entry, explicitly
-  // prioritize an eligible ROB-head load over the normal physical-order scan.
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_stored_rob_tag;
   logic head_mem_update_found;
   logic [IdxWidth-1:0] head_mem_update_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
-  always_comb begin
-    head_mem_stored_found   = 1'b0;
-    head_mem_stored_idx     = '0;
-    head_mem_stored_rob_tag = '0;
-    head_mem_update_found   = 1'b0;
-    head_mem_update_idx     = '0;
-    head_mem_update_rob_tag = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (!head_mem_stored_found &&
-          lq_valid[i] &&
-          rob_head_match_q[i] &&
-          lq_addr_valid[i] &&
-          !lq_issued[i] &&
-          !lq_data_valid[i] &&
-          !in_flight_mask[i] &&
-          !lq_is_mmio[i] &&
-          !lq_is_lr[i] &&
-          !lq_is_amo[i]) begin
-        head_mem_stored_found   = 1'b1;
-        head_mem_stored_idx     = IdxWidth'(i);
-        head_mem_stored_rob_tag = lq_rob_tag[i];
-      end
 
-      if (!head_mem_update_found &&
-          lq_valid[i] &&
-          rob_head_match_q[i] &&
-          addr_update_pre_match_q[i] &&
-          !lq_issued[i] &&
-          !lq_data_valid[i] &&
-          !in_flight_mask[i] &&
-          !lq_is_lr[i] &&
-          !lq_is_amo[i]) begin
-        head_mem_update_found   = 1'b1;
-        head_mem_update_idx     = IdxWidth'(i);
-        head_mem_update_rob_tag = lq_rob_tag[i];
-      end
+  lq_issue_selector #(
+      .DEPTH(DEPTH)
+  ) lq_issue_selector_inst (
+      .lq_valid(lq_valid),
+      .lq_addr_valid(lq_addr_valid),
+      .lq_is_mmio(lq_is_mmio),
+      .lq_issued(lq_issued),
+      .lq_data_valid(lq_data_valid),
+      .lq_is_lr(lq_is_lr),
+      .lq_is_amo(lq_is_amo),
+      .sq_check_in_flight_mask(sq_check_in_flight_mask),
+      .addr_update_pre_match_q(addr_update_pre_match_q),
+      .rob_head_match_q(rob_head_match_q),
+      .lq_rob_tag(lq_rob_tag),
+      .head_idx(head_idx),
+      .i_sq_committed_empty(i_sq_committed_empty),
+      .o_issue_cdb_found(issue_cdb_found),
+      .o_issue_cdb_idx(issue_cdb_idx),
+      .o_mem_issue_stored_mask(mem_issue_stored_mask),
+      .o_mem_issue_update_mask(mem_issue_update_mask),
+      .o_head_mem_stored_found(head_mem_stored_found),
+      .o_head_mem_stored_idx(head_mem_stored_idx),
+      .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
+      .o_head_mem_update_found(head_mem_update_found),
+      .o_head_mem_update_idx(head_mem_update_idx),
+      .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
+  );
+
+  // scan_idx recomputed locally for the head-load diagnostics below; the
+  // selector computes its own identical copy internally (head-relative idx).
+  logic [IdxWidth-1:0] scan_idx[DEPTH];
+  always_comb begin
+    for (int unsigned j = 0; j < DEPTH; j++) begin
+      scan_idx[j] = IdxWidth'(head_idx + IdxWidth'(j));
     end
   end
 
