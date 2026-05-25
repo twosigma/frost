@@ -435,16 +435,13 @@ module reorder_buffer (
   logic commit_2_gate;
 
   // Serializing instruction state machine
-  typedef enum logic [2:0] {
-    SERIAL_IDLE,       // No serializing instruction at head
-    SERIAL_WAIT_SQ,    // Waiting for SQ to drain (FENCE/AMO)
-    SERIAL_CSR_EXEC,   // CSR executing
-    SERIAL_MRET_EXEC,  // MRET executing
-    SERIAL_WFI_WAIT,   // WFI waiting for interrupt
-    SERIAL_TRAP_WAIT   // Exception waiting for trap unit
-  } serial_state_e;
+  // serial_state_e + its SERIAL_* values now live in riscv_pkg; import the
+  // members so the ~44 bare SERIAL_* references below resolve unchanged.
+  import riscv_pkg::serial_state_e;
+  import riscv_pkg::SERIAL_IDLE, riscv_pkg::SERIAL_WAIT_SQ, riscv_pkg::SERIAL_CSR_EXEC,
+      riscv_pkg::SERIAL_MRET_EXEC, riscv_pkg::SERIAL_WFI_WAIT, riscv_pkg::SERIAL_TRAP_WAIT;
 
-  serial_state_e serial_state, serial_state_next;
+  serial_state_e serial_state;  // driven by rob_serializer (next-state is internal there)
 
   // Misprediction detection at commit
   logic commit_misprediction;
@@ -1566,116 +1563,33 @@ module reorder_buffer (
   // ===========================================================================
   // Handles WFI, CSR, FENCE, FENCE.I, MRET, and exceptions at Reorder Buffer head
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      serial_state <= SERIAL_IDLE;
-    end else if (i_flush_all) begin
-      serial_state <= SERIAL_IDLE;
-    end else begin
-      serial_state <= serial_state_next;
-    end
-  end
-
-  always_comb begin
-    serial_state_next = serial_state;
-    commit_stall = 1'b0;
-
-    case (serial_state)
-      SERIAL_IDLE: begin
-        if (head_ready && !i_commit_hold && !i_early_recovery_en &&
-                          !i_flush_en    && !i_flush_all) begin
-          // Check for serializing instructions at head
-          if (head_exception) begin
-            // Exception: wait for trap unit
-            serial_state_next = SERIAL_TRAP_WAIT;
-            commit_stall = 1'b1;
-          end else if (head_is_wfi) begin
-            // WFI: wait for interrupt
-            if (i_interrupt_pending) begin
-              // Interrupt pending, WFI can commit immediately
-              serial_state_next = SERIAL_IDLE;
-              commit_stall = 1'b0;
-            end else begin
-              serial_state_next = SERIAL_WFI_WAIT;
-              commit_stall = 1'b1;
-            end
-          end else if (head_is_csr) begin
-            // CSR: need to execute at commit
-            serial_state_next = SERIAL_CSR_EXEC;
-            commit_stall = 1'b1;
-          end else if (head_is_fence || head_is_fence_i) begin
-            // FENCE/FENCE.I: wait for committed SQ entries to drain
-            if (i_sq_committed_empty) begin
-              // No committed entries pending write, can commit
-              serial_state_next = SERIAL_IDLE;
-              commit_stall = 1'b0;
-            end else begin
-              serial_state_next = SERIAL_WAIT_SQ;
-              commit_stall = 1'b1;
-            end
-          end else if (head_is_mret) begin
-            // MRET: signal trap unit
-            serial_state_next = SERIAL_MRET_EXEC;
-            commit_stall = 1'b1;
-          end else if (head_is_amo || head_is_lr) begin
-            // AMO/LR: ordering enforced at LQ issue time (waits for ROB head +
-            // SQ committed-empty). Once CDB arrives (head_done=1), commit normally.
-            // No SQ check here (would deadlock with younger uncommitted SQ entries).
-          end
-          // Non-serializing instructions: no stall
-        end
-      end
-
-      SERIAL_WAIT_SQ: begin
-        commit_stall = 1'b1;
-        if (i_sq_committed_empty) begin
-          // Committed SQ entries drained, can commit
-          serial_state_next = SERIAL_IDLE;
-          commit_stall = 1'b0;
-        end
-      end
-
-      SERIAL_CSR_EXEC: begin
-        commit_stall = 1'b1;
-        if (i_csr_done) begin
-          // CSR complete, can commit
-          serial_state_next = SERIAL_IDLE;
-          commit_stall = 1'b0;
-        end
-      end
-
-      SERIAL_MRET_EXEC: begin
-        commit_stall = 1'b1;
-        if (i_mret_done) begin
-          // MRET complete, can commit
-          serial_state_next = SERIAL_IDLE;
-          commit_stall = 1'b0;
-        end
-      end
-
-      SERIAL_WFI_WAIT: begin
-        commit_stall = 1'b1;
-        if (i_interrupt_pending) begin
-          // Interrupt arrived, WFI can commit
-          serial_state_next = SERIAL_IDLE;
-          commit_stall = 1'b0;
-        end
-      end
-
-      SERIAL_TRAP_WAIT: begin
-        commit_stall = 1'b1;
-        if (i_trap_taken) begin
-          // Trap unit has taken the exception, flush will follow
-          serial_state_next = SERIAL_IDLE;
-          // Note: i_flush_all will reset state machine
-        end
-      end
-
-      default: begin
-        serial_state_next = SERIAL_IDLE;
-      end
-    endcase
-  end
+  // Serializing-instruction FSM -> reorder_buffer/rob_serializer.sv (boundary
+  // move).  serial_state + commit_stall are received below; consumers (perf,
+  // o_csr_start/o_mret_start, asserts) read serial_state via the pkg enum.
+  rob_serializer rob_serializer_inst (
+      .i_clk               (i_clk),
+      .i_rst_n             (i_rst_n),
+      .i_flush_all         (i_flush_all),
+      .i_flush_en          (i_flush_en),
+      .i_commit_hold       (i_commit_hold),
+      .i_early_recovery_en (i_early_recovery_en),
+      .i_interrupt_pending (i_interrupt_pending),
+      .i_sq_committed_empty(i_sq_committed_empty),
+      .i_csr_done          (i_csr_done),
+      .i_mret_done         (i_mret_done),
+      .i_trap_taken        (i_trap_taken),
+      .head_ready          (head_ready),
+      .head_exception      (head_exception),
+      .head_is_wfi         (head_is_wfi),
+      .head_is_csr         (head_is_csr),
+      .head_is_fence       (head_is_fence),
+      .head_is_fence_i     (head_is_fence_i),
+      .head_is_mret        (head_is_mret),
+      .head_is_amo         (head_is_amo),
+      .head_is_lr          (head_is_lr),
+      .o_serial_state      (serial_state),
+      .o_commit_stall      (commit_stall)
+  );
 
   // ===========================================================================
   // Commit Enable Logic
