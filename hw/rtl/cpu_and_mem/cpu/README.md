@@ -80,7 +80,7 @@ instruction size.
 | Path                                | Status        | What it is |
 |-------------------------------------|---------------|------------|
 | [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
-| [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. See its README for everything inside. |
+| [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) now nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
 | `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |

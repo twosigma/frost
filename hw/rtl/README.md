@@ -40,8 +40,9 @@ After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
 `tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,
 RATs, reservation stations, load/store queues, CDB arbiter, FU shims, and
-profiling counters. See [cpu/README.md](cpu_and_mem/cpu/README.md) and
-[cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed
+profiling counters; its former inline glue now lives in private submodules under
+`tomasulo_wrapper/` (see below). See [cpu/README.md](cpu_and_mem/cpu/README.md)
+and [cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed
 backend notes.
 
 ## Directory Map
@@ -53,7 +54,7 @@ backend notes.
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
-| `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, CDB, dispatch glue, FU shims |
+| `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/lq_issue_selector`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
