@@ -7,6 +7,21 @@ six reservation stations, LQ, SQ, CDB arbiter, FU shims, CDB adapters
 straddle module boundaries and don't fit cleanly into any one
 submodule.
 
+Some of that glue has been factored into private submodules under this
+directory. These are pure RTL boundary moves — the logic bodies were copied
+verbatim, so the flattened design is unchanged:
+
+| Submodule | Dir | What it holds |
+|-----------|-----|---------------|
+| `tomasulo_perf_counters` | `perf/` | The 60 back-end performance counters (accumulate / snapshot / four banks / CSR-style readout). |
+| `commit_bus_pipeline` | `commit_bus/` | The four `always_ff` that register the combinational ROB commit bus into `commit_bus_q` / `commit_bus_2_q` plus the decomposed `commit_q_*` fields. |
+| `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. |
+
+The remaining inline glue (dispatch routing, the SC / atomics FSM, flush
+coordination, the FMUL repair queue, FU-shim wiring) stays in the wrapper: it
+is tightly coupled to the integration and carries load-bearing synthesis
+attributes (`max_fanout`, `keep`) whose placement is best left undisturbed.
+
 ## Why it's not a passive harness
 
 If the wrapper were just module instantiations, the rest of this README
@@ -54,7 +69,9 @@ same-cycle mux conflict.
 
 Both the ROB commit bus and the CDB broadcast are registered into
 local copies (`commit_bus_q`, `cdb_bus`) before being routed to the
-downstream consumers. The valid bits are split out from the payload
+downstream consumers. The commit-bus registers now live in
+`commit_bus/commit_bus_pipeline.sv` (the CDB registers stay inline). The
+valid bits are split out from the payload
 and registered separately so a full flush only fans a narrow reset
 into a one-bit register instead of the wide payload — a Vivado
 synthesis trick to keep flush fanout under control. A parallel
@@ -110,8 +127,9 @@ three FP adapters additionally set `REGISTER_OUTPUT=1`.
 
 ## Performance counters
 
-The wrapper owns 60 live performance counters, snapshot-captured in
-four banks for end-of-test reporting. In rough groups:
+The wrapper owns 60 live performance counters (in
+`perf/tomasulo_perf_counters.sv`), snapshot-captured in four banks for
+end-of-test reporting. In rough groups:
 
 - **Head-wait partitions.** The dominant `head_wait_total` bucket
   is decomposed into `Int / Branch / Mul / MemLoad / MemStore /
