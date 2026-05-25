@@ -9,7 +9,11 @@ instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) are reused through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
 on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
 two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
-commit two at a time (with a few slot-2 restrictions). See the 2-wide notes below.
+commit two at a time (with a few slot-2 restrictions). That makes the core
+**2-way superscalar**, with one width asymmetry: result writeback rides a
+single-lane CDB (one completion per cycle, except CDB-bypassing aligned stores),
+so dispatch and commit are 2-wide while completion is 1-wide — see
+[Single-CDB arbitration](#single-cdb-arbitration). See the 2-wide notes below.
 
 ```
    IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
