@@ -549,191 +549,38 @@ module store_queue #(
   assign o_committed_empty = committed_empty_q;
 
   // ===========================================================================
-  // Store-to-Load Forwarding (combinational scan)
+  // Store-to-Load Forwarding -> sq_forwarding_unit.sv (pure boundary move).
+  // The SQ data-RAM forwarding read (addressed by fwd_match_idx) stays here.
   // ===========================================================================
-  // For each valid SQ entry that is OLDER than the load (check_rob_tag):
-  //   1. Check if all older stores have addr_valid (conservative disambiguation)
-  //   2. Find newest matching store (scan oldest→newest, last match wins)
-  //   3. Determine if forwarding is possible (data_valid + compatible sizes)
-  //
-  // Forwarding rules (conservative):
-  //   - can_forward when: exact address match, same size, WORD or DOUBLE, data_valid
-  //   - match (stall) when: accessed byte lanes overlap within a word
-  //     (including DOUBLE +4 overlap)
-  //   - all_older_addrs_known: all older valid entries have addr_valid
-
-  // Forwarding extract type: which slice of sq_data to forward
-  logic [1:0] fwd_extract_type;  // 0=EXACT, 1=LO_WORD, 2=HI_WORD
-
-  // Forwarding scan results — promoted to module scope so the per-entry
-  // qualification mask, winner select, and sq_data_fwd_rd consumption stay in
-  // separate blocks and avoid UNOPTFLAT circular combinational logic through
-  // the LUTRAM.
-  logic fwd_all_older_known;
-  logic fwd_found_match;
-  logic fwd_can_fwd;
-  logic [3:0] fwd_load_byte_mask;
-  logic [DEPTH-1:0] fwd_addr_unknown_mask;
-  logic [DEPTH-1:0] fwd_conflict_mask;
-  logic [DEPTH-1:0] fwd_can_forward_mask;
-  logic [ReorderBufferTagWidth:0] fwd_load_age;
-  logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
-  logic [1:0] fwd_entry_extract_type[DEPTH];
-
-  assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
-  assign fwd_load_age = {1'b0, i_sq_check_rob_tag} - {1'b0, i_rob_head_tag};
-
-  // Block 1: per-entry forwarding qualification from FF-based fields only
-  // (no LUTRAM read, no inter-entry "last match wins" dependency).
-  // Select older stores by ROB age directly so the forwarding path does not
-  // need a head-relative barrel rotation over sq_valid/sq_addr_valid.
-  always_comb begin
-    logic same_word;
-    logic base_match;
-    logic double_hi_match;
-    logic load_double_hi;
-    logic older_store;
-    logic store_committed;
-    logic [3:0] store_byte_mask;
-    logic [3:0] load_byte_mask;
-    // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
-    // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
-    // (driven by sister registers in LQ), but the two source FFs let the
-    // placer split the per-entry CARRY8 compare chains across two physical
-    // anchor points.  Without this split, all per-entry compares routed
-    // from a single source FF, contributing ~0.2 ns route hops on the
-    // -0.178 ns post-synth path (LQ → SQ CAM → output FF).
-    logic [XLEN-1:0] sq_check_addr_for_entry;
-    logic [WordAddrWidth-1:0] sq_check_word_for_entry;
-
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      same_word = 1'b0;
-      base_match = 1'b0;
-      double_hi_match = 1'b0;
-      load_double_hi = 1'b0;
-      older_store = 1'b0;
-      store_committed = 1'b0;
-      store_byte_mask = 4'b0000;
-      load_byte_mask = fwd_load_byte_mask;
-      // (i < DEPTH/2) is constant per loop iteration after synth unroll —
-      // the select collapses to a wire-pick of one of the two address ports.
-      sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
-      sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
-      fwd_entry_age[i] = {1'b0, sq_rob_tag[i]} - {1'b0, i_rob_head_tag};
-      fwd_addr_unknown_mask[i] = 1'b0;
-      fwd_conflict_mask[i] = 1'b0;
-      fwd_can_forward_mask[i] = 1'b0;
-      fwd_entry_extract_type[i] = 2'd0;
-
-      // Stores retire from the ROB before they drain from the SQ.  Keep a
-      // store visible to younger-load disambiguation in the cycle its commit
-      // arrives so the load cannot slip through the one-cycle sq_committed lag.
-      // Widen-commit extends the same guard to slot 2.
-      store_committed = sq_committed[i] ||
-                        (i_commit_valid && (sq_rob_tag[i] == i_commit_rob_tag)) ||
-                        (i_commit_valid_2 && (sq_rob_tag[i] == i_commit_rob_tag_2));
-      older_store = sq_valid[i] && (store_committed || (fwd_entry_age[i] < fwd_load_age));
-
-      if (older_store) begin
-        // Check if this older store has its address resolved
-        if (!sq_addr_valid[i]) begin
-          fwd_addr_unknown_mask[i] = 1'b1;
-        end
-
-        // Check for address overlap
-        if (sq_addr_valid[i]) begin
-          same_word = word_addr_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
-          store_byte_mask = gen_byte_en(sq_address[i][1:0], riscv_pkg::mem_size_e'(sq_size[i]));
-
-          // Non-double accesses only conflict when their byte ranges overlap.
-          base_match = same_word && ((sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) ||
-                       (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
-                       (|(store_byte_mask & load_byte_mask)));
-
-          // DOUBLE store: also overlaps at word addr+4
-          double_hi_match = (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(sq_address[i][XLEN-1:2], sq_check_word_for_entry);
-
-          // DOUBLE load: check if store is at the +4 word
-          load_double_hi = (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(sq_check_word_for_entry, sq_address[i][XLEN-1:2]);
-
-          if (base_match || double_hi_match || load_double_hi) begin
-            fwd_conflict_mask[i] = 1'b1;
-
-            // Forwarding: only non-MMIO stores with valid data
-            if (sq_data_valid[i] && !sq_is_mmio[i]) begin
-              // Case 1: exact address, same size, WORD or DOUBLE
-              if (base_match && full_addr_eq(
-                      sq_address[i], sq_check_addr_for_entry
-                  ) && (sq_size[i] == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
-                      (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd0;  // EXACT
-                // Case 2: FLW at FSD base address → forward low word
-              end else if (base_match &&
-                  (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD) &&
-                  (sq_size[i] == riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd1;  // LO_WORD
-                // Case 3: FLW at FSD addr+4 → forward high word
-              end else if (double_hi_match && (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd2;  // HI_WORD
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  assign fwd_all_older_known = ~(|fwd_addr_unknown_mask);
-  assign fwd_found_match     = |fwd_conflict_mask;
-
-  // Block 2: newest conflicting store wins for data/extract selection. The
-  // heavy address/age qualification is already parallelized above, so this
-  // block only prioritizes 1-bit match results and their precomputed metadata.
-  always_comb begin
-    logic have_winner;
-    logic [ReorderBufferTagWidth:0] winner_age;
-
-    have_winner      = 1'b0;
-    winner_age       = '0;
-    fwd_can_fwd      = 1'b0;
-    fwd_match_idx    = '0;
-    fwd_extract_type = 2'd0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (fwd_conflict_mask[i] && (!have_winner || (fwd_entry_age[i] >= winner_age))) begin
-        have_winner      = 1'b1;
-        winner_age       = fwd_entry_age[i];
-        fwd_can_fwd      = fwd_can_forward_mask[i];
-        fwd_match_idx    = IdxWidth'(i);
-        fwd_extract_type = fwd_entry_extract_type[i];
-      end
-    end
-  end
-
-  // Block 3: Registered forwarding outputs.
-  // Keep the SQ compare/forwarding result behind a register so the LQ sees it
-  // one cycle later; this breaks the MEM_RS -> SQ scan -> LQ -> BRAM path.
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      o_sq_all_older_addrs_known <= 1'b0;
-      o_sq_forward.match         <= 1'b0;
-      o_sq_forward.can_forward   <= 1'b0;
-    end else begin
-      o_sq_all_older_addrs_known <= i_sq_check_valid ? fwd_all_older_known : 1'b0;
-      o_sq_forward.match         <= i_sq_check_valid ? fwd_found_match : 1'b0;
-      o_sq_forward.can_forward   <= i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
-    end
-
-    case (fwd_extract_type)
-      2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
-      2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
-      default: o_sq_forward.data <= sq_data_fwd_rd;
-    endcase
-  end
+  sq_forwarding_unit #(
+      .DEPTH(DEPTH)
+  ) sq_forwarding_unit_inst (
+      .i_clk                     (i_clk),
+      .i_rst_n                   (i_rst_n),
+      .i_flush_all               (i_flush_all),
+      .i_sq_check_valid          (i_sq_check_valid),
+      .i_sq_check_addr           (i_sq_check_addr),
+      .i_sq_check_addr_b         (i_sq_check_addr_b),
+      .i_sq_check_size           (i_sq_check_size),
+      .i_sq_check_rob_tag        (i_sq_check_rob_tag),
+      .i_rob_head_tag            (i_rob_head_tag),
+      .i_commit_valid            (i_commit_valid),
+      .i_commit_rob_tag          (i_commit_rob_tag),
+      .i_commit_valid_2          (i_commit_valid_2),
+      .i_commit_rob_tag_2        (i_commit_rob_tag_2),
+      .sq_valid                  (sq_valid),
+      .sq_addr_valid             (sq_addr_valid),
+      .sq_data_valid             (sq_data_valid),
+      .sq_is_mmio                (sq_is_mmio),
+      .sq_committed              (sq_committed),
+      .sq_rob_tag                (sq_rob_tag),
+      .sq_address                (sq_address),
+      .sq_size                   (sq_size),
+      .sq_data_fwd_rd            (sq_data_fwd_rd),
+      .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
+      .o_sq_forward              (o_sq_forward),
+      .o_fwd_match_idx           (fwd_match_idx)
+  );
 
   // ===========================================================================
   // Memory Write Logic (combinational)

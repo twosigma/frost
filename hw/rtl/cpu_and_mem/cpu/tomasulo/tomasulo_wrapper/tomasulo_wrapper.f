@@ -25,7 +25,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 
-# Store queue
+# Store queue (+ extracted store-to-load forwarding submodule)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
 
 # Wrapper glue submodules (extracted from tomasulo_wrapper top-level)
