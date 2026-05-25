@@ -477,37 +477,32 @@ module tomasulo_wrapper #(
   logic commit_2_valid_raw;
   logic commit_2_store_like_raw;
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) commit_bus_q_valid <= 1'b0;
-    else commit_bus_q_valid <= commit_bus.valid;
-  end
-
-  always_ff @(posedge i_clk) begin
-    commit_bus_q <= commit_bus;
-    commit_q_dest_valid <= commit_bus.dest_valid;
-    commit_q_dest_rf <= commit_bus.dest_rf;
-    commit_q_dest_reg <= commit_bus.dest_reg;
-    commit_q_tag <= commit_bus.tag;
-    commit_q_is_sc <= commit_bus.is_sc;
-    commit_q_is_store_like <= commit_bus.is_store || commit_bus.is_fp_store || commit_bus.is_sc;
-    commit_q_sc_failed <= commit_bus.is_sc && commit_bus.value[0];
-  end
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) commit_bus_2_q_valid <= 1'b0;
-    else commit_bus_2_q_valid <= commit_bus_2.valid;
-  end
-
-  always_ff @(posedge i_clk) begin
-    commit_bus_2_q <= commit_bus_2;
-    commit_q_2_dest_valid <= commit_bus_2.dest_valid;
-    commit_q_2_dest_rf <= commit_bus_2.dest_rf;
-    commit_q_2_dest_reg <= commit_bus_2.dest_reg;
-    commit_q_2_tag <= commit_bus_2.tag;
-    // Slot 2 excludes SC by construction, so "store_like" collapses to
-    // is_store | is_fp_store — the SC discard path is not reachable.
-    commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
-  end
+  // The commit-bus pipeline registers (4 always_ff) now live in
+  // commit_bus/commit_bus_pipeline.sv (pure boundary move).  Declarations above
+  // and the reset-qualified reconstruction below stay in the wrapper.
+  commit_bus_pipeline commit_bus_pipeline_inst (
+      .i_clk                     (i_clk),
+      .i_rst_n                   (i_rst_n),
+      .i_flush_all               (i_flush_all),
+      .i_commit_bus              (commit_bus),
+      .i_commit_bus_2            (commit_bus_2),
+      .o_commit_bus_q            (commit_bus_q),
+      .o_commit_bus_q_valid      (commit_bus_q_valid),
+      .o_commit_q_dest_valid     (commit_q_dest_valid),
+      .o_commit_q_dest_rf        (commit_q_dest_rf),
+      .o_commit_q_dest_reg       (commit_q_dest_reg),
+      .o_commit_q_tag            (commit_q_tag),
+      .o_commit_q_is_sc          (commit_q_is_sc),
+      .o_commit_q_is_store_like  (commit_q_is_store_like),
+      .o_commit_q_sc_failed      (commit_q_sc_failed),
+      .o_commit_bus_2_q          (commit_bus_2_q),
+      .o_commit_bus_2_q_valid    (commit_bus_2_q_valid),
+      .o_commit_q_2_dest_valid   (commit_q_2_dest_valid),
+      .o_commit_q_2_dest_rf      (commit_q_2_dest_rf),
+      .o_commit_q_2_dest_reg     (commit_q_2_dest_reg),
+      .o_commit_q_2_tag          (commit_q_2_tag),
+      .o_commit_q_2_is_store_like(commit_q_2_is_store_like)
+  );
 
   // Reconstruct commit bus with reset-qualified valid for downstream consumers
   riscv_pkg::reorder_buffer_commit_t commit_bus_q_qualified;
