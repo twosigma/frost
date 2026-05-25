@@ -51,6 +51,15 @@ Two things the cache intentionally *doesn't* do:
   hit on the just-filled line becomes a one-cycle-delayed hit instead;
   the LUTRAM is current next cycle regardless.
 
+## Issue selection
+
+The parallel issue-selection scan — oldest CDB-ready entry (Phase A),
+memory-issue eligibility masks with MMIO/LR/AMO head gating and older-AMO
+blocking (Phase B), and the explicit ROB-head priority result — lives in
+[`lq_issue_selector.sv`](lq_issue_selector.sv), a pure boundary move out of
+`load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
+which stays in `load_queue.sv`.
+
 ## Issue and completion bypasses
 
 Two bypass paths shave a cycle each off the load critical latency:
