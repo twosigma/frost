@@ -1044,8 +1044,6 @@ module tomasulo_wrapper #(
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
   // ===========================================================================
   logic sc_pending;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sc_pending_rob_tag;
-  logic [riscv_pkg::XLEN-1:0] sc_pending_addr;
   // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
 
@@ -1063,33 +1061,11 @@ module tomasulo_wrapper #(
   endfunction
 
   // SC result computation (combinational)
-  logic sc_can_fire;
-  logic sc_success;
-  logic sc_fire_now;
+  riscv_pkg::fu_complete_t sc_fu_complete;  // driven by sc_pending_unit
   logic store_issue_fire;
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
 
-  assign sc_can_fire = sc_pending && (sc_pending_rob_tag == head_tag) && sq_committed_empty;
-  assign sc_success = lq_reservation_valid
-      && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sc_pending_addr[riscv_pkg::XLEN-1:2]);
-  // Arm SC only when the MEM adapter has no competing same-cycle producer.
-  // This keeps the rare SC head-tag compare local to the SC register D path;
-  // the registered completion below owns the MEM adapter on the next cycle.
-  assign sc_fire_now = sc_can_fire &&
-                       !mem_adapter_result_pending &&
-                       !lq_fu_complete.valid &&
-                       !store_misalign_issue &&
-                       !store_misalign_fu_complete_reg.valid;
-
-  // SC fu_complete generation
-  riscv_pkg::fu_complete_t sc_fu_complete;
-  always_comb begin
-    sc_fu_complete       = '0;
-    sc_fu_complete.valid = sc_fire_now;
-    sc_fu_complete.tag   = sc_pending_rob_tag;
-    sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
-  end
 
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
@@ -1196,43 +1172,29 @@ module tomasulo_wrapper #(
                               !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      sc_pending <= 1'b0;
-    end else if (speculative_flush_all) begin
-      sc_pending <= 1'b0;
-    end else begin
-      // Set when MEM_RS issues SC.  Gate with flush signals because
-      // the RS output valid is no longer suppressed during flush for
-      // timing closure — a phantom SC set during partial flush would
-      // leave sc_pending stuck (the flushed tag never reaches head).
-      if (o_mem_rs_issue.valid && !speculative_flush_all && !speculative_flush_en
-          && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
-        sc_pending <= 1'b1;
-      end
-      // Clear when SC fu_complete is armed for the registered MEM path.
-      if (sc_fire_now) begin
-        sc_pending <= 1'b0;
-      end
-      // A pending SC is speculative if it is younger than the flush boundary,
-      // or if recovery is draining everything younger than the current/just-
-      // retired head.
-      if (i_flush_en && sc_pending && (speculative_partial_flush || is_younger(
-              sc_pending_rob_tag, i_flush_tag, head_tag
-          ))) begin
-        sc_pending <= 1'b0;
-      end
-    end
-  end
-
-  // SC data capture (no reset - gated by sc_pending)
-  always_ff @(posedge i_clk) begin
-    if (o_mem_rs_issue.valid && !speculative_flush_all && !speculative_flush_en
-        && (o_mem_rs_issue.op == riscv_pkg::SC_W)) begin
-      sc_pending_rob_tag <= o_mem_rs_issue.rob_tag;
-      sc_pending_addr    <= sq_effective_addr;
-    end
-  end
+  // SC resolution + pending-register FSM -> atomics/sc_pending_unit.sv.
+  // store-misalign, the MEM mux, and lq_result_accepted stay in the wrapper.
+  sc_pending_unit sc_pending_unit_inst (
+      .i_clk                           (i_clk),
+      .i_rst_n                         (i_rst_n),
+      .i_flush_en                      (i_flush_en),
+      .i_flush_tag                     (i_flush_tag),
+      .i_head_tag                      (head_tag),
+      .i_sq_committed_empty            (sq_committed_empty),
+      .i_lq_reservation_valid          (lq_reservation_valid),
+      .i_lq_reservation_addr           (lq_reservation_addr),
+      .i_mem_adapter_result_pending    (mem_adapter_result_pending),
+      .i_lq_fu_complete                (lq_fu_complete),
+      .i_store_misalign_issue          (store_misalign_issue),
+      .i_store_misalign_fu_complete_reg(store_misalign_fu_complete_reg),
+      .i_mem_rs_issue                  (o_mem_rs_issue),
+      .i_sq_effective_addr             (sq_effective_addr),
+      .i_speculative_flush_all         (speculative_flush_all),
+      .i_speculative_flush_en          (speculative_flush_en),
+      .i_speculative_partial_flush     (speculative_partial_flush),
+      .o_sc_pending                    (sc_pending),
+      .o_sc_fu_complete                (sc_fu_complete)
+  );
 
   // ===========================================================================
   // FP_ADD Pipeline: FP_RS issue → fp_add_shim → adapter → CDB arbiter slot 4
