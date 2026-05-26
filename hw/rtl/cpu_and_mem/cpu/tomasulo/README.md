@@ -9,10 +9,15 @@ instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) are reused through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
 on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
 two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
-commit two at a time (with a few slot-2 restrictions). That makes the core
-**2-way superscalar**, with one width asymmetry: result writeback rides a
-single-lane CDB (one completion per cycle, except CDB-bypassing aligned stores),
-so dispatch and commit are 2-wide while completion is 1-wide — see
+commit two at a time (with a few slot-2 restrictions). So the **two ends of the
+pipeline are 2-wide, but the execution engine is 1-wide**: each reservation
+station issues one operation per cycle (with a single integer ALU), and result
+writeback rides a single-lane CDB — one completion per cycle, except
+CDB-bypassing aligned stores. Different function units still execute concurrently
+(up to six RSes can issue in one cycle), so execution is single-issue *per FU*
+rather than globally serial. But because retirement cannot exceed completion over
+time, the single CDB caps **sustained IPC near ~1**, and 2-wide commit raises
+*burst* throughput by draining the done-backlog, not the steady-state rate — see
 [Single-CDB arbitration](#single-cdb-arbitration). See the 2-wide notes below.
 
 ```
@@ -174,12 +179,12 @@ Slot 1 control flow terminates the bundle. Slot 2 has its own RAT lookups,
 destination rename, ROB allocation, and RS packet. A slot-2 source that reads
 slot 1's destination is redirected to slot 1's just allocated ROB tag inside
 dispatch, so same-bundle RAW dependencies behave like ordinary renamed
-dependencies. Slot 2 has no done-repair path of its own; instead it is
-conservatively blocked from firing whenever one of its renamed sources has
-already completed (those operands would otherwise miss the CDB wake). The
-checkpoint pool remains single-save-per-cycle because slot 1 branch/jump
-instructions suppress slot 2; when slot 2 is the control-flow instruction, the
-checkpoint snapshot overlays slot 1's rename.
+dependencies. Slot 2 also has its own done-repair channels: dispatch registers
+slot-2 source tags on channels 4/5/6, and the wrapper repairs already-completed
+sources one cycle later just like slot 1. The checkpoint pool remains
+single-save-per-cycle because slot 1 branch/jump instructions suppress slot 2;
+when slot 2 is the control-flow instruction, the checkpoint snapshot overlays
+slot 1's rename.
 
 ### 2-wide commit
 

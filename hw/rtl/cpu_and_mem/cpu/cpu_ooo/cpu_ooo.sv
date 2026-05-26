@@ -192,8 +192,8 @@ module cpu_ooo #(
   // (sel_nop=1 only when there is no valid second instruction this cycle) and
   // PD/ID propagate it to dispatch, which fires slot-2 subject to the bundle
   // restrictions (slot-1 taken control flow ends the bundle, slot-2 cannot be
-  // an FP-compute op, and slot-2 is blocked when a renamed source is already
-  // done since slot-2 has no done-repair path).
+  // an FP-compute op, and slot-2 renamed sources use done-repair channels
+  // 4/5/6 for the missed-CDB case).
   riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
   riscv_pkg::from_pd_to_id_t from_pd_to_id_2;
   riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
@@ -1212,7 +1212,9 @@ module cpu_ooo #(
       .o_rob_alloc_req_2 (rob_alloc_req_2_raw),
       .i_rob_alloc_resp_2(rob_alloc_resp_2),
 
-      // ROB entry-done vector (slot-2 missed-CDB conservative gate, Session G)
+      // ROB entry-done vector retained for dispatch interface stability; the
+      // old slot-2 conservative missed-CDB gate has been replaced by
+      // done-repair channels 4/5/6.
       .i_rob_entry_done(rob_entry_done_vec),
 
       // RAT lookups - slot 1

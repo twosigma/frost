@@ -310,11 +310,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 106,547 | 1,029,600 | 10.3% |
-|   LUT as Logic | 96,936 | 1,029,600 | 9.4% |
-|   LUT as Distributed RAM | 9,032 | — | — |
-|   LUT as Shift Register | 579 | — | — |
-| CLB Registers | 62,135 | 2,059,200 | 3.0% |
+| CLB LUTs | 108,541 | 1,029,600 | 10.5% |
+|   LUT as Logic | 99,000 | 1,029,600 | 9.6% |
+|   LUT as Distributed RAM | 9,028 | — | — |
+|   LUT as Shift Register | 513 | — | — |
+| CLB Registers | 63,588 | 2,059,200 | 3.1% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
@@ -329,11 +329,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 106,445 | 203,800 | 52.2% |
-|   LUT as Logic | 95,225 | 203,800 | 46.7% |
-|   LUT as Distributed RAM | 10,636 | — | — |
-|   LUT as Shift Register | 584 | — | — |
-| Slice Registers | 62,089 | 407,600 | 15.2% |
+| Slice LUTs | 106,208 | 203,800 | 52.1% |
+|   LUT as Logic | 95,122 | 203,800 | 46.7% |
+|   LUT as Distributed RAM | 10,578 | — | — |
+|   LUT as Shift Register | 508 | — | — |
+| Slice Registers | 62,097 | 407,600 | 15.2% |
 | Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 34 | 101,900 | 0.0% |

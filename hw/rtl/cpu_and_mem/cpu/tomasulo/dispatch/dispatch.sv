@@ -97,10 +97,10 @@ module dispatch (
     output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req_2,
     input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp_2,
 
-    // ROB entry-done vector (for slot-2 missed-CDB conservative gate).  See
-    // 2wide_dispatch_design.md decision #5: slot-2 lacks done-repair coverage
-    // for now.  Block slot-2 firing when any of its renamed source tags has
-    // already completed (done=1) — those operands would miss the CDB wake.
+    // ROB entry-done vector, retained for interface stability.  The old
+    // slot-2 missed-CDB conservative gate was removed after dispatch grew
+    // channels 4/5/6 for slot-2 done-repair; missed-CDB operands are now
+    // repaired by the registered bypass path in the wrapper/RS.
     input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_done,
 
     // =========================================================================
