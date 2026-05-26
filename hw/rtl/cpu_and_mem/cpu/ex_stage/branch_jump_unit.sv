@@ -49,9 +49,8 @@
  *
  * Related Modules:
  *   - id_stage.sv: Pre-computes branch_target and jal_target
- *   - ex_stage.sv: Instantiates this unit
- *   - pc_controller.sv: Uses branch_taken and target to update PC
- *   - hazard_resolution_unit.sv: Uses branch_taken for pipeline flush
+ *   - branch_resolution.sv: Instantiates this unit for INT_RS branch issue
+ *   - ex_comb_synthesizer.sv: Converts branch recovery into front-end redirects
  */
 module branch_jump_unit #(
     parameter int unsigned XLEN = 32
@@ -63,7 +62,7 @@ module branch_jump_unit #(
     input logic i_is_jump_and_link,          // JAL instruction (PC-relative)
     input logic i_is_jump_and_link_register, // JALR instruction (rs1-relative)
 
-    // Operands for comparison (forwarded values from forwarding unit)
+    // Operands for comparison from the issuing reservation station
     input logic [XLEN-1:0] i_operand_a,  // rs1 value (also used for JALR base)
     input logic [XLEN-1:0] i_operand_b,  // rs2 value (for branch comparisons)
 

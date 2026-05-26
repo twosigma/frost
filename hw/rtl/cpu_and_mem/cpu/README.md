@@ -84,9 +84,7 @@ instruction size.
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
 | `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |
-| `control/`                          | **Mostly legacy** | Only `trap_unit.sv` is reused. The forwarding/hazard units are in-order leftovers — Tomasulo handles those natively. |
-| `ex_stage/`                         | **Repurposed** | `branch_jump_unit.sv` is instantiated directly at top level. ALU/MUL/DIV/FPU are reused via the FU shims in `tomasulo/fu_shims/`. |
-| `ma_stage/`, `cache/`               | **Legacy**    | In-order memory access stage and L0 cache. Replaced by the LQ + SQ + `lq_l0_cache` inside `tomasulo/`. Not in `cpu_ooo.f`. |
-| `data_mem_arbiter.sv`               | **Legacy**    | Standalone arbiter from the in-order design, still formally verified standalone but not in the OOO build. |
+| `control/trap_unit.sv`               | **In use**    | Machine-mode exception/interrupt handling used by `cpu_ooo.sv`. |
+| `ex_stage/`                         | **In use**    | `branch_jump_unit.sv` is instantiated directly at top level. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
 
 `cpu_ooo.f` is the authoritative filelist for what actually gets compiled.

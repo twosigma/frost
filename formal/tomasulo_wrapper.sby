@@ -80,7 +80,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_alu_shim.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv
-../hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv

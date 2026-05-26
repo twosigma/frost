@@ -184,7 +184,7 @@ def _is_double_precision_fp_op(operation: str) -> bool:
         return True
     if ".s" in operation:
         return False
-    # Default to single-precision for legacy F ops without .s/.d suffix
+    # Default to single-precision for unqualified F ops without .s/.d suffix.
     return False
 
 
@@ -198,7 +198,7 @@ def _is_single_precision_fp_op(operation: str) -> bool:
         return False
     if ".s" in operation:
         return True
-    # Default to single-precision for legacy F ops without .s/.d suffix
+    # Default to single-precision for unqualified F ops without .s/.d suffix.
     return True
 
 

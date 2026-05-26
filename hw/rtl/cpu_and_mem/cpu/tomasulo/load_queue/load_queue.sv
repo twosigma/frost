@@ -2123,7 +2123,7 @@ module load_queue #(
   // Internal data: issued entry tracker + flat snapshot
   // -----------------------------------------------------------------
   // Snapshotting the per-entry attributes here breaks the long
-  //   issued_idx → lq_*[issued_idx] → cache_fill_addr → l0_cache lookup
+  //   issued_idx → lq_*[issued_idx] → cache_fill_addr → lq_l0_cache lookup
   // cone that fed the data_memory ADDRARDADDR pin via lookup_fill_bypass.
   // The captured fields are stable for the lifetime of the outstanding
   // load (allocation-time fields don't change once written; sq_check_*_q

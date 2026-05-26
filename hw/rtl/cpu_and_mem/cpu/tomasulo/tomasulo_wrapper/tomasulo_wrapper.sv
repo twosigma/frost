@@ -24,8 +24,8 @@
  *
  * Dispatch routing:
  *   The full CPU uses per-RS dispatch payloads so unrelated source-family
- *   lookup cones do not feed every RS instance.  Wrapper-level tests can keep
- *   driving the legacy i_rs_dispatch bus by leaving SPLIT_RS_DISPATCH at 0.
+ *   lookup cones do not feed every RS instance.  Wrapper-level tests can use
+ *   the single-slot i_rs_dispatch bus by leaving SPLIT_RS_DISPATCH at 0.
  *
  * Internal wiring:
  *   ROB.o_commit_comb --> commit_bus --> cpu_ooo same-cycle mispredict detect
@@ -1543,8 +1543,8 @@ module tomasulo_wrapper #(
     int_rs_dispatch         = SPLIT_RS_DISPATCH ? i_int_rs_dispatch : i_rs_dispatch;
     int_rs_dispatch.valid   = int_rs_dispatch_valid;
 
-    // Slot-2 only carries a meaningful packet in SPLIT mode; the legacy
-    // i_rs_dispatch port is single-slot, so slot-2 is hard-zero otherwise.
+    // Slot-2 only carries a meaningful packet in SPLIT mode; the single-slot
+    // i_rs_dispatch port hard-zeros slot-2 otherwise.
     int_rs_dispatch_2       = SPLIT_RS_DISPATCH ? i_int_rs_dispatch_2 : '0;
     int_rs_dispatch_2.valid = int_rs_dispatch_valid_2;
   end

@@ -520,7 +520,6 @@ class CPUModel:
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
                 # RTL writes FSD as two 32-bit stores: low word then high word.
-                # See hw/rtl/cpu_and_mem/cpu/ma_stage/ma_stage.sv (FP_MEM_STORE_HI).
                 low_word = fp_value & MASK32
                 high_word = (fp_value >> 32) & MASK32
                 cocotb.log.info(

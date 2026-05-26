@@ -258,13 +258,13 @@ PIPELINE_FLUSH_CYCLES: Final[int] = 3
 """Branch/jump recovery padding cycles used by the random-instruction model."""
 
 PIPELINE_IF_TO_EX_CYCLES: Final[int] = 3
-"""Legacy monitor offset from fetch to branch/CSR resolution."""
+"""Monitor offset from fetch to branch/CSR resolution."""
 
 PIPELINE_IF_TO_MA_CYCLES: Final[int] = 4
-"""Legacy monitor offset from fetch to memory-observation point."""
+"""Monitor offset from fetch to memory-observation point."""
 
 PIPELINE_IF_TO_WB_CYCLES: Final[int] = 5
-"""Legacy monitor offset from fetch to architectural writeback observation."""
+"""Monitor offset from fetch to architectural writeback observation."""
 
 # ============================================================================
 # Division Edge Cases (RISC-V Spec)

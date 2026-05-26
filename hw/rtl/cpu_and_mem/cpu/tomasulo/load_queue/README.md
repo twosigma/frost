@@ -29,7 +29,7 @@ lo/hi in the LUTRAM so each phase writes only its half.
 ## L0 cache
 
 The L0 is a 128-entry direct-mapped cache, filled on memory
-response, preserved from the in-order core but moved inside the LQ.
+response, implemented inside the LQ by [`lq_l0_cache.sv`](lq_l0_cache.sv).
 It's a hit-path optimization: loads check it in parallel with SQ
 disambiguation, and a hit returns the result the same cycle. Stores
 invalidate matching lines on commit (the SQ pulses an invalidate back

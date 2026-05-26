@@ -21,8 +21,7 @@
  * Direct-mapped, word-aligned entries with FF-based valid bits and
  * LUTRAM-backed tag/data arrays.
  *
- * The existing l0_cache.sv uses in-order pipeline types; this module
- * uses simple address/data ports suitable for the LQ's OoO issue path.
+ * The module uses simple address/data ports suitable for the LQ's OoO issue path.
  *
  * Features:
  *   - Combinational lookup (hit in same cycle as address)

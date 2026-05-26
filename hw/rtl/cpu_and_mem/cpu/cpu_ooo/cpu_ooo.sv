@@ -17,20 +17,14 @@
 /*
  * FROST OOO CPU Core - Tomasulo Out-of-Order RISC-V Processor (RV32IMACBFD)
  *
- * Replaces the in-order EX/MA/WB stages with Tomasulo-based out-of-order
- * execution. Preserves the existing IF/PD/ID front-end.
+ * Integrates the IF/PD/ID front-end with Tomasulo-based out-of-order execution.
  *
  * Pipeline structure:
  *   IF → PD → ID → DISPATCH → [OOO execution via Tomasulo] → COMMIT
  *
- * Key changes from the former in-order back-end:
- *   - REMOVED: EX/MA/WB stages, forwarding_unit, fp_forwarding_unit,
- *              hazard_resolution_unit (in-order versions)
- *   - ADDED: dispatch module, tomasulo_wrapper (ROB+RAT+RS+CDB+LQ+SQ+FU shims)
- *   - CHANGED: Regfile writes come from ROB commit, not WB stage
- *   - CHANGED: CSR writes happen at ROB commit (serialized)
- *   - CHANGED: Branch/BTB/RAS updates come from ROB commit, not EX stage
- *   - CHANGED: Pipeline stalls come from dispatch back-pressure
+ * Regfile and CSR writes retire through ROB commit. Branch/BTB/RAS recovery
+ * comes from early branch resolution or ROB commit, and front-end stalls come
+ * from dispatch/back-end back-pressure.
  */
 
 module cpu_ooo #(
@@ -1766,8 +1760,8 @@ module cpu_ooo #(
       .i_exception_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
       .i_exception_tval('0),
       .i_exception_pc(rob_trap_pc),
-      .i_mret_in_ex(mret_start),
-      .i_wfi_in_ex(1'b0),  // WFI handled by ROB serialization
+      .i_mret_start(mret_start),
+      .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       .o_trap_taken(trap_taken),
       .o_mret_taken(mret_taken),
       .o_trap_target(trap_target),

@@ -252,8 +252,8 @@ module id_stage #(
       (instruction.funct7[6:2] == 5'b11110 && instruction.funct3 == 3'b000)  // FMV.W.X
       );
 
-  // Pipelined FP operations (multi-cycle ops that track in-flight destinations)
-  // Used by hazard_resolution_unit to detect RAW hazards without re-decoding the operation.
+  // Pipelined FP operations (multi-cycle ops that track in-flight destinations).
+  // Registered for downstream dispatch and issue logic without re-decoding.
   // Includes: FADD, FSUB, FMUL, FDIV, FSQRT, and all FMA variants
   logic is_pipelined_fp_op_direct;
   assign is_pipelined_fp_op_direct = is_fp_fma_direct |  // All FMA ops

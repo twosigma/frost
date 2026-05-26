@@ -33,9 +33,8 @@
  *   - LW: uses full 32-bit word
  *
  * Related Modules:
- *   - ma_stage.sv: Instantiates this unit for load completion
- *   - store_unit.sv: Complementary unit for store byte positioning
- *   - l0_cache.sv: Provides cached data for load-use hazard elimination
+ *   - load_queue.sv: Instantiates this unit for memory and L0-cache result paths
+ *   - lq_l0_cache.sv: Provides cached words that this unit extracts/sign-extends
  */
 module load_unit #(
     parameter int unsigned XLEN = 32
@@ -63,20 +62,20 @@ module load_unit #(
   //   Bit:      [31:24|23:16|15:8 | 7:0]
   //
   // Address bits select position:
-  //   addr[1:0] = 00 → byte 0 (bits 7:0)
-  //   addr[1:0] = 01 → byte 1 (bits 15:8)
-  //   addr[1:0] = 10 → byte 2 (bits 23:16)
-  //   addr[1:0] = 11 → byte 3 (bits 31:24)
-  //   addr[1]   = 0  → lower halfword (bits 15:0)
-  //   addr[1]   = 1  → upper halfword (bits 31:16)
+  //   addr[1:0] = 00 -> byte 0 (bits 7:0)
+  //   addr[1:0] = 01 -> byte 1 (bits 15:8)
+  //   addr[1:0] = 10 -> byte 2 (bits 23:16)
+  //   addr[1:0] = 11 -> byte 3 (bits 31:24)
+  //   addr[1]   = 0  -> lower halfword (bits 15:0)
+  //   addr[1]   = 1  -> upper halfword (bits 31:16)
   //
   // TIMING OPTIMIZATION: Pre-compute sign-extended results for all byte/halfword
   // positions in PARALLEL. The late-arriving address (from CARRY8 chain) only
   // controls the final mux, not the sign extension logic. This breaks the path:
-  //   address → byte_select → sign_bit_select → sign_extension
+  //   address -> byte_select -> sign_bit_select -> sign_extension
   // Into:
-  //   address → final_mux (short)
-  //   data → sign_extension (parallel, doesn't wait for address)
+  //   address -> final_mux (short)
+  //   data -> sign_extension (parallel, doesn't wait for address)
 
   // Extract individual bytes
   logic [7:0] byte0, byte1, byte2, byte3;

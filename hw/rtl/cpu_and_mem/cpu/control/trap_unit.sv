@@ -65,9 +65,8 @@
  *
  * Related Modules:
  *   - csr_file.sv: Provides mstatus/mie/mtvec/mepc, receives trap updates
- *   - ex_stage.sv: Detects exceptions, provides exception_valid/cause/tval
- *   - hazard_resolution_unit.sv: Uses trap_taken for pipeline flush
- *   - pc_controller.sv: Uses trap_target for PC redirect
+ *   - cpu_ooo.sv: Provides ROB-head exceptions and consumes trap redirects
+ *   - ooo_pipeline_control.sv: Registers trap/MRET pulses for front-end flush
  */
 module trap_unit #(
     parameter int unsigned XLEN = 32
@@ -90,17 +89,17 @@ module trap_unit #(
     // Interrupt pending inputs
     input riscv_pkg::interrupt_t i_interrupts,
 
-    // Exception inputs from EX stage
+    // Exception inputs from ROB commit/trap arbitration
     input logic i_exception_valid,
     input logic [XLEN-1:0] i_exception_cause,
     input logic [XLEN-1:0] i_exception_tval,
     input logic [XLEN-1:0] i_exception_pc,
 
-    // MRET instruction in EX stage
-    input logic i_mret_in_ex,
+    // MRET trap-return request
+    input logic i_mret_start,
 
-    // WFI instruction in EX stage
-    input logic i_wfi_in_ex,
+    // WFI wait request
+    input logic i_wfi_start,
 
     // Trap control outputs
     output logic            o_trap_taken,  // Trap is being taken this cycle
@@ -198,7 +197,7 @@ module trap_unit #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       wfi_active <= 1'b0;
-    end else if (i_wfi_in_ex && !i_pipeline_stall) begin
+    end else if (i_wfi_start && !i_pipeline_stall) begin
       // Enter WFI wait state
       wfi_active <= 1'b1;
     end else if (interrupt_pending || i_interrupts.meip ||
@@ -242,7 +241,7 @@ module trap_unit #(
 
   // MRET execution (trap has priority: if interrupt/exception fires same cycle, trap wins)
   logic take_mret;
-  assign take_mret = i_mret_in_ex && !i_pipeline_stall && !take_trap;
+  assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap;
 
   // Output trap signals
   assign o_trap_taken = take_trap;
@@ -299,9 +298,9 @@ module trap_unit #(
   // Structural constraints: these combos can't happen in real pipeline.
   // In the real pipeline, only one instruction type can be in EX at a time.
   always_comb begin
-    assume (!(i_mret_in_ex && i_exception_valid));
-    assume (!(i_wfi_in_ex && i_mret_in_ex));
-    assume (!(i_wfi_in_ex && i_exception_valid));
+    assume (!(i_mret_start && i_exception_valid));
+    assume (!(i_wfi_start && i_mret_start));
+    assume (!(i_wfi_start && i_exception_valid));
     // Note: MRET + interrupt_pending is NOT assumed away. The RTL handles it
     // by giving trap priority (!take_trap gate on take_mret), and the
     // p_trap_mret_mutex assertion proves this without over-constraining.

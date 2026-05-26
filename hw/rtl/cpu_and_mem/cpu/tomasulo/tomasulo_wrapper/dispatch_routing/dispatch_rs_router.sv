@@ -23,7 +23,7 @@
 // signals each RS uses to pre-select alloc_idx_2 off the dispatch critical path.
 //
 // SPLIT_RS_DISPATCH selects between the dispatch unit pre-routing per-RS packets
-// (i_*_rs_dispatch.valid) and the legacy single-bus rs_type decode.
+// (i_*_rs_dispatch.valid) and the single-bus rs_type decode.
 //
 // TIMING NOTE: the per-RS dispatch-valid nets carry (* max_fanout = 32 *).  The
 // body below keeps that attribute verbatim, AND the wrapper keeps it on the
@@ -86,8 +86,8 @@ module dispatch_rs_router #(
   (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid_2;
 
   wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
-  (* max_fanout = 32 *) logic legacy_dispatch_valid;
-  assign legacy_dispatch_valid = i_rs_dispatch.valid && !i_backend_recovery_hold;
+  (* max_fanout = 32 *) logic single_bus_dispatch_valid;
+  assign single_bus_dispatch_valid = i_rs_dispatch.valid && !i_backend_recovery_hold;
 
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
@@ -98,18 +98,20 @@ module dispatch_rs_router #(
       fmul_rs_dispatch_valid = i_fmul_rs_dispatch.valid && !i_backend_recovery_hold;
       fdiv_rs_dispatch_valid = i_fdiv_rs_dispatch.valid && !i_backend_recovery_hold;
     end else begin
-      int_rs_dispatch_valid  = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
-      mul_rs_dispatch_valid  = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MUL);
-      mem_rs_dispatch_valid  = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MEM);
-      fp_rs_dispatch_valid   = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FP);
-      fmul_rs_dispatch_valid = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FMUL);
-      fdiv_rs_dispatch_valid = legacy_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FDIV);
+      int_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
+      mul_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MUL);
+      mem_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MEM);
+      fp_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FP);
+      fmul_rs_dispatch_valid = single_bus_dispatch_valid &&
+                               (dispatch_rs_type == riscv_pkg::RS_FMUL);
+      fdiv_rs_dispatch_valid = single_bus_dispatch_valid &&
+                               (dispatch_rs_type == riscv_pkg::RS_FDIV);
     end
   end
 
   // Slot-2 dispatch routing.  The dispatch unit decodes slot-2's rs_type and
   // asserts the matching i_*_rs_dispatch_2.valid; the wrapper simply gates each
-  // by !backend_recovery_hold.  Legacy non-split mode does not support slot-2,
+  // by !backend_recovery_hold.  Single-bus non-split mode does not support slot-2,
   // so all slot-2 valids are zero in that case.
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
