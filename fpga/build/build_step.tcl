@@ -470,6 +470,7 @@ if {$step eq "synth"} {
         AggressiveFanoutOpt \
         AlternateFlowWithRetiming \
         RuntimeOptimized \
+        ExploreWithAggressiveHoldFix \
         ]
     }
     set total_directives [llength $sweep_order]

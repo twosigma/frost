@@ -122,6 +122,7 @@ PHYS_OPT_DIRECTIVES = [
     "AggressiveFanoutOpt",
     "AlternateFlowWithRetiming",
     "RuntimeOptimized",
+    "ExploreWithAggressiveHoldFix",
 ]
 
 # Step names in order
@@ -538,7 +539,8 @@ Behavior:
     and remaining stages are skipped — bitstream runs next.
 
 Each step uses a tuned default directive unless overridden with --*-directive.
---route-directive applies to both route and second_route.
+--route-directive controls the first route (default NoTimingRelaxation);
+--second-route-directive controls the second route (default Explore).
 --physopt-directive is currently ignored (kept for backward compatibility).
 
 Examples:
@@ -606,8 +608,15 @@ Examples:
         "--route-directive",
         choices=ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES,
         default="NoTimingRelaxation",
-        help="Router directive — used for both route (with -tns_cleanup) and "
-        "second_route (without) (default: NoTimingRelaxation)",
+        help="Router directive for the first route step (with -tns_cleanup) "
+        "(default: NoTimingRelaxation)",
+    )
+    parser.add_argument(
+        "--second-route-directive",
+        choices=ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES,
+        default="Explore",
+        help="Router directive for the second route step (without -tns_cleanup) "
+        "(default: Explore)",
     )
     parser.add_argument(
         "--physopt-directive",
@@ -643,7 +652,7 @@ Examples:
         "post_place_physopt": "Sweep",
         "route": args.route_directive,
         "post_route_physopt": "Sweep",
-        "second_route": args.route_directive,
+        "second_route": args.second_route_directive,
         "post_second_route_physopt": "Sweep",
     }
 
