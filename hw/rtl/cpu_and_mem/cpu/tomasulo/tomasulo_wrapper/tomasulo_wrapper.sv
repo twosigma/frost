@@ -536,9 +536,9 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done;
   assign o_rob_entry_done_vec = rob_entry_done;
 
-  // Dispatch done-repair: dispatch registers up to three renamed source ROB
-  // tags.  One cycle later, already-done entries are broadcast to RS operands
-  // that missed the original CDB wakeup.
+  // Dispatch done-repair: dispatch registers up to six renamed source ROB
+  // tags (three per dispatch slot).  One cycle later, already-done entries are
+  // broadcast to RS operands that missed the original CDB wakeup.
   logic [riscv_pkg::FLEN-1:0] bypass_value_1, bypass_value_2, bypass_value_3;
   logic [riscv_pkg::FLEN-1:0] bypass_value_4, bypass_value_5, bypass_value_6;
   logic                       done_repair_valid_1;

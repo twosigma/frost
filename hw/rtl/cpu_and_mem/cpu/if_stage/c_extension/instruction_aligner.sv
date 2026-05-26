@@ -377,11 +377,12 @@ module instruction_aligner #(
 
   // Slot-2 is invalid when:
   //   - slot-1 itself is a NOP/bubble (sel_nop), OR
-  //   - slot-1 is a branch (decision #1 — bundle terminates), OR
+  //   - slot-1 is not compressed, OR
+  //   - slot-1 is a compressed control-flow op (bundle terminates), OR
   //   - slot-2 does not fit in the 64-bit fetch (NEXT_HI 32-bit), OR
   //   - slot-2 needs bram_next_word but the BRAM is in the !buf+swap state
   //     (transient — see Session J gate below), OR
-  //   - slot-2 is a compressed branch (Session G placeholder — see below).
+  //   - slot-2 is a native serializing op or FP-compute op.
   //
   // 64-bit fetch supplies up to 4 halfwords per cycle: the two halves of
   // bram_current_word and the two halves of bram_next_word.  The CURRENT_HI
@@ -410,12 +411,10 @@ module instruction_aligner #(
   // future case that lets a non-NOP cycle land in !buf+swap.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped;
-  // Slot-2 compressed-branch detector — kept in the gate because slot-2 with a
-  // RAS-eligible compressed branch (c.j/c.jal/c.jr/c.jalr/c.beqz/c.bnez)
-  // didn't wake up correctly in Session G runtime tests.  Single-port BTB and
-  // RAS lookup (decision #3) only handle slot-1, so a compressed branch in
-  // slot-2 is always a misprediction relative to fetch — measure first
-  // before opening that path.
+  // Slot-2 compressed-branch detector — historical Session G guard.  Slot-2
+  // branch gates were dropped after the done-repair, checkpoint-owner, and
+  // dual-port BTB fixes; detector retained as documentation and not used in
+  // the OR chain.
   logic [2:0] s2_c_funct3;
   logic [3:0] s2_c_funct4;
   logic [4:0] s2_c_rs1;
@@ -438,11 +437,9 @@ module instruction_aligner #(
        (s2_c_rs1 != 5'b00000) &&
        ((s2_c_funct4 == 4'b1000) ||
         (s2_c_funct4 == 4'b1001)));
-  // Session K: slot-2 native-branch detector — same defensive rationale as the
-  // compressed-branch gate above.  Slot-2 native BRANCH/JAL/JALR shares the
-  // same un-root-caused source-tag-wakeup / RAT-update-ordering risk that
-  // motivated slot2_is_compressed_branch.  Slot-2's 32-bit opcode is always
-  // at o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
+  // Session K: slot-2 native-branch detector — same historical defensive
+  // rationale as the compressed-branch detector above.  Slot-2's 32-bit opcode
+  // is always at o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
   // {bram_next_word[15:0], bram_current_word[31:16]} (opcode lives in the
   // low half of the assembled instruction); Slot2AtNextLo 32b is just
   // bram_next_word with the opcode at [6:0].

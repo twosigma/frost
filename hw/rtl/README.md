@@ -1,13 +1,23 @@
 # FROST RTL
 
 This directory contains the synthesizable SystemVerilog for FROST. The current
-CPU is a **2-way superscalar out-of-order** RV32GCB implementation: a 2-wide
-in-order IF/PD/ID front-end, Tomasulo register renaming and dynamic scheduling,
-out-of-order execution across six function units, and precise 2-wide in-order
-commit, with machine-mode traps and separate instruction/data memory ports.
-The one asymmetry in the width is result writeback: it rides a single-lane
-common data bus (one completion per cycle), so fetch/dispatch/commit are 2-wide
-while completion is the single 1-wide stage.
+CPU is an **out-of-order RV32GCB implementation with a 2-wide front-end and
+2-wide commit**: a 2-wide in-order IF/PD/ID front-end, Tomasulo register renaming
+and dynamic scheduling, out-of-order execution across six function units, and
+precise 2-wide in-order commit, with machine-mode traps and separate
+instruction/data memory ports.
+
+The pipeline width is **asymmetric — the two ends are 2-wide, but the execution
+engine is 1-wide.** Fetch, decode, rename, ROB allocation, and commit each move
+two instructions per cycle; but each reservation station issues only one
+operation per cycle (with a single integer ALU), and result writeback rides a
+**single-lane common data bus — one completion per cycle** (aligned plain stores
+bypass it). Different function units do run concurrently — up to six reservation
+stations can issue in the same cycle — so execution is single-issue *per FU*, not
+globally serial. Because retirement cannot exceed completion over a long window,
+the single CDB caps **sustained IPC near ~1** (slightly above, since plain stores
+and JAL retire off the CDB); 2-wide commit raises *burst* throughput by draining
+the done-backlog, not the steady-state rate.
 
 The RTL is intended to stay portable: the core uses generic SystemVerilog and
 is built in CI with Verilator for simulation plus Yosys for vendor-agnostic
