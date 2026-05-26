@@ -289,8 +289,8 @@ module cpu_and_mem #(
     endcase
   end
 
-  // Register MMIO read data so both the legacy in-order path and the OOO path
-  // see a stable response after the side-effect pulse fires.
+  // Register MMIO read data so the CPU sees a stable response after the
+  // side-effect pulse fires.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       mmio_read_data_valid <= 1'b0;

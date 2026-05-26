@@ -9,7 +9,7 @@ $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 
 # Load unit (byte/halfword extraction and sign extension)
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/ma_stage/load_unit.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_unit.sv
 
 # L0 data cache (OoO-compatible, used internally by load_queue)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv

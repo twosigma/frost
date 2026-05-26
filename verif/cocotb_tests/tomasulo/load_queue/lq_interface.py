@@ -328,7 +328,7 @@ class LQInterface:
     # =========================================================================
 
     def drive_adapter_pending(self, pending: bool = True) -> None:
-        """Drive legacy downstream-busy hint."""
+        """Drive the downstream-busy hint."""
         self.dut.i_adapter_result_pending.value = 1 if pending else 0
 
     def drive_result_accepted(self, accepted: bool = True) -> None:

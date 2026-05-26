@@ -166,7 +166,7 @@ All source files must include the Apache 2.0 license header. Use the appropriate
 | Type names | `CamelCase` or `*_t` suffix | `interrupt_t`, `PipelineState` |
 | Enum values | `UPPER_CASE` | `OPC_ADD`, `STATE_IDLE` |
 | Parameters | `UPPER_CASE` | `XLEN`, `MEM_DEPTH` |
-| Module names | `snake_case` | `hazard_resolution_unit` |
+| Module names | `snake_case` | `branch_jump_unit` |
 
 #### Formatting
 

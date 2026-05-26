@@ -373,7 +373,7 @@ class TomasuloInterface:
         self.dut.i_rs_dispatch.value = 0
 
         # Slot-2 RS dispatch ports (2-wide dispatch plumbing, Session C).
-        # Wrapper-level tests drive only the legacy i_rs_dispatch port; slot-2
+        # Wrapper-level tests drive only the single-slot i_rs_dispatch port; slot-2
         # is held inactive across all RS families.
         self.dut.i_int_rs_dispatch_2.value = 0
         self.dut.i_mul_rs_dispatch_2.value = 0

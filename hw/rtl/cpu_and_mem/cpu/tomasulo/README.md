@@ -1,12 +1,11 @@
 # FROST Tomasulo Out-of-Order Back-End
 
-The Tomasulo back-end replaces the in-order EX / MA / WB pipeline with
-dynamic instruction scheduling, register renaming, speculation, and
-out-of-order completion — while preserving precise exceptions and the
+The Tomasulo back-end provides dynamic instruction scheduling, register
+renaming, speculation, and out-of-order completion while preserving precise exceptions and the
 existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zihintpause).
 The front-end (IF / PD / ID, branch predictor, RAS, RVC) supplies decoded
 instructions to dispatch; the functional units (ALU, multiplier, divider,
-FPU) are reused through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
+FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
 on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
 two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
 commit two at a time (with a few slot-2 restrictions). So the **two ends of the

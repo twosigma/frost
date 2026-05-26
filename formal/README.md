@@ -18,7 +18,7 @@ Each `.sby` file defines a verification target with tasks:
 
 - **BMC (Bounded Model Checking)** -- proves all `assert` properties hold for N clock cycles, across all possible input combinations
 - **Cover** -- proves all `cover` properties are reachable (i.e., the scenarios aren't dead code)
-- **Prove (k-induction)** -- unbounded safety proof via k-induction; proves properties hold for all time, not just N cycles. Available for simple state machines (HRU, LR/SC).
+- **Prove (k-induction)** -- optional unbounded safety proof via k-induction for targets that define a `prove` task.
 
 ## Targets
 
@@ -43,16 +43,15 @@ pytest tests/test_run_formal.py
 # Standalone runner
 ./tests/test_run_formal.py
 ./tests/test_run_formal.py --list-targets
-./tests/test_run_formal.py --target hru
+./tests/test_run_formal.py --target trap_unit
 ./tests/test_run_formal.py --task bmc
 ./tests/test_run_formal.py --verbose
 
 # Direct SymbiYosys invocation
 cd formal/
-sby -f hru.sby bmc      # Prove assertions (~2 sec)
-sby -f hru.sby cover    # Prove reachability (<1 sec)
-sby -f hru.sby prove    # Unbounded induction proof
-sby -f lr_sc.sby prove  # LR/SC induction proof
+sby -f trap_unit.sby bmc      # Prove assertions
+sby -f trap_unit.sby cover    # Prove reachability
+sby -f reorder_buffer.sby bmc # ROB checks
 ```
 
 ## Property Style: Contract-Based
@@ -104,12 +103,12 @@ Add an `ifdef FORMAL` block at the end of the module (before `endmodule`):
 ## Adding a New Formal Target
 
 1. Add `ifdef FORMAL` assertions to the RTL module
-2. Create an `.sby` file in `formal/` (see `hru.sby` as template)
+2. Create an `.sby` file in `formal/` (see `trap_unit.sby` as template)
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`:
 
 ```python
 FORMAL_TARGETS = [
-    FormalTarget("hru.sby", "Hazard resolution unit", ("bmc", "cover", "prove")),
+    FormalTarget("trap_unit.sby", "Trap unit"),
     FormalTarget("new_module.sby", "Description of new module"),  # bmc + cover only
 ]
 ```

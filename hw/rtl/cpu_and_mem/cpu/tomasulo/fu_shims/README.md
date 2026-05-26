@@ -1,14 +1,14 @@
 # Functional Unit Shims
 
 Each shim is an adapter between a reservation station's issue port and
-one of the in-order core's functional units. It translates the
+one of the CPU's shared functional units. It translates the
 generic `rs_issue_t` payload into the FU's native interface, tracks
 the in-flight ROB tags, handles back-pressure when the CDB is
 contended, and emits a `fu_complete_t` for the CDB arbiter via a
 `fu_cdb_adapter`.
 
-The underlying ALU, multiplier, divider, and FPU subunits are reused
-unchanged from the in-order FROST core. The shims are pure plumbing —
+The underlying ALU, multiplier, divider, and FPU subunits are shared
+with the CPU core. The shims are pure plumbing —
 no new arithmetic, just out-of-order glue.
 
 ## How they vary

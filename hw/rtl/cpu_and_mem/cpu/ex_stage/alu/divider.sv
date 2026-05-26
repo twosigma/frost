@@ -68,7 +68,7 @@
  *
  * Related Modules:
  *   - alu.sv: Instantiates divider, selects quotient vs remainder
- *   - hazard_resolution_unit.sv: Stalls pipeline during division
+ *   - int_muldiv_shim.sv: Tracks in-flight divide results for the OOO CDB
  */
 module divider #(
     parameter int unsigned WIDTH = 32  // Bit width (32 for RV32)

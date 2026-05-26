@@ -37,7 +37,7 @@ FORMAL_DIR = "formal"
 class FormalTarget:
     """A formal verification target defined by an .sby file."""
 
-    sby_file: str  # Filename of the .sby file (e.g., "hru.sby")
+    sby_file: str  # Filename of the .sby file (e.g., "trap_unit.sby")
     description: str  # Human-readable description
     tasks: tuple[str, ...] = ("bmc", "cover")  # Tasks this target supports
 
@@ -50,23 +50,8 @@ class FormalTarget:
 # Registry of formal verification targets.
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
-    FormalTarget(
-        "hru.sby",
-        "Hazard resolution unit - pipeline stall/flush control",
-        ("bmc", "cover", "prove"),
-    ),
-    FormalTarget(
-        "lr_sc.sby",
-        "LR/SC reservation register - atomic synchronization",
-        ("bmc", "cover", "prove"),
-    ),
     FormalTarget("trap_unit.sby", "Trap unit - exception and interrupt handling"),
     FormalTarget("csr_file.sby", "CSR file - control/status registers"),
-    FormalTarget("fwd_unit.sby", "Forwarding unit - integer RAW hazard bypass"),
-    FormalTarget("fp_fwd_unit.sby", "FP forwarding unit - FP RAW hazard bypass"),
-    FormalTarget("cache_hit.sby", "Cache hit detector - L0 cache hit logic"),
-    FormalTarget("cache_write.sby", "Cache write controller - L0 cache writes"),
-    FormalTarget("data_mem_arb.sby", "Data memory arbiter - memory interface mux"),
     FormalTarget(
         "reorder_buffer.sby",
         "Reorder buffer - in-order commit with serialization",
@@ -348,7 +333,7 @@ def main() -> int:
         epilog="""
 Examples:
   %(prog)s                           # Run all targets (bmc + cover)
-  %(prog)s --target hru              # Run specific target
+  %(prog)s --target trap_unit        # Run specific target
   %(prog)s --task bmc                # Run only BMC (skip cover)
   %(prog)s --verbose                 # Show full sby output
   %(prog)s --list-targets            # List available targets/tasks and exit
