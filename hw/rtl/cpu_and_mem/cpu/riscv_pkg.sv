@@ -473,29 +473,17 @@ package riscv_pkg;
   // ===========================================================================
   // Section 6: Pipeline Control
   // ===========================================================================
-  // Global control signals distributed to front-end and backend control logic.
-  // Keep the packed layout stable because synthesis is sensitive to this bundle.
-
   // Control signals distributed through the pipeline control bundle.
   typedef struct packed {
     logic reset;
     logic stall;  // Freeze pipeline (don't advance)
     logic stall_registered;  // Stall signal from previous cycle
-    logic stall_for_load_use_hazard;  // Stall due to load-use dependency
-    logic stall_for_fp_load_ma_hazard;  // Stall: FP load in MA feeds multi-cycle FP op
     logic stall_for_trap_check;  // Stall conditions for trap unit (before trap/mret gating)
     logic flush;  // Clear pipeline (insert bubble/NOP)
-    logic amo_wb_write_enable;  // Force regfile write for AMO result
     // Registered trap/mret signals for timing optimization
     // These break the path from trap/MRET detection through IF stage
     logic trap_taken_registered;  // trap_taken from previous cycle
     logic mret_taken_registered;  // mret_taken from previous cycle
-    // TIMING OPTIMIZATION: Raw hazard detection without multiply precedence check.
-    // Preserved in this packed bundle to keep the synthesized control shape stable.
-    // This preserves the load-use timing path that breaks a multiply-completion dependency.
-    logic load_use_hazard_detected;  // Raw load-use hazard (no multiply precedence)
-    // F extension: FPU in-flight hazard stall (RAW hazard with pipelined FPU ops)
-    logic stall_for_fpu_inflight_hazard;
     // NOTE: stall_excluding_amo is passed as a separate output port
     // (not through this struct) to avoid false combinational loop detection in some simulators.
   } pipeline_ctrl_t;
@@ -683,25 +671,10 @@ package riscv_pkg;
     logic is_not_nop;
   } from_id_to_ex_t;
 
-  // Backend feedback bundle. The packed layout is intentionally stable for synthesis.
+  // Control-flow feedback consumed by the front-end.
   typedef struct packed {
-    logic regfile_write_enable;
-    logic [XLEN-1:0] alu_result;
-    logic [XLEN-1:0] data_memory_address;
-    logic [XLEN-1:0] data_memory_write_data;
-    logic [(XLEN/8)-1:0] data_memory_byte_write_enable;
     logic branch_taken;  // Whether branch or jump should be taken
     logic [XLEN-1:0] branch_target_address;  // Target address for branch/jump
-    logic stall_for_multiply_divide;
-    // TIMING OPTIMIZATION: Signal from multiplier indicating completion next cycle.
-    // Hazard unit registers this to predict unstall without depending on multiplier_valid_output.
-    logic multiply_completing_next_cycle;
-    // A extension: SC.W success flag (0=success, 1=fail as value for rd)
-    logic sc_success;
-    // Exception signals
-    logic exception_valid;  // Exception detected in EX stage
-    logic [XLEN-1:0] exception_cause;  // Exception cause code
-    logic [XLEN-1:0] exception_tval;  // Trap value (faulting address/instruction)
     // BTB update signals (for branch prediction)
     logic btb_update;  // Update BTB entry
     logic [XLEN-1:0] btb_update_pc;  // PC of branch instruction
@@ -716,27 +689,6 @@ package riscv_pkg;
     logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
     logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
     logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
-    // F extension fields
-    logic stall_for_fpu;  // Stall for multi-cycle FP operation
-    logic fpu_completing_next_cycle;  // FPU result will be valid next cycle
-    logic [FpWidth-1:0] fp_result;  // FP computation result
-    fp_flags_t fp_flags;  // FP exception flags from this operation
-    logic fp_regfile_write_enable;  // Write to FP register file
-    logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
-    // FPU in-flight destination registers and occupancy (for RAW hazard detection).
-    // Valid bits are required because FP destination register f0 is writable.
-    logic [4:0] fpu_inflight_dest_1;  // 3-cycle ops: 2 cycles remaining
-    logic fpu_inflight_valid_1;
-    logic [4:0] fpu_inflight_dest_2;  // 3-cycle ops: 1 cycle remaining
-    logic fpu_inflight_valid_2;
-    logic [4:0] fpu_inflight_dest_3;  // FMA: 3 cycles remaining
-    logic fpu_inflight_valid_3;
-    logic [4:0] fpu_inflight_dest_4;  // FMA: 2 cycles remaining
-    logic fpu_inflight_valid_4;
-    logic [4:0] fpu_inflight_dest_5;  // FMA: 1 cycle remaining
-    logic fpu_inflight_valid_5;
-    logic [4:0] fpu_inflight_dest_6;  // Sequential (div/sqrt)
-    logic fpu_inflight_valid_6;
   } from_ex_comb_t;
 
   // Writeback result bundle.
@@ -749,8 +701,6 @@ package riscv_pkg;
     logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
     logic [FpWidth-1:0] fp_regfile_write_data;  // Final FP result to write back
     fp_flags_t fp_flags;  // FP exception flags (to accumulate in fflags)
-    logic is_fp_load;  // FLW/FLD — no valid fp_flags (for forwarding filter)
-    logic is_fp_to_int;  // FP-to-int (FCVT.W.D,) has valid fp_flags but fp_regfile_write_enable=0
   } from_ma_to_wb_t;
 
   // ===========================================================================
@@ -776,9 +726,6 @@ package riscv_pkg;
   // ===========================================================================
   // Structures for trap control.
   // Used by trap_unit.sv for M-mode exception/interrupt handling.
-  // Note: Exception signals (valid, cause, tval) are defined inline in from_ex_comb_t
-  // rather than as a separate struct, since the PC comes from from_id_to_ex.
-
   // Trap control signals (from trap unit to pipeline)
   typedef struct packed {
     logic            trap_taken;   // Trap is being taken this cycle
@@ -1049,11 +996,8 @@ package riscv_pkg;
   } rs_type_e;
 
   // ---------------------------------------------------------------------------
-  // Reorder Buffer Entry Structure
+  // Reorder Buffer Interface Structures
   // ---------------------------------------------------------------------------
-  // Unified Reorder Buffer entry supporting both integer and floating-point instructions.
-  // ~120 bits per entry.
-
   // Exception cause codes specific to Tomasulo (extends riscv_pkg causes)
   // Width: 5 bits covers synchronous exception causes 0-31 (RISC-V max is 11 for ecall M-mode)
   // NOTE: Interrupts are handled separately by the trap unit, not stored in Reorder Buffer.
@@ -1068,73 +1012,6 @@ package riscv_pkg;
 
   // Typedef for exception cause to make the encoding explicit
   typedef logic [ExcCauseWidth-1:0] exc_cause_t;
-
-  // Reorder Buffer entry structure
-  typedef struct packed {
-    // Core fields
-    logic       valid;      // Entry is allocated
-    logic       done;       // Execution complete
-    logic       exception;  // Exception occurred
-    exc_cause_t exc_cause;  // Exception cause code
-
-    // Instruction identification
-    logic [XLEN-1:0] pc;  // Instruction PC (for mepc)
-
-    // Destination register
-    logic dest_rf;  // 0=INT (x-reg), 1=FP (f-reg)
-    logic [RegAddrWidth-1:0] dest_reg;  // Architectural destination (rd)
-    logic dest_valid;  // Has destination register (not stores/branches w/o link)
-
-    // Result value (FLEN-wide to support FP double)
-    // For JAL: set to zero-extended link_addr at dispatch with done=1 (target known)
-    // For JALR: set to zero-extended link_addr at dispatch with done=0, marked done=1 via reorder_buffer_branch_update_t
-    // For other instructions: set by CDB broadcast (reorder_buffer_cdb_write_t) when execution completes
-    // NOTE: When storing XLEN values, zero-extend to FLEN: value = {{FLEN-XLEN{1'b0}}, xlen_result}
-    logic [FLEN-1:0] value;  // Result value
-
-    // Store tracking
-    logic is_store;     // Is store instruction
-    logic is_fp_store;  // Is FP store (FSW/FSD)
-
-    // Branch tracking (for speculation recovery)
-    // NOTE: is_branch should be set for conditional branches AND JAL/JALR
-    // so checkpoint allocation and misprediction recovery apply uniformly
-    logic            is_branch;         // Is branch/jump instruction (BEQ/BNE/.../JAL/JALR)
-    logic            branch_taken;      // Actual branch outcome
-    logic [XLEN-1:0] branch_target;     // Actual branch target
-    logic            predicted_taken;   // BTB prediction (for misprediction detection)
-    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
-    logic            mispredicted;      // Branch unit determined misprediction (authoritative)
-    logic            is_call;           // Is call (for RAS recovery)
-    logic            is_return;         // Is return (for RAS recovery)
-    logic            is_jal;            // JAL instruction (can mark done=1 at dispatch)
-    logic            is_jalr;           // JALR instruction (must wait for execute)
-
-    // Checkpoint index (for branches that allocated a checkpoint)
-    logic                         has_checkpoint;  // This branch has a checkpoint
-    logic [CheckpointIdWidth-1:0] checkpoint_id;   // Checkpoint index
-
-    // FP exception flags (accumulated at commit)
-    fp_flags_t fp_flags;  // NV, DZ, OF, UF, NX
-
-    // Serializing instruction flags
-    logic is_csr;      // CSR instruction (execute at commit)
-    logic is_fence;    // FENCE (drain SQ at commit)
-    logic is_fence_i;  // FENCE.I (drain SQ, flush pipeline)
-    logic is_wfi;      // WFI (stall at head until interrupt)
-    logic is_mret;     // MRET (restore mstatus, redirect to mepc)
-    logic is_amo;      // AMO (execute at head with SQ empty)
-    logic is_lr;       // LR (sets reservation)
-    logic is_sc;       // SC (checks reservation at head)
-
-    // CSR info (stored at dispatch, used at commit for serialized CSR execution)
-    logic [11:0]     csr_addr;
-    logic [2:0]      csr_op;          // funct3 for CSR operation
-    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
-
-    // FP flags validity
-    logic has_fp_flags;  // This instruction produces FP flags (FP compute, not FP load)
-  } reorder_buffer_entry_t;
 
   // Reorder Buffer interface signals (for module ports)
   typedef struct packed {
@@ -1321,15 +1198,8 @@ package riscv_pkg;
   } rob_perf_events_t;
 
   // ---------------------------------------------------------------------------
-  // RAT Entry and Checkpoint Structures
+  // RAT Lookup Structure
   // ---------------------------------------------------------------------------
-  // Separate INT and FP RATs, each with checkpoint storage for speculation.
-
-  // RAT entry (per architectural register)
-  typedef struct packed {
-    logic                             valid;  // Register is renamed (has in-flight producer)
-    logic [ReorderBufferTagWidth-1:0] tag;    // Reorder Buffer tag of producer
-  } rat_entry_t;
 
   // RAT lookup result (returned on source register read)
   typedef struct packed {
@@ -1337,23 +1207,6 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] tag;      // Reorder Buffer tag if renamed
     logic [FLEN-1:0]                  value;    // Value from regfile if not renamed
   } rat_lookup_t;
-
-  // Full RAT state (for checkpointing)
-  // Note: x0 entry is included for simplicity but always returns 0/not-renamed
-  typedef struct packed {rat_entry_t [NumIntRegs-1:0] entries;} int_rat_state_t;
-
-  typedef struct packed {rat_entry_t [NumFpRegs-1:0] entries;} fp_rat_state_t;
-
-  // Checkpoint structure (stores RAT state for branch recovery)
-  typedef struct packed {
-    logic                             valid;            // Checkpoint is active
-    logic [ReorderBufferTagWidth-1:0] branch_tag;       // Reorder Buffer tag of associated branch
-    int_rat_state_t                   int_rat;          // INT RAT snapshot
-    fp_rat_state_t                    fp_rat;           // FP RAT snapshot
-    // RAS state for recovery
-    logic [RasPtrBits-1:0]            ras_tos;          // RAS top-of-stack pointer
-    logic [RasPtrBits:0]              ras_valid_count;  // RAS valid entry count
-  } checkpoint_t;
 
   // ---------------------------------------------------------------------------
   // Memory Operation Size Encoding
@@ -1368,60 +1221,8 @@ package riscv_pkg;
   } mem_size_e;
 
   // ---------------------------------------------------------------------------
-  // Reservation Station Entry Structure
+  // Reservation Station Interface Structures
   // ---------------------------------------------------------------------------
-  // Generic RS entry supporting up to 3 source operands (for FMA).
-  // All values are FLEN-wide to support FP double precision.
-
-  // RS entry structure (generic, used by all RS types)
-  typedef struct packed {
-    logic                             valid;    // Entry is allocated
-    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Destination Reorder Buffer entry
-    instr_op_e                        op;       // Operation to perform
-
-    // Source operand 1
-    logic                             src1_ready;  // Operand 1 is available
-    logic [ReorderBufferTagWidth-1:0] src1_tag;    // Reorder Buffer tag if not ready
-    logic [FLEN-1:0]                  src1_value;  // Value if ready
-
-    // Source operand 2
-    logic                             src2_ready;  // Operand 2 is available
-    logic [ReorderBufferTagWidth-1:0] src2_tag;    // Reorder Buffer tag if not ready
-    logic [FLEN-1:0]                  src2_value;  // Value if ready
-
-    // Source operand 3 (for FMA: rs3/fs3)
-    logic                             src3_ready;  // Operand 3 is available
-    logic [ReorderBufferTagWidth-1:0] src3_tag;    // Reorder Buffer tag if not ready
-    logic [FLEN-1:0]                  src3_value;  // Value if ready
-
-    // Immediate value (for immediate instructions)
-    logic [XLEN-1:0] imm;      // Immediate value
-    logic            use_imm;  // Use imm instead of src2
-
-    // FP rounding mode (resolved from instruction rm or fcsr.frm at dispatch)
-    logic [2:0] rm;  // Rounding mode (FRM_RNE, etc.)
-
-    // For branches: pre-computed target from ID stage and BTB/RAS prediction
-    logic [XLEN-1:0] branch_target;     // Pre-computed PC + imm (for branches/JAL)
-    logic            predicted_taken;   // BTB predicted taken
-    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
-
-    // For memory operations: additional info
-    logic      is_fp_mem;   // FP load/store (for LQ/SQ routing)
-    mem_size_e mem_size;    // Memory operation size
-    logic      mem_signed;  // Sign-extend on load
-
-    // For CSR: address and immediate
-    logic [11:0]                  csr_addr;        // CSR address
-    logic [4:0]                   csr_imm;         // Zero-extended CSR immediate
-    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
-    logic [XLEN-1:0]              link_addr;
-    // Early misprediction recovery: checkpoint info and branch type
-    logic                         has_checkpoint;
-    logic [CheckpointIdWidth-1:0] checkpoint_id;
-    logic                         is_call;
-    logic                         is_return;
-  } rs_entry_t;
 
   // RS dispatch request (from dispatch unit to RS)
   typedef struct packed {
@@ -1505,26 +1306,8 @@ package riscv_pkg;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------
-  // Load Queue Entry Structure
+  // Load Queue Interface Structures
   // ---------------------------------------------------------------------------
-  // Supports INT and FP loads, including 2-phase FLD (64-bit double on 32-bit bus).
-
-  // Load queue entry
-  typedef struct packed {
-    logic valid;  // Entry allocated
-    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Associated Reorder Buffer entry
-    logic is_fp;  // FP load (FLW/FLD)
-    logic addr_valid;  // Address has been calculated
-    logic [XLEN-1:0] address;  // Load address
-    mem_size_e size;  // Memory operation size (FLD uses MEM_SIZE_DOUBLE)
-    logic sign_ext;  // Sign extend result (INT only)
-    logic is_mmio;  // MMIO address (non-speculative only)
-    logic fp64_phase;  // FLD phase: 0=low word, 1=high word
-    logic issued;  // Sent to memory
-    logic data_valid;  // Data received
-    logic [FLEN-1:0] data;  // Loaded data (FLEN for FLD)
-    logic forwarded;  // Data from store queue forward
-  } lq_entry_t;
 
   // LQ allocation request (from MEM_RS)
   typedef struct packed {
@@ -1548,25 +1331,8 @@ package riscv_pkg;
   } lq_addr_update_t;
 
   // ---------------------------------------------------------------------------
-  // Store Queue Entry Structure
+  // Store Queue Interface Structures
   // ---------------------------------------------------------------------------
-  // Supports INT and FP stores, including 2-phase FSD.
-
-  // Store queue entry
-  typedef struct packed {
-    logic valid;  // Entry allocated
-    logic [ReorderBufferTagWidth-1:0] rob_tag;  // Associated Reorder Buffer entry
-    logic is_fp;  // FP store (FSW/FSD)
-    logic addr_valid;  // Address has been calculated
-    logic [XLEN-1:0] address;  // Store address
-    logic data_valid;  // Data is available
-    logic [FLEN-1:0] data;  // Store data (FLEN for FSD)
-    mem_size_e size;  // Memory operation size (FSD uses MEM_SIZE_DOUBLE)
-    logic is_mmio;  // MMIO address (bypass cache)
-    logic fp64_phase;  // FSD phase: 0=low word, 1=high word
-    logic committed;  // Reorder Buffer has committed this store
-    logic sent;  // Written to memory
-  } sq_entry_t;
 
   // SQ allocation request (from MEM_RS)
   typedef struct packed {
@@ -1628,81 +1394,9 @@ package riscv_pkg;
     fp_flags_t                        fp_flags;
   } fu_complete_t;
 
-  // CDB arbiter grant (to FU)
-  typedef struct packed {
-    logic granted;  // FU can broadcast this cycle
-  } cdb_grant_t;
-
   // ---------------------------------------------------------------------------
   // Dispatch Interface Structures
   // ---------------------------------------------------------------------------
-  // Signals between decode stage and dispatch unit.
-
-  // Decoded instruction info (from ID stage to dispatch)
-  typedef struct packed {
-    logic            valid;  // Valid instruction
-    logic [XLEN-1:0] pc;
-    instr_op_e       op;
-
-    // Destination register
-    logic                    has_dest;  // Has destination register
-    logic                    dest_rf;   // 0=INT, 1=FP
-    logic [RegAddrWidth-1:0] dest_reg;
-
-    // Source registers
-    logic                    uses_rs1;
-    logic                    rs1_rf;    // 0=INT, 1=FP
-    logic [RegAddrWidth-1:0] rs1_addr;
-    logic                    uses_rs2;
-    logic                    rs2_rf;    // 0=INT, 1=FP
-    logic [RegAddrWidth-1:0] rs2_addr;
-    logic                    uses_rs3;  // For FMA
-    logic [RegAddrWidth-1:0] rs3_addr;  // Always FP
-
-    // Immediate
-    logic [XLEN-1:0] imm;
-    logic            use_imm;
-
-    // FP rounding mode (from instruction or DYN)
-    logic [2:0] rm;
-    logic       rm_is_dyn;  // Use fcsr.frm instead
-
-    // Instruction classification
-    rs_type_e rs_type;      // Which RS to use
-    logic     is_branch;
-    logic     is_call;
-    logic     is_return;
-    logic     is_store;
-    logic     is_fp_store;
-    logic     is_load;
-    logic     is_fp_load;
-    logic     is_csr;
-    logic     is_fence;
-    logic     is_fence_i;
-    logic     is_wfi;
-    logic     is_amo;
-    logic     is_lr;
-    logic     is_sc;
-
-    // Memory operation info
-    mem_size_e mem_size;
-    logic      mem_signed;
-
-    // Branch prediction info (passed through from IF)
-    logic            predicted_taken;
-    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
-    logic [XLEN-1:0] branch_target;     // Pre-computed PC + imm
-
-    // JAL/JALR link address (pre-computed PC+2 or PC+4 from IF)
-    logic [XLEN-1:0] link_addr;
-    logic            is_jal;     // JAL instruction
-    logic            is_jalr;    // JALR instruction
-    logic            is_mret;    // MRET instruction
-
-    // CSR info
-    logic [11:0] csr_addr;
-    logic [4:0]  csr_imm;
-  } decoded_instr_t;
 
   // Dispatch status (from dispatch to front-end)
   typedef struct packed {

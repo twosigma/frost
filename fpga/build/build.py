@@ -588,8 +588,8 @@ Examples:
     parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
-        default="AlternateRoutability",
-        help="Synthesis directive (default: AlternateRoutability)",
+        default="PerformanceOptimized",
+        help="Synthesis directive (default: PerformanceOptimized)",
     )
     parser.add_argument(
         "--opt-directive",
@@ -601,7 +601,7 @@ Examples:
         "--place-directive",
         choices=PLACER_DIRECTIVES,
         default=None,
-        help="Placer directive (default: ExtraNetDelay_low on x3, "
+        help="Placer directive (default: AltSpreadLogic_high on x3, "
         "ExtraTimingOpt otherwise)",
     )
     parser.add_argument(
@@ -639,7 +639,7 @@ Examples:
     place_directive = args.place_directive
     if place_directive is None:
         place_directive = (
-            "ExtraNetDelay_low" if board_name == "x3" else "ExtraTimingOpt"
+            "AltSpreadLogic_high" if board_name == "x3" else "ExtraTimingOpt"
         )
 
     # Per-step directives. The three phys_opt stages all run hardcoded sweeps
