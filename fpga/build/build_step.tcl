@@ -439,13 +439,14 @@ if {$step eq "synth"} {
     # PHYS_OPT SWEEP (post-place, post-route, or post-second-route)
     # ===================
     # Run phys_opt_design serially with every directive, starting with
-    # AggressiveExplore. The directive arg from the caller is ignored; the
-    # sweep order is fixed here. Physopt repeats full sweeps until an entire
-    # sweep fails to improve WNS or, for same-WNS sweeps, TNS by a meaningful
-    # amount. Inside a sweep, every WNS/TNS improvement is kept so small gains
-    # can stack across later directives. After each completed sweep iteration,
-    # the current best checkpoint and reports are written to both the step work
-    # directory and the board's main work directory.
+    # AggressiveExplore, then finish each sweep with a retime-only pass. The
+    # directive arg from the caller is ignored; the sweep order is fixed here.
+    # Physopt repeats full sweeps until an entire sweep fails to improve WNS or,
+    # for same-WNS sweeps, TNS by a meaningful amount. Inside a sweep, every
+    # WNS/TNS improvement is kept so small gains can stack across later passes.
+    # After each completed sweep iteration, the current best checkpoint and
+    # reports are written to both the step work directory and the board's main
+    # work directory.
     if {$checkpoint_path eq ""} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
@@ -473,7 +474,18 @@ if {$step eq "synth"} {
         ExploreWithAggressiveHoldFix \
         ]
     }
-    set total_directives [llength $sweep_order]
+
+    # Always make the non-directive retime pass the final pass in each sweep.
+    set directive_sweep_order [list]
+    foreach sweep_pass $sweep_order {
+        if {$sweep_pass ne "-retime"} {
+            lappend directive_sweep_order $sweep_pass
+        }
+    }
+    set sweep_order $directive_sweep_order
+    lappend sweep_order "-retime"
+
+    set total_physopt_passes [llength $sweep_order]
     set total_passes_run 0
     set sweep_num 1
     set early_exit 0
@@ -553,20 +565,30 @@ if {$step eq "synth"} {
         }
         puts "=========================================="
 
-        foreach sweep_directive $sweep_order {
+        foreach sweep_pass $sweep_order {
+            if {$sweep_pass eq "-retime"} {
+                set pass_label "retime"
+                set pass_display "-retime"
+                set phys_opt_args [list -retime]
+            } else {
+                set pass_label $sweep_pass
+                set pass_display $sweep_pass
+                set phys_opt_args [list -directive $sweep_pass]
+            }
+
             puts ""
             puts "------------------------------------------"
             if {$repeat_sweeps} {
-                puts "  $step sweep $sweep_num, directive $pass_num/$total_directives: $sweep_directive"
+                puts "  $step sweep $sweep_num, pass $pass_num/$total_physopt_passes: $pass_display"
             } else {
-                puts "  $step directive $pass_num/$total_directives: $sweep_directive"
+                puts "  $step pass $pass_num/$total_physopt_passes: $pass_display"
             }
             puts "------------------------------------------"
-            phys_opt_design -directive $sweep_directive
+            phys_opt_design {*}$phys_opt_args
             incr total_passes_run
             set pass_improved 0
 
-            set pass_report [file join $work_directory [format "phys_opt_probe_s%02d_p%02d_%s_timing.rpt" $sweep_num $pass_num $sweep_directive]]
+            set pass_report [file join $work_directory [format "phys_opt_probe_s%02d_p%02d_%s_timing.rpt" $sweep_num $pass_num $pass_label]]
             report_timing_summary -file $pass_report
             set timing_summary [get_setup_timing_summary $pass_report]
             set report_wns [dict get $timing_summary wns]
@@ -586,9 +608,9 @@ if {$step eq "synth"} {
                 set better_tns [expr {$tns ne "" && $tns > ($best_tns + $tns_keep_epsilon)}]
                 puts ""
                 if {$tns ne ""} {
-                    puts "  WNS/TNS after $sweep_directive: $wns ns / $tns ns"
+                    puts "  WNS/TNS after $pass_display: $wns ns / $tns ns"
                 } else {
-                    puts "  WNS after $sweep_directive: $wns ns"
+                    puts "  WNS after $pass_display: $wns ns"
                 }
 
                 if {$better_wns || ($same_wns && $better_tns)} {
@@ -603,7 +625,7 @@ if {$step eq "synth"} {
                     }
                     set best_pass $pass_num
                     set best_sweep $sweep_num
-                    set best_directive $sweep_directive
+                    set best_directive $pass_display
                     write_checkpoint -force $best_checkpoint
                     if {$accepted_checkpoint_dir ne ""} {
                         set wns_name [string map [list - m . p] $wns]
@@ -611,7 +633,7 @@ if {$step eq "synth"} {
                         if {$tns ne ""} {
                             set tns_name [string map [list - m . p] $tns]
                         }
-                        set accepted_base [format "%s_s%02d_p%02d_%s_wns_%s_tns_%s" $step $sweep_num $pass_num $sweep_directive $wns_name $tns_name]
+                        set accepted_base [format "%s_s%02d_p%02d_%s_wns_%s_tns_%s" $step $sweep_num $pass_num $pass_label $wns_name $tns_name]
                         set accepted_checkpoint [file join $accepted_checkpoint_dir "${accepted_base}.dcp"]
                         write_checkpoint -force $accepted_checkpoint
                         if {[file exists $pass_report]} {
@@ -622,14 +644,14 @@ if {$step eq "synth"} {
                     set sweep_kept_improvement 1
                     set pass_improved 1
                     if {$tns ne ""} {
-                        puts "  ** New best $step: WNS=$best_wns ns, TNS=$best_tns ns ($best_directive, sweep $best_sweep, directive $best_pass/$total_directives, $improvement_reason)"
+                        puts "  ** New best $step: WNS=$best_wns ns, TNS=$best_tns ns ($best_directive, sweep $best_sweep, pass $best_pass/$total_physopt_passes, $improvement_reason)"
                     } else {
-                        puts "  ** New best $step: WNS=$best_wns ns ($best_directive, sweep $best_sweep, directive $best_pass/$total_directives, $improvement_reason)"
+                        puts "  ** New best $step: WNS=$best_wns ns ($best_directive, sweep $best_sweep, pass $best_pass/$total_physopt_passes, $improvement_reason)"
                     }
                 }
 
                 if {$wns >= 0.0} {
-                    puts "  ** Timing met; stopping $step sweep early after $total_passes_run total directives"
+                    puts "  ** Timing met; stopping $step sweep early after $total_passes_run total phys_opt passes"
                     set early_exit 1
                     break
                 }
@@ -693,7 +715,7 @@ if {$step eq "synth"} {
             if {$best_pass == 0} {
                 puts "  Restoring best $step checkpoint: input checkpoint (WNS=$best_wns ns, TNS=$best_tns ns)"
             } else {
-                puts "  Restoring best $step pass: $best_directive (sweep $best_sweep, directive $best_pass/$total_directives, WNS=$best_wns ns, TNS=$best_tns ns)"
+                puts "  Restoring best $step pass: $best_directive (sweep $best_sweep, pass $best_pass/$total_physopt_passes, WNS=$best_wns ns, TNS=$best_tns ns)"
             }
             close_design
             open_checkpoint $best_checkpoint
@@ -709,9 +731,9 @@ if {$step eq "synth"} {
     }
 
     if {$early_exit} {
-        puts "** DONE — $step sweep complete ($total_passes_run total directives, stopped early on closure)"
+        puts "** DONE — $step sweep complete ($total_passes_run total phys_opt passes, stopped early on closure)"
     } else {
-        puts "** DONE — $step sweep complete ($total_passes_run total directives)"
+        puts "** DONE — $step sweep complete ($total_passes_run total phys_opt passes)"
     }
 
 } elseif {$step eq "route"} {
