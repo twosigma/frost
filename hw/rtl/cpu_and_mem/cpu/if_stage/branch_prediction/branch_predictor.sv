@@ -17,13 +17,16 @@
 /*
  * Branch Target Buffer (BTB) - 2-Bit Saturating Counter Predictor
  *
- * A 128-entry, 2-bit direct-mapped BTB for branch prediction by default.
+ * A 256-entry, 2-bit direct-mapped BTB for branch prediction by default.
  * Reduces the 3-cycle branch penalty for correctly predicted taken branches.
  *
  * Design:
  * =======
- *   - 128 entries indexed by PC[8:2] (7 bits) by default
- *   - Each entry: valid (1) + tag (26 bits) + target (32) + counter (2)
+ *   - 256 entries indexed by PC[9:2] (8 bits) by default.  Sized up from 128:
+ *     CoreMark's branch working set overflows 128 entries, so the extra
+ *     capacity raises BTB hit rate and cuts front-end redirect bubbles (the
+ *     dominant measured branch cost) with no change to the prediction policy.
+ *   - Each entry: valid (1) + tag (23 bits) + target (32) + counter (2)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - 2-bit saturating counter (bimodal predictor):
  *       00 = Strongly Not-Taken, 01 = Weakly Not-Taken
@@ -43,8 +46,8 @@
  * Operation:
  * ==========
  *   Prediction (IF stage):
- *     - Index BTB with current PC[6:2] by default
- *     - Compare tag (PC[31:7] ++ PC[1]) with stored tag
+ *     - Index BTB with current PC[9:2] by default
+ *     - Compare tag (PC[31:10] ++ PC[1]) with stored tag
  *     - If hit && counter[1] set → predict taken, use stored target
  *     - Otherwise → predict not-taken (sequential)
  *
@@ -101,7 +104,7 @@ module branch_predictor #(
   localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;
   // Tag includes PC[1] to distinguish halfword-aligned addresses (important for C extension).
   // Without PC[1], addresses like 0x100 and 0x102 would alias to the same entry.
-  localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 26 bits (includes PC[1])
+  localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 23 bits (includes PC[1])
 
   // 2-bit saturating counter states
   localparam logic [1:0] StronglyNotTaken = 2'b00;
@@ -124,8 +127,8 @@ module branch_predictor #(
   logic [1:0] next_counter;
 
   // Index and tag extraction for slot-1 lookup
-  // Index: PC[6:2] (7 bits) - selects which of 128 entries
-  // Tag: PC[31:9] concatenated with PC[1] (24 bits) - distinguishes halfword addresses
+  // Index: PC[9:2] (8 bits) - selects which of 256 entries
+  // Tag: PC[31:10] concatenated with PC[1] (23 bits) - distinguishes halfword addresses
   wire [BTB_INDEX_BITS-1:0] lookup_index = i_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] lookup_tag = {i_pc[XLEN-1:BTB_INDEX_BITS+2], i_pc[1]};
 
