@@ -2324,45 +2324,33 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
     await Timer(1, unit="ps")
 
-    # Round 1: FP_DIV should win (highest priority)
+    # Round 1: 2-wide CDB grants the top two contenders — FP_DIV on lane 0
+    # (highest priority) and FP_MUL on lane 1. FP_ADD loses and must retry.
     cdb = dut_if.read_cdb_output()
     grant = dut_if.read_cdb_grant()
     assert cdb.valid, "CDB should be valid with 3 FUs completing"
-    assert cdb.tag == tag_c, f"FP_DIV should win, got tag={cdb.tag} expected={tag_c}"
-    assert cdb.value == 0xCCCC
-    assert (grant >> FU_FP_DIV) & 1, "FP_DIV grant should be set"
-    assert not ((grant >> FU_FP_MUL) & 1), "FP_MUL should not be granted"
-    assert not ((grant >> FU_FP_ADD) & 1), "FP_ADD should not be granted"
-
-    # Model: only the FP_DIV completion goes through this cycle
-    model.fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
-
-    # Clock: arbiter result latched by ROB
-    await dut_if.step()
-
-    # Clear FP_DIV (granted), re-drive FP_ADD and FP_MUL
-    dut_if.clear_fu_complete(FU_FP_DIV)
-    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
-    dut_if.drive_fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
-    await Timer(1, unit="ps")
-
-    # Round 2: FP_MUL should win (higher priority than FP_ADD)
-    cdb = dut_if.read_cdb_output()
-    assert cdb.valid
     assert (
-        cdb.tag == tag_b
-    ), f"FP_MUL should win now, got tag={cdb.tag} expected={tag_b}"
-    assert cdb.value == 0xBBBB
+        cdb.tag == tag_c
+    ), f"FP_DIV should win lane 0, got tag={cdb.tag} expected={tag_c}"
+    assert cdb.value == 0xCCCC
+    assert (grant >> FU_FP_DIV) & 1, "FP_DIV grant should be set (lane 0)"
+    assert (grant >> FU_FP_MUL) & 1, "FP_MUL grant should be set (lane 1)"
+    assert not ((grant >> FU_FP_ADD) & 1), "FP_ADD should not be granted (lost)"
 
+    # Model: both lane winners (FP_DIV + FP_MUL) complete this cycle.
+    model.fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
     model.fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
+
+    # Clock: arbiter results latched by ROB
     await dut_if.step()
 
-    # Clear FP_MUL (granted), re-drive only FP_ADD
+    # Clear both granted FUs (FP_DIV, FP_MUL); re-drive only FP_ADD (the loser).
+    dut_if.clear_fu_complete(FU_FP_DIV)
     dut_if.clear_fu_complete(FU_FP_MUL)
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
     await Timer(1, unit="ps")
 
-    # Round 3: FP_ADD is the only remaining contender
+    # Round 2: FP_ADD is the only remaining contender → wins lane 0.
     cdb = dut_if.read_cdb_output()
     assert cdb.valid
     assert (

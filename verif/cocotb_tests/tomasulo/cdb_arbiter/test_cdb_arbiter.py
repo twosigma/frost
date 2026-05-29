@@ -71,15 +71,14 @@ def drive_and_check(
     dut_if: CdbArbiterInterface,
     model: CdbArbiterModel,
     fu_completes: list[FuComplete],
-) -> tuple[CdbBroadcast, list[bool]]:
-    """Drive FU completes to DUT, run model, return (model_cdb, model_grants)."""
+) -> tuple[CdbBroadcast, CdbBroadcast, list[bool]]:
+    """Drive FU completes to DUT, run model, return (model_cdb, model_cdb_2, model_grants)."""
     from .cdb_arbiter_interface import pack_fu_complete
 
     for i, req in enumerate(fu_completes):
         dut_if._get_fu_signal(i).value = pack_fu_complete(req)
 
-    model_cdb, model_grants = model.arbitrate(fu_completes)
-    return model_cdb, model_grants
+    return model.arbitrate(fu_completes)
 
 
 def assert_cdb_match(
@@ -178,7 +177,7 @@ async def test_single_fu_alu(dut: Any) -> None:
             FU_ALU: {"tag": 5, "value": 0xDEADBEEF},
         }
     )
-    model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -216,7 +215,9 @@ async def test_single_fu_each(dut: Any) -> None:
                 fu_idx: {"tag": tag, "value": value},
             }
         )
-        model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(
+            dut_if, model, fu_completes
+        )
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
@@ -247,7 +248,7 @@ async def test_priority_alu_over_fp_div(dut: Any) -> None:
             FU_FP_DIV: {"tag": 2, "value": 0xBBBB},
         }
     )
-    model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -257,7 +258,11 @@ async def test_priority_alu_over_fp_div(dut: Any) -> None:
     assert dut_cdb.fu_type == FU_ALU
     assert dut_cdb.tag == 1
     assert dut_grants[FU_ALU] is True
-    assert dut_grants[FU_FP_DIV] is False
+    # 2-wide CDB: the runner-up is broadcast on lane 1, not denied.
+    dut_cdb_2 = dut_if.read_cdb_2_output()
+    assert_cdb_match(dut_cdb_2, model_cdb_2, "alu_over_fp_div lane1")
+    assert dut_cdb_2.fu_type == FU_FP_DIV
+    assert dut_grants[FU_FP_DIV] is True
 
 
 # ============================================================================
@@ -274,7 +279,7 @@ async def test_priority_mul_over_div(dut: Any) -> None:
             FU_DIV: {"tag": 4, "value": 0x4444},
         }
     )
-    model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -283,7 +288,11 @@ async def test_priority_mul_over_div(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "mul_over_div")
     assert dut_cdb.fu_type == FU_MUL
     assert dut_grants[FU_MUL] is True
-    assert dut_grants[FU_DIV] is False
+    # 2-wide CDB: DIV is the runner-up, broadcast on lane 1.
+    dut_cdb_2 = dut_if.read_cdb_2_output()
+    assert_cdb_match(dut_cdb_2, model_cdb_2, "mul_over_div lane1")
+    assert dut_cdb_2.fu_type == FU_DIV
+    assert dut_grants[FU_DIV] is True
 
 
 # ============================================================================
@@ -299,7 +308,7 @@ async def test_priority_all_valid(dut: Any) -> None:
         specs[fu_idx] = {"tag": fu_idx, "value": (fu_idx + 1) * 0x100}
 
     fu_completes = make_fu_completes(specs)
-    model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -308,9 +317,14 @@ async def test_priority_all_valid(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "all_valid")
     assert dut_cdb.fu_type == FU_MUL
     assert dut_grants[FU_MUL] is True
-    # All others should be denied
+    # 2-wide CDB: the second-highest priority (MEM) is granted on lane 1.
+    dut_cdb_2 = dut_if.read_cdb_2_output()
+    assert_cdb_match(dut_cdb_2, model_cdb_2, "all_valid lane1")
+    assert dut_cdb_2.fu_type == FU_MEM
+    assert dut_grants[FU_MEM] is True
+    # Every FU except the two lane winners should be denied.
     for i in range(NUM_FUS):
-        if i != FU_MUL:
+        if i not in (FU_MUL, FU_MEM):
             assert dut_grants[i] is False, f"FU {i} should not be granted"
 
 
@@ -328,7 +342,7 @@ async def test_priority_all_except_highest(dut: Any) -> None:
             specs[fu_idx] = {"tag": fu_idx + 10, "value": fu_idx * 0x1000}
 
     fu_completes = make_fu_completes(specs)
-    model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -337,6 +351,11 @@ async def test_priority_all_except_highest(dut: Any) -> None:
     assert_cdb_match(dut_cdb, model_cdb, "all_except_highest")
     assert dut_cdb.fu_type == FU_MEM
     assert dut_grants[FU_MEM] is True
+    # 2-wide CDB: next priority after MEM is ALU, granted on lane 1.
+    dut_cdb_2 = dut_if.read_cdb_2_output()
+    assert_cdb_match(dut_cdb_2, model_cdb_2, "all_except_highest lane1")
+    assert dut_cdb_2.fu_type == FU_ALU
+    assert dut_grants[FU_ALU] is True
 
 
 # ============================================================================
@@ -344,7 +363,7 @@ async def test_priority_all_except_highest(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_grant_exclusivity(dut: Any) -> None:
-    """Exactly one grant bit set when any FU valid."""
+    """Grant popcount: 1 when a single FU requests, 2 when two or more do (2-wide CDB)."""
     dut_if, model = await setup(dut)
 
     # Try several combinations
@@ -361,15 +380,20 @@ async def test_grant_exclusivity(dut: Any) -> None:
 
     for i, specs in enumerate(combos):
         fu_completes = make_fu_completes(specs)
-        model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(
+            dut_if, model, fu_completes
+        )
         await Timer(1, unit="ns")
 
         grant_raw = dut_if.read_grant_raw()
-        # Exactly one bit set
+        # 2-wide CDB: one grant when a single FU requests, two when >= 2 do.
+        num_requesting = len(specs)
+        expected_grants = min(num_requesting, 2)
         assert grant_raw != 0, f"combo {i}: grant should not be zero"
-        assert (
-            grant_raw & (grant_raw - 1)
-        ) == 0, f"combo {i}: grant=0b{grant_raw:07b} not onehot"
+        assert bin(grant_raw).count("1") == expected_grants, (
+            f"combo {i}: grant=0b{grant_raw:07b} has "
+            f"{bin(grant_raw).count('1')} bits, expected {expected_grants}"
+        )
 
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
@@ -397,7 +421,7 @@ async def test_value_propagation(dut: Any) -> None:
                 FU_MEM: {"tag": 10, "value": val},
             }
         )
-        model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
@@ -425,7 +449,7 @@ async def test_fp_flags_propagation(dut: Any) -> None:
                 FU_FP_ADD: {"tag": 15, "value": 42, "fp_flags": fp_flags},
             }
         )
-        model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
@@ -442,7 +466,7 @@ async def test_fp_flags_propagation(dut: Any) -> None:
             FU_FP_MUL: {"tag": 16, "value": 99, "fp_flags": 0x1F},
         }
     )
-    model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -463,7 +487,7 @@ async def test_exception_propagation(dut: Any) -> None:
             FU_DIV: {"tag": 20, "value": 0, "exception": True, "exc_cause": 0x0B},
         }
     )
-    model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -477,7 +501,7 @@ async def test_exception_propagation(dut: Any) -> None:
             FU_ALU: {"tag": 21, "value": 100, "exception": False, "exc_cause": 0},
         }
     )
-    model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+    model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
@@ -499,7 +523,7 @@ async def test_tag_propagation(dut: Any) -> None:
                 FU_MUL: {"tag": tag, "value": tag * 100},
             }
         )
-        model_cdb, _ = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, _ = drive_and_check(dut_if, model, fu_completes)
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
@@ -523,7 +547,9 @@ async def test_fu_type_field(dut: Any) -> None:
                 fu_idx: {"tag": fu_idx, "value": fu_idx},
             }
         )
-        model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(
+            dut_if, model, fu_completes
+        )
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
@@ -565,31 +591,37 @@ async def test_sequential_different_fus(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_loser_must_retry(dut: Any) -> None:
-    """FU that lost arbitration: grant=0, must re-present next cycle."""
+    """A third requester (beyond the two CDB lanes) loses and must re-present."""
     dut_if, model = await setup(dut)
 
-    # Cycle 1: ALU + FP_DIV both valid → ALU wins, FP_DIV loses
-    dut_if.drive_fu_complete(FU_ALU, tag=1, value=0x1111)
-    dut_if.drive_fu_complete(FU_FP_DIV, tag=2, value=0x2222)
+    # Cycle 1: MUL + MEM + ALU all valid. 2-wide CDB grants the top two
+    # (MUL on lane 0, MEM on lane 1); ALU loses and must retry.
+    dut_if.drive_fu_complete(FU_MUL, tag=1, value=0x1111)
+    dut_if.drive_fu_complete(FU_MEM, tag=2, value=0x2222)
+    dut_if.drive_fu_complete(FU_ALU, tag=3, value=0x3333)
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
+    dut_cdb_2 = dut_if.read_cdb_2_output()
     dut_grants = dut_if.read_grant()
-    assert dut_cdb.fu_type == FU_ALU
-    assert dut_grants[FU_ALU] is True
-    assert dut_grants[FU_FP_DIV] is False
+    assert dut_cdb.fu_type == FU_MUL
+    assert dut_cdb_2.fu_type == FU_MEM
+    assert dut_grants[FU_MUL] is True
+    assert dut_grants[FU_MEM] is True
+    assert dut_grants[FU_ALU] is False  # lost arbitration, must retry
 
-    # Cycle 2: ALU clears (was granted), FP_DIV still valid → FP_DIV wins
-    dut_if.clear_fu_complete(FU_ALU)
+    # Cycle 2: MUL + MEM clear (were granted), ALU still valid → ALU wins lane 0.
+    dut_if.clear_fu_complete(FU_MUL)
+    dut_if.clear_fu_complete(FU_MEM)
     await dut_if.step()
     await Timer(1, unit="ns")
 
     dut_cdb = dut_if.read_cdb_output()
     dut_grants = dut_if.read_grant()
     assert dut_cdb.valid
-    assert dut_cdb.fu_type == FU_FP_DIV
-    assert dut_cdb.tag == 2
-    assert dut_grants[FU_FP_DIV] is True
+    assert dut_cdb.fu_type == FU_ALU
+    assert dut_cdb.tag == 3
+    assert dut_grants[FU_ALU] is True
 
 
 # ============================================================================
@@ -617,13 +649,17 @@ async def test_random_multi_fu_stress(dut: Any) -> None:
                     fp_flags=rng.randint(0, 0x1F),
                 )
 
-        model_cdb, model_grants = drive_and_check(dut_if, model, fu_completes)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(
+            dut_if, model, fu_completes
+        )
 
         await dut_if.step()
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
+        dut_cdb_2 = dut_if.read_cdb_2_output()
         dut_grants = dut_if.read_grant()
 
         assert_cdb_match(dut_cdb, model_cdb, f"random cycle {cycle}")
+        assert_cdb_match(dut_cdb_2, model_cdb_2, f"random cycle {cycle} lane1")
         assert_grants_match(dut_grants, model_grants, f"random cycle {cycle}")

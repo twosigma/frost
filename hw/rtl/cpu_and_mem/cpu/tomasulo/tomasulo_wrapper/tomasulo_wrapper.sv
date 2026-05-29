@@ -613,6 +613,8 @@ module tomasulo_wrapper #(
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
   riscv_pkg::cdb_broadcast_t cdb_bus;  // registered — feeds RS/ROB wakeup
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
+  riscv_pkg::cdb_broadcast_t cdb_bus_2;  // registered lane-1 — feeds RS/ROB wakeup
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
   riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
@@ -655,6 +657,7 @@ module tomasulo_wrapper #(
       .i_fu_complete_6(cdb_arb_in_6),
       .i_kill         (cdb_kill),
       .o_cdb          (cdb_bus_comb),
+      .o_cdb_2        (cdb_bus_2_comb),
       .o_grant        (o_cdb_grant),
       .o_grant_raw    ()
   );
@@ -696,6 +699,30 @@ module tomasulo_wrapper #(
     cdb_write_from_arbiter.exception = cdb_bus.exception;
     cdb_write_from_arbiter.exc_cause = cdb_bus.exc_cause;
     cdb_write_from_arbiter.fp_flags  = cdb_bus.fp_flags;
+  end
+
+  // ---- 2-wide CDB lane-1: registered mirror of the lane-0 pipeline above.
+  (* max_fanout = 32 *) logic cdb_bus_2_valid;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus_2_valid <= 1'b0;
+    else cdb_bus_2_valid <= cdb_bus_2_comb.valid;
+  end
+  always_ff @(posedge i_clk) begin
+    cdb_bus_2 <= cdb_bus_2_comb;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
+  always_comb begin
+    cdb_bus_2_qualified       = cdb_bus_2;
+    cdb_bus_2_qualified.valid = cdb_bus_2_valid;
+  end
+  riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter_2;
+  always_comb begin
+    cdb_write_from_arbiter_2.valid     = cdb_bus_2_valid;
+    cdb_write_from_arbiter_2.tag       = cdb_bus_2.tag;
+    cdb_write_from_arbiter_2.value     = cdb_bus_2.value;
+    cdb_write_from_arbiter_2.exception = cdb_bus_2.exception;
+    cdb_write_from_arbiter_2.exc_cause = cdb_bus_2.exc_cause;
+    cdb_write_from_arbiter_2.fp_flags  = cdb_bus_2.fp_flags;
   end
 
   // ===========================================================================
@@ -1311,6 +1338,7 @@ module tomasulo_wrapper #(
 
       // CDB (from arbiter)
       .i_cdb_write(cdb_write_from_arbiter),
+      .i_cdb_write_2(cdb_write_from_arbiter_2),
       .i_store_complete_valid(store_issue_fire),
       .i_store_complete_tag(store_complete_tag),
 
@@ -1581,6 +1609,7 @@ module tomasulo_wrapper #(
 
       // CDB snoop (from arbiter)
       .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_bus_2_qualified),
       .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -1650,6 +1679,10 @@ module tomasulo_wrapper #(
       // the MUL dispatch write path.  Already-done operands are still repaired
       // by the registered post-insertion snoop one cycle later.
       .DISPATCH_REPAIR_BYPASS(1'b0),
+      // Match INT/MEM timing: do not let live ROB-done repair participate in
+      // the MUL issue-select/stage2 operand mux cone. The registered repair
+      // snoop still wakes the entry for the following cycle.
+      .ISSUE_REPAIR_BYPASS(1'b0),
       // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
       // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
       .SPECULATIVE_DATA_WRITES(1'b1)
@@ -1662,6 +1695,7 @@ module tomasulo_wrapper #(
       .o_full                 (mul_rs_full_w),
       .o_full_for_2           (mul_rs_full_for_2_w),
       .i_cdb                  (cdb_bus_qualified),
+      .i_cdb_2                (cdb_bus_2_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
       .i_repair_value_1       (bypass_value_1),
@@ -1735,6 +1769,7 @@ module tomasulo_wrapper #(
       .o_full(mem_rs_full_w),
       .o_full_for_2(mem_rs_full_for_2_w),
       .i_cdb(cdb_bus_qualified),
+      .i_cdb_2(cdb_bus_2_qualified),
       .i_repair_valid_1(done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -1859,7 +1894,7 @@ module tomasulo_wrapper #(
       // avoids routing RAT tag lookup into the 64-bit FP operand value flops.
       fp_dispatch_pending <= fp_rs_dispatch;
     end else if (fp_dispatch_pending_valid &&
-                 (cdb_bus_qualified.valid || done_repair_valid_1 ||
+                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid || done_repair_valid_1 ||
                   done_repair_valid_2 || done_repair_valid_3 ||
                   done_repair_valid_4 || done_repair_valid_5 ||
                   done_repair_valid_6)) begin
@@ -1867,6 +1902,10 @@ module tomasulo_wrapper #(
           fp_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fp_dispatch_pending.src1_ready <= 1'b1;
         fp_dispatch_pending.src1_value <= cdb_bus_qualified.value;
+      end else if (!fp_dispatch_pending.src1_ready && cdb_bus_2_qualified.valid &&
+          fp_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
+        fp_dispatch_pending.src1_ready <= 1'b1;
+        fp_dispatch_pending.src1_value <= cdb_bus_2_qualified.value;
       end else if (!fp_dispatch_pending.src1_ready && wrapper_done_repair_match(
               fp_dispatch_pending.src1_tag
           )) begin
@@ -1878,6 +1917,10 @@ module tomasulo_wrapper #(
           fp_dispatch_pending.src2_tag == cdb_bus_qualified.tag) begin
         fp_dispatch_pending.src2_ready <= 1'b1;
         fp_dispatch_pending.src2_value <= cdb_bus_qualified.value;
+      end else if (!fp_dispatch_pending.src2_ready && cdb_bus_2_qualified.valid &&
+          fp_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
+        fp_dispatch_pending.src2_ready <= 1'b1;
+        fp_dispatch_pending.src2_value <= cdb_bus_2_qualified.value;
       end else if (!fp_dispatch_pending.src2_ready && wrapper_done_repair_match(
               fp_dispatch_pending.src2_tag
           )) begin
@@ -1918,6 +1961,7 @@ module tomasulo_wrapper #(
       .o_full                 (fp_rs_full_raw),
       .o_full_for_2           (fp_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
+      .i_cdb_2                (cdb_bus_2_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
       .i_repair_value_1       (bypass_value_1),
@@ -2032,6 +2076,7 @@ module tomasulo_wrapper #(
       .o_full                 (fmul_rs_full_raw),
       .o_full_for_2           (fmul_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
+      .i_cdb_2                (cdb_bus_2_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
       .i_repair_value_1       (bypass_value_1),
@@ -2103,7 +2148,7 @@ module tomasulo_wrapper #(
       // repair path fill just-completed operands after the packet is parked.
       fdiv_dispatch_pending <= fdiv_rs_dispatch;
     end else if (fdiv_dispatch_pending_valid &&
-                 (cdb_bus_qualified.valid || done_repair_valid_1 ||
+                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid || done_repair_valid_1 ||
                   done_repair_valid_2 || done_repair_valid_3 ||
                   done_repair_valid_4 || done_repair_valid_5 ||
                   done_repair_valid_6)) begin
@@ -2111,6 +2156,10 @@ module tomasulo_wrapper #(
           fdiv_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fdiv_dispatch_pending.src1_ready <= 1'b1;
         fdiv_dispatch_pending.src1_value <= cdb_bus_qualified.value;
+      end else if (!fdiv_dispatch_pending.src1_ready && cdb_bus_2_qualified.valid &&
+          fdiv_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
+        fdiv_dispatch_pending.src1_ready <= 1'b1;
+        fdiv_dispatch_pending.src1_value <= cdb_bus_2_qualified.value;
       end else if (!fdiv_dispatch_pending.src1_ready && wrapper_done_repair_match(
               fdiv_dispatch_pending.src1_tag
           )) begin
@@ -2124,6 +2173,10 @@ module tomasulo_wrapper #(
           fdiv_dispatch_pending.src2_tag == cdb_bus_qualified.tag) begin
         fdiv_dispatch_pending.src2_ready <= 1'b1;
         fdiv_dispatch_pending.src2_value <= cdb_bus_qualified.value;
+      end else if (!fdiv_dispatch_pending.src2_ready && cdb_bus_2_qualified.valid &&
+          fdiv_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
+        fdiv_dispatch_pending.src2_ready <= 1'b1;
+        fdiv_dispatch_pending.src2_value <= cdb_bus_2_qualified.value;
       end else if (!fdiv_dispatch_pending.src2_ready && wrapper_done_repair_match(
               fdiv_dispatch_pending.src2_tag
           )) begin
@@ -2155,6 +2208,7 @@ module tomasulo_wrapper #(
       .o_full                 (fdiv_rs_full_raw),
       .o_full_for_2           (fdiv_rs_full_for_2_raw),
       .i_cdb                  (cdb_bus_qualified),
+      .i_cdb_2                (cdb_bus_2_qualified),
       .i_repair_valid_1       (done_repair_valid_1),
       .i_repair_tag_1         (i_bypass_tag_1),
       .i_repair_value_1       (bypass_value_1),

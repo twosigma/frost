@@ -175,8 +175,13 @@ class CdbArbiterInterface:
         self.dut.i_kill.value = int(value)
 
     def read_cdb_output(self) -> CdbBroadcast:
-        """Read the CDB broadcast output."""
+        """Read the lane-0 CDB broadcast output."""
         raw = int(self.dut.o_cdb.value)
+        return unpack_cdb_broadcast(raw)
+
+    def read_cdb_2_output(self) -> CdbBroadcast:
+        """Read the lane-1 CDB broadcast output (2-wide CDB secondary lane)."""
+        raw = int(self.dut.o_cdb_2.value)
         return unpack_cdb_broadcast(raw)
 
     def read_grant(self) -> list[bool]:

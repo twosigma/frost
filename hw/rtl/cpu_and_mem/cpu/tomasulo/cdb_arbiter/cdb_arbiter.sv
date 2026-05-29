@@ -57,7 +57,13 @@ module cdb_arbiter (
     // CDB broadcast output (to RS wakeup + ROB write)
     output riscv_pkg::cdb_broadcast_t o_cdb,
 
-    // Per-FU grant signals (back-pressure: FU can clear result when granted)
+    // Second CDB broadcast lane (secondary winner). Same semantics as o_cdb;
+    // carries the highest-priority FU result that lane 0 did not take this
+    // cycle. valid=0 when fewer than two FUs request the CDB.
+    output riscv_pkg::cdb_broadcast_t o_cdb_2,
+
+    // Per-FU grant signals (back-pressure: FU can clear result when granted).
+    // 2-wide CDB: up to two bits may be set (lane-0 + lane-1 winners).
     output logic [riscv_pkg::NumFus-1:0] o_grant,
 
     // Pre-kill grant vector. Identical to o_grant when !i_kill; during kill,
@@ -73,11 +79,20 @@ module cdb_arbiter (
   // Valid vector for convenience (used by formal assertions)
   logic                    [riscv_pkg::NumFus-1:0] valid_vec;
 
-  // Fixed-priority encoder.
+  // Fixed-priority encoder, lane 0 (primary).
   // Priority: MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD
   logic                                            found;
   logic                    [                  2:0] winner_idx;
   riscv_pkg::fu_complete_t                         winner_data;
+  logic                    [riscv_pkg::NumFus-1:0] g0_raw;
+
+  // Lane 1 (secondary): highest-priority requester lane 0 did not take.
+  logic                                            found2;
+  logic                    [                  2:0] winner2_idx;
+  riscv_pkg::fu_complete_t                         winner2_data;
+  logic                    [riscv_pkg::NumFus-1:0] g1_raw;
+  // Per-FU "valid and not granted by lane 0", input to the lane-1 encoder.
+  logic                    [riscv_pkg::NumFus-1:0] avail1;
 
   always_comb begin
     valid_vec[riscv_pkg::FU_ALU]    = i_fu_complete_0.valid;
@@ -93,45 +108,104 @@ module cdb_arbiter (
     found       = 1'b0;
     winner_idx  = 3'd0;
     winner_data = '0;
-    o_grant_raw = '0;
+    g0_raw      = '0;
 
     if (i_fu_complete_1.valid) begin
-      found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_MUL;
-      winner_data                    = i_fu_complete_1;
-      o_grant_raw[riscv_pkg::FU_MUL] = 1'b1;
+      found                     = 1'b1;
+      winner_idx                = riscv_pkg::FU_MUL;
+      winner_data               = i_fu_complete_1;
+      g0_raw[riscv_pkg::FU_MUL] = 1'b1;
     end else if (i_fu_complete_3.valid) begin
-      found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_MEM;
-      winner_data                    = i_fu_complete_3;
-      o_grant_raw[riscv_pkg::FU_MEM] = 1'b1;
+      found                     = 1'b1;
+      winner_idx                = riscv_pkg::FU_MEM;
+      winner_data               = i_fu_complete_3;
+      g0_raw[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete_0.valid) begin
-      found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_ALU;
-      winner_data                    = i_fu_complete_0;
-      o_grant_raw[riscv_pkg::FU_ALU] = 1'b1;
+      found                     = 1'b1;
+      winner_idx                = riscv_pkg::FU_ALU;
+      winner_data               = i_fu_complete_0;
+      g0_raw[riscv_pkg::FU_ALU] = 1'b1;
     end else if (i_fu_complete_2.valid) begin
-      found                          = 1'b1;
-      winner_idx                     = riscv_pkg::FU_DIV;
-      winner_data                    = i_fu_complete_2;
-      o_grant_raw[riscv_pkg::FU_DIV] = 1'b1;
+      found                     = 1'b1;
+      winner_idx                = riscv_pkg::FU_DIV;
+      winner_data               = i_fu_complete_2;
+      g0_raw[riscv_pkg::FU_DIV] = 1'b1;
     end else if (i_fu_complete_6.valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_DIV;
-      winner_data                       = i_fu_complete_6;
-      o_grant_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
+      found                        = 1'b1;
+      winner_idx                   = riscv_pkg::FU_FP_DIV;
+      winner_data                  = i_fu_complete_6;
+      g0_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
     end else if (i_fu_complete_5.valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_MUL;
-      winner_data                       = i_fu_complete_5;
-      o_grant_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
+      found                        = 1'b1;
+      winner_idx                   = riscv_pkg::FU_FP_MUL;
+      winner_data                  = i_fu_complete_5;
+      g0_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
     end else if (i_fu_complete_4.valid) begin
-      found                             = 1'b1;
-      winner_idx                        = riscv_pkg::FU_FP_ADD;
-      winner_data                       = i_fu_complete_4;
-      o_grant_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
+      found                        = 1'b1;
+      winner_idx                   = riscv_pkg::FU_FP_ADD;
+      winner_data                  = i_fu_complete_4;
+      g0_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end
+
+  // Lane-1 candidates: each FU's valid minus whatever lane 0 granted.
+  always_comb begin
+    avail1[riscv_pkg::FU_ALU]    = i_fu_complete_0.valid && !g0_raw[riscv_pkg::FU_ALU];
+    avail1[riscv_pkg::FU_MUL]    = i_fu_complete_1.valid && !g0_raw[riscv_pkg::FU_MUL];
+    avail1[riscv_pkg::FU_DIV]    = i_fu_complete_2.valid && !g0_raw[riscv_pkg::FU_DIV];
+    avail1[riscv_pkg::FU_MEM]    = i_fu_complete_3.valid && !g0_raw[riscv_pkg::FU_MEM];
+    avail1[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid && !g0_raw[riscv_pkg::FU_FP_ADD];
+    avail1[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid && !g0_raw[riscv_pkg::FU_FP_MUL];
+    avail1[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid && !g0_raw[riscv_pkg::FU_FP_DIV];
+  end
+
+  // Lane-1 priority encoder (same priority order as lane 0, over avail1).
+  always_comb begin
+    found2       = 1'b0;
+    winner2_idx  = 3'd0;
+    winner2_data = '0;
+    g1_raw       = '0;
+
+    if (avail1[riscv_pkg::FU_MUL]) begin
+      found2                    = 1'b1;
+      winner2_idx               = riscv_pkg::FU_MUL;
+      winner2_data              = i_fu_complete_1;
+      g1_raw[riscv_pkg::FU_MUL] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_MEM]) begin
+      found2                    = 1'b1;
+      winner2_idx               = riscv_pkg::FU_MEM;
+      winner2_data              = i_fu_complete_3;
+      g1_raw[riscv_pkg::FU_MEM] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_ALU]) begin
+      found2                    = 1'b1;
+      winner2_idx               = riscv_pkg::FU_ALU;
+      winner2_data              = i_fu_complete_0;
+      g1_raw[riscv_pkg::FU_ALU] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_DIV]) begin
+      found2                    = 1'b1;
+      winner2_idx               = riscv_pkg::FU_DIV;
+      winner2_data              = i_fu_complete_2;
+      g1_raw[riscv_pkg::FU_DIV] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_FP_DIV]) begin
+      found2                       = 1'b1;
+      winner2_idx                  = riscv_pkg::FU_FP_DIV;
+      winner2_data                 = i_fu_complete_6;
+      g1_raw[riscv_pkg::FU_FP_DIV] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_FP_MUL]) begin
+      found2                       = 1'b1;
+      winner2_idx                  = riscv_pkg::FU_FP_MUL;
+      winner2_data                 = i_fu_complete_5;
+      g1_raw[riscv_pkg::FU_FP_MUL] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_FP_ADD]) begin
+      found2                       = 1'b1;
+      winner2_idx                  = riscv_pkg::FU_FP_ADD;
+      winner2_data                 = i_fu_complete_4;
+      g1_raw[riscv_pkg::FU_FP_ADD] = 1'b1;
+    end
+  end
+
+  // Pre-kill grant (both lanes). 2-hot when two FUs are granted this cycle.
+  assign o_grant_raw = g0_raw | g1_raw;
 
   // Kill-gated grant: suppress CDB broadcast and adapter grant when in
   // speculative full-flush recovery. o_grant_raw is the pre-kill version.
@@ -139,11 +213,11 @@ module cdb_arbiter (
     if (i_kill) begin
       o_grant = '0;
     end else begin
-      o_grant = o_grant_raw;
+      o_grant = g0_raw | g1_raw;
     end
   end
 
-  // Pack CDB output. Suppressed during kill (speculative full-flush).
+  // Pack lane-0 CDB output. Suppressed during kill (speculative full-flush).
   always_comb begin
     o_cdb.valid     = found && !i_kill;
     o_cdb.tag       = winner_data.tag;
@@ -152,6 +226,17 @@ module cdb_arbiter (
     o_cdb.exc_cause = winner_data.exc_cause;
     o_cdb.fp_flags  = winner_data.fp_flags;
     o_cdb.fu_type   = riscv_pkg::fu_type_e'(winner_idx);
+  end
+
+  // Pack lane-1 CDB output. Suppressed during kill.
+  always_comb begin
+    o_cdb_2.valid     = found2 && !i_kill;
+    o_cdb_2.tag       = winner2_data.tag;
+    o_cdb_2.value     = winner2_data.value;
+    o_cdb_2.exception = winner2_data.exception;
+    o_cdb_2.exc_cause = winner2_data.exc_cause;
+    o_cdb_2.fp_flags  = winner2_data.fp_flags;
+    o_cdb_2.fu_type   = riscv_pkg::fu_type_e'(winner2_idx);
   end
 
   // ===========================================================================
@@ -178,9 +263,16 @@ module cdb_arbiter (
   // Combinational assertions (module is purely combinational)
   // -------------------------------------------------------------------------
 
-  // At most one FU granted per cycle
+  // 2-wide CDB: up to two FUs (lane-0 primary + lane-1 secondary) granted
+  // per cycle.  Each lane is independently one-hot-or-zero, the two lanes are
+  // disjoint, and lane-1 only grants when lane-0 also grants (the secondary
+  // encoder picks from the FUs lane-0 left ungranted).
   always_comb begin
-    p_grant_at_most_one : assert ($onehot0(o_grant));
+    p_grant_at_most_two : assert ($countones(o_grant) <= 2);
+    p_grant_lane0_onehot0 : assert ($onehot0(g0_raw));
+    p_grant_lane1_onehot0 : assert ($onehot0(g1_raw));
+    p_grant_lanes_disjoint : assert ((g0_raw & g1_raw) == '0);
+    p_grant_lane1_implies_lane0 : assert (!(|g1_raw) || (|g0_raw));
   end
 
   always_comb begin
@@ -286,18 +378,35 @@ module cdb_arbiter (
         o_cdb.fp_flags  == winner_data.fp_flags);
   end
 
-  // CDB fu_type matches the granted FU index (unrolled for unique Yosys labels)
+  // CDB fu_type matches the granted FU index (unrolled for unique Yosys labels).
+  // 2-wide CDB: a granted FU is broadcasting on lane-0 OR lane-1 this cycle, so
+  // its fu_type must match on whichever lane carries it (not solely lane-0).
+  function automatic logic fu_on_a_lane(input riscv_pkg::fu_type_e fu);
+    fu_on_a_lane = (o_cdb.valid && o_cdb.fu_type == fu) || (o_cdb_2.valid && o_cdb_2.fu_type == fu);
+  endfunction
   always_comb begin
-    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_fu_type_alu : assert (o_cdb.fu_type == riscv_pkg::FU_ALU);
-    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_fu_type_mul : assert (o_cdb.fu_type == riscv_pkg::FU_MUL);
-    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_fu_type_div : assert (o_cdb.fu_type == riscv_pkg::FU_DIV);
-    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_fu_type_mem : assert (o_cdb.fu_type == riscv_pkg::FU_MEM);
+    if (o_grant[riscv_pkg::FU_ALU]) p_cdb_fu_type_alu : assert (fu_on_a_lane(riscv_pkg::FU_ALU));
+    if (o_grant[riscv_pkg::FU_MUL]) p_cdb_fu_type_mul : assert (fu_on_a_lane(riscv_pkg::FU_MUL));
+    if (o_grant[riscv_pkg::FU_DIV]) p_cdb_fu_type_div : assert (fu_on_a_lane(riscv_pkg::FU_DIV));
+    if (o_grant[riscv_pkg::FU_MEM]) p_cdb_fu_type_mem : assert (fu_on_a_lane(riscv_pkg::FU_MEM));
     if (o_grant[riscv_pkg::FU_FP_ADD])
-      p_cdb_fu_type_fp_add : assert (o_cdb.fu_type == riscv_pkg::FU_FP_ADD);
+      p_cdb_fu_type_fp_add : assert (fu_on_a_lane(riscv_pkg::FU_FP_ADD));
     if (o_grant[riscv_pkg::FU_FP_MUL])
-      p_cdb_fu_type_fp_mul : assert (o_cdb.fu_type == riscv_pkg::FU_FP_MUL);
+      p_cdb_fu_type_fp_mul : assert (fu_on_a_lane(riscv_pkg::FU_FP_MUL));
     if (o_grant[riscv_pkg::FU_FP_DIV])
-      p_cdb_fu_type_fp_div : assert (o_cdb.fu_type == riscv_pkg::FU_FP_DIV);
+      p_cdb_fu_type_fp_div : assert (fu_on_a_lane(riscv_pkg::FU_FP_DIV));
+  end
+
+  // Lane-1 broadcast is consistent: when valid it carries its selected
+  // secondary winner's payload and a distinct FU from lane 0.
+  always_comb begin
+    if (o_cdb_2.valid) begin
+      p_cdb2_fu_type : assert (o_cdb_2.fu_type == riscv_pkg::fu_type_e'(winner2_idx));
+      p_cdb2_tag : assert (o_cdb_2.tag == winner2_data.tag);
+      p_cdb2_value : assert (o_cdb_2.value == winner2_data.value);
+      p_cdb2_distinct_from_lane0 : assert (!o_cdb.valid || (winner2_idx != winner_idx));
+      p_cdb2_implies_lane0 : assert (o_cdb.valid);
+    end
   end
 
   // -------------------------------------------------------------------------
