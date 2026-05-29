@@ -935,15 +935,10 @@ module store_queue #(
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
           if (sq_valid[i] && !sq_committed[i] &&
-              // Guard: don't flush a store the ROB is committing or just committed.
-              // sq_committed has a 2-cycle pipeline lag from the ROB's commit_en:
-              //   Cycle K:   ROB commit_en → commit_bus (comb)
-              //   Cycle K+1: commit_bus_q → i_commit_valid (registered)
-              //   Cycle K+2: sq_committed set (from K+1's NBA)
-              // A partial flush on K or K+1 would see sq_committed=0. Guard both,
-              // and extend the same guard to widen-commit slot 2.
-              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
-              !(i_commit_valid_comb_2 && sq_rob_tag[i] == i_commit_rob_tag_comb_2) &&
+              // Guard the registered commit cycle while sq_committed is still
+              // one NBA behind. The same-cycle raw commit does not need a tag
+              // exemption here: ordinary partial flush uses the current head
+              // age, and flush-after-head cannot retire a slot-1 store.
               !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
               !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
               (flush_all_uncommitted || is_younger(

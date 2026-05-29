@@ -333,7 +333,6 @@ module pc_controller #(
   logic [XLEN-2:0] pc_reg_hw;
   logic            halfword_target_lead_catchup;
   logic            clear_pending_prediction_state;
-  logic            pending_prediction_valid_d;
   // pending_prediction_allow_cross_d / pending_prediction_from_buffer_d were
   // removed when those FFs moved to a !pending_prediction_valid speculative-
   // capture pattern (see the timing comment near the always_ff below).
@@ -465,7 +464,8 @@ module pc_controller #(
       (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_target_holdoff_q <= 1'b0;
     end else if (!i_stall) begin
       // Keep exactly one target bubble after the pending handoff. With fetch
@@ -481,7 +481,8 @@ module pc_controller #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_target_holdoff_prev_q <= 1'b0;
     end else if (!i_stall) begin
       pending_prediction_target_holdoff_prev_q <= pending_prediction_target_holdoff_q;
@@ -492,11 +493,12 @@ module pc_controller #(
     if (i_reset) redirect_kill_pending_q <= 1'b0;
     else
       redirect_kill_pending_q <= i_flush || i_branch_taken || i_pd_redirect ||
-                                     i_trap_taken || i_mret_taken;
+                                     i_trap_taken || i_mret_taken || i_fence_i_flush;
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_pc_ready_q <= 1'b0;
     end else if (!i_stall) begin
       if (redirect_kill_pending_q || pending_prediction_target_handoff ||
@@ -513,22 +515,17 @@ module pc_controller #(
       redirect_kill_pending_q || pending_prediction_target_handoff ||
       stale_pending_prediction;
 
-  always_comb begin
-    pending_prediction_valid_d = pending_prediction_valid;
-
-    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken || i_pd_redirect) begin
-      pending_prediction_valid_d = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
+      pending_prediction_valid <= 1'b0;
     end else if (!i_stall) begin
       if (clear_pending_prediction_state) begin
-        pending_prediction_valid_d = 1'b0;
+        pending_prediction_valid <= 1'b0;
       end else if (prediction_needs_pending) begin
-        pending_prediction_valid_d = 1'b1;
+        pending_prediction_valid <= 1'b1;
       end
     end
-  end
-
-  always_ff @(posedge i_clk) begin
-    pending_prediction_valid <= pending_prediction_valid_d;
   end
 
   // TIMING: Use !pending_prediction_valid as the CE instead of the

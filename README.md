@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 2.86 CoreMark/MHz (857 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Solid performance** — 2.93 CoreMark/MHz (880 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
@@ -310,15 +310,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 108,551 | 1,029,600 | 10.5% |
-|   LUT as Logic | 98,690 | 1,029,600 | 9.6% |
-|   LUT as Distributed RAM | 9,348 | — | — |
-|   LUT as Shift Register | 513 | — | — |
-| CLB Registers | 63,177 | 2,059,200 | 3.1% |
+| CLB LUTs | 122,758 | 1,029,600 | 11.9% |
+|   LUT as Logic | 112,451 | 1,029,600 | 10.9% |
+|   LUT as Distributed RAM | 9,792 | — | — |
+|   LUT as Shift Register | 515 | — | — |
+| CLB Registers | 67,545 | 2,059,200 | 3.3% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,362 | 128,700 | 3.4% |
+| CARRY8 | 4,347 | 128,700 | 3.4% |
 | F7 Muxes | 66 | 514,800 | 0.0% |
 | F8 Muxes | 33 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
@@ -329,15 +329,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 105,446 | 203,800 | 51.7% |
-|   LUT as Logic | 94,350 | 203,800 | 46.3% |
-|   LUT as Distributed RAM | 10,584 | — | — |
+| Slice LUTs | 115,722 | 203,800 | 56.8% |
+|   LUT as Logic | 103,762 | 203,800 | 50.9% |
+|   LUT as Distributed RAM | 11,448 | — | — |
 |   LUT as Shift Register | 512 | — | — |
-| Slice Registers | 62,197 | 407,600 | 15.3% |
+| Slice Registers | 62,526 | 407,600 | 15.3% |
 | Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
-| F7 Muxes | 2,965 | 101,900 | 2.9% |
-| F8 Muxes | 646 | 50,950 | 1.3% |
+| F7 Muxes | 2,870 | 101,900 | 2.8% |
+| F8 Muxes | 661 | 50,950 | 1.3% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |

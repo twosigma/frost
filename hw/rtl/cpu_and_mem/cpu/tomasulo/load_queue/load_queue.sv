@@ -439,6 +439,7 @@ module load_queue #(
   logic sq_check_is_amo_q;
   logic sq_check_no_older_store_q;
   logic [DEPTH-1:0] sq_check_in_flight_mask;
+  logic [DEPTH-1:0] sq_check_in_flight_mask_next;
   logic sq_check_capture;
   logic sq_check_replace;
   logic sq_check_entry_valid;
@@ -1586,7 +1587,6 @@ module load_queue #(
   logic sq_check_pending_next;
   logic sq_check_no_older_store_next;
   logic sq_check_phase2_next;
-  logic [DEPTH-1:0] sq_check_in_flight_mask_next;
   logic sq_check_flushed;
   assign sq_check_flushed = i_flush_en && sq_check_pending && (flush_all_entries || is_younger(
       sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
@@ -1613,7 +1613,7 @@ module load_queue #(
                  (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                   launch_mem_issue || misalign_bypass_fire)) begin
       // launch_mem_issue keeps the slot held through bus_busy stalls.
-      sq_check_pending_next        = 1'b0;
+      sq_check_pending_next = 1'b0;
       sq_check_in_flight_mask_next = '0;
     end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
       sq_check_phase2_next = 1'b1;
@@ -1659,17 +1659,20 @@ module load_queue #(
       .R (!i_rst_n || i_flush_all)
   );
 
-  for (genvar g_sq_mask = 0; g_sq_mask < DEPTH; g_sq_mask++) begin : gen_sq_check_in_flight_mask_ff
+  for (
+      genvar g_sq_check_mask = 0; g_sq_check_mask < DEPTH; g_sq_check_mask++
+  ) begin : gen_sq_check_in_flight_mask_ff
     FDRE #(
         .INIT(1'b0)
     ) sq_check_in_flight_mask_ff (
         .C (i_clk),
         .CE(1'b1),
-        .D (sq_check_in_flight_mask_next[g_sq_mask]),
-        .Q (sq_check_in_flight_mask[g_sq_mask]),
+        .D (sq_check_in_flight_mask_next[g_sq_check_mask]),
+        .Q (sq_check_in_flight_mask[g_sq_check_mask]),
         .R (!i_rst_n || i_flush_all)
     );
   end
+
 `else
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin

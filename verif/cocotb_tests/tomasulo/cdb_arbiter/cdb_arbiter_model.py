@@ -68,37 +68,60 @@ class CdbBroadcast:
     fu_type: int = 0
 
 
+def _broadcast_from(req: FuComplete, fu_idx: int) -> CdbBroadcast:
+    """Pack an FU completion request into a CDB broadcast."""
+    return CdbBroadcast(
+        valid=True,
+        tag=req.tag & MASK_TAG,
+        value=req.value & MASK64,
+        exception=req.exception,
+        exc_cause=req.exc_cause & 0x1F,
+        fp_flags=req.fp_flags & 0x1F,
+        fu_type=fu_idx,
+    )
+
+
 class CdbArbiterModel:
-    """Golden model for CDB arbiter priority arbitration."""
+    """Golden model for CDB arbiter priority arbitration (2-wide CDB).
+
+    Lane 0 = highest-priority valid request; lane 1 = highest-priority valid
+    request among those lane 0 did not take. Both winners are granted, so the
+    grant vector is 2-hot when two or more FUs request the CDB.
+    """
 
     def arbitrate(
         self,
         fu_completes: list[FuComplete],
-    ) -> tuple[CdbBroadcast, list[bool]]:
+    ) -> tuple[CdbBroadcast, CdbBroadcast, list[bool]]:
         """Arbitrate among FU completion requests.
 
         Args:
             fu_completes: List of NUM_FUS FuComplete requests, indexed by fu_type_e.
 
         Returns:
-            Tuple of (CdbBroadcast, grants) where grants is a list of NUM_FUS bools.
+            Tuple of (lane0_cdb, lane1_cdb, grants). lane1_cdb.valid is False when
+            fewer than two FUs request the CDB. grants is a list of NUM_FUS bools
+            (up to two set).
         """
         assert len(fu_completes) == NUM_FUS
 
         grants = [False] * NUM_FUS
         cdb = CdbBroadcast()
+        cdb_2 = CdbBroadcast()
 
+        lane0_idx = None
         for fu_idx in PRIORITY_ORDER:
-            req = fu_completes[fu_idx]
-            if req.valid:
+            if fu_completes[fu_idx].valid:
+                lane0_idx = fu_idx
                 grants[fu_idx] = True
-                cdb.valid = True
-                cdb.tag = req.tag & MASK_TAG
-                cdb.value = req.value & MASK64
-                cdb.exception = req.exception
-                cdb.exc_cause = req.exc_cause & 0x1F
-                cdb.fp_flags = req.fp_flags & 0x1F
-                cdb.fu_type = fu_idx
+                cdb = _broadcast_from(fu_completes[fu_idx], fu_idx)
                 break
 
-        return cdb, grants
+        # Lane 1: next-highest-priority valid request, excluding lane 0's winner.
+        for fu_idx in PRIORITY_ORDER:
+            if fu_idx != lane0_idx and fu_completes[fu_idx].valid:
+                grants[fu_idx] = True
+                cdb_2 = _broadcast_from(fu_completes[fu_idx], fu_idx)
+                break
+
+        return cdb, cdb_2, grants

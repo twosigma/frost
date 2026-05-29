@@ -603,7 +603,7 @@ Examples:
         "--place-directive",
         choices=PLACER_DIRECTIVES,
         default=None,
-        help="Placer directive (default: ExtraNetDelay_low on x3, "
+        help="Placer directive (default: ExtraNetDelay_high on x3, "
         "ExtraTimingOpt otherwise)",
     )
     parser.add_argument(
@@ -641,7 +641,7 @@ Examples:
     place_directive = args.place_directive
     if place_directive is None:
         place_directive = (
-            "ExtraNetDelay_low" if board_name == "x3" else "ExtraTimingOpt"
+            "ExtraNetDelay_high" if board_name == "x3" else "ExtraTimingOpt"
         )
 
     # Per-step directives. The three phys_opt stages all run hardcoded sweeps

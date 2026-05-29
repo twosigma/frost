@@ -74,6 +74,11 @@ module reorder_buffer (
     // =========================================================================
     // For non-branch results (ALU, MUL, DIV, MEM, FP)
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
+    // Second CDB lane (2-wide CDB): a distinct completed entry, marked done +
+    // value/exc/fp written the same cycle as i_cdb_write. The arbiter
+    // guarantees tag != i_cdb_write.tag, so the two never collide on a RAM
+    // address or a rob_done bit.
+    input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write_2,
 
     // Direct non-CDB completion for plain stores. Stores do not need wakeup or
     // a CDB value broadcast; the ROB only needs to know the entry is done.
@@ -274,6 +279,14 @@ module reorder_buffer (
     end
   endfunction
 
+  function automatic logic [ReorderBufferDepth-1:0] advance_onehot_mask(
+      input logic [ReorderBufferDepth-1:0] mask, input logic advance_two);
+    advance_onehot_mask = '0;
+    for (int unsigned i = 0; i < ReorderBufferDepth; i++) begin
+      advance_onehot_mask[(i+(advance_two?2 : 1))%ReorderBufferDepth] = mask[i];
+    end
+  endfunction
+
   // Forward declarations (used in debug assigns before main decl)
   logic [ReorderBufferTagWidth:0] head_ptr;
   logic [ReorderBufferTagWidth:0] tail_ptr;
@@ -317,6 +330,8 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth-1:0] tail_idx;
   // Slot-2 alloc target, wraps within ReorderBufferTagWidth modulus.
   logic [ReorderBufferTagWidth-1:0] tail_idx_2;
+  logic [ReorderBufferDepth-1:0] head_clear_mask;
+  logic [ReorderBufferDepth-1:0] head_next_clear_mask;
 
   // Status signals (full and empty declared above for forward ref)
   logic [ReorderBufferTagWidth:0] count;
@@ -576,20 +591,41 @@ module reorder_buffer (
   // full_flush_all cone (the current -0.495 ns critical path) off the
   // commit-side bypass path.
   logic head_cdb_match;
+  logic head_cdb_match_l2;  // lane-1 hits the head
   logic head_cdb_bypass;
   logic head_next_cdb_match;
+  logic head_next_cdb_match_l2;  // lane-1 hits head+1
   logic head_next_cdb_bypass;
 
+  // The two CDB lanes carry distinct tags, so at most one lane hits the head
+  // (and independently at most one hits head+1). Select that lane's payload.
   assign head_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_idx);
-  assign head_cdb_bypass = head_cdb_match && !i_cdb_write.exception &&
+  assign head_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx);
+  logic head_cdb_exc_sel;
+  logic [FLEN-1:0] head_cdb_value_sel;
+  riscv_pkg::fp_flags_t head_cdb_fp_flags_sel;
+  assign head_cdb_exc_sel = head_cdb_match ? i_cdb_write.exception : i_cdb_write_2.exception;
+  assign head_cdb_value_sel = head_cdb_match ? i_cdb_write.value : i_cdb_write_2.value;
+  assign head_cdb_fp_flags_sel = head_cdb_match ? i_cdb_write.fp_flags : i_cdb_write_2.fp_flags;
+  assign head_cdb_bypass = (head_cdb_match || head_cdb_match_l2) && !head_cdb_exc_sel &&
       !head_is_branch && !head_is_csr && !head_is_fence && !head_is_fence_i &&
       !head_is_wfi && !head_is_mret;
 
   assign head_next_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_next_idx);
+  assign head_next_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_write_2.tag == head_next_idx);
+  logic head_next_cdb_exc_sel;
+  logic [FLEN-1:0] head_next_cdb_value_sel;
+  riscv_pkg::fp_flags_t head_next_cdb_fp_flags_sel;
+  assign head_next_cdb_exc_sel =
+      head_next_cdb_match ? i_cdb_write.exception : i_cdb_write_2.exception;
+  assign head_next_cdb_value_sel = head_next_cdb_match ? i_cdb_write.value : i_cdb_write_2.value;
+  assign head_next_cdb_fp_flags_sel =
+      head_next_cdb_match ? i_cdb_write.fp_flags : i_cdb_write_2.fp_flags;
   // head_next_cdb_bypass is gated further by head_next_ok_2wide at its only
   // consumer (commit_2_gate), so the bypass itself only needs the exception
   // exclusion to cover the trap path.
-  assign head_next_cdb_bypass = head_next_cdb_match && !i_cdb_write.exception;
+  assign head_next_cdb_bypass = (head_next_cdb_match || head_next_cdb_match_l2) &&
+      !head_next_cdb_exc_sel;
 
   logic head_done_eff;
   logic head_next_done_eff;
@@ -602,10 +638,11 @@ module reorder_buffer (
   riscv_pkg::fp_flags_t head_fp_flags_eff;
   logic [FLEN-1:0] head_next_value_eff;
   riscv_pkg::fp_flags_t head_next_fp_flags_eff;
-  assign head_value_eff = head_cdb_bypass ? i_cdb_write.value : head_value;
-  assign head_fp_flags_eff = head_cdb_bypass ? i_cdb_write.fp_flags : head_fp_flags;
-  assign head_next_value_eff = head_next_cdb_bypass ? i_cdb_write.value : head_next_value;
-  assign head_next_fp_flags_eff = head_next_cdb_bypass ? i_cdb_write.fp_flags : head_next_fp_flags;
+  assign head_value_eff = head_cdb_bypass ? head_cdb_value_sel : head_value;
+  assign head_fp_flags_eff = head_cdb_bypass ? head_cdb_fp_flags_sel : head_fp_flags;
+  assign head_next_value_eff = head_next_cdb_bypass ? head_next_cdb_value_sel : head_next_value;
+  assign head_next_fp_flags_eff =
+      head_next_cdb_bypass ? head_next_cdb_fp_flags_sel : head_next_fp_flags;
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done_eff;
@@ -658,6 +695,12 @@ module reorder_buffer (
   logic cdb_state_wr_en;
   assign cdb_ram_wr_en   = i_cdb_write.valid && !i_flush_all;
   assign cdb_state_wr_en = cdb_ram_wr_en && rob_valid[i_cdb_write.tag];
+
+  // Lane-1 (2-wide CDB) write enables — symmetric with lane 0.
+  logic cdb_ram_wr_en_2;
+  logic cdb_state_wr_en_2;
+  assign cdb_ram_wr_en_2   = i_cdb_write_2.valid && !i_flush_all;
+  assign cdb_state_wr_en_2 = cdb_ram_wr_en_2 && rob_valid[i_cdb_write_2.tag];
 
   logic branch_wr_en;
   assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
@@ -904,216 +947,224 @@ module reorder_buffer (
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_head (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_value)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(head_idx),
+      .o_read_data(head_value)
   );
 
   // Widen-commit replica: head+1 read port for value.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_head_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_value)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_value)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_rat (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_read_tag),
-      .o_read_data    (o_read_value)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_read_tag),
+      .o_read_data(o_read_value)
   );
 
   // Dispatch bypass value read ports (same write data as above, different read addresses)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_1),
-      .o_read_data    (o_bypass_value_1)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_1),
+      .o_read_data(o_bypass_value_1)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_2),
-      .o_read_data    (o_bypass_value_2)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_2),
+      .o_read_data(o_bypass_value_2)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_3),
-      .o_read_data    (o_bypass_value_3)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_3),
+      .o_read_data(o_bypass_value_3)
   );
 
   // Slot-2 done-repair bypass read ports (Session M).
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_4 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_4),
-      .o_read_data    (o_bypass_value_4)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_4),
+      .o_read_data(o_bypass_value_4)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_5 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_5),
-      .o_read_data    (o_bypass_value_5)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_5),
+      .o_read_data(o_bypass_value_5)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_bypass_6 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_bypass_tag_6),
-      .o_read_data    (o_bypass_value_6)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_bypass_tag_6),
+      .o_read_data(o_bypass_value_6)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_1 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_1),
-      .o_read_data    (o_fmul_pending_bypass_value_1)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_fmul_pending_bypass_tag_1),
+      .o_read_data(o_fmul_pending_bypass_value_1)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_2 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_2),
-      .o_read_data    (o_fmul_pending_bypass_value_2)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_fmul_pending_bypass_tag_2),
+      .o_read_data(o_fmul_pending_bypass_value_2)
   );
 
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_value_fmul_pending_3 (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address (i_fmul_pending_bypass_tag_3),
-      .o_read_data    (o_fmul_pending_bypass_value_3)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
+      .i_read_address(i_fmul_pending_bypass_tag_3),
+      .o_read_data(o_fmul_pending_bypass_value_3)
   );
 
   // rob_exc_cause: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_exc_cause)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({
+        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+      }),
+      .i_read_address(head_idx),
+      .o_read_data(head_exc_cause)
   );
 
   // Widen-commit replica: head+1 read port for exc_cause.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_exc_cause)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({
+        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+      }),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_exc_cause)
   );
 
   // rob_fp_flags: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
-      .i_read_address (head_idx),
-      .o_read_data    (head_fp_flags)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({
+        i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+      }),
+      .i_read_address(head_idx),
+      .o_read_data(head_fp_flags)
   );
 
   // Widen-commit replica: head+1 read port for fp_flags.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
-      .NUM_WRITE_PORTS(3)
+      .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags_next (
       .i_clk,
-      .i_write_enable ({cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data   ({i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)}),
-      .i_read_address (head_next_idx),
-      .o_read_data    (head_next_fp_flags)
+      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_data({
+        i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+      }),
+      .i_read_address(head_next_idx),
+      .o_read_data(head_next_fp_flags)
   );
 
   // Branch target storage only needs one writer per producer class:
@@ -1280,19 +1331,17 @@ module reorder_buffer (
   logic flush_after_head_commit;
   assign flush_after_head_commit = i_flush_after_head_commit;
 
-  // Exported dispatch back-pressure is registered from the exact next ROB
-  // occupancy.  That cuts the tail_ptr/full -> dispatch -> queue-allocation
-  // timing cone without reducing usable ROB capacity.  Internal allocation
-  // still uses the exact combinational full/full_for_2 signals above.
+  // Exported dispatch back-pressure is registered from conservative next ROB
+  // occupancy that includes allocation but not same-cycle commit.  This keeps
+  // CDB/head-done -> commit_en off the dispatch-full flop D path.  Internal
+  // allocation still uses the exact combinational full/full_for_2 signals above.
   logic [ReorderBufferTagWidth:0] dispatch_tail_next;
   logic [ReorderBufferTagWidth:0] dispatch_head_next;
   logic [ReorderBufferTagWidth:0] dispatch_count_next;
   logic [ReorderBufferTagWidth:0] dispatch_alloc_delta;
-  logic [ReorderBufferTagWidth:0] dispatch_commit_delta;
   assign dispatch_alloc_delta = {
     {ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2_status, !alloc_en_2_status
   };
-  assign dispatch_commit_delta = {{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire};
   always_comb begin
     dispatch_tail_next  = tail_ptr;
     dispatch_head_next  = head_ptr;
@@ -1307,15 +1356,8 @@ module reorder_buffer (
         dispatch_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
       end
 
-      if (commit_en && !i_flush_all) begin
-        dispatch_head_next = head_ptr + dispatch_commit_delta;
-      end
-
       dispatch_count_next = dispatch_tail_next - dispatch_head_next;
     end else begin
-      if (commit_en) begin
-        dispatch_count_next = dispatch_count_next - dispatch_commit_delta;
-      end
       if (alloc_en_status) begin
         dispatch_count_next = dispatch_count_next + dispatch_alloc_delta;
       end
@@ -1423,6 +1465,12 @@ module reorder_buffer (
         rob_done[i_cdb_write.tag]      <= 1'b1;
         rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
       end
+      // Lane-1 (2-wide CDB): distinct tag from lane 0, so these non-blocking
+      // writes target a different rob_done/rob_exception index — no collision.
+      if (cdb_state_wr_en_2) begin
+        rob_done[i_cdb_write_2.tag]      <= 1'b1;
+        rob_exception[i_cdb_write_2.tag] <= i_cdb_write_2.exception;
+      end
 
       // ---------------------------------------------------------------------
       // Direct store completion (mark plain store entry done)
@@ -1477,10 +1525,14 @@ module reorder_buffer (
       // advances separately).  Widen-commit also clears head+1 when the
       // 2-wide gate (commit_2_fire) fires.
       if (commit_en && !i_flush_all) begin
-        rob_valid[head_idx] <= 1'b0;
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (head_clear_mask[i]) rob_valid[i] <= 1'b0;
+        end
       end
       if (commit_2_fire && !i_flush_all) begin
-        rob_valid[head_next_idx] <= 1'b0;
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (head_next_clear_mask[i]) rob_valid[i] <= 1'b0;
+        end
       end
     end
   end
@@ -1541,7 +1593,9 @@ module reorder_buffer (
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      head_ptr <= '0;
+      head_ptr             <= '0;
+      head_clear_mask      <= ReorderBufferDepth'(1);
+      head_next_clear_mask <= ReorderBufferDepth'(2);
     end else if (i_flush_all) begin
       // Full flush: head stays (tail resets to head)
     end else if (commit_en) begin
@@ -1549,6 +1603,8 @@ module reorder_buffer (
       // 2-wide gate fires; otherwise by 1 as before.  commit_2_fire is a
       // strict subset of commit_en so the OR is implicit.
       head_ptr <= head_ptr + ({{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire});
+      head_clear_mask <= advance_onehot_mask(head_clear_mask, commit_2_fire);
+      head_next_clear_mask <= advance_onehot_mask(head_next_clear_mask, commit_2_fire);
     end
   end
 
