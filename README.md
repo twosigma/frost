@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 2.83 CoreMark/MHz (848 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Solid performance** — 2.86 CoreMark/MHz (857 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
@@ -31,7 +31,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     │      expand                          ┌─────────────────────────────┐   │
 │     │                                      │   ROB  (32 entries)         │   │
 │     │   ┌─────────────┐                    │   RAT  (INT + FP, 8 ckpts)  │   │
-│     │   │ BTB (128×2b)│                    └──────────────┬──────────────┘   │
+│     │   │ BTB (256×2b)│                    └──────────────┬──────────────┘   │
 │     │   │ RAS (8)     │                                   │ issue            │
 │     │   └─────────────┘                                   ▼                  │
 │     │                          ┌──────────────────────────────────────────┐  │
@@ -94,7 +94,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Single-CDB result broadcast** with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
-- **Branch prediction** with 128-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
+- **Branch prediction** with 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 8-entry return address stack, and a backward-branch-taken static fallback for cold BTB lookups
 - **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
@@ -310,17 +310,17 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 108,541 | 1,029,600 | 10.5% |
-|   LUT as Logic | 99,000 | 1,029,600 | 9.6% |
-|   LUT as Distributed RAM | 9,028 | — | — |
+| CLB LUTs | 108,551 | 1,029,600 | 10.5% |
+|   LUT as Logic | 98,690 | 1,029,600 | 9.6% |
+|   LUT as Distributed RAM | 9,348 | — | — |
 |   LUT as Shift Register | 513 | — | — |
-| CLB Registers | 63,588 | 2,059,200 | 3.1% |
+| CLB Registers | 63,177 | 2,059,200 | 3.1% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
 | URAM | 0 | 352 | 0.0% |
 | DSPs | 32 | 1,320 | 2.4% |
 | CARRY8 | 4,362 | 128,700 | 3.4% |
-| F7 Muxes | 34 | 514,800 | 0.0% |
-| F8 Muxes | 0 | 257,400 | 0.0% |
+| F7 Muxes | 66 | 514,800 | 0.0% |
+| F8 Muxes | 33 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
 | MMCM | 1 | 11 | 9.1% |
 | PLL | 0 | 22 | 0.0% |
@@ -329,15 +329,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 106,208 | 203,800 | 52.1% |
-|   LUT as Logic | 95,122 | 203,800 | 46.7% |
-|   LUT as Distributed RAM | 10,578 | — | — |
-|   LUT as Shift Register | 508 | — | — |
-| Slice Registers | 62,097 | 407,600 | 15.2% |
+| Slice LUTs | 105,446 | 203,800 | 51.7% |
+|   LUT as Logic | 94,350 | 203,800 | 46.3% |
+|   LUT as Distributed RAM | 10,584 | — | — |
+|   LUT as Shift Register | 512 | — | — |
+| Slice Registers | 62,197 | 407,600 | 15.3% |
 | Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
-| F7 Muxes | 34 | 101,900 | 0.0% |
-| F8 Muxes | 0 | 50,950 | 0.0% |
+| F7 Muxes | 2,965 | 101,900 | 2.9% |
+| F8 Muxes | 646 | 50,950 | 1.3% |
 | Bonded IOB | 6 | 500 | 1.2% |
 | MMCM | 1 | 10 | 10.0% |
 | PLL | 0 | 10 | 0.0% |
@@ -380,7 +380,7 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **CDB**         | Common Data Bus (single-lane result broadcast)   |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **BTB**         | Branch Target Buffer (128-entry branch predictor) |
+| **BTB**         | Branch Target Buffer (256-entry branch predictor) |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |

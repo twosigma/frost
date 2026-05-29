@@ -28,10 +28,11 @@ Steps:
 9. Bitstream generation
 
 All three phys_opt stages (4, 6, 8) run a hardcoded sweep over every directive
-in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore. Each sweep preserves
-the best-WNS pass and stops early as soon as a phys_opt_design pass closes
-timing (WNS>=0). Repeated phys_opt sweeps write the current best checkpoint
-and reports after every completed sweep iteration.
+in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore, followed by one
+retime-only pass (phys_opt_design -retime). Each sweep preserves the best-WNS
+pass and stops early as soon as a phys_opt_design pass closes timing (WNS>=0).
+Repeated phys_opt sweeps write the current best checkpoint and reports after
+every completed sweep iteration.
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -524,22 +525,23 @@ Steps (in order):
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup)
-  post_route_physopt          - Phys_opt sweep over every directive (serial)
+  post_route_physopt          - Phys_opt directive sweep plus retime pass (serial)
   second_route                - Route design (without -tns_cleanup)
-  post_second_route_physopt   - Phys_opt sweep over every directive (serial);
+  post_second_route_physopt   - Phys_opt directive sweep plus retime pass (serial);
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore.
-    Each sweep preserves the best-WNS pass and stops early if a directive closes
-    timing (WNS>=0). Repeated sweeps write the current best checkpoint and
-    reports after every completed sweep iteration.
+  * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore
+    and ending with one retime-only pass (phys_opt_design -retime). Each sweep
+    preserves the best-WNS pass and stops early if a pass closes timing
+    (WNS>=0). Repeated sweeps write the current best checkpoint and reports
+    after every completed sweep iteration.
   * Pipeline early-exit at route, post_route_physopt, or second_route: when
     one of these closes timing, its outputs are promoted to final.dcp/final_*
     and remaining stages are skipped — bitstream runs next.
 
 Each step uses a tuned default directive unless overridden with --*-directive.
---route-directive controls the first route (default NoTimingRelaxation);
+--route-directive controls the first route (default AggressiveExplore);
 --second-route-directive controls the second route (default Explore).
 --physopt-directive is currently ignored (kept for backward compatibility).
 
@@ -588,8 +590,8 @@ Examples:
     parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
-        default="PerformanceOptimized",
-        help="Synthesis directive (default: PerformanceOptimized)",
+        default="AlternateRoutability",
+        help="Synthesis directive (default: AlternateRoutability)",
     )
     parser.add_argument(
         "--opt-directive",
@@ -601,15 +603,15 @@ Examples:
         "--place-directive",
         choices=PLACER_DIRECTIVES,
         default=None,
-        help="Placer directive (default: AltSpreadLogic_high on x3, "
+        help="Placer directive (default: ExtraNetDelay_low on x3, "
         "ExtraTimingOpt otherwise)",
     )
     parser.add_argument(
         "--route-directive",
         choices=ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES,
-        default="NoTimingRelaxation",
+        default="AggressiveExplore",
         help="Router directive for the first route step (with -tns_cleanup) "
-        "(default: NoTimingRelaxation)",
+        "(default: AggressiveExplore)",
     )
     parser.add_argument(
         "--second-route-directive",
@@ -623,8 +625,8 @@ Examples:
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
         help="Currently ignored — all phys_opt stages (post_place, post_route, "
-        "post_second_route) run a hardcoded sweep over every directive. Kept "
-        "for backward compatibility.",
+        "post_second_route) run a hardcoded directive sweep plus a retime-only "
+        "pass. Kept for backward compatibility.",
     )
     args = parser.parse_args()
 
@@ -639,7 +641,7 @@ Examples:
     place_directive = args.place_directive
     if place_directive is None:
         place_directive = (
-            "AltSpreadLogic_high" if board_name == "x3" else "ExtraTimingOpt"
+            "ExtraNetDelay_low" if board_name == "x3" else "ExtraTimingOpt"
         )
 
     # Per-step directives. The three phys_opt stages all run hardcoded sweeps

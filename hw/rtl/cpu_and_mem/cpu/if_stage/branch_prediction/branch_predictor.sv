@@ -62,7 +62,7 @@
  */
 module branch_predictor #(
     parameter int unsigned XLEN = 32,
-    parameter int unsigned BTB_INDEX_BITS = 7  // 128 entries
+    parameter int unsigned BTB_INDEX_BITS = 8  // 256 entries
 ) (
     input logic i_clk,
     input logic i_rst,
