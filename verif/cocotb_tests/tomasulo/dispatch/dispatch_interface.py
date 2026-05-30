@@ -1202,17 +1202,14 @@ class DispatchInterface:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_valid.value = 0
-        # Slot-2 instruction (2-wide dispatch).  Held inactive in the
-        # dispatch unit tests; slot-2 dispatch is hard-tied off until later
-        # sessions wire it through cpu_ooo.
+        # Slot-2 instruction (2-wide dispatch).  Default inactive; tests that
+        # exercise 2-wide behavior drive it explicitly.
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0
         self.dut.i_rs1_addr.value = 0
         self.dut.i_rs2_addr.value = 0
         self.dut.i_fp_rs3_addr.value = 0
-        # Slot-2 source register addresses (2-wide dispatch).  Held at zero
-        # in the dispatch unit tests; slot-2 dispatch is hard-tied off until
-        # later sessions wire in slot-2 instruction inputs.
+        # Slot-2 source register addresses (2-wide dispatch).
         self.dut.i_rs1_addr_2.value = 0
         self.dut.i_rs2_addr_2.value = 0
         self.dut.i_fp_rs3_addr_2.value = 0
@@ -1244,9 +1241,7 @@ class DispatchInterface:
         self.dut.i_fdiv_rs_full.value = 0
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
-        # Slot-2 "room for 2" status inputs.  Held at zero in unit tests
-        # (room for 2 always available).  Slot-2 dispatch fire gates use
-        # these but never assert until cpu_ooo wires up slot-2 instructions.
+        # Slot-2 "room for 2" status inputs.  Default to room available.
         self.dut.i_rob_full_for_2.value = 0
         self.dut.i_int_rs_full_for_2.value = 0
         self.dut.i_mul_rs_full_for_2.value = 0
@@ -1287,6 +1282,26 @@ class DispatchInterface:
         self.dut.i_valid.value = 0
         self.dut.i_from_id_to_ex.value = 0
 
+    def drive_instruction_2(
+        self,
+        valid: bool = True,
+        rs1_addr: int = 0,
+        rs2_addr: int = 0,
+        fp_rs3_addr: int = 0,
+        **kwargs: int,
+    ) -> None:
+        """Drive the slot-2 instruction input and associated signals."""
+        self.dut.i_valid_2.value = 1 if valid else 0
+        self.dut.i_rs1_addr_2.value = rs1_addr & 0x1F
+        self.dut.i_rs2_addr_2.value = rs2_addr & 0x1F
+        self.dut.i_fp_rs3_addr_2.value = fp_rs3_addr & 0x1F
+        self.dut.i_from_id_to_ex_2.value = build_from_id_to_ex(**kwargs)
+
+    def clear_instruction_2(self) -> None:
+        """De-assert slot-2 instruction valid and zero out inputs."""
+        self.dut.i_valid_2.value = 0
+        self.dut.i_from_id_to_ex_2.value = 0
+
     # =========================================================================
     # FRM CSR
     # =========================================================================
@@ -1304,6 +1319,14 @@ class DispatchInterface:
     ) -> None:
         """Drive the ROB allocation response input."""
         self.dut.i_rob_alloc_resp.value = pack_rob_alloc_resp(
+            alloc_ready=alloc_ready, alloc_tag=alloc_tag, full=full
+        )
+
+    def drive_rob_alloc_resp_2(
+        self, alloc_ready: int = 1, alloc_tag: int = 0, full: int = 0
+    ) -> None:
+        """Drive the slot-2 ROB allocation response input."""
+        self.dut.i_rob_alloc_resp_2.value = pack_rob_alloc_resp(
             alloc_ready=alloc_ready, alloc_tag=alloc_tag, full=full
         )
 
@@ -1330,6 +1353,26 @@ class DispatchInterface:
     def drive_fp_src3(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
         """Drive FP source 3 RAT lookup result."""
         self.dut.i_fp_src3.value = pack_rat_lookup(renamed, tag, value)
+
+    def drive_int_src1_2(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
+        """Drive slot-2 integer source 1 RAT lookup result."""
+        self.dut.i_int_src1_2.value = pack_rat_lookup(renamed, tag, value)
+
+    def drive_int_src2_2(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
+        """Drive slot-2 integer source 2 RAT lookup result."""
+        self.dut.i_int_src2_2.value = pack_rat_lookup(renamed, tag, value)
+
+    def drive_fp_src1_2(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
+        """Drive slot-2 FP source 1 RAT lookup result."""
+        self.dut.i_fp_src1_2.value = pack_rat_lookup(renamed, tag, value)
+
+    def drive_fp_src2_2(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
+        """Drive slot-2 FP source 2 RAT lookup result."""
+        self.dut.i_fp_src2_2.value = pack_rat_lookup(renamed, tag, value)
+
+    def drive_fp_src3_2(self, renamed: int = 0, tag: int = 0, value: int = 0) -> None:
+        """Drive slot-2 FP source 3 RAT lookup result."""
+        self.dut.i_fp_src3_2.value = pack_rat_lookup(renamed, tag, value)
 
     # =========================================================================
     # Resource Status
@@ -1371,6 +1414,42 @@ class DispatchInterface:
         """Set SQ full signal."""
         self.dut.i_sq_full.value = 1 if full else 0
 
+    def set_rob_full_for_2(self, full: bool) -> None:
+        """Set ROB room-for-2 full signal."""
+        self.dut.i_rob_full_for_2.value = 1 if full else 0
+
+    def set_int_rs_full_for_2(self, full: bool) -> None:
+        """Set INT RS room-for-2 full signal."""
+        self.dut.i_int_rs_full_for_2.value = 1 if full else 0
+
+    def set_mul_rs_full_for_2(self, full: bool) -> None:
+        """Set MUL RS room-for-2 full signal."""
+        self.dut.i_mul_rs_full_for_2.value = 1 if full else 0
+
+    def set_mem_rs_full_for_2(self, full: bool) -> None:
+        """Set MEM RS room-for-2 full signal."""
+        self.dut.i_mem_rs_full_for_2.value = 1 if full else 0
+
+    def set_fp_rs_full_for_2(self, full: bool) -> None:
+        """Set FP RS room-for-2 full signal."""
+        self.dut.i_fp_rs_full_for_2.value = 1 if full else 0
+
+    def set_fmul_rs_full_for_2(self, full: bool) -> None:
+        """Set FMUL RS room-for-2 full signal."""
+        self.dut.i_fmul_rs_full_for_2.value = 1 if full else 0
+
+    def set_fdiv_rs_full_for_2(self, full: bool) -> None:
+        """Set FDIV RS room-for-2 full signal."""
+        self.dut.i_fdiv_rs_full_for_2.value = 1 if full else 0
+
+    def set_lq_full_for_2(self, full: bool) -> None:
+        """Set LQ room-for-2 full signal."""
+        self.dut.i_lq_full_for_2.value = 1 if full else 0
+
+    def set_sq_full_for_2(self, full: bool) -> None:
+        """Set SQ room-for-2 full signal."""
+        self.dut.i_sq_full_for_2.value = 1 if full else 0
+
     # =========================================================================
     # Checkpoint
     # =========================================================================
@@ -1407,9 +1486,61 @@ class DispatchInterface:
         """Read and unpack o_rob_alloc_req."""
         return unpack_rob_alloc_req(int(self.dut.o_rob_alloc_req.value))
 
+    def read_rob_alloc_req_2(self) -> dict[str, int]:
+        """Read and unpack o_rob_alloc_req_2."""
+        return unpack_rob_alloc_req(int(self.dut.o_rob_alloc_req_2.value))
+
     def read_rs_dispatch(self) -> dict[str, int]:
         """Read and unpack o_rs_dispatch."""
         return unpack_rs_dispatch(int(self.dut.o_rs_dispatch.value))
+
+    def read_int_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_int_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_int_rs_dispatch.value))
+
+    def read_mul_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_mul_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_mul_rs_dispatch.value))
+
+    def read_mem_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_mem_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_mem_rs_dispatch.value))
+
+    def read_fp_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_fp_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_fp_rs_dispatch.value))
+
+    def read_fmul_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_fmul_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_fmul_rs_dispatch.value))
+
+    def read_fdiv_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_fdiv_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_fdiv_rs_dispatch.value))
+
+    def read_int_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_int_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_int_rs_dispatch_2.value))
+
+    def read_mul_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_mul_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_mul_rs_dispatch_2.value))
+
+    def read_mem_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_mem_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_mem_rs_dispatch_2.value))
+
+    def read_fp_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_fp_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_fp_rs_dispatch_2.value))
+
+    def read_fmul_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_fmul_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_fmul_rs_dispatch_2.value))
+
+    def read_fdiv_rs_dispatch_2(self) -> dict[str, int]:
+        """Read and unpack o_fdiv_rs_dispatch_2."""
+        return unpack_rs_dispatch(int(self.dut.o_fdiv_rs_dispatch_2.value))
 
     @property
     def stall(self) -> bool:
@@ -1437,9 +1568,34 @@ class DispatchInterface:
         return int(self.dut.o_rat_alloc_rob_tag.value)
 
     @property
+    def rat_alloc_valid_2(self) -> bool:
+        """Read o_rat_alloc_valid_2 output."""
+        return bool(self.dut.o_rat_alloc_valid_2.value)
+
+    @property
+    def rat_alloc_dest_rf_2(self) -> int:
+        """Read o_rat_alloc_dest_rf_2 output (0=INT, 1=FP)."""
+        return int(self.dut.o_rat_alloc_dest_rf_2.value)
+
+    @property
+    def rat_alloc_dest_reg_2(self) -> int:
+        """Read o_rat_alloc_dest_reg_2 output."""
+        return int(self.dut.o_rat_alloc_dest_reg_2.value)
+
+    @property
+    def rat_alloc_rob_tag_2(self) -> int:
+        """Read o_rat_alloc_rob_tag_2 output."""
+        return int(self.dut.o_rat_alloc_rob_tag_2.value)
+
+    @property
     def checkpoint_save(self) -> bool:
         """Read o_checkpoint_save output."""
         return bool(self.dut.o_checkpoint_save.value)
+
+    @property
+    def checkpoint_save_for_slot2(self) -> bool:
+        """Read o_checkpoint_save_for_slot2 output."""
+        return bool(self.dut.o_checkpoint_save_for_slot2.value)
 
     @property
     def checkpoint_id(self) -> int:
