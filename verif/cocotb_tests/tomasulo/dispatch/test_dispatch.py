@@ -80,6 +80,7 @@ async def _setup(dut: Any) -> DispatchInterface:
     await dut_if.reset_dut(cycles=5)
     # Provide a default ROB alloc response: ready, tag=0, not full
     dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=0, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=1, full=0)
     # Default: checkpoint available
     dut_if.drive_checkpoint(available=True, alloc_id=0)
     return dut_if
@@ -418,6 +419,345 @@ async def test_source_not_ready_renamed(dut: Any) -> None:
     assert rs["src1_ready"] == 0, "src1 should not be ready (renamed)"
     assert rs["src1_tag"] == 7, f"src1_tag mismatch: {rs['src1_tag']}"
     assert rs["src2_ready"] == 1, "src2 should be ready"
+
+
+# =============================================================================
+# Slot-2 Bundle Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_slot2_dual_int_dispatches_and_renames(dut: Any) -> None:
+    """Slot 1 and slot 2 can dispatch integer ops in one cycle."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=6, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=7, full=0)
+    dut_if.drive_int_src1(renamed=0, tag=0, value=0x11)
+    dut_if.drive_int_src2(renamed=0, tag=0, value=0x22)
+    dut_if.drive_int_src1_2(renamed=0, tag=0, value=0x33)
+
+    dut_if.drive_instruction(
+        valid=True,
+        rs1_addr=1,
+        rs2_addr=2,
+        instruction_operation=ADD,
+        program_counter=0x1000,
+        instruction=_make_instr(
+            dest_reg=5,
+            opcode=OPC_OP,
+            source_reg_1=1,
+            source_reg_2=2,
+        ),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=3,
+        instruction_operation=ADDI,
+        immediate_i_type=12,
+        program_counter=0x1004,
+        instruction=_make_instr(
+            dest_reg=6,
+            opcode=OPC_OP_IMM,
+            source_reg_1=3,
+        ),
+    )
+    await dut_if.step()
+
+    assert not dut_if.stall, "Dual integer bundle should fire"
+    req1 = dut_if.read_rob_alloc_req()
+    req2 = dut_if.read_rob_alloc_req_2()
+    assert req1["alloc_valid"] == 1, "Slot 1 should allocate ROB"
+    assert req2["alloc_valid"] == 1, "Slot 2 should allocate ROB"
+    assert req2["pc"] == 0x1004
+    assert req2["dest_valid"] == 1
+    assert req2["dest_reg"] == 6
+
+    assert dut_if.rat_alloc_valid, "Slot 1 should rename x5"
+    assert dut_if.rat_alloc_dest_reg == 5
+    assert dut_if.rat_alloc_rob_tag == 6
+    assert dut_if.rat_alloc_valid_2, "Slot 2 should rename x6"
+    assert dut_if.rat_alloc_dest_reg_2 == 6
+    assert dut_if.rat_alloc_rob_tag_2 == 7
+
+    slot1_rs = dut_if.read_int_rs_dispatch()
+    slot2_rs = dut_if.read_int_rs_dispatch_2()
+    assert slot1_rs["valid"] == 1
+    assert slot1_rs["rs_type"] == RS_INT
+    assert slot1_rs["rob_tag"] == 6
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["rs_type"] == RS_INT
+    assert slot2_rs["rob_tag"] == 7
+    assert slot2_rs["use_imm"] == 1
+    assert slot2_rs["imm"] == 12
+    assert slot2_rs["src1_ready"] == 1
+    assert slot2_rs["src1_value"] == 0x33
+
+
+@cocotb.test()
+async def test_slot2_raw_source_uses_slot1_rob_tag(dut: Any) -> None:
+    """Slot-2 source matching slot-1 dest should use slot-1's ROB tag."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=12, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=13, full=0)
+    dut_if.drive_int_src1_2(renamed=0, tag=0, value=0xCAFE)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=9, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=9,
+        instruction_operation=ADDI,
+        immediate_i_type=1,
+        instruction=_make_instr(dest_reg=10, opcode=OPC_OP_IMM, source_reg_1=9),
+    )
+    await dut_if.step()
+
+    assert not dut_if.stall
+    slot2_rs = dut_if.read_int_rs_dispatch_2()
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["src1_ready"] == 0, "RAW source should wait on slot-1 tag"
+    assert slot2_rs["src1_tag"] == 12, f"Expected tag 12, got {slot2_rs['src1_tag']}"
+
+
+@cocotb.test()
+async def test_slot2_same_rs_full_for_2_stalls_bundle(dut: Any) -> None:
+    """Same-RS bundles should stall when the room-for-2 signal is full."""
+    dut_if = await _setup(dut)
+
+    dut_if.set_int_rs_full_for_2(True)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=ADDI,
+        instruction=_make_instr(dest_reg=6, opcode=OPC_OP_IMM),
+    )
+    await dut_if.step()
+
+    assert dut_if.stall, "INT/INT bundle should stall when INT RS lacks room for 2"
+    assert dut_if.read_rob_alloc_req()["alloc_valid"] == 0
+    assert dut_if.read_rob_alloc_req_2()["alloc_valid"] == 0
+    assert dut_if.read_int_rs_dispatch()["valid"] == 0
+    assert dut_if.read_int_rs_dispatch_2()["valid"] == 0
+
+
+@cocotb.test()
+async def test_slot2_different_rs_ignores_unrelated_full_for_2(dut: Any) -> None:
+    """Different-RS bundles should use plain fullness for the slot-2 RS."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=4, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=5, full=0)
+    dut_if.set_int_rs_full_for_2(True)
+    dut_if.set_mul_rs_full_for_2(True)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=MUL,
+        instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+    )
+    await dut_if.step()
+
+    assert not dut_if.stall, "INT/MUL should ignore unrelated room-for-2 flags"
+    slot1_rs = dut_if.read_int_rs_dispatch()
+    slot2_rs = dut_if.read_mul_rs_dispatch_2()
+    assert slot1_rs["valid"] == 1
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["rs_type"] == RS_MUL
+    assert slot2_rs["rob_tag"] == 5
+
+
+@cocotb.test()
+async def test_slot1_branch_blocks_slot2_bundle(dut: Any) -> None:
+    """Slot 1 control flow should terminate the bundle before slot 2 fires."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_checkpoint(available=True, alloc_id=3)
+    dut_if.drive_instruction(
+        valid=True,
+        rs1_addr=1,
+        rs2_addr=2,
+        instruction_operation=BEQ,
+        instruction=_make_instr(
+            opcode=OPC_BRANCH,
+            source_reg_1=1,
+            source_reg_2=2,
+        ),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_OP),
+    )
+    await dut_if.step()
+
+    assert dut_if.stall, "Slot-1 branch with valid slot 2 should stall the bundle"
+    assert dut_if.read_rob_alloc_req()["alloc_valid"] == 0
+    assert dut_if.read_rob_alloc_req_2()["alloc_valid"] == 0
+    assert not dut_if.checkpoint_save
+    assert dut_if.read_int_rs_dispatch()["valid"] == 0
+    assert dut_if.read_int_rs_dispatch_2()["valid"] == 0
+
+
+@cocotb.test()
+async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
+    """Slot-2 branches should save a checkpoint using slot-2 metadata."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_checkpoint(available=True, alloc_id=5)
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=2, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=3, full=0)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=8, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=1,
+        rs2_addr=2,
+        instruction_operation=BEQ,
+        program_counter=0x2004,
+        branch_target_precomputed=0x2080,
+        btb_predicted_taken=1,
+        btb_predicted_target=0x2070,
+        ras_checkpoint_tos=6,
+        ras_checkpoint_valid_count=7,
+        instruction=_make_instr(
+            opcode=OPC_BRANCH,
+            source_reg_1=1,
+            source_reg_2=2,
+        ),
+    )
+    await dut_if.step()
+
+    assert not dut_if.stall
+    req2 = dut_if.read_rob_alloc_req_2()
+    assert req2["alloc_valid"] == 1
+    assert req2["is_branch"] == 1
+    assert req2["branch_target"] == 0x2080
+    assert req2["predicted_taken"] == 1
+    assert req2["predicted_target"] == 0x2070
+
+    assert dut_if.checkpoint_save, "Slot-2 branch should save checkpoint"
+    assert dut_if.checkpoint_save_for_slot2
+    assert dut_if.checkpoint_id == 5
+    assert dut_if.checkpoint_branch_tag == 3
+    assert dut_if.ras_tos_out == 6
+    assert dut_if.ras_valid_count_out == 7
+    assert dut_if.rob_checkpoint_valid
+    assert dut_if.rob_checkpoint_id == 5
+
+    slot2_rs = dut_if.read_int_rs_dispatch_2()
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["has_checkpoint"] == 1
+    assert slot2_rs["checkpoint_id"] == 5
+
+
+@cocotb.test()
+async def test_slot2_fp_compute_serializes_off(dut: Any) -> None:
+    """Slot-2 FP compute ops should not allocate while slot 1 fires."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=FADD_S,
+        instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
+    )
+    await dut_if.step()
+
+    assert not dut_if.stall, "Serialized slot-2 FP op should not block slot 1"
+    assert dut_if.read_rob_alloc_req()["alloc_valid"] == 1
+    assert dut_if.read_rob_alloc_req_2()["alloc_valid"] == 0
+    assert not dut_if.rat_alloc_valid_2
+    assert dut_if.read_int_rs_dispatch()["valid"] == 1
+    assert dut_if.read_fp_rs_dispatch_2()["valid"] == 0
+
+
+@cocotb.test()
+async def test_slot2_memory_routes_to_mem_rs(dut: Any) -> None:
+    """Slot-2 loads and stores should route to MEM_RS with LQ/SQ intent."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=8, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=9, full=0)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=1, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=2,
+        instruction_operation=LW,
+        immediate_i_type=16,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, source_reg_1=2),
+    )
+    await dut_if.step()
+
+    load_req = dut_if.read_rob_alloc_req_2()
+    load_rs = dut_if.read_mem_rs_dispatch_2()
+    assert load_req["alloc_valid"] == 1
+    assert load_req["dest_valid"] == 1
+    assert load_req["dest_reg"] == 5
+    assert load_rs["valid"] == 1
+    assert load_rs["rs_type"] == RS_MEM
+    assert load_rs["mem_needs_lq"] == 1
+    assert load_rs["mem_needs_sq"] == 0
+    assert load_rs["use_imm"] == 1
+    assert load_rs["imm"] == 16
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=10, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=11, full=0)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=3, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=4,
+        rs2_addr=5,
+        instruction_operation=SW,
+        immediate_s_type=32,
+        instruction=_make_instr(
+            opcode=OPC_STORE,
+            source_reg_1=4,
+            source_reg_2=5,
+        ),
+    )
+    await dut_if.step()
+
+    store_req = dut_if.read_rob_alloc_req_2()
+    store_rs = dut_if.read_mem_rs_dispatch_2()
+    assert store_req["alloc_valid"] == 1
+    assert store_req["is_store"] == 1
+    assert store_req["dest_valid"] == 0
+    assert store_rs["valid"] == 1
+    assert store_rs["rs_type"] == RS_MEM
+    assert store_rs["mem_needs_lq"] == 0
+    assert store_rs["mem_needs_sq"] == 1
+    assert store_rs["use_imm"] == 1
+    assert store_rs["imm"] == 32
+    assert not dut_if.rat_alloc_valid_2
 
 
 # =============================================================================
