@@ -207,6 +207,7 @@ class RATModel:
         branch_tag: int,
         ras_tos: int,
         ras_valid_count: int,
+        overlay_rename: tuple[int, int, int] | None = None,
     ) -> None:
         """Save current RAT state into a checkpoint slot.
 
@@ -215,15 +216,29 @@ class RATModel:
             branch_tag: ROB tag of the branch instruction.
             ras_tos: RAS top-of-stack pointer.
             ras_valid_count: RAS valid entry count.
+            overlay_rename: Optional same-cycle slot-1 rename to include in
+                the saved image for a slot-2 branch checkpoint.
         """
         slot = self.checkpoints[checkpoint_id]
         slot.valid = True
         slot.branch_tag = branch_tag & MASK_TAG
         slot.ras_tos = ras_tos
         slot.ras_valid_count = ras_valid_count
-        # Deep copy current RAT state
-        slot.int_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in self.int_rat]
-        slot.fp_rat = [RATEntry(valid=e.valid, tag=e.tag) for e in self.fp_rat]
+        int_snapshot = [RATEntry(valid=e.valid, tag=e.tag) for e in self.int_rat]
+        fp_snapshot = [RATEntry(valid=e.valid, tag=e.tag) for e in self.fp_rat]
+
+        if overlay_rename is not None:
+            dest_rf, dest_reg, rob_tag = overlay_rename
+            if dest_rf == 0:
+                if dest_reg != 0:
+                    int_snapshot[dest_reg] = RATEntry(
+                        valid=True, tag=rob_tag & MASK_TAG
+                    )
+            else:
+                fp_snapshot[dest_reg] = RATEntry(valid=True, tag=rob_tag & MASK_TAG)
+
+        slot.int_rat = int_snapshot
+        slot.fp_rat = fp_snapshot
 
     def _restored_tag_still_live(
         self,
@@ -306,6 +321,16 @@ class RATModel:
             checkpoint_id: Slot index.
         """
         self.checkpoints[checkpoint_id].valid = False
+
+    def checkpoint_bulk_free(self, free_mask: int) -> None:
+        """Free all checkpoint slots selected by a bit mask.
+
+        Args:
+            free_mask: One bit per checkpoint slot. A set bit clears that slot.
+        """
+        for checkpoint_id in range(NUM_CHECKPOINTS):
+            if (free_mask >> checkpoint_id) & 1:
+                self.checkpoint_free(checkpoint_id)
 
     def checkpoint_available(self) -> tuple[bool, int]:
         """Check if a free checkpoint slot is available.

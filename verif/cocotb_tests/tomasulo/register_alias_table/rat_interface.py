@@ -24,7 +24,15 @@ This interface handles packing/unpacking struct fields automatically.
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
 
-from .rat_model import LookupResult, MASK32, MASK64, MASK_TAG, MASK_REG, RATModel
+from .rat_model import (
+    ALL_ROB_ENTRIES_VALID,
+    LookupResult,
+    MASK32,
+    MASK64,
+    MASK_TAG,
+    MASK_REG,
+    RATModel,
+)
 
 # =============================================================================
 # Struct Bit Field Definitions
@@ -57,11 +65,15 @@ class RATInterface:
         self._shadow_rat = RATModel()
         self._rob_tag_refcounts = [0] * (MASK_TAG + 1)
         self._rob_head_tag = 0
+        self._rob_entry_epoch_mask = 0
         self._pending_rename: tuple[int, int, int] | None = None
+        self._pending_rename_2: tuple[int, int, int] | None = None
         self._pending_commit: tuple[int, int, int, bool] | None = None
-        self._pending_checkpoint_save: tuple[int, int, int, int] | None = None
+        self._pending_commit_2: tuple[int, int, int, bool] | None = None
+        self._pending_checkpoint_save: tuple[int, int, int, int, bool] | None = None
         self._pending_checkpoint_restore: int | None = None
         self._pending_checkpoint_free: int | None = None
+        self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
     # =========================================================================
@@ -112,11 +124,15 @@ class RATInterface:
         self._shadow_rat = RATModel()
         self._rob_tag_refcounts = [0] * (MASK_TAG + 1)
         self._rob_head_tag = 0
+        self._rob_entry_epoch_mask = 0
         self._pending_rename = None
+        self._pending_rename_2 = None
         self._pending_commit = None
+        self._pending_commit_2 = None
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
         # Source lookup addresses - slot 1
@@ -210,7 +226,12 @@ class RATInterface:
     @property
     def rob_entry_epoch_mask(self) -> int:
         """Return the synthetic ROB epoch bitmask used by standalone tests."""
-        return 0
+        return self._rob_entry_epoch_mask
+
+    def set_rob_entry_epoch_mask(self, epoch_mask: int) -> None:
+        """Set the synthetic ROB epoch bitmask used by standalone tests."""
+        self._rob_entry_epoch_mask = epoch_mask & ALL_ROB_ENTRIES_VALID
+        self._drive_rob_entry_valid()
 
     @property
     def rob_head_tag(self) -> int:
@@ -228,10 +249,13 @@ class RATInterface:
         """Apply queued same-cycle effects to the synthetic ROB-valid vector."""
         if (
             self._pending_rename is None
+            and self._pending_rename_2 is None
             and self._pending_commit is None
+            and self._pending_commit_2 is None
             and self._pending_checkpoint_save is None
             and self._pending_checkpoint_restore is None
             and self._pending_checkpoint_free is None
+            and self._pending_checkpoint_bulk_free_mask == 0
             and not self._pending_flush_all
         ):
             return
@@ -247,15 +271,25 @@ class RATInterface:
                 rob_head_tag=self._rob_head_tag,
             )
         else:
+            if self._pending_checkpoint_bulk_free_mask:
+                self._shadow_rat.checkpoint_bulk_free(
+                    self._pending_checkpoint_bulk_free_mask
+                )
+
             if self._pending_checkpoint_free is not None:
                 self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
 
             if self._pending_checkpoint_save is not None:
-                checkpoint_id, branch_tag, ras_tos, ras_valid_count = (
+                checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2 = (
                     self._pending_checkpoint_save
                 )
+                overlay_rename = self._pending_rename if for_slot2 else None
                 self._shadow_rat.checkpoint_save(
-                    checkpoint_id, branch_tag, ras_tos, ras_valid_count
+                    checkpoint_id,
+                    branch_tag,
+                    ras_tos,
+                    ras_valid_count,
+                    overlay_rename,
                 )
 
             if self._pending_commit is not None:
@@ -281,18 +315,56 @@ class RATInterface:
                             if self._rob_tag_refcounts[commit_tag] > 0:
                                 self._rob_tag_refcounts[commit_tag] -= 1
 
+            if self._pending_commit_2 is not None:
+                commit_tag, commit_dest_rf, commit_dest_reg, commit_dest_valid = (
+                    self._pending_commit_2
+                )
+                if commit_dest_valid:
+                    if commit_dest_rf == 0:
+                        if commit_dest_reg != 0:
+                            entry = self._shadow_rat.int_rat[commit_dest_reg]
+                            if entry.valid and entry.tag == commit_tag:
+                                self._shadow_rat.commit(
+                                    commit_dest_rf, commit_dest_reg, commit_tag
+                                )
+                                if self._rob_tag_refcounts[commit_tag] > 0:
+                                    self._rob_tag_refcounts[commit_tag] -= 1
+                    else:
+                        entry = self._shadow_rat.fp_rat[commit_dest_reg]
+                        if entry.valid and entry.tag == commit_tag:
+                            self._shadow_rat.commit(
+                                commit_dest_rf, commit_dest_reg, commit_tag
+                            )
+                            if self._rob_tag_refcounts[commit_tag] > 0:
+                                self._rob_tag_refcounts[commit_tag] -= 1
+
             if self._pending_rename is not None:
                 dest_rf, dest_reg, rob_tag = self._pending_rename
+                rename_2_collides = (
+                    self._pending_rename_2 is not None
+                    and dest_rf == self._pending_rename_2[0]
+                    and dest_reg == self._pending_rename_2[1]
+                )
+                if not rename_2_collides:
+                    self._shadow_rat.rename(dest_rf, dest_reg, rob_tag)
+                if not (dest_rf == 0 and dest_reg == 0):
+                    self._rob_tag_refcounts[rob_tag] += 1
+
+            if self._pending_rename_2 is not None:
+                dest_rf, dest_reg, rob_tag = self._pending_rename_2
                 self._shadow_rat.rename(dest_rf, dest_reg, rob_tag)
                 if not (dest_rf == 0 and dest_reg == 0):
                     self._rob_tag_refcounts[rob_tag] += 1
 
         self._drive_rob_entry_valid()
         self._pending_rename = None
+        self._pending_rename_2 = None
         self._pending_commit = None
+        self._pending_commit_2 = None
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
     # =========================================================================
@@ -324,6 +396,31 @@ class RATInterface:
         self.dut.i_fp_src3_addr.value = addr & MASK_REG
         self.dut.i_fp_regfile_data3.value = regfile_data & MASK64
 
+    def set_int_src1_2(self, addr: int, regfile_data: int) -> None:
+        """Set slot-2 INT source 1 lookup inputs."""
+        self.dut.i_int_src1_addr_2.value = addr & MASK_REG
+        self.dut.i_int_regfile_data1_2.value = regfile_data & MASK32
+
+    def set_int_src2_2(self, addr: int, regfile_data: int) -> None:
+        """Set slot-2 INT source 2 lookup inputs."""
+        self.dut.i_int_src2_addr_2.value = addr & MASK_REG
+        self.dut.i_int_regfile_data2_2.value = regfile_data & MASK32
+
+    def set_fp_src1_2(self, addr: int, regfile_data: int) -> None:
+        """Set slot-2 FP source 1 lookup inputs."""
+        self.dut.i_fp_src1_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data1_2.value = regfile_data & MASK64
+
+    def set_fp_src2_2(self, addr: int, regfile_data: int) -> None:
+        """Set slot-2 FP source 2 lookup inputs."""
+        self.dut.i_fp_src2_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data2_2.value = regfile_data & MASK64
+
+    def set_fp_src3_2(self, addr: int, regfile_data: int) -> None:
+        """Set slot-2 FP source 3 lookup inputs."""
+        self.dut.i_fp_src3_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data3_2.value = regfile_data & MASK64
+
     def read_int_src1(self) -> LookupResult:
         """Read INT source 1 lookup result."""
         return unpack_rat_lookup(int(self.dut.o_int_src1.value))
@@ -344,6 +441,26 @@ class RATInterface:
         """Read FP source 3 lookup result."""
         return unpack_rat_lookup(int(self.dut.o_fp_src3.value))
 
+    def read_int_src1_2(self) -> LookupResult:
+        """Read slot-2 INT source 1 lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_int_src1_2.value))
+
+    def read_int_src2_2(self) -> LookupResult:
+        """Read slot-2 INT source 2 lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_int_src2_2.value))
+
+    def read_fp_src1_2(self) -> LookupResult:
+        """Read slot-2 FP source 1 lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src1_2.value))
+
+    def read_fp_src2_2(self) -> LookupResult:
+        """Read slot-2 FP source 2 lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src2_2.value))
+
+    def read_fp_src3_2(self) -> LookupResult:
+        """Read slot-2 FP source 3 lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src3_2.value))
+
     # =========================================================================
     # Rename Write Interface
     # =========================================================================
@@ -361,6 +478,23 @@ class RATInterface:
         self.dut.i_alloc_valid.value = 0
         self._apply_pending_cycle_updates()
 
+    def drive_rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
+        """Drive slot-2 rename write signals."""
+        self.dut.i_alloc_valid_2.value = 1
+        self.dut.i_alloc_dest_rf_2.value = dest_rf & 1
+        self.dut.i_alloc_dest_reg_2.value = dest_reg & MASK_REG
+        self.dut.i_alloc_rob_tag_2.value = rob_tag & MASK_TAG
+        self._pending_rename_2 = (
+            dest_rf & 1,
+            dest_reg & MASK_REG,
+            rob_tag & MASK_TAG,
+        )
+
+    def clear_rename_2(self) -> None:
+        """Clear slot-2 rename write signals."""
+        self.dut.i_alloc_valid_2.value = 0
+        self._apply_pending_cycle_updates()
+
     async def rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Perform rename transaction: drive on falling, wait rising+falling, clear."""
         await FallingEdge(self.clock)
@@ -368,6 +502,14 @@ class RATInterface:
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.clear_rename()
+
+    async def rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
+        """Perform slot-2 rename transaction."""
+        await FallingEdge(self.clock)
+        self.drive_rename_2(dest_rf, dest_reg, rob_tag)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_rename_2()
 
     # =========================================================================
     # Commit Interface
@@ -398,6 +540,31 @@ class RATInterface:
         self.dut.i_commit_tag.value = 0
         self._apply_pending_cycle_updates()
 
+    def drive_commit_2(
+        self, tag: int, dest_rf: int, dest_reg: int, dest_valid: bool = True
+    ) -> None:
+        """Drive slot-2 commit signals."""
+        self.dut.i_commit_valid_2.value = 1
+        self.dut.i_commit_dest_valid_2.value = 1 if dest_valid else 0
+        self.dut.i_commit_dest_rf_2.value = dest_rf & 1
+        self.dut.i_commit_dest_reg_2.value = dest_reg & MASK_REG
+        self.dut.i_commit_tag_2.value = tag & MASK_TAG
+        self._pending_commit_2 = (
+            tag & MASK_TAG,
+            dest_rf & 1,
+            dest_reg & MASK_REG,
+            dest_valid,
+        )
+
+    def clear_commit_2(self) -> None:
+        """Clear slot-2 commit signals."""
+        self.dut.i_commit_valid_2.value = 0
+        self.dut.i_commit_dest_valid_2.value = 0
+        self.dut.i_commit_dest_rf_2.value = 0
+        self.dut.i_commit_dest_reg_2.value = 0
+        self.dut.i_commit_tag_2.value = 0
+        self._apply_pending_cycle_updates()
+
     async def commit(
         self, tag: int, dest_rf: int, dest_reg: int, dest_valid: bool = True
     ) -> None:
@@ -407,6 +574,16 @@ class RATInterface:
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.clear_commit()
+
+    async def commit_2(
+        self, tag: int, dest_rf: int, dest_reg: int, dest_valid: bool = True
+    ) -> None:
+        """Perform slot-2 commit transaction."""
+        await FallingEdge(self.clock)
+        self.drive_commit_2(tag, dest_rf, dest_reg, dest_valid)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_commit_2()
 
     # =========================================================================
     # Checkpoint Save Interface
@@ -418,6 +595,7 @@ class RATInterface:
         branch_tag: int,
         ras_tos: int = 0,
         ras_valid_count: int = 0,
+        for_slot2: bool = False,
     ) -> None:
         """Drive checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
@@ -425,16 +603,19 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
+        self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
         self._pending_checkpoint_save = (
             checkpoint_id & 0x7,
             branch_tag & MASK_TAG,
             ras_tos & 0x7,
             ras_valid_count & 0xF,
+            for_slot2,
         )
 
     def clear_checkpoint_save(self) -> None:
         """Clear checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 0
+        self.dut.i_checkpoint_save_for_slot2.value = 0
         self._apply_pending_cycle_updates()
 
     async def checkpoint_save(
@@ -443,10 +624,13 @@ class RATInterface:
         branch_tag: int,
         ras_tos: int = 0,
         ras_valid_count: int = 0,
+        for_slot2: bool = False,
     ) -> None:
         """Perform checkpoint save transaction."""
         await FallingEdge(self.clock)
-        self.drive_checkpoint_save(checkpoint_id, branch_tag, ras_tos, ras_valid_count)
+        self.drive_checkpoint_save(
+            checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2
+        )
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.clear_checkpoint_save()
@@ -496,6 +680,16 @@ class RATInterface:
         self.dut.i_checkpoint_free.value = 0
         self._apply_pending_cycle_updates()
 
+    def drive_checkpoint_bulk_free(self, free_mask: int) -> None:
+        """Drive checkpoint bulk free mask."""
+        self.dut.i_checkpoint_flush_free_mask.value = free_mask & 0xFF
+        self._pending_checkpoint_bulk_free_mask = free_mask & 0xFF
+
+    def clear_checkpoint_bulk_free(self) -> None:
+        """Clear checkpoint bulk free mask."""
+        self.dut.i_checkpoint_flush_free_mask.value = 0
+        self._apply_pending_cycle_updates()
+
     async def checkpoint_free(self, checkpoint_id: int) -> None:
         """Perform checkpoint free transaction."""
         await FallingEdge(self.clock)
@@ -503,6 +697,14 @@ class RATInterface:
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.clear_checkpoint_free()
+
+    async def checkpoint_bulk_free(self, free_mask: int) -> None:
+        """Perform checkpoint bulk free transaction."""
+        await FallingEdge(self.clock)
+        self.drive_checkpoint_bulk_free(free_mask)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_checkpoint_bulk_free()
 
     # =========================================================================
     # Flush Interface

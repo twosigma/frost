@@ -1243,6 +1243,314 @@ async def test_regfile_value_passthrough(dut: Any) -> None:
 
 
 # =============================================================================
+# Slot-2 / 2-Wide Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_slot2_source_lookups(dut: Any) -> None:
+    """Test slot-2 INT/FP lookup ports."""
+    cocotb.log.info("=== Test: Slot-2 Source Lookups ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    model.rename(0, 5, 3)
+    await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=7)
+    model.rename(1, 10, 7)
+
+    dut_if.set_int_src1_2(5, 0x1111_2222)
+    dut_if.set_int_src2_2(0, 0x3333_4444)
+    dut_if.set_fp_src1_2(10, 0xAAAA_BBBB_CCCC_DDDD)
+    dut_if.set_fp_src2_2(11, 0x1111_2222_3333_4444)
+    dut_if.set_fp_src3_2(10, 0x5555_6666_7777_8888)
+    await RisingEdge(dut_if.clock)
+
+    check_lookup(
+        dut_if.read_int_src1_2(),
+        model.lookup_int(5, 0x1111_2222),
+        "slot-2 INT src1 x5",
+    )
+    check_lookup(
+        dut_if.read_int_src2_2(),
+        model.lookup_int(0, 0x3333_4444),
+        "slot-2 INT src2 x0",
+    )
+    check_lookup(
+        dut_if.read_fp_src1_2(),
+        model.lookup_fp(10, 0xAAAA_BBBB_CCCC_DDDD),
+        "slot-2 FP src1 f10",
+    )
+    check_lookup(
+        dut_if.read_fp_src2_2(),
+        model.lookup_fp(11, 0x1111_2222_3333_4444),
+        "slot-2 FP src2 f11",
+    )
+    check_lookup(
+        dut_if.read_fp_src3_2(),
+        model.lookup_fp(10, 0x5555_6666_7777_8888),
+        "slot-2 FP src3 f10",
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_rename_and_lookup(dut: Any) -> None:
+    """Test slot-2-only rename writes INT and FP RAT entries."""
+    cocotb.log.info("=== Test: Slot-2 Rename and Lookup ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await dut_if.rename_2(dest_rf=0, dest_reg=6, rob_tag=9)
+    model.rename(0, 6, 9)
+
+    dut_if.set_int_src1(6, 0x1234)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(6, 0x1234)
+    check_lookup(result, expected, "INT x6 after slot-2 rename")
+    assert result.renamed and result.tag == 9, "x6 should carry slot-2 tag 9"
+
+    await dut_if.rename_2(dest_rf=1, dest_reg=8, rob_tag=10)
+    model.rename(1, 8, 10)
+
+    dut_if.set_fp_src1(8, 0x4000_0000_0000_0000)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_fp_src1()
+    expected = model.lookup_fp(8, 0x4000_0000_0000_0000)
+    check_lookup(result, expected, "FP f8 after slot-2 rename")
+    assert result.renamed and result.tag == 10, "f8 should carry slot-2 tag 10"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dual_rename_slot2_wins_same_register(dut: Any) -> None:
+    """Same-cycle slot1/slot2 rename collision leaves slot 2 as newest."""
+    cocotb.log.info("=== Test: Dual Rename Slot 2 Wins Same Register ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    dut_if.drive_rename_2(dest_rf=0, dest_reg=5, rob_tag=4)
+    model.rename(0, 5, 4)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_rename()
+    dut_if.clear_rename_2()
+
+    dut_if.set_int_src1(5, 0)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(5, 0)
+    check_lookup(result, expected, "INT x5 after dual rename collision")
+    assert result.renamed and result.tag == 4, "slot-2 rename should win"
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_rename(dest_rf=0, dest_reg=6, rob_tag=5)
+    dut_if.drive_rename_2(dest_rf=1, dest_reg=6, rob_tag=6)
+    model.rename(0, 6, 5)
+    model.rename(1, 6, 6)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_rename()
+    dut_if.clear_rename_2()
+
+    dut_if.set_int_src1(6, 0)
+    dut_if.set_fp_src1(6, 0)
+    await RisingEdge(dut_if.clock)
+    int_result = dut_if.read_int_src1()
+    fp_result = dut_if.read_fp_src1()
+    check_lookup(int_result, model.lookup_int(6, 0), "INT x6 after dual rename")
+    check_lookup(fp_result, model.lookup_fp(6, 0), "FP f6 after dual rename")
+    assert int_result.renamed and int_result.tag == 5, "x6 should keep slot-1 tag"
+    assert fp_result.renamed and fp_result.tag == 6, "f6 should get slot-2 tag"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_commit_clears_entry(dut: Any) -> None:
+    """Test widen-commit slot 2 clears a matching RAT entry."""
+    cocotb.log.info("=== Test: Slot-2 Commit Clears Entry ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await dut_if.rename_2(dest_rf=0, dest_reg=7, rob_tag=11)
+    model.rename(0, 7, 11)
+
+    await dut_if.commit_2(tag=11, dest_rf=0, dest_reg=7)
+    model.commit(0, 7, 11)
+
+    dut_if.set_int_src1(7, 0xABCD)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(7, 0xABCD)
+    check_lookup(result, expected, "INT x7 after slot-2 commit")
+    assert not result.renamed, "x7 should clear on matching slot-2 commit"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dual_commit_same_cycle(dut: Any) -> None:
+    """Slot 1 and slot 2 commits can clear independent RAT entries."""
+    cocotb.log.info("=== Test: Dual Commit Same Cycle ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    model.rename(0, 5, 3)
+    await dut_if.rename(dest_rf=1, dest_reg=10, rob_tag=12)
+    model.rename(1, 10, 12)
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_commit(tag=3, dest_rf=0, dest_reg=5)
+    dut_if.drive_commit_2(tag=12, dest_rf=1, dest_reg=10)
+    model.commit(0, 5, 3)
+    model.commit(1, 10, 12)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_commit()
+    dut_if.clear_commit_2()
+
+    dut_if.set_int_src1(5, 0x55)
+    dut_if.set_fp_src1(10, 0xAAAA)
+    await RisingEdge(dut_if.clock)
+    check_lookup(
+        dut_if.read_int_src1(),
+        model.lookup_int(5, 0x55),
+        "INT x5 after dual commit",
+    )
+    check_lookup(
+        dut_if.read_fp_src1(),
+        model.lookup_fp(10, 0xAAAA),
+        "FP f10 after dual commit",
+    )
+    assert not dut_if.read_int_src1().renamed, "x5 should clear"
+    assert not dut_if.read_fp_src1().renamed, "f10 should clear"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_rename_over_slot2_commit_same_cycle(dut: Any) -> None:
+    """A same-cycle rename wins over a slot-2 commit clear."""
+    cocotb.log.info("=== Test: Rename Over Slot-2 Commit Same Cycle ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    model.rename(0, 5, 3)
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_commit_2(tag=3, dest_rf=0, dest_reg=5)
+    dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=10)
+    model.commit(0, 5, 3)
+    model.rename(0, 5, 10)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_commit_2()
+    dut_if.clear_rename()
+
+    dut_if.set_int_src1(5, 0)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(5, 0)
+    check_lookup(result, expected, "INT x5 after rename over slot-2 commit")
+    assert result.renamed and result.tag == 10, "rename should win over commit"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_checkpoint_save_for_slot2_overlays_slot1_rename(dut: Any) -> None:
+    """Slot-2 branch checkpoint includes slot 1's rename but not slot 2's."""
+    cocotb.log.info("=== Test: Checkpoint Save for Slot-2 Overlay ===")
+
+    dut_if, model = await setup_test(dut)
+
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=3)
+    dut_if.drive_rename_2(dest_rf=0, dest_reg=6, rob_tag=4)
+    dut_if.drive_checkpoint_save(
+        checkpoint_id=0,
+        branch_tag=4,
+        ras_tos=1,
+        ras_valid_count=2,
+        for_slot2=True,
+    )
+    model.checkpoint_save(0, 4, 1, 2, overlay_rename=(0, 5, 3))
+    model.rename(0, 5, 3)
+    model.rename(0, 6, 4)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_checkpoint_save()
+    dut_if.clear_rename()
+    dut_if.clear_rename_2()
+
+    await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=10)
+    model.rename(0, 5, 10)
+    await dut_if.rename(dest_rf=0, dest_reg=7, rob_tag=11)
+    model.rename(0, 7, 11)
+
+    dut_if.set_rob_entry_epoch_mask(1 << 3)
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_checkpoint_restore(0)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_checkpoint_restore()
+    model.checkpoint_restore(0)
+
+    dut_if.set_int_src1(5, 0)
+    await RisingEdge(dut_if.clock)
+    result = dut_if.read_int_src1()
+    expected = model.lookup_int(5, 0)
+    check_lookup(result, expected, "slot-1 rename restored from slot-2 checkpoint")
+    assert result.renamed and result.tag == 3, "x5 should restore slot-1 rename"
+
+    for reg in (6, 7):
+        dut_if.set_int_src1(reg, 0)
+        await RisingEdge(dut_if.clock)
+        result = dut_if.read_int_src1()
+        expected = model.lookup_int(reg, 0)
+        check_lookup(result, expected, f"INT x{reg} after slot-2 checkpoint restore")
+        assert not result.renamed, f"x{reg} should not survive slot-2 restore"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_checkpoint_bulk_free_mask(dut: Any) -> None:
+    """Bulk checkpoint free mask clears multiple slots in one cycle."""
+    cocotb.log.info("=== Test: Checkpoint Bulk Free Mask ===")
+
+    dut_if, model = await setup_test(dut)
+
+    for checkpoint_id in range(4):
+        await dut_if.checkpoint_save(checkpoint_id, branch_tag=checkpoint_id + 10)
+        model.checkpoint_save(checkpoint_id, checkpoint_id + 10, 0, 0)
+
+    assert dut_if.checkpoint_available, "Slots 4-7 should still be free"
+    assert dut_if.checkpoint_alloc_id == 4, "Next free slot should be 4"
+
+    free_mask = (1 << 1) | (1 << 3)
+    await dut_if.checkpoint_bulk_free(free_mask)
+    model.checkpoint_bulk_free(free_mask)
+
+    assert dut_if.checkpoint_available, "Bulk free should make slots available"
+    assert dut_if.checkpoint_alloc_id == 1, "Lowest bulk-freed slot should be next"
+
+    await dut_if.checkpoint_save(1, branch_tag=20)
+    model.checkpoint_save(1, 20, 0, 0)
+    assert dut_if.checkpoint_alloc_id == 3, "Slot 3 should remain bulk-freed"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
 # Constrained Random Tests
 # =============================================================================
 
