@@ -234,6 +234,75 @@ async def test_alloc_single(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 2b: Allocate slot 2 only
+# ============================================================================
+@cocotb.test()
+async def test_alloc_slot2_only(dut: Any) -> None:
+    """Slot-2-only load allocation takes the next free entry and can complete."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc_2(rob_tag=6, size=MEM_SIZE_WORD)
+    model.alloc(6, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == 1, f"Expected count=1, got {dut_if.count}"
+    assert not dut_if.empty, "Should not be empty after slot-2-only alloc"
+
+    dut_if.drive_addr_update(rob_tag=6, address=0x1060)
+    model.addr_update(6, 0x1060)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    result = await complete_load_no_forward(dut_if, model, mem_data=0x1234_5678)
+
+    assert result.valid, "Slot-2-only load should complete"
+    assert result.tag == 6, f"Expected tag=6, got {result.tag}"
+    assert result.value == 0x1234_5678
+
+
+# ============================================================================
+# Test 2c: Allocate slot 1 + slot 2 in the same cycle
+# ============================================================================
+@cocotb.test()
+async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
+    """Two simultaneous load allocations preserve program-order completion."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc(rob_tag=10, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=11, size=MEM_SIZE_WORD)
+    model.alloc(10, False, MEM_SIZE_WORD, False)
+    model.alloc(11, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == 2, f"Expected two allocated entries, got {dut_if.count}"
+
+    dut_if.drive_addr_update(rob_tag=10, address=0x1100)
+    model.addr_update(10, 0x1100)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_addr_update(rob_tag=11, address=0x1104)
+    model.addr_update(11, 0x1104)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    first = await complete_load_no_forward(dut_if, model, mem_data=0xAAAA_0001)
+    assert (
+        first.valid and first.tag == 10
+    ), f"Expected first completion tag=10, got {first}"
+    assert first.value == 0xAAAA_0001
+
+    second = await complete_load_no_forward(dut_if, model, mem_data=0xBBBB_0002)
+    assert (
+        second.valid and second.tag == 11
+    ), f"Expected second completion tag=11, got {second}"
+    assert second.value == 0xBBBB_0002
+
+
+# ============================================================================
 # Test 3: Allocate to full
 # ============================================================================
 @cocotb.test()
