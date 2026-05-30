@@ -143,9 +143,8 @@ still live alongside the decomposition.
 
 ## Verification
 
-Cocotb tests cover allocation (slot-1; the slot-2 alloc port is held
-inactive and not yet exercised), address update, every load size, SQ
-forwarding, MMIO ordering, FLD two-phase, FLW NaN-boxing, partial and
-full flush, AMO read-modify-write, LR/SC reservation, and
-constrained-random stress. Inline formal properties prove pointer invariants,
-issue prerequisites, MMIO ordering, and flush behavior.
+Cocotb tests cover allocation including slot-2-only and paired slot-1/slot-2
+cases, address update, every load size, SQ forwarding, MMIO ordering, FLD
+two-phase, FLW NaN-boxing, partial and full flush, AMO read-modify-write,
+LR/SC reservation, and constrained-random stress. Inline formal properties prove
+pointer invariants, issue prerequisites, MMIO ordering, and flush behavior.

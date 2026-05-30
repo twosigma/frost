@@ -205,6 +205,144 @@ async def test_alloc_with_initial_address(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 2c: Slot-2-only allocation with initial address
+# ============================================================================
+@cocotb.test()
+async def test_slot2_only_alloc_with_initial_address(dut: Any) -> None:
+    """A slot-2-only store allocates the next free entry and drains normally."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc_2(
+        rob_tag=9,
+        size=MEM_SIZE_WORD,
+        addr_valid=True,
+        address=0x1090,
+    )
+    model.alloc(9, False, MEM_SIZE_WORD, addr_valid=True, address=0x1090)
+    await dut_if.step()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == 1, f"Expected one slot-2-only entry, got {dut_if.count}"
+
+    dut_if.drive_data_update(9, 0x55667788)
+    model.data_update(9, 0x55667788)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    write_req = await commit_and_write(dut_if, model, rob_tag=9)
+
+    assert write_req.addr == 0x1090
+    assert write_req.data == 0x55667788
+    assert dut_if.empty, "SQ should be empty after slot-2-only store drains"
+
+
+# ============================================================================
+# Test 2d: Dual allocation, dual early-address update, and widen commit
+# ============================================================================
+@cocotb.test()
+async def test_slot1_slot2_dual_alloc_early_addr_and_widen_commit(dut: Any) -> None:
+    """Slot-1/slot-2 stores can capture early addresses and commit together."""
+    dut_if, model = await setup(dut)
+
+    dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=5, size=MEM_SIZE_WORD)
+    model.alloc(4, False, MEM_SIZE_WORD)
+    model.alloc(5, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == 2, f"Expected two allocated stores, got {dut_if.count}"
+
+    dut_if.drive_early_addr_update(rob_tag=4, address=0x2040)
+    dut_if.drive_early_addr_update_2(rob_tag=5, address=0x2044)
+    model.addr_update(4, 0x2040)
+    model.addr_update(5, 0x2044)
+    await dut_if.step()
+    dut_if.clear_early_addr_update()
+    dut_if.clear_early_addr_update_2()
+
+    dut_if.drive_data_update(4, 0xAAAA_0004)
+    model.data_update(4, 0xAAAA_0004)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    dut_if.drive_data_update(5, 0xBBBB_0005)
+    model.data_update(5, 0xBBBB_0005)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    dut_if.drive_commit(4)
+    dut_if.drive_commit_2(5)
+    model.commit(4)
+    model.commit(5)
+    await dut_if.step()
+    dut_if.clear_commit()
+    dut_if.clear_commit_2()
+
+    first = await complete_mem_write(dut_if, model)
+    assert first.addr == 0x2040
+    assert first.data == 0xAAAA_0004
+
+    second = await complete_mem_write(dut_if, model)
+    assert second.addr == 0x2044
+    assert second.data == 0xBBBB_0005
+
+    assert dut_if.empty, "SQ should be empty after both widened stores drain"
+
+
+# ============================================================================
+# Test 2e: Slot-2 store is newest forwarding candidate
+# ============================================================================
+@cocotb.test()
+async def test_slot2_store_forwarding_newest_wins(dut: Any) -> None:
+    """A same-cycle slot-2 store forwards over its older slot-1 peer."""
+    dut_if, model = await setup(dut)
+
+    store_addr = 0x2080
+
+    dut_if.drive_alloc(rob_tag=6, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=7, size=MEM_SIZE_WORD)
+    model.alloc(6, False, MEM_SIZE_WORD)
+    model.alloc(7, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    dut_if.drive_early_addr_update(rob_tag=6, address=store_addr)
+    dut_if.drive_early_addr_update_2(rob_tag=7, address=store_addr)
+    model.addr_update(6, store_addr)
+    model.addr_update(7, store_addr)
+    await dut_if.step()
+    dut_if.clear_early_addr_update()
+    dut_if.clear_early_addr_update_2()
+
+    dut_if.drive_data_update(6, 0x1111_0006)
+    model.data_update(6, 0x1111_0006)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    dut_if.drive_data_update(7, 0x2222_0007)
+    model.data_update(7, 0x2222_0007)
+    await dut_if.step()
+    dut_if.clear_data_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=store_addr, rob_tag=8, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "Both older slot stores have known addresses"
+    assert fwd.match, "Load should match the same-address stores"
+    assert fwd.can_forward, "Newest slot-2 store should be forwardable"
+    assert fwd.data == 0x2222_0007, f"Expected slot-2 data, got 0x{fwd.data:x}"
+
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
 # Test 3: Allocate to full
 # ============================================================================
 @cocotb.test()

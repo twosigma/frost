@@ -240,9 +240,35 @@ class LQInterface:
             amo_op=amo_op,
         )
 
+    def drive_alloc_2(
+        self,
+        rob_tag: int,
+        is_fp: bool = False,
+        size: int = 2,
+        sign_ext: bool = False,
+        is_lr: bool = False,
+        is_amo: bool = False,
+        amo_op: int = 0,
+    ) -> None:
+        """Drive slot-2 allocation request."""
+        self.dut.i_alloc_2.value = pack_lq_alloc(
+            valid=True,
+            rob_tag=rob_tag,
+            is_fp=is_fp,
+            size=size,
+            sign_ext=sign_ext,
+            is_lr=is_lr,
+            is_amo=is_amo,
+            amo_op=amo_op,
+        )
+
     def clear_alloc(self) -> None:
         """Clear allocation request."""
         self.dut.i_alloc.value = 0
+
+    def clear_alloc_2(self) -> None:
+        """Clear slot-2 allocation request."""
+        self.dut.i_alloc_2.value = 0
 
     # =========================================================================
     # Address Update
@@ -387,6 +413,11 @@ class LQInterface:
     def full(self) -> bool:
         """Return whether the load queue is full."""
         return bool(self.dut.o_full.value)
+
+    @property
+    def full_for_2(self) -> bool:
+        """Return whether there is room for fewer than two new entries."""
+        return bool(self.dut.o_full_for_2.value)
 
     @property
     def empty(self) -> bool:
