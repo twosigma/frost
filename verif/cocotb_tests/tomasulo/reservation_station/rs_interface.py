@@ -363,6 +363,21 @@ class RSInterface:
         else:
             self.dut.i_dispatch.value = 0
 
+    def drive_dispatch_2(self, intent_1: bool = False, **kwargs: Any) -> None:
+        """Drive slot-2 dispatch signals."""
+        kwargs["valid"] = True
+        self.dut.i_dispatch_2.value = pack_rs_dispatch(**kwargs)
+        self.set_intent_1(intent_1)
+
+    def clear_dispatch_2(self) -> None:
+        """Clear slot-2 dispatch and slot-1 intent."""
+        self.dut.i_dispatch_2.value = 0
+        self.set_intent_1(False)
+
+    def set_intent_1(self, active: bool = True) -> None:
+        """Drive fast slot-1 intent used by slot-2 allocation selection."""
+        self.dut.i_intent_1.value = 1 if active else 0
+
     def _drive_dispatch_flat(self, **kwargs: Any) -> None:
         """Drive individual dispatch ports from a flattened wrapper."""
         d = self.dut
@@ -521,6 +536,11 @@ class RSInterface:
     def full(self) -> bool:
         """Return whether RS is full."""
         return bool(self.dut.o_full.value)
+
+    @property
+    def full_for_2(self) -> bool:
+        """Return whether there is not enough room for a 2-wide dispatch."""
+        return bool(self.dut.o_full_for_2.value)
 
     @property
     def empty(self) -> bool:
