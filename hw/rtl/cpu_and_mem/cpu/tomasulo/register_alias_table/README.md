@@ -80,11 +80,11 @@ gets reclaimed without going through the per-slot port.
 
 ## Verification
 
-Cocotb tests cover lookup, rename (including overwrite and rename-over-commit
-precedence), commit clear, checkpoint save/restore/free, checkpoint exhaustion,
-flush-all, regfile value passthrough, and x0 invariants. (The slot-2 rename,
-slot-2 commit, and bulk-free mask ports are exercised by integration tests, not
-the unit suite, which holds them at zero.) Inline formal properties prove the x0
+Cocotb tests cover lookup, slot-2 lookup, rename (including overwrite,
+slot-2 rename, slot-2-wins collisions, and rename-over-commit precedence),
+slot-1/slot-2 commit clear, checkpoint save/restore/free, slot-2 checkpoint
+overlay, checkpoint bulk-free masks, checkpoint exhaustion, flush-all, regfile
+value passthrough, and x0 invariants. Inline formal properties prove the x0
 invariant, the slot-1 and slot-2 rename state transitions, the commit-clear
 state transition, and that flush/reset clear the active RATs and checkpoint
 valid bits.
