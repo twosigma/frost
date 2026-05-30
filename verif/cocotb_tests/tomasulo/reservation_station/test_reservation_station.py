@@ -323,6 +323,279 @@ async def test_dispatch_blocked_when_full(dut: Any) -> None:
     cocotb.log.info("=== Test Passed ===")
 
 
+@cocotb.test()
+async def test_dispatch_slot2_only_and_issue(dut: Any) -> None:
+    """Slot-2-only dispatch uses the first free entry and issues normally."""
+    cocotb.log.info("=== Test: Dispatch Slot 2 Only and Issue ===")
+    dut_if, model = await setup_test(dut)
+
+    dispatch: dict[str, Any] = {
+        "rob_tag": 8,
+        "op": OP_OR,
+        "src1_ready": True,
+        "src1_value": 0x1111_2222,
+        "src2_ready": True,
+        "src2_value": 0x3333_4444,
+        "src3_ready": True,
+        "src3_value": 0x5555_6666,
+        "imm": 0x1234_5678,
+        "rm": 2,
+        "branch_target": 0x8000_1000,
+        "predicted_taken": True,
+        "predicted_target": 0x8000_2000,
+        "is_fp_mem": True,
+        "mem_size": 2,
+        "mem_signed": True,
+        "csr_addr": 0x305,
+        "csr_imm": 0x7,
+    }
+
+    dut_if.drive_dispatch_2(**dispatch)
+    model.dispatch(**dispatch)
+    await dut_if.step()
+    dut_if.clear_dispatch_2()
+
+    empty_after_dispatch = dut_if.empty
+    assert not empty_after_dispatch, "Should not be empty after slot-2-only dispatch"
+    assert dut_if.count == 1, f"Count should be 1, got {dut_if.count}"
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    model_issue = model.try_issue(fu_ready=True)
+    check_issue(issue, model_issue, "slot-2-only issue")
+    assert issue["rob_tag"] == 8, "Slot-2-only entry should issue"
+
+    await dut_if.step()
+    dut_if.set_fu_ready(False)
+    empty_after_issue = dut_if.empty
+    assert empty_after_issue, "Should be empty after issuing slot-2-only entry"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_slot1_slot2_same_cycle_issue_order(dut: Any) -> None:
+    """Slot 1 and slot 2 can dispatch together and issue from distinct entries."""
+    cocotb.log.info("=== Test: Dispatch Slot 1 + Slot 2 Same Cycle ===")
+    dut_if, model = await setup_test(dut)
+
+    slot1: dict[str, Any] = {
+        "rob_tag": 10,
+        "op": OP_ADD,
+        "src1_ready": True,
+        "src1_value": 0x1000,
+        "src2_ready": True,
+        "src2_value": 0x2000,
+        "src3_ready": True,
+        "src3_value": 0x3000,
+        "imm": 0x10,
+    }
+    slot2: dict[str, Any] = {
+        "rob_tag": 11,
+        "op": OP_SUB,
+        "src1_ready": True,
+        "src1_value": 0x4000,
+        "src2_ready": True,
+        "src2_value": 0x5000,
+        "src3_ready": True,
+        "src3_value": 0x6000,
+        "imm": 0x20,
+    }
+
+    dut_if.drive_dispatch(**slot1)
+    dut_if.drive_dispatch_2(intent_1=True, **slot2)
+    model.dispatch(**slot1)
+    model.dispatch(**slot2)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+
+    assert dut_if.count == 2, f"Count should be 2, got {dut_if.count}"
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+
+    for expected_tag in (10, 11):
+        issue = dut_if.read_issue()
+        model_issue = model.try_issue(fu_ready=True)
+        check_issue(issue, model_issue, f"dual dispatch issue tag={expected_tag}")
+        assert (
+            issue["rob_tag"] == expected_tag
+        ), f"Expected tag {expected_tag}, got {issue['rob_tag']}"
+        await dut_if.step()
+
+    assert dut_if.empty, "Should be empty after issuing both dual-dispatch entries"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_slot2_cdb_bypass_at_dispatch(dut: Any) -> None:
+    """Slot-2 dispatch captures a same-cycle CDB source bypass."""
+    cocotb.log.info("=== Test: Slot 2 CDB Bypass at Dispatch ===")
+    dut_if, model = await setup_test(dut)
+
+    dut_if.drive_dispatch_2(
+        rob_tag=12,
+        op=OP_AND,
+        src1_ready=False,
+        src1_tag=6,
+        src2_ready=True,
+        src2_value=0x2222,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=6, value=0xCAFE)
+    model.dispatch(
+        rob_tag=12,
+        op=OP_AND,
+        src1_ready=False,
+        src1_tag=6,
+        src2_ready=True,
+        src2_value=0x2222,
+        src3_ready=True,
+        cdb_valid=True,
+        cdb_tag=6,
+        cdb_value=0xCAFE,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch_2()
+    dut_if.clear_cdb()
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    model_issue = model.try_issue(fu_ready=True)
+    check_issue(issue, model_issue, "slot-2 CDB bypass at dispatch")
+    assert issue["rob_tag"] == 12
+    assert issue["src1_value"] == 0xCAFE, "src1 should capture CDB value"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_full_for_2_blocks_slot2_of_dual_dispatch(dut: Any) -> None:
+    """Near-full RS accepts slot 1 but blocks slot 2 of a dual dispatch."""
+    cocotb.log.info("=== Test: Full-for-2 Blocks Slot 2 of Dual Dispatch ===")
+    dut_if, model = await setup_test(dut)
+
+    for i in range(RS_DEPTH - 1):
+        dispatch: dict[str, Any] = {
+            "rob_tag": i,
+            "op": OP_ADD,
+            "src1_ready": False,
+            "src1_tag": (i + 10) & MASK_TAG,
+            "src2_ready": False,
+            "src2_tag": (i + 20) & MASK_TAG,
+            "src3_ready": True,
+        }
+        dut_if.drive_dispatch(**dispatch)
+        model.dispatch(**dispatch)
+        await dut_if.step()
+        dut_if.clear_dispatch()
+
+    assert dut_if.count == RS_DEPTH - 1, f"Count should be {RS_DEPTH - 1}"
+    full_before_dual = dut_if.full
+    assert not full_before_dual, "Should not be full with one free entry"
+    assert dut_if.full_for_2, "Should be full_for_2 with one free entry"
+    assert model.is_full_for_2(), "Model should also be full_for_2"
+
+    slot1: dict[str, Any] = {
+        "rob_tag": 20,
+        "op": OP_OR,
+        "src1_ready": True,
+        "src1_value": 0xAAAA,
+        "src2_ready": True,
+        "src2_value": 0xBBBB,
+        "src3_ready": True,
+    }
+    slot2: dict[str, Any] = {
+        "rob_tag": 21,
+        "op": OP_SUB,
+        "src1_ready": True,
+        "src1_value": 0xCCCC,
+        "src2_ready": True,
+        "src2_value": 0xDDDD,
+        "src3_ready": True,
+    }
+
+    dut_if.drive_dispatch(**slot1)
+    dut_if.drive_dispatch_2(intent_1=True, **slot2)
+    model.dispatch(**slot1)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+
+    assert (
+        dut_if.count == RS_DEPTH
+    ), f"Only slot 1 should be accepted, got {dut_if.count}"
+    full_after_slot1 = dut_if.full
+    assert full_after_slot1, "Should be full after accepting slot 1"
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    model_issue = model.try_issue(fu_ready=True)
+    check_issue(issue, model_issue, "near-full accepted slot 1")
+    assert issue["rob_tag"] == 20, "Slot 2 should have been blocked"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_partial_flush_after_dual_dispatch(dut: Any) -> None:
+    """Partial flush removes a younger slot-2 entry from a dual dispatch."""
+    cocotb.log.info("=== Test: Partial Flush After Dual Dispatch ===")
+    dut_if, model = await setup_test(dut)
+
+    slot1: dict[str, Any] = {
+        "rob_tag": 1,
+        "op": OP_ADD,
+        "src1_ready": True,
+        "src1_value": 0x1111,
+        "src2_ready": True,
+        "src2_value": 0x2222,
+        "src3_ready": True,
+    }
+    slot2: dict[str, Any] = {
+        "rob_tag": 5,
+        "op": OP_SUB,
+        "src1_ready": True,
+        "src1_value": 0x3333,
+        "src2_ready": True,
+        "src2_value": 0x4444,
+        "src3_ready": True,
+    }
+
+    dut_if.drive_dispatch(**slot1)
+    dut_if.drive_dispatch_2(intent_1=True, **slot2)
+    model.dispatch(**slot1)
+    model.dispatch(**slot2)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+
+    assert dut_if.count == 2, f"Count should be 2, got {dut_if.count}"
+
+    dut_if.drive_partial_flush(flush_tag=1, head_tag=0)
+    model.partial_flush(flush_tag=1, head_tag=0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    assert (
+        dut_if.count == 1
+    ), f"Only the older slot-1 entry should remain, got {dut_if.count}"
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    model_issue = model.try_issue(fu_ready=True)
+    check_issue(issue, model_issue, "dual dispatch survivor")
+    assert issue["rob_tag"] == 1, "Older slot-1 entry should survive flush"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
 # =============================================================================
 # CDB Wakeup Tests
 # =============================================================================

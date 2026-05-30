@@ -82,9 +82,8 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests cover dispatch, CDB wakeup for each source
-slot, same-cycle bypass, issue priority, FU ready gating, immediate bypass, and
-partial/full flush. The cocotb bench drives only slot 1 (slot-2 dispatch and
-`i_intent_1` are tied off), so 2-wide allocation is exercised in formal instead:
-inline formal properties prove the dispatch / issue / wakeup / flush invariants
-and cover both-slots and slot-2-alone dispatch.
+Cocotb tests cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2
+dispatch, CDB wakeup for each source slot, same-cycle bypass, slot-2 CDB bypass,
+issue priority, FU ready gating, immediate bypass, `full_for_2` gating, and
+partial/full flush. Inline formal properties also prove the dispatch / issue /
+wakeup / flush invariants and cover both-slots and slot-2-alone dispatch.

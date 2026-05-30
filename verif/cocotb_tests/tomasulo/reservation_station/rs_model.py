@@ -82,6 +82,10 @@ class RSModel:
         """Return whether all entries are valid."""
         return all(e.valid for e in self.entries)
 
+    def is_full_for_2(self) -> bool:
+        """Return whether there is not enough room for a 2-wide dispatch."""
+        return self.count() >= self.depth - 1
+
     def is_empty(self) -> bool:
         """Return whether no entries are valid."""
         return not any(e.valid for e in self.entries)
