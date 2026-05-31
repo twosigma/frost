@@ -108,6 +108,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),ex_comb_synthesizer)
+# CPU OOO from_ex_comb synthesizer unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
