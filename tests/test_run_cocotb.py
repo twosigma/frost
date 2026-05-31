@@ -60,6 +60,7 @@ class CocotbRunConfig:
     app_name: str | None = None  # Application name (compiled on demand)
     description: str = ""
     include_in_pytest: bool = True
+    verilator_extra_args: tuple[str, ...] = ()
 
 
 # CPU testbench tests (multiple modules combined)
@@ -280,6 +281,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tomasulo_wrapper",
         description="Tomasulo integration tests (ROB + RAT + RS + CDB arbiter)",
     ),
+    "tomasulo_wrapper_split_rs": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo wrapper tests with CPU production split-RS dispatch",
+        verilator_extra_args=("-GSPLIT_RS_DISPATCH=1",),
+    ),
 }
 
 # List of real program test names (excludes 'cpu' which uses different toplevel)
@@ -313,6 +320,7 @@ class CocotbRunner:
         python_test_module: str,
         hdl_toplevel_module: str,
         app_name: str | None = None,
+        verilator_extra_args: tuple[str, ...] = (),
     ) -> None:
         """Initialize Cocotb test runner.
 
@@ -320,10 +328,12 @@ class CocotbRunner:
             python_test_module: Python module containing Cocotb tests (e.g., "cocotb_tests.test_cpu")
             hdl_toplevel_module: Top-level HDL module name (e.g., "cpu_tb")
             app_name: Optional application name to compile and load (e.g., "hello_world")
+            verilator_extra_args: Extra Verilator args for this build.
         """
         self.python_test_module = python_test_module
         self.hdl_toplevel_module = hdl_toplevel_module
         self.app_name = app_name
+        self.verilator_extra_args = verilator_extra_args
         self.test_directory = Path(__file__).parent.resolve()
         self.repository_root_directory = self.test_directory.parent
 
@@ -334,7 +344,12 @@ class CocotbRunner:
             python_test_module=config.python_test_module,
             hdl_toplevel_module=config.hdl_toplevel_module,
             app_name=config.app_name,
+            verilator_extra_args=config.verilator_extra_args,
         )
+
+    def _verilator_extra_args_string(self) -> str:
+        """Return the build args string consumed by tests/Makefile."""
+        return " ".join(self.verilator_extra_args)
 
     def _compile_app(self) -> bool:
         """Compile the application if app_name is set.
@@ -371,6 +386,9 @@ class CocotbRunner:
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
+        environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = (
+            self._verilator_extra_args_string()
+        )
 
         # Add verification infrastructure to Python path so cocotb_tests modules are importable
         verif_path = str(self.repository_root_directory / "verif")
@@ -455,6 +473,7 @@ class CocotbRunner:
         """
         toplevel_marker = sim_build_dir / ".last_toplevel"
         cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
+        verilator_extra_args_marker = sim_build_dir / ".last_verilator_extra_args"
         verilator_binary = sim_build_dir / "Vtop"
         cocotb_libs_dir = str(
             (Path(cocotb.__file__).resolve().parent / "libs").resolve()
@@ -464,7 +483,9 @@ class CocotbRunner:
         # This handles stale state from before marker tracking was added or
         # before cocotb/Python environment changes were tracked.
         if verilator_binary.exists() and (
-            not toplevel_marker.exists() or not cocotb_libs_marker.exists()
+            not toplevel_marker.exists()
+            or not cocotb_libs_marker.exists()
+            or not verilator_extra_args_marker.exists()
         ):
             return True
 
@@ -474,9 +495,11 @@ class CocotbRunner:
         try:
             last_toplevel = toplevel_marker.read_text().strip()
             last_cocotb_libs = cocotb_libs_marker.read_text().strip()
+            last_verilator_extra_args = verilator_extra_args_marker.read_text().strip()
             return (
                 last_toplevel != self.hdl_toplevel_module
                 or last_cocotb_libs != cocotb_libs_dir
+                or last_verilator_extra_args != self._verilator_extra_args_string()
             )
         except OSError:
             return False
@@ -486,10 +509,12 @@ class CocotbRunner:
         sim_build_dir.mkdir(exist_ok=True)
         toplevel_marker = sim_build_dir / ".last_toplevel"
         cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
+        verilator_extra_args_marker = sim_build_dir / ".last_verilator_extra_args"
         toplevel_marker.write_text(self.hdl_toplevel_module)
         cocotb_libs_marker.write_text(
             str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
         )
+        verilator_extra_args_marker.write_text(self._verilator_extra_args_string())
 
     def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
         """Return True when the existing Verilator build dir can be rebuilt in place."""
@@ -501,6 +526,7 @@ class CocotbRunner:
             sim_build_dir / "Vtop",
             sim_build_dir / ".last_toplevel",
             sim_build_dir / ".last_cocotb_libs",
+            sim_build_dir / ".last_verilator_extra_args",
         ):
             if path.exists() and not os.access(path, os.W_OK):
                 return False

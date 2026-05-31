@@ -150,6 +150,12 @@ else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif
 
+# Optional per-test Verilator args supplied by test_run_cocotb.py.
+FROST_VERILATOR_EXTRA_ARGS ?=
+ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
+	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
+endif
+
 # Simulation-only memory override (2MB default, allows arch tests with large data)
 # Only for toplevels that have the MEM_SIZE_BYTES parameter
 SIM_MEM_SIZE_BYTES ?= 2097152
