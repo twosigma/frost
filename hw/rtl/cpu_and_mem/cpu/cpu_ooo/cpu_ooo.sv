@@ -912,8 +912,9 @@ module cpu_ooo #(
       .o_commit_correct_branch_raw(rob_commit_correct_branch_raw),
       .o_head_commit_misprediction_candidate(rob_head_commit_misprediction_candidate),
 
-      // Widen-commit slot 2 observation + back-pressure to the ROB's
-      // commit_2_fire gate from the pending-write FIFO.
+      // Widen-commit slot 2 observation plus the downstream-ready gate.
+      // cpu_ooo ties the gate high because slot 2 has a dedicated regfile
+      // write port.
       .o_commit_2(rob_commit_2),
       .o_commit_comb_2(rob_commit_comb_2),
       .o_commit_2_valid_raw(rob_commit_2_valid_raw),

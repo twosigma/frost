@@ -276,6 +276,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="dispatch",
         description="Dispatch unit tests (instruction classification, source resolution, stall, RS routing)",
     ),
+    "commit_actions": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.commit.test_commit_actions",
+        hdl_toplevel_module="commit_actions",
+        description="CPU OOO commit action tests (regfile writes, CSR writeback, instret)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
