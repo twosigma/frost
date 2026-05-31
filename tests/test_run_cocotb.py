@@ -336,6 +336,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="return_address_stack",
         description="IF-stage return-address stack tests",
     ),
+    "branch_predictor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_branch_predictor",
+        hdl_toplevel_module="branch_predictor",
+        description="IF-stage branch target buffer predictor tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
