@@ -316,6 +316,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="perf_counter_aggregator",
         description="CPU OOO performance-counter aggregator tests",
     ),
+    "ooo_pipeline_control": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",
+        hdl_toplevel_module="ooo_pipeline_control",
+        description="CPU OOO pipeline-control tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
