@@ -151,6 +151,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),ooo_pipeline_control)
+# CPU OOO pipeline-control unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
