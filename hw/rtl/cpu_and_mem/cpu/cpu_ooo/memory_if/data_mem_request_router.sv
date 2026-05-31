@@ -105,10 +105,14 @@ module data_mem_request_router #(
   logic [XLEN-1:0] lq_mem_request_addr_eff;
   logic [XLEN-1:0] lq_mem_read_data;
   logic            lq_mem_read_valid;
+  logic            lq_mem_request_is_mmio;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
   assign lq_mem_request_addr_eff = lq_mem_request_valid ? lq_mem_request_addr : lq_mem_read_addr;
+  assign lq_mem_request_is_mmio =
+      (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0]) &&
+      (lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
 
   // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
   // range comparison. AMOs on MMIO are undefined by spec but we preserve the
@@ -154,10 +158,7 @@ module data_mem_request_router #(
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
 
     o_mmio_load_addr = lq_mem_request_addr_eff;
-    o_mmio_load_valid = o_data_mem_read_enable &&
-                        (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0]) &&
-                        (lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] +
-                                                   MMIO_SIZE_BYTES[XLEN-1:0]));
+    o_mmio_load_valid = o_data_mem_read_enable && lq_mem_request_is_mmio;
   end
 
   // SQ write done: register to align with write_outstanding in the SQ
@@ -201,10 +202,10 @@ module data_mem_request_router #(
   end
   assign lq_mem_read_valid = mem_read_pending;
 
-  // MMIO read pulse
-  assign o_mmio_read_pulse = lq_mem_read_accepted &&
-                             (o_data_mem_addr >= MMIO_ADDR[XLEN-1:0]) &&
-                             (o_data_mem_addr < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
+  // MMIO read pulse.  Read side effects are driven only by LQ reads; using the
+  // full data-port address mux here needlessly pulls SQ/AMO write addresses
+  // into FIFO/UART consume-pulse timing.
+  assign o_mmio_read_pulse = lq_mem_read_accepted && lq_mem_request_is_mmio;
 
   // --- Output wiring.
   assign o_sq_mem_write_done = sq_mem_write_done;

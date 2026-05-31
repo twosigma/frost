@@ -233,6 +233,17 @@ class RATInterface:
         self._rob_entry_epoch_mask = epoch_mask & ALL_ROB_ENTRIES_VALID
         self._drive_rob_entry_valid()
 
+    def add_rob_entry_epoch_bits(self, epoch_mask: int) -> None:
+        """Set selected synthetic ROB epoch bits without clearing existing bits."""
+        self._rob_entry_epoch_mask |= epoch_mask & ALL_ROB_ENTRIES_VALID
+        self._drive_rob_entry_valid()
+
+    def _mark_checkpoint_owner_allocated(self, branch_tag: int) -> None:
+        """Model the ROB allocation that owns a same-cycle checkpoint save."""
+        tag = branch_tag & MASK_TAG
+        self._rob_tag_refcounts[tag] += 1
+        self._rob_entry_epoch_mask ^= 1 << tag
+
     @property
     def rob_head_tag(self) -> int:
         """Return the synthetic ROB head tag used by standalone tests."""
@@ -290,7 +301,9 @@ class RATInterface:
                     ras_tos,
                     ras_valid_count,
                     overlay_rename,
+                    rob_entry_epoch=self.rob_entry_epoch_mask,
                 )
+                self._mark_checkpoint_owner_allocated(branch_tag)
 
             if self._pending_commit is not None:
                 commit_tag, commit_dest_rf, commit_dest_reg, commit_dest_valid = (

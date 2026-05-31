@@ -6,9 +6,9 @@ operands for both dispatch slots, written by dispatch to rename destinations,
 and cleared
 by ROB commit when the architectural value catches up.
 
-INT and FP have separate tables, both with the same `{valid, tag}`
-entry format. x0 is hardwired — reads always return zero, writes
-are silently ignored.
+INT and FP have separate tables, both with the same `{valid, alloc_epoch, tag}`
+entry format. x0 is hardwired — reads always return zero, writes are silently
+ignored.
 
 Up to ten sources are looked up per cycle: two INT sources and three FP
 sources for each dispatch slot. Each lookup returns either the regfile value
@@ -19,14 +19,14 @@ instruction (if it's renamed and still in flight).
 
 Speculation needs a way to roll back the rename state. Every branch
 or JALR reserves a checkpoint at dispatch that snapshots the full
-INT RAT, FP RAT, and RAS state (top-of-stack pointer + valid count).
-On misprediction, the checkpoint atomically replaces the active RAT
-in a single cycle.
+INT RAT, FP RAT, RAS state (top-of-stack pointer + valid count), and the
+checkpoint owner's ROB tag/epoch. On misprediction, the checkpoint atomically
+replaces the active RAT in a single cycle.
 
 There are 8 checkpoint slots. With 4–8 branches typically in flight
 at a time, exhaustion is rare; when it happens dispatch stalls until
 a slot frees. The checkpoint snapshots themselves live in distributed
-RAM — 8 slots × (64 entries × 7 bits + 12 metadata bits), saving
+RAM — 8 slots × (64 entries × 7 bits + 13 metadata bits), saving
 several thousand flip-flops compared to keeping them
 in registers — while the active RATs stay in FFs because they need
 parallel lookup, per-entry commit clear, and bulk parallel overwrite on restore.
@@ -42,9 +42,10 @@ When the ROB recycles a tag (allocation wraps), an in-flight rename
 that points at the old generation could otherwise look valid. The
 RAT consumes the ROB's per-entry valid vector and treats any lookup
 whose tag points at an invalid entry as architectural rather than
-renamed. Checkpoints additionally capture an alloc-generation bit so
-restore can reject snapshot entries whose tag has wrapped since the
-checkpoint was taken.
+renamed. Checkpoints additionally capture an alloc-generation bit for each
+snapshot entry and for the checkpoint-owning branch, so restore can reject
+snapshot entries whose tag has wrapped since the checkpoint was taken or whose
+owner branch has already retired/recycled.
 
 This is the kind of subtle correctness bug that's invisible until a
 particular branch-heavy code path with deep ROB occupancy hits the

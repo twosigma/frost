@@ -369,6 +369,11 @@ module cpu_ooo #(
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
+      // Bimodal direction-predictor training (conditional branches only — see
+      // dir_update_* below).
+      .i_dir_update_valid(dir_update_valid),
+      .i_dir_update_idx(dir_update_idx),
+      .i_dir_update_taken(dir_update_taken),
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
@@ -590,6 +595,12 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_vec;
 
+  // Per-ROB-entry predict-time bimodal index for the direction predictor.  Written
+  // at ROB allocation (mirroring rob_entry_epoch) and read at commit to train the
+  // exact bimodal entry the branch's prediction read.  No reset: only entries
+  // allocated for a committing conditional branch are ever read.
+  logic [riscv_pkg::BpDirIdxBits-1:0] branch_dir_idx_table[riscv_pkg::ReorderBufferDepth];
+
   // RAT lookup - slot 1
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr, int_src2_addr;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr, fp_src2_addr, fp_src3_addr;
@@ -639,6 +650,53 @@ module cpu_ooo #(
       if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready) begin
         rob_entry_epoch[rob_alloc_resp_2.alloc_tag] <= ~rob_entry_epoch[rob_alloc_resp_2.alloc_tag];
       end
+    end
+  end
+
+  // Record each allocated entry's predict-time bimodal index, keyed by ROB tag,
+  // using the same alloc signals as rob_entry_epoch.  Each slot stores its OWN
+  // predict index (slot-1 and slot-2 looked up different PCs).
+  always_ff @(posedge i_clk) begin
+    if (rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready) begin
+      branch_dir_idx_table[rob_alloc_resp.alloc_tag] <= from_id_to_ex.bp_dir_idx;
+    end
+    if (rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready) begin
+      branch_dir_idx_table[rob_alloc_resp_2.alloc_tag] <= from_id_to_ex_2.bp_dir_idx;
+    end
+  end
+
+  // ===========================================================================
+  // Direction Predictor Commit-Time Training (bimodal)
+  // ===========================================================================
+  // Train the decoupled bimodal at commit for CONDITIONAL branches only.
+  // rob_commit_comb.is_branch is true for branches AND jumps (is_branch_or_jump),
+  // so exclude JAL/JALR.  Branches commit only at the head (slot-1, never slot-2),
+  // so one update port suffices.  The training index is the branch's predict-time
+  // bimodal index, recovered from branch_dir_idx_table at the committing tag, so
+  // training updates the exact entry the prediction read.
+  logic                               dir_update_valid_comb;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
+  logic                               dir_update_taken_comb;
+  assign dir_update_valid_comb = rob_commit_comb.valid && rob_commit_comb.is_branch &&
+                                 !rob_commit_comb.is_jal && !rob_commit_comb.is_jalr;
+  assign dir_update_idx_comb = branch_dir_idx_table[rob_commit_comb.tag];
+  assign dir_update_taken_comb = rob_commit_comb.branch_taken;
+
+  // Register the predictor update before it enters IF.  This removes the
+  // ROB-head/serializer path from the distributed-RAM read-modify-write timing
+  // arc; training is still in commit order, just one cycle later.
+  logic                               dir_update_valid;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx;
+  logic                               dir_update_taken;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      dir_update_valid <= 1'b0;
+      dir_update_idx   <= '0;
+      dir_update_taken <= 1'b0;
+    end else begin
+      dir_update_valid <= dir_update_valid_comb;
+      dir_update_idx   <= dir_update_idx_comb;
+      dir_update_taken <= dir_update_taken_comb;
     end
   end
 

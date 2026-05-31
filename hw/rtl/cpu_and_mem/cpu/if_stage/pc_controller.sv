@@ -366,10 +366,34 @@ module pc_controller #(
   // slot-1 BTB hit (on the now-wrong-path next-bundle PC) is moot, and
   // letting its halfword target latch a pending_prediction state would
   // fight the slot-2 redirect bubble at cycle N+2.
+  //
+  // Timing: avoid using (seq_next_pc_reg != o_pc) on the pending-valid D path.
+  // That pulls the full pc_reg increment adders and equality compare into the
+  // same-cycle prediction arm cone. When prediction is allowed, the front-end is
+  // not in holdoff, so equality to a word-aligned fetch PC is determined by the
+  // selected instruction-size advance's effect on PC bit 1. A mismatch means
+  // pc_reg will not land on the predicted fetch PC next cycle and needs the
+  // pending handoff path.
+  logic pc_reg_next_bit1_for_prediction;
+  logic pc_reg_next_misses_fetch_pc_for_prediction;
+  always_comb begin
+    if (i_slot2_valid) begin
+      // Slot-2 valid implies a two-instruction bundle. Same-size advances
+      // preserve bit 1; mixed-size +6 advances flip it.
+      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ (i_is_compressed ^ i_slot2_is_compressed);
+    end else begin
+      // One-wide: compressed advances by +2 and flips bit 1; 32-bit advances
+      // by +4 and preserves it.
+      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ i_is_compressed;
+    end
+  end
+  assign pc_reg_next_misses_fetch_pc_for_prediction = pc_reg_next_bit1_for_prediction != o_pc[1];
+
   assign prediction_needs_pending =
       i_prediction_used && !i_ras_predicted && !i_slot2_prediction_used &&
       (o_pc[1] || i_predicted_target[1] ||
-       ((seq_next_pc_reg != o_pc) && i_prediction_requires_pc_reg_handoff));
+       (pc_reg_next_misses_fetch_pc_for_prediction &&
+        i_prediction_requires_pc_reg_handoff));
   // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
   // from mispredict_recovery_pending through flush_pipeline into this cone.
   // For mispredict, !i_branch_taken already kills the pending prediction.
@@ -515,16 +539,16 @@ module pc_controller #(
       redirect_kill_pending_q || pending_prediction_target_handoff ||
       stale_pending_prediction;
 
+  // Express the valid bit as clear/enable/set control rather than a full
+  // next-state mux on D.  The priority is unchanged, but Vivado can map the
+  // clear and hold portions onto flop control pins and keep the prediction arm
+  // cone narrower.
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-        i_pd_redirect || i_fence_i_flush) begin
+        i_pd_redirect || i_fence_i_flush || clear_pending_prediction_state) begin
       pending_prediction_valid <= 1'b0;
-    end else if (!i_stall) begin
-      if (clear_pending_prediction_state) begin
-        pending_prediction_valid <= 1'b0;
-      end else if (prediction_needs_pending) begin
-        pending_prediction_valid <= 1'b1;
-      end
+    end else if (!i_stall && prediction_needs_pending) begin
+      pending_prediction_valid <= 1'b1;
     end
   end
 
@@ -652,6 +676,14 @@ module pc_controller #(
   end
 
 `ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_reset && !i_stall && i_prediction_used && !i_ras_predicted &&
+        !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
+        i_prediction_requires_pc_reg_handoff) begin
+      p_pending_prediction_fast_miss_matches_full :
+      assert (pc_reg_next_misses_fetch_pc_for_prediction == (seq_next_pc_reg != o_pc));
+    end
+  end
 `endif
 
 endmodule : pc_controller

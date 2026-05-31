@@ -1,7 +1,7 @@
 # FROST CPU
 
 `cpu_ooo.sv` is the top-level RISC-V CPU module. It pairs a 2-wide
-in-order front-end (IF / PD / ID, branch predictor, RAS, RVC) with a
+in-order front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) with a
 Tomasulo out-of-order back-end (in [`tomasulo/`](tomasulo/README.md)).
 The reused functional units (ALU, multiplier, divider, FPU) live under
 `ex_stage/` and are wrapped by FU shims for OOO use.
@@ -65,6 +65,25 @@ BTB-cold JAL sites used to mispredict on every execution; pulling JAL into the
 commit-time BTB-update path turns that into a one-time cost per JAL site, and
 early recovery does its BTB update unconditionally for the same reason.
 
+### Front-end branch prediction
+
+The front-end has three prediction structures:
+
+- A 256-entry BTB supplies targets, direction counters for BTB hits, and slot-2
+  lookup support.
+- An 8-entry RAS predicts returns.
+- A 1024-entry bimodal direction predictor supplies a conditional-branch
+  taken/not-taken prediction independent of BTB hit status.
+
+The decoupled direction predictor lets PD recover useful work from conditional
+branches that miss the BTB. IF carries the predicted direction and predict-time
+direction index with each fetched branch. If PD sees a conditional branch whose
+BTB/RAS path did not already redirect and the carried direction predicts taken,
+PD computes the branch target from the decoded immediate and redirects the
+front-end immediately. At commit, `cpu_ooo.sv` trains the bimodal table using
+the carried predict-time index so replay/stall halfword cases update the same
+entry they originally read.
+
 ### 2-wide dispatch integration
 
 The front-end carries two instruction packets through IF, PD, and ID. Dispatch
@@ -81,7 +100,7 @@ instruction size.
 |-------------------------------------|---------------|------------|
 | [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
 | [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) now nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
-| `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including the branch predictor and RVC handling. |
+| `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
 | `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |
 | `control/trap_unit.sv`               | **In use**    | Machine-mode exception/interrupt handling used by `cpu_ooo.sv`. |

@@ -348,6 +348,7 @@ async def drive_dual_alloc(
 
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
+    dut_if.record_allocated_tags(tag_1, tag_2)
 
     dut_if.clear_alloc_requests()
     dut_if.clear_rat_rename()
@@ -808,7 +809,7 @@ async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None
         ras_tos=2,
         ras_valid_count=3,
     )
-    dut_if.set_rob_entry_epoch_mask(1 << tag_1)
+    dut_if.add_rob_entry_epoch_bits(1 << tag_1)
 
     dut_if.set_int_src1(5, 0)
     dut_if.set_int_src2(6, 0)

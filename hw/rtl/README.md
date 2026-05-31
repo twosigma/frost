@@ -46,9 +46,16 @@ The front-end is still staged as IF, PD, and ID:
 
 | Stage | Main Files | Role |
 |-------|------------|------|
-| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB/RAS prediction including slot-2 BTB lookup, RVC parcel alignment |
-| PD | `cpu_and_mem/cpu/pd_stage/` | RVC decompression, instruction selection, early source extraction for both dispatch slots |
+| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB + bimodal direction predictor + RAS, slot-2 BTB lookup, RVC parcel alignment |
+| PD | `cpu_and_mem/cpu/pd_stage/` | RVC decompression, instruction selection, PD-stage computed-target redirect for predicted-taken conditional BTB misses, early source extraction for both dispatch slots |
 | ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR reads, two registered dispatch packets |
+
+The conditional-branch predictor is split between target and direction. The BTB
+still supplies targets for BTB hits, while a separate 1024-entry bimodal
+direction predictor is trained from committed conditional branches. IF carries
+the predicted direction and predict-time direction index with the instruction;
+PD uses that direction to compute `PC + imm` and redirect immediately when a
+conditional branch misses the BTB but is predicted taken.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to

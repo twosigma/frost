@@ -812,6 +812,8 @@ module id_stage #(
       o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
       o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+      // Lever A: carry the predict-time bimodal index through to commit.
+      o_from_id_to_ex.bp_dir_idx <= i_from_pd_to_id.bp_dir_idx;
       o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
       // Pre-computed expected rs1 values for branch/RAS verification.
       o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
@@ -1492,6 +1494,8 @@ module id_stage #(
       o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      // Lever A: carry the predict-time bimodal index through to commit.
+      o_from_id_to_ex_2.bp_dir_idx <= i_from_pd_to_id_2.bp_dir_idx;
       o_from_id_to_ex_2.ras_predicted_target_nonzero <= |i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_expected_rs1 <= ras_expected_rs1_precomputed_2;
       o_from_id_to_ex_2.btb_expected_rs1 <= btb_expected_rs1_precomputed_2;

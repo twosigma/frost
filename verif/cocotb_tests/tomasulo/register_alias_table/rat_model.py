@@ -53,6 +53,7 @@ class RATEntry:
 
     valid: bool = False
     tag: int = 0
+    epoch: int = 0
 
 
 @dataclass
@@ -70,6 +71,7 @@ class CheckpointSlot:
 
     valid: bool = False
     branch_tag: int = 0
+    branch_epoch: int = 0
     ras_tos: int = 0
     ras_valid_count: int = 0
     int_rat: list[RATEntry] = field(default_factory=list)
@@ -208,6 +210,7 @@ class RATModel:
         ras_tos: int,
         ras_valid_count: int,
         overlay_rename: tuple[int, int, int] | None = None,
+        rob_entry_epoch: int = 0,
     ) -> None:
         """Save current RAT state into a checkpoint slot.
 
@@ -218,24 +221,38 @@ class RATModel:
             ras_valid_count: RAS valid entry count.
             overlay_rename: Optional same-cycle slot-1 rename to include in
                 the saved image for a slot-2 branch checkpoint.
+            rob_entry_epoch: Current ROB epoch bitmask. Checkpoint snapshots
+                store producer epochs and the checkpoint branch's post-alloc
+                epoch so restore can reject recycled tags.
         """
         slot = self.checkpoints[checkpoint_id]
         slot.valid = True
         slot.branch_tag = branch_tag & MASK_TAG
+        slot.branch_epoch = ((rob_entry_epoch >> slot.branch_tag) & 1) ^ 1
         slot.ras_tos = ras_tos
         slot.ras_valid_count = ras_valid_count
-        int_snapshot = [RATEntry(valid=e.valid, tag=e.tag) for e in self.int_rat]
-        fp_snapshot = [RATEntry(valid=e.valid, tag=e.tag) for e in self.fp_rat]
+        int_snapshot = [
+            RATEntry(valid=e.valid, tag=e.tag, epoch=(rob_entry_epoch >> e.tag) & 1)
+            for e in self.int_rat
+        ]
+        fp_snapshot = [
+            RATEntry(valid=e.valid, tag=e.tag, epoch=(rob_entry_epoch >> e.tag) & 1)
+            for e in self.fp_rat
+        ]
 
         if overlay_rename is not None:
             dest_rf, dest_reg, rob_tag = overlay_rename
+            overlay_tag = rob_tag & MASK_TAG
+            overlay_epoch = ((rob_entry_epoch >> overlay_tag) & 1) ^ 1
             if dest_rf == 0:
                 if dest_reg != 0:
                     int_snapshot[dest_reg] = RATEntry(
-                        valid=True, tag=rob_tag & MASK_TAG
+                        valid=True, tag=overlay_tag, epoch=overlay_epoch
                     )
             else:
-                fp_snapshot[dest_reg] = RATEntry(valid=True, tag=rob_tag & MASK_TAG)
+                fp_snapshot[dest_reg] = RATEntry(
+                    valid=True, tag=overlay_tag, epoch=overlay_epoch
+                )
 
         slot.int_rat = int_snapshot
         slot.fp_rat = fp_snapshot
@@ -243,22 +260,30 @@ class RATModel:
     def _restored_tag_still_live(
         self,
         restored_tag: int,
+        restored_epoch: int,
         branch_tag: int,
+        branch_epoch: int,
         rob_entry_valid: int,
         rob_entry_epoch: int,
         rob_head_tag: int,
-        restored_epoch: int = 0,
+        check_epochs: bool,
     ) -> bool:
         """Return whether a checkpointed tag survives restore filtering."""
         tag = restored_tag & MASK_TAG
+        branch = branch_tag & MASK_TAG
         head = rob_head_tag & MASK_TAG
         tag_age = (tag - head) & MASK_AGE
-        branch_age = ((branch_tag & MASK_TAG) - head) & MASK_AGE
-        return (
-            bool((rob_entry_valid >> tag) & 1)
-            and (((rob_entry_epoch >> tag) & 1) == (restored_epoch & 1))
-            and tag_age < branch_age
-        )
+        branch_age = (branch - head) & MASK_AGE
+        branch_still_live = bool((rob_entry_valid >> branch) & 1)
+        tag_still_live = bool((rob_entry_valid >> tag) & 1)
+        if check_epochs:
+            branch_still_live = branch_still_live and (
+                ((rob_entry_epoch >> branch) & 1) == (branch_epoch & 1)
+            )
+            tag_still_live = tag_still_live and (
+                ((rob_entry_epoch >> tag) & 1) == (restored_epoch & 1)
+            )
+        return branch_still_live and tag_still_live and tag_age < branch_age
 
     def checkpoint_restore(
         self,
@@ -281,6 +306,7 @@ class RATModel:
         """
         slot = self.checkpoints[checkpoint_id]
         assert slot.valid, f"Restoring from invalid checkpoint {checkpoint_id}"
+        check_epochs = rob_entry_valid is not None
         valid_mask = (
             ALL_ROB_ENTRIES_VALID if rob_entry_valid is None else rob_entry_valid
         )
@@ -289,12 +315,16 @@ class RATModel:
                 valid=e.valid
                 and self._restored_tag_still_live(
                     e.tag,
+                    e.epoch,
                     slot.branch_tag,
+                    slot.branch_epoch,
                     valid_mask,
                     rob_entry_epoch,
                     rob_head_tag,
+                    check_epochs,
                 ),
                 tag=e.tag,
+                epoch=e.epoch,
             )
             for e in slot.int_rat
         ]
@@ -303,12 +333,16 @@ class RATModel:
                 valid=e.valid
                 and self._restored_tag_still_live(
                     e.tag,
+                    e.epoch,
                     slot.branch_tag,
+                    slot.branch_epoch,
                     valid_mask,
                     rob_entry_epoch,
                     rob_head_tag,
+                    check_epochs,
                 ),
                 tag=e.tag,
+                epoch=e.epoch,
             )
             for e in slot.fp_rat
         ]

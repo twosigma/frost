@@ -4,6 +4,9 @@
 # Branch Target Buffer (BTB) - stores predicted targets
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 
+# Direction predictor (decoupled bimodal) - supplies lever A's BTB-miss direction
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+
 # Return Address Stack (RAS) - predicts function return addresses
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
