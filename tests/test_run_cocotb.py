@@ -346,6 +346,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="prediction_metadata_tracker",
         description="IF-stage prediction metadata tracker tests",
     ),
+    "control_flow_tracker": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_control_flow_tracker",
+        hdl_toplevel_module="control_flow_tracker",
+        description="IF-stage control-flow holdoff tracker tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
