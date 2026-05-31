@@ -281,6 +281,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="commit_actions",
         description="CPU OOO commit action tests (regfile writes, CSR writeback, instret)",
     ),
+    "ex_comb_synthesizer": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.recovery.test_ex_comb_synthesizer",
+        hdl_toplevel_module="ex_comb_synthesizer",
+        description="CPU OOO from_ex_comb synthesis tests (redirect, BTB, RAS)",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
