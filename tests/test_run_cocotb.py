@@ -351,6 +351,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="control_flow_tracker",
         description="IF-stage control-flow holdoff tracker tests",
     ),
+    "pc_increment_calculator": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
+        hdl_toplevel_module="pc_increment_calculator",
+        description="IF-stage PC increment calculator tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
