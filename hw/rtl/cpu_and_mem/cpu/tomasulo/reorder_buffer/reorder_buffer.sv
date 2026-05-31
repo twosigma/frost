@@ -343,8 +343,8 @@ module reorder_buffer (
   logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
   logic head_early_recovered;
-  logic head_is_call;  // TODO: wire to BPU update at commit
-  logic head_is_return;  // TODO: wire to BPU update at commit
+  logic head_is_call;  // for BTB/RAS update at commit
+  logic head_is_return;  // for BTB/RAS update at commit
   logic head_is_jal;
   logic head_is_jalr;
   logic head_has_checkpoint;

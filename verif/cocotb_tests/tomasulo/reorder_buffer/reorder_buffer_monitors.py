@@ -177,6 +177,26 @@ class CommitMonitor:
                     f"redirect_pc: got {commit['redirect_pc']:08x}, expected {expected.redirect_pc:08x}"
                 )
 
+        # Check branch/RAS metadata used by BTB and RAS commit handling.
+        for flag in [
+            "predicted_taken",
+            "branch_taken",
+            "is_branch",
+            "is_call",
+            "is_return",
+            "is_jal",
+            "is_jalr",
+        ]:
+            actual = commit[flag]
+            expected_val = getattr(expected, flag)
+            if actual != expected_val:
+                errors.append(f"{flag}: got {actual}, expected {expected_val}")
+
+        if expected.is_branch and commit["branch_target"] != expected.branch_target:
+            errors.append(
+                f"branch_target: got {commit['branch_target']:08x}, expected {expected.branch_target:08x}"
+            )
+
         # Check checkpoint
         if commit["has_checkpoint"] != expected.has_checkpoint:
             errors.append(
