@@ -291,6 +291,13 @@ def read_commit_output(dut: Any) -> dict[str, Any]:
     return unpack_commit(int(dut.o_commit.value))
 
 
+def read_commit_output_2(dut: Any) -> dict[str, Any]:
+    """Read widen-commit slot-2 output as sampled on the active clock edge."""
+    if hasattr(dut, "o_commit_comb_2"):
+        return unpack_commit(int(dut.o_commit_comb_2.value))
+    return unpack_commit(int(dut.o_commit_2.value))
+
+
 class ReorderBufferInterface:
     """Interface to Reorder Buffer DUT.
 
@@ -393,9 +400,28 @@ class ReorderBufferInterface:
         """Clear allocation request."""
         self.dut.i_alloc_req.value = 0
 
+    def drive_alloc_request_2(self, req: AllocationRequest) -> None:
+        """Drive slot-2 allocation request signals. Call on falling edge."""
+        val = pack_alloc_request(req)
+        self.dut.i_alloc_req_2.value = val
+
+    def clear_alloc_request_2(self) -> None:
+        """Clear slot-2 allocation request."""
+        self.dut.i_alloc_req_2.value = 0
+
+    def clear_alloc_requests(self) -> None:
+        """Clear both allocation request ports."""
+        self.clear_alloc_request()
+        self.clear_alloc_request_2()
+
     def read_alloc_response(self) -> tuple[bool, int, bool]:
         """Read allocation response. Returns (ready, tag, full). Call after rising edge."""
         val = int(self.dut.o_alloc_resp.value)
+        return unpack_alloc_response(val)
+
+    def read_alloc_response_2(self) -> tuple[bool, int, bool]:
+        """Read slot-2 allocation response. Returns (ready, tag, full)."""
+        val = int(self.dut.o_alloc_resp_2.value)
         return unpack_alloc_response(val)
 
     async def allocate(self, req: AllocationRequest) -> int | None:
@@ -493,11 +519,25 @@ class ReorderBufferInterface:
         """Read commit output signals."""
         return read_commit_output(self.dut)
 
+    def read_commit_2(self) -> dict[str, Any]:
+        """Read widen-commit slot-2 output signals."""
+        return read_commit_output_2(self.dut)
+
     @property
     def commit_valid(self) -> bool:
         """Check if commit is valid this cycle."""
         commit = self.read_commit()
         return commit["valid"]
+
+    @property
+    def commit_2_valid_raw(self) -> bool:
+        """Return unregistered widen-commit slot-2 valid."""
+        return bool(self.dut.o_commit_2_valid_raw.value)
+
+    @property
+    def commit_2_store_like_raw(self) -> bool:
+        """Return unregistered widen-commit slot-2 store-like marker."""
+        return bool(self.dut.o_commit_2_store_like_raw.value)
 
     # =========================================================================
     # External Coordination Signals
@@ -530,6 +570,10 @@ class ReorderBufferInterface:
     def set_interrupt_pending(self, pending: bool) -> None:
         """Set interrupt pending signal for WFI."""
         self.dut.i_interrupt_pending.value = 1 if pending else 0
+
+    def set_widen_commit_ok(self, ok: bool) -> None:
+        """Set downstream readiness for slot-2 widen commit."""
+        self.dut.i_widen_commit_ok.value = 1 if ok else 0
 
     @property
     def csr_start(self) -> bool:
@@ -606,6 +650,11 @@ class ReorderBufferInterface:
     def full(self) -> bool:
         """Return True if buffer is full."""
         return bool(self.dut.o_full.value)
+
+    @property
+    def full_for_2(self) -> bool:
+        """Return True if there is not enough room for a 2-wide allocation."""
+        return bool(self.dut.o_full_for_2.value)
 
     @property
     def empty(self) -> bool:
