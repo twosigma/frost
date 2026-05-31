@@ -296,6 +296,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="misprediction_flush_controller",
         description="CPU OOO misprediction flush controller tests",
     ),
+    "branch_resolution": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.recovery.test_branch_resolution",
+        hdl_toplevel_module="branch_resolution",
+        description="CPU OOO branch resolution tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
