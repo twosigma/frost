@@ -207,6 +207,15 @@ _RS_SIGNAL_MAP = {
     },
 }
 
+_RS_DISPATCH_INPUT_MAP = {
+    RS_INT: ("i_int_rs_dispatch", "i_int_rs_dispatch_2"),
+    RS_MUL: ("i_mul_rs_dispatch", "i_mul_rs_dispatch_2"),
+    RS_MEM: ("i_mem_rs_dispatch", "i_mem_rs_dispatch_2"),
+    RS_FP: ("i_fp_rs_dispatch", "i_fp_rs_dispatch_2"),
+    RS_FMUL: ("i_fmul_rs_dispatch", "i_fmul_rs_dispatch_2"),
+    RS_FDIV: ("i_fdiv_rs_dispatch", "i_fdiv_rs_dispatch_2"),
+}
+
 
 class TomasuloInterface:
     """Interface to the Tomasulo integration wrapper DUT."""
@@ -374,16 +383,12 @@ class TomasuloInterface:
 
         # RS dispatch
         self.dut.i_rs_dispatch.value = 0
+        for slot1_name, _ in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot1_name).value = 0
 
         # Slot-2 RS dispatch ports.
-        # Wrapper-level tests drive only the single-slot i_rs_dispatch port; slot-2
-        # is held inactive across all RS families.
-        self.dut.i_int_rs_dispatch_2.value = 0
-        self.dut.i_mul_rs_dispatch_2.value = 0
-        self.dut.i_mem_rs_dispatch_2.value = 0
-        self.dut.i_fp_rs_dispatch_2.value = 0
-        self.dut.i_fmul_rs_dispatch_2.value = 0
-        self.dut.i_fdiv_rs_dispatch_2.value = 0
+        for _, slot2_name in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot2_name).value = 0
 
         # Per-RS FU ready signals
         self.dut.i_rs_fu_ready.value = 0
@@ -849,22 +854,61 @@ class TomasuloInterface:
     # RS Dispatch (single input, routed by rs_type in the wrapper)
     # =========================================================================
 
+    def _rs_dispatch_kwargs(
+        self, rs_type: int, valid: bool, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build a packed-dispatch kwargs dict with wrapper defaults."""
+        dispatch_kwargs = dict(kwargs)
+        dispatch_kwargs["valid"] = valid
+        dispatch_kwargs["rs_type"] = rs_type
+        if rs_type == RS_MEM:
+            op = int(dispatch_kwargs.get("op", 0))
+            dispatch_kwargs.setdefault("mem_needs_lq", op in _LQ_OPS)
+            dispatch_kwargs.setdefault("mem_needs_sq", op in _SQ_OPS)
+            dispatch_kwargs.setdefault("is_fp_mem", op in _FP_MEM_OPS)
+            dispatch_kwargs.setdefault("mem_size", _mem_size_for_op(op))
+            dispatch_kwargs.setdefault("mem_signed", op in _SIGNED_LOAD_OPS)
+        return dispatch_kwargs
+
     def drive_rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> None:
         """Drive RS dispatch signals. rs_type selects which RS receives it."""
-        kwargs["valid"] = True
-        kwargs["rs_type"] = rs_type
-        if rs_type == RS_MEM:
-            op = int(kwargs.get("op", 0))
-            kwargs.setdefault("mem_needs_lq", op in _LQ_OPS)
-            kwargs.setdefault("mem_needs_sq", op in _SQ_OPS)
-            kwargs.setdefault("is_fp_mem", op in _FP_MEM_OPS)
-            kwargs.setdefault("mem_size", _mem_size_for_op(op))
-            kwargs.setdefault("mem_signed", op in _SIGNED_LOAD_OPS)
-        self.dut.i_rs_dispatch.value = pack_rs_dispatch(**kwargs)
+        self.dut.i_rs_dispatch.value = pack_rs_dispatch(
+            **self._rs_dispatch_kwargs(rs_type, True, kwargs)
+        )
 
     def clear_rs_dispatch(self) -> None:
         """Clear RS dispatch signals."""
         self.dut.i_rs_dispatch.value = 0
+
+    def drive_split_rs_dispatch(self, rs_type: int = RS_INT, **kwargs: Any) -> None:
+        """Drive slot-1 per-RS dispatch inputs used when SPLIT_RS_DISPATCH=1."""
+        base = pack_rs_dispatch(**self._rs_dispatch_kwargs(rs_type, False, kwargs))
+        selected = pack_rs_dispatch(**self._rs_dispatch_kwargs(rs_type, True, kwargs))
+        target_name = _RS_DISPATCH_INPUT_MAP[rs_type][0]
+        for slot1_name, _ in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot1_name).value = (
+                selected if slot1_name == target_name else base
+            )
+
+    def clear_split_rs_dispatch(self) -> None:
+        """Clear all slot-1 per-RS dispatch inputs."""
+        for slot1_name, _ in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot1_name).value = 0
+
+    def drive_split_rs_dispatch_2(self, rs_type: int = RS_INT, **kwargs: Any) -> None:
+        """Drive slot-2 per-RS dispatch inputs used when SPLIT_RS_DISPATCH=1."""
+        base = pack_rs_dispatch(**self._rs_dispatch_kwargs(rs_type, False, kwargs))
+        selected = pack_rs_dispatch(**self._rs_dispatch_kwargs(rs_type, True, kwargs))
+        target_name = _RS_DISPATCH_INPUT_MAP[rs_type][1]
+        for _, slot2_name in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot2_name).value = (
+                selected if slot2_name == target_name else base
+            )
+
+    def clear_split_rs_dispatch_2(self) -> None:
+        """Clear all slot-2 per-RS dispatch inputs."""
+        for _, slot2_name in _RS_DISPATCH_INPUT_MAP.values():
+            getattr(self.dut, slot2_name).value = 0
 
     # =========================================================================
     # RS Issue (per-RS type)
