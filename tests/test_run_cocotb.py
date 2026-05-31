@@ -291,6 +291,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="early_misprediction_recovery",
         description="CPU OOO early misprediction recovery FSM tests",
     ),
+    "misprediction_flush_controller": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.recovery.test_misprediction_flush_controller",
+        hdl_toplevel_module="misprediction_flush_controller",
+        description="CPU OOO misprediction flush controller tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
