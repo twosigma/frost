@@ -286,6 +286,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ex_comb_synthesizer",
         description="CPU OOO from_ex_comb synthesis tests (redirect, BTB, RAS)",
     ),
+    "early_misprediction_recovery": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",
+        hdl_toplevel_module="early_misprediction_recovery",
+        description="CPU OOO early misprediction recovery FSM tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
