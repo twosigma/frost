@@ -190,6 +190,22 @@ def make_store_request(pc: int, is_fp: bool = False) -> AllocationRequest:
     )
 
 
+async def drive_dual_alloc(
+    dut_if: ReorderBufferInterface,
+    req_1: AllocationRequest,
+    req_2: AllocationRequest,
+) -> tuple[tuple[bool, int, bool], tuple[bool, int, bool]]:
+    """Drive a slot-1/slot-2 allocation bundle and return both responses."""
+    dut_if.drive_alloc_request(req_1)
+    dut_if.drive_alloc_request_2(req_2)
+    await RisingEdge(dut_if.clock)
+    resp_1 = dut_if.read_alloc_response()
+    resp_2 = dut_if.read_alloc_response_2()
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_requests()
+    return resp_1, resp_2
+
+
 # =============================================================================
 # Directed Tests
 # =============================================================================
@@ -308,6 +324,244 @@ async def test_allocation_full(dut: Any) -> None:
     ready, _, full = dut_if.read_alloc_response()
     assert not ready, "alloc_ready should be false when full"
     assert full, "full signal should be true"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
+    """Slot-1/slot-2 allocation writes adjacent entries and advances by 2."""
+    cocotb.log.info("=== Test: Slot-2 Dual Allocation Adjacent Tags ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    req_1 = make_simple_alloc_request(pc=0x1000, rd=5)
+    req_2 = make_simple_alloc_request(pc=0x1004, rd=6)
+    resp_1, resp_2 = await drive_dual_alloc(dut_if, req_1, req_2)
+
+    ready_1, tag_1, full_1 = resp_1
+    ready_2, tag_2, full_2 = resp_2
+    assert ready_1 and not full_1, "Slot 1 should be ready"
+    assert ready_2 and not full_2, "Slot 2 should be ready"
+    assert tag_1 == 0, f"Slot 1 should allocate tag 0, got {tag_1}"
+    assert tag_2 == 1, f"Slot 2 should allocate tag 1, got {tag_2}"
+    assert (
+        dut_if.count == 2
+    ), f"Dual allocation should leave count=2, got {dut_if.count}"
+    assert dut_if.head_tag == 0
+    assert dut_if.tail_ptr & (REORDER_BUFFER_DEPTH - 1) == 2
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_allocation_blocked_by_full_for_2(dut: Any) -> None:
+    """With one free ROB entry, slot 1 can allocate but slot 2 is blocked."""
+    cocotb.log.info("=== Test: Slot-2 Allocation Blocked by full_for_2 ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    for i in range(REORDER_BUFFER_DEPTH - 1):
+        req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=(i % 31) + 1)
+        dut_if.drive_alloc_request(req)
+        await RisingEdge(dut_if.clock)
+        ready, tag, _ = dut_if.read_alloc_response()
+        assert ready, f"Allocation {i} should be ready"
+        assert tag == i, f"Allocation {i} expected tag {i}, got {tag}"
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_alloc_request()
+
+    assert dut_if.count == REORDER_BUFFER_DEPTH - 1
+    assert dut_if.full_for_2, "ROB should report no room for a 2-wide bundle"
+    assert not dut_if.full, "ROB should still have room for one slot"
+
+    ready_2, _, full_2 = dut_if.read_alloc_response_2()
+    assert not ready_2, "Slot 2 should report not-ready when full_for_2 is set"
+    assert full_2, "Slot-2 full flag should be set"
+
+    req_1 = make_simple_alloc_request(pc=0x2000, rd=3)
+    dut_if.drive_alloc_request(req_1)
+    await RisingEdge(dut_if.clock)
+    ready_1, tag_1, full_1 = dut_if.read_alloc_response()
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    assert ready_1 and not full_1, "Slot 1 should still allocate the last entry"
+    assert tag_1 == REORDER_BUFFER_DEPTH - 1
+    assert dut_if.count == REORDER_BUFFER_DEPTH
+    assert dut_if.full
+
+    cocotb.log.info("=== Test Passed ===")  # type: ignore[unreachable]
+
+
+@cocotb.test()
+async def test_widen_commit_emits_slot2_commit(dut: Any) -> None:
+    """Two completed ordinary head entries should retire together."""
+    cocotb.log.info("=== Test: Widen Commit Emits Slot 2 Commit ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    req_1 = make_simple_alloc_request(pc=0x1000, rd=5)
+    req_2 = make_simple_alloc_request(pc=0x1004, rd=6)
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, req_1, req_2)
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_2, value=0x2222))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+    assert dut_if.count == 2, "Younger done entry should not commit before head"
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_1, value=0x1111))
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"], "Slot 1 commit should fire"
+    assert commit_2["valid"], "Slot 2 commit should fire"
+    assert dut_if.commit_2_valid_raw, "Raw slot-2 commit valid should assert"
+    assert commit_1["tag"] == tag_1
+    assert commit_1["value"] == 0x1111
+    assert commit_2["tag"] == tag_2
+    assert commit_2["value"] == 0x2222
+    assert commit_2["dest_valid"]
+    assert commit_2["dest_reg"] == 6
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.empty, "Both entries should retire in one cycle"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_widen_commit_ok_blocks_slot2_commit(dut: Any) -> None:
+    """Back-pressure can retire slot 1 while holding slot 2 for the next cycle."""
+    cocotb.log.info("=== Test: Widen Commit OK Blocks Slot 2 Commit ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    req_1 = make_simple_alloc_request(pc=0x1000, rd=5)
+    req_2 = make_simple_alloc_request(pc=0x1004, rd=6)
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, req_1, req_2)
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_2, value=0xBBBB))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    dut_if.set_widen_commit_ok(False)
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_1, value=0xAAAA))
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"], "Slot 1 should still commit"
+    assert commit_1["tag"] == tag_1
+    assert not commit_2["valid"], "Slot 2 should be held by widen back-pressure"
+    assert not dut_if.commit_2_valid_raw
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+    dut_if.set_widen_commit_ok(True)
+
+    assert dut_if.count == 1
+    assert dut_if.head_tag == tag_2
+
+    await RisingEdge(dut_if.clock)
+    commit = dut_if.read_commit()
+    assert commit["valid"], "Held slot-2 entry should commit next"
+    assert commit["tag"] == tag_2
+    assert commit["value"] == 0xBBBB
+    await FallingEdge(dut_if.clock)
+
+    assert dut_if.empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_branch_checkpoint_metadata_and_no_widen_commit(dut: Any) -> None:
+    """A slot-2 branch keeps checkpoint metadata and never retires as commit_2."""
+    cocotb.log.info("=== Test: Slot-2 Branch Checkpoint Metadata ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    req_1 = make_simple_alloc_request(pc=0x1000, rd=5)
+    req_2 = make_branch_request(
+        pc=0x1004,
+        predicted_taken=True,
+        predicted_target=0x2400,
+    )
+    dut_if.drive_checkpoint(6)
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, req_1, req_2)
+    dut_if.clear_checkpoint()
+
+    update = BranchUpdate(tag=tag_2, taken=True, target=0x2400, mispredicted=False)
+    dut_if.drive_branch_update(update)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_1, value=0x1234))
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"] and commit_1["tag"] == tag_1
+    assert not commit_2["valid"], "Branch in head+1 must block widen commit"
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.count == 1
+    assert dut_if.head_tag == tag_2
+
+    await RisingEdge(dut_if.clock)
+    commit = dut_if.read_commit()
+    assert commit["valid"], "Slot-2 branch should commit once it reaches head"
+    assert commit["tag"] == tag_2
+    assert commit["is_branch"]
+    assert commit["has_checkpoint"]
+    assert commit["checkpoint_id"] == 6
+    assert commit["predicted_taken"]
+    assert commit["branch_taken"]
+    assert commit["branch_target"] == 0x2400
+    assert not commit["misprediction"]
+    await FallingEdge(dut_if.clock)
+
+    assert dut_if.empty
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_head_serial_instruction_blocks_widen_commit(dut: Any) -> None:
+    """Serializing slot 1 can retire while a done slot 2 remains queued."""
+    cocotb.log.info("=== Test: Head Serial Instruction Blocks Widen Commit ===")
+
+    dut_if, _ = await setup_test(dut)
+
+    req_1 = AllocationRequest(pc=0x1000, is_fence=True)
+    req_2 = make_simple_alloc_request(pc=0x1004, rd=7)
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, req_1, req_2)
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_2, value=0x7777))
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"], "FENCE should commit with SQ empty"
+    assert commit_1["tag"] == tag_1
+    assert commit_1["is_fence"]
+    assert not commit_2["valid"], "Serial head should block widen commit"
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.count == 1
+    assert dut_if.head_tag == tag_2
+
+    await RisingEdge(dut_if.clock)
+    commit = dut_if.read_commit()
+    assert commit["valid"]
+    assert commit["tag"] == tag_2
+    assert commit["value"] == 0x7777
+    await FallingEdge(dut_if.clock)
+
+    assert dut_if.empty
 
     cocotb.log.info("=== Test Passed ===")
 
