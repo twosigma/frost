@@ -158,6 +158,8 @@ def make_branch_request(
     is_jal: bool = False,
     is_jalr: bool = False,
     link_addr: int = 0,
+    is_call: bool = False,
+    is_return: bool = False,
 ) -> AllocationRequest:
     """Create allocation request for branch/jump instruction."""
     actual_target = (
@@ -172,6 +174,8 @@ def make_branch_request(
         predicted_taken=predicted_taken,
         predicted_target=predicted_target,
         branch_target=actual_target,
+        is_call=is_call,
+        is_return=is_return,
         is_jal=is_jal,
         is_jalr=is_jalr,
         link_addr=link_addr,
@@ -950,6 +954,10 @@ async def test_commit_struct_with_monitor(dut: Any) -> None:
         has_checkpoint=False,
         checkpoint_id=0,
         redirect_pc=branch_pc + 4,  # Not-taken -> fall through to pc+4
+        predicted_taken=True,
+        branch_taken=False,
+        branch_target=0,
+        is_branch=True,
         is_csr=False,
         is_fence=False,
         is_fence_i=False,
@@ -1355,6 +1363,61 @@ async def test_jal_done_at_allocation(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
 
     assert dut_if.empty, "Buffer should be empty after JAL commit"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_jal_call_commit_metadata(dut: Any) -> None:
+    """Test JAL call metadata propagates to the commit interface."""
+    cocotb.log.info("=== Test: JAL Call Commit Metadata ===")
+
+    dut_if, model = await setup_test(dut)
+
+    expected_commits: deque[ExpectedCommit] = deque()
+    monitor = CommitMonitor(dut_if.dut, expected_commits)
+    cocotb.start_soon(monitor.run())
+
+    jal_pc = 0x1800
+    target = 0x2400
+    link_addr = jal_pc + 4
+    req = make_branch_request(
+        pc=jal_pc,
+        predicted_taken=True,
+        predicted_target=target,
+        branch_target=target,
+        is_jal=True,
+        link_addr=link_addr,
+        is_call=True,
+    )
+    dut_if.drive_alloc_request(req)
+    tag = model.allocate(req)
+    assert tag is not None
+    expected_commits.append(
+        ExpectedCommit(
+            tag=tag,
+            dest_reg=1,
+            dest_valid=True,
+            value=link_addr,
+            pc=jal_pc,
+            predicted_taken=True,
+            branch_taken=True,
+            branch_target=target,
+            is_branch=True,
+            is_call=True,
+            is_jal=True,
+        )
+    )
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+
+    assert dut_if.empty, "Buffer should be empty after JAL call commit"
+    monitor.check_complete()
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -2055,6 +2118,10 @@ async def test_checkpoint_assignment(dut: Any) -> None:
         has_checkpoint=True,
         checkpoint_id=2,
         redirect_pc=0x2000,
+        predicted_taken=True,
+        branch_taken=True,
+        branch_target=0x2000,
+        is_branch=True,
     )
     expected_commits.append(expected)
 
@@ -2124,6 +2191,11 @@ async def test_jalr_end_to_end(dut: Any) -> None:
         pc=jalr_pc,
         misprediction=False,
         redirect_pc=0x3000,
+        predicted_taken=True,
+        branch_taken=True,
+        branch_target=0x3000,
+        is_branch=True,
+        is_jalr=True,
     )
     expected_commits.append(expected)
 
@@ -2140,6 +2212,68 @@ async def test_jalr_end_to_end(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
 
     assert dut_if.empty, "Buffer should be empty after JALR commit"
+    monitor.check_complete()
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_jalr_return_commit_metadata(dut: Any) -> None:
+    """Test JALR return metadata propagates after branch resolution."""
+    cocotb.log.info("=== Test: JALR Return Commit Metadata ===")
+
+    dut_if, model = await setup_test(dut)
+
+    expected_commits: deque[ExpectedCommit] = deque()
+    monitor = CommitMonitor(dut_if.dut, expected_commits)
+    cocotb.start_soon(monitor.run())
+
+    return_pc = 0x1A00
+    target = 0x3400
+    req = AllocationRequest(
+        pc=return_pc,
+        dest_reg=0,
+        dest_valid=False,
+        is_branch=True,
+        predicted_taken=True,
+        predicted_target=target,
+        is_return=True,
+        is_jalr=True,
+    )
+    dut_if.drive_alloc_request(req)
+    tag = model.allocate(req)
+    assert tag is not None
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    assert dut_if.head_valid, "Head should be valid"
+    assert not dut_if.head_done, "JALR return should wait for branch update"
+
+    expected_commits.append(
+        ExpectedCommit(
+            tag=tag,
+            pc=return_pc,
+            predicted_taken=True,
+            branch_taken=True,
+            branch_target=target,
+            is_branch=True,
+            is_return=True,
+            is_jalr=True,
+        )
+    )
+
+    update = BranchUpdate(tag=tag, taken=True, target=target, mispredicted=False)
+    dut_if.drive_branch_update(update)
+    model.branch_update(update)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+
+    assert dut_if.empty, "Buffer should be empty after JALR return commit"
     monitor.check_complete()
 
     cocotb.log.info("=== Test Passed ===")
