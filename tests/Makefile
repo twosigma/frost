@@ -191,6 +191,11 @@ else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),control_flow_tracker)
+# IF-stage control-flow holdoff tracker unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
