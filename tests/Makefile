@@ -186,6 +186,11 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
+# IF-stage prediction metadata tracker unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
