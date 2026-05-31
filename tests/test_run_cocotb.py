@@ -311,6 +311,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frontend_validity_tracker",
         description="CPU OOO frontend validity/control-flow tracker tests",
     ),
+    "perf_counter_aggregator": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",
+        hdl_toplevel_module="perf_counter_aggregator",
+        description="CPU OOO performance-counter aggregator tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
