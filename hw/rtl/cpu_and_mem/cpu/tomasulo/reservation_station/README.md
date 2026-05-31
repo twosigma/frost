@@ -14,14 +14,15 @@ with average occupancy ~4 at depth 8, so the queue was doubled
 without changing any other RS structure. Everything else
 (entry array, wakeup network, priority encoder) scales by parameter.
 
-The wakeup mechanism is the standard Tomasulo CDB snoop: each entry
-compares its source tags against the broadcast CDB tag every cycle,
-and a match captures the value and marks the source ready. There's
-also a same-cycle dispatch bypass — if the source's tag matches the
-CDB broadcast on the same cycle the entry is dispatched, the entry
-captures the value immediately without waiting a cycle.
+The wakeup mechanism is a two-lane Tomasulo CDB snoop: each entry compares its
+source tags against both broadcast tags every cycle, and a match captures the
+value and marks the source ready. Lane 0 also feeds the combinational
+same-cycle issue bypass, so a resident entry can issue in the same cycle its
+last operand arrives. Lane 1 intentionally stays out of that issue cone; it
+wakes resident entries through the registered snoop one cycle later, while still
+being available to the dispatch-capture path for newly inserted entries.
 
-Alongside the CDB there is a six-channel done-repair snoop
+Alongside the CDB lanes there is a six-channel done-repair snoop
 (`i_repair_valid_1..6` / `i_repair_tag_1..6` / `i_repair_value_1..6`):
 registered wakeups from dispatch that carry operands whose CDB
 broadcast landed before the consumer was dispatched and so were
@@ -83,7 +84,8 @@ elsewhere in the back-end. Older entries are preserved.
 ## Verification
 
 Cocotb tests cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2
-dispatch, CDB wakeup for each source slot, same-cycle bypass, slot-2 CDB bypass,
-issue priority, FU ready gating, immediate bypass, `full_for_2` gating, and
-partial/full flush. Inline formal properties also prove the dispatch / issue /
-wakeup / flush invariants and cover both-slots and slot-2-alone dispatch.
+dispatch, both CDB lanes, CDB wakeup for each source slot, same-cycle lane-0
+bypass, dispatch capture from lane 1, issue priority, FU ready gating, immediate
+bypass, `full_for_2` gating, and partial/full flush. Inline formal properties
+also prove the dispatch / issue / wakeup / flush invariants and cover both-slots
+and slot-2-alone dispatch.

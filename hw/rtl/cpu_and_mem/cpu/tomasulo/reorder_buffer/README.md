@@ -10,8 +10,8 @@ resolution and exception handling.
 A 32-entry circular buffer with head and tail pointers (extra MSB
 wrap bit so full and empty are distinguishable). Allocation is
 in-order at dispatch, with slot 1 and slot 2 able to allocate adjacent entries
-in the same cycle. Completion is out-of-order via the CDB (or directly for
-plain stores), and commit is in-order at the head.
+in the same cycle. Completion is out-of-order via the two CDB lanes (or directly
+for plain stores), and commit is in-order at the head.
 
 INT and FP instructions share a single buffer with a `dest_rf` flag
 to distinguish them. There's no need for separate INT/FP queues —
@@ -23,7 +23,9 @@ Multi-bit fields (PC, value, dest reg, branch target, exception
 cause, FP flags, …) live in distributed RAM. Allocation-only fields
 use paired allocation write ports for slot 1 and slot 2; fields also
 updated by CDB or branch resolution use multi-write LUTRAMs with a Live
-Value Table. The 1-bit packed flags
+Value Table. The ordinary CDB-updated value / exception-cause / FP-flag RAMs
+have four write ports: alloc slot 1, alloc slot 2, CDB lane 0, and CDB lane 1.
+The 1-bit packed flags
 (`valid`, `done`, `exception`, branch flags, etc.) stay in flip-flops
 because they need per-entry clear on partial flush.
 
@@ -99,9 +101,14 @@ in the RAT: slot 2's commit wins if both slots write the same reg.
 The ordinary-completion path — a CDB broadcast that writes a ROB
 entry's `done`, `value`, and `fp_flags` — previously drained for one
 cycle before the head could retire, because those fields updated on
-the clock edge. The bypass forwards the CDB write directly into the
+the clock edge. The bypass forwards either CDB lane directly into the
 head commit mux when it targets `head_idx` (or `head_next_idx` for
-slot 2), so the head retires the same cycle the arbiter broadcasts.
+slot 2), so the head retires the same cycle the arbiter broadcast
+reaches the ROB.
+
+Lane 0 and lane 1 carry distinct ROB tags. If both are valid in the same cycle,
+the ROB marks two entries done and writes both value / exception / FP flag
+payloads through the parallel CDB write ports.
 
 Excluded cases (exception, branch / JAL / JALR, CSR, FENCE / FENCE.I,
 WFI, MRET) fall through to the existing serial / branch-update / trap
@@ -153,7 +160,7 @@ than the hazard gate.
 
 ## Verification
 
-Cocotb unit tests cover allocation, CDB writes, branch updates,
+Cocotb unit tests cover allocation, dual-lane CDB writes, branch updates,
 serializing instructions, partial and full flush, and edge cases
 (simultaneous alloc + commit, full buffer, etc.). Inline `` `ifdef
 FORMAL `` properties prove pointer invariants, allocation/commit

@@ -4,8 +4,7 @@ The LQ tracks every in-flight load from dispatch through memory access
 to CDB broadcast. It also owns the L0 data cache, the LR/SC
 reservation register, and the AMO read-modify-write path. Loads allocate in
 program order at dispatch, with independent slot-1 and slot-2 allocation ports
-for 2-wide bundles (slot-2 is wired up but held inactive by the wrapper until
-dispatch widens), and free when their result is broadcast on the CDB.
+for 2-wide bundles, and free when their result is broadcast on the CDB.
 
 ## What makes loads interesting
 

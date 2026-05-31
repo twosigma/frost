@@ -79,8 +79,8 @@ same-cycle mux conflict.
 
 ### Commit and CDB pipelining
 
-Both the ROB commit bus and the CDB broadcast are registered into
-local copies (`commit_bus_q`, `cdb_bus`) before being routed to the
+The ROB commit bus and both CDB broadcast lanes are registered into
+local copies (`commit_bus_q`, `cdb_bus`, `cdb_bus_2`) before being routed to the
 downstream consumers. The commit-bus registers now live in
 `commit_bus/commit_bus_pipeline.sv` (the CDB registers stay inline). The
 valid bits are split out from the payload
@@ -88,11 +88,13 @@ and registered separately so a full flush only fans a narrow reset
 into a one-bit register instead of the wide payload — a Vivado
 synthesis trick to keep flush fanout under control. A parallel
 slot-2 register (`commit_bus_2_q`) carries the widen-commit
-second-retire payload to RAT / SQ.
+second-retire payload to RAT / SQ; the parallel CDB lane-1 register carries the
+secondary completion to the ROB and RS wakeup network.
 
-The combinational versions are still exposed for the same-cycle
-misprediction-detect path in `cpu_ooo.sv` and for FU adapters that
-need to clear their hold registers on the same cycle as a grant.
+The combinational commit versions are still exposed for the same-cycle
+misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
+combinational so FU adapters can clear their hold registers on the same cycle as
+a grant.
 
 ### Dispatch routing
 
@@ -129,7 +131,7 @@ gate only on adapter-pending / result-valid, not on
 
 One ROB, one RAT, six RS instances at the depths in
 [`../README.md`](../README.md), one LQ (with the L0 cache inside),
-one SQ, one CDB arbiter, seven CDB adapters (one per FU slot), and
+one SQ, one 2-lane CDB arbiter, seven CDB adapters (one per FU slot), and
 five FU shims (`int_alu_shim`, `int_muldiv_shim`, `fp_add_shim`,
 `fp_mul_shim`, `fp_div_shim` — `int_muldiv_shim` drives two adapter
 slots). Only the ALU adapter keeps the default `ALLOW_GRANT_REFILL=1`
@@ -186,5 +188,5 @@ signals so a single capture-enable strobe doesn't need to drive all
 
 Each FU slot has a test-injection input that lets cocotb drive
 synthetic completions into the wrapper without exercising the FU
-shims, useful for unit-testing the CDB / RS / ROB interaction in
-isolation.
+shims, useful for unit-testing the top-two CDB arbitration and the CDB / RS /
+ROB interaction in isolation.

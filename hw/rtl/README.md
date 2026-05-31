@@ -7,17 +7,17 @@ and dynamic scheduling, out-of-order execution across six function units, and
 precise 2-wide in-order commit, with machine-mode traps and separate
 instruction/data memory ports.
 
-The pipeline width is **asymmetric — the two ends are 2-wide, but the execution
-engine is 1-wide.** Fetch, decode, rename, ROB allocation, and commit each move
-two instructions per cycle; but each reservation station issues only one
-operation per cycle (with a single integer ALU), and result writeback rides a
-**single-lane common data bus — one completion per cycle** (aligned plain stores
-bypass it). Different function units do run concurrently — up to six reservation
-stations can issue in the same cycle — so execution is single-issue *per FU*, not
-globally serial. Because retirement cannot exceed completion over a long window,
-the single CDB caps **sustained IPC near ~1** (slightly above, since plain stores
-and JAL retire off the CDB); 2-wide commit raises *burst* throughput by draining
-the done-backlog, not the steady-state rate.
+The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
+result writeback, and commit can each move up to two instructions or completions
+per cycle, but each reservation station still issues only one operation per
+cycle and there is one integer ALU. Result writeback uses a **2-lane common data
+bus**: the arbiter grants the top two FU completions in fixed-priority order,
+while aligned plain stores bypass the CDB. Lane 0 remains on the same-cycle RS
+issue bypass path; lane 1 updates the ROB and registered RS wakeup /
+dispatch-capture paths, so a resident consumer wakes one cycle later by design.
+Different function units can still execute concurrently — up to six reservation
+stations can issue in the same cycle — but this is not a fully symmetric
+2-issue execution engine.
 
 The RTL is intended to stay portable: the core uses generic SystemVerilog and
 is built in CI with Verilator for simulation plus Yosys for vendor-agnostic
@@ -36,7 +36,7 @@ frost.sv
     MMIO timer/UART/FIFOs
     cpu_ooo.sv
       IF -> PD -> ID -> 2-wide dispatch
-                         ROB / RAT / RS / LQ / SQ / CDB
+                         ROB / RAT / RS / LQ / SQ / CDBx2
                          FU shims around ALU, MUL/DIV, FPU
                          2-wide commit -> INT/FP regfiles
   UART clock-domain crossing FIFOs
@@ -68,7 +68,7 @@ backend notes.
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
-| `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |
+| `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |

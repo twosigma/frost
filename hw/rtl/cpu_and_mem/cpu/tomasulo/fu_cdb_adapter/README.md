@@ -1,17 +1,16 @@
 # FU CDB Adapter
 
-A one-deep holding register between a functional unit and the CDB
-arbiter. When the FU produces a result and the arbiter can't grant
-the CDB the same cycle (because a higher-priority FU is also
-completing), the adapter latches the result and re-presents it on
-subsequent cycles until granted. The wrapper instantiates one per
-FU slot.
+A one-deep holding register between a functional unit and the 2-lane CDB
+arbiter. When the FU produces a result and the arbiter can't grant either CDB
+lane the same cycle (because two higher-priority FUs are also completing), the
+adapter latches the result and re-presents it on subsequent cycles until
+granted. The wrapper instantiates one per FU slot.
 
 ## What it provides
 
 - **Back-pressure** to the FU shim / RS via `o_result_pending`, so
   the RS stalls new issues while a result is waiting for CDB access.
-- **Zero-latency pass-through** when the arbiter grants on the same
+- **Zero-latency pass-through** when the arbiter grants on either lane in the same
   cycle the FU result arrives — no register on the common case. This
   is the default; setting the `REGISTER_OUTPUT` parameter disables it
   so every result is captured into the register first (output stays

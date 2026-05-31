@@ -8,7 +8,7 @@ The reused functional units (ALU, multiplier, divider, FPU) live under
 
 ```
    IF → PD → ID → 2-wide dispatch → tomasulo_wrapper → commit → regfiles
-                                     (ROB / RAT / RS×6 / LQ+L0$ / SQ / CDB)
+                                     (ROB / RAT / RS×6 / LQ+L0$ / SQ / CDB×2)
 ```
 
 ## What lives in cpu_ooo.sv

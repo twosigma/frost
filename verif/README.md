@@ -43,7 +43,7 @@ Additional features:
 - 32 general-purpose registers plus a separate FP register file
 - Harvard architecture with separate instruction and data memory interfaces
 - 2-wide in-order IF/PD/ID front-end feeding a Tomasulo OOO back-end
-- 2-wide dispatch/rename and precise in-order commit through the ROB, with branch/trap recovery paths
+- 2-wide dispatch/rename, 2-lane CDB completion broadcast, and precise in-order commit through the ROB, with branch/trap recovery paths
 
 ### Verification Methodology
 

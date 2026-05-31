@@ -29,8 +29,7 @@ a slot frees. The checkpoint snapshots themselves live in distributed
 RAM — 8 slots × (64 entries × 7 bits + 12 metadata bits), saving
 several thousand flip-flops compared to keeping them
 in registers — while the active RATs stay in FFs because they need
-parallel lookup, parallel CDB-driven invalidation, and bulk parallel
-overwrite on restore.
+parallel lookup, per-entry commit clear, and bulk parallel overwrite on restore.
 
 For 2-wide dispatch, slot 1 and slot 2 have separate rename write ports. If
 slot 2 is the control-flow instruction that owns the checkpoint, the checkpoint

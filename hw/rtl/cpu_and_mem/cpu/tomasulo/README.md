@@ -8,16 +8,16 @@ instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
 on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
 two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
-commit two at a time (with a few slot-2 restrictions). So the **two ends of the
-pipeline are 2-wide, but the execution engine is 1-wide**: each reservation
-station issues one operation per cycle (with a single integer ALU), and result
-writeback rides a single-lane CDB — one completion per cycle, except
-CDB-bypassing aligned stores. Different function units still execute concurrently
-(up to six RSes can issue in one cycle), so execution is single-issue *per FU*
-rather than globally serial. But because retirement cannot exceed completion over
-time, the single CDB caps **sustained IPC near ~1**, and 2-wide commit raises
-*burst* throughput by draining the done-backlog, not the steady-state rate — see
-[Single-CDB arbitration](#single-cdb-arbitration). See the 2-wide notes below.
+commit two at a time (with a few slot-2 restrictions). The execution engine is
+still asymmetric: each reservation station issues one operation per cycle (with
+a single integer ALU), but result writeback now has a 2-lane CDB that can
+broadcast two FU completions per cycle, except for CDB-bypassing aligned stores.
+Lane 0 keeps the same-cycle RS issue bypass; lane 1 updates the ROB and the
+registered RS wakeup / dispatch-capture paths, so resident consumers see lane 1
+one cycle later by design. Different function units can execute concurrently
+(up to six RSes can issue in one cycle), but this is not a fully symmetric
+2-issue execution engine — see [2-wide CDB arbitration](#2-wide-cdb-arbitration)
+and the 2-wide notes below.
 
 ```
    IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
@@ -40,8 +40,8 @@ time, the single CDB caps **sustained IPC near ~1**, and 2-wide commit raises
                          LQ + L0 cache, SQ
                                    │
                                    ▼
-                              CDB (1 lane)
-                          ─ broadcast value & tag
+                              CDB (2 lanes)
+                          ─ broadcast values & tags
                           ─ wakes RS, marks ROB done
 ```
 
@@ -56,7 +56,7 @@ time, the single CDB caps **sustained IPC near ~1**, and 2-wide commit raises
 | [`reservation_station/`](reservation_station/README.md)            | Generic RS, instantiated 6× |
 | [`load_queue/`](load_queue/README.md)                              | Loads, L0 cache, MMIO, FP64 phasing, LR/AMO |
 | [`store_queue/`](store_queue/README.md)                            | Stores, store-to-load forwarding, FSD phasing |
-| [`cdb_arbiter/`](cdb_arbiter/README.md)                            | Single-lane CDB priority arbiter |
+| [`cdb_arbiter/`](cdb_arbiter/README.md)                            | 2-lane CDB priority arbiter |
 | [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
 | [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |
 
@@ -120,25 +120,26 @@ A small FSM in the ROB pins most of these instructions at the commit head
 | **MRET**            | Hand-shakes with `trap_unit`; redirect PC = `mepc`. |
 | **AMO / LR / SC**   | Head-ordered atomics, not stalled by the ROB FSM. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight) — AMO is gated at LQ issue, SC at the wrapper's reservation check; LR fires at the head. |
 
-### Single-CDB arbitration
+### 2-wide CDB arbitration
 
-One result broadcast per cycle. Fixed priority favors common integer
-traffic while keeping FP/divide valid cones out of the fastest grant
-paths:
+Up to two result broadcasts per cycle. Lane 0 picks the highest-priority valid
+FU completion; lane 1 picks the highest-priority remaining completion. Both
+lanes use the same fixed priority, which favors common integer traffic while
+keeping FP/divide valid cones out of the fastest grant paths:
 
 ```
 MUL  >  MEM  >  ALU  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-Losers latch their result in a one-deep `fu_cdb_adapter` and
-re-present it next cycle. Pipelined units (MUL, DIV, FDIV) also
-have internal result FIFOs with credit-based back-pressure to absorb
-multi-cycle contention.
+Any FU not selected by either lane latches its result in a one-deep
+`fu_cdb_adapter` and re-presents it next cycle. Pipelined units (MUL, DIV, FDIV)
+also have internal result FIFOs with credit-based back-pressure to absorb
+multi-cycle contention. The grant vector can therefore be 0-, 1-, or 2-hot.
 
-Full-flush CDB suppression is handled centrally at the arbiter via
-an `i_kill` input, rather than replicated across every per-FU
-adapter — this keeps the broadly-fanned flush signal out of each
-adapter's output cone.
+Full-flush CDB suppression is handled centrally at the arbiter via an `i_kill`
+input, rather than replicated across every per-FU adapter — this suppresses both
+broadcast lanes and keeps the broadly-fanned flush signal out of each adapter's
+output cone.
 
 ### Instruction → reservation station routing
 
@@ -201,7 +202,7 @@ land in the same cycle.
 
 Two bypass paths shorten commit and completion latency:
 
-- **CDB → head-done bypass.** When a CDB write targets the ROB head
+- **CDB → head-done bypass.** When either CDB lane targets the ROB head
   (or head+1), the value flows into the commit mux the same cycle
   instead of waiting for the `rob_done[head]` flop to update. Cuts
   one cycle off the common ordinary-completion path. Excluded for
