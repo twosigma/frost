@@ -361,6 +361,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="instruction_aligner",
         description="IF-stage instruction aligner tests",
     ),
+    "rvc_decompressor": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
+        hdl_toplevel_module="rvc_decompressor",
+        description="IF-stage RVC decompressor tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
