@@ -203,6 +203,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),instruction_aligner)
+# IF-stage instruction aligner unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
