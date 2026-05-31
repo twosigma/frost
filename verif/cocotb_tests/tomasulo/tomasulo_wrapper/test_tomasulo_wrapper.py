@@ -314,6 +314,74 @@ async def collect_rs_issues(
     return seen
 
 
+async def drive_dual_alloc(
+    dut_if: TomasuloInterface,
+    req_1: AllocationRequest,
+    req_2: AllocationRequest,
+    slot2_checkpoint_id: int | None = None,
+    ras_tos: int = 0,
+    ras_valid_count: int = 0,
+) -> tuple[int, int]:
+    """Allocate a 2-wide bundle through the wrapper and drive matching RAT writes."""
+    dut_if.drive_alloc_request(req_1)
+    dut_if.drive_alloc_request_2(req_2)
+
+    ready_1, tag_1, full_1 = dut_if.read_alloc_response()
+    ready_2, tag_2, full_2 = dut_if.read_alloc_response_2()
+    assert ready_1 and not full_1, "Slot 1 allocation should be accepted"
+    assert ready_2 and not full_2, "Slot 2 allocation should be accepted"
+
+    if req_1.dest_valid:
+        dut_if.drive_rat_rename(req_1.dest_rf, req_1.dest_reg, tag_1)
+    if req_2.dest_valid:
+        dut_if.drive_rat_rename_2(req_2.dest_rf, req_2.dest_reg, tag_2)
+    if slot2_checkpoint_id is not None:
+        assert req_2.is_branch, "slot2_checkpoint_id only applies to slot-2 branches"
+        dut_if.drive_checkpoint_save(
+            slot2_checkpoint_id,
+            tag_2,
+            ras_tos,
+            ras_valid_count,
+            for_slot2=True,
+        )
+        dut_if.drive_rob_checkpoint(slot2_checkpoint_id)
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+
+    dut_if.clear_alloc_requests()
+    dut_if.clear_rat_rename()
+    dut_if.clear_rat_rename_2()
+    if slot2_checkpoint_id is not None:
+        dut_if.clear_checkpoint_save()
+        dut_if.clear_rob_checkpoint()
+
+    return tag_1, tag_2
+
+
+async def mark_done_via_cdb(dut_if: TomasuloInterface, tag: int, value: int) -> None:
+    """Mark one ROB entry done through the wrapper's external CDB injection."""
+    dut_if.drive_cdb_write(CDBWrite(tag=tag, value=value))
+    await dut_if.step()
+    dut_if.clear_cdb_write()
+
+
+async def wait_for_commit_pair(
+    dut_if: TomasuloInterface, max_cycles: int = 10
+) -> tuple[dict, dict, bool]:
+    """Wait for a commit cycle and return slot-1 plus slot-2 observations."""
+    for _ in range(max_cycles):
+        await RisingEdge(dut_if.clock)
+        commit_1 = dut_if.read_commit()
+        commit_2 = dut_if.read_commit_2()
+        commit_2_valid_raw = dut_if.commit_2_valid_raw
+        if commit_1["valid"] or commit_2["valid"]:
+            await FallingEdge(dut_if.clock)
+            return commit_1, commit_2, commit_2_valid_raw
+        await FallingEdge(dut_if.clock)
+    raise TimeoutError("No commit observed within timeout")
+
+
 # =============================================================================
 # Ported ROB-RAT Tests (backward compatibility)
 # =============================================================================
@@ -661,6 +729,186 @@ async def test_x0_destination_invariant(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
     assert not result.renamed and result.value == 0
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Slot-2 Wrapper Integration Tests
+# =============================================================================
+
+
+@cocotb.test()
+async def test_slot2_dual_alloc_rename_and_lookup(dut: Any) -> None:
+    """Wrapper drives ROB slot 2, RAT slot-2 rename, and slot-2 lookups."""
+    cocotb.log.info("=== Test: Slot-2 Dual Alloc Rename and Lookup ===")
+    dut_if, _ = await setup_test(dut)
+
+    tag_1, tag_2 = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4000, rd=5),
+        make_fp_req(pc=0x4004, fd=8),
+    )
+
+    assert dut_if.rob_count == 2
+    assert tag_2 == ((tag_1 + 1) & 0x1F)
+
+    dut_if.set_int_src1_2(5, 0x1111_2222)
+    dut_if.set_int_src2_2(0, 0x3333_4444)
+    dut_if.set_fp_src1_2(8, 0xAAAA_BBBB_CCCC_DDDD)
+    await RisingEdge(dut_if.clock)
+
+    int_src = dut_if.read_int_src1_2()
+    x0_src = dut_if.read_int_src2_2()
+    fp_src = dut_if.read_fp_src1_2()
+
+    assert int_src.renamed and int_src.tag == tag_1
+    assert not x0_src.renamed and x0_src.value == 0
+    assert fp_src.renamed and fp_src.tag == tag_2
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_rename_wins_same_register_through_wrapper(dut: Any) -> None:
+    """Same-cycle wrapper RAT renames leave slot 2 as newest producer."""
+    cocotb.log.info("=== Test: Slot-2 Rename Wins Same Register Through Wrapper ===")
+    dut_if, _ = await setup_test(dut)
+
+    _, tag_2 = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4100, rd=5),
+        make_int_req(pc=0x4104, rd=5),
+    )
+
+    dut_if.set_int_src1(5, 0)
+    dut_if.set_int_src1_2(5, 0)
+    await RisingEdge(dut_if.clock)
+
+    slot1_lookup = dut_if.read_int_src1()
+    slot2_lookup = dut_if.read_int_src1_2()
+    assert slot1_lookup.renamed and slot1_lookup.tag == tag_2
+    assert slot2_lookup.renamed and slot2_lookup.tag == tag_2
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None:
+    """A slot-2 branch checkpoint restores slot 1's rename but not slot 2's."""
+    cocotb.log.info("=== Test: Slot-2 Branch Checkpoint Overlay Through Wrapper ===")
+    dut_if, _ = await setup_test(dut)
+
+    cp_id = dut_if.checkpoint_alloc_id
+    tag_1, tag_branch = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4200, rd=5),
+        make_branch_req(pc=0x4204, rd=6, predicted_taken=True, predicted_target=0x5000),
+        slot2_checkpoint_id=cp_id,
+        ras_tos=2,
+        ras_valid_count=3,
+    )
+    dut_if.set_rob_entry_epoch_mask(1 << tag_1)
+
+    dut_if.set_int_src1(5, 0)
+    dut_if.set_int_src2(6, 0)
+    await RisingEdge(dut_if.clock)
+    assert dut_if.read_int_src1().renamed
+    assert dut_if.read_int_src2().renamed
+
+    await dut_if.dispatch(make_int_req(pc=0x5000, rd=7))
+
+    dut_if.drive_flush_en(tag_branch)
+    dut_if.drive_checkpoint_restore(cp_id)
+    await dut_if.step()
+    dut_if.clear_flush_en()
+    dut_if.clear_checkpoint_restore()
+
+    assert dut_if.rob_count == 2
+
+    dut_if.set_int_src1(5, 0)
+    await RisingEdge(dut_if.clock)
+    restored = dut_if.read_int_src1()
+    assert restored.renamed and restored.tag == tag_1
+
+    for reg in (6, 7):
+        dut_if.set_int_src1(reg, 0)
+        await RisingEdge(dut_if.clock)
+        assert not dut_if.read_int_src1().renamed
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_widen_commit_slot2_clears_rat_through_wrapper(dut: Any) -> None:
+    """Wrapper slot-2 commit observation and RAT clear are wired together."""
+    cocotb.log.info("=== Test: Widen Commit Slot-2 Clears RAT Through Wrapper ===")
+    dut_if, _ = await setup_test(dut)
+
+    tag_1, tag_2 = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4300, rd=5),
+        make_int_req(pc=0x4304, rd=6),
+    )
+
+    dut_if.set_commit_hold(True)
+    await mark_done_via_cdb(dut_if, tag_2, 0x2222)
+    await mark_done_via_cdb(dut_if, tag_1, 0x1111)
+    dut_if.set_commit_hold(False)
+    dut_if.set_widen_commit_ok(True)
+
+    commit_1, commit_2, commit_2_valid_raw = await wait_for_commit_pair(dut_if)
+    assert commit_1["valid"] and commit_1["tag"] == tag_1
+    assert commit_1["value"] == 0x1111
+    assert commit_2["valid"] and commit_2["tag"] == tag_2
+    assert commit_2["value"] == 0x2222
+    assert commit_2_valid_raw
+
+    dut_if.set_int_src1(5, 0)
+    dut_if.set_int_src1_2(6, 0)
+    await RisingEdge(dut_if.clock)
+    assert not dut_if.read_int_src1().renamed
+    assert not dut_if.read_int_src1_2().renamed
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_widen_commit_ok_blocks_slot2_through_wrapper(dut: Any) -> None:
+    """Wrapper forwards slot-2 widen-commit back-pressure to the ROB."""
+    cocotb.log.info("=== Test: Widen Commit OK Blocks Slot-2 Through Wrapper ===")
+    dut_if, _ = await setup_test(dut)
+
+    tag_1, tag_2 = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4400, rd=9),
+        make_int_req(pc=0x4404, rd=10),
+    )
+
+    dut_if.set_commit_hold(True)
+    await mark_done_via_cdb(dut_if, tag_2, 0xBBBB)
+    await mark_done_via_cdb(dut_if, tag_1, 0xAAAA)
+    dut_if.set_commit_hold(False)
+    dut_if.set_widen_commit_ok(False)
+
+    commit_1, commit_2, commit_2_valid_raw = await wait_for_commit_pair(dut_if)
+    assert commit_1["valid"] and commit_1["tag"] == tag_1
+    assert not commit_2["valid"]
+    assert not commit_2_valid_raw
+    assert dut_if.rob_count == 1
+    assert dut_if.head_tag == tag_2
+
+    dut_if.set_widen_commit_ok(True)
+    commit_next, commit_2_next, _ = await wait_for_commit_pair(dut_if)
+    assert commit_next["valid"] and commit_next["tag"] == tag_2
+    assert commit_next["value"] == 0xBBBB
+    assert not commit_2_next["valid"]
+
+    dut_if.set_int_src1(9, 0)
+    dut_if.set_int_src2(10, 0)
+    await RisingEdge(dut_if.clock)
+    assert not dut_if.read_int_src1().renamed
+    assert not dut_if.read_int_src2().renamed
 
     cocotb.log.info("=== Test Passed ===")
 

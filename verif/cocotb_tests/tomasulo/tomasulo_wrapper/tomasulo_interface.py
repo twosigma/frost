@@ -29,6 +29,7 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
     unpack_alloc_response,
     pack_branch_update,
     read_commit_output,
+    read_commit_output_2,
 )
 from cocotb_tests.tomasulo.register_alias_table.rat_interface import (
     unpack_rat_lookup,
@@ -262,6 +263,8 @@ class TomasuloInterface:
         self.dut.i_mret_done.value = 0
         self.dut.i_mepc.value = 0
         self.dut.i_interrupt_pending.value = 0
+        self.dut.i_trap_misaligned_accesses.value = 0
+        self.dut.i_widen_commit_ok.value = 0
         self.dut.i_commit_hold.value = 0
 
         # Flush
@@ -276,6 +279,7 @@ class TomasuloInterface:
 
         # ROB bypass read
         self.dut.i_read_tag.value = 0
+        self.dut.i_rob_entry_epoch.value = 0
         self.dut.i_bypass_valid_1.value = 0
         self.dut.i_bypass_tag_1.value = 0
         self.dut.i_bypass_valid_2.value = 0
@@ -296,8 +300,7 @@ class TomasuloInterface:
         self.dut.i_fp_src2_addr.value = 0
         self.dut.i_fp_src3_addr.value = 0
 
-        # RAT source lookup addresses - slot 2 (2-wide dispatch).  Held at
-        # zero in wrapper-level tests; slot-2 dispatch is hard-tied off.
+        # RAT source lookup addresses - slot 2 (2-wide dispatch).
         self.dut.i_int_src1_addr_2.value = 0
         self.dut.i_int_src2_addr_2.value = 0
         self.dut.i_fp_src1_addr_2.value = 0
@@ -324,7 +327,7 @@ class TomasuloInterface:
         self.dut.i_rat_alloc_dest_reg.value = 0
         self.dut.i_rat_alloc_rob_tag.value = 0
 
-        # RAT rename - slot 2 (held inactive in wrapper-level tests)
+        # RAT rename - slot 2
         self.dut.i_rat_alloc_valid_2.value = 0
         self.dut.i_rat_alloc_dest_rf_2.value = 0
         self.dut.i_rat_alloc_dest_reg_2.value = 0
@@ -336,7 +339,7 @@ class TomasuloInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
-        # Slot-2-branch checkpoint flag (Session F): defensive init.
+        # Slot-2-branch checkpoint flag.
         self.dut.i_checkpoint_save_for_slot2.value = 0
 
         # RAT checkpoint restore
@@ -372,7 +375,7 @@ class TomasuloInterface:
         # RS dispatch
         self.dut.i_rs_dispatch.value = 0
 
-        # Slot-2 RS dispatch ports (2-wide dispatch plumbing, Session C).
+        # Slot-2 RS dispatch ports.
         # Wrapper-level tests drive only the single-slot i_rs_dispatch port; slot-2
         # is held inactive across all RS families.
         self.dut.i_int_rs_dispatch_2.value = 0
@@ -402,9 +405,27 @@ class TomasuloInterface:
         """Clear ROB allocation request."""
         self.dut.i_alloc_req.value = 0
 
+    def drive_alloc_request_2(self, req: AllocationRequest) -> None:
+        """Drive slot-2 ROB allocation request."""
+        self.dut.i_alloc_req_2.value = pack_alloc_request(req)
+
+    def clear_alloc_request_2(self) -> None:
+        """Clear slot-2 ROB allocation request."""
+        self.dut.i_alloc_req_2.value = 0
+
+    def clear_alloc_requests(self) -> None:
+        """Clear both ROB allocation request ports."""
+        self.clear_alloc_request()
+        self.clear_alloc_request_2()
+
     def read_alloc_response(self) -> tuple[bool, int, bool]:
         """Read ROB allocation response."""
         val = int(self.dut.o_alloc_resp.value)
+        return unpack_alloc_response(val)
+
+    def read_alloc_response_2(self) -> tuple[bool, int, bool]:
+        """Read slot-2 ROB allocation response."""
+        val = int(self.dut.o_alloc_resp_2.value)
         return unpack_alloc_response(val)
 
     # =========================================================================
@@ -549,14 +570,27 @@ class TomasuloInterface:
         """Read and unpack commit output."""
         return read_commit_output(self.dut)
 
+    def read_commit_2(self) -> dict[str, Any]:
+        """Read and unpack widen-commit slot-2 output."""
+        return read_commit_output_2(self.dut)
+
     def set_commit_hold(self, hold: bool = True) -> None:
         """Hold ROB commit while still allowing CDB writes to mark entries done."""
         self.dut.i_commit_hold.value = 1 if hold else 0
+
+    def set_widen_commit_ok(self, ok: bool = True) -> None:
+        """Set downstream readiness for slot-2 widen commit."""
+        self.dut.i_widen_commit_ok.value = 1 if ok else 0
 
     @property
     def commit_valid(self) -> bool:
         """Return whether commit output is valid."""
         return self.read_commit()["valid"]
+
+    @property
+    def commit_2_valid_raw(self) -> bool:
+        """Return unregistered widen-commit slot-2 valid."""
+        return bool(self.dut.o_commit_2_valid_raw.value)
 
     # =========================================================================
     # ROB Status
@@ -566,6 +600,11 @@ class TomasuloInterface:
     def rob_full(self) -> bool:
         """Return whether ROB is full."""
         return bool(self.dut.o_rob_full.value)
+
+    @property
+    def rob_full_for_2(self) -> bool:
+        """Return whether ROB lacks room for a 2-wide allocation."""
+        return bool(self.dut.o_rob_full_for_2.value)
 
     @property
     def rob_empty(self) -> bool:
@@ -608,6 +647,10 @@ class TomasuloInterface:
         """Return the read entry value."""
         return int(self.dut.o_read_value.value)
 
+    def set_rob_entry_epoch_mask(self, epoch_mask: int) -> None:
+        """Drive synthetic ROB entry epochs for direct wrapper tests."""
+        self.dut.i_rob_entry_epoch.value = epoch_mask
+
     # =========================================================================
     # Flush
     # =========================================================================
@@ -643,6 +686,16 @@ class TomasuloInterface:
         self.dut.i_int_src2_addr.value = addr & MASK_REG
         self.dut.i_int_regfile_data2.value = regfile_data & MASK32
 
+    def set_int_src1_2(self, addr: int, regfile_data: int) -> None:
+        """Drive slot-2 integer source 1 lookup address and regfile data."""
+        self.dut.i_int_src1_addr_2.value = addr & MASK_REG
+        self.dut.i_int_regfile_data1_2.value = regfile_data & MASK32
+
+    def set_int_src2_2(self, addr: int, regfile_data: int) -> None:
+        """Drive slot-2 integer source 2 lookup address and regfile data."""
+        self.dut.i_int_src2_addr_2.value = addr & MASK_REG
+        self.dut.i_int_regfile_data2_2.value = regfile_data & MASK32
+
     def read_int_src1(self) -> LookupResult:
         """Read integer source 1 RAT lookup result."""
         return unpack_rat_lookup(int(self.dut.o_int_src1.value))
@@ -650,6 +703,14 @@ class TomasuloInterface:
     def read_int_src2(self) -> LookupResult:
         """Read integer source 2 RAT lookup result."""
         return unpack_rat_lookup(int(self.dut.o_int_src2.value))
+
+    def read_int_src1_2(self) -> LookupResult:
+        """Read slot-2 integer source 1 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_int_src1_2.value))
+
+    def read_int_src2_2(self) -> LookupResult:
+        """Read slot-2 integer source 2 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_int_src2_2.value))
 
     def set_fp_src1(self, addr: int, regfile_data: int) -> None:
         """Drive FP source 1 lookup address and regfile data."""
@@ -661,6 +722,26 @@ class TomasuloInterface:
         self.dut.i_fp_src2_addr.value = addr & MASK_REG
         self.dut.i_fp_regfile_data2.value = regfile_data & MASK64
 
+    def set_fp_src3(self, addr: int, regfile_data: int) -> None:
+        """Drive FP source 3 lookup address and regfile data."""
+        self.dut.i_fp_src3_addr.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data3.value = regfile_data & MASK64
+
+    def set_fp_src1_2(self, addr: int, regfile_data: int) -> None:
+        """Drive slot-2 FP source 1 lookup address and regfile data."""
+        self.dut.i_fp_src1_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data1_2.value = regfile_data & MASK64
+
+    def set_fp_src2_2(self, addr: int, regfile_data: int) -> None:
+        """Drive slot-2 FP source 2 lookup address and regfile data."""
+        self.dut.i_fp_src2_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data2_2.value = regfile_data & MASK64
+
+    def set_fp_src3_2(self, addr: int, regfile_data: int) -> None:
+        """Drive slot-2 FP source 3 lookup address and regfile data."""
+        self.dut.i_fp_src3_addr_2.value = addr & MASK_REG
+        self.dut.i_fp_regfile_data3_2.value = regfile_data & MASK64
+
     def read_fp_src1(self) -> LookupResult:
         """Read FP source 1 RAT lookup result."""
         return unpack_rat_lookup(int(self.dut.o_fp_src1.value))
@@ -668,6 +749,22 @@ class TomasuloInterface:
     def read_fp_src2(self) -> LookupResult:
         """Read FP source 2 RAT lookup result."""
         return unpack_rat_lookup(int(self.dut.o_fp_src2.value))
+
+    def read_fp_src3(self) -> LookupResult:
+        """Read FP source 3 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src3.value))
+
+    def read_fp_src1_2(self) -> LookupResult:
+        """Read slot-2 FP source 1 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src1_2.value))
+
+    def read_fp_src2_2(self) -> LookupResult:
+        """Read slot-2 FP source 2 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src2_2.value))
+
+    def read_fp_src3_2(self) -> LookupResult:
+        """Read slot-2 FP source 3 RAT lookup result."""
+        return unpack_rat_lookup(int(self.dut.o_fp_src3_2.value))
 
     # =========================================================================
     # RAT Rename
@@ -684,6 +781,17 @@ class TomasuloInterface:
         """Clear RAT rename signals."""
         self.dut.i_rat_alloc_valid.value = 0
 
+    def drive_rat_rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
+        """Drive slot-2 RAT rename signals."""
+        self.dut.i_rat_alloc_valid_2.value = 1
+        self.dut.i_rat_alloc_dest_rf_2.value = dest_rf & 1
+        self.dut.i_rat_alloc_dest_reg_2.value = dest_reg & MASK_REG
+        self.dut.i_rat_alloc_rob_tag_2.value = rob_tag & MASK_TAG
+
+    def clear_rat_rename_2(self) -> None:
+        """Clear slot-2 RAT rename signals."""
+        self.dut.i_rat_alloc_valid_2.value = 0
+
     # =========================================================================
     # RAT Checkpoint Save/Restore/Free
     # =========================================================================
@@ -694,6 +802,7 @@ class TomasuloInterface:
         branch_tag: int,
         ras_tos: int = 0,
         ras_valid_count: int = 0,
+        for_slot2: bool = False,
     ) -> None:
         """Drive RAT checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
@@ -701,10 +810,12 @@ class TomasuloInterface:
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
+        self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
 
     def clear_checkpoint_save(self) -> None:
         """Deassert checkpoint save."""
         self.dut.i_checkpoint_save.value = 0
+        self.dut.i_checkpoint_save_for_slot2.value = 0
 
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint restore signals."""
