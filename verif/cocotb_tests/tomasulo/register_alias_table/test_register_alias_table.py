@@ -1496,7 +1496,7 @@ async def test_checkpoint_save_for_slot2_overlays_slot1_rename(dut: Any) -> None
     await dut_if.rename(dest_rf=0, dest_reg=7, rob_tag=11)
     model.rename(0, 7, 11)
 
-    dut_if.set_rob_entry_epoch_mask(1 << 3)
+    dut_if.add_rob_entry_epoch_bits(1 << 3)
     await FallingEdge(dut_if.clock)
     dut_if.drive_checkpoint_restore(0)
     await RisingEdge(dut_if.clock)
@@ -1687,7 +1687,13 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
                 ras_tos = random.randint(0, 7)
                 ras_count = random.randint(0, 8)
                 dut_if.drive_checkpoint_save(slot_id, branch_tag, ras_tos, ras_count)
-                model.checkpoint_save(slot_id, branch_tag, ras_tos, ras_count)
+                model.checkpoint_save(
+                    slot_id,
+                    branch_tag,
+                    ras_tos,
+                    ras_count,
+                    rob_entry_epoch=dut_if.rob_entry_epoch_mask,
+                )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_save()
@@ -1807,7 +1813,13 @@ async def test_random_mixed_stress(dut: Any) -> None:
                 rt = random.randint(0, 7)
                 rc = random.randint(0, 8)
                 dut_if.drive_checkpoint_save(slot_id, bt, rt, rc)
-                model.checkpoint_save(slot_id, bt, rt, rc)
+                model.checkpoint_save(
+                    slot_id,
+                    bt,
+                    rt,
+                    rc,
+                    rob_entry_epoch=dut_if.rob_entry_epoch_mask,
+                )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_save()

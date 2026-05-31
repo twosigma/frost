@@ -95,6 +95,12 @@ module branch_prediction_controller (
     input logic                             i_ras_push_after_restore,
     input logic [      riscv_pkg::XLEN-1:0] i_ras_push_address_after_restore,
 
+    // Bimodal direction-predictor training (from commit, CONDITIONAL branches
+    // only).  Trains at the committing branch PC; no carried GHR / predict-PC.
+    input logic                               i_dir_update_valid,
+    input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
+    input logic                               i_dir_update_taken,
+
     // Combinational prediction outputs (for pc_controller next_pc selection)
     output logic                       o_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_predicted_target,
@@ -128,7 +134,17 @@ module branch_prediction_controller (
     output logic o_ras_predicted,  // RAS prediction was used
     output logic [riscv_pkg::XLEN-1:0] o_ras_predicted_target,  // RAS predicted return address
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,  // TOS checkpoint for recovery
-    output logic [riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count  // Valid count checkpoint
+    output logic [riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count,  // Valid count checkpoint
+
+    // Lever A: decoupled bimodal direction (NOT gated by btb_hit), registered to
+    // align with the prediction metadata carried to PD.  PD redirects on a BTB
+    // miss when this predicts taken (any offset sign).
+    output logic o_dir_predicted_taken,
+    // Lever A: predict-time bimodal index to carry with each fetched branch
+    // (slot-1 registered to align with the prediction metadata; slot-2
+    // combinational off its own lookup PC) and hand back at commit for training.
+    output logic [riscv_pkg::BpDirIdxBits-1:0] o_dir_idx,
+    output logic [riscv_pkg::BpDirIdxBits-1:0] o_dir_idx_2
 );
 
   localparam int unsigned XLEN = riscv_pkg::XLEN;
@@ -151,10 +167,10 @@ module branch_prediction_controller (
   logic            btb_compressed_2;
   logic            btb_requires_pc_reg_handoff_2;
 
-  // Taken BTB predictions always need the predicted PC to keep flowing through
+  // Taken predictions always need the predicted PC to keep flowing through
   // IF/PD/ID so the branch or stale predicted op can resolve architecturally.
   // Avoid putting the BTB metadata RAM read on the pending-prediction arm path.
-  assign o_prediction_requires_pc_reg_handoff = btb_predicted_taken;
+  assign o_prediction_requires_pc_reg_handoff = dir_predicted_taken;
 
   branch_predictor #(
       .XLEN(XLEN)
@@ -186,6 +202,60 @@ module branch_prediction_controller (
       .i_update_compressed(i_btb_update_compressed),
       .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff)
   );
+
+  // ===========================================================================
+  // Direction Predictor (decoupled bimodal) — lever A's BTB-miss direction
+  // ===========================================================================
+  // Supplies a taken/not-taken direction independent of the BTB, so a conditional
+  // branch that MISSES the BTB still has a trained direction for the PD-stage
+  // computed-target redirect (lever A).  The BTB still supplies the target and
+  // the direction for branches that HIT it.  Trained at commit on conditional
+  // branches only, indexed by the committing branch PC.
+  logic dir_taken;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_pred_idx;  // slot-1 predict-time index
+
+  direction_predictor #(
+      .XLEN(XLEN),
+      .BIM_BITS(riscv_pkg::BpDirIdxBits)
+  ) direction_predictor_inst (
+      .i_clk,
+      .i_rst(i_reset),
+
+      // Slot-1 lookup (same live fetch PC as the BTB)
+      .i_pc(i_pc),
+      .o_taken(dir_taken),
+      .o_pred_idx(dir_pred_idx),
+
+      // Commit-time training (conditional branches only).  Trained at the carried
+      // predict-time index so it updates the exact entry the prediction read.
+      .i_update_valid(i_dir_update_valid),
+      .i_update_idx  (i_dir_update_idx),
+      .i_update_taken(i_dir_update_taken)
+  );
+
+  // Lever A: registered decoupled bimodal direction, snapshot in the SAME
+  // ~i_stall stage as the registered prediction metadata (o_predicted_target_r /
+  // prediction_used_r) so the bit carried to PD aligns with that instruction.
+  // This is dir_taken (decoupled), NOT dir_predicted_taken (gated by btb_hit,
+  // which would be 0 on a miss).
+  logic dir_taken_snapshot_r;
+  assign o_dir_predicted_taken = dir_taken_snapshot_r;
+
+  // Lever A: carry the predict-time bimodal index.  Slot-1 is registered in the
+  // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
+  // reaching from_if_to_pd); slot-2's prediction is combinational, so its index
+  // is combinational off i_pc_2.
+  logic [riscv_pkg::BpDirIdxBits-1:0] pred_idx_snapshot_r;
+  assign o_dir_idx   = pred_idx_snapshot_r;
+  assign o_dir_idx_2 = i_pc_2[riscv_pkg::BpDirIdxBits:1];
+
+  // BTB-hit direction comes from the BTB's own 2-bit counter (btb_predicted_taken).
+  // The decoupled bimodal (dir_taken) is used ONLY for lever A's BTB-miss redirect
+  // (carried to PD as o_dir_predicted_taken); it never overrides a BTB hit.
+  logic dir_predicted_taken;
+  logic dir_predicted_taken_2;
+  assign dir_predicted_taken   = btb_predicted_taken;
+  assign dir_predicted_taken_2 = btb_predicted_taken_2;
 
   // ===========================================================================
   // RAS (Return Address Stack) Instance
@@ -347,7 +417,7 @@ module branch_prediction_controller (
 
   // sel_prediction for BTB only (without RAS)
   logic sel_btb_prediction;
-  assign sel_btb_prediction = prediction_allowed && btb_predicted_taken;
+  assign sel_btb_prediction = prediction_allowed && dir_predicted_taken;
 
   // sel_prediction for RAS (for returns, RAS takes priority over BTB)
   // Use ras_prediction_allowed which permits halfword-aligned PCs for compressed instructions
@@ -372,7 +442,7 @@ module branch_prediction_controller (
 
   // Export combinational prediction for pc_controller
   // RAS prediction takes priority over BTB for returns
-  assign o_predicted_taken = sel_ras_prediction || btb_predicted_taken;
+  assign o_predicted_taken = sel_ras_prediction || dir_predicted_taken;
   assign o_predicted_target = sel_ras_prediction ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
   assign o_prediction_used_for_pc = prediction_used_for_pc;
@@ -427,6 +497,10 @@ module branch_prediction_controller (
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
       o_predicted_target_r <= o_predicted_target;
+      // Lever A: snapshot the decoupled bimodal direction AND its predict-time
+      // index in the SAME stage so both carried values align with the instruction.
+      dir_taken_snapshot_r <= dir_taken;
+      pred_idx_snapshot_r  <= dir_pred_idx;
     end
   end
 
@@ -512,7 +586,7 @@ module branch_prediction_controller (
                                      (i_slot2_is_compressed == btb_compressed_2));
 
   logic slot2_sel_btb_prediction;
-  assign slot2_sel_btb_prediction = slot2_prediction_allowed && btb_predicted_taken_2;
+  assign slot2_sel_btb_prediction = slot2_prediction_allowed && dir_predicted_taken_2;
 
   // Final slot-2 prediction-used: same late-arrival gates as slot-1
   // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction

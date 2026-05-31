@@ -163,11 +163,16 @@ module pd_stage #(
   assign fp_source_reg_3_2 = final_instruction_2[31:27];
 
   // ===========================================================================
-  // Backward-Branch-Taken Static Heuristic
+  // Lever A: Predicted-Taken Redirect on BTB Miss
+  // (generalized from the former backward-branch static heuristic)
   // ===========================================================================
-  // Detect backward conditional branches that the BTB missed. Predict them as
-  // taken and redirect IF to the computed target. This saves ~4-5 cycles vs
-  // waiting for EX-stage misprediction recovery on cold-start BTB misses.
+  // Detect conditional branches (ANY offset sign) that the BTB missed and that
+  // the decoupled direction predictor calls TAKEN, and redirect IF to the
+  // computed PC+imm target. This saves ~4-5 cycles vs waiting for EX-stage
+  // misprediction recovery. Formerly this fired only for backward offsets using
+  // a static "backward => taken" rule; lever A drives it from the trained
+  // direction predictor (carried as bp_dir_taken), so forward taken branches
+  // that thrash the 256-entry BTB also redirect here instead of mispredicting.
   //
   // Compute native B-type and compressed C.BEQZ/C.BNEZ branch targets in
   // parallel. Selecting decompressed-vs-native before the adder made the IF
@@ -214,11 +219,18 @@ module pd_stage #(
   assign pd_backward_target = pd_compressed_branch ? pd_backward_target_compressed :
                               pd_backward_target_native;
 
+  // Lever A: fire the PD redirect for any conditional branch (native B-type or
+  // compressed C.BEQZ/C.BNEZ) that the front-end did NOT already redirect and
+  // that the decoupled bimodal (carried from IF as bp_dir_taken) predicts TAKEN.
+  // pd_backward_target (= PC + imm_b, above) is already computed for both offset
+  // signs, so forward taken branches that miss the BTB redirect here instead of
+  // stalling to an EX-stage misprediction.  Signal name kept as pd_backward_branch
+  // for minimal churn.
   logic pd_backward_branch;
   assign pd_backward_branch =
-      ((pd_native_branch && i_from_if_to_pd.effective_instr[31]) ||
-       (pd_compressed_branch && i_from_if_to_pd.raw_parcel[12])) &&  // backward offset
-      !i_from_if_to_pd.btb_predicted_taken &&  // BTB didn't predict
+      (pd_native_branch || pd_compressed_branch) &&  // conditional branch (any offset)
+      i_from_if_to_pd.bp_dir_taken &&  // decoupled bimodal predicts TAKEN
+      !i_from_if_to_pd.btb_predicted_taken &&  // front-end didn't already redirect
       !i_from_if_to_pd.ras_predicted &&  // RAS didn't predict
       !i_from_if_to_pd.sel_nop &&  // not a bubble
       !pd_redirect_r;  // not already redirecting
@@ -314,6 +326,8 @@ module pd_stage #(
       o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
+      // Lever A: carry the predict-time bimodal index through to commit.
+      o_from_pd_to_id.bp_dir_idx <= i_from_if_to_pd.bp_dir_idx;
     end
     // When stalled, hold current values (implicit - no else clause)
   end
@@ -362,6 +376,8 @@ module pd_stage #(
       o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
+      // Lever A: carry the predict-time bimodal index through to commit.
+      o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
     end
   end
 

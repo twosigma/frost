@@ -93,6 +93,11 @@ module if_stage #(
     input logic [XLEN-1:0] i_fence_i_target,
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
+    // Bimodal direction-predictor training (from commit, conditional branches
+    // only).  Forwarded to the branch_prediction_controller; trains at commit PC.
+    input logic i_dir_update_valid,
+    input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
+    input logic i_dir_update_taken,
     // PD backward-branch heuristic redirect (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
@@ -138,6 +143,14 @@ module if_stage #(
   logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
   logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;  // TOS checkpoint
   logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count checkpoint
+
+  // Lever A: decoupled bimodal direction prediction, carried with each slot-1 op
+  // to PD so the PD redirect can fire on a BTB miss.
+  logic bp_dir_taken;
+  // Lever A: predict-time bimodal index (slot-1 + slot-2), carried to commit for
+  // training so the entry trained matches the entry the prediction read.
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx;
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_2;
 
   // ---------------------------------------------------------------------------
   // PC Controller Interface (pc_controller)
@@ -384,6 +397,11 @@ module if_stage #(
       .i_ras_push_after_restore(i_from_ex_comb.ras_push_after_restore),
       .i_ras_push_address_after_restore(i_from_ex_comb.ras_push_address_after_restore),
 
+      // Bimodal direction-predictor training (conditional branches only)
+      .i_dir_update_valid(i_dir_update_valid),
+      .i_dir_update_idx  (i_dir_update_idx),
+      .i_dir_update_taken(i_dir_update_taken),
+
       // Combinational prediction outputs (for pc_controller)
       .o_predicted_taken (btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
@@ -412,7 +430,12 @@ module if_stage #(
       .o_ras_predicted(ras_predicted),
       .o_ras_predicted_target(ras_predicted_target),
       .o_ras_checkpoint_tos(ras_checkpoint_tos),
-      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count)
+      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
+
+      // Lever A: decoupled bimodal direction + predict-time index carried to PD
+      .o_dir_predicted_taken(bp_dir_taken),
+      .o_dir_idx(bp_dir_idx),
+      .o_dir_idx_2(bp_dir_idx_2)
   );
 
   // ===========================================================================
@@ -935,6 +958,50 @@ module if_stage #(
       .o_data(ras_checkpoint_valid_count_sc)
   );
 
+  // Lever A: freeze the decoupled direction bit across stall replay (like the
+  // RAS checkpoint capture above) so the carried direction stays matched to the op.
+  logic bp_dir_taken_sc;
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_bp_dir_taken_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(bp_dir_taken),
+      .o_data(bp_dir_taken_sc)
+  );
+
+  // Lever A: freeze the slot-1 predict-time index across stall replay, mirroring
+  // the direction bit above, so the carried index stays matched to the op.
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_sc;
+  stall_capture_reg #(
+      .WIDTH(riscv_pkg::BpDirIdxBits)
+  ) u_bp_dir_idx_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(bp_dir_idx),
+      .o_data(bp_dir_idx_sc)
+  );
+  // Slot-2 predict-time index (combinational from the slot-2 lookup PC), captured
+  // on stall entry like the other slot-2 metadata.
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_2_sc;
+  stall_capture_reg #(
+      .WIDTH(riscv_pkg::BpDirIdxBits)
+  ) u_bp_dir_idx_2_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(bp_dir_idx_2),
+      .o_data(bp_dir_idx_2_sc)
+  );
+
   // Output RAS metadata - clear for NOP/spanning, use saved during stall
   logic sel_nop_effective;
   assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
@@ -949,6 +1016,10 @@ module if_stage #(
                                               ras_checkpoint_tos;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = replay_saved_if_outputs ?
       ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count;
+  // Lever A: decoupled bimodal direction carried with this slot-1 op (replay-aware).
+  assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc : bp_dir_taken;
+  // Lever A: predict-time index carried with this slot-1 op (replay-aware).
+  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc : bp_dir_idx;
 
   // ===========================================================================
   // Prediction Metadata Tracker
@@ -1160,5 +1231,10 @@ module if_stage #(
   assign o_from_if_to_pd_2.ras_predicted_target = '0;
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
   assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
+  // Lever A: slot-2 is not used by the PD redirect heuristic (slot-1 only), so
+  // carry a benign 0 for slot-2's direction bit.  Its predict-time index IS
+  // carried, so a slot-2-fetched branch trains the entry it predicted.
+  assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
+  assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
 
 endmodule : if_stage

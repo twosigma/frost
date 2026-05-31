@@ -499,6 +499,11 @@ package riscv_pkg;
   localparam int unsigned RasDepth = 8;
   localparam int unsigned RasPtrBits = $clog2(RasDepth);
 
+  // Branch direction predictor (bimodal) index width.  Must match
+  // direction_predictor's BIM_BITS.  Also the width of the predict-time index
+  // carried with each branch (bp_dir_idx) for commit-time training.
+  localparam int unsigned BpDirIdxBits = 10;
+
   // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage
   // IF outputs raw/partially processed data; PD performs decompression for better timing.
   // With 64-bit fetch, spanning instructions are assembled immediately in IF — no
@@ -523,6 +528,15 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
     logic [RasPtrBits-1:0] ras_checkpoint_tos;  // TOS at prediction time (for recovery)
     logic [RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count at prediction (for recovery)
+    // Lever A: decoupled bimodal branch-direction prediction (NOT gated by
+    // btb_hit) carried to PD.  PD uses it to redirect on a BTB MISS when the
+    // direction predicts taken, for ANY offset sign.  Consumed only in PD
+    // (slot-1); not carried past PD.
+    logic bp_dir_taken;
+    // Lever A: predict-time bimodal index this op carried from fetch, handed back
+    // at commit to train the EXACT entry the prediction read (carried all the way
+    // to commit, unlike bp_dir_taken which is consumed at PD).
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
   } from_if_to_pd_t;
 
   // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage
@@ -547,6 +561,8 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    // Lever A: predict-time bimodal index carried to commit for training.
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
   } from_pd_to_id_t;
 
   // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
@@ -631,6 +647,8 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    // Lever A: predict-time bimodal index carried to commit for training.
+    logic [BpDirIdxBits-1:0] bp_dir_idx;
     // TIMING OPTIMIZATION: Pre-computed RAS instruction type detection.
     // These flags move comparisons out of the EX stage critical path.
     // Computed in ID stage from registered values, used by EX for ras_correct.

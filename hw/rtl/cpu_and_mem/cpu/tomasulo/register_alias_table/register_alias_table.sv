@@ -216,9 +216,9 @@ module register_alias_table (
   localparam int unsigned FpRatSnapshotWidth = NumFpRegs * RatEntryWidth;
   // Combined RAT snapshot for single wide RAM
   localparam int unsigned RatSnapshotWidth = IntRatSnapshotWidth + FpRatSnapshotWidth;
-  // Metadata: branch_tag(5) + ras_tos(3) + ras_valid_count(4) = 12
+  // Metadata: branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4) = 13
   localparam int unsigned CheckpointMetaWidth =
-      ReorderBufferTagWidth + RasPtrBits + (RasPtrBits + 1);
+      ReorderBufferTagWidth + 1 + RasPtrBits + (RasPtrBits + 1);
 
   // ===========================================================================
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
@@ -291,7 +291,7 @@ module register_alias_table (
   );
 
   // Checkpoint metadata — distributed RAM
-  // branch_tag(5) + ras_tos(3) + ras_valid_count(4) = 12 bits
+  // branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4) = 13 bits
   logic                           ckpt_meta_wr_en;
   logic [  CheckpointIdWidth-1:0] ckpt_meta_wr_addr;
   logic [CheckpointMetaWidth-1:0] ckpt_meta_wr_data;
@@ -374,11 +374,16 @@ module register_alias_table (
     end
   end
 
-  // Pack metadata for checkpoint save
-  assign ckpt_meta_wr_data = {i_ras_valid_count, i_ras_tos, i_checkpoint_branch_tag};
+  // Pack metadata for checkpoint save.  The branch ROB entry is allocated in
+  // the same cycle as the checkpoint, so save the post-allocation epoch.
+  logic checkpoint_branch_epoch_next;
+  assign checkpoint_branch_epoch_next = ~i_rob_entry_epoch[i_checkpoint_branch_tag];
+  assign ckpt_meta_wr_data = {
+    i_ras_valid_count, i_ras_tos, checkpoint_branch_epoch_next, i_checkpoint_branch_tag
+  };
 
   // Read side: checkpoint restore
-  assign ckpt_rat_rd_addr  = i_checkpoint_restore_id;
+  assign ckpt_rat_rd_addr = i_checkpoint_restore_id;
   assign ckpt_meta_rd_addr = i_checkpoint_restore_id;
 
   // Unpack restored RAT state
@@ -407,26 +412,33 @@ module register_alias_table (
 
   // Unpack restored metadata
   logic [ReorderBufferTagWidth-1:0] restored_branch_tag;
-  logic [RasPtrBits-1:0] restored_ras_tos;
-  logic [RasPtrBits:0] restored_ras_valid_count;
+  logic                             restored_branch_epoch;
+  logic [           RasPtrBits-1:0] restored_ras_tos;
+  logic [             RasPtrBits:0] restored_ras_valid_count;
 
   assign restored_branch_tag = ckpt_meta_rd_data[0+:ReorderBufferTagWidth];
-  assign restored_ras_tos = ckpt_meta_rd_data[ReorderBufferTagWidth+:RasPtrBits];
+  assign restored_branch_epoch = ckpt_meta_rd_data[ReorderBufferTagWidth];
+  assign restored_ras_tos = ckpt_meta_rd_data[ReorderBufferTagWidth+1+:RasPtrBits];
   assign restored_ras_valid_count =
-      ckpt_meta_rd_data[ReorderBufferTagWidth+RasPtrBits+:(RasPtrBits+1)];
+      ckpt_meta_rd_data[ReorderBufferTagWidth+1+RasPtrBits+:(RasPtrBits+1)];
 
   function automatic logic restored_tag_still_live(
       input logic [ReorderBufferTagWidth-1:0] restored_tag, input logic restored_epoch);
     logic [ReorderBufferTagWidth:0] tag_age;
     logic [ReorderBufferTagWidth:0] branch_age;
+    logic                           branch_still_live;
     begin
       tag_age = {1'b0, restored_tag} - {1'b0, i_rob_head_tag};
       branch_age = {1'b0, restored_branch_tag} - {1'b0, i_rob_head_tag};
+      branch_still_live =
+          i_rob_entry_valid[restored_branch_tag] &&
+          (i_rob_entry_epoch[restored_branch_tag] == restored_branch_epoch);
       // Snapshot entries must still refer to live producers that are strictly
-      // older than the restoring branch and match the saved allocation
-      // generation. This prevents a recycled ROB tag from being revived after
-      // wraparound.
+      // older than a still-live restoring branch and match the saved allocation
+      // generation. This prevents recycled ROB tags from being revived after
+      // the checkpoint owner has retired or wrapped.
       restored_tag_still_live =
+          branch_still_live &&
           i_rob_entry_valid[restored_tag] &&
           (i_rob_entry_epoch[restored_tag] == restored_epoch) &&
           (tag_age < branch_age);

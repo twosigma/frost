@@ -223,6 +223,7 @@ class TomasuloInterface:
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
+        self._rob_entry_epoch_mask = 0
 
     # =========================================================================
     # Clock and Reset
@@ -288,7 +289,8 @@ class TomasuloInterface:
 
         # ROB bypass read
         self.dut.i_read_tag.value = 0
-        self.dut.i_rob_entry_epoch.value = 0
+        self._rob_entry_epoch_mask = 0
+        self._drive_rob_entry_epoch()
         self.dut.i_bypass_valid_1.value = 0
         self.dut.i_bypass_tag_1.value = 0
         self.dut.i_bypass_valid_2.value = 0
@@ -654,7 +656,23 @@ class TomasuloInterface:
 
     def set_rob_entry_epoch_mask(self, epoch_mask: int) -> None:
         """Drive synthetic ROB entry epochs for direct wrapper tests."""
-        self.dut.i_rob_entry_epoch.value = epoch_mask
+        self._rob_entry_epoch_mask = epoch_mask
+        self._drive_rob_entry_epoch()
+
+    def add_rob_entry_epoch_bits(self, epoch_mask: int) -> None:
+        """Set selected synthetic ROB epoch bits without clearing existing bits."""
+        self._rob_entry_epoch_mask |= epoch_mask
+        self._drive_rob_entry_epoch()
+
+    def _drive_rob_entry_epoch(self) -> None:
+        """Drive synthetic ROB entry epochs for the wrapper's RAT instance."""
+        self.dut.i_rob_entry_epoch.value = self._rob_entry_epoch_mask
+
+    def record_allocated_tags(self, *tags: int) -> None:
+        """Record post-allocation ROB epochs for tags allocated this cycle."""
+        for tag in set(tags):
+            self._rob_entry_epoch_mask ^= 1 << (tag & MASK_TAG)
+        self._drive_rob_entry_epoch()
 
     # =========================================================================
     # Flush
@@ -1025,6 +1043,7 @@ class TomasuloInterface:
         # Rising edge: modules register
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
+        self.record_allocated_tags(tag)
 
         # Clear
         self.clear_alloc_request()
