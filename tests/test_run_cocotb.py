@@ -326,6 +326,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="ooo_register_files",
         description="CPU OOO architectural register-files tests",
     ),
+    "ras_detector": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
+        hdl_toplevel_module="ras_detector",
+        description="IF-stage RAS instruction detector tests",
+    ),
+    "return_address_stack": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_return_address_stack",
+        hdl_toplevel_module="return_address_stack",
+        description="IF-stage return-address stack tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
