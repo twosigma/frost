@@ -109,9 +109,8 @@ module tomasulo_wrapper #(
 
     // Widen-commit slot 2 observation (head+1).  Non-null only when the
     // 2-wide gate inside the ROB fires; otherwise valid bits are low and
-    // payload is '0.  These ports exist so cpu_ooo (and future external
-    // consumers) can wire up slot-2 retire logic — step 2 does not yet
-    // connect any consumer to them.
+    // payload is '0.  cpu_ooo consumes these in parallel with slot 1 for
+    // two-wide architectural retirement.
     output riscv_pkg::reorder_buffer_commit_t o_commit_2,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
     output logic                              o_commit_2_valid_raw,
@@ -132,10 +131,9 @@ module tomasulo_wrapper #(
     input  logic                                        i_interrupt_pending,
     input  logic                                        i_trap_misaligned_accesses,
 
-    // Widen-commit back-pressure: asserted when cpu_ooo's pending-write
-    // FIFO has room for a slot-2 regfile write this cycle.  Driven from
-    // a registered pending_write state so the ROB can OR it into the
-    // commit_2_fire gate without creating a combinational loop.
+    // Widen-commit back-pressure: asserted when the downstream slot-2
+    // retire path can accept a second commit this cycle.  cpu_ooo ties this
+    // high because it has a dedicated second regfile write port.
     input logic i_widen_commit_ok,
     input logic i_commit_hold,
 
