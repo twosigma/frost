@@ -306,6 +306,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="data_mem_request_router",
         description="CPU OOO data-memory request router tests",
     ),
+    "frontend_validity_tracker": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
+        hdl_toplevel_module="frontend_validity_tracker",
+        description="CPU OOO frontend validity/control-flow tracker tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
