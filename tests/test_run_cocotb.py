@@ -276,6 +276,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="dispatch",
         description="Dispatch unit tests (instruction classification, source resolution, stall, RS routing)",
     ),
+    "branch_jump_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_branch_jump_unit",
+        hdl_toplevel_module="branch_jump_unit",
+        description="EX-stage branch/jump resolution unit tests",
+    ),
     "commit_actions": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.commit.test_commit_actions",
         hdl_toplevel_module="commit_actions",
