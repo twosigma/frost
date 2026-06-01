@@ -26,6 +26,7 @@ CLOCK_PERIOD_NS = 10
 XLEN = 32
 FLEN = 64
 RAS_PTR_BITS = 3
+BP_DIR_IDX_BITS = 10
 INSTR_OP_WIDTH = 32
 BRANCH_OP_WIDTH = 3
 STORE_OP_WIDTH = 2
@@ -88,6 +89,7 @@ PD_TO_ID_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
 RF_TO_FWD_FIELDS = [
@@ -175,6 +177,7 @@ ID_TO_EX_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
     ("is_ras_return", 1),
     ("is_ras_call", 1),
     ("ras_predicted_target_nonzero", 1),
@@ -280,6 +283,7 @@ def _drive_pd_packet(
         "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "bp_dir_idx": 0,
     }
     packet.update(fields)
     value = _pack_pd_to_id(packet)

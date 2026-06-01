@@ -29,6 +29,7 @@ INSTR_OP_WIDTH = 32
 BRANCH_OP_WIDTH = 3
 STORE_OP_WIDTH = 2
 RAS_PTR_BITS = 3
+BP_DIR_IDX_BITS = 10
 
 PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
@@ -45,6 +46,7 @@ PD_TO_ID_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
 ID_TO_EX_FIELDS = [
@@ -111,6 +113,7 @@ ID_TO_EX_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
     ("is_ras_return", 1),
     ("is_ras_call", 1),
     ("ras_predicted_target_nonzero", 1),
