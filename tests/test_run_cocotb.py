@@ -356,6 +356,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="pc_increment_calculator",
         description="IF-stage PC increment calculator tests",
     ),
+    "pc_controller": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_pc_controller",
+        hdl_toplevel_module="pc_controller",
+        description="IF-stage PC controller tests",
+    ),
     "instruction_aligner": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
         hdl_toplevel_module="instruction_aligner",
