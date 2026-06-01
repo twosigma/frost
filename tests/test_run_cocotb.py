@@ -394,6 +394,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="pd_stage",
         description="PD-stage top-level unit tests",
     ),
+    "id_stage": CocotbRunConfig(
+        python_test_module="cocotb_tests.id_stage.test_id_stage",
+        hdl_toplevel_module="id_stage",
+        description="ID-stage top-level unit tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",

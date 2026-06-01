@@ -254,6 +254,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),id_stage)
+# ID-stage top-level unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 # Tomasulo integration wrapper block test (ROB + RAT + RS + CDB arbiter)
 COMPILE_ARGS := \
