@@ -94,6 +94,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_update_taken.value = 0
     dut.i_btb_update_compressed.value = 0
     dut.i_btb_update_requires_pc_reg_handoff.value = 0
+    dut.i_dir_update_valid.value = 0
+    dut.i_dir_update_idx.value = 0
+    dut.i_dir_update_taken.value = 0
     dut.i_instruction.value = 0
     dut.i_raw_parcel.value = 0
     dut.i_is_compressed.value = 0

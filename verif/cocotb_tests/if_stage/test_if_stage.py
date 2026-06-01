@@ -25,6 +25,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 CLOCK_PERIOD_NS = 10
 XLEN = 32
 RAS_PTR_BITS = 3
+BP_DIR_IDX_BITS = 10
 NOP_INSTR = 0x00000013
 ADD_INSTR_A = 0x00B50533
 ADD_INSTR_B = 0x00C585B3
@@ -91,6 +92,8 @@ IF_TO_PD_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_taken", 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
 

@@ -25,6 +25,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 CLOCK_PERIOD_NS = 10
 XLEN = 32
 RAS_PTR_BITS = 3
+BP_DIR_IDX_BITS = 10
 
 NOP_INSTR = 0x00000013
 OPC_BRANCH = 0b1100011
@@ -57,6 +58,8 @@ IF_TO_PD_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_taken", 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
 PD_TO_ID_FIELDS = [
@@ -74,6 +77,7 @@ PD_TO_ID_FIELDS = [
     ("ras_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
 
@@ -138,6 +142,8 @@ def _drive_if_packet(
         "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "bp_dir_taken": False,
+        "bp_dir_idx": 0,
     }
     packet.update(fields)
     value = _pack_if_to_pd(packet)
@@ -243,6 +249,7 @@ def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     assert packet["btb_hit"] is False
     assert packet["btb_predicted_taken"] is False
     assert packet["ras_predicted"] is False
+    assert packet["bp_dir_idx"] == 0
 
 
 @cocotb.test()
@@ -284,6 +291,7 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
             "ras_predicted_target": BASE_PC + 0x80,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
+            "bp_dir_idx": 0x155,
         },
     )
     await _advance_cycle(dut)
@@ -303,6 +311,7 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     assert packet["ras_predicted_target"] == BASE_PC + 0x80
     assert packet["ras_checkpoint_tos"] == 5
     assert packet["ras_checkpoint_valid_count"] == 6
+    assert packet["bp_dir_idx"] == 0x155
 
 
 @cocotb.test()
@@ -533,10 +542,10 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_backward_branch_redirect_registers_and_squashes_following_cycle(
+async def test_direction_predicted_branch_redirects_and_squashes_following_cycle(
     dut: Any,
 ) -> None:
-    """A cold backward branch redirects next cycle and squashes wrong-path PD data."""
+    """A direction-predicted branch redirects next cycle and squashes wrong-path data."""
     await _setup_test(dut)
     branch_instr = _pack_b(
         imm=-4,
@@ -554,6 +563,7 @@ async def test_backward_branch_redirect_registers_and_squashes_following_cycle(
             "sel_nop": False,
             "effective_instr": branch_instr,
             "link_address": BASE_PC + 4,
+            "bp_dir_taken": True,
         },
     )
     await _settle()
