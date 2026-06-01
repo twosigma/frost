@@ -366,6 +366,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="rvc_decompressor",
         description="IF-stage RVC decompressor tests",
     ),
+    "c_ext_state": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_c_ext_state",
+        hdl_toplevel_module="c_ext_state",
+        description="IF-stage C-extension state controller tests",
+    ),
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
