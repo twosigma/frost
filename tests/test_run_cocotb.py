@@ -341,6 +341,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="branch_predictor",
         description="IF-stage branch target buffer predictor tests",
     ),
+    "branch_prediction_controller": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.if_stage.branch_prediction."
+            "test_branch_prediction_controller"
+        ),
+        hdl_toplevel_module="branch_prediction_controller",
+        description="IF-stage branch prediction controller tests",
+    ),
     "prediction_metadata_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_prediction_metadata_tracker",
         hdl_toplevel_module="prediction_metadata_tracker",

@@ -186,6 +186,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),branch_prediction_controller)
+# IF-stage branch prediction controller unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
 # IF-stage prediction metadata tracker unit test
 COMPILE_ARGS := \
