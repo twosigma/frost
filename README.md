@@ -34,7 +34,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     │   │ BTB 256×2b     │                 └──────────────┬──────────────┘   │
 │     │   │ DirPred 1024×2b│                                │ issue            │
 │     │   │ RAS 8          │                                ▼                  │
-│     │   └────────────────┘    ┌──────────────────────────────────────────┐  │
+│     │   └────────────────┘     ┌──────────────────────────────────────────┐  │
 │     │                          │  6 reservation stations                  │  │
 │     │                          │  INT  MUL  MEM  FP  FMUL  FDIV           │  │
 │     │                          │  (16) (4)  (8)  (6)  (4)   (2)           │  │
