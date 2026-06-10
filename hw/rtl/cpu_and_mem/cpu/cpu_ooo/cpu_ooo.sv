@@ -31,7 +31,14 @@ module cpu_ooo #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
+    // URAM memory tier (high-address region). Loads to [URAM_BASE,
+    // URAM_BASE+URAM_SIZE_BYTES) take URAM_READ_LATENCY cycles; the low BRAM
+    // range + MMIO stay 1-cycle. Production software never addresses this region.
+    parameter int unsigned URAM_BASE = 32'h0100_0000,
+    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024,
+    parameter int unsigned URAM_READ_LATENCY = 2,
+    parameter int unsigned URAM_WRITE_LATENCY = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -53,6 +60,18 @@ module cpu_ooo #(
     // MMIO writes remain visible to UART/FIFO/timer logic.
     output logic [3:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
+    // URAM tier (high-address region). Tier-routed write/read enables (already
+    // qualified by is_uram in the router) and the URAM read-data return path.
+    output logic [3:0] o_data_mem_uram_byte_wr_en,
+    // URAM write data: the store-queue drain data ONLY. AMOs are pinned to the
+    // BRAM tier (never write URAM), so routing the AMO write-data mux into the
+    // URAM data input was dead logic -- but it dragged the long
+    // (amo_entry_idx -> AMO ALU) cone onto the URAM CAS_IN_DIN cascade, which was
+    // the dominant post-opt timing failure. Feeding the SQ drain data directly
+    // drops that cone with no added latency (URAM writes stay single-cycle).
+    output logic [XLEN-1:0] o_data_mem_uram_wr_data,
+    output logic o_data_mem_uram_read_enable,
+    input logic [XLEN-1:0] i_uram_rd_data,
     output logic o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic o_mmio_load_valid,
@@ -803,6 +822,10 @@ module cpu_ooo #(
   logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
   logic [3:0] sq_mem_write_byte_en;
   logic sq_mem_write_is_mmio;
+  // Registered URAM-tier flag for the SQ write (parallels is_mmio). Used by the
+  // router to steer the store's byte-write enables to the URAM tier and mask
+  // them off the BRAM, keeping the late address-range test off the BRAM WEA cone.
+  logic sq_mem_write_is_uram;
   logic sq_mem_write_done;
 
   logic lq_mem_read_en;
@@ -927,7 +950,9 @@ module cpu_ooo #(
 
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
-      .ENABLE_DISPATCH_DONE_REPAIR(1'b1)
+      .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES)
   ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
@@ -1192,6 +1217,7 @@ module cpu_ooo #(
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
       .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
+      .o_sq_mem_write_is_uram(sq_mem_write_is_uram),
       .i_sq_mem_write_done(sq_mem_write_done),
 
       // Load queue memory interface
@@ -1657,10 +1683,18 @@ module cpu_ooo #(
   // Priority: SQ writes > AMO writes > queued LQ reads
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
+  // URAM write data is store-queue drain data only (AMOs never target URAM); see
+  // the o_data_mem_uram_wr_data port comment. Off the AMO write-data cone.
+  assign o_data_mem_uram_wr_data = sq_mem_write_data;
+
   data_mem_request_router #(
       .XLEN(XLEN),
       .MMIO_ADDR(MMIO_ADDR),
-      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES)
+      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES),
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
+      .URAM_READ_LATENCY(URAM_READ_LATENCY),
+      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY)
   ) data_mem_request_router_inst (
       .i_clk,
       .i_rst,
@@ -1669,6 +1703,7 @@ module cpu_ooo #(
       .i_sq_mem_write_data(sq_mem_write_data),
       .i_sq_mem_write_byte_en(sq_mem_write_byte_en),
       .i_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
+      .i_sq_mem_write_is_uram(sq_mem_write_is_uram),
       .i_amo_mem_write_en(amo_mem_write_en),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
@@ -1676,11 +1711,14 @@ module cpu_ooo #(
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
       .i_data_mem_rd_data(i_data_mem_rd_data),
+      .i_uram_rd_data(i_uram_rd_data),
       .o_data_mem_addr(o_data_mem_addr),
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
       .o_data_mem_read_enable(o_data_mem_read_enable),
+      .o_data_mem_uram_byte_wr_en(o_data_mem_uram_byte_wr_en),
+      .o_data_mem_uram_read_enable(o_data_mem_uram_read_enable),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
       .o_mmio_load_valid(o_mmio_load_valid),

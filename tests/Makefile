@@ -324,8 +324,14 @@ endif
 # Simulation-only memory override (2MB default, allows arch tests with large data)
 # Only for toplevels that have the MEM_SIZE_BYTES parameter
 SIM_MEM_SIZE_BYTES ?= 2097152
+# URAM memory tier read latency (cycles, addr->data) for the high-address
+# UltraRAM tier. Default 6 matches frost.sv; override to sweep e.g.:
+#   URAM_READ_LATENCY=3 ./test_run_cocotb.py uram_test
+URAM_READ_LATENCY ?= 6
+URAM_WRITE_LATENCY ?= 2
+ENABLE_URAM_TIER ?= 1
 ifeq ($(TOPLEVEL),frost)
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GURAM_READ_LATENCY=$(URAM_READ_LATENCY) -GURAM_WRITE_LATENCY=$(URAM_WRITE_LATENCY) -GENABLE_URAM_TIER=$(ENABLE_URAM_TIER)
 endif
 
 # Include Cocotb simulation makefile rules

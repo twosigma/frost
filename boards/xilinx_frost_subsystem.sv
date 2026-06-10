@@ -20,7 +20,10 @@
 module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz - must match actual clock from board wrapper
     // Used for UART baud rate calculation (UART runs at CLK_FREQ_HZ / 4)
-    parameter int unsigned CLK_FREQ_HZ = 300000000
+    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    // 1 = instantiate the URAM tier (UltraScale+); 0 = omit it (7-series, no
+    // UltraRAM). Set by the board top (genesys2_frost=0, x3_frost=1).
+    parameter int unsigned ENABLE_URAM_TIER = 1
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
@@ -172,7 +175,8 @@ module xilinx_frost_subsystem #(
 
   // FROST RISC-V processor instance
   frost #(
-      .CLK_FREQ_HZ(CLK_FREQ_HZ)
+      .CLK_FREQ_HZ(CLK_FREQ_HZ),
+      .ENABLE_URAM_TIER(ENABLE_URAM_TIER)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),

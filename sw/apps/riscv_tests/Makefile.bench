@@ -48,6 +48,14 @@ DISASSEMBLY_FILE    = sw.S
 CRT0 = crt0_bench.S
 SYSCALLS = syscalls_frost.c
 
+# Frost standard library (single source of truth in sw/lib). syscalls_frost.c
+# no longer carries its own libc copies; the canonical memcpy/memset/str*/
+# malloc/free/calloc/realloc/atol/abs come from here. Compiled as isolated
+# objects with their own include path so the benchmark sources keep using the
+# toolchain's <string.h>/<stdlib.h> (no header shadowing).
+LIB_DIR = ../../lib
+LIB_OBJ = frostlib_string.o frostlib_memory.o frostlib_stdlib.o frostlib_ctype.o
+
 # Find benchmark source files (all .c and .S in the benchmark directory)
 BENCH_C_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.c)
 BENCH_S_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.S)
@@ -55,12 +63,16 @@ BENCH_S_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.S)
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-$(EXECUTABLE_ELF_FILE): $(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) $(LINKER_SCRIPT)
+# Frost library objects: compiled with the lib's own include path in isolation.
+frostlib_%.o: $(LIB_DIR)/src/%.c
+	$(CC) $(CFLAGS) -I$(LIB_DIR)/include -c $< -o $@
+
+$(EXECUTABLE_ELF_FILE): $(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) $(LIB_OBJ) $(LINKER_SCRIPT)
 ifndef BENCH
 	$(error BENCH is not set. Usage: make -f Makefile.bench BENCH=median)
 endif
 	$(CC) $(CFLAGS) $(INCLUDES) \
-		$(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) \
+		$(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) $(LIB_OBJ) \
 		$(LDFLAGS) -o $@
 
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
@@ -73,6 +85,6 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
 clean:
-	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
+	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE) $(LIB_OBJ)
 
 .PHONY: all clean

@@ -142,31 +142,10 @@ Load software into instruction memory without regenerating the bitstream. This e
 
 **Arguments:**
 - `board` - Target board: `x3` or `genesys2`
-- `app` - Application name (see table below)
+- `app` - Application name (run `./fpga/load_software/load_software.py --help` for choices)
 - `remote_host` - (Optional) Hostname for remote FPGA
 - `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
 - `--list-targets` - (Optional) List available hardware targets for this board and exit (does not require `app`)
-
-**Available Applications:**
-
-| Application         | Description                                          |
-|---------------------|------------------------------------------------------|
-| `hello_world`       | Simple test program (prints message every second)    |
-| `isa_test`          | ISA compliance test suite                            |
-| `coremark`          | Industry-standard CPU benchmark                      |
-| `freertos_demo`     | FreeRTOS RTOS demo with timer interrupts             |
-| `csr_test`          | CSR and trap handling tests                          |
-| `memory_test`       | Memory allocator test suite                          |
-| `strings_test`      | String library test suite                            |
-| `packet_parser`     | FIX protocol message parser                          |
-| `c_ext_test`        | C extension (compressed instruction) test            |
-| `call_stress`       | Function call stress test                            |
-| `spanning_test`     | Instruction spanning boundary test                   |
-| `uart_echo`         | Interactive UART receive demo (echo, hex, commands)  |
-| `branch_pred_test`  | Branch predictor verification (45 tests)             |
-| `ras_test`          | Return Address Stack (RAS) comprehensive test suite  |
-| `ras_stress_test`   | Stress test mixing calls, returns, and branches      |
-| `print_clock_speed` | Clock speed measurement utility                      |
 
 The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.
 
@@ -183,6 +162,13 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 # Load FreeRTOS demo on Genesys2
 ./fpga/load_software/load_software.py genesys2 freertos_demo
+
+# CoreMark-PRO workloads (X3 only — they need the 2 MiB URAM heap) take a
+# mandatory mode flag: -v1 runs self-validation, -v0 runs the performance
+# configuration with the per-workload iteration counts from
+# sw/apps/software_registry.py.
+./fpga/load_software/load_software.py x3 coremark_pro_core -v1
+./fpga/load_software/load_software.py x3 coremark_pro_linear_alg -v0
 
 # List targets for this board (doesn't require app argument)
 ./fpga/load_software/load_software.py genesys2 --list-targets

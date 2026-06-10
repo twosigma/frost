@@ -1081,6 +1081,234 @@ async def test_cache_hit_bypasses_memory(dut: Any) -> None:
         ], "Fast-path cache hit should skip memory"
 
 
+@cocotb.test()
+async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
+    """A warm L0 hit must wait while SQ/AMO owns the memory bus.
+
+    Regression: a phase-2 SQ-checked load could complete from L0 while
+    i_mem_bus_busy was high, one cycle before the matching store invalidation
+    reached the cache.
+    """
+    dut_if, model = await setup(dut)
+
+    addr = 0x0100_0040
+    stale_word = 0x1122_3344
+
+    # Fill L0 with the old value.
+    dut_if.drive_sq_empty(True)
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
+    result = await complete_load_no_forward(dut_if, model, mem_data=stale_word)
+    assert result.valid and result.value == stale_word
+    await dut_if.step()
+
+    # Capture another load to the same warm line. Keep SQ non-empty so the
+    # candidate reaches phase 2 through the explicit SQ-check response path,
+    # matching an older-store drain window.
+    dut_if.drive_sq_empty(False)
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=addr)
+
+    sq_check = await wait_for_sq_check(dut_if)
+    assert sq_check["valid"], "Expected LQ to present SQ check"
+    assert sq_check["addr"] == addr
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()
+
+    dut_if.drive_mem_bus_busy(True)
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_hit.value), "L0 fast path fired while memory bus was busy"
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Load completed from stale L0 during SQ write"
+    assert not dut_if.read_mem_request()[
+        "en"
+    ], "Busy memory bus should block memory issue"
+
+    await dut_if.step()
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=1)).valid
+
+    dut_if.drive_mem_bus_busy(False)
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+
+@cocotb.test()
+async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> None:
+    """A warm L0 line must die at the store's write launch, never hit stale.
+
+    X3 URAM stores keep their write in flight for cycles after the SQ write
+    pulse drops; a younger same-address load must never consume the stale L0
+    line in that gap (the window that exposed the parser failure on
+    hardware).
+
+    Contract: the SQ fires the L0 invalidate in the write LAUNCH cycle, so
+    the line is dead before the flight even starts — the launch cycle
+    itself is covered by i_mem_bus_busy plus the L0's same-cycle
+    invalidate suppress. In the flight gap the load simply MISSES and may
+    issue to memory; ordering the read behind the in-flight write is the
+    router's job (test_uram_queued_load_waits_for_delayed_store_done).
+    (Earlier designs blocked the gap in the LQ instead — first by
+    stretching busy a trailing cycle, which taxed every BRAM store drain
+    ~2% CoreMark, then via a routed busy term that broke timing closure.)
+    """
+    dut_if, model = await setup(dut)
+
+    addr = 0x0100_0080
+    stale_word = 0xCAFE_BABE
+    fresh_word = 0x0BAD_F00D
+
+    # Fill L0 with the old value.
+    dut_if.drive_sq_empty(True)
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
+    result = await complete_load_no_forward(dut_if, model, mem_data=stale_word)
+    assert result.valid and result.value == stale_word
+    await dut_if.step()
+
+    # Capture another load to the same warm line through the explicit SQ-check
+    # path so it models a younger load behind a draining store.
+    dut_if.drive_sq_empty(False)
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=addr)
+
+    sq_check = await wait_for_sq_check(dut_if)
+    assert sq_check["valid"], "Expected LQ to present SQ check"
+    assert sq_check["addr"] == addr
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()
+
+    # Store launch cycle: the memory port is busy AND the SQ fires the L0
+    # invalidate for the written address in this same cycle. The warm line
+    # must not hit (busy gate + same-cycle invalidate suppress).
+    dut_if.drive_mem_bus_busy(True)
+    dut_if.drive_cache_invalidate(addr)
+    await Timer(1, unit="ns")
+    assert not bool(
+        dut.o_l0_hit.value
+    ), "L0 fast path fired while SQ write owned the bus"
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Load completed from stale L0 during SQ write"
+    assert not dut_if.read_mem_request()[
+        "en"
+    ], "Busy memory bus should block memory issue"
+    await dut_if.step()
+    dut_if.clear_cache_invalidate()
+
+    # URAM delayed-write gap: the write pulse (and busy) are gone while the
+    # store is still in its write pipeline — but the line was already
+    # invalidated at launch, so the load must MISS (no stale hit, no stale
+    # completion). Issuing to memory here is fine: the router orders the
+    # read behind the in-flight write.
+    dut_if.drive_mem_bus_busy(False)
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_hit.value), (
+        "L0 fast path fired in the write-flight gap despite the launch-time "
+        "invalidation"
+    )
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Load completed from stale L0 in the write-flight gap"
+    mem_req = dut_if.read_mem_request()
+    await dut_if.step()
+
+    if not mem_req["en"]:
+        mem_req = await wait_for_mem_request(dut_if, max_cycles=3)
+    assert mem_req["en"], "Load should issue to memory after the launch invalidation"
+    assert mem_req["addr"] == addr
+
+    dut_if.drive_mem_response(fresh_word)
+    model.mem_response(fresh_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Load should complete after fetching fresh memory data"
+    assert result.tag == 2
+    assert (
+        result.value == fresh_word
+    ), f"Expected fresh value 0x{fresh_word:x}, got 0x{result.value:x}"
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_uram_response_after_invalidate_does_not_refill_l0(dut: Any) -> None:
+    """A delayed URAM response must not refill L0 after a same-word store.
+
+    A multi-cycle URAM load can be older than a later committed store. If that
+    store invalidates the L0 line before the load response returns, the response
+    must still complete the older load but must not repopulate L0 with the
+    pre-store word. Otherwise a still-younger load can hit stale data.
+    """
+    dut_if, model = await setup(dut)
+
+    addr = 0x0100_0200
+    stale_word = 0x1122_3344
+    fresh_word = 0x5566_7788
+
+    dut_if.drive_sq_empty(True)
+
+    # Launch a URAM-range load and leave its response delayed.
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Expected first URAM load to issue"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    # A younger store to the same word commits before the delayed URAM response.
+    dut_if.drive_cache_invalidate(addr)
+    await dut_if.step()
+    dut_if.clear_cache_invalidate()
+
+    # The older load still completes with the pre-store value.
+    await dut_if.step()
+    dut_if.drive_mem_response(stale_word)
+    model.mem_response(stale_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Delayed URAM load should still complete"
+    assert result.tag == 1
+    assert result.value == stale_word
+    await accept_fu_complete(dut_if)
+
+    # A later load to the same word must miss L0 and fetch the post-store value.
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+
+    assert not bool(
+        dut.o_l0_hit.value
+    ), "Stale URAM response refilled L0 after invalidation"
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=4)
+    assert mem_req["en"], "Later load should miss L0 and issue to memory"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    dut_if.drive_mem_response(fresh_word)
+    model.mem_response(fresh_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Later load should complete from memory"
+    assert result.tag == 2
+    assert result.value == fresh_word
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await accept_fu_complete(dut_if)
+
+
 # ============================================================================
 # Test 26: Cache miss fills cache, subsequent hit
 # ============================================================================

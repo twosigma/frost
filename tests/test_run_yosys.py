@@ -55,6 +55,34 @@ def _is_generic_synth_command(synth_command: str) -> bool:
     return command == "synth" or command.startswith("synth ")
 
 
+def _xilinx_family(synth_command: str) -> str | None:
+    """Return the synth_xilinx -family value, if this is a Xilinx command."""
+    parts = synth_command.split()
+    if not parts or parts[0] != "synth_xilinx":
+        return None
+
+    for i, part in enumerate(parts[:-1]):
+        if part == "-family":
+            return parts[i + 1]
+    return None
+
+
+def _hierarchy_command(synth_command: str) -> str:
+    """Build the Yosys hierarchy command for this synthesis target."""
+    command = "hierarchy -top cpu_and_mem"
+
+    # UltraRAM exists only on UltraScale+. Keep the URAM tier enabled for xcup
+    # so that target still exercises the high-address tier, but disable it for
+    # 7-series and UltraScale where Yosys cannot legally map UltraRAM.
+    family = _xilinx_family(synth_command)
+    if family in {"xc7", "xcu"}:
+        command += " -chparam ENABLE_URAM_TIER 0"
+    elif family == "xcup":
+        command += " -chparam ENABLE_URAM_TIER 1"
+
+    return command
+
+
 def _get_timeout_seconds(synth_command: str) -> int:
     """Get synthesis timeout in seconds, with target-aware defaults.
 
@@ -236,6 +264,8 @@ class YosysRunner:
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
             else:
                 yosys_script.append(f"read_verilog {defines} {vfile}")
+
+        yosys_script.append(_hierarchy_command(synth_command))
 
         # Add synthesis command
         yosys_script.append(synth_command)

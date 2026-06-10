@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from software_registry import app_build_directory_name, coremark_pro_make_vars
+
 # App-specific build settings for simulation
 # These override defaults when compiling for cocotb simulation
 APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
@@ -58,7 +60,9 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
         For example, coremark is compiled with ITERATIONS=1 for fast simulation.
     """
     apps_dir = get_apps_directory()
-    app_dir = apps_dir / app_name
+    app_dir_name = app_build_directory_name(app_name)
+    app_dir = apps_dir / app_dir_name
+    make_vars = coremark_pro_make_vars(app_name, hardware=False)
 
     if not app_dir.exists():
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
@@ -86,9 +90,11 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
     try:
         if verbose:
             print(f"Compiling {app_name}...")
+            for key, value in make_vars.items():
+                print(f"  Setting {key}={value}")
 
         # Clean first if app has special settings to ensure recompilation
-        if app_name in APP_SIM_SETTINGS:
+        if app_name in APP_SIM_SETTINGS or make_vars:
             subprocess.run(
                 ["make", "clean"],
                 cwd=app_dir,
@@ -99,8 +105,10 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
             )
 
         # Run make in the application directory
+        make_command = ["make"]
+        make_command.extend(f"{key}={value}" for key, value in make_vars.items())
         result = subprocess.run(
-            ["make"],
+            make_command,
             cwd=app_dir,
             env=env,
             capture_output=not verbose,

@@ -12,7 +12,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
 - **Solid performance** — 3.06 CoreMark/MHz (917 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
-- **Real workloads included** — FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
+- **Real workloads included** — CoreMark Pro benchmark, FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
@@ -99,6 +99,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
+- **URAM memory tier** — a 2 MiB UltraRAM data region at `0x0100_0000` (X3 / UltraScale+ only; 6-cycle reads, 2-cycle writes) backing large heaps such as CoreMark-PRO's, alongside the 1-cycle 128 KiB low-BRAM window
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
@@ -198,6 +199,7 @@ frost/
 │       ├── riscv_tests/      # riscv-tests ISA tests (126 tests)
 │       ├── riscv_torture/    # Random instruction torture tests (20 tests)
 │       ├── coremark/         # CPU benchmark
+│       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (X3 URAM heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
 ├── verif/                    # Verification infrastructure
@@ -245,6 +247,8 @@ pytest tests/ -s                           # With live output
 ./tests/test_run_cocotb.py hello_world     # Hello World program
 ./tests/test_run_cocotb.py isa_test        # ISA compliance
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
+./tests/test_run_cocotb.py coremark_pro_core  # CoreMark-PRO workload (also
+                                           # _cjpeg/_linear_alg/_nnet/_parser/_sha)
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
 # With waveform output
@@ -289,6 +293,10 @@ Running `pytest tests/` exercises:
 ./fpga/load_software/load_software.py x3 hello_world
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
+
+# CoreMark-PRO workloads (X3 only; -v1 = validation, -v0 = performance run
+# with calibrated iterations from sw/apps/software_registry.py)
+./fpga/load_software/load_software.py x3 coremark_pro_core -v1
 ```
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
@@ -296,10 +304,10 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 ## Supported FPGA Boards
 
-| Board              | FPGA                 | CPU Clock |
-|--------------------|----------------------|-----------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   |
+| Board              | FPGA                 | CPU Clock | URAM Tier             |
+|--------------------|----------------------|-----------|-----------------------|
+| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 2 MiB @ `0x0100_0000` |
+| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | — (no UltraRAM)       |
 
 
 <!-- FPGA_UTILIZATION_START -->
@@ -310,15 +318,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 122,442 | 1,029,600 | 11.9% |
-|   LUT as Logic | 112,071 | 1,029,600 | 10.9% |
+| CLB LUTs | 124,179 | 1,029,600 | 12.1% |
+|   LUT as Logic | 113,805 | 1,029,600 | 11.1% |
 |   LUT as Distributed RAM | 9,856 | — | — |
-|   LUT as Shift Register | 515 | — | — |
-| CLB Registers | 66,939 | 2,059,200 | 3.2% |
+|   LUT as Shift Register | 518 | — | — |
+| CLB Registers | 68,421 | 2,059,200 | 3.3% |
 | Block RAM Tile | 71.5 | 2,112 | 3.4% |
-| URAM | 0 | 352 | 0.0% |
+| URAM | 64 | 352 | 18.2% |
 | DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,345 | 128,700 | 3.4% |
+| CARRY8 | 4,349 | 128,700 | 3.4% |
 | F7 Muxes | 98 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
 | Bonded IOB | 4 | 364 | 1.1% |
@@ -329,11 +337,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 122,078 | 203,800 | 59.9% |
-|   LUT as Logic | 110,074 | 203,800 | 54.0% |
-|   LUT as Distributed RAM | 11,496 | — | — |
+| Slice LUTs | 121,731 | 203,800 | 59.7% |
+|   LUT as Logic | 109,725 | 203,800 | 53.8% |
+|   LUT as Distributed RAM | 11,498 | — | — |
 |   LUT as Shift Register | 508 | — | — |
-| Slice Registers | 66,985 | 407,600 | 16.4% |
+| Slice Registers | 66,946 | 407,600 | 16.4% |
 | Block RAM Tile | 71.5 | 445 | 16.1% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 98 | 101,900 | 0.1% |

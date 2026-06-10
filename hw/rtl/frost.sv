@@ -35,7 +35,29 @@ module frost #(
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
-    parameter int unsigned SIM_TIMER_SPEEDUP = 1
+    parameter int unsigned SIM_TIMER_SPEEDUP = 1,
+    // URAM memory tier (high-address region backed by UltraRAM). The low BRAM
+    // range + MMIO stay 1-cycle; only loads to [URAM_BASE, URAM_BASE+URAM_SIZE_BYTES)
+    // pay URAM_READ_LATENCY cycles. Production software never addresses this
+    // region, so the tier is unused and the load path stays byte-identical.
+    parameter int unsigned URAM_BASE = 32'h0100_0000,
+    parameter int unsigned URAM_SIZE_BYTES = 2 * 1024 * 1024,  // 2 MiB
+    // Total URAM read latency in cycles (addr -> data). Must match the URAM
+    // primitive's READ_LATENCY and the router's URAM valid pipeline depth. The
+    // tier is a multi-block URAM cascade (2 MiB = 64 blocks); the XPM pipelines
+    // the cascade to READ_LATENCY so the read closes 300 MHz. The
+    // single-outstanding LQ gate absorbs the latency, so this is free for
+    // correctness (only adds cycles to URAM L0-miss loads).
+    parameter int unsigned URAM_READ_LATENCY = 6,
+    // Total URAM write latency in cycles. 2 registers the write inputs at the URAM
+    // boundary (mirrors the read input reg) to close timing on the wide array; the
+    // router holds the URAM store-done URAM_WRITE_LATENCY-1 extra cycles so
+    // store-to-load ordering stays correct. 1 = legacy single-cycle write.
+    parameter int unsigned URAM_WRITE_LATENCY = 2,
+    // URAM tier present (UltraScale+ only). 0 omits the UltraRAM instance for
+    // 7-series boards (Genesys2 = Kintex-7, no UltraRAM) and ties URAM read data
+    // to 0. Set per-board in build_step.tcl from the FPGA part.
+    parameter int unsigned ENABLE_URAM_TIER = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -129,7 +151,12 @@ module frost #(
   // Instruction memory programming interface is directly on div4 clock domain (no CDC needed)
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
-      .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP)
+      .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
+      .URAM_READ_LATENCY(URAM_READ_LATENCY),
+      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY),
+      .ENABLE_URAM_TIER(ENABLE_URAM_TIER)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,

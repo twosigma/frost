@@ -4,10 +4,14 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 
 ## Supported Boards
 
-| Board                  | FPGA                               | CPU Clock  | Features                 |
-|------------------------|------------------------------------|------------|--------------------------|
-| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | Entry-level development  |
-| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | High-performance target  |
+| Board                  | FPGA                               | CPU Clock  | URAM Tier        | Features                 |
+|------------------------|------------------------------------|------------|------------------|--------------------------|
+| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | No (no UltraRAM) | Entry-level development  |
+| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 2 MiB @ `0x0100_0000` | High-performance target  |
+
+The URAM tier (UltraScale+ only, `ENABLE_URAM_TIER` in `frost.sv`) is a 2 MiB
+UltraRAM data region with 6-cycle reads and 2-cycle writes; large-heap
+workloads such as CoreMark-PRO require it, so they run on X3 only.
 
 ## Architecture Overview
 

@@ -36,6 +36,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef FROST_MALLOC_DISABLE_FREE
+#define FROST_MALLOC_DISABLE_FREE 0
+#endif
+#ifndef FROST_MALLOC_GUARD_FREE
+#define FROST_MALLOC_GUARD_FREE 0
+#endif
+#ifndef FROST_MALLOC_EVICT_FREE
+#define FROST_MALLOC_EVICT_FREE 0
+#endif
+
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
 extern char _heap_start;
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
@@ -65,6 +75,26 @@ arena_t arena_alloc(uint32_t size)
 #define DEFAULT_ALIGN sizeof(long long)
 #define ALIGN(ptr, align) (((ptr) + ((align) - 1)) & ~((align) - 1))
 #define ALIGN_PADDING(ptr, align) (ALIGN(ptr, align) - (ptr))
+
+#if FROST_MALLOC_EVICT_FREE
+static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
+{
+    volatile uint32_t sink = 0;
+    uintptr_t end = start + size;
+    start &= ~(uintptr_t) (sizeof(uint32_t) - 1);
+
+    /*
+     * FROST's load-queue L0 is direct-mapped and indexed by address bits [8:2].
+     * Toggling bit 9 preserves the index and changes the tag, forcing the word
+     * entry out without needing hardware support for explicit cache management.
+     */
+    for (uintptr_t addr = start; addr < end; addr += sizeof(uint32_t)) {
+        sink ^= *(volatile uint32_t *) (addr ^ 0x200u);
+    }
+
+    __asm__ volatile("" : : "r"(sink) : "memory");
+}
+#endif
 
 char *arena_push_align(arena_t *arena, uint32_t size, uint8_t align)
 {
@@ -182,9 +212,86 @@ void free(void *ptr)
 {
     if (ptr == NULL)
         return;
-    struct free_slot *slot = ptr - ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+#if FROST_MALLOC_DISABLE_FREE
+    /*
+     * Diagnostic mode for one-shot heap-heavy bare-metal workloads.  Leaking
+     * freed blocks avoids allocator reuse while leaving malloc/realloc call
+     * sites intact, which helps isolate stale-cache/reuse corruption.
+     */
+    (void) ptr;
+#else
+    uintptr_t header_size = ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+#if FROST_MALLOC_GUARD_FREE
+    uintptr_t payload = (uintptr_t) ptr;
+    uintptr_t heap_start = (uintptr_t) &_heap_start;
+    uintptr_t heap_limit = (uintptr_t) heap_mark;
+
+    if ((payload & (DEFAULT_ALIGN - 1)) != 0 || payload < heap_start + header_size ||
+        payload > heap_limit) {
+        return;
+    }
+
+    struct metadata *guard_md = (struct metadata *) ptr - 1;
+    uint32_t guarded_size = guard_md->size;
+    if ((guarded_size & (DEFAULT_ALIGN - 1)) != 0 || guarded_size < header_size ||
+        guarded_size > heap_limit - (payload - header_size)) {
+        return;
+    }
+#endif
+    struct metadata *md = (struct metadata *) ptr - 1;
+    uint32_t block_size = md->size;
+
+#if FROST_MALLOC_EVICT_FREE
+    evict_l0_words_for_range((uintptr_t) ptr - header_size, block_size);
+#endif
+
+    struct free_slot *slot = ptr - header_size;
     slot->next = freelist;
-    struct metadata *md = ptr;
-    slot->size = (md - 1)->size;
+    slot->size = block_size;
     freelist = slot;
+#endif
+}
+
+/* Allocate and zero an array of nmemb elements of `size` bytes each. */
+void *calloc(size_t nmemb, size_t size)
+{
+    size_t total = nmemb * size;
+    /* Reject multiplication overflow. */
+    if (nmemb != 0 && total / nmemb != size)
+        return NULL;
+    void *p = malloc(total);
+    if (p != NULL)
+        memset(p, 0, total);
+    return p;
+}
+
+/* Resize a previously malloc'd block, preserving its existing contents. */
+void *realloc(void *ptr, size_t size)
+{
+    if (ptr == NULL)
+        return malloc(size);
+    if (size == 0) {
+        free(ptr);
+        return NULL;
+    }
+
+    /* Recover the old payload size from the metadata malloc wrote ahead of the
+     * block, so we copy exactly the still-live bytes (never past the old end). */
+    struct metadata *md = (struct metadata *) ptr - 1;
+    uint32_t old_payload = md->size - ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+
+    if (size <= old_payload)
+        return ptr;
+
+    size_t new_size = size;
+    if (old_payload <= (SIZE_MAX / 2u) && (size_t) old_payload * 2u > new_size)
+        new_size = (size_t) old_payload * 2u;
+
+    void *newp = malloc(new_size);
+    if (newp == NULL)
+        return NULL;
+
+    memcpy(newp, ptr, old_payload);
+    free(ptr);
+    return newp;
 }

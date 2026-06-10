@@ -51,4 +51,28 @@ char *strchr(const char *s, int c);
 /* Find first occurrence of needle in haystack */
 char *strstr(const char *haystack, const char *needle);
 
+/* Calculate length of string, examining at most n bytes */
+size_t strnlen(const char *s, size_t n);
+
+/* Copy null-terminated string including terminator */
+char *strcpy(char *dst, const char *src);
+
+/* Append src to the end of dst */
+char *strcat(char *dst, const char *src);
+
+/* Find last occurrence of character in string */
+char *strrchr(const char *s, int c);
+
+/* Length of initial span of s consisting only of bytes in accept */
+size_t strspn(const char *s, const char *accept);
+
+/* Length of initial span of s consisting of bytes not in reject */
+size_t strcspn(const char *s, const char *reject);
+
+/* Find first occurrence in s of any byte from accept */
+char *strpbrk(const char *s, const char *accept);
+
+/* Duplicate a string into a freshly malloc'd buffer (caller frees) */
+char *strdup(const char *s);
+
 #endif /* STRING_H */

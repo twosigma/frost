@@ -47,4 +47,10 @@ void arena_clear(arena_t *arena);
 void *malloc(size_t size);
 void free(void *ptr);
 
+/* Allocate and zero an array of nmemb elements of `size` bytes each. */
+void *calloc(size_t nmemb, size_t size);
+
+/* Resize a previously malloc'd block, preserving its existing contents. */
+void *realloc(void *ptr, size_t size);
+
 #endif /* MEMORY_H */

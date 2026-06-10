@@ -14,7 +14,11 @@ to memory until every older store address is known. If a matching
 older store turns up, the LQ pulls the data from the SQ via
 store-to-load forwarding and skips memory entirely. Otherwise it
 checks the L0 cache; on a hit, the result is available the same
-cycle, and on a miss it issues to main memory.
+cycle, and on a miss it issues to main memory. Main memory is not
+uniform: low-BRAM loads return in one cycle, while loads to the URAM
+tier return after `URAM_READ_LATENCY` cycles through
+`data_mem_request_router`'s valid pipeline — the LQ just consumes the
+router's read-valid, so the tiering is invisible here beyond latency.
 
 MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued

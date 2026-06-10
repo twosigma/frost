@@ -27,24 +27,81 @@
 
 #include "string.h"
 
-/* Fill memory region with specified byte value */
+#include "memory.h"
+
+#include <stdint.h>
+
+#ifndef FROST_MEMORY_FENCE_WRITES
+#define FROST_MEMORY_FENCE_WRITES 0
+#endif
+
+#if FROST_MEMORY_FENCE_WRITES
+static inline void frost_memory_write_fence(void)
+{
+    __asm__ volatile("fence rw, rw" ::: "memory");
+}
+#else
+static inline void frost_memory_write_fence(void) {}
+#endif
+
+/* Fill memory region with specified byte value.
+ * Fast path writes one machine word at a time when the destination and length
+ * are word-aligned; otherwise falls back to a byte fill. */
 void *memset(void *dst, int c, size_t n)
 {
-    unsigned char *p = dst;
-    while (n--) {
-        *p++ = (unsigned char) c;
+    if ((((uintptr_t) dst | n) & (sizeof(uintptr_t) - 1)) == 0) {
+        uintptr_t word = (unsigned char) c;
+        word |= word << 8;
+        word |= word << 16;
+#if UINTPTR_MAX > 0xffffffffU
+        word |= word << 32;
+#endif
+        uintptr_t *d = (uintptr_t *) dst;
+        uintptr_t *end = (uintptr_t *) ((char *) dst + n);
+        while (d < end)
+            *d++ = word;
+    } else {
+        unsigned char *p = (unsigned char *) dst;
+        while (n--)
+            *p++ = (unsigned char) c;
     }
+    frost_memory_write_fence();
     return dst;
 }
 
-/* Copy memory from source to destination */
+/* Copy memory from source to destination.
+ * Fast path copies machine words (8-word unrolled blocks) at a time when the
+ * source, destination, and length are all word-aligned; otherwise falls back to
+ * a byte copy. Roughly 4x fewer loads/stores than byte-wise for aligned bulk
+ * copies. Does not handle overlap (use memmove for that). */
 void *memcpy(void *dst, const void *src, size_t n)
 {
-    unsigned char *d = dst;
-    const unsigned char *s = src;
-    while (n--) {
-        *d++ = *s++;
+    if ((((uintptr_t) dst | (uintptr_t) src | n) & (sizeof(uintptr_t) - 1)) == 0) {
+        uintptr_t *d = (uintptr_t *) dst;
+        const uintptr_t *s = (const uintptr_t *) src;
+        uintptr_t *end = (uintptr_t *) ((char *) dst + n);
+        while (d + 8 < end) {
+            uintptr_t reg[8] = {s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]};
+            d[0] = reg[0];
+            d[1] = reg[1];
+            d[2] = reg[2];
+            d[3] = reg[3];
+            d[4] = reg[4];
+            d[5] = reg[5];
+            d[6] = reg[6];
+            d[7] = reg[7];
+            d += 8;
+            s += 8;
+        }
+        while (d < end)
+            *d++ = *s++;
+    } else {
+        unsigned char *d = (unsigned char *) dst;
+        const unsigned char *s = (const unsigned char *) src;
+        while (n--)
+            *d++ = *s++;
     }
+    frost_memory_write_fence();
     return dst;
 }
 
@@ -71,6 +128,7 @@ void *memmove(void *dst, const void *src, size_t n)
         }
     }
     /* If d == s, no copy needed */
+    frost_memory_write_fence();
     return dst;
 }
 
@@ -115,6 +173,7 @@ char *strncpy(char *dst, const char *src, size_t n)
         memcpy(dst, src, n);
     }
 
+    frost_memory_write_fence();
     return dst;
 }
 
@@ -167,4 +226,83 @@ char *strstr(const char *haystack, const char *needle)
         p++;
     }
     return NULL;
+}
+
+/* Calculate length of string, examining at most n bytes */
+size_t strnlen(const char *s, size_t n)
+{
+    const char *p = s;
+    while (n-- && *p)
+        p++;
+    return (size_t) (p - s);
+}
+
+/* Copy null-terminated string including terminator */
+char *strcpy(char *dst, const char *src)
+{
+    char *d = dst;
+    while ((*d++ = *src++))
+        ;
+    frost_memory_write_fence();
+    return dst;
+}
+
+/* Append src to the end of dst */
+char *strcat(char *dst, const char *src)
+{
+    char *d = dst;
+    while (*d)
+        d++;
+    while ((*d++ = *src++))
+        ;
+    frost_memory_write_fence();
+    return dst;
+}
+
+/* Find last occurrence of character in string */
+char *strrchr(const char *s, int c)
+{
+    const char *last = NULL;
+    do {
+        if (*s == (char) c)
+            last = s;
+    } while (*s++);
+    return (char *) last;
+}
+
+/* Length of initial span of s consisting only of bytes in accept */
+size_t strspn(const char *s, const char *accept)
+{
+    const char *p = s;
+    while (*p && strchr(accept, *p) != NULL)
+        p++;
+    return (size_t) (p - s);
+}
+
+/* Length of initial span of s consisting of bytes not in reject */
+size_t strcspn(const char *s, const char *reject)
+{
+    const char *p = s;
+    while (*p && strchr(reject, *p) == NULL)
+        p++;
+    return (size_t) (p - s);
+}
+
+/* Find first occurrence in s of any byte from accept */
+char *strpbrk(const char *s, const char *accept)
+{
+    for (; *s; s++)
+        if (strchr(accept, *s) != NULL)
+            return (char *) s;
+    return NULL;
+}
+
+/* Duplicate a string into a freshly malloc'd buffer (caller frees) */
+char *strdup(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    char *p = malloc(n);
+    if (p != NULL)
+        memcpy(p, s, n);
+    return p;
 }

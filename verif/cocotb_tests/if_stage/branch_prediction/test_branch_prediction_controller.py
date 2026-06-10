@@ -74,6 +74,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 0
     dut.i_flush.value = 0
+    dut.i_pd_redirect.value = 0
     dut.i_pc.value = 0
     dut.i_pc_2.value = 0
     dut.i_slot2_valid.value = 0

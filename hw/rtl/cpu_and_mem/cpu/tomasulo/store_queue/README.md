@@ -51,28 +51,43 @@ the MMIO address range on the muxed data-memory address — that
 recomputation used to pull the LQ issue cone into the BRAM write
 enable whenever no store was firing.
 
-## 2-wide allocation
+## 2-wide allocation: pure ring tail
 
-When both dispatch slots allocate stores, slot 1 takes the older free entry and
-slot 2 takes the next free entry, preserving program order through the SQ. When
-only slot 2 is a store, it takes the first free entry. The `o_full_for_2` output
-lets dispatch block a two-store bundle when only one entry is free while still
-allowing a single-store dispatch to proceed.
+Allocation is strictly at the ring tail: slot 1 takes `tail_ptr`, slot 2 takes
+`tail_ptr + 1`, and the tail advances past whatever was consumed. Ring
+position therefore always encodes program order, which the head-ordered drain
+depends on. (An earlier design searched forward from the tail for the first
+free slot, so a younger store could land in a partial-flush hole at a ring
+position the head reaches before older live entries — committed stores then
+stranded behind a younger uncommitted hole-filler, and same-address stores
+could drain out of program order.) The `o_full_for_2` output lets dispatch
+block a two-store bundle when only one slot remains while still allowing a
+single-store dispatch to proceed.
 
-The free-entry search is no longer an O(DEPTH) serial scan: the free mask is
-barrel-rotated so `tail_ptr` maps to index 0, a tree priority encoder picks the
-first and second free offsets in one sweep, and the offsets are added back to
-`tail_ptr`. Head advancement uses the same rotate → tree-encode → add-back form
-over `sq_valid`. Partial flush leaves sparse holes rather than compacting the
-tail; the next allocation reuses the reclaimed slots.
+A partial flush kills a program-order suffix of the window. The flush cycle
+only clears the per-entry valid bits while both pointers hold; one cycle
+later the tail is pulled back to just past the youngest survivor, recomputed
+entirely from registered state (rotate `sq_valid` so the head maps to index
+0, take the highest set offset, add back). Retiming the pullback keeps the
+late ROB commit/flush cone off the pointer D/CE pins — computing it in the
+flush cycle was an 18-LUT-level path at 300 MHz. The deferred cycle is safe:
+dispatch cannot allocate again that soon after a flush (asserted in the RTL),
+and capacity reads conservatively in the meantime. Head advancement uses the
+same rotate → tree-encode → add-back form over `sq_valid` to skip-advance
+past freed entries, collapsing onto the tail when the window empties.
 
-`o_full`, `o_full_for_2`, `o_empty`, and `o_count` are exact combinational
-status for local visibility. The CPU dispatch path instead consumes the
-registered `o_dispatch_full` / `o_dispatch_full_for_2` back-pressure (and
-`o_dispatch_empty` / `o_dispatch_count`), which account for same-cycle
-allocation and write-drain as a count delta; partial-flush and SC-discard
-clears are deliberately omitted, so they can only hold back-pressure one extra
-cycle, never under-report fullness.
+Capacity is the ring window (`tail_ptr - head_ptr`), not the live popcount:
+with pure tail allocation a slot is reusable only once the head has passed
+it, so rare mid-window holes (failed-SC discards) keep consuming capacity
+until the head walks over them. `o_full`, `o_full_for_2`, `o_empty`, and
+`o_count` are exact combinational status for local visibility. The CPU
+dispatch path instead consumes the registered `o_dispatch_full` /
+`o_dispatch_full_for_2` back-pressure (and `o_dispatch_empty` /
+`o_dispatch_count`), which add same-cycle allocations to the window but
+deliberately take no same-cycle credit for drains, flushes, or SC discards —
+the head advances the cycle after a drain completes, so an early credit
+would let dispatch send a store the SQ must refuse (a silently lost store).
+Back-pressure is therefore only ever conservatively long, never short.
 
 ## Widen-commit slot 2
 

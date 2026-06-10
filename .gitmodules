@@ -12,3 +12,6 @@
 [submodule "sw/apps/riscv_tests/riscv-tests"]
 	path = sw/apps/riscv_tests/riscv-tests
 	url = https://github.com/riscv-software-src/riscv-tests.git
+[submodule "sw/apps/coremark_pro/coremark-pro"]
+	path = sw/apps/coremark_pro/coremark-pro
+	url = https://github.com/eembc/coremark-pro.git
