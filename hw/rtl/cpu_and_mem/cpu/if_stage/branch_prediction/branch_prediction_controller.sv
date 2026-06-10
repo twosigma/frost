@@ -43,6 +43,13 @@ module branch_prediction_controller (
     input logic i_stall,
     input logic i_stall_registered,
     input logic i_flush,
+    // PD-stage redirect. Kills in-flight registered prediction metadata the
+    // same way a flush does: a PD redirect steals the PC stream from any
+    // prediction made in the same (or previous) cycle, so the registered
+    // pc_reg handoff must not survive it. pc_controller's redirect_kill
+    // pulse only suppresses the handoff for one cycle and is not stall-aware;
+    // clearing at the source keeps a stall from replaying a dead prediction.
+    input logic i_pd_redirect,
 
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
@@ -485,6 +492,30 @@ module branch_prediction_controller (
       // instruction stream with the wrong PC/instruction pairing.
       o_prediction_used_r <= 1'b0;
       o_sel_prediction_r  <= 1'b0;
+    end else if (i_pd_redirect || o_slot2_prediction_used) begin
+      // PD redirects and slot-2 prediction redirects kill a slot-1 prediction's
+      // PC-REG HANDOFF exactly like a flush: they outrank it in the next_pc
+      // mux, so the prediction never owns the fetch stream. pc_controller's
+      // redirect_kill_pending_q / o_slot2_redirect_q suppressions are
+      // one-cycle pulses that are not stall-aware, while this register IS
+      // stall-held -- a stall starting in the kill cycle used to let the dead
+      // prediction's pc_reg handoff fire on release, desyncing pc_reg from
+      // the fetched bytes (stale words executed under wrong PCs; see
+      // test_pd_redirect_with_stall_kills_registered_prediction_handoff).
+      //
+      // CRITICAL SCOPE: only the handoff (o_sel_prediction_r) dies here. The
+      // METADATA bit (o_prediction_used_r -> btb_predicted_taken carried with
+      // the in-flight instruction) must survive: clearing it on an unrelated
+      // pd/slot-2 redirect strips a predicted-taken branch of its "front-end
+      // already redirected" marker, and pd_stage's Lever-A heuristic then
+      // re-redirects to the SAME target -- double-dispatching the (already
+      // unsquashable) target bundle. Observed as two extra retirements in
+      // cjpeg's Huffman zero-run loop, skipping one coefficient and emitting
+      // a one-bit-short code (646-byte JPEG).
+      o_sel_prediction_r <= 1'b0;
+      if (~i_stall) begin
+        o_prediction_used_r <= prediction_used_effective;
+      end
     end else if (~i_stall) begin
       o_prediction_used_r <= prediction_used_effective;
       o_sel_prediction_r  <= prediction_used_effective;

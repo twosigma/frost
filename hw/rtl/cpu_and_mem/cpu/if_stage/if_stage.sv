@@ -349,6 +349,8 @@ module if_stage #(
       .i_stall_registered(if_stage_stall_registered),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
+      // PD redirect kills in-flight slot-1 prediction metadata (see module).
+      .i_pd_redirect(i_pd_redirect),
 
       // Current PC for BTB lookup
       .i_pc(pc),
@@ -642,8 +644,20 @@ module if_stage #(
   // This registered signal is NOT on the critical path (FF output → 1 OR gate).
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
+    // Stall-gated (bug #5): this wrong-path bubble pulse must survive a
+    // stall that freezes the front-end mid-bubble. control_flow_holdoff and
+    // prediction_holdoff are both stall-held, so without the gate a stall
+    // covering the bubble cycle outlives the one-cycle pulse: on release
+    // the colliding BTB hit's prediction_holdoff still defeats the
+    // control-flow NOP term, the lead-restoring bubble cycle presents (and
+    // dispatch consumes) the bundle, and the realigned next cycle presents
+    // the SAME pc_reg again — a duplicate ROB allocation (observed in the
+    // cjpeg tiny sim as a re-executed zero-run-loop pair: one skipped
+    // coefficient, one-bit-short Huffman code, 646-byte JPEG). Mirrors
+    // o_slot2_redirect_q, which has carried the same !i_stall gate since
+    // Session Q. See test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble.
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
-    else pd_redirect_q <= i_pd_redirect;
+    else if (!i_pipeline_ctrl.stall) pd_redirect_q <= i_pd_redirect;
   end
 
   // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
@@ -663,6 +677,11 @@ module if_stage #(
   // slot-2 BTB redirect bubble — BRAM was fetching the sequential
   // wrong-path bundle when the slot-2 prediction fired, so the cycle
   // following the redirect must NOP even if prediction_holdoff is set.
+  // Bug #5 (stall-release duplicate dispatch) lived here: pd_redirect_q
+  // was a plain one-cycle pulse while the holdoffs it overrides are
+  // stall-held, so a stall covering the bubble cycle let the bubble
+  // present-and-dispatch on release alongside the realigned repeat. Fixed
+  // by stall-gating pd_redirect_q (see its always_ff above).
   assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||

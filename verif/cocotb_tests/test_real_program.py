@@ -2677,8 +2677,10 @@ async def test_real_program(dut: Any) -> None:
         get_expected_behavior()
     )
 
-    # Use longer timeout for tests that need more cycles
-    if app_name == "coremark":
+    # Use longer timeout for tests that need more cycles. Match the
+    # is_coremark_like convention (startswith) so coremark_pro workloads get the
+    # same large CoreMark budget, not just the exact "coremark" app.
+    if app_name is not None and app_name.startswith("coremark"):
         max_cycles = COREMARK_MAX_CYCLES
     elif app_name == "sprintf_test":
         max_cycles = SPRINTF_TEST_MAX_CYCLES

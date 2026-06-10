@@ -33,10 +33,11 @@ LINKER_SCRIPT = ../../common/link.ld
 EXECUTABLE_ELF_FILE = sw.elf
 VERILOG_HEX_FILE    = sw.mem
 RAW_BINARY_FILE     = sw.bin
+VIVADO_BRAM_FILE    = sw.txt
 DISASSEMBLY_FILE    = sw.S
 
 # Build targets
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
 
 # Assemble and link
 $(EXECUTABLE_ELF_FILE): ras_test.S $(LINKER_SCRIPT)
@@ -52,11 +53,15 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id $< $@
 
+# Generate Vivado BRAM text file
+$(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
+	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
+
 # Generate disassembly
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
 clean:
-	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE) ras_test.o
+	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) ras_test.o
 
 .PHONY: all clean

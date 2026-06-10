@@ -442,3 +442,183 @@ async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
     assert int(dut.o_pc.value) == FENCE_TARGET
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+
+@cocotb.test()
+async def test_pd_redirect_with_stall_kills_registered_prediction_handoff(
+    dut: Any,
+) -> None:
+    """A PD+BTB collision must kill the pc_reg handoff even across a stall.
+
+    Repro of the layout-sensitive CoreMark-PRO failures (cjpeg illegal
+    instruction / linear_alg hang): a BTB hit arms the registered slot-1
+    prediction handoff (o_sel_prediction_r / o_predicted_target_r) in the same
+    cycle a PD redirect steals the PC stream.  pc_controller suppresses the
+    handoff with a one-cycle redirect_kill pulse, but a stall starting in that
+    cycle outlives the pulse while the handoff register is stall-held.  On
+    release, the dead prediction's target is applied to pc_reg while fetch
+    continues on the PD-redirect path, desyncing pc_reg from the fetched
+    bytes (stale words are then served under wrong PCs).
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    branch_pc = BASE_PC + 8
+    stale_pred_target = 0x80005000
+    pd_target = 0x80006000
+
+    # Train the BTB: taken branch at branch_pc needing the pc_reg handoff.
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": branch_pc,
+            "btb_update_target": stale_pred_target,
+            "btb_update_taken": True,
+            "btb_update_compressed": False,
+            "btb_update_requires_pc_reg_handoff": True,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+
+    # Walk the PC stream toward the trained branch until the BTB hit fires.
+    await _redirect_to(dut, BASE_PC)
+    prediction_cycle_found = False
+    for _ in range(20):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+
+    # Collision: a PD redirect in the same cycle the prediction is used.
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = pd_target
+    await _advance_cycle(dut)
+    dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_target.value = 0
+
+    # Fetch must follow the PD redirect, not the dead prediction.
+    assert int(dut.o_pc.value) == pd_target
+
+    # A stall begins immediately and outlives any one-cycle kill pulse.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    for _ in range(3):
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {})
+
+    # After release, every non-NOP slot-1 packet must carry a PD-path PC.
+    # On broken RTL the stall-held handoff applies the dead prediction's
+    # target to pc_reg at release: packet PCs walk the stale-target region
+    # while fetch serves PD-path bytes (the pc/byte desync that executes
+    # stale words under wrong PCs).
+    for _ in range(7):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"]:
+            pkt_pc = packet["program_counter"]
+            assert pd_target <= pkt_pc < pd_target + 0x100, (
+                f"slot-1 packet pc={pkt_pc:#x} left the PD-redirect path: "
+                "a stale registered prediction handoff applied a dead "
+                "prediction's target to pc_reg after a PD redirect + stall"
+            )
+        await _advance_cycle(dut)
+
+
+@cocotb.test()
+async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
+    dut: Any,
+) -> None:
+    """A stalled PD-redirect wrong-path bubble must not dispatch on release.
+
+    A PD redirect collapses pc onto pc_reg (both jump to the target), and the
+    cycle after it is a lead-restoring bubble: fetch advances while pc_reg
+    holds, and pd_redirect_q forces sel_nop because a same-cycle BTB hit sets
+    prediction_holdoff, which otherwise defeats the control-flow-holdoff NOP
+    term.  pd_redirect_q is a one-cycle pulse; control_flow_holdoff and
+    prediction_holdoff are stall-held.  A stall covering the bubble cycle
+    outlives the pulse: on release the bubble cycle presents non-NOP (consumed
+    by dispatch) and the realigned next cycle presents the SAME pc_reg again
+    -- the duplicate ROB allocation seen in the cjpeg tiny sim (646-byte JPEG,
+    one-bit-short Huffman code from a skipped coefficient).
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    branch_pc = BASE_PC + 8
+    stale_pred_target = 0x80005000
+    pd_target = 0x80006000
+
+    # Train the BTB so a hit collides with the PD redirect (the collision is
+    # what arms prediction_holdoff and defeats the plain control-flow NOP).
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": branch_pc,
+            "btb_update_target": stale_pred_target,
+            "btb_update_taken": True,
+            "btb_update_compressed": False,
+            "btb_update_requires_pc_reg_handoff": True,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+
+    await _redirect_to(dut, BASE_PC)
+    prediction_cycle_found = False
+    for _ in range(20):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+
+    # Collision cycle E: PD redirect + BTB hit together (unstalled, so the
+    # redirect applies and pd_redirect_q arms for the next cycle).
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = pd_target
+    await _advance_cycle(dut)
+    dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_target.value = 0
+    assert int(dut.o_pc.value) == pd_target
+
+    # Cycle E+1 (the wrong-path bubble): a stall begins and outlives the
+    # one-cycle pd_redirect_q pulse.  Keep the target word on the fetch bus,
+    # as BRAM would once the frozen fetch address resolves.
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    for _ in range(3):
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        await _advance_cycle(dut)
+
+    # Release: stall drops with stall_registered high for one cycle, then
+    # both low.  Sample every consumable cycle from the release on.
+    presented: list[int] = []
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    for _ in range(8):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"]:
+            presented.append(packet["program_counter"])
+        await _advance_cycle(dut)
+        _drive_pipeline_ctrl(dut, {})
+
+    # The PD target bundle must flow exactly once: a repeat of the same
+    # slot-1 PC in the consumed stream is the duplicate dispatch.
+    dup = [pc for pc in set(presented) if presented.count(pc) > 1]
+    assert not dup, (
+        f"slot-1 pc(s) {[hex(p) for p in dup]} presented more than once after "
+        "stall release: the pd_redirect_q wrong-path bubble expired during "
+        "the stall and the bubble cycle dispatched alongside the realigned "
+        "repeat (stall-release duplicate dispatch)"
+    )
+    assert any(pd_target <= pc < pd_target + 0x40 for pc in presented), (
+        f"PD-target bundle never presented after release (got "
+        f"{[hex(p) for p in presented]}): over-broad squash"
+    )

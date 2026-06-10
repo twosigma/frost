@@ -32,7 +32,8 @@ lives under `fpga/` and `boards/`.
 frost.sv
   cpu_and_mem.sv
     instruction RAM  <---- JTAG/software-load port on clk_div4
-    data RAM
+    data RAM (low 128 KiB BRAM)
+    URAM tier (2 MiB UltraRAM @ 0x0100_0000, X3 only)
     MMIO timer/UART/FIFOs
     cpu_ooo.sv
       IF -> PD -> ID -> 2-wide dispatch
@@ -81,19 +82,31 @@ backend notes.
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | Machine-mode exception/interrupt handling |
-| `lib/` | In use | Portable RAM/FIFO/stall helper primitives |
+| `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/ram/sdp_uram_byte_en.sv` (byte-enable simple-dual-port macro that infers the UltraRAM cascade backing the URAM tier) |
 | `peripherals/` | In use | UART TX/RX blocks |
 
 ## Memory Map
 
-The default hardware memory size is 128 KiB. The common linker script splits it
-into 96 KiB ROM and 32 KiB RAM:
+The low BRAM memory is 128 KiB; the common linker script splits it into
+96 KiB ROM and 32 KiB RAM. On X3 the data port additionally reaches a 2 MiB
+UltraRAM tier at `0x0100_0000`:
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
 | ROM | `0x0000_0000` | 96 KiB | Code and read-only data |
 | RAM | `0x0001_8000` | 32 KiB | Data, BSS, heap, stack |
+| URAM | `0x0100_0000` | 2 MiB | UltraRAM data tier (X3 only; see below) |
 | MMIO | `0x4000_0000` | 44 B | UART, FIFOs, CLINT-style timer, software interrupt |
+
+The URAM tier is data-only (loads/stores; no instruction fetch). The low BRAM
+range and MMIO stay 1-cycle; loads to the URAM region take `URAM_READ_LATENCY`
+cycles and stores take `URAM_WRITE_LATENCY` cycles, with
+`data_mem_request_router` tracking in-flight URAM operations so reads never
+race a still-landing write. `ENABLE_URAM_TIER=0` omits the UltraRAM instance
+for 7-series boards (Genesys2 is Kintex-7, which has no UltraRAM) and the
+Yosys flow. Large-heap workloads opt in via an app-specific linker script —
+`sw/apps/coremark_pro/coremark_pro.ld` places a 1936 KiB malloc heap plus a
+112 KiB stack reserve there.
 
 MMIO registers:
 
@@ -154,6 +167,11 @@ sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 | `frost.sv` | `CLK_FREQ_HZ` | `300000000` | Main CPU clock frequency |
 | `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 17` | 128 KiB RAM |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | Multiplies `mtime` increment rate for simulation |
+| `frost.sv` | `URAM_BASE` | `32'h0100_0000` | URAM tier base address |
+| `frost.sv` | `URAM_SIZE_BYTES` | `2 * 1024 * 1024` | URAM tier size (2 MiB) |
+| `frost.sv` | `URAM_READ_LATENCY` | `6` | URAM load latency in cycles (addr → data); must match the URAM cascade pipelining and the router's valid pipeline |
+| `frost.sv` | `URAM_WRITE_LATENCY` | `2` | URAM store latency in cycles; the router holds store-done so reads cannot pass an in-flight write |
+| `frost.sv` | `ENABLE_URAM_TIER` | `1` | Set 0 to omit the UltraRAM instance (7-series boards, Yosys flow) |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
 | `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size |
 

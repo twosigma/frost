@@ -69,11 +69,19 @@ Minimal C library replacements for bare-metal operation.
 memset(buffer, 0, sizeof(buffer));        // Fill memory
 memcpy(dest, src, len);                   // Copy memory
 size_t len = strlen(str);                 // String length
+size_t len = strnlen(str, n);             // Bounded string length
+strcpy(dest, src);                        // String copy
 strncpy(dest, src, n);                    // Bounded string copy
+strcat(dest, src);                        // String concatenate
 int cmp = strcmp(a, b);                   // Compare strings
 int cmp = strncmp(a, b, n);               // Compare up to n chars
 char *p = strchr(str, 'x');               // Find character
+char *p = strrchr(str, 'x');              // Find last occurrence
 char *p = strstr(haystack, needle);       // Find substring
+size_t n = strspn(s, accept);             // Span of accepted chars
+size_t n = strcspn(s, reject);            // Span until rejected char
+char *p = strpbrk(s, accept);             // First char from accept set
+char *dup = strdup(s);                    // Duplicate into malloc'd buffer
 ```
 
 ### Ctype (`lib/include/ctype.h`, `lib/src/ctype.c`)
@@ -104,6 +112,7 @@ long hex = strtol("0xff", NULL, 16);      // Hexadecimal
 long oct = strtol("077", NULL, 0);        // Auto-detect base
 int i = atoi("-42");                      // String to int
 long l = atol("12345");                   // String to long
+int a = abs(-7);                          // Absolute value
 ```
 
 ### Memory (`lib/include/memory.h`, `lib/src/memory.c`)
@@ -123,6 +132,8 @@ arena_clear(&arena);                      // Reset arena (free all at once)
 
 // Traditional malloc/free - first-fit freelist allocator
 void *ptr = malloc(128);                  // Allocate 128 bytes
+void *arr = calloc(16, 8);                // Allocate and zero 16x8 bytes
+ptr = realloc(ptr, 256);                  // Grow/shrink an allocation
 free(ptr);                                // Return to freelist
 ```
 
@@ -325,6 +336,7 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) instruction test |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
+| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule); six workloads supported on X3 hardware (core, cjpeg, linear_alg, nnet, parser, sha) with per-workload calibration in `apps/software_registry.py`; uses its own `coremark_pro.ld` with the URAM heap |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
@@ -344,6 +356,8 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
 | `tomasulo_test/` | Tomasulo correctness test -- RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
+| `uram_heap_test/` | malloc/free exerciser with the heap linked into the URAM tier |
+| `uram_test/` | URAM tier bring-up test (direct load/store patterns across the 2 MiB region) |
 
 ## Building
 
@@ -425,6 +439,22 @@ Defined in `common/link.ld`:
 | ROM    | `0x00000000` | 96 KB | Code and read-only data       |
 | RAM    | `0x00018000` | 32 KB | Variables, BSS, heap, and stack |
 | MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals |
+
+Apps with larger working sets can ship their own linker script.
+`apps/coremark_pro/coremark_pro.ld` splits the low 128 KiB BRAM window into
+64 KB ROM + 64 KB RAM and places the malloc heap and stack in the X3 URAM
+tier:
+
+| Region | Address      | Size  | Description                                  |
+|--------|--------------|-------|----------------------------------------------|
+| ROM    | `0x00000000` | 64 KB | Code and read-only data                      |
+| RAM    | `0x00010000` | 64 KB | Variables and BSS                            |
+| URAM   | `0x01000000` | 2 MiB | 1936 KiB malloc heap + 112 KiB stack reserve |
+| MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals                |
+
+The URAM tier exists only on X3 (UltraScale+). The stack reserve is sized
+from measured per-workload stack high-water marks (parser's recursive XML
+cleanup is the deepest user at ~75 KiB).
 
 ### Peripheral Addresses
 

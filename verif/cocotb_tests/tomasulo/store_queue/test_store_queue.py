@@ -949,7 +949,12 @@ async def test_no_write_without_data(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_cache_invalidation(dut: Any) -> None:
-    """Memory write completion triggers L0 cache invalidation."""
+    """The memory write LAUNCH triggers L0 cache invalidation.
+
+    Invalidating at launch (not at write-done) closes the stale-L0 window
+    for any write latency: the line dies before the write lands, and the
+    router orders any read behind the write flight.
+    """
     dut_if, model = await setup(dut)
 
     store_addr = 0x5000
@@ -962,16 +967,21 @@ async def test_cache_invalidation(dut: Any) -> None:
 
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
+
+    # The invalidate fires in the SAME cycle as the write launch.
+    inv = dut_if.read_cache_invalidate()
+    assert inv["valid"], "Cache invalidation should fire with the write launch"
+    assert inv["addr"] == store_addr, f"Should invalidate at 0x{store_addr:x}"
+
     model.mem_write_initiate()
     await dut_if.step()
 
-    # Acknowledge → should see cache invalidation
+    # By the write-done cycle the pulse is gone (it tracked the launch).
     dut_if.drive_mem_write_done()
     await Timer(1, unit="ns")
-
-    inv = dut_if.read_cache_invalidate()
-    assert inv["valid"], "Cache invalidation should be active"
-    assert inv["addr"] == store_addr, f"Should invalidate at 0x{store_addr:x}"
+    assert not dut_if.read_cache_invalidate()[
+        "valid"
+    ], "Invalidate must be a launch-cycle pulse, not a done-cycle one"
 
     model.mem_write_done()
     model.advance_head()
@@ -1130,7 +1140,7 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
-    """FSD phase-2 write invalidates L0 cache at addr+4, not base."""
+    """Each FSD phase's write LAUNCH invalidates its own word (base, addr+4)."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0x400921FB54442D18  # pi
@@ -1151,39 +1161,34 @@ async def test_fsd_phase2_cache_invalidation(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Phase 0: low word at base addr
+    # Phase 0: low word at base addr — invalidate fires with the launch.
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 0 write expected"
-    model.mem_write_initiate()
-    await dut_if.step()
-    dut_if.drive_mem_write_done()
-    await Timer(1, unit="ns")
-
     inv = dut_if.read_cache_invalidate()
-    assert inv["valid"], "Phase 0 cache invalidation expected"
+    assert inv["valid"], "Phase 0 cache invalidation expected at launch"
     assert (
         inv["addr"] == base_addr
     ), f"Phase 0 should invalidate at base 0x{base_addr:x}, got 0x{inv['addr']:x}"
 
+    model.mem_write_initiate()
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
     model.mem_write_done()
     await dut_if.step()
     dut_if.clear_mem_write_done()
 
-    # Phase 1: high word at addr+4
+    # Phase 1: high word at addr+4 — its own launch-cycle invalidate.
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Phase 1 write expected"
-
-    model.mem_write_initiate()
-    await dut_if.step()
-    dut_if.drive_mem_write_done()
-    await Timer(1, unit="ns")
-
     inv = dut_if.read_cache_invalidate()
-    assert inv["valid"], "Phase 1 cache invalidation expected"
+    assert inv["valid"], "Phase 1 cache invalidation expected at launch"
     assert (
         inv["addr"] == base_addr + 4
     ), f"Phase 1 should invalidate at 0x{base_addr + 4:x}, got 0x{inv['addr']:x}"
 
+    model.mem_write_initiate()
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
     model.mem_write_done()
     model.advance_head()
     await dut_if.step()
@@ -1555,19 +1560,22 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_pointer_full_with_hole(dut: Any) -> None:
-    """Partial flush leaves holes; the queue fills only after every hole is reused.
+    """Flush holes are reclaimed; an sc_discard hole keeps consuming capacity.
 
-    Allocate out-of-ROB-order so partial flush creates:
-      idx 0(V:tag0) 1(V:tag1) 2(I:tag5) 3(V:tag2) 4(I:tag6) 5(I:tag7)
-    Then allocate into the available holes. After four allocations the queue
-    still has one free slot; the fifth allocation should make it full.
+    Phase 1: allocate tags 0,1,2,5,6,7 in program order; partial flush at
+    tag 4 kills the suffix (5,6,7) and the tail pulls back, so the queue
+    reports 3 entries and five immediately reusable slots (full at exactly 8).
+
+    Phase 2: with the queue full, discarding a failed SC mid-window leaves a
+    hole that pure-tail allocation must NOT reuse: the queue stays
+    window-full at count 7 (capacity returns only when the head drains past
+    the hole).
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
 
-    # Allocate 6 entries with tags that create a hole after flush.
-    # Tags 5, 6, 7 are younger than flush_tag=4; tags 0, 1, 2 are not.
-    for tag in [0, 1, 5, 2, 6, 7]:
+    # In-order allocation; tags 5,6,7 are younger than flush_tag=4.
+    for tag in [0, 1, 2, 5, 6, 7]:
         dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
         model.alloc(tag, False, MEM_SIZE_WORD)
         await dut_if.step()
@@ -1576,35 +1584,174 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert dut_if.count == 6, f"Expected 6 entries, got {dut_if.count}"
     assert model.count == 6
 
-    # Partial flush: tags 5, 6, 7 flushed (younger than 4 relative to head 0)
+    # Partial flush: tags 5, 6, 7 flushed (younger than 4 relative to head 0).
+    # The killed entries are a program-order suffix; the retimed tail
+    # pullback reclaims their slots in the cycle after the flush (dispatch
+    # cannot allocate that early — redirect/refill latency), so settle one
+    # cycle before resuming allocation.
     dut_if.drive_partial_flush(flush_tag=4)
     model.partial_flush(4, 0)
     await dut_if.step()
     dut_if.clear_partial_flush()
+    await dut_if.step()  # tail pullback applies from registered state
 
     assert dut_if.count == 3, f"Expected 3 valid entries, got {dut_if.count}"
     assert model.count == 3
-    assert not dut_if.full, "SQ should not be full after partial flush"
-    assert not model.full, "Model should not be full after partial flush"
+    dut_full_after_flush = dut_if.full
+    model_full_after_flush = model.full
+    assert not dut_full_after_flush, "SQ should not be full after partial flush"
+    assert not model_full_after_flush, "Model should not be full after partial flush"
 
-    # Four allocations should reuse four of the five free holes.
-    for i in range(4):
-        dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD)
-        model.alloc(10 + i, False, MEM_SIZE_WORD)
+    # Five allocations fit in the reclaimed window; full at exactly 8.
+    # The full reads go through per-iteration locals so mypy does not narrow
+    # the dut_if.full/model.full member expressions themselves (it would
+    # carry `not full` past the loop and call the post-loop asserts
+    # unreachable).
+    for i in range(5):
+        dut_full_now = dut_if.full
+        model_full_now = model.full
+        assert not dut_full_now, f"SQ reported full too early at alloc {i}"
+        assert not model_full_now, f"Model reported full too early at alloc {i}"
+        is_sc = i == 2
+        dut_if.drive_alloc(rob_tag=10 + i, size=MEM_SIZE_WORD, is_sc=is_sc)
+        model.alloc(10 + i, False, MEM_SIZE_WORD, is_sc=is_sc)
         await dut_if.step()
         dut_if.clear_alloc()
 
-    assert not dut_if.full, "SQ should not be full while one free hole remains"
-    assert not model.full, "Model should not be full while one free hole remains"
-    assert (
-        dut_if.count == 7
-    ), f"Expected 7 valid entries (with hole), got {dut_if.count}"
-    assert model.count == 7, f"Model count must match DUT (got {model.count})"
-
-    dut_if.drive_alloc(rob_tag=14, size=MEM_SIZE_WORD)
-    model.alloc(14, False, MEM_SIZE_WORD)
-    await dut_if.step()
-    dut_if.clear_alloc()
-
     assert dut_if.count == 8, f"Expected 8 valid entries, got {dut_if.count}"
     assert model.count == 8, f"Model count must match DUT (got {model.count})"
+    assert dut_if.full, "SQ must be full at 8 valid entries"
+    assert model.full, "Model must be window-full at 8 entries"
+
+    # Failed SC discard leaves a mid-window hole. Pure-tail allocation must
+    # not reuse it: the window (and therefore full) is unchanged even though
+    # the live count dropped.
+    dut_if.drive_sc_discard(12)
+    model.sc_discard(12)
+    await dut_if.step()
+    dut_if.clear_sc_discard()
+
+    assert dut_if.count == 7, f"Expected 7 valid entries, got {dut_if.count}"
+    assert model.count == 7, f"Model count must match DUT (got {model.count})"
+    assert dut_if.full, "sc hole must keep consuming capacity (no hole reuse)"
+    assert model.full, "Model must stay window-full across the sc hole"
+
+
+# ============================================================================
+# Drain-order / stranding regression: partial-flush hole reuse
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
+    dut: Any,
+) -> None:
+    """Committed stores keep draining in order after flush slots are reused.
+
+    Repro of the linear_alg hardware/sim deadlock and the cjpeg corruption:
+    a partial flush leaves holes mid-ring; allocation reuses them for younger
+    stores; the head-ordered drain then reaches a younger, uncommitted
+    hole-filler BEFORE older committed stores at later ring positions. The
+    older committed stores strand (deadlock once a load waits on them), and
+    same-address stores can drain out of program order (stale memory).
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(2)
+
+    old_addrs = [0x1000 + 0x10 * i for i in range(6)]
+    new_addrs = [0x2000 + 0x10 * i for i in range(4)]
+
+    # Six in-flight stores, program order tags 2,4,...,12.
+    for i, tag in enumerate([2, 4, 6, 8, 10, 12]):
+        await alloc_addr_data(dut_if, model, tag, old_addrs[i], 0xA0 + i)
+
+    # Partial flush at tag 9: kills tags 10 and 12, leaving mid-ring holes.
+    dut_if.drive_partial_flush(9)
+    model.partial_flush(9, 2)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    await dut_if.step()  # retimed tail pullback applies the cycle after
+
+    # Re-dispatch four younger stores (tags 10,12,14,16). With hole-reusing
+    # allocation, two of these land in the flush holes behind the live tail.
+    for i, tag in enumerate([10, 12, 14, 16]):
+        await alloc_addr_data(dut_if, model, tag, new_addrs[i], 0xB0 + i)
+
+    drained: list[int] = []
+
+    async def commit_and_drain(tag: int, what: str) -> None:
+        dut_if.drive_commit(tag)
+        await dut_if.step()
+        dut_if.clear_commit()
+        write_req = await wait_for_mem_write(dut_if, max_cycles=12)
+        assert write_req.en, (
+            f"SQ stopped draining while committed stores are pending ({what}): "
+            "an uncommitted younger hole-filler is stranding older committed "
+            "stores behind the head pointer"
+        )
+        drained.append(write_req.addr)
+        await dut_if.step()
+        dut_if.drive_mem_write_done()
+        await dut_if.step()
+        dut_if.clear_mem_write_done()
+        await dut_if.step()
+
+    # Commit+drain the flush survivors (tags 2..8) in lockstep, then the
+    # post-flush stores in program order. Tags 10/12 MUST drain when
+    # committed: nothing older remains. On broken RTL the head is parked on
+    # uncommitted tag 14 in a reused hole, and they strand (the linear_alg
+    # deadlock shape).
+    for tag in [2, 4, 6, 8]:
+        await commit_and_drain(tag, f"survivor tag {tag}")
+    await commit_and_drain(10, "oldest post-flush store (tag 10)")
+    await commit_and_drain(12, "tag 12")
+    await commit_and_drain(14, "tag 14")
+    await commit_and_drain(16, "tag 16")
+
+    expected = old_addrs[:4] + new_addrs
+    assert drained == expected, (
+        f"stores drained out of program order: {[hex(a) for a in drained]} != "
+        f"{[hex(a) for a in expected]} — same-address stores would leave stale "
+        "data in memory"
+    )
+
+
+# ============================================================================
+# Same-cycle comb-commit vs flush-after-head-commit
+# ============================================================================
+@cocotb.test()
+async def test_same_cycle_comb_commit_survives_flush_after_head(dut: Any) -> None:
+    """A comb-commit in the flush cycle must survive flush_all_uncommitted.
+
+    Repro of the cjpeg lost-store corruption: the registered i_commit_valid is
+    still the PREVIOUS cycle's commit when the flush arrives, sq_committed has
+    not yet set, and flush_all_uncommitted bypasses the age check — so without
+    the i_commit_valid_comb guard the just-committed store is invalidated and
+    its memory write is silently lost (a dropped UART char / corrupted JPEG
+    byte in the system runs).
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(4)
+
+    await alloc_addr_data(dut_if, model, 6, 0x3000, 0xDD)
+
+    # Same cycle: combinational commit of tag 6 + delayed-recovery flush.
+    dut_if.drive_commit_comb(6)
+    dut.i_flush_after_head_commit.value = 1
+    dut_if.drive_partial_flush(4)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    dut.i_flush_after_head_commit.value = 0
+    dut_if.clear_commit_comb()
+
+    # The registered commit arrives the following cycle as usual.
+    dut_if.drive_commit(6)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    assert dut_if.count == 1, (
+        "store committing in the flush cycle was lost to "
+        "flush_all_uncommitted (missing comb-commit guard)"
+    )
+    write_req = await wait_for_mem_write(dut_if, max_cycles=8)
+    assert (
+        write_req.en and write_req.addr == 0x3000
+    ), "same-cycle-committed store never drained after the flush"

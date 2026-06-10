@@ -44,7 +44,14 @@
 
 module tomasulo_wrapper #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
-    parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0
+    parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
+    // URAM memory tier (high-address region). The load queue uses these to
+    // decode is_uram and arm its single-outstanding launch gate only while a
+    // URAM load is in flight; the store queue uses them to tag URAM stores so
+    // the router can steer their write enables to the URAM tier. Production
+    // software never addresses this region, so the gate stays folded out.
+    parameter int unsigned URAM_BASE = 32'h0100_0000,
+    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -388,6 +395,7 @@ module tomasulo_wrapper #(
     output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_data,
     output logic [                3:0] o_sq_mem_write_byte_en,
     output logic                       o_sq_mem_write_is_mmio,
+    output logic                       o_sq_mem_write_is_uram,
     input  logic                       i_sq_mem_write_done,
 
     // =========================================================================
@@ -2399,7 +2407,10 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Load Queue Instance
   // ===========================================================================
-  load_queue u_lq (
+  load_queue #(
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES)
+  ) u_lq (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
@@ -2437,6 +2448,9 @@ module tomasulo_wrapper #(
       // AMO writes share the same external data-memory port as load reads.
       // Treat them as bus-busy so the LQ cannot issue a younger load or
       // take a stale L0-cache fast path in the AMO write-completion cycle.
+      // URAM stores need no extra busy coverage: their L0 invalidate fires
+      // at write LAUNCH (see the SQ), and the router queues/replays any
+      // memory read behind the remaining write flight.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
@@ -2636,7 +2650,10 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Store Queue Instance
   // ===========================================================================
-  store_queue u_sq (
+  store_queue #(
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES)
+  ) u_sq (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
 
@@ -2698,6 +2715,7 @@ module tomasulo_wrapper #(
       .o_mem_write_data   (o_sq_mem_write_data),
       .o_mem_write_byte_en(o_sq_mem_write_byte_en),
       .o_mem_write_is_mmio(o_sq_mem_write_is_mmio),
+      .o_mem_write_is_uram(o_sq_mem_write_is_uram),
       .i_mem_write_done   (i_sq_mem_write_done),
 
       // L0 cache invalidation (to LQ)

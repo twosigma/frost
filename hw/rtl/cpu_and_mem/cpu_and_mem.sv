@@ -37,7 +37,15 @@ module cpu_and_mem #(
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
-    parameter int unsigned SIM_TIMER_SPEEDUP = 1
+    parameter int unsigned SIM_TIMER_SPEEDUP = 1,
+    // URAM memory tier parameters (see frost.sv). High-address region backed by
+    // an UltraRAM scratchpad; loads to it take URAM_READ_LATENCY cycles while the
+    // low BRAM range + MMIO stay 1-cycle.
+    parameter int unsigned URAM_BASE = 32'h0100_0000,
+    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024,  // 8 MiB
+    parameter int unsigned URAM_READ_LATENCY = 2,
+    parameter int unsigned URAM_WRITE_LATENCY = 1,
+    parameter int unsigned ENABLE_URAM_TIER = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -127,10 +135,27 @@ module cpu_and_mem #(
   // data_memory_address-range test.
   logic [ 3:0] data_memory_bram_byte_write_enable;
   logic        data_memory_read_enable;
-  logic        mmio_read_pulse;
-  logic        fifo0_rd_pulse_q;
-  logic        fifo1_rd_pulse_q;
-  logic        uart_rx_ready_q;
+  // URAM tier (high-address region). The router drives these tier-routed
+  // enables (already qualified by is_uram); the BRAM keeps reading/writing the
+  // low range unchanged. The URAM word-addressed write/read share the same
+  // byte address as the BRAM, offset by URAM_BASE.
+  logic [ 3:0] data_memory_uram_byte_write_enable;
+  logic        data_memory_uram_read_enable;
+  logic [31:0] data_memory_uram_read_data;
+  // URAM write data is the store-queue drain data only (AMOs never target URAM),
+  // kept separate from data_memory_write_data so the AMO write-data cone stays
+  // off the URAM data cascade (post-opt timing).
+  logic [31:0] data_memory_uram_write_data;
+  localparam int unsigned UramWordAddrWidth = $clog2(URAM_SIZE_BYTES) - 2;
+  // Pack 8 words per URAM row (256-bit rows): fits 8 MiB in 256 URAM blocks AND
+  // makes the cascade 64-deep (4 URAMs wide) instead of 256-deep, so the read
+  // cascade mux and the address/enable nets to the blocks close 300 MHz.
+  localparam int unsigned UramWordsPerRow = 8;
+  logic [UramWordAddrWidth-1:0] data_memory_uram_word_address;
+  logic                         mmio_read_pulse;
+  logic                         fifo0_rd_pulse_q;
+  logic                         fifo1_rd_pulse_q;
+  logic                         uart_rx_ready_q;
 `ifndef SYNTHESIS
   logic [31:0] data_memory_store_last_addr;
   localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -164,7 +189,11 @@ module cpu_and_mem #(
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
-      .MMIO_SIZE_BYTES(MmioSizeBytes)
+      .MMIO_SIZE_BYTES(MmioSizeBytes),
+      .URAM_BASE(URAM_BASE),
+      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
+      .URAM_READ_LATENCY(URAM_READ_LATENCY),
+      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY)
   ) cpu_inst (
       .i_clk,
       .i_rst,
@@ -177,6 +206,11 @@ module cpu_and_mem #(
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
       .o_data_mem_bram_byte_wr_en(data_memory_bram_byte_write_enable),
       .o_data_mem_read_enable(data_memory_read_enable),
+      // URAM tier ports (high-address region).
+      .o_data_mem_uram_byte_wr_en(data_memory_uram_byte_write_enable),
+      .o_data_mem_uram_wr_data(data_memory_uram_write_data),
+      .o_data_mem_uram_read_enable(data_memory_uram_read_enable),
+      .i_uram_rd_data(data_memory_uram_read_data),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
       .o_mmio_load_valid(mmio_load_valid),
@@ -251,6 +285,46 @@ module cpu_and_mem #(
       .o_port_b_read_data(data_memory_read_data)
   );
   assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
+
+  // URAM tier: high-address scratchpad (UltraRAM). Single synchronous clock,
+  // byte-write enables, parameterizable READ_LATENCY. Word-addressed: the
+  // shared byte address (data_memory_address) is offset by URAM_BASE and shifted
+  // to a word index. The router only asserts the URAM read/write enables for
+  // addresses inside the URAM range, so the index is a don't-care otherwise and
+  // the BRAM continues to serve the low range. sim uses no init file (the URAM
+  // powers up zero on hardware too; tests write the region at runtime).
+  logic [31:0] data_memory_uram_byte_offset;
+  assign data_memory_uram_byte_offset  = data_memory_address - URAM_BASE[31:0];
+  assign data_memory_uram_word_address = data_memory_uram_byte_offset[UramWordAddrWidth+1:2];
+  // URAM tier is instantiated only on UltraScale+ boards (ENABLE_URAM_TIER=1).
+  // 7-series boards (Genesys2 = Kintex-7) have no UltraRAM: omit the instance and
+  // tie the read data low. The router still decodes the (unused) URAM range and
+  // its read-valid pipeline drains zeros, but production software on those boards
+  // never addresses the URAM region, so the load path is unaffected.
+  if (ENABLE_URAM_TIER != 0) begin : gen_uram_tier
+    sdp_uram_byte_en #(
+        .DATA_WIDTH(32),
+        .ADDR_WIDTH(UramWordAddrWidth),
+        .READ_LATENCY(URAM_READ_LATENCY),
+        .WRITE_LATENCY(URAM_WRITE_LATENCY),
+        .WORDS_PER_ROW(UramWordsPerRow),
+        .USE_INIT_FILE(1'b0)
+    ) data_memory_uram (
+        .i_clk(i_clk),
+        // Write port: runtime stores routed to the URAM tier (byte-granular).
+        // Data is the SQ drain data only (AMOs are BRAM-only) to keep the AMO
+        // write-data cone off the URAM cascade.
+        .i_waddr(data_memory_uram_word_address),
+        .i_wdata(data_memory_uram_write_data),
+        .i_wbyte_en(data_memory_uram_byte_write_enable),
+        // Read port: data appears READ_LATENCY cycles after i_re.
+        .i_re(data_memory_uram_read_enable),
+        .i_raddr(data_memory_uram_word_address),
+        .o_rdata(data_memory_uram_read_data)
+    );
+  end else begin : gen_no_uram_tier
+    assign data_memory_uram_read_data = '0;
+  end
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
   logic [3:0] data_memory_byte_write_enable_registered;

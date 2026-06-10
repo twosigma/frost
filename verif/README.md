@@ -133,8 +133,10 @@ Key types:
 - `InstructionParams`: NamedTuple with named fields for readable instruction handling
 
 #### Integration Test (`test_real_program.py`)
-- Runs actual compiled programs (Hello World, CoreMark)
-- Tests system-level functionality
+- Runs actual compiled programs (Hello World, CoreMark, the six CoreMark-PRO
+  workload sims `coremark_pro_{core,cjpeg,linear_alg,nnet,parser,sha}`)
+- Tests system-level functionality, including the URAM memory tier
+  (CoreMark-PRO heap lives there; router latency parameters match hardware)
 - Validates long-running software execution
 
 #### Test Helpers (`test_helpers.py`)

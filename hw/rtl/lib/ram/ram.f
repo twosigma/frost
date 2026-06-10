@@ -24,3 +24,7 @@ $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc_byte_en.sv
 
 # True dual-port block RAM with dual clocks (simple, no byte enables or write-first)
 $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc.sv
+
+# Simple dual-port UltraRAM scratchpad (single clock, byte enables, configurable
+# read latency) -- backs the high-address URAM memory tier
+$(ROOT)/hw/rtl/lib/ram/sdp_uram_byte_en.sv

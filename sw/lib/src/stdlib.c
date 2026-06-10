@@ -116,3 +116,9 @@ long atol(const char *s)
 {
     return strtol(s, NULL, 10);
 }
+
+/* Absolute value of an integer */
+int abs(int n)
+{
+    return n < 0 ? -n : n;
+}

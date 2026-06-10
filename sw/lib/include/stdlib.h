@@ -29,4 +29,7 @@ int atoi(const char *s);
 /* Convert string to long */
 long atol(const char *s);
 
+/* Absolute value of an integer */
+int abs(int n);
+
 #endif /* STDLIB_H */

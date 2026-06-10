@@ -46,6 +46,16 @@ from collections.abc import Mapping
 import pytest
 import cocotb
 
+SW_APPS_DIR = Path(__file__).resolve().parent.parent / "sw" / "apps"
+sys.path.insert(0, str(SW_APPS_DIR))
+try:
+    from software_registry import (
+        COREMARK_PRO_PROGRAMS,
+        app_build_directory_name,
+    )
+finally:
+    sys.path.pop(0)
+
 # =============================================================================
 # Test Configuration Registry
 # =============================================================================
@@ -73,6 +83,20 @@ CPU_TEST_MODULES = ",".join(
         "cocotb_tests.test_directed_multicycle",
     ]
 )
+
+COREMARK_PRO_TESTS = {
+    program.app_name: CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name=program.app_name,
+        description=program.description,
+        # All nine workloads run CRC-verified minimal-preset simulations,
+        # including the three whose OFFICIAL datasets exceed the platform's
+        # memory limits (loops/radix2/zip, hardware_supported=False): the
+        # sim presets are small enough to fit and are validated green.
+    )
+    for program in COREMARK_PRO_PROGRAMS
+}
 
 # Registry of all available tests - single source of truth
 # Maps test name to its configuration
@@ -107,6 +131,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="coremark",
         description="Coremark benchmark",
+    ),
+    **COREMARK_PRO_TESTS,
+    "uram_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="uram_test",
+        description="URAM memory tier store/load test (high-address UltraRAM)",
+    ),
+    "uram_heap_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="uram_heap_test",
+        description="URAM heap capacity test (multi-MB malloc from UltraRAM)",
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -310,6 +347,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",
         description="CPU OOO data-memory request router tests",
+        verilator_extra_args=("-GURAM_READ_LATENCY=6", "-GURAM_WRITE_LATENCY=2"),
     ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
@@ -502,7 +540,8 @@ class CocotbRunner:
         """Get the path to the program memory file for the current app."""
         if not self.app_name:
             return None
-        return f"../sw/apps/{self.app_name}/sw.mem"
+        app_dir_name = app_build_directory_name(self.app_name)
+        return f"../sw/apps/{app_dir_name}/sw.mem"
 
     def setup_environment(self) -> dict[str, str]:
         """Set up environment variables for HDL simulation.

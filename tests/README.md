@@ -53,6 +53,9 @@ Applications are compiled automatically before simulation—no manual build step
 ./test_run_cocotb.py hello_world                   # Run Hello World program
 ./test_run_cocotb.py isa_test                      # Run ISA compliance tests
 ./test_run_cocotb.py freertos_demo                 # Run FreeRTOS demo
+./test_run_cocotb.py coremark_pro_core             # CoreMark-PRO workload system sim
+                                                   # (also: _cjpeg, _linear_alg, _nnet,
+                                                   #  _parser, _sha; long-running)
 
 # Reproducibility options
 ./test_run_cocotb.py cdb_arbiter --random-seed=12345                       # Use specific seed

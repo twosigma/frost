@@ -33,6 +33,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sq_mem_write_data.value = 0
     dut.i_sq_mem_write_byte_en.value = 0
     dut.i_sq_mem_write_is_mmio.value = 0
+    dut.i_sq_mem_write_is_uram.value = 0
     dut.i_amo_mem_write_en.value = 0
     dut.i_amo_mem_write_addr.value = 0
     dut.i_amo_mem_write_data.value = 0
@@ -40,6 +41,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_lq_mem_read_addr.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     dut.i_data_mem_rd_data.value = 0
+    dut.i_uram_rd_data.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -64,6 +66,14 @@ async def _advance_cycle(dut: Any) -> None:
     await _settle()
 
 
+def _get_int_parameter(dut: Any, name: str, default: int) -> int:
+    """Return a Verilog parameter value when cocotb exposes it."""
+    try:
+        return int(getattr(dut, name).value)
+    except AttributeError:
+        return default
+
+
 def _drive_sq_write(
     dut: Any,
     *,
@@ -71,6 +81,7 @@ def _drive_sq_write(
     data: int = 0xA5A55A5A,
     byte_en: int = 0b1111,
     is_mmio: bool = False,
+    is_uram: bool = False,
 ) -> None:
     """Drive a store-queue write request."""
     dut.i_sq_mem_write_en.value = 1
@@ -78,6 +89,7 @@ def _drive_sq_write(
     dut.i_sq_mem_write_data.value = data
     dut.i_sq_mem_write_byte_en.value = byte_en
     dut.i_sq_mem_write_is_mmio.value = 1 if is_mmio else 0
+    dut.i_sq_mem_write_is_uram.value = 1 if is_uram else 0
 
 
 def _drive_amo_write(
@@ -249,6 +261,49 @@ async def test_blocked_lq_request_retries_after_write_conflict(dut: Any) -> None
 
     assert not dut.o_lq_mem_request_valid.value
     assert dut.o_lq_mem_read_valid.value
+
+
+@cocotb.test()
+async def test_uram_queued_load_waits_for_delayed_store_done(dut: Any) -> None:
+    """A load queued behind a URAM store must not replay before store-done."""
+    await _setup_test(dut)
+
+    uram_write_latency = _get_int_parameter(dut, "URAM_WRITE_LATENCY", 2)
+    assert uram_write_latency >= 2, "test requires delayed URAM writes"
+
+    uram_addr = 0x01000080
+    _drive_sq_write(
+        dut,
+        addr=uram_addr,
+        data=0x11223344,
+        byte_en=0b1111,
+        is_uram=True,
+    )
+    _drive_lq_read(dut, addr=uram_addr)
+    await _settle()
+
+    assert int(dut.o_data_mem_uram_byte_wr_en.value) == 0b1111
+    assert not dut.o_data_mem_uram_read_enable.value
+
+    await _advance_cycle(dut)
+
+    dut.i_sq_mem_write_en.value = 0
+    dut.i_sq_mem_write_is_uram.value = 0
+    dut.i_sq_mem_write_byte_en.value = 0
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    await _settle()
+
+    assert dut.o_lq_mem_request_valid.value
+    assert not dut.o_sq_mem_write_done.value
+    assert not dut.o_data_mem_read_enable.value
+    assert not dut.o_data_mem_uram_read_enable.value
+
+    await _advance_cycle(dut)
+
+    assert dut.o_sq_mem_write_done.value
+    assert dut.o_data_mem_read_enable.value
+    assert dut.o_data_mem_uram_read_enable.value
 
 
 @cocotb.test()

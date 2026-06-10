@@ -32,6 +32,8 @@
 
 // Forward declarations
 int sprintf(char *str, const char *fmt, ...);
+// Used by the printf engine below; definition lives in sw/lib (string.c).
+size_t strnlen(const char *s, size_t n);
 
 // -----------------------------------------------------------------------
 // UART output primitives
@@ -388,149 +390,14 @@ int sprintf(char *str, const char *fmt, ...)
 }
 
 // -----------------------------------------------------------------------
-// Standard library replacements (bare-metal, no libc)
+// Standard library functions
+//
+// memcpy / memset / strlen / strnlen / strcmp / strcpy and the allocator
+// (malloc / free / calloc / realloc) and atol previously lived here as
+// bare-metal copies. They are now provided by the shared Frost library
+// (sw/lib: string.c, memory.c, stdlib.c) and linked in via Makefile.bench,
+// so there is a single source of truth and no divergent duplicates.
+//
+// Note: sw/lib's malloc is a real first-fit freelist allocator (free()
+// reclaims), an upgrade over the previous bump allocator.
 // -----------------------------------------------------------------------
-
-void *memcpy(void *dest, const void *src, size_t len)
-{
-    if ((((uintptr_t) dest | (uintptr_t) src | len) & (sizeof(uintptr_t) - 1)) == 0) {
-        const uintptr_t *s = src;
-        uintptr_t *d = dest;
-        uintptr_t *end = dest + len;
-        while (d + 8 < end) {
-            uintptr_t reg[8] = {s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]};
-            d[0] = reg[0];
-            d[1] = reg[1];
-            d[2] = reg[2];
-            d[3] = reg[3];
-            d[4] = reg[4];
-            d[5] = reg[5];
-            d[6] = reg[6];
-            d[7] = reg[7];
-            d += 8;
-            s += 8;
-        }
-        while (d < end)
-            *d++ = *s++;
-    } else {
-        const char *s = src;
-        char *d = dest;
-        while (d < (char *) (dest + len))
-            *d++ = *s++;
-    }
-    return dest;
-}
-
-void *memset(void *dest, int byte, size_t len)
-{
-    if ((((uintptr_t) dest | len) & (sizeof(uintptr_t) - 1)) == 0) {
-        uintptr_t word = byte & 0xFF;
-        word |= word << 8;
-        word |= word << 16;
-
-        uintptr_t *d = dest;
-        while (d < (uintptr_t *) (dest + len))
-            *d++ = word;
-    } else {
-        char *d = dest;
-        while (d < (char *) (dest + len))
-            *d++ = byte;
-    }
-    return dest;
-}
-
-size_t strlen(const char *s)
-{
-    const char *p = s;
-    while (*p)
-        p++;
-    return p - s;
-}
-
-size_t strnlen(const char *s, size_t n)
-{
-    const char *p = s;
-    while (n-- && *p)
-        p++;
-    return p - s;
-}
-
-int strcmp(const char *s1, const char *s2)
-{
-    unsigned char c1, c2;
-    do {
-        c1 = *s1++;
-        c2 = *s2++;
-    } while (c1 != 0 && c1 == c2);
-    return c1 - c2;
-}
-
-char *strcpy(char *dest, const char *src)
-{
-    char *d = dest;
-    while ((*d++ = *src++))
-        ;
-    return dest;
-}
-
-// -----------------------------------------------------------------------
-// Minimal malloc/free (bump allocator for TLS emulation in libgcc)
-// -----------------------------------------------------------------------
-
-extern char _heap_start, _heap_end;
-static char *_brk = &_heap_start;
-
-void *malloc(size_t size)
-{
-    // Align to 8 bytes
-    size = (size + 7) & ~(size_t) 7;
-    char *p = _brk;
-    if (p + size > &_heap_end)
-        return (void *) 0;
-    _brk = p + size;
-    return p;
-}
-
-void free(void *ptr)
-{
-    (void) ptr;
-    // Bump allocator: no-op free
-}
-
-void *calloc(size_t nmemb, size_t size)
-{
-    size_t total = nmemb * size;
-    void *p = malloc(total);
-    if (p)
-        memset(p, 0, total);
-    return p;
-}
-
-void *realloc(void *ptr, size_t size)
-{
-    void *newp = malloc(size);
-    if (newp && ptr)
-        memcpy(newp, ptr, size); // Over-copies, but safe for bump allocator
-    return newp;
-}
-
-long atol(const char *str)
-{
-    long res = 0;
-    int sign = 0;
-
-    while (*str == ' ')
-        str++;
-
-    if (*str == '-' || *str == '+') {
-        sign = *str == '-';
-        str++;
-    }
-
-    while (*str) {
-        res *= 10;
-        res += *str++ - '0';
-    }
-
-    return sign ? -res : res;
-}

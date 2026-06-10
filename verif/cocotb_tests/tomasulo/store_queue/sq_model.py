@@ -160,9 +160,14 @@ class SQModel:
         return sum(1 for e in self.entries if e.valid)
 
     @property
+    def window_occupancy(self) -> int:
+        """Ring window size (tail - head); capacity consumed including holes."""
+        return (self.tail_ptr - self.head_ptr) % self._ptr_wrap
+
+    @property
     def full(self) -> bool:
-        """Count-based full (matches the sparse-hole RTL)."""
-        return self.count == self.depth
+        """Window-based full (matches the pure-tail-allocation RTL)."""
+        return self.window_occupancy >= self.depth
 
     @property
     def empty(self) -> bool:
@@ -179,15 +184,12 @@ class SQModel:
         address: int = 0,
         is_mmio: bool = False,
     ) -> bool:
-        """Allocate a new entry at the next invalid slot. Returns True if successful."""
+        """Allocate a new entry at the ring tail. Returns True if successful."""
         if self.full:
             return False
         ptr = self.tail_ptr
-        for _ in range(self.depth):
-            if not self.entries[ptr % self.depth].valid:
-                break
-            ptr = (ptr + 1) % self._ptr_wrap
         idx = ptr % self.depth
+        assert not self.entries[idx].valid, "tail allocation hit a valid entry"
         e = self.entries[idx]
         e.valid = True
         e.rob_tag = rob_tag & MASK_TAG
@@ -281,9 +283,11 @@ class SQModel:
             self.write_outstanding = False
 
     def advance_head(self) -> None:
-        """Advance head pointer past freed entries."""
+        """Advance head pointer past freed entries (collapse to tail when empty)."""
         while self.count and not self.entries[self.head_idx].valid:
             self.head_ptr = (self.head_ptr + 1) % self._ptr_wrap
+        if self.count == 0:
+            self.head_ptr = self.tail_ptr
 
     def check_forward(
         self, check_addr: int, check_rob_tag: int, check_size: int, rob_head_tag: int
@@ -360,7 +364,7 @@ class SQModel:
         self.reset()
 
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
-        """Partial flush: invalidate uncommitted entries younger than flush_tag."""
+        """Kill younger uncommitted entries, then pull back the ring tail."""
         for e in self.entries:
             if (
                 e.valid
@@ -368,3 +372,12 @@ class SQModel:
                 and is_younger(e.rob_tag, flush_tag & MASK_TAG, rob_head_tag & MASK_TAG)
             ):
                 e.valid = False
+
+        last_survivor_offset = None
+        for offset in range(self.depth):
+            if self.entries[(self.head_idx + offset) % self.depth].valid:
+                last_survivor_offset = offset
+        if last_survivor_offset is None:
+            self.tail_ptr = self.head_ptr
+        else:
+            self.tail_ptr = (self.head_ptr + last_survivor_offset + 1) % self._ptr_wrap

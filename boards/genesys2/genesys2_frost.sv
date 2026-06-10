@@ -78,7 +78,9 @@ module genesys2_frost (
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
   // Clock: 200MHz * 4 / 6 = 133.33 MHz
   xilinx_frost_subsystem #(
-      .CLK_FREQ_HZ(133333333)
+      .CLK_FREQ_HZ(133333333),
+      // Genesys2 = Kintex-7: no UltraRAM, so omit the URAM tier.
+      .ENABLE_URAM_TIER(0)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

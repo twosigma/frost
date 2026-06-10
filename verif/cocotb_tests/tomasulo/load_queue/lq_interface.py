@@ -200,6 +200,7 @@ class LQInterface:
         self.dut.i_sq_forward.value = 0
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
+        self.dut.i_mem_bus_busy.value = 0
         self.dut.i_adapter_result_pending.value = 0
         self.dut.i_result_accepted.value = 0
         self.dut.i_rob_head_tag.value = 0
@@ -340,6 +341,19 @@ class LQInterface:
     def clear_mem_response(self) -> None:
         """Clear memory read response."""
         self.dut.i_mem_read_valid.value = 0
+
+    def drive_mem_bus_busy(self, busy: bool = True) -> None:
+        """Drive memory-bus busy input from SQ/AMO/backend recovery."""
+        self.dut.i_mem_bus_busy.value = 1 if busy else 0
+
+    def drive_cache_invalidate(self, addr: int) -> None:
+        """Drive L0 cache invalidation for one address."""
+        self.dut.i_cache_invalidate_valid.value = 1
+        self.dut.i_cache_invalidate_addr.value = addr & MASK32
+
+    def clear_cache_invalidate(self) -> None:
+        """Clear L0 cache invalidation."""
+        self.dut.i_cache_invalidate_valid.value = 0
 
     def read_mem_request(self) -> dict:
         """Read memory read request outputs."""
