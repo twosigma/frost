@@ -58,7 +58,7 @@ module xilinx_frost_subsystem #(
   // BRAM interface signals for instruction memory programming
   logic        instruction_memory_enable;
   logic [ 3:0] instruction_memory_write_enable;
-  logic [16:0] instruction_memory_address;
+  logic [17:0] instruction_memory_address;
   logic [31:0] instruction_memory_write_data;
   logic [31:0] instruction_memory_read_data;
 
@@ -183,7 +183,7 @@ module xilinx_frost_subsystem #(
       .i_rst_n(i_rst_n & image_load_reset_n & programming_reset_n),  // Combined reset
       .i_instr_mem_en(instruction_memory_program_enable),
       .i_instr_mem_we(instruction_memory_program_write_enable),
-      .i_instr_mem_addr({15'd0, instruction_memory_address}),  // Zero-extend to 32 bits
+      .i_instr_mem_addr({14'd0, instruction_memory_address}),  // Zero-extend to 32 bits
       .i_instr_mem_wrdata(instruction_memory_write_data),
       .o_instr_mem_rddata(instruction_memory_read_data),
       .o_uart_tx,

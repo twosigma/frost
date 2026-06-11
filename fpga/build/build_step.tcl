@@ -345,7 +345,7 @@ if {$step eq "synth"} {
     set_property -dict [list \
         CONFIG.PROTOCOL {AXI4LITE} \
         CONFIG.SINGLE_PORT_BRAM {1} \
-        CONFIG.MEM_DEPTH {32768} \
+        CONFIG.MEM_DEPTH {65536} \
     ] [get_ips axi_bram_ctrl_0]
 
     generate_target all [get_ips]
