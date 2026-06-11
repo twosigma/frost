@@ -1758,22 +1758,28 @@ module load_queue #(
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
-      head_ptr                  <= '0;
-      tail_ptr                  <= '0;
-      lq_valid                  <= '0;
-      lq_addr_valid             <= '0;
-      lq_issued                 <= '0;
-      lq_data_valid             <= '0;
-      lq_forwarded              <= '0;
-      mem_outstanding           <= 1'b0;
-      drop_mem_response_pending <= 1'b0;
-      // Full flush clears the URAM gate (mirrors drop_mem_response_pending). The
-      // front-end refill after a full flush is longer than the URAM read
-      // pipeline, so a freshly launched post-flush load cannot collide with the
-      // pre-flush URAM response draining out of the router.
-      slow_outstanding          <= 1'b0;
-      reservation_valid         <= 1'b0;
-      amo_state                 <= AMO_IDLE;
+      head_ptr <= '0;
+      tail_ptr <= '0;
+      lq_valid <= '0;
+      lq_addr_valid <= '0;
+      lq_issued <= '0;
+      lq_data_valid <= '0;
+      lq_forwarded <= '0;
+      mem_outstanding <= 1'b0;
+      // Full flush: if a memory response is still owed -- a load accepted by
+      // the memory side (or parked in the router's queued-load register), or a
+      // drop already armed by an earlier partial flush -- keep/arm the drop so
+      // the zombie response is consumed and, via the launch gates, no new load
+      // issues until it drains. The pre-cache reasoning ("front-end refill
+      // after a full flush outlasts the URAM read pipeline") does not hold for
+      // the cached tier, whose miss latency is unbounded relative to the
+      // refill; an unaccounted zombie response would be misattributed to the
+      // next launched load.
+      drop_mem_response_pending <= (drop_mem_response_pending || mem_outstanding) &&
+                                   !i_mem_read_valid;
+      slow_outstanding <= 1'b0;
+      reservation_valid <= 1'b0;
+      amo_state <= AMO_IDLE;
     end else begin
       // -----------------------------------------------------------------
       // Partial flush: invalidate entries younger than flush_tag

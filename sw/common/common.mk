@@ -120,6 +120,7 @@ EXECUTABLE_ELF_FILE     := sw.elf  # ELF executable with debug info
 VERILOG_HEX_FILE        := sw.mem  # Verilog hex format for $readmemh
 RAW_BINARY_FILE         := sw.bin  # Raw binary (no ELF headers)
 VIVADO_BRAM_FILE        := sw.txt  # BRAM initialization format for Vivado
+DDR_HEX_FILE            := sw_ddr.mem  # Cached-region (DDR) image, region-relative
 DISASSEMBLY_FILE        := sw.S    # Human-readable disassembly
 IMEM_EVEN_INIT_FILE     := sw_imem_even.mem
 IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
@@ -133,8 +134,8 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SI
 endif
 
 # Build targets
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
-     $(IMEM_INIT_TARGETS)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
+     $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
 # Link C sources and assembly startup into ELF executable
 $(EXECUTABLE_ELF_FILE): $(SRC_C) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
@@ -144,14 +145,30 @@ $(EXECUTABLE_ELF_FILE): $(SRC_C) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LIN
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
-# Generate Verilog HEX file for $readmemh (used by simulation and synthesis)
+# Generate Verilog HEX file for $readmemh (used by simulation and synthesis).
+# Cached-region (.ddr_*) sections are excluded: they live at 0x8000_0000 and
+# would otherwise emit @-records far beyond the low BRAM; they are delivered
+# separately via $(DDR_HEX_FILE).
 # Format: One 32-bit word per line in hexadecimal (little-endian)
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id $< $@
+	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
+	      -R .ddr_rodata -R .ddr_data $< $@
 
-# Generate raw binary file (stripped of ELF headers and metadata)
+# Generate raw binary file (stripped of ELF headers and metadata; cached-region
+# sections excluded so the binary spans only the low BRAM image)
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
-	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id $< $@
+	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
+	      -R .ddr_rodata -R .ddr_data $< $@
+
+# Generate the cached-region (DDR) image: only the .ddr_* loaded sections,
+# rebased so file offset 0 = the cached-region base (0x8000_0000). Loaded by
+# the behavioral DDR model in simulation and the JTAG loader on hardware.
+# Programs with no .ddr_* sections get a single zero word so consumers can
+# always $readmemh the file.
+$(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_rodata -j .ddr_data \
+	      --change-addresses -0x80000000 $< $@ 2>/dev/null
+	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
 # Generate Vivado BRAM initialization file (8 hex digits per line, zero-padded)
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
@@ -174,7 +191,8 @@ size: $(EXECUTABLE_ELF_FILE)
 
 # Clean all build artifacts
 clean:
-	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
+	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
+	      $(DISASSEMBLY_FILE) \
 	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
 
 .PHONY: all size clean

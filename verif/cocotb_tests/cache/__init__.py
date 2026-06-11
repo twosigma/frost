@@ -12,11 +12,4 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the URAM heap capacity test.
-# Allocates several MiB via malloc from the high-address URAM tier and verifies
-# the data reads back correctly -- the capacity that lets the big CoreMark-PRO
-# heaps fit on-chip. Uses a dedicated linker (uram_heap_test.ld) that places the
-# heap in URAM (0x0100_0000, 2 MiB) while code/data/stack stay in low BRAM.
-SRC_C   := ../../lib/src/uart.c ../../lib/src/memory.c ../../lib/src/string.c uram_heap_test.c
-LINKER_SCRIPT := uram_heap_test.ld
-include ../../common/common.mk
+"""Cache hierarchy unit tests."""

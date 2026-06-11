@@ -75,7 +75,17 @@ _start:
 #if COREMARK_PRO_TRACE
     call    early_puts
 #endif
-    call    main
+
+    // Zero the cached-region BSS (.ddr_bss). Empty (PROVIDEd as 0) unless the
+    // unified linker script places zero-init sections in the DDR region.
+    la      t0, __ddr_bss_start
+    la      t1, __ddr_bss_end
+9:  bgeu    t0, t1, 10f
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    j       9b
+
+10: call    main
 
 7:  j       7b
 

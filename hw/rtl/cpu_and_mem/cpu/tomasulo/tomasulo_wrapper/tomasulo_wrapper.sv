@@ -152,6 +152,12 @@ module tomasulo_wrapper #(
     input logic                                        i_flush_all,
     input logic                                        i_flush_after_head_commit,
     input logic                                        i_backend_recovery_hold,
+    // A slow-tier (cached-region) store is in flight between the memory
+    // request router and the cache hierarchy. Folded into the LQ bus-busy
+    // gate so load launches wait instead of piling into the router's
+    // one-entry queued-load register (which can hold exactly ONE blocked
+    // load; handshake-latency stores would otherwise overwrite it).
+    input logic                                        i_slow_write_inflight,
 
     // =========================================================================
     // Early Misprediction Recovery
@@ -2389,10 +2395,13 @@ module tomasulo_wrapper #(
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
   assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
-  // MMIO detection: address >= MMIO base
+  // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000).
+  // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
+  // and must NOT be flagged MMIO -- the old ">= MmioBase" shortcut predates
+  // the cached tier (when nothing was mapped above MMIO).
   localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 32'h4000_0000;
   logic lq_addr_is_mmio;
-  assign lq_addr_is_mmio = (lq_effective_addr >= MmioBase);
+  assign lq_addr_is_mmio = (lq_effective_addr[31:30] == 2'b01);
 
   riscv_pkg::lq_addr_update_t lq_addr_update;
   always_comb begin
@@ -2439,19 +2448,21 @@ module tomasulo_wrapper #(
       .i_sq_forward              (sq_forward),
 
       // Memory interface (external)
-      .o_mem_read_en   (o_lq_mem_read_en),
+      .o_mem_read_en(o_lq_mem_read_en),
       .o_mem_addr_valid(o_lq_mem_addr_valid),
-      .o_mem_read_addr (o_lq_mem_read_addr),
-      .o_mem_read_size (o_lq_mem_read_size),
-      .i_mem_read_data (i_lq_mem_read_data),
+      .o_mem_read_addr(o_lq_mem_read_addr),
+      .o_mem_read_size(o_lq_mem_read_size),
+      .i_mem_read_data(i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
       // AMO writes share the same external data-memory port as load reads.
       // Treat them as bus-busy so the LQ cannot issue a younger load or
       // take a stale L0-cache fast path in the AMO write-completion cycle.
-      // URAM stores need no extra busy coverage: their L0 invalidate fires
-      // at write LAUNCH (see the SQ), and the router queues/replays any
-      // memory read behind the remaining write flight.
-      .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold),
+      // A slow-tier (cached) store in flight is also bus-busy: the router's
+      // queued-load register holds exactly ONE blocked load, so launches
+      // during the (arbitrarily long) handshake write flight must be held
+      // here -- with only the fire-cycle skew load able to queue.
+      .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
+                        i_slow_write_inflight),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
@@ -2616,7 +2627,8 @@ module tomasulo_wrapper #(
 
   // MMIO detection: address >= MMIO base
   logic sq_addr_is_mmio;
-  assign sq_addr_is_mmio = (sq_effective_addr >= MmioBase);
+  // MMIO quadrant test; see lq_addr_is_mmio above.
+  assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
 
   riscv_pkg::sq_addr_update_t sq_addr_update;
   always_comb begin

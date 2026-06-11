@@ -79,7 +79,9 @@ module lq_l0_cache #(
 
   wire  [IndexWidth-1:0] lookup_index = i_lookup_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] lookup_tag = i_lookup_addr[(2+IndexWidth)+:TagWidth];
-  wire                   lookup_mmio = (i_lookup_addr >= MMIO_ADDR[XLEN-1:0]);
+  // MMIO = the 01 address quadrant; the cached (DDR) region (10 quadrant) is
+  // cacheable here just like the low BRAM range (stores invalidate; reset clears).
+  wire                   lookup_mmio = (i_lookup_addr[XLEN-1:XLEN-2] == 2'b01);
 
   wire  [IndexWidth-1:0] fill_index = i_fill_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] fill_tag = i_fill_addr[(2+IndexWidth)+:TagWidth];
@@ -213,7 +215,7 @@ module lq_l0_cache #(
 
   // MMIO addresses never hit
   always_comb begin
-    if (i_rst_n && (i_lookup_addr >= MMIO_ADDR[XLEN-1:0])) begin
+    if (i_rst_n && (i_lookup_addr[XLEN-1:XLEN-2] == 2'b01)) begin
       p_mmio_never_hits : assert (!o_lookup_hit);
     end
   end
@@ -251,7 +253,7 @@ module lq_l0_cache #(
     if (f_past_valid && i_rst_n && f_fill_valid_q
         && !i_flush_all
         && i_lookup_addr[XLEN-1:2] == f_fill_addr_q[XLEN-1:2]
-        && !(i_lookup_addr >= MMIO_ADDR[XLEN-1:0])
+        && !(i_lookup_addr[XLEN-1:XLEN-2] == 2'b01)
         && !(i_invalidate_valid
              && i_invalidate_addr[2+:IndexWidth]
                 == f_fill_addr_q[2+:IndexWidth])

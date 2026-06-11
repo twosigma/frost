@@ -470,7 +470,11 @@ INTERPOSE_CFLAGS := $(MITH_CFLAGS) -DCMP_PGO_TRAINING=$(WL_PGO) \
                     '-DCOREMARK_PRO_RUN_ARGS="$(COREMARK_PRO_RUN_ARGS)"'
 
 # --- Linker ----------------------------------------------------------------
-LINKER_SCRIPT := coremark_pro.ld
+# Unified memory map (sw/common/link_unified.ld): code/data/stack in the
+# 256 KiB low BRAM, heap (and any .ddr_* sections, e.g. radix2's FFT tables)
+# in the DDR-backed 1 GiB cached region at 0x8000_0000 -- identical on both
+# boards and in simulation.
+LINKER_SCRIPT := ../../common/link_unified.ld
 # -lm covers libm symbols (cos/sin/pow/sqrt/log10) used by the FP workloads
 # (linpack/loops/nnet/radix2); harmless for the integer workloads. -lgcc
 # supplies soft helpers (64-bit divide in the timing math, soft float helpers).
@@ -537,10 +541,12 @@ EXECUTABLE_ELF_FILE := sw.elf
 VERILOG_HEX_FILE    := sw.mem
 RAW_BINARY_FILE     := sw.bin
 VIVADO_BRAM_FILE    := sw.txt
+DDR_HEX_FILE        := sw_ddr.mem
 DISASSEMBLY_FILE    := sw.S
 
 # --- Build targets ---------------------------------------------------------
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
+     $(DDR_HEX_FILE) $(DISASSEMBLY_FILE)
 
 # FROST libc objects: compiled with the lib's own include path in isolation so
 # the MITH sources never see the FROST headers (no header shadowing).
@@ -582,10 +588,20 @@ $(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(LINKER_SCRIPT)
 	$(CC) $(BASE_FLAGS) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o $@
 
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id $< $@
+	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
+	      -R .ddr_rodata -R .ddr_data $< $@
 
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
-	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id $< $@
+	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
+	      -R .ddr_rodata -R .ddr_data $< $@
+
+# Cached-region (DDR) image: only the .ddr_* loaded sections, rebased so file
+# offset 0 = CACHED_BASE (0x8000_0000). Always exists (zero word fallback) so
+# the behavioral DDR model / loader can unconditionally consume it.
+$(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_rodata -j .ddr_data \
+	      --change-addresses -0x80000000 $< $@ 2>/dev/null
+	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
@@ -597,6 +613,7 @@ size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
 clean:
-	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
+	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
+	      $(DDR_HEX_FILE) $(DISASSEMBLY_FILE)
 
 .PHONY: all size clean

@@ -41,10 +41,20 @@ _start:
     addi    t0, t0, 4             // Advance pointer by 4 bytes
     j       5b                    // Loop back
 
-    // Step 5: Call main() function (C program entry point)
-6:  call    main
+    // Step 5: Zero-initialize the cached-region BSS (.ddr_bss). Empty (the
+    // linker PROVIDEs both symbols as 0) unless the unified linker script
+    // places zero-init sections in the DDR-backed cached region.
+6:  la      t0, __ddr_bss_start
+    la      t1, __ddr_bss_end
+8:  bgeu    t0, t1, 9f
+    sw      zero, 0(t0)
+    addi    t0, t0, 4
+    j       8b
 
-    // Step 6: If main() returns (shouldn't happen), loop forever
+    // Step 6: Call main() function (C program entry point)
+9:  call    main
+
+    // Step 7: If main() returns (shouldn't happen), loop forever
 7:  j       7b                    // Infinite loop
 
     .option  pop

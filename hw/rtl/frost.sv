@@ -36,28 +36,30 @@ module frost #(
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
-    // URAM memory tier (high-address region backed by UltraRAM). The low BRAM
-    // range + MMIO stay 1-cycle; only loads to [URAM_BASE, URAM_BASE+URAM_SIZE_BYTES)
-    // pay URAM_READ_LATENCY cycles. Production software never addresses this
-    // region, so the tier is unused and the load path stays byte-identical.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 2 * 1024 * 1024,  // 2 MiB
-    // Total URAM read latency in cycles (addr -> data). Must match the URAM
-    // primitive's READ_LATENCY and the router's URAM valid pipeline depth. The
-    // tier is a multi-block URAM cascade (2 MiB = 64 blocks); the XPM pipelines
-    // the cascade to READ_LATENCY so the read closes 300 MHz. The
-    // single-outstanding LQ gate absorbs the latency, so this is free for
-    // correctness (only adds cycles to URAM L0-miss loads).
-    parameter int unsigned URAM_READ_LATENCY = 6,
-    // Total URAM write latency in cycles. 2 registers the write inputs at the URAM
-    // boundary (mirrors the read input reg) to close timing on the wide array; the
-    // router holds the URAM store-done URAM_WRITE_LATENCY-1 extra cycles so
-    // store-to-load ordering stays correct. 1 = legacy single-cycle write.
-    parameter int unsigned URAM_WRITE_LATENCY = 2,
-    // URAM tier present (UltraScale+ only). 0 omits the UltraRAM instance for
-    // 7-series boards (Genesys2 = Kintex-7, no UltraRAM) and ties URAM read data
-    // to 0. Set per-board in build_step.tcl from the FPGA part.
-    parameter int unsigned ENABLE_URAM_TIER = 1
+    // Cached memory tier: the high-address region [CACHED_BASE,
+    // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
+    // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. The low BRAM
+    // range + MMIO stay 1-cycle; cached accesses complete by handshake
+    // (variable latency), absorbed by the LQ/SQ single-outstanding gates.
+    // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
+    // 0 disables the tier (cached-region accesses complete with zero data):
+    // FPGA builds keep 0 until their DDR controller is integrated. Simulation
+    // enables it via -G (see tests/Makefile).
+    parameter int unsigned ENABLE_CACHED_TIER = 0,
+    // 1 splices the URAM L2 between L1 and main memory (X3 shape); 0 is the
+    // L1-only shape (Genesys2 -- Kintex-7 has no UltraRAM).
+    parameter int unsigned CACHED_HAS_L2 = 1,
+    parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
+    parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Behavioral main-memory model knobs (simulation only).
+    parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
+    parameter int unsigned DDR_MODEL_LATENCY = 30,
+    // 1 = the cached tier ends in the simulation-only behavioral DDR model;
+    // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports (hardware boards wire
+    // them to their DDR controller subsystem).
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -74,7 +76,36 @@ module frost #(
 
     // External interrupt input (directly triggers MEIP when high)
     // Optional: tie to 0 if not used
-    input logic i_external_interrupt = 1'b0
+    input logic i_external_interrupt = 1'b0,
+
+    // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
+    // REGION-RELATIVE addresses). Quiescent when USE_BEHAVIORAL_DDR=1 or the
+    // cached tier is disabled; hardware boards wire it to the DDR controller.
+    output logic         o_ddr_axi_awvalid,
+    input  logic         i_ddr_axi_awready,
+    output logic [ 31:0] o_ddr_axi_awaddr,
+    output logic [  7:0] o_ddr_axi_awlen,
+    output logic [  2:0] o_ddr_axi_awsize,
+    output logic [  1:0] o_ddr_axi_awburst,
+    output logic         o_ddr_axi_wvalid,
+    input  logic         i_ddr_axi_wready,
+    output logic [255:0] o_ddr_axi_wdata,
+    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic         o_ddr_axi_wlast,
+    input  logic         i_ddr_axi_bvalid,
+    output logic         o_ddr_axi_bready,
+    input  logic [  1:0] i_ddr_axi_bresp,
+    output logic         o_ddr_axi_arvalid,
+    input  logic         i_ddr_axi_arready,
+    output logic [ 31:0] o_ddr_axi_araddr,
+    output logic [  7:0] o_ddr_axi_arlen,
+    output logic [  2:0] o_ddr_axi_arsize,
+    output logic [  1:0] o_ddr_axi_arburst,
+    input  logic         i_ddr_axi_rvalid,
+    output logic         o_ddr_axi_rready,
+    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [  1:0] i_ddr_axi_rresp,
+    input  logic         i_ddr_axi_rlast
 );
 
   /*
@@ -152,15 +183,44 @@ module frost #(
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
-      .URAM_BASE(URAM_BASE),
-      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
-      .URAM_READ_LATENCY(URAM_READ_LATENCY),
-      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY),
-      .ENABLE_URAM_TIER(ENABLE_URAM_TIER)
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
+      .CACHED_HAS_L2(CACHED_HAS_L2),
+      .L1_CACHE_BYTES(L1_CACHE_BYTES),
+      .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
+      .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
+      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,
       .i_rst(reset_synchronized),
+      .o_ddr_axi_awvalid,
+      .i_ddr_axi_awready,
+      .o_ddr_axi_awaddr,
+      .o_ddr_axi_awlen,
+      .o_ddr_axi_awsize,
+      .o_ddr_axi_awburst,
+      .o_ddr_axi_wvalid,
+      .i_ddr_axi_wready,
+      .o_ddr_axi_wdata,
+      .o_ddr_axi_wstrb,
+      .o_ddr_axi_wlast,
+      .i_ddr_axi_bvalid,
+      .o_ddr_axi_bready,
+      .i_ddr_axi_bresp,
+      .o_ddr_axi_arvalid,
+      .i_ddr_axi_arready,
+      .o_ddr_axi_araddr,
+      .o_ddr_axi_arlen,
+      .o_ddr_axi_arsize,
+      .o_ddr_axi_arburst,
+      .i_ddr_axi_rvalid,
+      .o_ddr_axi_rready,
+      .i_ddr_axi_rdata,
+      .i_ddr_axi_rresp,
+      .i_ddr_axi_rlast,
       .i_instr_mem_en(i_instr_mem_en),
       .i_instr_mem_we(i_instr_mem_we),
       .i_instr_mem_addr(i_instr_mem_addr),

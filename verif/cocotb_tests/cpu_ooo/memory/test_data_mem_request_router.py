@@ -12,7 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the CPU OOO data-memory request router."""
+"""Unit tests for the CPU OOO data-memory request router.
+
+Covers the three-way arbitration (SQ > AMO > queued LQ reads), the MMIO
+sidebands, and the cached-tier handshake: tier-routed enables, the
+write-inflight port hold, and the per-tier read-valid/data muxing.
+"""
 
 from typing import Any
 
@@ -20,10 +25,11 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
-
 CLOCK_PERIOD_NS = 10
 MMIO_ADDR = 0x40000000
-MMIO_SIZE_BYTES = 0x2C
+CACHED_BASE = 0x80000000
+FAST_ADDR = 0x100
+CACHED_ADDR = CACHED_BASE + 0x1234
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -33,7 +39,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sq_mem_write_data.value = 0
     dut.i_sq_mem_write_byte_en.value = 0
     dut.i_sq_mem_write_is_mmio.value = 0
-    dut.i_sq_mem_write_is_uram.value = 0
+    dut.i_sq_mem_write_is_cached.value = 0
     dut.i_amo_mem_write_en.value = 0
     dut.i_amo_mem_write_addr.value = 0
     dut.i_amo_mem_write_data.value = 0
@@ -41,7 +47,10 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_lq_mem_read_addr.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     dut.i_data_mem_rd_data.value = 0
-    dut.i_uram_rd_data.value = 0
+    dut.i_cached_read_data.value = 0
+    dut.i_cached_read_valid.value = 0
+    dut.i_cached_write_done.value = 0
+    dut.i_cached_write_inflight.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -66,263 +75,209 @@ async def _advance_cycle(dut: Any) -> None:
     await _settle()
 
 
-def _get_int_parameter(dut: Any, name: str, default: int) -> int:
-    """Return a Verilog parameter value when cocotb exposes it."""
-    try:
-        return int(getattr(dut, name).value)
-    except AttributeError:
-        return default
-
-
-def _drive_sq_write(
-    dut: Any,
-    *,
-    addr: int = 0x100,
-    data: int = 0xA5A55A5A,
-    byte_en: int = 0b1111,
-    is_mmio: bool = False,
-    is_uram: bool = False,
-) -> None:
-    """Drive a store-queue write request."""
+@cocotb.test()
+async def test_fast_sq_write_done_next_cycle(dut: Any) -> None:
+    """A low-BRAM SQ write asserts BRAM enables and done one cycle later."""
+    await _setup_test(dut)
     dut.i_sq_mem_write_en.value = 1
-    dut.i_sq_mem_write_addr.value = addr
-    dut.i_sq_mem_write_data.value = data
-    dut.i_sq_mem_write_byte_en.value = byte_en
-    dut.i_sq_mem_write_is_mmio.value = 1 if is_mmio else 0
-    dut.i_sq_mem_write_is_uram.value = 1 if is_uram else 0
-
-
-def _drive_amo_write(
-    dut: Any,
-    *,
-    addr: int = 0x200,
-    data: int = 0x12345678,
-) -> None:
-    """Drive an atomic-unit write request."""
-    dut.i_amo_mem_write_en.value = 1
-    dut.i_amo_mem_write_addr.value = addr
-    dut.i_amo_mem_write_data.value = data
-
-
-def _drive_lq_read(dut: Any, *, addr: int = 0x300, addr_valid: bool = True) -> None:
-    """Drive a load-queue read request."""
-    dut.i_lq_mem_read_en.value = 1
-    dut.i_lq_mem_read_addr.value = addr
-    dut.i_lq_mem_addr_valid.value = 1 if addr_valid else 0
-
-
-@cocotb.test()
-async def test_idle_outputs_are_inactive_and_read_data_mirrors(dut: Any) -> None:
-    """Idle router outputs are inactive while read data mirrors memory input."""
-    await _setup_test(dut)
-
-    dut.i_data_mem_rd_data.value = 0xCAFEBABE
+    dut.i_sq_mem_write_addr.value = FAST_ADDR
+    dut.i_sq_mem_write_data.value = 0xDEADBEEF
+    dut.i_sq_mem_write_byte_en.value = 0b1111
     await _settle()
-
-    assert int(dut.o_data_mem_addr.value) == 0
-    assert int(dut.o_data_mem_wr_data.value) == 0
-    assert int(dut.o_data_mem_per_byte_wr_en.value) == 0
-    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-    assert not dut.o_data_mem_read_enable.value
-    assert not dut.o_mmio_read_pulse.value
-    assert not dut.o_mmio_load_valid.value
-    assert not dut.o_sq_mem_write_done.value
-    assert not dut.o_amo_mem_write_done.value
-    assert not dut.o_lq_mem_request_valid.value
-    assert int(dut.o_lq_mem_read_data.value) == 0xCAFEBABE
-    assert not dut.o_lq_mem_read_valid.value
-
-
-@cocotb.test()
-async def test_sq_write_has_priority_and_blocks_lq_request(dut: Any) -> None:
-    """SQ writes own the port, block lower-priority requests, and queue LQ."""
-    await _setup_test(dut)
-
-    _drive_sq_write(dut, addr=0x100, data=0x11112222, byte_en=0b0101)
-    _drive_amo_write(dut, addr=0x200, data=0x33334444)
-    _drive_lq_read(dut, addr=0x300)
-    await _settle()
-
-    assert int(dut.o_data_mem_addr.value) == 0x100
-    assert int(dut.o_data_mem_wr_data.value) == 0x11112222
-    assert int(dut.o_data_mem_per_byte_wr_en.value) == 0b0101
-    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0b0101
-    assert not dut.o_data_mem_read_enable.value
-    assert not dut.o_amo_mem_write_done.value
-    assert not dut.o_lq_mem_request_valid.value
-
-    await _advance_cycle(dut)
-
-    assert dut.o_sq_mem_write_done.value
-    assert dut.o_lq_mem_request_valid.value
-    assert not dut.o_lq_mem_read_valid.value
-
-
-@cocotb.test()
-async def test_mmio_sq_write_preserves_peripheral_mask_only(dut: Any) -> None:
-    """MMIO SQ writes keep peripheral byte enables but mask BRAM writes."""
-    await _setup_test(dut)
-
-    _drive_sq_write(
-        dut,
-        addr=MMIO_ADDR + 0x10,
-        data=0x55667788,
-        byte_en=0b1010,
-        is_mmio=True,
-    )
-    await _settle()
-
-    assert int(dut.o_data_mem_addr.value) == MMIO_ADDR + 0x10
-    assert int(dut.o_data_mem_wr_data.value) == 0x55667788
-    assert int(dut.o_data_mem_per_byte_wr_en.value) == 0b1010
-    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-
-    await _advance_cycle(dut)
-
-    assert dut.o_sq_mem_write_done.value
-
-
-@cocotb.test()
-async def test_amo_write_has_second_priority_and_mmio_masks_bram(dut: Any) -> None:
-    """AMO writes run when SQ is idle and MMIO AMOs are masked from BRAM."""
-    await _setup_test(dut)
-
-    _drive_amo_write(dut, addr=0x200, data=0xAABBCCDD)
-    _drive_lq_read(dut, addr=0x300)
-    await _settle()
-
-    assert int(dut.o_data_mem_addr.value) == 0x200
-    assert int(dut.o_data_mem_wr_data.value) == 0xAABBCCDD
-    assert int(dut.o_data_mem_per_byte_wr_en.value) == 0b1111
     assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0b1111
-    assert dut.o_amo_mem_write_done.value
-    assert not dut.o_data_mem_read_enable.value
-
-    dut.i_amo_mem_write_addr.value = MMIO_ADDR + 0x04
-    await _settle()
-
-    assert int(dut.o_data_mem_addr.value) == MMIO_ADDR + 0x04
-    assert int(dut.o_data_mem_per_byte_wr_en.value) == 0b1111
-    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+    assert int(dut.o_data_mem_addr.value) == FAST_ADDR
+    assert int(dut.o_sq_mem_write_done.value) == 0
     await _advance_cycle(dut)
-
-    assert dut.o_lq_mem_request_valid.value
-
-
-@cocotb.test()
-async def test_lq_read_bypasses_when_port_is_free(dut: Any) -> None:
-    """LQ reads use the port immediately and return valid data one cycle later."""
-    await _setup_test(dut)
-
-    dut.i_data_mem_rd_data.value = 0x13579BDF
-    _drive_lq_read(dut, addr=0x900)
-    await _settle()
-
-    assert dut.o_data_mem_read_enable.value
-    assert int(dut.o_data_mem_addr.value) == 0x900
-    assert int(dut.o_lq_mem_read_data.value) == 0x13579BDF
-    assert not dut.o_lq_mem_request_valid.value
-    assert not dut.o_lq_mem_read_valid.value
-
-    await _advance_cycle(dut)
-
-    assert dut.o_lq_mem_read_valid.value
-
-    dut.i_lq_mem_read_en.value = 0
-    dut.i_lq_mem_addr_valid.value = 0
-    await _advance_cycle(dut)
-
-    assert not dut.o_lq_mem_read_valid.value
-
-
-@cocotb.test()
-async def test_blocked_lq_request_retries_after_write_conflict(dut: Any) -> None:
-    """A blocked load is held and retried once the write conflict clears."""
-    await _setup_test(dut)
-
-    _drive_sq_write(dut, addr=0x100, data=0x22223333)
-    _drive_lq_read(dut, addr=0x444)
-    await _advance_cycle(dut)
-
-    assert dut.o_lq_mem_request_valid.value
-    assert not dut.o_data_mem_read_enable.value
-
     dut.i_sq_mem_write_en.value = 0
-    dut.i_lq_mem_read_en.value = 0
-    dut.i_lq_mem_addr_valid.value = 0
-    await _settle()
-
-    assert dut.o_data_mem_read_enable.value
-    assert int(dut.o_data_mem_addr.value) == 0x444
-    assert dut.o_lq_mem_request_valid.value
-
-    await _advance_cycle(dut)
-
-    assert not dut.o_lq_mem_request_valid.value
-    assert dut.o_lq_mem_read_valid.value
-
-
-@cocotb.test()
-async def test_uram_queued_load_waits_for_delayed_store_done(dut: Any) -> None:
-    """A load queued behind a URAM store must not replay before store-done."""
-    await _setup_test(dut)
-
-    uram_write_latency = _get_int_parameter(dut, "URAM_WRITE_LATENCY", 2)
-    assert uram_write_latency >= 2, "test requires delayed URAM writes"
-
-    uram_addr = 0x01000080
-    _drive_sq_write(
-        dut,
-        addr=uram_addr,
-        data=0x11223344,
-        byte_en=0b1111,
-        is_uram=True,
-    )
-    _drive_lq_read(dut, addr=uram_addr)
-    await _settle()
-
-    assert int(dut.o_data_mem_uram_byte_wr_en.value) == 0b1111
-    assert not dut.o_data_mem_uram_read_enable.value
-
-    await _advance_cycle(dut)
-
-    dut.i_sq_mem_write_en.value = 0
-    dut.i_sq_mem_write_is_uram.value = 0
     dut.i_sq_mem_write_byte_en.value = 0
-    dut.i_lq_mem_read_en.value = 0
-    dut.i_lq_mem_addr_valid.value = 0
     await _settle()
-
-    assert dut.o_lq_mem_request_valid.value
-    assert not dut.o_sq_mem_write_done.value
-    assert not dut.o_data_mem_read_enable.value
-    assert not dut.o_data_mem_uram_read_enable.value
-
+    assert int(dut.o_sq_mem_write_done.value) == 1
     await _advance_cycle(dut)
-
-    assert dut.o_sq_mem_write_done.value
-    assert dut.o_data_mem_read_enable.value
-    assert dut.o_data_mem_uram_read_enable.value
+    assert int(dut.o_sq_mem_write_done.value) == 0
 
 
 @cocotb.test()
-async def test_mmio_lq_read_sidebands_and_pulse(dut: Any) -> None:
-    """MMIO LQ reads assert the MMIO load sideband and read pulse."""
+async def test_cached_sq_write_handshake(dut: Any) -> None:
+    """Check a cached SQ write: masked off BRAM, completes on cached done."""
     await _setup_test(dut)
-
-    _drive_lq_read(dut, addr=MMIO_ADDR + MMIO_SIZE_BYTES - 4)
+    dut.i_sq_mem_write_en.value = 1
+    dut.i_sq_mem_write_addr.value = CACHED_ADDR
+    dut.i_sq_mem_write_data.value = 0xA5A5A5A5
+    dut.i_sq_mem_write_byte_en.value = 0b0011
+    dut.i_sq_mem_write_is_cached.value = 1
     await _settle()
-
-    assert dut.o_data_mem_read_enable.value
-    assert int(dut.o_data_mem_addr.value) == MMIO_ADDR + MMIO_SIZE_BYTES - 4
-    assert dut.o_mmio_load_valid.value
-    assert int(dut.o_mmio_load_addr.value) == MMIO_ADDR + MMIO_SIZE_BYTES - 4
-    assert dut.o_mmio_read_pulse.value
-
-    dut.i_lq_mem_read_addr.value = MMIO_ADDR + MMIO_SIZE_BYTES
+    assert (
+        int(dut.o_data_mem_bram_byte_wr_en.value) == 0
+    ), "cached store must not hit BRAM"
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0b0011
+    await _advance_cycle(dut)
+    dut.i_sq_mem_write_en.value = 0
+    dut.i_sq_mem_write_byte_en.value = 0
+    dut.i_sq_mem_write_is_cached.value = 0
+    # Adapter is now busy with the store.
+    dut.i_cached_write_inflight.value = 1
     await _settle()
+    assert int(dut.o_sq_mem_write_done.value) == 0, "no fast done for a cached store"
+    # Several cycles later the adapter reports completion.
+    for _ in range(5):
+        await _advance_cycle(dut)
+        assert int(dut.o_sq_mem_write_done.value) == 0
+    dut.i_cached_write_done.value = 1
+    dut.i_cached_write_inflight.value = 0
+    await _settle()
+    assert int(dut.o_sq_mem_write_done.value) == 1
+    await _advance_cycle(dut)
+    dut.i_cached_write_done.value = 0
 
-    assert dut.o_data_mem_read_enable.value
-    assert not dut.o_mmio_load_valid.value
-    assert not dut.o_mmio_read_pulse.value
+
+@cocotb.test()
+async def test_load_queued_behind_cached_write_inflight(dut: Any) -> None:
+    """Check a load queues behind a cached store and issues after done."""
+    await _setup_test(dut)
+    dut.i_cached_write_inflight.value = 1
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FAST_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert (
+        int(dut.o_data_mem_read_enable.value) == 0
+    ), "load must wait for the cached store"
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    await _settle()
+    assert int(dut.o_lq_mem_request_valid.value) == 1, "load must be queued"
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    # Store completes: the queued load issues.
+    dut.i_cached_write_inflight.value = 0
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_addr.value) == FAST_ADDR
+    dut.i_data_mem_rd_data.value = 0x12345678
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_read_data.value) == 0x12345678
+
+
+@cocotb.test()
+async def test_fast_read_one_cycle_valid(dut: Any) -> None:
+    """A low-BRAM load returns data with the 1-cycle valid pulse."""
+    await _setup_test(dut)
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FAST_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    dut.i_data_mem_rd_data.value = 0xCAFE0001
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_read_data.value) == 0xCAFE0001
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+
+
+@cocotb.test()
+async def test_cached_read_handshake(dut: Any) -> None:
+    """Check a cached load completes only on i_cached_read_valid."""
+    await _setup_test(dut)
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 1
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    await _settle()
+    # The fast tap must NOT fire for a cached load.
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+    for _ in range(7):
+        await _advance_cycle(dut)
+        assert int(dut.o_lq_mem_read_valid.value) == 0
+    dut.i_cached_read_valid.value = 1
+    dut.i_cached_read_data.value = 0x0DDC0FFE
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_read_data.value) == 0x0DDC0FFE
+    await _advance_cycle(dut)
+    dut.i_cached_read_valid.value = 0
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+
+
+@cocotb.test()
+async def test_mmio_read_pulse(dut: Any) -> None:
+    """An MMIO load raises the MMIO pulse/valid sideband (not the cached one)."""
+    await _setup_test(dut)
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = MMIO_ADDR + 0x10
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_mmio_read_pulse.value) == 1
+    assert int(dut.o_mmio_load_valid.value) == 1
+    assert int(dut.o_mmio_load_addr.value) == MMIO_ADDR + 0x10
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+
+
+@cocotb.test()
+async def test_amo_write_bram_and_priority(dut: Any) -> None:
+    """Check AMO writes hit BRAM and defer to SQ priority."""
+    await _setup_test(dut)
+    # AMO alone: done combinationally, BRAM write-enable asserted.
+    dut.i_amo_mem_write_en.value = 1
+    dut.i_amo_mem_write_addr.value = FAST_ADDR + 8
+    dut.i_amo_mem_write_data.value = 0x77
+    await _settle()
+    assert int(dut.o_amo_mem_write_done.value) == 1
+    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0b1111
+    # SQ arrives: AMO must defer.
+    dut.i_sq_mem_write_en.value = 1
+    dut.i_sq_mem_write_addr.value = FAST_ADDR
+    dut.i_sq_mem_write_byte_en.value = 0b1111
+    await _settle()
+    assert int(dut.o_amo_mem_write_done.value) == 0
+    assert int(dut.o_data_mem_addr.value) == FAST_ADDR, "SQ owns the address mux"
+    dut.i_sq_mem_write_en.value = 0
+    dut.i_sq_mem_write_byte_en.value = 0
+    dut.i_amo_mem_write_en.value = 0
+    await _advance_cycle(dut)
+
+
+@cocotb.test()
+async def test_amo_cached_write_fully_masked(dut: Any) -> None:
+    """Check a cached-region AMO write is masked from BRAM and the cache."""
+    await _setup_test(dut)
+    dut.i_amo_mem_write_en.value = 1
+    dut.i_amo_mem_write_addr.value = CACHED_ADDR
+    dut.i_amo_mem_write_data.value = 0x55
+    await _settle()
+    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+    assert int(dut.o_amo_mem_write_done.value) == 1
+    dut.i_amo_mem_write_en.value = 0
+    await _advance_cycle(dut)
+
+
+@cocotb.test()
+async def test_cached_read_enable_not_spurious(dut: Any) -> None:
+    """Check low-BRAM loads never pulse the cached read enable."""
+    await _setup_test(dut)
+    for addr in (0x0, 0x1FFC, FAST_ADDR):
+        dut.i_lq_mem_read_en.value = 1
+        dut.i_lq_mem_read_addr.value = addr
+        dut.i_lq_mem_addr_valid.value = 1
+        await _settle()
+        assert int(dut.o_data_mem_cached_read_enable.value) == 0
+        await _advance_cycle(dut)
+        dut.i_lq_mem_read_en.value = 0
+        dut.i_lq_mem_addr_valid.value = 0
+        await _advance_cycle(dut)

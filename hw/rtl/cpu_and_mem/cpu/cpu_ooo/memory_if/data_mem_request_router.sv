@@ -23,31 +23,27 @@
  * register until the store/AMO port conflict clears, and produces the MMIO
  * read/write sidebands and the 1-cycle load-read-valid pulse.
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Memory Interface" section, with the parent's signals presented as
- * ports and aliased back to their original names. lq_mem_request_addr_eff is
- * folded in here since all of its uses live in this block.
+ * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
+ * the cache hierarchy -> DDR through cached_tier_adapter. Unlike the old
+ * fixed-latency URAM tier, completion is HANDSHAKE-based: the adapter pulses
+ * i_cached_read_valid / i_cached_write_done any number of cycles after the
+ * request, and holds i_cached_write_inflight while a cached store is pending.
+ * The LQ's single-outstanding slow gate blocks every load launch while a
+ * cached load is in flight, and write_port_busy (which folds in the
+ * write-inflight hold) queues loads behind a pending cached store, so the
+ * fast and cached read responses can never overlap -- the same per-tier
+ * mutual exclusion the URAM tier relied on.
  */
 
 module data_mem_request_router #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
-    // URAM memory tier (high-address region). Loads to [URAM_BASE,
-    // URAM_BASE+URAM_SIZE_BYTES) are served by the UltraRAM scratchpad and take
-    // URAM_READ_LATENCY cycles; the low BRAM range + MMIO stay 1-cycle. The
-    // single-outstanding URAM read invariant (enforced by the load queue's
-    // slow_outstanding gate) keeps the fast and URAM read responses from
-    // overlapping. Production software never addresses this region, so the tier
-    // is unused and the read path is byte-identical to the 1-cycle baseline.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024,
-    parameter int unsigned URAM_READ_LATENCY = 2,
-    // Extra cycles the URAM store-done is held vs the fast tier, matching the
-    // write-input register stages in sdp_uram_byte_en (WRITE_LATENCY). Keeps the
-    // SQ entry / store-to-load forwarding / ordering alive until the registered
-    // URAM write actually lands. 1 = legacy single-cycle write (no extra hold).
-    parameter int unsigned URAM_WRITE_LATENCY = 1
+    // Cached memory tier (high-address region). Loads/stores to
+    // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache
+    // hierarchy with variable latency; the low BRAM range + MMIO stay 1-cycle.
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -58,8 +54,8 @@ module data_mem_request_router #(
     input logic [XLEN-1:0] i_sq_mem_write_data,
     input logic [     3:0] i_sq_mem_write_byte_en,
     input logic            i_sq_mem_write_is_mmio,
-    // Registered URAM-tier flag for the SQ write (parallels is_mmio).
-    input logic            i_sq_mem_write_is_uram,
+    // Registered cached-tier flag for the SQ write (parallels is_mmio).
+    input logic            i_sq_mem_write_is_cached,
 
     // Atomic-unit write request.
     input logic            i_amo_mem_write_en,
@@ -74,8 +70,12 @@ module data_mem_request_router #(
     // External data memory read data (BRAM, combinational the cycle after a read
     // is accepted; the cpu_and_mem mux folds in registered MMIO read data).
     input logic [XLEN-1:0] i_data_mem_rd_data,
-    // URAM-tier read data, valid URAM_READ_LATENCY cycles after a URAM read.
-    input logic [XLEN-1:0] i_uram_rd_data,
+    // Cached-tier completion (from cached_tier_adapter): handshake pulses with
+    // variable latency, plus the write-inflight hold.
+    input logic [XLEN-1:0] i_cached_read_data,
+    input logic            i_cached_read_valid,
+    input logic            i_cached_write_done,
+    input logic            i_cached_write_inflight,
 
     // External data memory port.
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -83,9 +83,9 @@ module data_mem_request_router #(
     output logic [     3:0] o_data_mem_per_byte_wr_en,
     output logic [     3:0] o_data_mem_bram_byte_wr_en,
     output logic            o_data_mem_read_enable,
-    // URAM-tier write/read enables (asserted only for URAM-range accesses).
-    output logic [     3:0] o_data_mem_uram_byte_wr_en,
-    output logic            o_data_mem_uram_read_enable,
+    // Cached-tier write/read requests (asserted only for cached-range accesses).
+    output logic [     3:0] o_data_mem_cached_byte_wr_en,
+    output logic            o_data_mem_cached_read_enable,
     output logic            o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic            o_mmio_load_valid,
@@ -98,45 +98,40 @@ module data_mem_request_router #(
     output logic            o_lq_mem_read_valid
 );
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases: keep the body close to the original extracted form.
   logic sq_mem_write_en;
   logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
   logic [3:0] sq_mem_write_byte_en;
   logic       sq_mem_write_is_mmio;
-  logic       sq_mem_write_is_uram;
+  logic       sq_mem_write_is_cached;
   logic       amo_mem_write_en;
   logic [XLEN-1:0] amo_mem_write_addr, amo_mem_write_data;
   logic            lq_mem_read_en;
   logic [XLEN-1:0] lq_mem_read_addr;
   logic            lq_mem_addr_valid;
-  assign sq_mem_write_en      = i_sq_mem_write_en;
-  assign sq_mem_write_addr    = i_sq_mem_write_addr;
-  assign sq_mem_write_data    = i_sq_mem_write_data;
-  assign sq_mem_write_byte_en = i_sq_mem_write_byte_en;
-  assign sq_mem_write_is_mmio = i_sq_mem_write_is_mmio;
-  assign sq_mem_write_is_uram = i_sq_mem_write_is_uram;
-  assign amo_mem_write_en     = i_amo_mem_write_en;
-  assign amo_mem_write_addr   = i_amo_mem_write_addr;
-  assign amo_mem_write_data   = i_amo_mem_write_data;
-  assign lq_mem_read_en       = i_lq_mem_read_en;
-  assign lq_mem_read_addr     = i_lq_mem_read_addr;
-  assign lq_mem_addr_valid    = i_lq_mem_addr_valid;
+  assign sq_mem_write_en        = i_sq_mem_write_en;
+  assign sq_mem_write_addr      = i_sq_mem_write_addr;
+  assign sq_mem_write_data      = i_sq_mem_write_data;
+  assign sq_mem_write_byte_en   = i_sq_mem_write_byte_en;
+  assign sq_mem_write_is_mmio   = i_sq_mem_write_is_mmio;
+  assign sq_mem_write_is_cached = i_sq_mem_write_is_cached;
+  assign amo_mem_write_en       = i_amo_mem_write_en;
+  assign amo_mem_write_addr     = i_amo_mem_write_addr;
+  assign amo_mem_write_data     = i_amo_mem_write_data;
+  assign lq_mem_read_en         = i_lq_mem_read_en;
+  assign lq_mem_read_addr       = i_lq_mem_read_addr;
+  assign lq_mem_addr_valid      = i_lq_mem_addr_valid;
 
-  // Router-internal state / nets (formerly cpu_ooo locals).
-  // Store-done, split per tier (see the always_ff below). Fast tier asserts one
-  // cycle after the SQ fires (legacy); the URAM tier is delayed URAM_WRITE_LATENCY
-  // cycles to match its registered write port.
-  logic                          sq_write_done_fast;
-  logic [URAM_WRITE_LATENCY-1:0] sq_write_done_uram_sr;
-  logic                          sq_uram_write_before_done;
-  logic                          write_port_busy;
-  logic                          amo_mem_write_done;
-  logic                          lq_mem_request_valid;
-  logic [              XLEN-1:0] lq_mem_request_addr;
-  logic [              XLEN-1:0] lq_mem_request_addr_eff;
-  logic [              XLEN-1:0] lq_mem_read_data;
-  logic                          lq_mem_read_valid;
-  logic                          lq_mem_request_is_mmio;
+  // Router-internal state / nets.
+  logic            sq_write_done_fast;
+  logic            write_port_busy;
+  logic            amo_mem_write_done;
+  logic            lq_mem_request_valid;
+  logic [XLEN-1:0] lq_mem_request_addr;
+  logic [XLEN-1:0] lq_mem_request_addr_eff;
+  logic [XLEN-1:0] lq_mem_read_data;
+  logic            lq_mem_read_valid;
+  logic            lq_mem_request_is_mmio;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
@@ -156,39 +151,37 @@ module data_mem_request_router #(
       (amo_mem_write_addr <  (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
 
   // -------------------------------------------------------------------------
-  // URAM tier decode.
+  // Cached-tier decode.
   //
-  // READ side: is_uram for the queued load address. This is computed the same
-  // cheap way as is_mmio and never feeds o_data_mem_addr (the BRAM ADDR cone),
-  // so it stays off the BRAM-ADDR late path. It is consumed only by the URAM
-  // read-enable and (immediately registered into) the per-tier read-valid
-  // pipeline below.
+  // READ side: is_cached for the queued load address. For the power-of-two
+  // aligned 1 GiB region this range compare reduces to a 2-bit test of the
+  // top address bits -- far cheaper than the old URAM range compare. It is
+  // consumed by the cached read-enable (which lands on the adapter's request
+  // register, not a memory enable cascade) and the per-tier read-valid seed.
   //
-  // WRITE side: the SQ flag arrives pre-registered (i_sq_mem_write_is_uram,
-  // computed at the SQ drain alongside is_mmio), mirroring the discipline that
-  // keeps the late address-range test off the BRAM WEA pin. The AMO write flag
-  // is decoded locally like amo_mem_write_is_mmio; AMOs are restricted to the
-  // low BRAM tier by the linker, so this only provides the same "never corrupt
-  // an aliased BRAM word" safety as the MMIO case.
-  logic lq_mem_request_is_uram;
-  assign lq_mem_request_is_uram =
-      (lq_mem_request_addr_eff >= URAM_BASE[XLEN-1:0]) &&
-      (lq_mem_request_addr_eff <  (URAM_BASE[XLEN-1:0] + URAM_SIZE_BYTES[XLEN-1:0]));
+  // WRITE side: the SQ flag arrives pre-registered (i_sq_mem_write_is_cached,
+  // computed at the SQ drain alongside is_mmio), keeping the late
+  // address-range test off the BRAM WEA pin. The AMO write flag is decoded
+  // locally like amo_mem_write_is_mmio; AMOs are restricted to the low BRAM
+  // tier by the linker, so the cached decode only provides the "never corrupt
+  // an aliased BRAM word" safety -- a (forbidden) cached AMO write is masked
+  // from the BRAM and dropped, NOT forwarded to the cache, so the adapter's
+  // write-done pulses can only ever belong to SQ stores.
+  logic lq_mem_request_is_cached;
+  assign lq_mem_request_is_cached =
+      (lq_mem_request_addr_eff >= CACHED_BASE[XLEN-1:0]) &&
+      (lq_mem_request_addr_eff <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
 
-  logic amo_mem_write_is_uram;
-  assign amo_mem_write_is_uram =
-      (amo_mem_write_addr >= URAM_BASE[XLEN-1:0]) &&
-      (amo_mem_write_addr <  (URAM_BASE[XLEN-1:0] + URAM_SIZE_BYTES[XLEN-1:0]));
+  logic amo_mem_write_is_cached;
+  assign amo_mem_write_is_cached =
+      (amo_mem_write_addr >= CACHED_BASE[XLEN-1:0]) &&
+      (amo_mem_write_addr <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
 
-  generate
-    if (URAM_WRITE_LATENCY > 1) begin : gen_sq_uram_write_hold
-      assign sq_uram_write_before_done = |sq_write_done_uram_sr[URAM_WRITE_LATENCY-2:0];
-    end else begin : gen_no_sq_uram_write_hold
-      assign sq_uram_write_before_done = 1'b0;
-    end
-  endgenerate
-
-  assign write_port_busy = sq_mem_write_en || amo_mem_write_en || sq_uram_write_before_done;
+  // A cached store owns the write port from its fire (sq_mem_write_en) until
+  // its done pulse (i_cached_write_inflight covers the cycles in between), so
+  // loads queue behind it -- the same ordering hold the URAM tier's
+  // write-done shift register provided, now handshake-shaped.
+  assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
 
   always_comb begin
     // Load queue memory read. Bypass the one-entry request register when the
@@ -210,34 +203,32 @@ module data_mem_request_router #(
     // can dispatch them on the next cycle.
     o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
                                 amo_mem_write_en ? 4'b1111 : 4'b0000;
-    // BRAM-specific byte-write-enable: MMIO- AND URAM-targeted stores are
-    // pre-masked at the SQ/AMO source using registered tier flags. Keeping these
-    // checks out of cpu_and_mem (where the old address-range test pulled in the
-    // full data_memory_address mux) breaks the -1.045 ns issued_idx_reg →
-    // data_memory/WEA path reported post-synthesis. A URAM store must not also
-    // land in the BRAM (its aliased low word would be corrupted), so it is
-    // excluded here and routed to the URAM tier instead.
+    // BRAM-specific byte-write-enable: MMIO- AND cached-targeted stores are
+    // pre-masked at the SQ/AMO source using registered tier flags. Keeping
+    // these checks out of cpu_and_mem (where the old address-range test pulled
+    // in the full data_memory_address mux) breaks the issued_idx_reg →
+    // data_memory/WEA timing path. A cached store must not also land in the
+    // BRAM (its aliased low word would be corrupted), so it is excluded here
+    // and routed to the cached tier instead.
     o_data_mem_bram_byte_wr_en =
-        (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_uram) ?
+        (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached) ?
             sq_mem_write_byte_en :
-        (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_uram) ?
+        (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached) ?
             4'b1111 : 4'b0000;
 
-    // URAM-tier byte-write-enable: only URAM-targeted stores/AMOs. The URAM and
-    // BRAM write masks are mutually exclusive by tier.
-    o_data_mem_uram_byte_wr_en =
-        (sq_mem_write_en && sq_mem_write_is_uram) ? sq_mem_write_byte_en :
-        (amo_mem_write_en && amo_mem_write_is_uram) ? 4'b1111 : 4'b0000;
+    // Cached-tier byte-write-enable: SQ stores only. AMO cached writes are
+    // linker-forbidden; they are masked from the BRAM above and intentionally
+    // NOT forwarded here (see the decode comment).
+    o_data_mem_cached_byte_wr_en =
+        (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en : 4'b0000;
 
-    // URAM-tier read enable: UNCONDITIONAL on any queued load read, mirroring
-    // the BRAM read. Deliberately NOT qualified by lq_mem_request_is_uram --
-    // is_uram is computed on the (AMO-muxed) request address, so ANDing it onto
-    // the enable dragged the long amo_entry_idx -> AMO-address-RAM -> is_uram cone
-    // onto the URAM read-enable cascade (the dominant post-opt path). The URAM
-    // harmlessly reads the aliased low word for non-URAM loads; the is_uram
-    // qualification lives only on the per-tier read-valid below, so the response
-    // is taken from the URAM only for actual URAM loads (data otherwise ignored).
-    o_data_mem_uram_read_enable = o_data_mem_read_enable;
+    // Cached-tier read enable: the accepted-load pulse qualified by is_cached.
+    // Unlike the old URAM tier (whose enable was deliberately unqualified to
+    // keep the range compare off a memory enable cascade), this lands on the
+    // adapter's request register and the 1 GiB decode is a 2-bit compare, so
+    // qualification is cheap -- and required, since a cache lookup has side
+    // effects (miss/fill/evict) and must not fire for low-BRAM loads.
+    o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
 
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
 
@@ -245,26 +236,19 @@ module data_mem_request_router #(
     o_mmio_load_valid = o_data_mem_read_enable && lq_mem_request_is_mmio;
   end
 
-  // Per-tier SQ write-done timing. Fast tier (BRAM/MMIO, production): done one
-  // cycle after the SQ fires, as before. URAM tier: the write-control inputs
-  // carry (URAM_WRITE_LATENCY-1) extra register stages inside sdp_uram_byte_en,
-  // so the data lands that many cycles later -- delay the URAM store-done to
-  // match. i_mem_write_done releases the SQ entry (store_queue.sv sq_sent /
-  // write_outstanding) and the cache-invalidate, and a younger same-address load
-  // is blocked from issuing to memory until the older store leaves the SQ
-  // (load_queue.sv), so holding the URAM done until the write lands keeps that
-  // forwarding/ordering correct with no new hazard logic. MUST track
-  // sdp_uram_byte_en's WRITE_LATENCY (both fed by URAM_WRITE_LATENCY).
+  // Per-tier SQ write-done timing. Fast tier (BRAM/MMIO): done one cycle after
+  // the SQ fires, as before. Cached tier: the adapter pulses
+  // i_cached_write_done once the store has landed in the cache hierarchy;
+  // i_mem_write_done releases the SQ entry (store_queue.sv sq_sent /
+  // write_outstanding) and the cache-invalidate, and a younger same-address
+  // load is blocked from issuing to memory until the older store leaves the
+  // SQ (load_queue.sv), so holding the cached done until the write lands keeps
+  // that forwarding/ordering correct with no new hazard logic.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      sq_write_done_fast    <= 1'b0;
-      sq_write_done_uram_sr <= '0;
+      sq_write_done_fast <= 1'b0;
     end else begin
-      sq_write_done_fast       <= sq_mem_write_en && !sq_mem_write_is_uram;
-      sq_write_done_uram_sr[0] <= sq_mem_write_en && sq_mem_write_is_uram;
-      for (int s = 1; s < int'(URAM_WRITE_LATENCY); s++) begin
-        sq_write_done_uram_sr[s] <= sq_write_done_uram_sr[s-1];
-      end
+      sq_write_done_fast <= sq_mem_write_en && !sq_mem_write_is_cached;
     end
   end
 
@@ -295,29 +279,24 @@ module data_mem_request_router #(
   // Per-tier memory read response timing.
   //
   // Two independent valid taps that, by construction, never assert in the same
-  // cycle (the load queue's single-outstanding URAM gate blocks every launch
-  // while a URAM read is in flight, and only one read is accepted per cycle):
+  // cycle (the load queue's single-outstanding slow gate blocks every launch
+  // while a cached read is in flight, and only one read is accepted per cycle):
   //
   //   * FAST path (BRAM + MMIO): the external BRAM returns data exactly one
-  //     cycle after a non-URAM read is accepted. fast_valid is the accept pulse
-  //     (qualified !is_uram) delayed one cycle; data is forwarded combinationally
-  //     from i_data_mem_rd_data. This is identical to the production 1-cycle
-  //     baseline -- in production is_uram is always 0, so this is the only tap.
+  //     cycle after a non-cached read is accepted. fast_valid is the accept
+  //     pulse (qualified !is_cached) delayed one cycle; data is forwarded
+  //     combinationally from i_data_mem_rd_data. This is identical to the
+  //     1-cycle production baseline for low-BRAM/MMIO loads.
   //
-  //   * URAM path: the URAM primitive presents i_uram_rd_data URAM_READ_LATENCY
-  //     cycles after its read pulse. A shift register of depth URAM_READ_LATENCY,
-  //     seeded by (accept && is_uram), reproduces that delay -> uram_valid.
-  //
-  // Deliberately NOT a single captured is_uram flag selecting one shared valid
-  // tap: that approach racily regressed the fast path. Keeping two taps OR-ed
-  // (mutually exclusive) is the robust per-tier form.
+  //   * CACHED path: the adapter pulses i_cached_read_valid with
+  //     i_cached_read_data when the cache hierarchy completes the load --
+  //     a hit after a few cycles, a miss after a writeback/fill round trip.
+  //     No fixed-latency pipeline models it; the pulse IS the timing.
   logic lq_mem_read_accepted;
   assign lq_mem_read_accepted = o_data_mem_read_enable;
 
   logic fast_read_accepted;
-  logic uram_read_accepted;
-  assign fast_read_accepted = lq_mem_read_accepted && !lq_mem_request_is_uram;
-  assign uram_read_accepted = lq_mem_read_accepted && lq_mem_request_is_uram;
+  assign fast_read_accepted = lq_mem_read_accepted && !lq_mem_request_is_cached;
 
   // Fast (BRAM/MMIO) 1-cycle valid.
   logic fast_read_valid;
@@ -326,28 +305,11 @@ module data_mem_request_router #(
     else fast_read_valid <= fast_read_accepted;
   end
 
-  // URAM valid pipeline: depth URAM_READ_LATENCY. uram_read_pending[0] is high
-  // at accept+1; uram_read_pending[URAM_READ_LATENCY-1] is high at
-  // accept+URAM_READ_LATENCY, the cycle i_uram_rd_data is valid.
-  logic [URAM_READ_LATENCY-1:0] uram_read_pending;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) uram_read_pending <= '0;
-    else begin
-      uram_read_pending[0] <= uram_read_accepted;
-      for (int s = 1; s < int'(URAM_READ_LATENCY); s++) begin
-        uram_read_pending[s] <= uram_read_pending[s-1];
-      end
-    end
-  end
-  logic uram_read_valid;
-  assign uram_read_valid = uram_read_pending[URAM_READ_LATENCY-1];
-
   // The two valids are mutually exclusive (LQ gate guarantee), so OR them.
-  assign lq_mem_read_valid = fast_read_valid | uram_read_valid;
-  // Select the URAM data only when its valid is asserted; otherwise the BRAM /
-  // MMIO combinational data. In production uram_read_valid is always 0, so this
-  // is byte-identical to the baseline assign lq_mem_read_data = i_data_mem_rd_data.
-  assign lq_mem_read_data = uram_read_valid ? i_uram_rd_data : i_data_mem_rd_data;
+  assign lq_mem_read_valid = fast_read_valid | i_cached_read_valid;
+  // Select the cached data only when its valid is asserted; otherwise the
+  // BRAM / MMIO combinational data.
+  assign lq_mem_read_data = i_cached_read_valid ? i_cached_read_data : i_data_mem_rd_data;
 
   // MMIO read pulse.  Read side effects are driven only by LQ reads; using the
   // full data-port address mux here needlessly pulls SQ/AMO write addresses
@@ -355,7 +317,7 @@ module data_mem_request_router #(
   assign o_mmio_read_pulse = lq_mem_read_accepted && lq_mem_request_is_mmio;
 
   // --- Output wiring.
-  assign o_sq_mem_write_done = sq_write_done_fast | sq_write_done_uram_sr[URAM_WRITE_LATENCY-1];
+  assign o_sq_mem_write_done = sq_write_done_fast | i_cached_write_done;
   assign o_amo_mem_write_done = amo_mem_write_done;
   assign o_lq_mem_request_valid = lq_mem_request_valid;
   assign o_lq_mem_read_data = lq_mem_read_data;

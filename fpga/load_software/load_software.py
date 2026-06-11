@@ -56,27 +56,29 @@ VALID_APPS = [
     "spanning_test",
     "strings_test",
     "uart_echo",
-    "uram_heap_test",
-    "uram_test",
+    "ddr_heap_test",
+    "ddr_test",
 ]
 
 # Board configurations: clock frequency in Hz and CoreMark iterations
 # Iterations are calibrated for ~10 second runtime on each board
 BOARD_CONFIG = {
-    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_uram": True},
+    # has_ddr: the bitstream wires the cached tier to a real DDR controller.
+    # Both stay False until the Phase 2 (genesys2 DDR3) / Phase 3 (X3 DDR4)
+    # hardware integration lands; until then DDR-region apps are sim-only.
+    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": False},
     "genesys2": {
         "clock_freq": 133333333,
         "coremark_iterations": 5000,
-        "has_uram": False,
+        "has_ddr": False,
     },
 }
 
-# Apps whose linker script / data place a working set in the high-address URAM
-# tier (UltraRAM). They only run on boards that instantiate that tier
-# (has_uram=True); on a board without it that address range reads back zero.
-# Kept in VALID_APPS for x3 hardware loads, but rejected on boards without the
-# URAM tier below.
-URAM_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {"uram_test", "uram_heap_test"}
+# Apps whose linker script / data place a working set in the high-address
+# cached (DDR-backed) region. They only run on boards whose bitstream wires
+# the cached tier to a real DDR controller (has_ddr=True); on other builds
+# that address range reads back zero. Rejected below until then.
+DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {"ddr_test", "ddr_heap_test"}
 
 
 def compile_app_for_board(
@@ -307,14 +309,16 @@ def main() -> None:
     ) and args.coremark_pro_mode != "validation":
         parser.error("parser reference diagnostics require -v1 validation mode")
 
-    # Guard: URAM-tier apps cannot run on a board without UltraRAM (e.g. genesys2,
-    # a Kintex-7). The hardware omits the tier there, so that address range reads
-    # back zero -- refuse rather than silently load a broken image.
-    if args.software_app in URAM_APPS and not BOARD_CONFIG[args.board]["has_uram"]:
+    # Guard: DDR-region apps need a bitstream with the cached tier wired to a
+    # real DDR controller. Until the DDR hardware integration lands for this
+    # board, that address range reads back zero -- refuse rather than silently
+    # load a broken image.
+    if args.software_app in DDR_APPS and not BOARD_CONFIG[args.board]["has_ddr"]:
         parser.error(
-            f"'{args.software_app}' uses the URAM tier, which board "
-            f"'{args.board}' does not have (no UltraRAM). Load it on an "
-            f"UltraScale+ board (e.g. x3), or choose a non-URAM app."
+            f"'{args.software_app}' uses the DDR-backed cached region, which "
+            f"board '{args.board}' does not provide yet (DDR controller "
+            f"integration pending). These apps currently run in simulation "
+            f"only."
         )
 
     coremark_pro_error = coremark_pro_hardware_error(args.software_app)
@@ -421,8 +425,11 @@ def main() -> None:
         selected_target,  # Pass selected hardware target
     ]
 
-    if args.remote_host:
-        vivado_command.append(args.remote_host)
+    # Positional tclargs: remote host (may be empty) then the has_ddr flag,
+    # which tells the loader whether the bitstream provides the JTAG DDR-load
+    # master (hw_axi_2) and the DDR-backed cached region.
+    vivado_command.append(args.remote_host if args.remote_host else "")
+    vivado_command.append("1" if BOARD_CONFIG[args.board]["has_ddr"] else "0")
 
     # Execute Vivado command (will raise exception on failure)
     subprocess.run(vivado_command, check=True)

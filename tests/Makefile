@@ -272,6 +272,12 @@ else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),frost_cache_test_harness)
+# Cache hierarchy unit bench (cache stack + AXI bridge + behavioral memory)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cache/cache.f
+VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \
@@ -324,14 +330,17 @@ endif
 # Simulation-only memory override (2MB default, allows arch tests with large data)
 # Only for toplevels that have the MEM_SIZE_BYTES parameter
 SIM_MEM_SIZE_BYTES ?= 2097152
-# URAM memory tier read latency (cycles, addr->data) for the high-address
-# UltraRAM tier. Default 6 matches frost.sv; override to sweep e.g.:
-#   URAM_READ_LATENCY=3 ./test_run_cocotb.py uram_test
-URAM_READ_LATENCY ?= 6
-URAM_WRITE_LATENCY ?= 2
-ENABLE_URAM_TIER ?= 1
+# Cached memory tier (high-address region behind the cache hierarchy).
+# Simulation enables the tier with the X3 shape (L1 -> URAM L2 -> DDR model)
+# by default; CACHED_HAS_L2=0 selects the Genesys2 shape (L1 -> DDR model).
+# DDR_MODEL_LATENCY mimics main-memory access time; sweep it e.g.:
+#   DDR_MODEL_LATENCY=80 ./test_run_cocotb.py ddr_test
+ENABLE_CACHED_TIER ?= 1
+CACHED_HAS_L2 ?= 1
+DDR_MODEL_BYTES ?= 67108864
+DDR_MODEL_LATENCY ?= 30
 ifeq ($(TOPLEVEL),frost)
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GURAM_READ_LATENCY=$(URAM_READ_LATENCY) -GURAM_WRITE_LATENCY=$(URAM_WRITE_LATENCY) -GENABLE_URAM_TIER=$(ENABLE_URAM_TIER)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY)
 endif
 
 # Include Cocotb simulation makefile rules
@@ -342,4 +351,4 @@ clean:: clean-local
 
 .PHONY: clean-local
 clean-local:
-	@rm -rf dump.vcd dump.fst sw.mem results.xml sim_build
+	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build

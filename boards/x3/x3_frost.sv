@@ -95,8 +95,10 @@ module x3_frost (
   // X3 has no push-button reset; hold the subsystem in reset until the MMCM is locked.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000),
-      // X3 = UltraScale+ (VU23P): include the URAM tier.
-      .ENABLE_URAM_TIER(1)
+      // Cached tier off until the X3 DDR4 controller is integrated
+      // (Phase 3). X3 = UltraScale+ (VU23P): URAM L2 shape when enabled.
+      .ENABLE_CACHED_TIER(0),
+      .CACHED_HAS_L2(1)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

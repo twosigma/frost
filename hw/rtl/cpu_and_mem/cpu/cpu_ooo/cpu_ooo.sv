@@ -32,13 +32,12 @@ module cpu_ooo #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
-    // URAM memory tier (high-address region). Loads to [URAM_BASE,
-    // URAM_BASE+URAM_SIZE_BYTES) take URAM_READ_LATENCY cycles; the low BRAM
-    // range + MMIO stay 1-cycle. Production software never addresses this region.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024,
-    parameter int unsigned URAM_READ_LATENCY = 2,
-    parameter int unsigned URAM_WRITE_LATENCY = 1
+    // Cached memory tier (high-address region). Loads/stores to [CACHED_BASE,
+    // CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache hierarchy with
+    // handshake (variable-latency) completion; the low BRAM range + MMIO stay
+    // 1-cycle.
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -60,18 +59,22 @@ module cpu_ooo #(
     // MMIO writes remain visible to UART/FIFO/timer logic.
     output logic [3:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
-    // URAM tier (high-address region). Tier-routed write/read enables (already
-    // qualified by is_uram in the router) and the URAM read-data return path.
-    output logic [3:0] o_data_mem_uram_byte_wr_en,
-    // URAM write data: the store-queue drain data ONLY. AMOs are pinned to the
-    // BRAM tier (never write URAM), so routing the AMO write-data mux into the
-    // URAM data input was dead logic -- but it dragged the long
-    // (amo_entry_idx -> AMO ALU) cone onto the URAM CAS_IN_DIN cascade, which was
-    // the dominant post-opt timing failure. Feeding the SQ drain data directly
-    // drops that cone with no added latency (URAM writes stay single-cycle).
-    output logic [XLEN-1:0] o_data_mem_uram_wr_data,
-    output logic o_data_mem_uram_read_enable,
-    input logic [XLEN-1:0] i_uram_rd_data,
+    // Cached tier (high-address region). Tier-routed write/read requests
+    // (already qualified by is_cached in the router) plus the handshake
+    // completion inputs from the cached_tier_adapter.
+    output logic [3:0] o_data_mem_cached_byte_wr_en,
+    // Cached-tier write data: the store-queue drain data ONLY. AMOs are pinned
+    // to the BRAM tier (never write the cached region), so routing the AMO
+    // write-data mux here was dead logic -- but it dragged the long
+    // (amo_entry_idx -> AMO ALU) cone onto the wide write-data cascade, which
+    // was the dominant post-opt timing failure in the URAM-tier era. Feeding
+    // the SQ drain data directly drops that cone.
+    output logic [XLEN-1:0] o_data_mem_cached_wr_data,
+    output logic o_data_mem_cached_read_enable,
+    input logic [XLEN-1:0] i_cached_read_data,
+    input logic i_cached_read_valid,
+    input logic i_cached_write_done,
+    input logic i_cached_write_inflight,
     output logic o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic o_mmio_load_valid,
@@ -822,10 +825,12 @@ module cpu_ooo #(
   logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
   logic [3:0] sq_mem_write_byte_en;
   logic sq_mem_write_is_mmio;
-  // Registered URAM-tier flag for the SQ write (parallels is_mmio). Used by the
-  // router to steer the store's byte-write enables to the URAM tier and mask
-  // them off the BRAM, keeping the late address-range test off the BRAM WEA cone.
-  logic sq_mem_write_is_uram;
+  // Registered cached-tier flag for the SQ write (parallels is_mmio). Used by
+  // the router to steer the store's byte-write enables to the cached tier and
+  // mask them off the BRAM, keeping the late address-range test off the BRAM
+  // WEA cone. (The SQ port keeps its historical is_uram name; it decodes the
+  // slow-tier region, which is now the cached region.)
+  logic sq_mem_write_is_cached;
   logic sq_mem_write_done;
 
   logic lq_mem_read_en;
@@ -951,8 +956,11 @@ module cpu_ooo #(
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
-      .URAM_BASE(URAM_BASE),
-      .URAM_SIZE_BYTES(URAM_SIZE_BYTES)
+      // The tomasulo wrapper's URAM_* params name the SLOW (non-1-cycle) tier
+      // region generically: the LQ's single-outstanding gate and the SQ's
+      // drain-time tier flag now decode the cached region.
+      .URAM_BASE(CACHED_BASE),
+      .URAM_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
@@ -1026,6 +1034,7 @@ module cpu_ooo #(
       .i_flush_all(flush_all),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
+      .i_slow_write_inflight(i_cached_write_inflight),
 
       // Early misprediction recovery
       .i_early_recovery_flush(early_backend_recovery_pending),
@@ -1217,7 +1226,7 @@ module cpu_ooo #(
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
       .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
-      .o_sq_mem_write_is_uram(sq_mem_write_is_uram),
+      .o_sq_mem_write_is_uram(sq_mem_write_is_cached),
       .i_sq_mem_write_done(sq_mem_write_done),
 
       // Load queue memory interface
@@ -1683,18 +1692,17 @@ module cpu_ooo #(
   // Priority: SQ writes > AMO writes > queued LQ reads
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
-  // URAM write data is store-queue drain data only (AMOs never target URAM); see
-  // the o_data_mem_uram_wr_data port comment. Off the AMO write-data cone.
-  assign o_data_mem_uram_wr_data = sq_mem_write_data;
+  // Cached-tier write data is store-queue drain data only (AMOs never target
+  // the cached region); see the o_data_mem_cached_wr_data port comment. Off
+  // the AMO write-data cone.
+  assign o_data_mem_cached_wr_data = sq_mem_write_data;
 
   data_mem_request_router #(
       .XLEN(XLEN),
       .MMIO_ADDR(MMIO_ADDR),
       .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES),
-      .URAM_BASE(URAM_BASE),
-      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
-      .URAM_READ_LATENCY(URAM_READ_LATENCY),
-      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY)
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) data_mem_request_router_inst (
       .i_clk,
       .i_rst,
@@ -1703,7 +1711,7 @@ module cpu_ooo #(
       .i_sq_mem_write_data(sq_mem_write_data),
       .i_sq_mem_write_byte_en(sq_mem_write_byte_en),
       .i_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
-      .i_sq_mem_write_is_uram(sq_mem_write_is_uram),
+      .i_sq_mem_write_is_cached(sq_mem_write_is_cached),
       .i_amo_mem_write_en(amo_mem_write_en),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
@@ -1711,14 +1719,17 @@ module cpu_ooo #(
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
       .i_data_mem_rd_data(i_data_mem_rd_data),
-      .i_uram_rd_data(i_uram_rd_data),
+      .i_cached_read_data(i_cached_read_data),
+      .i_cached_read_valid(i_cached_read_valid),
+      .i_cached_write_done(i_cached_write_done),
+      .i_cached_write_inflight(i_cached_write_inflight),
       .o_data_mem_addr(o_data_mem_addr),
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
       .o_data_mem_read_enable(o_data_mem_read_enable),
-      .o_data_mem_uram_byte_wr_en(o_data_mem_uram_byte_wr_en),
-      .o_data_mem_uram_read_enable(o_data_mem_uram_read_enable),
+      .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
+      .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
       .o_mmio_load_valid(o_mmio_load_valid),
