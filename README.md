@@ -337,18 +337,18 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 121,731 | 203,800 | 59.7% |
-|   LUT as Logic | 109,725 | 203,800 | 53.8% |
-|   LUT as Distributed RAM | 11,498 | — | — |
-|   LUT as Shift Register | 508 | — | — |
-| Slice Registers | 66,946 | 407,600 | 16.4% |
-| Block RAM Tile | 71.5 | 445 | 16.1% |
+| Slice LUTs | 145,223 | 203,800 | 71.3% |
+|   LUT as Logic | 124,372 | 203,800 | 61.0% |
+|   LUT as Distributed RAM | 20,006 | — | — |
+|   LUT as Shift Register | 845 | — | — |
+| Slice Registers | 85,115 | 407,600 | 20.9% |
+| Block RAM Tile | 173 | 445 | 38.9% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 98 | 101,900 | 0.1% |
 | F8 Muxes | 33 | 50,950 | 0.1% |
-| Bonded IOB | 6 | 500 | 1.2% |
-| MMCM | 1 | 10 | 10.0% |
-| PLL | 0 | 10 | 0.0% |
+| Bonded IOB | 77 | 500 | 15.4% |
+| MMCM | 3 | 10 | 30.0% |
+| PLL | 1 | 10 | 10.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 

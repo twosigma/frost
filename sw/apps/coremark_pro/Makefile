@@ -542,11 +542,12 @@ VERILOG_HEX_FILE    := sw.mem
 RAW_BINARY_FILE     := sw.bin
 VIVADO_BRAM_FILE    := sw.txt
 DDR_HEX_FILE        := sw_ddr.mem
+DDR_TXT_FILE        := sw_ddr.txt
 DISASSEMBLY_FILE    := sw.S
 
 # --- Build targets ---------------------------------------------------------
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
-     $(DDR_HEX_FILE) $(DISASSEMBLY_FILE)
+     $(DDR_HEX_FILE) $(DDR_TXT_FILE) $(DISASSEMBLY_FILE)
 
 # FROST libc objects: compiled with the lib's own include path in isolation so
 # the MITH sources never see the FROST headers (no header shadowing).
@@ -603,6 +604,16 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
+# DDR image for the JTAG loader (dense words from the region base; empty when
+# nothing lives in the cached region -- the loader skips empty files).
+$(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
+	-$(OBJCOPY) -O binary -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	@if [ -s sw_ddr.bin ]; then \
+	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
+	else \
+	    : > $@; \
+	fi
+
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
 
@@ -614,6 +625,6 @@ size: $(EXECUTABLE_ELF_FILE)
 
 clean:
 	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
-	      $(DDR_HEX_FILE) $(DISASSEMBLY_FILE)
+	      $(DDR_HEX_FILE) $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE)
 
 .PHONY: all size clean

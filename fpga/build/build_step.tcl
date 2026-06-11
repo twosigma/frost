@@ -351,6 +351,24 @@ if {$step eq "synth"} {
     generate_target all [get_ips]
     synth_ip [get_ips]
 
+    if {$board_name eq "genesys2"} {
+        # DDR3 subsystem: MIG (configured by the transplanted mig_a.prj) +
+        # SmartConnect + JTAG DDR-image loader + calibration/reset sequencing,
+        # assembled as a small block design (see genesys2_ddr_bd.tcl). The
+        # generated wrapper (ddr_subsys_wrapper) is instantiated by
+        # genesys2_frost.sv.
+        read_verilog ${project_root_directory}/boards/genesys2/mem_reset_control.v
+        source [file join [file dirname [info script]] genesys2_ddr_bd.tcl]
+        create_genesys2_ddr_bd
+        # Global synthesis for the BD: child IPs (MIG, SmartConnect, JTAG-AXI)
+        # compile into the main synth_design run instead of expecting
+        # pre-synthesized OOC checkpoints (this flow never launches IP runs).
+        set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
+        generate_target all [get_files ddr_subsys.bd]
+        set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
+        add_files -norecurse $ddr_subsys_wrapper
+    }
+
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
 
     # Enable Xilinx primitive instantiations and Vivado-specific init handling

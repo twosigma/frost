@@ -71,14 +71,17 @@ def _hierarchy_command(synth_command: str) -> str:
     """Build the Yosys hierarchy command for this synthesis target."""
     command = "hierarchy -top cpu_and_mem"
 
-    # UltraRAM exists only on UltraScale+. Keep the URAM tier enabled for xcup
-    # so that target still exercises the high-address tier, but disable it for
-    # 7-series and UltraScale where Yosys cannot legally map UltraRAM.
+    # The cached tier (which replaced the URAM scratchpad) is synthesized in
+    # its hardware shape: tier enabled with the AXI export (the behavioral DDR
+    # model is simulation-only), and the URAM L2 spliced in only on
+    # UltraScale+ (Yosys cannot legally map UltraRAM elsewhere).
     family = _xilinx_family(synth_command)
     if family in {"xc7", "xcu"}:
-        command += " -chparam ENABLE_URAM_TIER 0"
+        command += " -chparam ENABLE_CACHED_TIER 1 -chparam CACHED_HAS_L2 0"
+        command += " -chparam USE_BEHAVIORAL_DDR 0"
     elif family == "xcup":
-        command += " -chparam ENABLE_URAM_TIER 1"
+        command += " -chparam ENABLE_CACHED_TIER 1 -chparam CACHED_HAS_L2 1"
+        command += " -chparam USE_BEHAVIORAL_DDR 0"
 
     return command
 
@@ -89,7 +92,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
     Defaults:
       - Generic target (synth): 1800s
       - Other non-Xilinx targets: 7200s
-      - Xilinx targets (synth_xilinx*): 1800s
+      - Xilinx targets (synth_xilinx*): 3600s (the UltraScale+ shape with the
+        L1+L2 cache hierarchy measures ~2750s end to end)
 
     Environment overrides:
       - FROST_YOSYS_GENERIC_TIMEOUT_SEC
@@ -98,7 +102,7 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """
     default_generic_timeout = 1800
     default_timeout = 7200
-    default_xilinx_timeout = 1800
+    default_xilinx_timeout = 3600
 
     if _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"

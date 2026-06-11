@@ -54,6 +54,22 @@
 
 static volatile uint32_t *const ddr = (volatile uint32_t *) CACHED_BASE;
 
+/* Placed in the cached region by the unified linker script and delivered
+ * through the sw_ddr.mem image (simulation) / sw_ddr.txt (JTAG loader) --
+ * the same mechanism that carries radix2's FFT tables. Verifying it proves
+ * the whole preloaded-DDR-image path: linker placement, image emission,
+ * model/loader initialization, and cache fills from preloaded memory. */
+__attribute__((section(".ddr_rodata"))) static const uint32_t ddr_preload[8] = {
+    0x0DD41001u,
+    0x0DD41002u,
+    0x0DD41003u,
+    0x0DD41004u,
+    0xFEEDFACEu,
+    0xCAFED00Du,
+    0x5EED5EEDu,
+    0x0DD41008u,
+};
+
 /* Canary in low BRAM: catches a cached store that incorrectly aliases into
  * the BRAM (cached byte address truncates into the low range). */
 static volatile uint32_t bram_canary = 0xC0FFEE11u;
@@ -211,6 +227,34 @@ int main(void)
         }
         if (!evict_fail) {
             uart_printf("EVICT sweep (%lu aliasing lines) OK\n", (unsigned long) lines);
+        }
+    }
+
+    /* --- Phase 7: preloaded .ddr_rodata image readback. -------------------- */
+    {
+        static const uint32_t preload_want[8] = {
+            0x0DD41001u,
+            0x0DD41002u,
+            0x0DD41003u,
+            0x0DD41004u,
+            0xFEEDFACEu,
+            0xCAFED00Du,
+            0x5EED5EEDu,
+            0x0DD41008u,
+        };
+        int preload_fail = 0;
+        for (uint32_t i = 0; i < 8u; i++) {
+            if (ddr_preload[i] != preload_want[i]) {
+                uart_printf("PRELOAD i=%lu want=0x%08lx got=0x%08lx FAIL\n",
+                            (unsigned long) i,
+                            (unsigned long) preload_want[i],
+                            (unsigned long) ddr_preload[i]);
+                failures++;
+                preload_fail = 1;
+            }
+        }
+        if (!preload_fail) {
+            uart_printf("PRELOAD .ddr_rodata image OK\n");
         }
     }
 
