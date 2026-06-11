@@ -38,14 +38,23 @@ module cpu_and_mem #(
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
-    // URAM memory tier parameters (see frost.sv). High-address region backed by
-    // an UltraRAM scratchpad; loads to it take URAM_READ_LATENCY cycles while the
-    // low BRAM range + MMIO stay 1-cycle.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024,  // 8 MiB
-    parameter int unsigned URAM_READ_LATENCY = 2,
-    parameter int unsigned URAM_WRITE_LATENCY = 1,
-    parameter int unsigned ENABLE_URAM_TIER = 1
+    // Cached memory tier parameters (see frost.sv). High-address region backed
+    // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
+    // accesses there have handshake (variable) latency while the low BRAM
+    // range + MMIO stay 1-cycle.
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
+    parameter int unsigned ENABLE_CACHED_TIER = 1,
+    parameter int unsigned CACHED_HAS_L2 = 1,
+    parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
+    parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Behavioral main-memory model (simulation only; hardware integration
+    // replaces it with the DDR controller behind the same AXI port).
+    parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
+    parameter int unsigned DDR_MODEL_LATENCY = 30,
+    // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
+    // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -81,7 +90,35 @@ module cpu_and_mem #(
     output logic        o_fifo1_rd_en,
 
     // External interrupt input (directly triggers MEIP when high)
-    input logic i_external_interrupt
+    input logic i_external_interrupt,
+
+    // DDR AXI master (cache-hierarchy bridge). Quiescent when
+    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled.
+    output logic         o_ddr_axi_awvalid,
+    input  logic         i_ddr_axi_awready,
+    output logic [ 31:0] o_ddr_axi_awaddr,
+    output logic [  7:0] o_ddr_axi_awlen,
+    output logic [  2:0] o_ddr_axi_awsize,
+    output logic [  1:0] o_ddr_axi_awburst,
+    output logic         o_ddr_axi_wvalid,
+    input  logic         i_ddr_axi_wready,
+    output logic [255:0] o_ddr_axi_wdata,
+    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic         o_ddr_axi_wlast,
+    input  logic         i_ddr_axi_bvalid,
+    output logic         o_ddr_axi_bready,
+    input  logic [  1:0] i_ddr_axi_bresp,
+    output logic         o_ddr_axi_arvalid,
+    input  logic         i_ddr_axi_arready,
+    output logic [ 31:0] o_ddr_axi_araddr,
+    output logic [  7:0] o_ddr_axi_arlen,
+    output logic [  2:0] o_ddr_axi_arsize,
+    output logic [  1:0] o_ddr_axi_arburst,
+    input  logic         i_ddr_axi_rvalid,
+    output logic         o_ddr_axi_rready,
+    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [  1:0] i_ddr_axi_rresp,
+    input  logic         i_ddr_axi_rlast
 );
 
   // Memory addressing parameters
@@ -135,27 +172,24 @@ module cpu_and_mem #(
   // data_memory_address-range test.
   logic [ 3:0] data_memory_bram_byte_write_enable;
   logic        data_memory_read_enable;
-  // URAM tier (high-address region). The router drives these tier-routed
-  // enables (already qualified by is_uram); the BRAM keeps reading/writing the
-  // low range unchanged. The URAM word-addressed write/read share the same
-  // byte address as the BRAM, offset by URAM_BASE.
-  logic [ 3:0] data_memory_uram_byte_write_enable;
-  logic        data_memory_uram_read_enable;
-  logic [31:0] data_memory_uram_read_data;
-  // URAM write data is the store-queue drain data only (AMOs never target URAM),
-  // kept separate from data_memory_write_data so the AMO write-data cone stays
-  // off the URAM data cascade (post-opt timing).
-  logic [31:0] data_memory_uram_write_data;
-  localparam int unsigned UramWordAddrWidth = $clog2(URAM_SIZE_BYTES) - 2;
-  // Pack 8 words per URAM row (256-bit rows): fits 8 MiB in 256 URAM blocks AND
-  // makes the cascade 64-deep (4 URAMs wide) instead of 256-deep, so the read
-  // cascade mux and the address/enable nets to the blocks close 300 MHz.
-  localparam int unsigned UramWordsPerRow = 8;
-  logic [UramWordAddrWidth-1:0] data_memory_uram_word_address;
-  logic                         mmio_read_pulse;
-  logic                         fifo0_rd_pulse_q;
-  logic                         fifo1_rd_pulse_q;
-  logic                         uart_rx_ready_q;
+  // Cached tier (high-address region). The router drives these tier-routed
+  // requests (already qualified by is_cached); the cached_tier_adapter
+  // completes them with handshake pulses. The BRAM keeps reading/writing the
+  // low range unchanged.
+  logic [ 3:0] data_memory_cached_byte_write_enable;
+  logic        data_memory_cached_read_enable;
+  logic [31:0] data_memory_cached_read_data;
+  logic        data_memory_cached_read_valid;
+  logic        data_memory_cached_write_done;
+  logic        data_memory_cached_write_inflight;
+  // Cached-tier write data is the store-queue drain data only (AMOs never
+  // target the cached region), kept separate from data_memory_write_data so
+  // the AMO write-data cone stays off the wide write-data path.
+  logic [31:0] data_memory_cached_write_data;
+  logic        mmio_read_pulse;
+  logic        fifo0_rd_pulse_q;
+  logic        fifo1_rd_pulse_q;
+  logic        uart_rx_ready_q;
 `ifndef SYNTHESIS
   logic [31:0] data_memory_store_last_addr;
   localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -190,10 +224,8 @@ module cpu_and_mem #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
       .MMIO_SIZE_BYTES(MmioSizeBytes),
-      .URAM_BASE(URAM_BASE),
-      .URAM_SIZE_BYTES(URAM_SIZE_BYTES),
-      .URAM_READ_LATENCY(URAM_READ_LATENCY),
-      .URAM_WRITE_LATENCY(URAM_WRITE_LATENCY)
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) cpu_inst (
       .i_clk,
       .i_rst,
@@ -206,11 +238,14 @@ module cpu_and_mem #(
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
       .o_data_mem_bram_byte_wr_en(data_memory_bram_byte_write_enable),
       .o_data_mem_read_enable(data_memory_read_enable),
-      // URAM tier ports (high-address region).
-      .o_data_mem_uram_byte_wr_en(data_memory_uram_byte_write_enable),
-      .o_data_mem_uram_wr_data(data_memory_uram_write_data),
-      .o_data_mem_uram_read_enable(data_memory_uram_read_enable),
-      .i_uram_rd_data(data_memory_uram_read_data),
+      // Cached tier ports (high-address region).
+      .o_data_mem_cached_byte_wr_en(data_memory_cached_byte_write_enable),
+      .o_data_mem_cached_wr_data(data_memory_cached_write_data),
+      .o_data_mem_cached_read_enable(data_memory_cached_read_enable),
+      .i_cached_read_data(data_memory_cached_read_data),
+      .i_cached_read_valid(data_memory_cached_read_valid),
+      .i_cached_write_done(data_memory_cached_write_done),
+      .i_cached_write_inflight(data_memory_cached_write_inflight),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
       .o_mmio_load_valid(mmio_load_valid),
@@ -286,44 +321,241 @@ module cpu_and_mem #(
   );
   assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
 
-  // URAM tier: high-address scratchpad (UltraRAM). Single synchronous clock,
-  // byte-write enables, parameterizable READ_LATENCY. Word-addressed: the
-  // shared byte address (data_memory_address) is offset by URAM_BASE and shifted
-  // to a word index. The router only asserts the URAM read/write enables for
-  // addresses inside the URAM range, so the index is a don't-care otherwise and
-  // the BRAM continues to serve the low range. sim uses no init file (the URAM
-  // powers up zero on hardware too; tests write the region at runtime).
-  logic [31:0] data_memory_uram_byte_offset;
-  assign data_memory_uram_byte_offset  = data_memory_address - URAM_BASE[31:0];
-  assign data_memory_uram_word_address = data_memory_uram_byte_offset[UramWordAddrWidth+1:2];
-  // URAM tier is instantiated only on UltraScale+ boards (ENABLE_URAM_TIER=1).
-  // 7-series boards (Genesys2 = Kintex-7) have no UltraRAM: omit the instance and
-  // tie the read data low. The router still decodes the (unused) URAM range and
-  // its read-valid pipeline drains zeros, but production software on those boards
-  // never addresses the URAM region, so the load path is unaffected.
-  if (ENABLE_URAM_TIER != 0) begin : gen_uram_tier
-    sdp_uram_byte_en #(
-        .DATA_WIDTH(32),
-        .ADDR_WIDTH(UramWordAddrWidth),
-        .READ_LATENCY(URAM_READ_LATENCY),
-        .WRITE_LATENCY(URAM_WRITE_LATENCY),
-        .WORDS_PER_ROW(UramWordsPerRow),
-        .USE_INIT_FILE(1'b0)
-    ) data_memory_uram (
+  // Cached tier: high-address region behind the cache hierarchy. The router
+  // only asserts the cached read/write requests for addresses inside the
+  // cached range; the adapter serializes them into line transactions through
+  // frost_cache_stack (L1 BRAM, optional L2 URAM) and the AXI bridge into
+  // main memory. In simulation the main memory is the behavioral DDR model
+  // (initialized from sw_ddr.mem, persistent across CPU resets like real
+  // DDR); the hardware integration (Phase 2/3) exports the bridge's AXI port
+  // to the DDR controller instead. Boards keep ENABLE_CACHED_TIER=0 until
+  // their DDR controller is wired up.
+  if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
+    logic line_req_valid, line_req_ready, line_req_write;
+    logic [31:0] line_req_addr;
+    logic [255:0] line_req_wdata;
+    logic [31:0] line_req_wstrb;
+    logic line_resp_valid;
+    logic [255:0] line_resp_rdata;
+
+    cached_tier_adapter #(
+        .XLEN(32),
+        .LINE_BYTES(32)
+    ) cached_adapter (
         .i_clk(i_clk),
-        // Write port: runtime stores routed to the URAM tier (byte-granular).
-        // Data is the SQ drain data only (AMOs are BRAM-only) to keep the AMO
-        // write-data cone off the URAM cascade.
-        .i_waddr(data_memory_uram_word_address),
-        .i_wdata(data_memory_uram_write_data),
-        .i_wbyte_en(data_memory_uram_byte_write_enable),
-        // Read port: data appears READ_LATENCY cycles after i_re.
-        .i_re(data_memory_uram_read_enable),
-        .i_raddr(data_memory_uram_word_address),
-        .o_rdata(data_memory_uram_read_data)
+        .i_rst(i_rst),
+        .i_read_req(data_memory_cached_read_enable),
+        .i_req_addr(data_memory_address),
+        .i_write_byte_en(data_memory_cached_byte_write_enable),
+        .i_write_data(data_memory_cached_write_data),
+        .o_read_data(data_memory_cached_read_data),
+        .o_read_valid(data_memory_cached_read_valid),
+        .o_write_done(data_memory_cached_write_done),
+        .o_write_inflight(data_memory_cached_write_inflight),
+        .o_line_req_valid(line_req_valid),
+        .i_line_req_ready(line_req_ready),
+        .o_line_req_write(line_req_write),
+        .o_line_req_addr(line_req_addr),
+        .o_line_req_wdata(line_req_wdata),
+        .o_line_req_wstrb(line_req_wstrb),
+        .i_line_resp_valid(line_resp_valid),
+        .i_line_resp_rdata(line_resp_rdata)
     );
-  end else begin : gen_no_uram_tier
-    assign data_memory_uram_read_data = '0;
+
+    logic down_req_valid, down_req_ready, down_req_write;
+    logic [31:0] down_req_addr;
+    logic [255:0] down_req_wdata;
+    logic [31:0] down_req_wstrb;
+    logic down_resp_valid;
+    logic [255:0] down_resp_rdata;
+
+    frost_cache_stack #(
+        .ADDR_WIDTH(32),
+        .LINE_BYTES(32),
+        .HAS_L2(CACHED_HAS_L2),
+        .L1_CACHE_BYTES(L1_CACHE_BYTES),
+        .L2_CACHE_BYTES(L2_CACHE_BYTES)
+    ) cache_stack (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_up_req_valid(line_req_valid),
+        .o_up_req_ready(line_req_ready),
+        .i_up_req_write(line_req_write),
+        .i_up_req_addr(line_req_addr),
+        .i_up_req_wdata(line_req_wdata),
+        .i_up_req_wstrb(line_req_wstrb),
+        .o_up_resp_valid(line_resp_valid),
+        .o_up_resp_rdata(line_resp_rdata),
+        .o_down_req_valid(down_req_valid),
+        .i_down_req_ready(down_req_ready),
+        .o_down_req_write(down_req_write),
+        .o_down_req_addr(down_req_addr),
+        .o_down_req_wdata(down_req_wdata),
+        .o_down_req_wstrb(down_req_wstrb),
+        .i_down_resp_valid(down_resp_valid),
+        .i_down_resp_rdata(down_resp_rdata)
+    );
+
+    logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
+    logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast, axi_wlast;
+    logic [31:0] axi_awaddr, axi_araddr;
+    logic [7:0] axi_awlen, axi_arlen;
+    logic [2:0] axi_awsize, axi_arsize;
+    logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
+    logic [255:0] axi_wdata, axi_rdata;
+    logic [31:0] axi_wstrb;
+
+    line_port_axi_bridge #(
+        .ADDR_WIDTH(32),
+        .LINE_BYTES(32),
+        .BASE_ADDR (CACHED_BASE)
+    ) ddr_bridge (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_req_valid(down_req_valid),
+        .o_req_ready(down_req_ready),
+        .i_req_write(down_req_write),
+        .i_req_addr(down_req_addr),
+        .i_req_wdata(down_req_wdata),
+        .i_req_wstrb(down_req_wstrb),
+        .o_resp_valid(down_resp_valid),
+        .o_resp_rdata(down_resp_rdata),
+        .o_axi_awvalid(axi_awvalid),
+        .i_axi_awready(axi_awready),
+        .o_axi_awaddr(axi_awaddr),
+        .o_axi_awlen(axi_awlen),
+        .o_axi_awsize(axi_awsize),
+        .o_axi_awburst(axi_awburst),
+        .o_axi_wvalid(axi_wvalid),
+        .i_axi_wready(axi_wready),
+        .o_axi_wdata(axi_wdata),
+        .o_axi_wstrb(axi_wstrb),
+        .o_axi_wlast(axi_wlast),
+        .i_axi_bvalid(axi_bvalid),
+        .o_axi_bready(axi_bready),
+        .i_axi_bresp(axi_bresp),
+        .o_axi_arvalid(axi_arvalid),
+        .i_axi_arready(axi_arready),
+        .o_axi_araddr(axi_araddr),
+        .o_axi_arlen(axi_arlen),
+        .o_axi_arsize(axi_arsize),
+        .o_axi_arburst(axi_arburst),
+        .i_axi_rvalid(axi_rvalid),
+        .o_axi_rready(axi_rready),
+        .i_axi_rdata(axi_rdata),
+        .i_axi_rresp(axi_rresp),
+        .i_axi_rlast(axi_rlast)
+    );
+
+    if (USE_BEHAVIORAL_DDR != 0) begin : gen_behavioral_ddr
+      // SIMULATION-ONLY main memory; hardware sets USE_BEHAVIORAL_DDR=0 and
+      // takes the bridge's AXI out through the o_ddr_axi_* ports instead.
+      axi_behavioral_memory #(
+          .LINE_BYTES(32),
+          .MEM_BYTES(DDR_MODEL_BYTES),
+          .LATENCY(DDR_MODEL_LATENCY),
+          .USE_INIT_FILE(1'b1),
+          .INIT_FILE("sw_ddr.mem")
+      ) ddr_model (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_axi_awvalid(axi_awvalid),
+          .o_axi_awready(axi_awready),
+          .i_axi_awaddr(axi_awaddr),
+          .i_axi_awlen(axi_awlen),
+          .i_axi_wvalid(axi_wvalid),
+          .o_axi_wready(axi_wready),
+          .i_axi_wdata(axi_wdata),
+          .i_axi_wstrb(axi_wstrb),
+          .o_axi_bvalid(axi_bvalid),
+          .i_axi_bready(axi_bready),
+          .o_axi_bresp(axi_bresp),
+          .i_axi_arvalid(axi_arvalid),
+          .o_axi_arready(axi_arready),
+          .i_axi_araddr(axi_araddr),
+          .i_axi_arlen(axi_arlen),
+          .o_axi_rvalid(axi_rvalid),
+          .i_axi_rready(axi_rready),
+          .o_axi_rdata(axi_rdata),
+          .o_axi_rresp(axi_rresp),
+          .o_axi_rlast(axi_rlast)
+      );
+      assign o_ddr_axi_awvalid = 1'b0;
+      assign o_ddr_axi_awaddr  = '0;
+      assign o_ddr_axi_awlen   = '0;
+      assign o_ddr_axi_awsize  = '0;
+      assign o_ddr_axi_awburst = '0;
+      assign o_ddr_axi_wvalid  = 1'b0;
+      assign o_ddr_axi_wdata   = '0;
+      assign o_ddr_axi_wstrb   = '0;
+      assign o_ddr_axi_wlast   = 1'b0;
+      assign o_ddr_axi_bready  = 1'b0;
+      assign o_ddr_axi_arvalid = 1'b0;
+      assign o_ddr_axi_araddr  = '0;
+      assign o_ddr_axi_arlen   = '0;
+      assign o_ddr_axi_arsize  = '0;
+      assign o_ddr_axi_arburst = '0;
+      assign o_ddr_axi_rready  = 1'b0;
+    end else begin : gen_ddr_axi_export
+      // Hardware: the bridge's AXI master goes out to the board's DDR
+      // controller subsystem.
+      assign o_ddr_axi_awvalid = axi_awvalid;
+      assign axi_awready = i_ddr_axi_awready;
+      assign o_ddr_axi_awaddr = axi_awaddr;
+      assign o_ddr_axi_awlen = axi_awlen;
+      assign o_ddr_axi_awsize = axi_awsize;
+      assign o_ddr_axi_awburst = axi_awburst;
+      assign o_ddr_axi_wvalid = axi_wvalid;
+      assign axi_wready = i_ddr_axi_wready;
+      assign o_ddr_axi_wdata = axi_wdata;
+      assign o_ddr_axi_wstrb = axi_wstrb;
+      assign o_ddr_axi_wlast = axi_wlast;
+      assign axi_bvalid = i_ddr_axi_bvalid;
+      assign o_ddr_axi_bready = axi_bready;
+      assign axi_bresp = i_ddr_axi_bresp;
+      assign o_ddr_axi_arvalid = axi_arvalid;
+      assign axi_arready = i_ddr_axi_arready;
+      assign o_ddr_axi_araddr = axi_araddr;
+      assign o_ddr_axi_arlen = axi_arlen;
+      assign o_ddr_axi_arsize = axi_arsize;
+      assign o_ddr_axi_arburst = axi_arburst;
+      assign axi_rvalid = i_ddr_axi_rvalid;
+      assign o_ddr_axi_rready = axi_rready;
+      assign axi_rdata = i_ddr_axi_rdata;
+      assign axi_rresp = i_ddr_axi_rresp;
+      assign axi_rlast = i_ddr_axi_rlast;
+    end
+  end else begin : gen_no_cached_tier
+    // Tier disabled (FPGA builds until their DDR controller lands): complete
+    // cached-region accesses immediately with zero data so stray software
+    // cannot hang the LQ/SQ -- mirroring the old disabled-URAM behaviour.
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        data_memory_cached_read_valid <= 1'b0;
+        data_memory_cached_write_done <= 1'b0;
+      end else begin
+        data_memory_cached_read_valid <= data_memory_cached_read_enable;
+        data_memory_cached_write_done <= |data_memory_cached_byte_write_enable;
+      end
+    end
+    assign data_memory_cached_read_data = '0;
+    assign data_memory_cached_write_inflight = 1'b0;
+    assign o_ddr_axi_awvalid = 1'b0;
+    assign o_ddr_axi_awaddr = '0;
+    assign o_ddr_axi_awlen = '0;
+    assign o_ddr_axi_awsize = '0;
+    assign o_ddr_axi_awburst = '0;
+    assign o_ddr_axi_wvalid = 1'b0;
+    assign o_ddr_axi_wdata = '0;
+    assign o_ddr_axi_wstrb = '0;
+    assign o_ddr_axi_wlast = 1'b0;
+    assign o_ddr_axi_bready = 1'b0;
+    assign o_ddr_axi_arvalid = 1'b0;
+    assign o_ddr_axi_araddr = '0;
+    assign o_ddr_axi_arlen = '0;
+    assign o_ddr_axi_arsize = '0;
+    assign o_ddr_axi_arburst = '0;
+    assign o_ddr_axi_rready = 1'b0;
   end
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)

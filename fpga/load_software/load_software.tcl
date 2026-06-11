@@ -17,12 +17,18 @@
 
 if { $argc < 3 } {
     puts "Error: Project root, software application name, and hardware target required"
-    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> <hw_target> \[remote_host\]"
+    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> <hw_target> \[remote_host\] \[has_ddr\]"
     exit 1
 }
 set project_root [lindex $argv 0]
 set software_application_name [lindex $argv 1]
 set hw_target [lindex $argv 2]
+# has_ddr: the bitstream provides the JTAG DDR-load master (hw_axi_2) and the
+# DDR-backed cached region. Passed by load_software.py from BOARD_CONFIG.
+set has_ddr 0
+if { $argc >= 5 } {
+    set has_ddr [lindex $argv 4]
+}
 
 set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
                             coremark_pro_linear_alg coremark_pro_loops \
@@ -34,7 +40,7 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
 set valid_apps [list branch_pred_test c_ext_test call_stress coremark \
                      {*}$coremark_pro_apps csr_test freertos_demo hello_world isa_test memory_test \
                      packet_parser print_clock_speed ras_stress_test ras_test \
-                     spanning_test strings_test uart_echo uram_heap_test uram_test]
+                     spanning_test strings_test uart_echo ddr_heap_test ddr_test]
 
 if { [lsearch -exact $valid_apps $software_application_name] == -1 } {
     puts "Error: Invalid software app '$software_application_name'"
@@ -49,13 +55,14 @@ if { [lsearch -exact $coremark_pro_apps $software_application_name] != -1 } {
 }
 set firmware_text_file ${project_root}/sw/apps/${firmware_application_name}/sw.txt
 
-# Source helper function for writing binary data to BRAM via AXI
+# Source helper functions for writing binary data to BRAM / DDR via AXI
 set script_dir [file dirname [file normalize [info script]]]
 source ${script_dir}/file_to_bram.tcl
+source ${script_dir}/file_to_ddr.tcl
 
 # Connect to FPGA hardware via JTAG
 open_hw_manager
-if { $argc >= 4 } {
+if { $argc >= 4 && [lindex $argv 3] ne "" } {
     # Remote host was provided - connect to remote hardware server
     set remote_hardware_server [lindex $argv 3]
     connect_hw_server -url ${remote_hardware_server}:3121
@@ -72,6 +79,23 @@ open_hw_target
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
-# Write software to instruction memory starting at address 0
 set bram_base_address 0x00000000
+set ddr_text_file ${project_root}/sw/apps/${firmware_application_name}/sw_ddr.txt
+
+# DDR image first (when present): assert the image-load CPU reset with a
+# single low-BRAM write, then burst the DDR image through hw_axi_2. The CPU
+# stays in reset until well after the subsequent full BRAM load, and the
+# caches re-invalidate on release, so the fresh DDR contents are never
+# shadowed by stale lines or racing writebacks.
+if { $has_ddr && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 } {
+    set first_word_fd [open $firmware_text_file r]
+    gets $first_word_fd first_word
+    close $first_word_fd
+    create_hw_axi_txn rst_assert [get_hw_axis hw_axi_1] \
+        -type write -address 0x00000000 -len 1 -data $first_word
+    run_hw_axi [get_hw_axi_txns rst_assert]
+    file2ddr $ddr_text_file
+}
+
+# Write software to instruction memory starting at address 0
 file2bram $bram_base_address $firmware_text_file

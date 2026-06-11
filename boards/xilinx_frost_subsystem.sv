@@ -21,16 +21,53 @@ module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz - must match actual clock from board wrapper
     // Used for UART baud rate calculation (UART runs at CLK_FREQ_HZ / 4)
     parameter int unsigned CLK_FREQ_HZ = 300000000,
-    // 1 = instantiate the URAM tier (UltraScale+); 0 = omit it (7-series, no
-    // UltraRAM). Set by the board top (genesys2_frost=0, x3_frost=1).
-    parameter int unsigned ENABLE_URAM_TIER = 1
+    // Cached-tier configuration, set by the board top. ENABLE_CACHED_TIER
+    // stays 0 on every board until its DDR controller is integrated
+    // (Phase 2/3); CACHED_HAS_L2 selects the hierarchy shape (x3_frost=1
+    // splices the URAM L2, genesys2_frost=0 is L1-only -- no UltraRAM on
+    // 7-series).
+    parameter int unsigned ENABLE_CACHED_TIER = 0,
+    parameter int unsigned CACHED_HAS_L2 = 1,
+    // 1 = the cached tier ends in the simulation-only behavioral DDR model;
+    // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below (hardware: wire
+    // them to the board's DDR controller subsystem).
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
     input logic i_rst_n,     // Active-low reset from board
 
     output logic o_uart_tx,  // UART transmit for debug console
-    input  logic i_uart_rx   // UART receive for debug console input
+    input  logic i_uart_rx,  // UART receive for debug console input
+
+    // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
+    // REGION-RELATIVE addresses). Quiescent when USE_BEHAVIORAL_DDR=1 or the
+    // cached tier is disabled.
+    output logic         o_ddr_axi_awvalid,
+    input  logic         i_ddr_axi_awready,
+    output logic [ 31:0] o_ddr_axi_awaddr,
+    output logic [  7:0] o_ddr_axi_awlen,
+    output logic [  2:0] o_ddr_axi_awsize,
+    output logic [  1:0] o_ddr_axi_awburst,
+    output logic         o_ddr_axi_wvalid,
+    input  logic         i_ddr_axi_wready,
+    output logic [255:0] o_ddr_axi_wdata,
+    output logic [ 31:0] o_ddr_axi_wstrb,
+    output logic         o_ddr_axi_wlast,
+    input  logic         i_ddr_axi_bvalid,
+    output logic         o_ddr_axi_bready,
+    input  logic [  1:0] i_ddr_axi_bresp,
+    output logic         o_ddr_axi_arvalid,
+    input  logic         i_ddr_axi_arready,
+    output logic [ 31:0] o_ddr_axi_araddr,
+    output logic [  7:0] o_ddr_axi_arlen,
+    output logic [  2:0] o_ddr_axi_arsize,
+    output logic [  1:0] o_ddr_axi_arburst,
+    input  logic         i_ddr_axi_rvalid,
+    output logic         o_ddr_axi_rready,
+    input  logic [255:0] i_ddr_axi_rdata,
+    input  logic [  1:0] i_ddr_axi_rresp,
+    input  logic         i_ddr_axi_rlast
 );
 
   // AXI4-Lite interface signals between JTAG-to-AXI bridge and AXI-to-BRAM controller
@@ -176,7 +213,9 @@ module xilinx_frost_subsystem #(
   // FROST RISC-V processor instance
   frost #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
-      .ENABLE_URAM_TIER(ENABLE_URAM_TIER)
+      .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
+      .CACHED_HAS_L2(CACHED_HAS_L2),
+      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),
@@ -187,7 +226,32 @@ module xilinx_frost_subsystem #(
       .i_instr_mem_wrdata(instruction_memory_write_data),
       .o_instr_mem_rddata(instruction_memory_read_data),
       .o_uart_tx,
-      .i_uart_rx
+      .i_uart_rx,
+      .o_ddr_axi_awvalid(o_ddr_axi_awvalid),
+      .i_ddr_axi_awready(i_ddr_axi_awready),
+      .o_ddr_axi_awaddr(o_ddr_axi_awaddr),
+      .o_ddr_axi_awlen(o_ddr_axi_awlen),
+      .o_ddr_axi_awsize(o_ddr_axi_awsize),
+      .o_ddr_axi_awburst(o_ddr_axi_awburst),
+      .o_ddr_axi_wvalid(o_ddr_axi_wvalid),
+      .i_ddr_axi_wready(i_ddr_axi_wready),
+      .o_ddr_axi_wdata(o_ddr_axi_wdata),
+      .o_ddr_axi_wstrb(o_ddr_axi_wstrb),
+      .o_ddr_axi_wlast(o_ddr_axi_wlast),
+      .i_ddr_axi_bvalid(i_ddr_axi_bvalid),
+      .o_ddr_axi_bready(o_ddr_axi_bready),
+      .i_ddr_axi_bresp(i_ddr_axi_bresp),
+      .o_ddr_axi_arvalid(o_ddr_axi_arvalid),
+      .i_ddr_axi_arready(i_ddr_axi_arready),
+      .o_ddr_axi_araddr(o_ddr_axi_araddr),
+      .o_ddr_axi_arlen(o_ddr_axi_arlen),
+      .o_ddr_axi_arsize(o_ddr_axi_arsize),
+      .o_ddr_axi_arburst(o_ddr_axi_arburst),
+      .i_ddr_axi_rvalid(i_ddr_axi_rvalid),
+      .o_ddr_axi_rready(o_ddr_axi_rready),
+      .i_ddr_axi_rdata(i_ddr_axi_rdata),
+      .i_ddr_axi_rresp(i_ddr_axi_rresp),
+      .i_ddr_axi_rlast(i_ddr_axi_rlast)
   );
 
 endmodule : xilinx_frost_subsystem

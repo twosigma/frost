@@ -12,11 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for URAM tier test application
-# Writes/reads distinct patterns across the high-address UltraRAM tier
-# (URAM_BASE = 0x0100_0000, 2 MiB) to exercise URAM stores + N-cycle loads
-# through the new per-tier memory path. Code/data/stack stay in the low BRAM;
-# the URAM region is reached purely via absolute-address volatile pointers, so
-# no custom linker script is needed.
-SRC_C   := ../../lib/src/uart.c uram_test.c
+# Makefile for the cached-region (DDR) heap capacity test.
+# Allocates several MiB via malloc from the DDR-backed cached region and
+# verifies the data reads back correctly through the cache hierarchy -- the
+# capacity that unblocks the big CoreMark-PRO heaps. Uses the unified linker
+# script, which places the heap at CACHED_BASE (0x8000_0000, ~1 GiB) while
+# code/data/stack stay in low BRAM.
+SRC_C   := ../../lib/src/uart.c ../../lib/src/memory.c ../../lib/src/string.c ddr_heap_test.c
+LINKER_SCRIPT := ../../common/link_unified.ld
 include ../../common/common.mk

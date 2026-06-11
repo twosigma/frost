@@ -79,8 +79,10 @@ module genesys2_frost (
   // Clock: 200MHz * 4 / 6 = 133.33 MHz
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(133333333),
-      // Genesys2 = Kintex-7: no UltraRAM, so omit the URAM tier.
-      .ENABLE_URAM_TIER(0)
+      // Cached tier off until the Genesys2 DDR3 controller is integrated
+      // (Phase 2). Genesys2 = Kintex-7: no UltraRAM, so the L1-only shape.
+      .ENABLE_CACHED_TIER(0),
+      .CACHED_HAS_L2(0)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

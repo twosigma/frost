@@ -76,12 +76,9 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_loops",
         workload="loops-all-mid-10k-sp",
         description="CoreMark-PRO Livermore loops single-precision workload",
+        # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
+        # Iteration count to be recalibrated on hardware once DDR lands.
         hardware_iterations=5000,
-        hardware_supported=False,
-        hardware_unsupported_reason=(
-            "official loops-all-mid-10k-sp needs about a 6 MiB heap; "
-            "the current X3 CoreMark-PRO heap is 1936 KiB (2 MiB URAM tier)"
-        ),
     ),
     CoremarkProProgram(
         app_name="coremark_pro_nnet",
@@ -101,13 +98,10 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_radix2",
         workload="radix2-big-64k",
         description="CoreMark-PRO radix-2 FFT workload",
+        # The ~800 KiB of constant FFT data is placed in the cached region
+        # (.ddr_rodata via the unified linker) and delivered through the
+        # sw_ddr.mem image. Iteration count to be recalibrated on hardware.
         hardware_iterations=1000,
-        hardware_supported=False,
-        hardware_unsupported_reason=(
-            "official radix2-big-64k compiles in ~800 KiB of constant FFT "
-            "data, far beyond the 128 KiB low-BRAM window the JTAG "
-            "loader can write (the URAM tier is NOLOAD: zero at boot)"
-        ),
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
@@ -119,12 +113,9 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_zip",
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
+        # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
+        # Iteration count to be recalibrated on hardware once DDR lands.
         hardware_iterations=5000,
-        hardware_supported=False,
-        hardware_unsupported_reason=(
-            "official zip-test needs about a 3.3 MiB heap; "
-            "the current X3 CoreMark-PRO heap is 1936 KiB (2 MiB URAM tier)"
-        ),
     ),
 )
 

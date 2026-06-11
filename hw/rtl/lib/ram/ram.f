@@ -28,3 +28,7 @@ $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc.sv
 # Simple dual-port UltraRAM scratchpad (single clock, byte enables, configurable
 # read latency) -- backs the high-address URAM memory tier
 $(ROOT)/hw/rtl/lib/ram/sdp_uram_byte_en.sv
+
+# Row-granular simple dual-port RAM with selectable primitive (block/ultra) --
+# backs the frost_cache data arrays
+$(ROOT)/hw/rtl/lib/ram/sdp_ram_byte_en.sv

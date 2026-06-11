@@ -133,17 +133,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Coremark benchmark",
     ),
     **COREMARK_PRO_TESTS,
-    "uram_test": CocotbRunConfig(
+    "ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
-        app_name="uram_test",
-        description="URAM memory tier store/load test (high-address UltraRAM)",
+        app_name="ddr_test",
+        description="Cached-region (DDR) tier store/load test through the cache hierarchy",
     ),
-    "uram_heap_test": CocotbRunConfig(
+    "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
-        app_name="uram_heap_test",
-        description="URAM heap capacity test (multi-MB malloc from UltraRAM)",
+        app_name="ddr_heap_test",
+        description="DDR heap capacity test (multi-MB malloc from the cached region)",
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -347,7 +347,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",
         description="CPU OOO data-memory request router tests",
-        verilator_extra_args=("-GURAM_READ_LATENCY=6", "-GURAM_WRITE_LATENCY=2"),
+    ),
+    "frost_cache": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests (L1 -> L2 -> DDR, X3 shape)",
+        verilator_extra_args=("-GHAS_L2=1",),
+    ),
+    "frost_cache_l1_only": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
+        verilator_extra_args=("-GHAS_L2=0",),
     ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
@@ -736,13 +747,20 @@ class CocotbRunner:
                 # Don't fail on clean errors (e.g., permission denied on root-owned files)
                 subprocess.run(["make", "clean"], check=False)
 
-            # Set up program memory symlink if needed
+            # Set up program memory symlinks if needed (low BRAM image + the
+            # cached-region DDR image consumed by the behavioral DDR model)
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
                 sw_mem_path = Path("sw.mem")
                 if sw_mem_path.exists() or sw_mem_path.is_symlink():
                     sw_mem_path.unlink()
                 sw_mem_path.symlink_to(program_memory_file)
+                sw_ddr_path = Path("sw_ddr.mem")
+                if sw_ddr_path.exists() or sw_ddr_path.is_symlink():
+                    sw_ddr_path.unlink()
+                sw_ddr_path.symlink_to(
+                    program_memory_file.replace("sw.mem", "sw_ddr.mem")
+                )
 
             # Run the simulation
             # Explicitly export PYTHONPATH so it's available to child processes (simulator)
@@ -778,9 +796,10 @@ class CocotbRunner:
         finally:
             # Clean up
             if self.app_name:
-                sw_mem_path = Path("sw.mem")
-                if sw_mem_path.exists() or sw_mem_path.is_symlink():
-                    sw_mem_path.unlink()
+                for mem_name in ("sw.mem", "sw_ddr.mem"):
+                    mem_path = Path(mem_name)
+                    if mem_path.exists() or mem_path.is_symlink():
+                        mem_path.unlink()
             os.chdir(original_dir)
 
 

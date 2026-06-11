@@ -255,12 +255,15 @@ module sq_early_addr_pipeline (
       sq_early_addr_update.valid   = 1'b1;
       sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
       sq_early_addr_update.address = sq_early_repair_effective_addr;
-      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr >= MmioBase);
+      // MMIO = the 01 address quadrant [0x4000_0000, 0x8000_0000). The cached
+      // (DDR) region is the 10 quadrant and must NOT be flagged -- the old
+      // ">= MmioBase" shortcut predates the cached tier.
+      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr[31:30] == 2'b01);
     end else begin
       sq_early_addr_update.valid   = sq_early_addr_valid_q;
       sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
       sq_early_addr_update.address = sq_early_effective_addr;
-      sq_early_addr_update.is_mmio = (sq_early_effective_addr >= MmioBase);
+      sq_early_addr_update.is_mmio = (sq_early_effective_addr[31:30] == 2'b01);
     end
   end
 
@@ -272,12 +275,12 @@ module sq_early_addr_pipeline (
       sq_early_addr_update_2.valid   = 1'b1;
       sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
       sq_early_addr_update_2.address = sq_early_repair_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = (sq_early_repair_effective_addr_2 >= MmioBase);
+      sq_early_addr_update_2.is_mmio = (sq_early_repair_effective_addr_2[31:30] == 2'b01);
     end else begin
       sq_early_addr_update_2.valid   = sq_early_addr_valid_2_q;
       sq_early_addr_update_2.rob_tag = sq_early_addr_rob_tag_2_q;
       sq_early_addr_update_2.address = sq_early_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = (sq_early_effective_addr_2 >= MmioBase);
+      sq_early_addr_update_2.is_mmio = (sq_early_effective_addr_2[31:30] == 2'b01);
     end
   end
 

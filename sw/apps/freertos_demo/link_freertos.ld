@@ -122,6 +122,11 @@ SECTIONS
     /* Memory-mapped I/O peripheral addresses
      * These symbols are referenced by C code (uart.c, fifo.h, timer.h, trap.h)
      * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
+    /* Cached-region BSS bounds: nothing placed there by this script; empty
+     * bounds keep crt0's .ddr_bss zeroing loop a no-op. */
+    PROVIDE(__ddr_bss_start = 0);
+    PROVIDE(__ddr_bss_end = 0);
+
     PROVIDE(UART_ADDR          = 0x40000000);  /* UART transmit register */
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */

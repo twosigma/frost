@@ -126,6 +126,12 @@ SECTIONS
      * Set to middle of small data region for optimal coverage */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
+    /* Cached-region BSS bounds: this script places nothing in the cached
+     * region, so provide empty bounds for crt0's .ddr_bss zeroing loop.
+     * (The unified linker script defines the real symbols.) */
+    PROVIDE(__ddr_bss_start = 0);
+    PROVIDE(__ddr_bss_end = 0);
+
     /* Memory-mapped I/O peripheral addresses
      * These symbols are referenced by C code (uart.c, fifo.h, timer.h, trap.h)
      * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
