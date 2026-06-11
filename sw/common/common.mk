@@ -121,6 +121,7 @@ VERILOG_HEX_FILE        := sw.mem  # Verilog hex format for $readmemh
 RAW_BINARY_FILE         := sw.bin  # Raw binary (no ELF headers)
 VIVADO_BRAM_FILE        := sw.txt  # BRAM initialization format for Vivado
 DDR_HEX_FILE            := sw_ddr.mem  # Cached-region (DDR) image, region-relative
+DDR_TXT_FILE            := sw_ddr.txt  # DDR image for the JTAG loader (dense words)
 DISASSEMBLY_FILE        := sw.S    # Human-readable disassembly
 IMEM_EVEN_INIT_FILE     := sw_imem_even.mem
 IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
@@ -135,7 +136,7 @@ endif
 
 # Build targets
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
-     $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
+     $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
 # Link C sources and assembly startup into ELF executable
 $(EXECUTABLE_ELF_FILE): $(SRC_C) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
@@ -170,6 +171,17 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
+# DDR image for the JTAG loader: dense 32-bit words from the region base
+# (the .ddr_* sections start exactly at 0x8000_0000). Empty when the program
+# places nothing in the cached region; the loader skips empty files.
+$(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
+	-$(OBJCOPY) -O binary -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	@if [ -s sw_ddr.bin ]; then \
+	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
+	else \
+	    : > $@; \
+	fi
+
 # Generate Vivado BRAM initialization file (8 hex digits per line, zero-padded)
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
@@ -192,7 +204,7 @@ size: $(EXECUTABLE_ELF_FILE)
 # Clean all build artifacts
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
-	      $(DISASSEMBLY_FILE) \
+	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) \
 	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
 
 .PHONY: all size clean

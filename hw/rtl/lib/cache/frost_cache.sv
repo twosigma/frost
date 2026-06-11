@@ -58,7 +58,10 @@ module frost_cache #(
     parameter int unsigned LINE_BYTES = 32,
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
-    parameter string DATA_MEMORY_PRIMITIVE = "block",
+    // Untyped on purpose: Vivado fails to resolve string-typed parameters
+    // propagated into the XPM macro (see sdp_ram_byte_en).
+    // verilog_lint: waive explicit-parameter-storage-type
+    parameter DATA_MEMORY_PRIMITIVE = "block",
     parameter int unsigned DATA_READ_LATENCY = 2,
     parameter int unsigned DATA_WRITE_LATENCY = 1
 ) (
@@ -191,15 +194,14 @@ module frost_cache #(
   );
   assign data_raddr = req_index;
 
-  // Merge the (partial) upstream write into a fetched line.
-  function automatic logic [LineBits-1:0] merge_line(input logic [LineBits-1:0] fill,
-                                                     input logic [LineBits-1:0] wdata,
-                                                     input logic [LINE_BYTES-1:0] wstrb);
-    logic [LineBits-1:0] merged;
-    for (int unsigned b = 0; b < LINE_BYTES; b++)
-    merged[b*8+:8] = wstrb[b] ? wdata[b*8+:8] : fill[b*8+:8];
-    return merged;
-  endfunction
+  // The (partial) upstream write merged into the fetched line: strobed bytes
+  // take the request's data, the rest keep the fill. (A generate rather than
+  // a function: Yosys cannot parse loop-variable declarations in functions.)
+  logic [LineBits-1:0] fill_merged;
+  for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_fill_merge
+    assign fill_merged[gb*8+:8] =
+        req_wstrb_q[gb] ? req_wdata_q[gb*8+:8] : i_down_resp_rdata[gb*8+:8];
+  end
 
   logic up_req_fire;
   assign up_req_fire = i_up_req_valid && o_up_req_ready;
@@ -349,9 +351,7 @@ module frost_cache #(
 
         S_FILL_WAIT: begin
           if (i_down_resp_valid) begin
-            line_buf_q <= req_write_q ? merge_line(
-                i_down_resp_rdata, req_wdata_q, req_wstrb_q
-            ) : i_down_resp_rdata;
+            line_buf_q <= req_write_q ? fill_merged : i_down_resp_rdata;
             state_q <= S_ALLOC;
           end
         end

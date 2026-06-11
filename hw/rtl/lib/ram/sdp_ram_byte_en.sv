@@ -40,7 +40,11 @@ module sdp_ram_byte_en #(
     parameter int unsigned ADDR_WIDTH       = 12,      // row-address bits
     parameter int unsigned READ_LATENCY     = 2,       // total cycles i_re->o_rdata (>= 2)
     parameter int unsigned WRITE_LATENCY    = 1,       // total cycles i_w*->array updated (>= 1)
-    parameter string       MEMORY_PRIMITIVE = "block"  // "block" | "ultra" | "auto"
+    // Untyped on purpose: Vivado fails to resolve a string-typed parameter
+    // propagated into xpm_memory_sdpram's MEMORY_PRIMITIVE.
+    // verilog_lint: waive-start explicit-parameter-storage-type
+    parameter              MEMORY_PRIMITIVE = "block"  // "block" | "ultra" | "auto"
+    // verilog_lint: waive-end explicit-parameter-storage-type
 ) (
     input logic i_clk,
 
@@ -164,21 +168,37 @@ module sdp_ram_byte_en #(
   );
 `else
   // Portable equivalent -- single-cycle byte write + XpmReadLatency-stage read
-  // pipeline. Same external latency as the XPM.
-  logic [DATA_WIDTH-1:0] memory[Depth];
-
-  for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
-    always_ff @(posedge i_clk)
-      if (wbyte_en_q[byte_index])
-        memory[waddr_q][byte_index*8+:8] <= wdata_q[byte_index*8+:8];
+  // pipeline. Same external latency as the XPM. The storage is declared in
+  // per-primitive generate branches so the ram_style hint matches
+  // MEMORY_PRIMITIVE (without it, Yosys spends unbounded time decomposing a
+  // multi-MiB array toward block RAM on UltraScale+).
+  if (MEMORY_PRIMITIVE == "ultra") begin : gen_ultra_storage
+    (* ram_style = "ultra" *) logic [DATA_WIDTH-1:0] memory[Depth];
+    for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
+      always_ff @(posedge i_clk)
+        if (wbyte_en_q[byte_index])
+          memory[waddr_q][byte_index*8+:8] <= wdata_q[byte_index*8+:8];
+    end
+    logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency];
+    always_ff @(posedge i_clk) begin
+      if (re_in_reg) rd_pipe[0] <= memory[raddr_reg];
+      for (int unsigned k = 1; k < XpmReadLatency; k++) rd_pipe[k] <= rd_pipe[k-1];
+    end
+    assign row_dout = rd_pipe[XpmReadLatency-1];
+  end else begin : gen_block_storage
+    (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[Depth];
+    for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte
+      always_ff @(posedge i_clk)
+        if (wbyte_en_q[byte_index])
+          memory[waddr_q][byte_index*8+:8] <= wdata_q[byte_index*8+:8];
+    end
+    logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency];
+    always_ff @(posedge i_clk) begin
+      if (re_in_reg) rd_pipe[0] <= memory[raddr_reg];
+      for (int unsigned k = 1; k < XpmReadLatency; k++) rd_pipe[k] <= rd_pipe[k-1];
+    end
+    assign row_dout = rd_pipe[XpmReadLatency-1];
   end
-
-  logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency];
-  always_ff @(posedge i_clk) begin
-    if (re_in_reg) rd_pipe[0] <= memory[raddr_reg];
-    for (int unsigned k = 1; k < XpmReadLatency; k++) rd_pipe[k] <= rd_pipe[k-1];
-  end
-  assign row_dout = rd_pipe[XpmReadLatency-1];
 `endif
 `ifdef FROST_SDP_RAM_USE_XPM
   `undef FROST_SDP_RAM_USE_XPM

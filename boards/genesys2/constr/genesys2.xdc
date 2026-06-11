@@ -30,3 +30,13 @@ set_property -dict {PACKAGE_PIN W19 IOSTANDARD LVCMOS33} [get_ports o_fan_pwm]
 # ================================================================
 # Reset button
 set_property -dict {PACKAGE_PIN R19 IOSTANDARD LVCMOS33} [get_ports i_pb_resetn]
+
+# The 200 MHz IBUFDS output drives both the board MMCM and (via its 200 MHz
+# output) the MIG's internal MMCM/PLL: allow the backbone route between clock
+# regions. Same override the hardware-verified reference design uses for its
+# MIG input clock.
+set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets differential_clock_200mhz_buffered]
+
+# mem_ok crosses from the DDR controller's ui_clk domain into the core-clock
+# reset tree through a dedicated 2FF synchronizer: cut the timing into it.
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]

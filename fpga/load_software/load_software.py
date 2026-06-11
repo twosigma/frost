@@ -70,7 +70,8 @@ BOARD_CONFIG = {
     "genesys2": {
         "clock_freq": 133333333,
         "coremark_iterations": 5000,
-        "has_ddr": False,
+        # Requires the Phase-2 bitstream (DDR3 + cache hierarchy).
+        "has_ddr": True,
     },
 }
 

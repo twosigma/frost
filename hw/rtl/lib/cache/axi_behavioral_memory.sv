@@ -72,6 +72,9 @@ module axi_behavioral_memory #(
 
   logic [31:0] memory[NumWords];
 
+`ifndef YOSYS
+  // Simulation-only image load (Yosys cannot elaborate $fopen; this module is
+  // never instantiated in synthesized configurations anyway).
   initial begin
     if (USE_INIT_FILE) begin
       // Probe before $readmemh so flows that never generate a DDR image
@@ -85,6 +88,7 @@ module axi_behavioral_memory #(
       end
     end
   end
+`endif
 
   // ---- Write channel ----------------------------------------------------------
   typedef enum logic [1:0] {
