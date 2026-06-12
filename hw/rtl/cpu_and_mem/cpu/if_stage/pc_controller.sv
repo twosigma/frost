@@ -76,6 +76,12 @@ module pc_controller #(
     input logic i_reset,
     input logic i_stall,
     input logic i_stall_registered,
+    // Fetch progress: live window valid OR the stall-replay bundle is being
+    // presented (see if_stage).  When low, PC and the pending-prediction walk
+    // freeze (hold arms in the muxes + fetch_stall gating below); backend
+    // redirects still land.  The provider re-serves the owed fetch address
+    // while o_pc holds, so no ask is ever skipped.
+    input logic i_fetch_progress,
     input logic i_flush,  // Pipeline flush - block state updates from garbage instructions
     input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - for pending prediction kill
     input logic [XLEN-1:0] i_fence_i_target,
@@ -132,6 +138,7 @@ module pc_controller #(
     // and o_slot2_redirect_q tracks the bubble cycle for the if_stage
     // sel_nop expression.
     input  logic            i_slot2_prediction_used,
+    // Slot-2 PC-mux arm select (no late !i_branch_taken term; see above).
     input  logic            i_slot2_prediction_used_for_pc,
     input  logic [XLEN-1:0] i_slot2_predicted_target,
     output logic            o_slot2_redirect_q,
@@ -160,12 +167,19 @@ module pc_controller #(
   // Track control flow changes and generate holdoff signals for stale cycles.
   // BRAM has latency, so i_instr is stale for 1-2 cycles after PC change.
 
+  // Fetch-invalid cycles freeze the pending-prediction walk and the redirect
+  // bubble bookkeeping exactly like a stall: nothing was delivered, so none
+  // of the per-delivery state may advance.
+  logic fetch_stall;
+  assign fetch_stall = i_stall || !i_fetch_progress;
+
   control_flow_tracker #(
       .XLEN(XLEN)
   ) control_flow_tracker_inst (
       .i_clk,
       .i_reset,
       .i_stall,
+      .i_fetch_progress,
       .i_flush,
       .i_fence_i_flush,
       // Control flow sources
@@ -204,7 +218,7 @@ module pc_controller #(
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush) begin
       o_slot2_redirect_q <= 1'b0;
-    end else if (!i_stall) begin
+    end else if (!fetch_stall) begin
       o_slot2_redirect_q <= i_slot2_prediction_used;
     end
   end
@@ -352,7 +366,7 @@ module pc_controller #(
   always_ff @(posedge i_clk) begin
     if (i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
       seq_next_pc_reg_hw_q <= '0;
-    else if (!i_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
+    else if (!fetch_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
   // Lower-half, word-aligned predictions only need the pending-handoff path
   // when pc_reg would otherwise skip over the branch PC. Treating every such
@@ -491,7 +505,7 @@ module pc_controller #(
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_target_holdoff_q <= 1'b0;
-    end else if (!i_stall) begin
+    end else if (!fetch_stall) begin
       // Keep exactly one target bubble after the pending handoff. With fetch
       // capped to the target's next word, that is enough time for the target
       // word to arrive while preserving the normal one-word BRAM lead.
@@ -508,7 +522,7 @@ module pc_controller #(
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_target_holdoff_prev_q <= 1'b0;
-    end else if (!i_stall) begin
+    end else if (!fetch_stall) begin
       pending_prediction_target_holdoff_prev_q <= pending_prediction_target_holdoff_q;
     end
   end
@@ -524,7 +538,7 @@ module pc_controller #(
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_pc_ready_q <= 1'b0;
-    end else if (!i_stall) begin
+    end else if (!fetch_stall) begin
       if (redirect_kill_pending_q || pending_prediction_target_handoff ||
           stale_pending_prediction) begin
         pending_prediction_pc_ready_q <= 1'b0;
@@ -547,7 +561,7 @@ module pc_controller #(
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush || clear_pending_prediction_state) begin
       pending_prediction_valid <= 1'b0;
-    end else if (!i_stall && prediction_needs_pending) begin
+    end else if (!fetch_stall && prediction_needs_pending) begin
       pending_prediction_valid <= 1'b1;
     end
   end
@@ -568,7 +582,7 @@ module pc_controller #(
   // below — extended to allow_cross/from_buffer to lift their CE off the
   // BRAM critical path.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && !pending_prediction_valid) begin
+    if (!fetch_stall && !pending_prediction_valid) begin
       pending_prediction_pc                   <= o_pc;
       pending_prediction_target               <= i_predicted_target;
       pending_prediction_allow_cross          <= o_pc[1];
@@ -587,6 +601,12 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc = i_fence_i_target;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_pd_redirect) next_pc = i_pd_redirect_target;
+    // No fetch progress: hold the fetch address so the provider can keep
+    // working on the owed ask.  Sits above the prediction/pending arms
+    // (their state is frozen and predictions are suppressed while invalid)
+    // and below the redirects (backend events and already-delivered bundles
+    // must still steer fetch).
+    else if (!i_fetch_progress) next_pc = o_pc;
     // Slot-2 BTB prediction (Session Q): higher priority than slot-1 BTB
     // because slot-2 is older in program order than the next bundle's
     // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
@@ -644,6 +664,9 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
     else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
+    // No fetch progress: hold the instruction address (nothing is being
+    // delivered).  Same placement rationale as the next_pc hold arm above.
+    else if (!i_fetch_progress) next_pc_reg = o_pc_reg;
     // Slot-2 BTB prediction (Session Q): pc_reg jumps to the slot-2 target
     // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
     // after the redirect is NOP'd via the standard control_flow_holdoff

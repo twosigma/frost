@@ -249,6 +249,7 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all IF-stage inputs to safe idle values."""
     _drive_from_ex(dut, {})
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    dut.i_instr_valid.value = 1
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
     dut.i_frontend_state_flush.value = 0
@@ -621,4 +622,131 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
     assert any(pd_target <= pc < pd_target + 0x40 for pc in presented), (
         f"PD-target bundle never presented after release (got "
         f"{[hex(p) for p in presented]}): over-broad squash"
+    )
+
+
+@cocotb.test()
+async def test_fetch_invalid_bubbles_and_holds_pc(dut: Any) -> None:
+    """Fetch-invalid cycles emit NOP bubbles, freeze PC, and defer delivery."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    await _settle()
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=BASE_PC,
+        raw=ADD_INSTR_A & 0xFFFF,
+        effective=ADD_INSTR_A,
+        compressed=False,
+    )
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BASE_PC + 8
+
+    # The provider goes invalid: bubbles on both slots, PC frozen, the
+    # undelivered instruction at pc_reg = BASE_PC + 4 stays pending.
+    dut.i_instr_valid.value = 0
+    await _settle()
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+    for _ in range(3):
+        await _advance_cycle(dut)
+        assert int(dut.o_pc.value) == BASE_PC + 8
+        packet = _read_if_packet(dut)
+        assert packet["sel_nop"]
+        assert packet["program_counter"] == BASE_PC + 4
+
+    # Resume: the provider re-serves the owed window (for fetch address
+    # BASE_PC + 4 -- an odd word, hence bank_sel=1) and delivery continues
+    # exactly where it left off.
+    dut.i_instr_valid.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_B, next_word=ADD_INSTR_C, bank_sel=1)
+    await _settle()
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=BASE_PC + 4,
+        raw=ADD_INSTR_B & 0xFFFF,
+        effective=ADD_INSTR_B,
+        compressed=False,
+    )
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BASE_PC + 12
+
+
+@cocotb.test()
+async def test_branch_redirect_lands_during_fetch_invalid(dut: Any) -> None:
+    """Branch resolution redirects PC while the fetch window is invalid."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    dut.i_instr_valid.value = 0
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BASE_PC + 4  # frozen
+    assert _read_if_packet(dut)["sel_nop"]
+
+    _drive_from_ex(dut, {"branch_taken": True, "branch_target_address": BRANCH_TARGET})
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BRANCH_TARGET  # redirect landed while invalid
+
+    _drive_from_ex(dut, {})
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BRANCH_TARGET  # held while still invalid
+    assert _read_if_packet(dut)["sel_nop"]
+
+    # Resume. The first valid cycle is the (extended-holdoff) stale squash
+    # that also restores the one-word fetch lead; the target word delivers
+    # on the following cycle.
+    dut.i_instr_valid.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)  # stale
+    await _settle()
+    assert _read_if_packet(dut)["sel_nop"]
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BRANCH_TARGET + 4
+
+    _drive_fetch(dut, current_word=ADD_INSTR_C, next_word=NOP_INSTR)
+    await _settle()
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=BRANCH_TARGET,
+        raw=ADD_INSTR_C & 0xFFFF,
+        effective=ADD_INSTR_C,
+        compressed=False,
+    )
+
+
+@cocotb.test()
+async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
+    """A 2-wide compressed bundle delivers intact right after an invalid gap."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    dut.i_instr_valid.value = 0
+    for _ in range(2):
+        await _advance_cycle(dut)
+        assert int(dut.o_pc.value) == BASE_PC + 4
+        assert _read_if_packet(dut)["sel_nop"]
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    dut.i_instr_valid.value = 1
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_A,
+        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+    )
+    await _settle()
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=BASE_PC,
+        raw=COMPRESSED_NOP,
+        effective=current_word,
+        compressed=True,
+    )
+    _assert_packet(
+        _read_if_packet(dut, slot2=True),
+        pc=BASE_PC + 2,
+        raw=COMPRESSED_HINT,
+        effective=COMPRESSED_HINT,
+        compressed=True,
     )

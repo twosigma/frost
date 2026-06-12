@@ -46,6 +46,10 @@ module control_flow_tracker #(
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
+    // Fetch progress (live window valid OR stall-replay bundle presented).
+    // Holdoffs extend through no-progress cycles exactly as through stalls:
+    // the stale-suppression window must still cover the first delivery.
+    input logic i_fetch_progress,
     input logic i_flush,
     input logic i_fence_i_flush,
 
@@ -98,6 +102,12 @@ module control_flow_tracker #(
   // ===========================================================================
   // Track stale instruction cycles after control flow changes
 
+  // No-progress fetch cycles freeze the front end like a stall: the holdoff
+  // must survive them so the first delivered window after a redirect is still
+  // treated as the stale-suppression cycle.
+  logic fetch_stall;
+  assign fetch_stall = i_stall || !i_fetch_progress;
+
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_control_flow_holdoff <= 1'b0;
@@ -106,8 +116,8 @@ module control_flow_tracker #(
       // Latch redirect holdoff even if the front-end is stalled. Otherwise a
       // mispredict/redirect that arrives into back-pressure can skip the stale
       // BRAM-suppression window and pair new-path instruction data with an old PC.
-      o_control_flow_holdoff <= o_control_flow_change || (o_control_flow_holdoff && i_stall);
-      o_reset_holdoff <= o_reset_holdoff && (i_stall || o_control_flow_change);
+      o_control_flow_holdoff <= o_control_flow_change || (o_control_flow_holdoff && fetch_stall);
+      o_reset_holdoff <= o_reset_holdoff && (fetch_stall || o_control_flow_change);
     end
   end
 
@@ -137,7 +147,7 @@ module control_flow_tracker #(
   always_ff @(posedge i_clk) begin
     if (i_reset) o_control_flow_to_halfword_r <= 1'b0;
     else if (o_control_flow_change) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
-    else if (!i_stall) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
+    else if (!fetch_stall) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
   end
 
 endmodule : control_flow_tracker

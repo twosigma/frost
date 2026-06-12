@@ -54,7 +54,12 @@ module cpu_and_mem #(
     parameter int unsigned DDR_MODEL_LATENCY = 30,
     // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
     // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
-    parameter int unsigned USE_BEHAVIORAL_DDR = 1
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1,
+    // Simulation-only fetch-latency fuzz: emulate a variable-latency fetch
+    // provider over the 1-cycle instruction BRAM (LFSR-gated i_instr_valid +
+    // owed-ask tracking).  Exercises the core's fetch-invalid machinery
+    // before a real I-cache sits behind it; hardware keeps 0.
+    parameter int unsigned FETCH_VALID_FUZZ = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -152,9 +157,13 @@ module cpu_and_mem #(
 
   // CPU interface signals
   logic [31:0] program_counter;
+  logic [31:0] fetch_address;  // imem port B address (= program_counter, or the
+                               // fuzz provider's owed ask)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
+  logic instruction_valid;  // Fetch window valid (1-cycle BRAM: constant 1)
+  logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
@@ -233,6 +242,8 @@ module cpu_and_mem #(
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
+      .i_instr_valid(instruction_valid),
+      .o_fetch_replay_consume(fetch_replay_consume),
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
@@ -270,6 +281,76 @@ module cpu_and_mem #(
   // Memory 0: Port A = instruction programming (div4), Port B = instruction fetch (main clk)
   // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
 
+  // ===========================================================================
+  // Fetch provider: 1-cycle BRAM (valid tied 1) or the simulation fuzz wrapper
+  // ===========================================================================
+  // Fetch contract (see if_stage.i_instr_valid): each cycle's window must
+  // correspond to the OWED fetch address -- the o_pc value of the last served
+  // cycle, retargeted when o_pc moves during an invalid period (only backend
+  // redirects move it then; the core holds o_pc while invalid). A variable-
+  // latency provider therefore owns a 1-deep owed-ask register and keeps
+  // serving it. The fuzz wrapper emulates such a provider over the always-
+  // ready BRAM with LFSR-chosen gaps; it exercises the core's fetch-invalid
+  // machinery end to end and is the reference model for the L1I front end.
+  if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
+    logic [31:0] fuzz_ask_q;  // owed fetch address
+    logic [31:0] pc_prev_q;  // detects o_pc movement
+    logic [31:0] served_addr_q;  // address the BRAM output corresponds to
+    logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
+    // A consumed stall-replay bundle counts as a served cycle: the CPU's PC
+    // advances without a live window, and the presentation during that cycle
+    // becomes the owed ask exactly as on a valid cycle.
+    logic        served_this_cycle;
+    logic [15:0] lfsr_q;
+    logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
+
+    logic        lfsr_feedback;
+    logic        fuzz_window_ready;
+    logic        fuzz_ok;
+    assign lfsr_feedback = lfsr_q[15] ^ lfsr_q[13] ^ lfsr_q[12] ^ lfsr_q[10];
+    assign fuzz_window_ready = (served_addr_q == fuzz_ask_q);
+    assign fuzz_ok = (gap_cnt_q == '0) && (lfsr_q[1:0] != 2'b00);
+
+    assign instruction_valid = fuzz_ok && fuzz_window_ready;
+    assign served_this_cycle = instruction_valid || fetch_replay_consume;
+    // The BRAM chases the owed ask while unserved and the live PC once
+    // serving (the 1-cycle BRAM then keeps the window contract-aligned).
+    assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
+
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        fuzz_ask_q    <= '0;
+        pc_prev_q     <= '0;
+        served_addr_q <= '0;
+        served_prev_q <= 1'b0;
+        lfsr_q        <= 16'hACE1;
+        gap_cnt_q     <= '0;
+      end else begin
+        pc_prev_q     <= program_counter;
+        served_addr_q <= fetch_address;
+        served_prev_q <= served_this_cycle;
+        lfsr_q        <= {lfsr_q[14:0], lfsr_feedback};
+        if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
+        else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
+        if (served_this_cycle) begin
+          // Served (live window or replay consumption): the current
+          // presentation becomes the owed ask.
+          fuzz_ask_q <= program_counter;
+        end else if (!served_prev_q && (program_counter != pc_prev_q)) begin
+          // o_pc moved between two invalid cycles: that is a backend
+          // redirect (the core holds o_pc on invalid cycles otherwise);
+          // abandon the old ask and chase the target. Movement at a
+          // valid->invalid boundary is normal flow whose ask was already
+          // latched on the valid cycle and must NOT be abandoned.
+          fuzz_ask_q <= program_counter;
+        end
+      end
+    end
+  end else begin : gen_fetch_direct
+    assign instruction_valid = 1'b1;
+    assign fetch_address = program_counter;
+  end
+
   // Memory 0: Instruction memory with predecode sideband
   // Stores 32-bit instruction data plus a small predecode sideband per word.
   // Sideband bits are computed at write time and keep common IF classification
@@ -291,7 +372,7 @@ module cpu_and_mem #(
       // Port B: Instruction fetch (main clock, read only)
       .i_port_b_clk(i_clk),
       .i_port_b_enable(1'b1),
-      .i_port_b_byte_address(program_counter),
+      .i_port_b_byte_address(fetch_address),
       .o_port_b_read_data(instruction),
       .o_port_b_sideband(instruction_sideband),
       .o_port_b_bank_sel_r(instruction_bank_sel_r)

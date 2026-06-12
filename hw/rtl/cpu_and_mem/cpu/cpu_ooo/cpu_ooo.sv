@@ -46,6 +46,11 @@ module cpu_ooo #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
+    // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
+    input logic i_instr_valid,
+    // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
+    // provider counts it as a served cycle for its owed-ask tracking.
+    output logic o_fetch_replay_consume,
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -385,6 +390,8 @@ module cpu_ooo #(
       .i_instr,
       .i_instr_sideband,
       .i_instr_bank_sel_r,
+      .i_instr_valid,
+      .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),

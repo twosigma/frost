@@ -53,6 +53,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_reg.value = PC_LO
     dut.i_is_compressed.value = 0
     dut.i_sel_nop.value = 0
+    dut.i_fetch_progress.value = 1
     dut.i_instr_sideband.value = 0
     dut.i_slot2_valid.value = 0
 
