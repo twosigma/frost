@@ -49,17 +49,17 @@ module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
-    // URAM memory tier (high-address region). A load whose address falls in
-    // [URAM_BASE, URAM_BASE+URAM_SIZE_BYTES) is served by the multi-cycle URAM
-    // tier. Only while such a load is in flight (slow_outstanding) does the LQ
-    // serialise issue to single-outstanding, so the single mem_outstanding /
-    // issued_idx tracker stays valid across the longer, possibly-flushed
-    // response window. With no URAM load in flight, BRAM/MMIO loads stay
-    // back-to-back exactly as in production. Production software never addresses
-    // this region, so slow_outstanding is always 0 and the launch gate is
-    // byte-identical to the 1-cycle baseline.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024
+    // Cached memory tier (high-address region). A load whose address falls in
+    // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle
+    // cached tier. Only while such a load is in flight (slow_outstanding) does
+    // the LQ serialise issue to single-outstanding, so the single
+    // mem_outstanding / issued_idx tracker stays valid across the longer,
+    // possibly-flushed response window. With no cached load in flight,
+    // BRAM/MMIO loads stay back-to-back; programs that never touch the cached
+    // region keep slow_outstanding at 0 and the launch gate byte-identical to
+    // the 1-cycle baseline.
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -488,23 +488,23 @@ module load_queue #(
   logic issued_is_lr;
   logic issued_is_amo;
   logic issued_is_mmio;
-  // Snapshot of "the outstanding load targets the URAM tier", captured at launch
-  // alongside issued_addr. Used to clear slow_outstanding when the URAM response
+  // Snapshot of "the outstanding load targets the cached tier", captured at launch
+  // alongside issued_addr. Used to clear slow_outstanding when the cached response
   // is accepted, and to keep the per-tier gate keyed on the actual in-flight tier
   // rather than a re-derived late-address decode.
-  logic issued_is_uram;
+  logic issued_is_cached;
   logic issued_sign_ext;
   logic issued_fp64_phase;
   logic [ReorderBufferTagWidth-1:0] issued_rob_tag;
   logic drop_mem_response_pending;  // Drop the next 1-cycle-latency response after flush
-  // Registered "a URAM (multi-cycle) load is in flight". Set when a URAM load
-  // launches; held across the whole URAM read pipeline + any flush-drain window
+  // Registered "a cached (multi-cycle) load is in flight". Set when a cached load
+  // launches; held across the whole cached read pipeline + any flush-drain window
   // until the response is accepted or dropped; gates ALL launches while set so
-  // the single-outstanding tracker stays valid. Always 0 when no software
-  // addresses the URAM tier (production), where the launch gate folds out.
+  // the single-outstanding tracker stays valid. Stays 0 for programs that
+  // never address the cached tier, where the launch gate folds out.
   logic slow_outstanding;
-  logic issued_uram_line_invalidated;
-  logic issued_uram_line_invalidate_now;
+  logic issued_cached_line_invalidated;
+  logic issued_cached_line_invalidate_now;
 
   // Load unit wires
   logic [XLEN-1:0] lu_data_out;
@@ -594,8 +594,8 @@ module load_queue #(
   // AMO cache invalidation: invalidate L0 cache when AMO write completes
   logic amo_cache_inv;
   assign amo_cache_inv = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
-  assign issued_uram_line_invalidate_now =
-      mem_outstanding && issued_is_uram && i_cache_invalidate_valid &&
+  assign issued_cached_line_invalidate_now =
+      mem_outstanding && issued_is_cached && i_cache_invalidate_valid &&
       (i_cache_invalidate_addr[XLEN-1:2] == issued_addr[XLEN-1:2]);
 
   // ===========================================================================
@@ -1236,15 +1236,15 @@ module load_queue #(
   // mispredict commits can still issue this cycle and consume the FIFO byte
   // before the next-cycle full flush clears the entry.  packet_parser exposed
   // this race once 2-wide dispatch let speculative loads reach HEAD faster.
-  // PER-TIER single-outstanding gate.  slow_outstanding is 1 only while a URAM
-  // (multi-cycle) load is in flight.  When 0 (always, in production -- no
-  // software addresses the URAM tier), this AND term folds to 1 and the gate is
+  // PER-TIER single-outstanding gate.  slow_outstanding is 1 only while a cached
+  // (multi-cycle) load is in flight.  When 0 (any program that stays out of
+  // the cached region), this AND term folds to 1 and the gate is
   // byte-identical to the back-to-back baseline, contributing nothing to the
-  // o_mem_read_en / BRAM-ADDR critical cone.  When a URAM load is in flight it
-  // blocks EVERY launch (URAM or fast) so the single mem_outstanding/issued_idx
+  // o_mem_read_en / BRAM-ADDR critical cone.  When a cached load is in flight it
+  // blocks EVERY launch (cached or fast) so the single mem_outstanding/issued_idx
   // tracker -- and the response-vs-launch ordering -- stay valid across the
-  // longer, possibly-flushed URAM window.  slow_outstanding is held until the
-  // URAM response is accepted or its flushed copy drains (see the set/clear
+  // longer, possibly-flushed cached window.  slow_outstanding is held until the
+  // cached response is accepted or its flushed copy drains (see the set/clear
   // below), so it also covers the partial-flush drain that the global de-risk
   // handled with a separate !drop_mem_response_pending term.
   assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
@@ -1253,14 +1253,14 @@ module load_queue #(
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
 
-  // URAM-tier decode of the load being launched this cycle (off the registered
+  // cached-tier decode of the load being launched this cycle (off the registered
   // staged candidate address, parallel to the issue cone -- feeds only the
-  // registered slow_outstanding set and the issued_is_uram snapshot, never the
+  // registered slow_outstanding set and the issued_is_cached snapshot, never the
   // launch gate itself).
-  logic launching_is_uram;
-  assign launching_is_uram =
-      (launch_mem_issue_addr >= URAM_BASE[XLEN-1:0]) &&
-      (launch_mem_issue_addr <  (URAM_BASE[XLEN-1:0] + URAM_SIZE_BYTES[XLEN-1:0]));
+  logic launching_is_cached;
+  assign launching_is_cached =
+      (launch_mem_issue_addr >= CACHED_BASE[XLEN-1:0]) &&
+      (launch_mem_issue_addr <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
 
   // Memory issue: bypass the staging register when the port is already free.
   always_comb begin
@@ -1379,8 +1379,8 @@ module load_queue #(
   // memory's ADDRARDADDR pin via lq_l0_cache.lookup_fill_bypass.
   assign cache_fill_valid = accept_mem_response
       && !issued_is_mmio && !issued_is_lr && !issued_is_amo
-      && !(issued_is_uram &&
-           (issued_uram_line_invalidated || issued_uram_line_invalidate_now));
+      && !(issued_is_cached &&
+           (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
   assign cache_fill_addr = issued_addr;
   assign cache_fill_data = i_mem_read_data;
 
@@ -1771,7 +1771,7 @@ module load_queue #(
       // drop already armed by an earlier partial flush -- keep/arm the drop so
       // the zombie response is consumed and, via the launch gates, no new load
       // issues until it drains. The pre-cache reasoning ("front-end refill
-      // after a full flush outlasts the URAM read pipeline") does not hold for
+      // after a full flush outlasts the cached read pipeline") does not hold for
       // the cached tier, whose miss latency is unbounded relative to the
       // refill; an unaccounted zombie response would be misattributed to the
       // next launched load.
@@ -1876,16 +1876,16 @@ module load_queue #(
       if (drop_mem_response_now) begin
         mem_outstanding <= 1'b0;
         drop_mem_response_pending <= 1'b0;
-        // A dropped response ends the URAM window (the flushed URAM read has now
+        // A dropped response ends the cached window (the flushed cached read has now
         // drained out of the router pipeline). Clearing here -- rather than at
         // the earlier issued_entry_flushed -- keeps slow_outstanding asserted
         // across the whole drain so no new launch overlaps the stale response.
         slow_outstanding <= 1'b0;
       end else if (accept_mem_response) begin
         mem_outstanding <= 1'b0;
-        // Normal completion of the in-flight load. Only a URAM load set
-        // slow_outstanding, so clear it on the URAM load's own response.
-        if (issued_is_uram) slow_outstanding <= 1'b0;
+        // Normal completion of the in-flight load. Only a cached load set
+        // slow_outstanding, so clear it on the cached load's own response.
+        if (issued_is_cached) slow_outstanding <= 1'b0;
         if (issued_is_amo) begin
           // AMO: start write phase (don't set data_valid yet);
           // data signals (amo_old_value, amo_entry_idx) in no-reset block
@@ -1921,11 +1921,11 @@ module load_queue #(
       if (o_mem_read_en) begin
         lq_issued[launch_mem_issue_idx] <= 1'b1;
         mem_outstanding                 <= 1'b1;
-        // Arm the per-tier single-outstanding gate only for URAM launches. A
-        // URAM launch cannot occur while slow_outstanding is already set (the
+        // Arm the per-tier single-outstanding gate only for cached launches. A
+        // cached launch cannot occur while slow_outstanding is already set (the
         // launch gate blocks it), so this never conflicts with a same-cycle
         // clear above. Fast (BRAM/MMIO) launches leave it 0 -> back-to-back.
-        if (launching_is_uram) slow_outstanding <= 1'b1;
+        if (launching_is_cached) slow_outstanding <= 1'b1;
       end
 
       // -----------------------------------------------------------------
@@ -2210,11 +2210,11 @@ module load_queue #(
   // already encodes the active FLD phase at launch time).
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
-      issued_uram_line_invalidated <= 1'b0;
+      issued_cached_line_invalidated <= 1'b0;
     end else if (o_mem_read_en || drop_mem_response_now || accept_mem_response) begin
-      issued_uram_line_invalidated <= 1'b0;
-    end else if (issued_uram_line_invalidate_now) begin
-      issued_uram_line_invalidated <= 1'b1;
+      issued_cached_line_invalidated <= 1'b0;
+    end else if (issued_cached_line_invalidate_now) begin
+      issued_cached_line_invalidated <= 1'b1;
     end
   end
 
@@ -2227,7 +2227,7 @@ module load_queue #(
       issued_is_lr      <= sq_check_is_lr_q;
       issued_is_amo     <= sq_check_is_amo_q;
       issued_is_mmio    <= sq_check_is_mmio_q;
-      issued_is_uram    <= launching_is_uram;
+      issued_is_cached  <= launching_is_cached;
       issued_sign_ext   <= sq_check_sign_ext_q;
       issued_fp64_phase <= sq_check_fp64_phase_q;
       issued_rob_tag    <= sq_check_rob_tag_q;

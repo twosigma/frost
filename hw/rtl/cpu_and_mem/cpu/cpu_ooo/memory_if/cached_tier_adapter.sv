@@ -18,8 +18,7 @@
  * cached_tier_adapter -- word<->line adapter between the data-memory request
  * router and the cache hierarchy (frost_cache_hierarchy upstream port).
  *
- * Router side mirrors the old URAM-tier signal shapes, but with handshake
- * (variable-latency) completion instead of fixed-latency shift registers:
+ * Router-side protocol (handshake, variable-latency completion):
  *   - i_read_req: 1-cycle pulse, an accepted cached-region load. The address
  *     is on i_req_addr that cycle. Completion: o_read_valid pulse with
  *     o_read_data (the addressed word), any number of cycles later.
@@ -28,8 +27,7 @@
  *     o_write_inflight stays high from the cycle AFTER the fire until the done
  *     pulse; the router folds it into write_port_busy so no load issues while
  *     a cached store is pending (the fire cycle itself is covered by
- *     sq_mem_write_en). This is the same ordering hold the URAM tier's
- *     write-done shift register provided, with handshake timing.
+ *     sq_mem_write_en), preserving load-vs-store ordering on the port.
  *
  * Word<->line conversion: a CPU read becomes a full-line read and the
  * addressed word is muxed out of the 256-bit response. A CPU write becomes a

@@ -528,7 +528,7 @@ module cpu_and_mem #(
   end else begin : gen_no_cached_tier
     // Tier disabled (FPGA builds until their DDR controller lands): complete
     // cached-region accesses immediately with zero data so stray software
-    // cannot hang the LQ/SQ -- mirroring the old disabled-URAM behaviour.
+    // cannot hang the LQ/SQ.
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         data_memory_cached_read_valid <= 1'b0;

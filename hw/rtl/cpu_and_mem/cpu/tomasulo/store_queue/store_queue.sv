@@ -52,13 +52,13 @@
 
 module store_queue #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
-    // URAM memory tier (high-address region). A committed store whose address
-    // falls in [URAM_BASE, URAM_BASE+URAM_SIZE_BYTES) is tagged so the router
-    // steers its byte-write enables to the URAM tier (and masks them off the
+    // Cached memory tier (high-address region). A committed store whose address
+    // falls in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is tagged so the router
+    // steers its byte-write enables to the cached tier (and masks them off the
     // BRAM). The flag is registered alongside o_mem_write_en, mirroring is_mmio,
     // so the late address-range test never reaches the BRAM WEA cone.
-    parameter int unsigned URAM_BASE = 32'h0100_0000,
-    parameter int unsigned URAM_SIZE_BYTES = 8 * 1024 * 1024
+    parameter int unsigned CACHED_BASE = 32'h8000_0000,
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -159,9 +159,9 @@ module store_queue #(
     // rather than recomputing an address-range check combinationally on the
     // muxed data memory address (which drags the LQ issue cone onto WEA).
     output logic                       o_mem_write_is_mmio,
-    // Registered URAM-tier flag for the current head entry (parallels is_mmio).
-    // The router steers the store's byte-write enables to the URAM tier when set.
-    output logic                       o_mem_write_is_uram,
+    // Registered cached-tier flag for the current head entry (parallels is_mmio).
+    // The router steers the store's byte-write enables to the cached tier when set.
+    output logic                       o_mem_write_is_cached,
     input  logic                       i_mem_write_done,
 
     // =========================================================================
@@ -629,7 +629,7 @@ module store_queue #(
   logic [riscv_pkg::XLEN-1:0] mem_write_data_next;
   logic [                3:0] mem_write_byte_en_next;
   logic                       mem_write_is_mmio_next;
-  logic                       mem_write_is_uram_next;
+  logic                       mem_write_is_cached_next;
 
   always_comb begin
     mem_write_fire_next    = 1'b0;
@@ -637,7 +637,7 @@ module store_queue #(
     mem_write_data_next    = '0;
     mem_write_byte_en_next = '0;
     mem_write_is_mmio_next = 1'b0;
-    mem_write_is_uram_next = 1'b0;
+    mem_write_is_cached_next = 1'b0;
 
     if (head_ready && !write_outstanding && !o_mem_write_en) begin
       mem_write_fire_next = 1'b1;
@@ -654,13 +654,13 @@ module store_queue #(
       mem_write_byte_en_next =
           gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
       mem_write_is_mmio_next = sq_is_mmio[head_idx];
-      // URAM-tier decode of the actual write address. Registered below into
-      // o_mem_write_is_uram (parallel to is_mmio), so the comparator stays in
+      // cached-tier decode of the actual write address. Registered below into
+      // o_mem_write_is_cached (parallel to is_mmio), so the comparator stays in
       // the addr->register cone and never reaches the BRAM WEA pin.
-      mem_write_is_uram_next =
-          (mem_write_addr_next >= URAM_BASE[riscv_pkg::XLEN-1:0]) &&
-          (mem_write_addr_next <  (URAM_BASE[riscv_pkg::XLEN-1:0] +
-                                   URAM_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
+      mem_write_is_cached_next =
+          (mem_write_addr_next >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
+          (mem_write_addr_next <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
+                                   CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
     end
   end
 
@@ -680,7 +680,7 @@ module store_queue #(
     o_mem_write_data    <= mem_write_data_next;
     o_mem_write_byte_en <= mem_write_byte_en_next;
     o_mem_write_is_mmio <= mem_write_is_mmio_next;
-    o_mem_write_is_uram <= mem_write_is_uram_next;
+    o_mem_write_is_cached <= mem_write_is_cached_next;
 
     if (mem_write_fire_next) begin
       mem_write_entry_idx_stg <= head_idx;
@@ -700,9 +700,9 @@ module store_queue #(
   // flight), so the only reachable outcomes are an L0 miss plus a
   // correctly-ordered memory read. Early invalidation is always safe — at
   // worst it costs one refill miss. The previous done-time pulse left the
-  // L0 line live during a multi-cycle URAM write flight; papering over that
+  // L0 line live during a multi-cycle cached write flight; papering over that
   // with a busy-stretch in the LQ taxed every BRAM store drain (~2%
-  // CoreMark), and routing the URAM-flight signal into the LQ's busy
+  // CoreMark), and routing the cached-flight signal into the LQ's busy
   // instead pushed the L0-hit/CDB cone past timing. Both outputs come
   // straight from SQ output registers, adding no new logic levels anywhere.
   // FSD fires one invalidate per phase (addr, then addr+4). MMIO stores

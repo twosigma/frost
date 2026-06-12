@@ -1091,7 +1091,7 @@ async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
     """
     dut_if, model = await setup(dut)
 
-    addr = 0x0100_0040
+    addr = 0x8000_0040
     stale_word = 0x1122_3344
 
     # Fill L0 with the old value.
@@ -1137,7 +1137,7 @@ async def test_cache_hit_blocked_while_mem_bus_busy(dut: Any) -> None:
 async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> None:
     """A warm L0 line must die at the store's write launch, never hit stale.
 
-    X3 URAM stores keep their write in flight for cycles after the SQ write
+    Cached-tier stores keep their write in flight for cycles after the SQ write
     pulse drops; a younger same-address load must never consume the stale L0
     line in that gap (the window that exposed the parser failure on
     hardware).
@@ -1147,14 +1147,14 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     itself is covered by i_mem_bus_busy plus the L0's same-cycle
     invalidate suppress. In the flight gap the load simply MISSES and may
     issue to memory; ordering the read behind the in-flight write is the
-    router's job (test_uram_queued_load_waits_for_delayed_store_done).
+    router's job (test_load_queued_behind_cached_write_inflight).
     (Earlier designs blocked the gap in the LQ instead — first by
     stretching busy a trailing cycle, which taxed every BRAM store drain
     ~2% CoreMark, then via a routed busy term that broke timing closure.)
     """
     dut_if, model = await setup(dut)
 
-    addr = 0x0100_0080
+    addr = 0x8000_0080
     stale_word = 0xCAFE_BABE
     fresh_word = 0x0BAD_F00D
 
@@ -1196,7 +1196,7 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cache_invalidate()
 
-    # URAM delayed-write gap: the write pulse (and busy) are gone while the
+    # Cached-tier delayed-write gap: the write pulse (and busy) are gone while the
     # store is still in its write pipeline — but the line was already
     # invalidated at launch, so the load must MISS (no stale hit, no stale
     # completion). Issuing to memory here is fine: the router orders the
@@ -1236,33 +1236,33 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
 
 
 @cocotb.test()
-async def test_uram_response_after_invalidate_does_not_refill_l0(dut: Any) -> None:
-    """A delayed URAM response must not refill L0 after a same-word store.
+async def test_cached_response_after_invalidate_does_not_refill_l0(dut: Any) -> None:
+    """A delayed cached-tier response must not refill L0 after a same-word store.
 
-    A multi-cycle URAM load can be older than a later committed store. If that
+    A multi-cycle cached-tier load can be older than a later committed store. If that
     store invalidates the L0 line before the load response returns, the response
     must still complete the older load but must not repopulate L0 with the
     pre-store word. Otherwise a still-younger load can hit stale data.
     """
     dut_if, model = await setup(dut)
 
-    addr = 0x0100_0200
+    addr = 0x8000_0200
     stale_word = 0x1122_3344
     fresh_word = 0x5566_7788
 
     dut_if.drive_sq_empty(True)
 
-    # Launch a URAM-range load and leave its response delayed.
+    # Launch a cached-region load and leave its response delayed.
     await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
     mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "Expected first URAM load to issue"
+    assert mem_req["en"], "Expected first cached load to issue"
     assert mem_req["addr"] == addr
     await dut_if.step()
 
-    # A younger store to the same word commits before the delayed URAM response.
+    # A younger store to the same word commits before the delayed cached response.
     dut_if.drive_cache_invalidate(addr)
     await dut_if.step()
     dut_if.clear_cache_invalidate()
@@ -1275,7 +1275,7 @@ async def test_uram_response_after_invalidate_does_not_refill_l0(dut: Any) -> No
     dut_if.clear_mem_response()
 
     result = await wait_for_fu_complete(dut_if)
-    assert result.valid, "Delayed URAM load should still complete"
+    assert result.valid, "Delayed cached load should still complete"
     assert result.tag == 1
     assert result.value == stale_word
     await accept_fu_complete(dut_if)
@@ -1288,7 +1288,7 @@ async def test_uram_response_after_invalidate_does_not_refill_l0(dut: Any) -> No
 
     assert not bool(
         dut.o_l0_hit.value
-    ), "Stale URAM response refilled L0 after invalidation"
+    ), "Stale cached response refilled L0 after invalidation"
     mem_req = await wait_for_mem_request(dut_if, max_cycles=4)
     assert mem_req["en"], "Later load should miss L0 and issue to memory"
     assert mem_req["addr"] == addr

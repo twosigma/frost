@@ -24,15 +24,14 @@
  * read/write sidebands and the 1-cycle load-read-valid pulse.
  *
  * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
- * the cache hierarchy -> DDR through cached_tier_adapter. Unlike the old
- * fixed-latency URAM tier, completion is HANDSHAKE-based: the adapter pulses
- * i_cached_read_valid / i_cached_write_done any number of cycles after the
- * request, and holds i_cached_write_inflight while a cached store is pending.
- * The LQ's single-outstanding slow gate blocks every load launch while a
- * cached load is in flight, and write_port_busy (which folds in the
- * write-inflight hold) queues loads behind a pending cached store, so the
- * fast and cached read responses can never overlap -- the same per-tier
- * mutual exclusion the URAM tier relied on.
+ * the cache hierarchy -> DDR through cached_tier_adapter. Completion is
+ * HANDSHAKE-based: the adapter pulses i_cached_read_valid /
+ * i_cached_write_done any number of cycles after the request, and holds
+ * i_cached_write_inflight while a cached store is pending. The LQ's
+ * single-outstanding slow gate blocks every load launch while a cached load
+ * is in flight, and write_port_busy (which folds in the write-inflight hold)
+ * queues loads behind a pending cached store, so the fast and cached read
+ * responses can never overlap -- per-tier mutual exclusion.
  */
 
 module data_mem_request_router #(
@@ -155,7 +154,7 @@ module data_mem_request_router #(
   //
   // READ side: is_cached for the queued load address. For the power-of-two
   // aligned 1 GiB region this range compare reduces to a 2-bit test of the
-  // top address bits -- far cheaper than the old URAM range compare. It is
+  // top address bits, keeping the decode off any timing-critical cone. It is
   // consumed by the cached read-enable (which lands on the adapter's request
   // register, not a memory enable cascade) and the per-tier read-valid seed.
   //
@@ -179,8 +178,8 @@ module data_mem_request_router #(
 
   // A cached store owns the write port from its fire (sq_mem_write_en) until
   // its done pulse (i_cached_write_inflight covers the cycles in between), so
-  // loads queue behind it -- the same ordering hold the URAM tier's
-  // write-done shift register provided, now handshake-shaped.
+  // loads queue behind it and the 1-deep queued-load register can never be
+  // overwritten by launches during a long store flight.
   assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
 
   always_comb begin
@@ -223,11 +222,10 @@ module data_mem_request_router #(
         (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en : 4'b0000;
 
     // Cached-tier read enable: the accepted-load pulse qualified by is_cached.
-    // Unlike the old URAM tier (whose enable was deliberately unqualified to
-    // keep the range compare off a memory enable cascade), this lands on the
-    // adapter's request register and the 1 GiB decode is a 2-bit compare, so
-    // qualification is cheap -- and required, since a cache lookup has side
-    // effects (miss/fill/evict) and must not fire for low-BRAM loads.
+    // The enable lands on the adapter's request register (not a memory enable
+    // cascade) and the 1 GiB decode is a 2-bit compare, so qualification is
+    // cheap -- and required, since a cache lookup has side effects
+    // (miss/fill/evict) and must not fire for low-BRAM loads.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
 
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
