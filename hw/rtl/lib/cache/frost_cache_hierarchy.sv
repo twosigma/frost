@@ -15,11 +15,11 @@
  */
 
 /*
- * frost_cache_stack -- the per-board cache hierarchy, as one module.
+ * frost_cache_hierarchy -- the per-board cache hierarchy, as one module.
  *
  * Instantiates L1 (BRAM) and, when HAS_L2 != 0, L2 (URAM) behind it; the
  * upstream and downstream ports are the same line protocol as frost_cache, so
- * the stack is itself a line-port slave (up) / master (down):
+ * the hierarchy is itself a line-port slave (up) / master (down):
  *
  *   Genesys2 (HAS_L2=0):  up -> L1(BRAM) -> down (DDR3)
  *   X3       (HAS_L2=1):  up -> L1(BRAM) -> L2(URAM) -> down (DDR4)
@@ -27,7 +27,7 @@
  * The L1 is identical on both boards and "none the wiser" what backs it.
  * Both shapes are exercised by the cocotb cache unit tests.
  */
-module frost_cache_stack #(
+module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned HAS_L2 = 1,
@@ -62,7 +62,7 @@ module frost_cache_stack #(
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
 
-  // L1 downstream wires (to L2 or straight to the stack's downstream port).
+  // L1 downstream wires (to L2 or straight to the hierarchy's downstream port).
   logic                    l1_down_req_valid;
   logic                    l1_down_req_ready;
   logic                    l1_down_req_write;
@@ -139,4 +139,4 @@ module frost_cache_stack #(
     assign l1_down_resp_rdata = i_down_resp_rdata;
   end
 
-endmodule : frost_cache_stack
+endmodule : frost_cache_hierarchy

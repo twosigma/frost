@@ -273,7 +273,7 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frost_cache_test_harness)
-# Cache hierarchy unit bench (cache stack + AXI bridge + behavioral memory)
+# Cache hierarchy unit bench (L1/L2 + AXI bridge + behavioral memory)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
