@@ -168,6 +168,9 @@ module tomasulo_wrapper #(
     // =========================================================================
     // ROB Status
     // =========================================================================
+    // FENCE.I cache-sync handshake (rob_serializer <-> the cache hierarchy).
+    input  logic                                        i_fence_i_sync_done,
+    output logic                                        o_fence_i_sync_req,
     output logic                                        o_fence_i_flush,
     output logic                                        o_rob_full,
     output logic                                        o_rob_full_for_2,
@@ -1384,6 +1387,8 @@ module tomasulo_wrapper #(
       // External coordination
       .i_sq_empty          (o_sq_empty),
       .i_sq_committed_empty(sq_committed_empty),
+      .i_fence_i_sync_done (i_fence_i_sync_done),
+      .o_fence_i_sync_req  (o_fence_i_sync_req),
       .o_csr_start         (o_csr_start),
       .i_csr_done          (i_csr_done),
       .o_trap_pending      (o_trap_pending),

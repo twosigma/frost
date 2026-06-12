@@ -145,6 +145,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_exec_test",
         description="Execute-from-DDR test (.ddr_text through the fetch provider + L1I)",
     ),
+    "ddr_smc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_smc_test",
+        description="Self-modifying code test (stores + fence.i + execute, full sync chain)",
+    ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

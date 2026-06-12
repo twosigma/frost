@@ -47,6 +47,15 @@
  * asserts while it rewrites memory -- so stale (possibly dirty) lines from a
  * previous program are discarded by design, never written back.
  *
+ * MAINTENANCE (fence.i support): two request inputs, accepted from idle
+ * (ready stays low for the duration; o_maint_busy covers the walk).
+ * INVALIDATE_ALL re-runs the reset sweep -- dirty contents are DISCARDED,
+ * which is only correct for caches used read-only (the L1I).
+ * WRITEBACK_ALL walks every index, writes each valid+dirty line downstream,
+ * and clears its dirty bit (lines stay valid and servable) -- the L1D's
+ * fence.i operation, making store-produced code visible at the level the
+ * L1I fills from.
+ *
  * The CPU side already tolerates variable latency (the LQ consumes a valid
  * pulse and the SQ waits for a done pulse), so hits and misses may take any
  * number of cycles. Hit latencies with the default DATA_READ_LATENCY:
@@ -77,6 +86,12 @@ module frost_cache #(
     input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
     output logic                    o_up_resp_valid,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
+
+    // Maintenance requests (see header). Hold the request until o_maint_busy
+    // rises; the walk completes when it falls.
+    input  logic i_writeback_all,
+    input  logic i_invalidate_all,
+    output logic o_maint_busy,
 
     // Downstream line port (master).
     output logic                    o_down_req_valid,
@@ -117,34 +132,48 @@ module frost_cache #(
 
   // ---- FSM ------------------------------------------------------------------
   typedef enum logic [3:0] {
-    S_SWEEP,       // reset: invalidate every tag entry
-    S_IDLE,        // accept a request; tag read issued at the fire
-    S_TAG_CHECK,   // tag compare; dispatch hit/miss work
-    S_READ_WAIT,   // read hit: wait out the data-array read latency
-    S_EVICT_WAIT,  // miss with dirty victim: read the victim line
-    S_WB_REQ,      // present the victim writeback downstream
-    S_WB_WAIT,     // wait for the writeback ack
-    S_FILL_REQ,    // present the line fetch downstream
-    S_FILL_WAIT,   // wait for the fetched line
-    S_ALLOC,       // write the new line + tag
-    S_RESPOND      // pulse the upstream response
+    S_SWEEP,         // reset/invalidate-all: clear every tag entry
+    S_IDLE,          // accept a request; tag read issued at the fire
+    S_TAG_CHECK,     // tag compare; dispatch hit/miss work
+    S_READ_WAIT,     // read hit: wait out the data-array read latency
+    S_EVICT_WAIT,    // miss with dirty victim: read the victim line
+    S_WB_REQ,        // present the victim writeback downstream
+    S_WB_WAIT,       // wait for the writeback ack
+    S_FILL_REQ,      // present the line fetch downstream
+    S_FILL_WAIT,     // wait for the fetched line
+    S_ALLOC,         // write the new line + tag
+    S_RESPOND,       // pulse the upstream response
+    S_FLUSH_SCAN,    // writeback-all: present the walk index to the tags
+    S_FLUSH_CHECK,   // examine the entry; skip clean, read out dirty
+    S_FLUSH_DATA,    // wait out the data-array read latency
+    S_FLUSH_WB_REQ,  // present the dirty line downstream
+    S_FLUSH_WB_WAIT  // wait for the ack; clear the dirty bit; advance
   } state_e;
 
-  state_e                    state_q;
+  state_e                 state_q;
 
-  logic   [   IndexBits-1:0] sweep_idx_q;
-  logic   [             7:0] wait_cnt_q;  // data-array latency countdown (latencies are small)
-  logic   [     TagBits-1:0] victim_tag_q;
-  logic   [    LineBits-1:0] victim_line_q;
-  logic   [    LineBits-1:0] line_buf_q;
-  logic   [    LineBits-1:0] resp_data_q;
+  logic   [IndexBits-1:0] sweep_idx_q;
+  logic   [IndexBits-1:0] flush_idx_q;
+  logic   [  TagBits-1:0] flush_tag_q;
+
+  // Writeback-all walk states (data/tag addressing + busy).
+  logic                   flush_active;
+  assign flush_active = (state_q == S_FLUSH_SCAN) || (state_q == S_FLUSH_CHECK) ||
+      (state_q == S_FLUSH_DATA) || (state_q == S_FLUSH_WB_REQ) ||
+      (state_q == S_FLUSH_WB_WAIT);
+  assign o_maint_busy = flush_active || (state_q == S_SWEEP);
+  logic [             7:0] wait_cnt_q;  // data-array latency countdown (latencies are small)
+  logic [     TagBits-1:0] victim_tag_q;
+  logic [    LineBits-1:0] victim_line_q;
+  logic [    LineBits-1:0] line_buf_q;
+  logic [    LineBits-1:0] resp_data_q;
 
   // ---- Tag array (sync 1-cycle read; written by sweep / hit / allocate) -----
-  logic                      tag_we;
-  logic   [   IndexBits-1:0] tag_waddr;
-  logic   [TagEntryBits-1:0] tag_wdata;
-  logic   [   IndexBits-1:0] tag_raddr;
-  logic   [TagEntryBits-1:0] tag_rdata;
+  logic                    tag_we;
+  logic [   IndexBits-1:0] tag_waddr;
+  logic [TagEntryBits-1:0] tag_wdata;
+  logic [   IndexBits-1:0] tag_raddr;
+  logic [TagEntryBits-1:0] tag_rdata;
 
   logic tag_rdata_valid, tag_rdata_dirty;
   logic [TagBits-1:0] tag_rdata_tag;
@@ -178,9 +207,10 @@ module frost_cache #(
       .o_read_data(tag_rdata)
   );
 
-  // Tag read address: the incoming request's index, sampled at the fire so the
-  // entry is readable in S_TAG_CHECK. Don't-care in every other state.
-  assign tag_raddr = i_up_req_addr[OffsetBits+:IndexBits];
+  // Tag read address: the incoming request's index, sampled at the fire so
+  // the entry is readable in S_TAG_CHECK; the walk index during the
+  // writeback-all scan. Don't-care in every other state.
+  assign tag_raddr = (state_q == S_FLUSH_SCAN) ? flush_idx_q : i_up_req_addr[OffsetBits+:IndexBits];
 
   // ---- Data array (one row per line) ----------------------------------------
   logic                  data_re;
@@ -205,7 +235,7 @@ module frost_cache #(
       .i_raddr(data_raddr),
       .o_rdata(data_rdata)
   );
-  assign data_raddr = req_index;
+  assign data_raddr = flush_active ? flush_idx_q : req_index;
 
   // The (partial) upstream write merged into the fetched line: strobed bytes
   // take the request's data, the rest keep the fill. (A generate rather than
@@ -218,7 +248,9 @@ module frost_cache #(
 
   logic up_req_fire;
   assign up_req_fire = i_up_req_valid && o_up_req_ready;
-  assign o_up_req_ready = (state_q == S_IDLE);
+  // Ready masks the (registered) maintenance requests so a request firing
+  // and a maintenance acceptance can never collide in the same idle cycle.
+  assign o_up_req_ready = (state_q == S_IDLE) && !i_invalidate_all && !i_writeback_all;
 
   logic whole_line_write;
   assign whole_line_write = req_write_q && (&req_wstrb_q);
@@ -283,6 +315,29 @@ module frost_cache #(
         tag_wdata     = {1'b1, req_write_q, req_tag};
       end
 
+      S_FLUSH_CHECK: begin
+        if (tag_rdata_valid && tag_rdata_dirty) begin
+          data_re = 1'b1;  // dirty entry: read it out for writeback
+        end
+      end
+
+      S_FLUSH_WB_REQ: begin
+        o_down_req_valid = 1'b1;
+        o_down_req_write = 1'b1;
+        o_down_req_addr  = {flush_tag_q, flush_idx_q, {OffsetBits{1'b0}}};
+        o_down_req_wdata = victim_line_q;
+        o_down_req_wstrb = '1;
+      end
+
+      S_FLUSH_WB_WAIT: begin
+        if (i_down_resp_valid) begin
+          // Written back: keep the line valid, clear its dirty bit.
+          tag_we    = 1'b1;
+          tag_waddr = flush_idx_q;
+          tag_wdata = {1'b1, 1'b0, flush_tag_q};
+        end
+      end
+
       default: ;
     endcase
   end
@@ -303,7 +358,15 @@ module frost_cache #(
         end
 
         S_IDLE: begin
-          if (up_req_fire) begin
+          // Maintenance has priority; ready is masked while requested, so an
+          // upstream fire can never coincide with an acceptance here.
+          if (i_invalidate_all) begin
+            sweep_idx_q <= '0;
+            state_q     <= S_SWEEP;
+          end else if (i_writeback_all) begin
+            flush_idx_q <= '0;
+            state_q     <= S_FLUSH_SCAN;
+          end else if (up_req_fire) begin
             req_write_q <= i_up_req_write;
             req_addr_q  <= i_up_req_addr;
             req_wdata_q <= i_up_req_wdata;
@@ -376,6 +439,42 @@ module frost_cache #(
 
         S_RESPOND: state_q <= S_IDLE;
 
+        S_FLUSH_SCAN: state_q <= S_FLUSH_CHECK;
+
+        S_FLUSH_CHECK: begin
+          if (tag_rdata_valid && tag_rdata_dirty) begin
+            wait_cnt_q  <= 8'(DATA_READ_LATENCY);
+            flush_tag_q <= tag_rdata_tag;
+            state_q     <= S_FLUSH_DATA;
+          end else if (flush_idx_q == {IndexBits{1'b1}}) begin
+            state_q <= S_IDLE;
+          end else begin
+            flush_idx_q <= flush_idx_q + 1'b1;
+            state_q     <= S_FLUSH_SCAN;
+          end
+        end
+
+        S_FLUSH_DATA: begin
+          wait_cnt_q <= wait_cnt_q - 1'b1;
+          if (wait_cnt_q == 8'd1) begin
+            victim_line_q <= data_rdata;
+            state_q       <= S_FLUSH_WB_REQ;
+          end
+        end
+
+        S_FLUSH_WB_REQ: if (i_down_req_ready) state_q <= S_FLUSH_WB_WAIT;
+
+        S_FLUSH_WB_WAIT: begin
+          if (i_down_resp_valid) begin
+            if (flush_idx_q == {IndexBits{1'b1}}) begin
+              state_q <= S_IDLE;
+            end else begin
+              flush_idx_q <= flush_idx_q + 1'b1;
+              state_q     <= S_FLUSH_SCAN;
+            end
+          end
+        end
+
         default: state_q <= S_SWEEP;
       endcase
     end
@@ -385,7 +484,8 @@ module frost_cache #(
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      if (i_down_resp_valid && !(state_q == S_WB_WAIT || state_q == S_FILL_WAIT))
+      if (i_down_resp_valid &&
+          !(state_q == S_WB_WAIT || state_q == S_FILL_WAIT || state_q == S_FLUSH_WB_WAIT))
         $error("frost_cache: downstream response outside a WAIT state (state=%0d)", state_q);
       if (i_up_req_valid && o_up_req_ready && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");

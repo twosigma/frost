@@ -51,6 +51,13 @@ module cpu_ooo #(
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
     // provider counts it as a served cycle for its owed-ask tracking.
     output logic o_fetch_replay_consume,
+    // FENCE.I support: the cache-sync handshake (request held while the ROB
+    // serializer stalls the fence at the head; done is a level while the
+    // request is high) and the committed-fence flush pulse that drops the
+    // fetch provider's buffered lines.
+    output logic o_fence_i_sync_req,
+    input logic i_fence_i_sync_done,
+    output logic o_fence_i_flush,
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -814,6 +821,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
+  assign o_fence_i_flush = fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
 
   // CSR coordination
@@ -1046,6 +1054,8 @@ module cpu_ooo #(
 
       // ROB status
       .o_fence_i_flush(fence_i_flush),
+      .i_fence_i_sync_done(i_fence_i_sync_done),
+      .o_fence_i_sync_req(o_fence_i_sync_req),
       .o_rob_full(rob_full),
       .o_rob_full_for_2(rob_full_for_2),
       .o_rob_empty(rob_empty),

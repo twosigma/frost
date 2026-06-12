@@ -1087,6 +1087,12 @@ async def test_fence_i_flush_pulse(dut: Any) -> None:
     # and pulse fence_i_flush on the next cycle
     assert not dut_if.fence_i_flush, "flush should not be asserted yet"
 
+    # One cycle in SERIAL_FENCE_I_SYNC (the bench holds i_fence_i_sync_done
+    # high, so the cache sync costs exactly one stall cycle).
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    assert not dut_if.fence_i_flush, "flush must wait for the cache sync"
+
     # Wait for commit
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
@@ -1102,6 +1108,68 @@ async def test_fence_i_flush_pulse(dut: Any) -> None:
     assert (
         not dut_if.fence_i_flush
     ), "fence_i_flush should be deasserted after one cycle"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fence_i_sync_handshake(dut: Any) -> None:
+    """FENCE.I holds commit in SERIAL_FENCE_I_SYNC until the cache sync.
+
+    With i_fence_i_sync_done low, the serializer must raise
+    o_fence_i_sync_req and stall commit indefinitely; raising done releases
+    the commit and the flush pulse follows.
+    """
+    cocotb.log.info("=== Test: FENCE.I Sync Handshake ===")
+
+    dut_if, model = await setup_test(dut)
+    dut_if.set_fence_i_sync_done(False)
+
+    req = AllocationRequest(pc=0x1000, is_fence_i=True)
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    # The serializer enters the sync state and parks there: sync_req high,
+    # no commit, no flush.
+    seen_req = False
+    for _ in range(5):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        if dut_if.fence_i_sync_req:
+            seen_req = True
+            break
+    assert seen_req, "o_fence_i_sync_req should rise for FENCE.I at head"
+
+    for _ in range(8):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        assert dut_if.fence_i_sync_req, "sync_req must hold while done is low"
+        assert not dut_if.empty, "FENCE.I must not commit before the sync"
+        assert not dut_if.fence_i_flush, "no flush before the sync completes"
+
+    # Complete the sync: commit proceeds and the flush pulse follows.
+    dut_if.set_fence_i_sync_done(True)
+    for _ in range(5):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        if dut_if.empty:
+            break
+    assert dut_if.empty, "FENCE.I should commit once the sync is done"
+    assert not dut_if.fence_i_sync_req, "sync_req must drop after the sync"
+
+    seen_flush = dut_if.fence_i_flush
+    for _ in range(3):
+        if seen_flush:
+            break
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        seen_flush = dut_if.fence_i_flush
+    assert seen_flush, "fence_i_flush should pulse after the synced commit"
+
+    dut_if.set_fence_i_sync_done(True)  # restore the bench default
 
     cocotb.log.info("=== Test Passed ===")
 

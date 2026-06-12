@@ -164,6 +164,9 @@ module cpu_and_mem #(
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
   logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
+  logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
+  logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
+  logic fence_i_flush;  // committed fence.i pipeline-flush pulse (provider invalidate)
 
   // Low instruction BRAM window (imem_predecode port B outputs); the active
   // fetch generate below turns this into the core-facing window.
@@ -259,6 +262,9 @@ module cpu_and_mem #(
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_instr_valid(instruction_valid),
       .o_fetch_replay_consume(fetch_replay_consume),
+      .o_fence_i_sync_req(fence_i_sync_req),
+      .i_fence_i_sync_done(fence_i_sync_done),
+      .o_fence_i_flush(fence_i_flush),
       .o_data_mem_addr(data_memory_address),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
@@ -395,8 +401,9 @@ module cpu_and_mem #(
         .o_line_req_wstrb(iup_req_wstrb),
         .i_line_resp_valid(iup_resp_valid),
         .i_line_resp_rdata(iup_resp_rdata),
-        // fence.i wires this in a later phase; reset already invalidates.
-        .i_invalidate(1'b0)
+        // Committed fence.i: drop both buffer lines (and any landing fill)
+        // the same cycle the pipeline flushes, before the refetch arrives.
+        .i_invalidate(fence_i_flush)
     );
   end else begin : gen_fetch_direct
     assign instruction_valid = 1'b1;
@@ -536,6 +543,8 @@ module cpu_and_mem #(
         .i_iup_req_wstrb(iup_req_wstrb),
         .o_iup_resp_valid(iup_resp_valid),
         .o_iup_resp_rdata(iup_resp_rdata),
+        .i_fence_sync(fence_i_sync_req),
+        .o_fence_done(fence_i_sync_done),
         .o_down_req_valid(down_req_valid),
         .i_down_req_ready(down_req_ready),
         .o_down_req_write(down_req_write),
@@ -677,9 +686,11 @@ module cpu_and_mem #(
     end
   end else begin : gen_no_cached_tier
     // No hierarchy: the instruction-side line port has no slave.
-    assign iup_req_ready  = 1'b0;
+    assign iup_req_ready = 1'b0;
     assign iup_resp_valid = 1'b0;
     assign iup_resp_rdata = '0;
+    // No caches to sync: fence.i completes immediately.
+    assign fence_i_sync_done = fence_i_sync_req;
     // Tier disabled (FPGA builds until their DDR controller lands): complete
     // cached-region accesses immediately with zero data so stray software
     // cannot hang the LQ/SQ.

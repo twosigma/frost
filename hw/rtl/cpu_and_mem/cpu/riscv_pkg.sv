@@ -1841,11 +1841,13 @@ package riscv_pkg;
   // Reorder-buffer serializing-instruction FSM state (moved here so
   // reorder_buffer and its extracted rob_serializer submodule share the type).
   typedef enum logic [2:0] {
-    SERIAL_IDLE,       // No serializing instruction at head
-    SERIAL_WAIT_SQ,    // Waiting for SQ to drain (FENCE/AMO)
-    SERIAL_CSR_EXEC,   // CSR executing
-    SERIAL_MRET_EXEC,  // MRET executing
-    SERIAL_WFI_WAIT,   // WFI waiting for interrupt
-    SERIAL_TRAP_WAIT   // Exception waiting for trap unit
+    SERIAL_IDLE,         // No serializing instruction at head
+    SERIAL_WAIT_SQ,      // Waiting for SQ to drain (FENCE/AMO)
+    SERIAL_CSR_EXEC,     // CSR executing
+    SERIAL_MRET_EXEC,    // MRET executing
+    SERIAL_WFI_WAIT,     // WFI waiting for interrupt
+    SERIAL_TRAP_WAIT,    // Exception waiting for trap unit
+    SERIAL_FENCE_I_SYNC  // FENCE.I waiting for the cache sync (L1D
+                         // writeback-all, then L1I invalidate-all)
   } serial_state_e;
 endpackage : riscv_pkg
