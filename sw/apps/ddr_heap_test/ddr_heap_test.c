@@ -24,7 +24,7 @@
  * hierarchy. This is the capacity that unblocks the remaining CoreMark-PRO
  * workloads (loops ~6 MiB and zip ~3.3 MiB heaps).
  *
- * The unified linker script (sw/common/link_unified.ld) places the heap at
+ * The unified linker script (sw/common/link.ld) places the heap at
  * CACHED_BASE = 0x8000_0000 with ~1 GiB of room; code/data/stack stay in the
  * low BRAM. (The behavioral DDR model in simulation is 64 MiB by default --
  * plenty for the 9 MiB exercised here.)

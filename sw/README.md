@@ -12,8 +12,7 @@ sw/
 │   ├── common.mk     # Common Makefile definitions
 │   ├── crt0.S        # C runtime startup (runs before main)
 │   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
-│   ├── link.ld       # Legacy small-program linker script (low BRAM only)
-│   └── link_unified.ld # Unified linker script (low BRAM + 1 GiB cached DDR)
+│   └── link.ld       # Unified linker script (low BRAM + 1 GiB cached DDR)
 ├── lib/              # Reusable libraries
 │   ├── include/      # Header files
 │   └── src/          # Source files
@@ -437,7 +436,7 @@ The unified memory map is identical on every board and in simulation; the
 cache hierarchy behind the cached region (L1 BRAM on every board, plus a
 URAM L2 on UltraScale+, over the board's DDR) is opaque to software.
 
-Defined in `common/link_unified.ld`:
+Defined in `common/link.ld`:
 
 | Region | Address      | Size    | Description                                        |
 |--------|--------------|---------|----------------------------------------------------|
@@ -459,9 +458,9 @@ Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
 offset 0 = `0x8000_0000`), consumed by the behavioral DDR model in simulation
 and by the JTAG DDR loader on hardware.
 
-`common/link.ld` is the legacy small-program script (low BRAM only, 32 KiB
-RAM, 8 KiB low heap); remaining apps migrate to the unified script as part of
-the memory-map consolidation.
+A few test suites keep app-specific scripts (`riscv_tests`, `arch_test`,
+`riscv_torture`, `freertos_demo`) for their own section layouts; all use the
+same 256 KiB low-BRAM map.
 
 ### Peripheral Addresses
 

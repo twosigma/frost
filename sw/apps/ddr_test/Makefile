@@ -19,5 +19,4 @@
 # Code/data/stack stay in the low BRAM; the cached region is reached purely
 # via absolute-address volatile pointers, so no custom linker script is needed.
 SRC_C   := ../../lib/src/uart.c ddr_test.c
-LINKER_SCRIPT := ../../common/link_unified.ld
 include ../../common/common.mk

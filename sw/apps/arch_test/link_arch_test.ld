@@ -1,15 +1,15 @@
 /* Linker script for riscv-arch-test on Frost
  *
- * Optimized for arch tests which have tiny code (~700 bytes) but
- * potentially large data sections (test vectors + signature area).
- * Split 50/50 to prevent LMA/VMA overlap during the crt0 forward copy.
+ * SIM-ONLY 2 MiB map, deliberately larger than the 256 KiB hardware low
+ * region: the big compliance tests (fmadd/fnmadd/... with up to ~14K test
+ * cases) compile to several hundred KiB of generated code plus large
+ * signature areas, and FROST executes only from the low instruction BRAM,
+ * so they cannot be split into the cached DDR region. The compliance
+ * harness (tests/test_arch_compliance.py) passes the matching
+ * SIM_MEM_SIZE_BYTES=2097152 override; this suite never runs on hardware.
  *
- * ROM holds: code (~700 bytes) + data load image (N bytes).
- * RAM holds: data runtime copy (N bytes) + BSS.
- * Constraint: code + 2*N <= 2MB, so max data ~1MB.
- *
- * NOTE: This linker script targets 2MB simulation memory (Verilator -GMEM_SIZE_BYTES).
- * It is NOT suitable for synthesis where hardware defaults to 128KB.
+ * The data load image lives in ROM and is copied forward into RAM by crt0
+ * (ROM below RAM, so LMA < VMA and the ascending copy never overlaps).
  */
 
 ENTRY(_start)
