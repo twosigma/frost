@@ -66,7 +66,8 @@ BOARD_CONFIG = {
     # has_ddr: the bitstream wires the cached tier to a real DDR controller.
     # Both stay False until the Phase 2 (genesys2 DDR3) / Phase 3 (X3 DDR4)
     # hardware integration lands; until then DDR-region apps are sim-only.
-    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": False},
+    # Requires the Phase-3 bitstream (DDR4 + L1/L2 cache hierarchy).
+    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
     "genesys2": {
         "clock_freq": 133333333,
         "coremark_iterations": 5000,
@@ -253,6 +254,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--coremark-pro-trace",
+        action="store_true",
+        help=(
+            "Enable the crt0 early-boot UART trace markers "
+            "(COREMARK_PRO_TRACE=1): distinguishes a hang before main() "
+            "from one inside the workload"
+        ),
+    )
+    parser.add_argument(
         "--coremark-pro-parser-size",
         type=int,
         metavar="BYTES",
@@ -375,6 +385,8 @@ def main() -> None:
         make_vars["FROST_MALLOC_EVICT_FREE"] = "1"
     if args.coremark_pro_fence_writes:
         make_vars["FROST_MEMORY_FENCE_WRITES"] = "1"
+    if args.coremark_pro_trace:
+        make_vars["COREMARK_PRO_TRACE"] = "1"
     if make_vars:
         print(f"  CoreMark-PRO workload: {make_vars['WORKLOAD']}")
         print(f"  CoreMark-PRO hardware args: {make_vars['COREMARK_PRO_RUN_ARGS']}")

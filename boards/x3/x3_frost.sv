@@ -15,13 +15,36 @@
  */
 
 // Top-level module for X3 FPGA board (UltraScale+) integration
-// Handles UltraScale+ specific clock generation and instantiates common subsystem
+// Handles UltraScale+ specific clock generation, the DDR4 memory subsystem
+// (ddr_subsys block design: DDR4 controller + SmartConnect + JTAG DDR
+// loader), and instantiates the common FROST subsystem.
 module x3_frost (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (300 MHz)
 
     output logic o_uart_tx,  // UART transmit for debug console
-    input  logic i_uart_rx   // UART receive for debug console input
+    input  logic i_uart_rx,  // UART receive for debug console input
+
+    // Dedicated DDR4 system clock (300 MHz differential, AN27/AN28)
+    input logic default_300mhz_clk0_clk_p,
+    input logic default_300mhz_clk0_clk_n,
+
+    // DDR4 SDRAM (pins constrained in constr/x3.xdc, copied from the
+    // hardware-verified reference design)
+    output logic [16:0] ddr4_sdram_c0_adr,
+    output logic        ddr4_sdram_c0_act_n,
+    output logic [ 1:0] ddr4_sdram_c0_ba,
+    output logic [ 0:0] ddr4_sdram_c0_bg,
+    output logic        ddr4_sdram_c0_ck_c,
+    output logic        ddr4_sdram_c0_ck_t,
+    output logic        ddr4_sdram_c0_cke,
+    output logic        ddr4_sdram_c0_cs_n,
+    inout  wire  [ 8:0] ddr4_sdram_c0_dm_n,
+    inout  wire  [71:0] ddr4_sdram_c0_dq,
+    inout  wire  [ 8:0] ddr4_sdram_c0_dqs_c,
+    inout  wire  [ 8:0] ddr4_sdram_c0_dqs_t,
+    output logic        ddr4_sdram_c0_odt,
+    output logic        ddr4_sdram_c0_reset_n
 );
 
   // Clock generation using Xilinx MMCM and clock dividers
@@ -90,21 +113,129 @@ module x3_frost (
       .I(clock_from_mmcm)
   );
 
+  // DDR AXI between the FROST cache-hierarchy bridge and the DDR4 subsystem
+  logic ddr_axi_awvalid, ddr_axi_awready, ddr_axi_wvalid, ddr_axi_wready;
+  logic ddr_axi_bvalid, ddr_axi_bready, ddr_axi_arvalid, ddr_axi_arready;
+  logic ddr_axi_rvalid, ddr_axi_rready, ddr_axi_wlast, ddr_axi_rlast;
+  logic [31:0] ddr_axi_awaddr, ddr_axi_araddr;
+  logic [7:0] ddr_axi_awlen, ddr_axi_arlen;
+  logic [2:0] ddr_axi_awsize, ddr_axi_arsize;
+  logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
+  logic [255:0] ddr_axi_wdata, ddr_axi_rdata;
+  logic [31:0] ddr_axi_wstrb;
+
+  logic mem_ok;
+  // mem_ok originates in the DDR controller's ui_clk domain: synchronize it
+  // into the core clock domain before folding it into the reset tree (the
+  // raw reset fans combinationally into both board clock domains). The
+  // crossing into this synchronizer is cut with a false_path in the xdc.
+  (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
+  always_ff @(posedge main_clock) begin
+    mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
+  end
+  logic mem_ok_synced;
+  assign mem_ok_synced = mem_ok_synchronizer[1];
+
+  logic cpu_side_aresetn;
+  assign cpu_side_aresetn = mmcm_locked;
+
+  // DDR4 subsystem (block design): controller (reference CONFIG) +
+  // SmartConnect (S00 = the FROST bridge below, S01 = the JTAG DDR-image
+  // loader). Addresses are region-relative. The X3 has no push-button;
+  // the controller is held in reset until the board MMCM locks.
+  ddr_subsys_wrapper ddr_subsystem (
+      .cpu_clk(main_clock),
+      .jtag_clk(divided_clock_by_4),
+      .default_300mhz_clk0_clk_p(default_300mhz_clk0_clk_p),
+      .default_300mhz_clk0_clk_n(default_300mhz_clk0_clk_n),
+      .sys_reset(~mmcm_locked),
+      .cpu_aresetn(cpu_side_aresetn),
+      .jtag_aresetn(cpu_side_aresetn),
+      .mem_ok(mem_ok),
+      .S00_AXI_awvalid(ddr_axi_awvalid),
+      .S00_AXI_awready(ddr_axi_awready),
+      .S00_AXI_awaddr(ddr_axi_awaddr[29:0]),
+      .S00_AXI_awlen(ddr_axi_awlen),
+      .S00_AXI_awsize(ddr_axi_awsize),
+      .S00_AXI_awburst(ddr_axi_awburst),
+      .S00_AXI_wvalid(ddr_axi_wvalid),
+      .S00_AXI_wready(ddr_axi_wready),
+      .S00_AXI_wdata(ddr_axi_wdata),
+      .S00_AXI_wstrb(ddr_axi_wstrb),
+      .S00_AXI_wlast(ddr_axi_wlast),
+      .S00_AXI_bvalid(ddr_axi_bvalid),
+      .S00_AXI_bready(ddr_axi_bready),
+      .S00_AXI_bresp(ddr_axi_bresp),
+      .S00_AXI_arvalid(ddr_axi_arvalid),
+      .S00_AXI_arready(ddr_axi_arready),
+      .S00_AXI_araddr(ddr_axi_araddr[29:0]),
+      .S00_AXI_arlen(ddr_axi_arlen),
+      .S00_AXI_arsize(ddr_axi_arsize),
+      .S00_AXI_arburst(ddr_axi_arburst),
+      .S00_AXI_rvalid(ddr_axi_rvalid),
+      .S00_AXI_rready(ddr_axi_rready),
+      .S00_AXI_rdata(ddr_axi_rdata),
+      .S00_AXI_rresp(ddr_axi_rresp),
+      .S00_AXI_rlast(ddr_axi_rlast),
+      .ddr4_sdram_c0_adr(ddr4_sdram_c0_adr),
+      .ddr4_sdram_c0_act_n(ddr4_sdram_c0_act_n),
+      .ddr4_sdram_c0_ba(ddr4_sdram_c0_ba),
+      .ddr4_sdram_c0_bg(ddr4_sdram_c0_bg),
+      .ddr4_sdram_c0_ck_c(ddr4_sdram_c0_ck_c),
+      .ddr4_sdram_c0_ck_t(ddr4_sdram_c0_ck_t),
+      .ddr4_sdram_c0_cke(ddr4_sdram_c0_cke),
+      .ddr4_sdram_c0_cs_n(ddr4_sdram_c0_cs_n),
+      .ddr4_sdram_c0_dm_n(ddr4_sdram_c0_dm_n),
+      .ddr4_sdram_c0_dq(ddr4_sdram_c0_dq),
+      .ddr4_sdram_c0_dqs_c(ddr4_sdram_c0_dqs_c),
+      .ddr4_sdram_c0_dqs_t(ddr4_sdram_c0_dqs_t),
+      .ddr4_sdram_c0_odt(ddr4_sdram_c0_odt),
+      .ddr4_sdram_c0_reset_n(ddr4_sdram_c0_reset_n)
+  );
+
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
   // Clock: 300 MHz (reduced from 322.265625 MHz for timing closure)
-  // X3 has no push-button reset; hold the subsystem in reset until the MMCM is locked.
+  // X3 has no push-button reset; hold the subsystem in reset until the MMCM
+  // is locked AND the DDR4 controller is calibrated (mem_ok), so the cached
+  // tier is usable from the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000),
-      // Cached tier off until the X3 DDR4 controller is integrated
-      // (Phase 3). X3 = UltraScale+ (VU23P): URAM L2 shape when enabled.
-      .ENABLE_CACHED_TIER(0),
-      .CACHED_HAS_L2(1)
+      // X3 = UltraScale+ (VU23P): L1 BRAM + L2 URAM hierarchy shape, backed
+      // by the DDR4 controller through the AXI port below.
+      .ENABLE_CACHED_TIER(1),
+      .CACHED_HAS_L2(1),
+      .USE_BEHAVIORAL_DDR(0)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
-      .i_rst_n(mmcm_locked),
+      .i_rst_n(mmcm_locked & mem_ok_synced),
       .o_uart_tx,
-      .i_uart_rx
+      .i_uart_rx,
+      .o_ddr_axi_awvalid(ddr_axi_awvalid),
+      .i_ddr_axi_awready(ddr_axi_awready),
+      .o_ddr_axi_awaddr(ddr_axi_awaddr),
+      .o_ddr_axi_awlen(ddr_axi_awlen),
+      .o_ddr_axi_awsize(ddr_axi_awsize),
+      .o_ddr_axi_awburst(ddr_axi_awburst),
+      .o_ddr_axi_wvalid(ddr_axi_wvalid),
+      .i_ddr_axi_wready(ddr_axi_wready),
+      .o_ddr_axi_wdata(ddr_axi_wdata),
+      .o_ddr_axi_wstrb(ddr_axi_wstrb),
+      .o_ddr_axi_wlast(ddr_axi_wlast),
+      .i_ddr_axi_bvalid(ddr_axi_bvalid),
+      .o_ddr_axi_bready(ddr_axi_bready),
+      .i_ddr_axi_bresp(ddr_axi_bresp),
+      .o_ddr_axi_arvalid(ddr_axi_arvalid),
+      .i_ddr_axi_arready(ddr_axi_arready),
+      .o_ddr_axi_araddr(ddr_axi_araddr),
+      .o_ddr_axi_arlen(ddr_axi_arlen),
+      .o_ddr_axi_arsize(ddr_axi_arsize),
+      .o_ddr_axi_arburst(ddr_axi_arburst),
+      .i_ddr_axi_rvalid(ddr_axi_rvalid),
+      .o_ddr_axi_rready(ddr_axi_rready),
+      .i_ddr_axi_rdata(ddr_axi_rdata),
+      .i_ddr_axi_rresp(ddr_axi_rresp),
+      .i_ddr_axi_rlast(ddr_axi_rlast)
   );
 
 endmodule : x3_frost
