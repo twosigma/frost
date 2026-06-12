@@ -71,8 +71,7 @@ module genesys2_frost (
       // Output clock 1: 800MHz / 24 = 33.33 MHz (div4 for JTAG/UART)
       .CLKOUT1_DIVIDE  (24),
       // Output clock 2: 800MHz / 4 = 200 MHz for the MIG system clock
-      // ("No Buffer" + "Use System Clock" in mig_a.prj, like the reference
-      // design that feeds the MIG from a clock-wizard 200 MHz output)
+      // ("No Buffer" + "Use System Clock" in mig_a.prj)
       .CLKOUT2_DIVIDE  (4)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_200mhz_buffered),

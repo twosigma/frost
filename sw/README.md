@@ -12,7 +12,8 @@ sw/
 │   ├── common.mk     # Common Makefile definitions
 │   ├── crt0.S        # C runtime startup (runs before main)
 │   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
-│   └── link.ld       # Linker script (memory layout)
+│   ├── link.ld       # Legacy small-program linker script (low BRAM only)
+│   └── link_unified.ld # Unified linker script (low BRAM + 1 GiB cached DDR)
 ├── lib/              # Reusable libraries
 │   ├── include/      # Header files
 │   └── src/          # Source files
@@ -336,7 +337,7 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) instruction test |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
-| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule); six workloads supported on X3 hardware (core, cjpeg, linear_alg, nnet, parser, sha) with per-workload calibration in `apps/software_registry.py`; uses its own `coremark_pro.ld` with the URAM heap |
+| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule); all nine official workloads run on both boards with per-workload calibration in `apps/software_registry.py`; builds on the unified linker script with the malloc heap (and large datasets such as radix2's FFT tables) in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
@@ -356,8 +357,8 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
 | `tomasulo_test/` | Tomasulo correctness test -- RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
-| `uram_heap_test/` | malloc/free exerciser with the heap linked into the URAM tier |
-| `uram_test/` | URAM tier bring-up test (direct load/store patterns across the 2 MiB region) |
+| `ddr_heap_test/` | Multi-MB malloc capacity test through the cache hierarchy into DDR |
+| `ddr_test/` | Cached-region bring-up test (stores/loads, byte strobes, eviction sweeps, and the preloaded `.ddr_rodata` image path) |
 
 ## Building
 
@@ -432,29 +433,35 @@ and benchmark normalization match the target board.
 
 ## Memory Map
 
-Defined in `common/link.ld`:
+The unified memory map is identical on every board and in simulation; the
+cache hierarchy behind the cached region (L1 BRAM on every board, plus a
+URAM L2 on UltraScale+, over the board's DDR) is opaque to software.
 
-| Region | Address      | Size  | Description                   |
-|--------|--------------|-------|-------------------------------|
-| ROM    | `0x00000000` | 96 KB | Code and read-only data       |
-| RAM    | `0x00018000` | 32 KB | Variables, BSS, heap, and stack |
-| MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals |
+Defined in `common/link_unified.ld`:
 
-Apps with larger working sets can ship their own linker script.
-`apps/coremark_pro/coremark_pro.ld` splits the low 128 KiB BRAM window into
-64 KB ROM + 64 KB RAM and places the malloc heap and stack in the X3 URAM
-tier:
+| Region | Address      | Size    | Description                                        |
+|--------|--------------|---------|----------------------------------------------------|
+| ROM    | `0x00000000` | 96 KiB  | Code and small read-only data (fast BRAM, 1-cycle) |
+| RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack (fast BRAM, 1-cycle)     |
+| MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals                      |
+| DDR    | `0x80000000` | 1 GiB   | Cached region: malloc heap, large `.ddr_*` data    |
 
-| Region | Address      | Size  | Description                                  |
-|--------|--------------|-------|----------------------------------------------|
-| ROM    | `0x00000000` | 64 KB | Code and read-only data                      |
-| RAM    | `0x00010000` | 64 KB | Variables and BSS                            |
-| URAM   | `0x01000000` | 2 MiB | 1936 KiB malloc heap + 112 KiB stack reserve |
-| MMIO   | `0x40000000` | 44 B  | Memory-mapped I/O peripherals                |
+Within the DDR region, loaded `.ddr_rodata`/`.ddr_data` sections (e.g.
+radix2's ~800 KiB FFT tables, routed there by per-object linker rules or an
+explicit `__attribute__((section(".ddr_rodata")))`) come first, then
+`.ddr_bss`, then the heap to the end of the gigabyte. The low-BRAM stack
+carries a 112 KiB reserve sized from measured per-workload high-water marks
+(parser's recursive XML cleanup is the deepest user at ~75 KiB), enforced by
+a link-time assert against data+bss growth.
 
-The URAM tier exists only on X3 (UltraScale+). The stack reserve is sized
-from measured per-workload stack high-water marks (parser's recursive XML
-cleanup is the deepest user at ~75 KiB).
+Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
+`sw_ddr.mem`/`sw_ddr.txt` carry the cached-region image (region-relative,
+offset 0 = `0x8000_0000`), consumed by the behavioral DDR model in simulation
+and by the JTAG DDR loader on hardware.
+
+`common/link.ld` is the legacy small-program script (low BRAM only, 32 KiB
+RAM, 8 KiB low heap); remaining apps migrate to the unified script as part of
+the memory-map consolidation.
 
 ### Peripheral Addresses
 

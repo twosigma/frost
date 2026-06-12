@@ -17,18 +17,17 @@
 #
 # X3 (X3522PV, UltraScale+) DDR4 subsystem block design.
 #
-# Transplanted from the hardware-verified vivado-risc-v x3522pv design
-# (board/x3522pv/riscv-2025.2.tcl): the ddr4 controller IP with the identical
-# CONFIG.C0.* property set (MT40A1G16RC-062E components, 300 MHz input on its
-# own AN27/AN28 clock pair, 72-bit physical / 512-bit AXI; the 72-bit width
-# implies ECC, whose mandatory S_AXI_CTRL management port is reachable from
-# the JTAG-AXI master at region offset 0x4000_0000) -- and the same reset
-# wiring (sys_rst in; ui_clk_sync_rst inverted into c0_ddr4_aresetn;
-# c0_init_calib_complete out as mem_ok). Differences from the reference: the
-# CPU-side AXI slave is external (FROST's cache-hierarchy bridge, 256-bit @
-# the core clock) and a JTAG-AXI master is added for DDR-image loading.
-# The DDR4 pin constraints live in boards/x3/constr/x3.xdc (copied verbatim
-# from the reference top.xdc; the external interface names match).
+# The ddr4 controller IP configured for this card's soldered memory
+# (MT40A1G16RC-062E components, 300 MHz input on its own AN27/AN28 clock
+# pair, 72-bit physical / 512-bit AXI -- a configuration proven on this
+# board; the 72-bit width implies ECC, whose mandatory S_AXI_CTRL management
+# port is reachable from the JTAG-AXI master at region offset 0x4000_0000),
+# with reset wiring: sys_rst in; ui_clk_sync_rst inverted into
+# c0_ddr4_aresetn; c0_init_calib_complete out as mem_ok. The CPU-side AXI
+# slave is external (FROST's cache-hierarchy bridge, 256-bit @ the core
+# clock) and a JTAG-AXI master handles DDR-image loading. The DDR4 pin
+# constraints live in boards/x3/constr/x3.xdc; the external interface names
+# match them.
 #
 # The block design is created inside the synthesis project by build_step.tcl
 # (x3 only); x3_frost.sv instantiates the generated wrapper.
@@ -70,13 +69,13 @@ proc create_x3_ddr_bd {} {
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
-  # Dedicated DDR4 system clock: 300 MHz differential on AN27/AN28 (the pins
-  # are constrained in boards/x3/constr/x3.xdc with the reference's names).
+  # Dedicated DDR4 system clock: 300 MHz differential on AN27/AN28 (pins
+  # constrained in boards/x3/constr/x3.xdc).
   set sys_clk [create_bd_intf_port -mode Slave \
       -vlnv xilinx.com:interface:diff_clock_rtl:1.0 default_300mhz_clk0]
   set_property CONFIG.FREQ_HZ {300000000} $sys_clk
 
-  # DDR4 controller, configured identically to the verified reference design.
+  # DDR4 controller.
   set ddr4 [create_bd_cell -type ip -vlnv xilinx.com:ip:ddr4:2.2 ddr4_0]
   set_property -dict [list \
     CONFIG.ADDN_UI_CLKOUT1_FREQ_HZ {None} \
@@ -100,8 +99,7 @@ proc create_x3_ddr_bd {} {
   set jtag_ddr [create_bd_cell -type ip -vlnv xilinx.com:ip:jtag_axi:1.2 jtag_axi_ddr]
   set_property CONFIG.PROTOCOL {0} $jtag_ddr
 
-  # ui_clk_sync_rst (active-high) -> c0_ddr4_aresetn (active-low), as in the
-  # reference design.
+  # ui_clk_sync_rst (active-high) -> c0_ddr4_aresetn (active-low).
   set rst_inv [create_bd_cell -type inline_hdl -vlnv xilinx.com:inline_hdl:ilvector_logic:1.0 \
       rst_inv]
   set_property -dict [list CONFIG.C_OPERATION {not} CONFIG.C_SIZE {1}] $rst_inv
@@ -124,7 +122,7 @@ proc create_x3_ddr_bd {} {
       [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
   connect_bd_intf_net [get_bd_intf_ports default_300mhz_clk0] [get_bd_intf_pins ddr4_0/C0_SYS_CLK]
 
-  # DDR4 pins out to the top level (names match the reference xdc).
+  # DDR4 pins out to the top level (names match boards/x3/constr/x3.xdc).
   set ddr4_sdram [create_bd_intf_port -mode Master \
       -vlnv xilinx.com:interface:ddr4_rtl:1.0 ddr4_sdram_c0]
   connect_bd_intf_net [get_bd_intf_pins ddr4_0/C0_DDR4] $ddr4_sdram
@@ -135,7 +133,7 @@ proc create_x3_ddr_bd {} {
   connect_bd_net [get_bd_ports jtag_clk] [get_bd_pins ddr_smc/aclk2] \
       [get_bd_pins jtag_axi_ddr/aclk]
 
-  # Reset / calibration sequencing (mirrors the reference wiring).
+  # Reset / calibration sequencing.
   connect_bd_net [get_bd_ports sys_reset] [get_bd_pins ddr4_0/sys_rst]
   connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_inv/Op1]
   connect_bd_net [get_bd_pins rst_inv/Res] [get_bd_pins ddr4_0/c0_ddr4_aresetn]

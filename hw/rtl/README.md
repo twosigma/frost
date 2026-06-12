@@ -32,8 +32,11 @@ lives under `fpga/` and `boards/`.
 frost.sv
   cpu_and_mem.sv
     instruction RAM  <---- JTAG/software-load port on clk_div4
-    data RAM (low 128 KiB BRAM)
-    URAM tier (2 MiB UltraRAM @ 0x0100_0000, X3 only)
+    data RAM (low 256 KiB BRAM, 1-cycle)
+    cached tier @ 0x8000_0000 (1 GiB):
+      cached_tier_adapter -> L1 (128 KiB BRAM) [-> L2 (2 MiB URAM, X3)]
+        -> line_port_axi_bridge -> DDR AXI port
+           (behavioral DDR model in sim; board DDR controller on hardware)
     MMIO timer/UART/FIFOs
     cpu_ooo.sv
       IF -> PD -> ID -> 2-wide dispatch
@@ -82,31 +85,36 @@ backend notes.
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | Machine-mode exception/interrupt handling |
-| `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/ram/sdp_uram_byte_en.sv` (byte-enable simple-dual-port macro that infers the UltraRAM cascade backing the URAM tier) |
+| `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model) and `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays) |
 | `peripherals/` | In use | UART TX/RX blocks |
 
 ## Memory Map
 
-The low BRAM memory is 128 KiB; the common linker script splits it into
-96 KiB ROM and 32 KiB RAM. On X3 the data port additionally reaches a 2 MiB
-UltraRAM tier at `0x0100_0000`:
+The low BRAM memory is 256 KiB (96 KiB ROM + 160 KiB RAM in the unified
+linker script); the data port additionally reaches a 1 GiB cached region
+served by the cache hierarchy:
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
-| ROM | `0x0000_0000` | 96 KiB | Code and read-only data |
-| RAM | `0x0001_8000` | 32 KiB | Data, BSS, heap, stack |
-| URAM | `0x0100_0000` | 2 MiB | UltraRAM data tier (X3 only; see below) |
+| ROM | `0x0000_0000` | 96 KiB | Code and read-only data (fast BRAM) |
+| RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
 | MMIO | `0x4000_0000` | 44 B | UART, FIFOs, CLINT-style timer, software interrupt |
+| DDR | `0x8000_0000` | 1 GiB | Cached region: heap and large data (see below) |
 
-The URAM tier is data-only (loads/stores; no instruction fetch). The low BRAM
-range and MMIO stay 1-cycle; loads to the URAM region take `URAM_READ_LATENCY`
-cycles and stores take `URAM_WRITE_LATENCY` cycles, with
-`data_mem_request_router` tracking in-flight URAM operations so reads never
-race a still-landing write. `ENABLE_URAM_TIER=0` omits the UltraRAM instance
-for 7-series boards (Genesys2 is Kintex-7, which has no UltraRAM) and the
-Yosys flow. Large-heap workloads opt in via an app-specific linker script —
-`sw/apps/coremark_pro/coremark_pro.ld` places a 1936 KiB malloc heap plus a
-112 KiB stack reserve there.
+The cached tier is data-only (loads/stores; no instruction fetch). The low
+BRAM range and MMIO stay 1-cycle; cached accesses complete by HANDSHAKE with
+variable latency — an L1 hit in a few cycles, a miss after a writeback/fill
+round trip through `frost_cache` (direct-mapped, 32 B lines, write-back
+write-allocate, single-outstanding) and, on X3, the URAM L2, down to the DDR
+AXI port. `cached_tier_adapter` converts CPU words to cache lines and
+serializes one transaction at a time; `data_mem_request_router` folds the
+handshake completions into the LQ/SQ ordering gates so reads never pass an
+in-flight write. The caches re-invalidate on ANY reset (tag sweep), so a
+JTAG program reload never observes stale lines. `ENABLE_CACHED_TIER=0`
+omits the hierarchy (cached-region accesses complete with zero data);
+`CACHED_HAS_L2` selects the board shape, and `USE_BEHAVIORAL_DDR=0` routes
+the bridge's AXI master to the top-level `o_ddr_axi_*` ports for the board
+DDR controller instead of the simulation-only behavioral model.
 
 MMIO registers:
 
@@ -165,18 +173,23 @@ sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 | Module | Parameter | Default | Description |
 |--------|-----------|---------|-------------|
 | `frost.sv` | `CLK_FREQ_HZ` | `300000000` | Main CPU clock frequency |
-| `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 17` | 128 KiB RAM |
+| `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | 256 KiB low BRAM |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | Multiplies `mtime` increment rate for simulation |
-| `frost.sv` | `URAM_BASE` | `32'h0100_0000` | URAM tier base address |
-| `frost.sv` | `URAM_SIZE_BYTES` | `2 * 1024 * 1024` | URAM tier size (2 MiB) |
-| `frost.sv` | `URAM_READ_LATENCY` | `6` | URAM load latency in cycles (addr → data); must match the URAM cascade pipelining and the router's valid pipeline |
-| `frost.sv` | `URAM_WRITE_LATENCY` | `2` | URAM store latency in cycles; the router holds store-done so reads cannot pass an in-flight write |
-| `frost.sv` | `ENABLE_URAM_TIER` | `1` | Set 0 to omit the UltraRAM instance (7-series boards, Yosys flow) |
+| `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |
+| `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |
+| `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 instantiates the cache hierarchy (simulation enables via `-G`; boards enable with their DDR controller) |
+| `frost.sv` | `CACHED_HAS_L2` | `1` | 1 splices the 2 MiB URAM L2 between L1 and main memory (X3 shape); 0 is L1-only (Genesys2) |
+| `frost.sv` | `L1_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `2 MiB` | Cache sizes |
+| `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation-only DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
+| `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
 | `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size |
 
-Simulation can override memory size through Verilator generics; the test
-Makefile currently uses 2 MiB for full-program and compliance workloads.
+Simulation overrides parameters through Verilator generics (`-G`): the test
+Makefile enables the cached tier with the X3 hierarchy shape by default
+(`CACHED_HAS_L2=0` selects the Genesys2 shape) and sets the behavioral DDR
+model's size/latency; the low-BRAM size converges on the 256 KiB hardware
+value as part of the memory-map consolidation.
 
 ## Notes for RTL Changes
 

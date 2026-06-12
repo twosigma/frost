@@ -15,10 +15,15 @@ older store turns up, the LQ pulls the data from the SQ via
 store-to-load forwarding and skips memory entirely. Otherwise it
 checks the L0 cache; on a hit, the result is available the same
 cycle, and on a miss it issues to main memory. Main memory is not
-uniform: low-BRAM loads return in one cycle, while loads to the URAM
-tier return after `URAM_READ_LATENCY` cycles through
-`data_mem_request_router`'s valid pipeline — the LQ just consumes the
-router's read-valid, so the tiering is invisible here beyond latency.
+uniform: low-BRAM loads return in one cycle, while loads to the
+cached (DDR-backed) region complete by handshake with variable
+latency — an L1 hit after a few cycles, a miss after a writeback/fill
+round trip through the cache hierarchy — and the LQ just consumes the
+router's read-valid pulse, so the tiering is invisible here beyond
+latency. The single-outstanding `slow_outstanding` gate serializes
+cached loads, and a full flush arms the drop-next-response accounting
+so an in-flight cached response can never be misattributed to a
+post-flush load.
 
 MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued
