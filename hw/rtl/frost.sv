@@ -52,6 +52,7 @@ module frost #(
     // L1-only shape (Genesys2 -- Kintex-7 has no UltraRAM).
     parameter int unsigned CACHED_HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
+    parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
@@ -190,6 +191,7 @@ module frost #(
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .CACHED_HAS_L2(CACHED_HAS_L2),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
+      .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),

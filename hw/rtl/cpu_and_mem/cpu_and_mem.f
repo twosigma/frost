@@ -22,5 +22,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
 # Per-line predecode sideband generation (L1I fill path)
 $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 
+# Quadrant-steered fetch window provider (BRAM + two-line L1I buffer)
+$(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
+
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv

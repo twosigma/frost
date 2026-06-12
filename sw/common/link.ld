@@ -6,6 +6,7 @@
  *       RAM 160KiB: .data/.sdata/.sbss/.bss + stack (top at 0x40000)
  *   [0x40000000, +44B)        MMIO (unchanged)
  *   [0x80000000, +1GiB)       cached region, DDR-backed, loadable
+ *       .ddr_text:             code fetched through the L1I (opt-in)
  *       .ddr_rodata/.ddr_data: large loaded sections (e.g. radix2 FFT tables)
  *       .ddr_bss:              large zero-init sections (zeroed by crt0)
  *       .ddr_heap:             everything else, to the end of the gigabyte
@@ -19,7 +20,7 @@
  *
  * Image emission (two files; loader/sim write the regions separately):
  *   sw.mem      = objcopy -O verilog -R '.ddr_*' ...        (low BRAM image)
- *   sw_ddr.mem  = objcopy -O verilog -j .ddr_rodata -j .ddr_data
+ *   sw_ddr.mem  = objcopy -O verilog -j .ddr_text -j .ddr_rodata -j .ddr_data
  *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
  *
  * Stack: lives in low BRAM for ALL programs (fast, uncached). The 112KiB
@@ -116,6 +117,18 @@ SECTIONS
     /* ================================================================
      * DDR SECTIONS (cached region; loaded directly by JTAG/sim, not crt0)
      * ================================================================ */
+
+    /* Code executed from the cached region through the L1I (opt-in via
+     * __attribute__((section(".ddr_text")))). FIRST DDR section: the dense
+     * sw_ddr.txt loader image starts at the lowest .ddr_* LMA, which must
+     * stay exactly at ORIGIN(DDR); an empty .ddr_text keeps .ddr_rodata
+     * there. Boot, vectors, and hot code stay in low-BRAM .text. */
+    .ddr_text : {
+        __ddr_text_start = .;
+        *(.ddr_text*)
+        . = ALIGN(4);
+        __ddr_text_end = .;
+    } > DDR
 
     /* Large read-only datasets (LMA == VMA; written by the loader). */
     .ddr_rodata : {

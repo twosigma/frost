@@ -47,6 +47,7 @@ module cpu_and_mem #(
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned CACHED_HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
+    parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
@@ -157,13 +158,27 @@ module cpu_and_mem #(
 
   // CPU interface signals
   logic [31:0] program_counter;
-  logic [31:0] fetch_address;  // imem port B address (= program_counter, or the
-                               // fuzz provider's owed ask)
+  logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
-  logic instruction_valid;  // Fetch window valid (1-cycle BRAM: constant 1)
+  logic instruction_valid;  // Fetch window valid
   logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
+
+  // Low instruction BRAM window (imem_predecode port B outputs); the active
+  // fetch generate below turns this into the core-facing window.
+  logic [63:0] bram_fetch_instr;
+  logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
+  logic bram_fetch_bank_sel_r;
+
+  // Instruction-side line port into the cache hierarchy: driven by the fetch
+  // provider when the cached tier is enabled, tied off otherwise.
+  logic iup_req_valid, iup_req_ready, iup_req_write;
+  logic [31:0] iup_req_addr;
+  logic [255:0] iup_req_wdata;
+  logic [31:0] iup_req_wstrb;
+  logic iup_resp_valid;
+  logic [255:0] iup_resp_rdata;
   logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
@@ -297,10 +312,6 @@ module cpu_and_mem #(
     logic [31:0] pc_prev_q;  // detects o_pc movement
     logic [31:0] served_addr_q;  // address the BRAM output corresponds to
     logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
-    // A consumed stall-replay bundle counts as a served cycle: the CPU's PC
-    // advances without a live window, and the presentation during that cycle
-    // becomes the owed ask exactly as on a valid cycle.
-    logic        served_this_cycle;
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
 
@@ -312,10 +323,19 @@ module cpu_and_mem #(
     assign fuzz_ok = (gap_cnt_q == '0) && (lfsr_q[1:0] != 2'b00);
 
     assign instruction_valid = fuzz_ok && fuzz_window_ready;
-    assign served_this_cycle = instruction_valid || fetch_replay_consume;
     // The BRAM chases the owed ask while unserved and the live PC once
     // serving (the 1-cycle BRAM then keeps the window contract-aligned).
     assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
+    assign instruction = bram_fetch_instr;
+    assign instruction_sideband = bram_fetch_sideband;
+    assign instruction_bank_sel_r = bram_fetch_bank_sel_r;
+
+    // No instruction-side cache traffic in fuzz mode (low-BRAM programs).
+    assign iup_req_valid = 1'b0;
+    assign iup_req_write = 1'b0;
+    assign iup_req_addr = '0;
+    assign iup_req_wdata = '0;
+    assign iup_req_wstrb = '0;
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -328,27 +348,67 @@ module cpu_and_mem #(
       end else begin
         pc_prev_q     <= program_counter;
         served_addr_q <= fetch_address;
-        served_prev_q <= served_this_cycle;
+        served_prev_q <= instruction_valid;
         lfsr_q        <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
-        if (served_this_cycle) begin
-          // Served (live window or replay consumption): the current
-          // presentation becomes the owed ask.
+        if (instruction_valid) begin
+          // Served: the current presentation becomes the owed ask.
           fuzz_ask_q <= program_counter;
-        end else if (!served_prev_q && (program_counter != pc_prev_q)) begin
-          // o_pc moved between two invalid cycles: that is a backend
-          // redirect (the core holds o_pc on invalid cycles otherwise);
-          // abandon the old ask and chase the target. Movement at a
-          // valid->invalid boundary is normal flow whose ask was already
-          // latched on the valid cycle and must NOT be abandoned.
+        end else if (!served_prev_q && !fetch_replay_consume &&
+                     (program_counter != pc_prev_q)) begin
+          // o_pc moved between two invalid cycles and it was not the
+          // (registered) stall-replay consumption advance: that is a
+          // backend redirect (the core holds o_pc on invalid cycles
+          // otherwise); abandon the old ask and chase the target.
+          // Movement at a valid->invalid boundary is normal flow whose ask
+          // was already latched on the valid cycle. A replay consumption
+          // needs no ask update at all: o_pc sat frozen at the owed ask
+          // through the stall, so the held ask is already correct.
           fuzz_ask_q <= program_counter;
         end
       end
     end
+  end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
+    // The real provider: quadrant-steered between the 1-cycle BRAM window
+    // and the two-line L1I fetch buffer (see fetch_provider.sv).
+    fetch_provider #(
+        .LINE_BYTES(32)
+    ) u_fetch_provider (
+        .i_clk(i_clk),
+        .i_rst(i_rst),
+        .i_pc(program_counter),
+        .i_fetch_replay_consume(fetch_replay_consume),
+        .o_instr(instruction),
+        .o_instr_sideband(instruction_sideband),
+        .o_instr_bank_sel_r(instruction_bank_sel_r),
+        .o_instr_valid(instruction_valid),
+        .o_bram_addr(fetch_address),
+        .i_bram_instr(bram_fetch_instr),
+        .i_bram_sideband(bram_fetch_sideband),
+        .i_bram_bank_sel_r(bram_fetch_bank_sel_r),
+        .o_line_req_valid(iup_req_valid),
+        .i_line_req_ready(iup_req_ready),
+        .o_line_req_write(iup_req_write),
+        .o_line_req_addr(iup_req_addr),
+        .o_line_req_wdata(iup_req_wdata),
+        .o_line_req_wstrb(iup_req_wstrb),
+        .i_line_resp_valid(iup_resp_valid),
+        .i_line_resp_rdata(iup_resp_rdata),
+        // fence.i wires this in a later phase; reset already invalidates.
+        .i_invalidate(1'b0)
+    );
   end else begin : gen_fetch_direct
     assign instruction_valid = 1'b1;
     assign fetch_address = program_counter;
+    assign instruction = bram_fetch_instr;
+    assign instruction_sideband = bram_fetch_sideband;
+    assign instruction_bank_sel_r = bram_fetch_bank_sel_r;
+    assign iup_req_valid = 1'b0;
+    assign iup_req_write = 1'b0;
+    assign iup_req_addr = '0;
+    assign iup_req_wdata = '0;
+    assign iup_req_wstrb = '0;
   end
 
   // Memory 0: Instruction memory with predecode sideband
@@ -373,9 +433,9 @@ module cpu_and_mem #(
       .i_port_b_clk(i_clk),
       .i_port_b_enable(1'b1),
       .i_port_b_byte_address(fetch_address),
-      .o_port_b_read_data(instruction),
-      .o_port_b_sideband(instruction_sideband),
-      .o_port_b_bank_sel_r(instruction_bank_sel_r)
+      .o_port_b_read_data(bram_fetch_instr),
+      .o_port_b_sideband(bram_fetch_sideband),
+      .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
 
   // Memory 1: Data memory
@@ -455,6 +515,7 @@ module cpu_and_mem #(
         .LINE_BYTES(32),
         .HAS_L2(CACHED_HAS_L2),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
+        .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES)
     ) cache_hierarchy (
         .i_clk(i_clk),
@@ -467,6 +528,14 @@ module cpu_and_mem #(
         .i_up_req_wstrb(line_req_wstrb),
         .o_up_resp_valid(line_resp_valid),
         .o_up_resp_rdata(line_resp_rdata),
+        .i_iup_req_valid(iup_req_valid),
+        .o_iup_req_ready(iup_req_ready),
+        .i_iup_req_write(iup_req_write),
+        .i_iup_req_addr(iup_req_addr),
+        .i_iup_req_wdata(iup_req_wdata),
+        .i_iup_req_wstrb(iup_req_wstrb),
+        .o_iup_resp_valid(iup_resp_valid),
+        .o_iup_resp_rdata(iup_resp_rdata),
         .o_down_req_valid(down_req_valid),
         .i_down_req_ready(down_req_ready),
         .o_down_req_write(down_req_write),
@@ -607,6 +676,10 @@ module cpu_and_mem #(
       assign axi_rlast = i_ddr_axi_rlast;
     end
   end else begin : gen_no_cached_tier
+    // No hierarchy: the instruction-side line port has no slave.
+    assign iup_req_ready  = 1'b0;
+    assign iup_resp_valid = 1'b0;
+    assign iup_resp_rdata = '0;
     // Tier disabled (FPGA builds until their DDR controller lands): complete
     // cached-region accesses immediately with zero data so stray software
     // cannot hang the LQ/SQ.

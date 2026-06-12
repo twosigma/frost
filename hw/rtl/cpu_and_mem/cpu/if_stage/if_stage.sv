@@ -109,9 +109,14 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
-    // The stall-release cycle is consuming the stall-captured replay bundle
-    // (no live window needed).  The fetch provider treats this like a served
-    // cycle when tracking its owed ask; PC and consumption state advance.
+    // REGISTERED: the stall-release cycle one cycle ago consumed the
+    // stall-captured replay bundle (no live window needed).  The fetch
+    // provider only needs this for served-vs-redirect classification of the
+    // PC movement it observes -- which it evaluates one cycle later anyway --
+    // so the export is registered to keep the late stall cone out of the
+    // provider's combinational ask/address paths.  The owed-ask VALUE needs
+    // no correction: o_pc is frozen at the owed ask through any stall a
+    // replay bundle can survive (redirects kill the replay capture).
     output logic o_fetch_replay_consume,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
     // Slot-2 IF→PD packet (2-wide dispatch, Session F).  When slot-2 is invalid
@@ -877,7 +882,10 @@ module if_stage #(
   // bundle IS consumed, so freezing there would re-present (and re-dispatch)
   // the same pc_reg on the next live cycle.
   assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
-  assign o_fetch_replay_consume = replay_saved_if_outputs && !if_stage_stall;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) o_fetch_replay_consume <= 1'b0;
+    else o_fetch_replay_consume <= replay_saved_if_outputs && !if_stage_stall;
+  end
 
   // ===========================================================================
   // Outputs to PD Stage

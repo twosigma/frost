@@ -139,6 +139,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached-region (DDR) tier store/load test through the cache hierarchy",
     ),
+    "ddr_exec_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_exec_test",
+        description="Execute-from-DDR test (.ddr_text through the fetch provider + L1I)",
+    ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -401,6 +407,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
         hdl_toplevel_module="imem_predecode_line",
         description="Per-line predecode sideband cross-checked against the python generator",
+    ),
+    "fetch_provider": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_fetch_provider",
+        hdl_toplevel_module="fetch_provider",
+        description="Fetch provider unit tests (quadrant steer, fetch buffer, fills, invalidate)",
     ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
