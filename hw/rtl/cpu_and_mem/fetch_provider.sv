@@ -120,7 +120,15 @@ module fetch_provider #(
   // The ask presented this cycle; its window is due (and its validity is
   // decided) for the next cycle.
   logic [31:0] fetch_addr;
-  assign fetch_addr  = (served_now || retarget_now) ? i_pc : ask_q;
+  // TIMING: the retarget term lives only in the ask REGISTER update below,
+  // not in this combinational mux -- the retarget's 32-bit compare otherwise
+  // stacks with the presence compares into the fill engine and the imem
+  // address pins (measured -0.42 post-opt from the o_pc flops).  On a
+  // retarget cycle this address is therefore the stale old ask for one
+  // extra cycle; the window it yields is squashed by the core's
+  // control-flow holdoff, which the redirect that caused the retarget has
+  // already armed and which extends through no-progress cycles.
+  assign fetch_addr  = served_now ? i_pc : ask_q;
 
   assign o_bram_addr = fetch_addr;
 
@@ -130,7 +138,7 @@ module fetch_provider #(
       pc_prev_q     <= '0;
       served_prev_q <= 1'b0;
     end else begin
-      ask_q         <= fetch_addr;
+      ask_q         <= (served_now || retarget_now) ? i_pc : ask_q;
       pc_prev_q     <= i_pc;
       served_prev_q <= served_now;
     end
@@ -211,26 +219,33 @@ module fetch_provider #(
   // One rule covers straddle completion and prefetch: fetch the window's
   // first line if absent, else the following line (which is the straddle's
   // second half when the window crosses, and the prefetch otherwise).
-  logic [LineAddrBits-1:0] line_after_win;
-  logic present_after;
-  assign line_after_win = win_line0 + 1'b1;
-  assign present_after = slot_valid_q[line_after_win[0]] &&
-      (slot_line_q[line_after_win[0]] == line_after_win);
+  // The fill engine works from the REGISTERED ask only (its own presence
+  // comparators), so the o_pc/served muxing never reaches the line-port
+  // request logic.  On ask transitions the wanted line lags one cycle --
+  // noise against a multi-cycle miss.
+  logic [LineAddrBits-1:0] fill_line0, fill_line_after;
+  assign fill_line0 = ask_q[31:OffsetBits];
+  assign fill_line_after = fill_line0 + 1'b1;
+
+  logic fill_present0, fill_present_after;
+  assign fill_present0 = slot_valid_q[fill_line0[0]] && (slot_line_q[fill_line0[0]] == fill_line0);
+  assign fill_present_after = slot_valid_q[fill_line_after[0]] &&
+      (slot_line_q[fill_line_after[0]] == fill_line_after);
 
   logic [LineAddrBits-1:0] want_line;
   logic want_fill;
   always_comb begin
-    want_line = win_line0;
+    want_line = fill_line0;
     want_fill = 1'b0;
-    if (quadrant_ddr) begin
-      if (!present0) begin
-        want_line = win_line0;
+    if (ask_q[31]) begin
+      if (!fill_present0) begin
+        want_line = fill_line0;
         want_fill = 1'b1;
-      end else if (!present_after) begin
-        // First window line resident: fetch the following line -- the
+      end else if (!fill_present_after) begin
+        // First ask line resident: fetch the following line -- the
         // straddle's second half when the window crosses, the prefetch
         // otherwise.
-        want_line = line_after_win;
+        want_line = fill_line_after;
         want_fill = 1'b1;
       end
     end
