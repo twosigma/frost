@@ -67,7 +67,7 @@ module cpu_ooo #(
     // to the BRAM tier (never write the cached region), so routing the AMO
     // write-data mux here was dead logic -- but it dragged the long
     // (amo_entry_idx -> AMO ALU) cone onto the wide write-data cascade, which
-    // was the dominant post-opt timing failure in the URAM-tier era. Feeding
+    // was the dominant post-opt timing failure before the AMO pinning. Feeding
     // the SQ drain data directly drops that cone.
     output logic [XLEN-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
@@ -828,8 +828,7 @@ module cpu_ooo #(
   // Registered cached-tier flag for the SQ write (parallels is_mmio). Used by
   // the router to steer the store's byte-write enables to the cached tier and
   // mask them off the BRAM, keeping the late address-range test off the BRAM
-  // WEA cone. (The SQ port keeps its historical is_uram name; it decodes the
-  // slow-tier region, which is now the cached region.)
+  // WEA cone.
   logic sq_mem_write_is_cached;
   logic sq_mem_write_done;
 
@@ -956,11 +955,8 @@ module cpu_ooo #(
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
-      // The tomasulo wrapper's URAM_* params name the SLOW (non-1-cycle) tier
-      // region generically: the LQ's single-outstanding gate and the SQ's
-      // drain-time tier flag now decode the cached region.
-      .URAM_BASE(CACHED_BASE),
-      .URAM_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_BASE(CACHED_BASE),
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
@@ -1226,7 +1222,7 @@ module cpu_ooo #(
       .o_sq_mem_write_data(sq_mem_write_data),
       .o_sq_mem_write_byte_en(sq_mem_write_byte_en),
       .o_sq_mem_write_is_mmio(sq_mem_write_is_mmio),
-      .o_sq_mem_write_is_uram(sq_mem_write_is_cached),
+      .o_sq_mem_write_is_cached(sq_mem_write_is_cached),
       .i_sq_mem_write_done(sq_mem_write_done),
 
       // Load queue memory interface

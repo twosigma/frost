@@ -17,13 +17,12 @@
 /*
  * Simple-dual-port RAM with byte-write enables, a pipelined read, and a
  * selectable memory primitive ("block" BRAM or "ultra" UltraRAM). Row-granular
- * sibling of sdp_uram_byte_en (no word packing: one access = one full row).
- * Backs the frost_cache data arrays -- L1 uses MEMORY_PRIMITIVE="block",
- * L2 uses "ultra"; a 32-byte cache line is exactly one 256-bit row.
+ * (no word packing: one access = one full row). Backs the frost_cache data
+ * arrays -- L1 uses MEMORY_PRIMITIVE="block", L2 uses "ultra"; a 32-byte
+ * cache line is exactly one 256-bit row.
  *
  * STORAGE -- two implementations behind synthesis-tool defines, with IDENTICAL
- * external behaviour and latency so simulation matches hardware (same scheme
- * as sdp_uram_byte_en):
+ * external behaviour and latency so simulation matches hardware:
  *   - FROST_XILINX_PRIMS + FROST_VIVADO_SYNTH: xpm_memory_sdpram with
  *     MEMORY_PRIMITIVE passed through; the XPM pipelines deep cascades
  *     internally to meet READ_LATENCY_B.
@@ -102,7 +101,7 @@ module sdp_ram_byte_en #(
 
   // ---- Read-port input register --------------------------------------------
   // Ends the request cone at a register before the memory and lets the tool
-  // replicate it across the wide array (same discipline as sdp_uram_byte_en).
+  // replicate it across the wide array.
   logic                  re_in_reg;
   logic [ADDR_WIDTH-1:0] raddr_reg;
   always_ff @(posedge i_clk) begin
