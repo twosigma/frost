@@ -278,6 +278,18 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
+# Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cache/cache.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),imem_predecode_line)
+# Per-line predecode sideband unit bench (cross-check vs the python generator)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
+VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \
