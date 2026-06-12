@@ -150,8 +150,21 @@ module frost_cache #(
   logic [TagBits-1:0] tag_rdata_tag;
   assign {tag_rdata_valid, tag_rdata_dirty, tag_rdata_tag} = tag_rdata;
 
+  // Tag compare, explicitly balanced: 3-bit equality groups (one LUT6 each)
+  // whose nets synthesis must keep, then a flat reduce. A plain == here has
+  // been seen re-packed into a deeper LUT tree under context pressure (6 ->
+  // 8 levels when the L1I joined the X3 build), and this cone drives the
+  // data-array byte-enable fanout the cycle the tag arrives from block RAM.
+  localparam int unsigned TagCmpGroups = (TagBits + 2) / 3;
+  (* dont_touch = "true" *) logic [TagCmpGroups-1:0] tag_match_group;
+  for (genvar gg = 0; gg < int'(TagCmpGroups); gg++) begin : gen_tag_compare
+    localparam int unsigned Lo = gg * 3;
+    localparam int unsigned Hi = (Lo + 3 <= TagBits) ? Lo + 3 : TagBits;
+    assign tag_match_group[gg] = (tag_rdata_tag[Hi-1:Lo] == req_tag[Hi-1:Lo]);
+  end
+
   logic hit;
-  assign hit = tag_rdata_valid && (tag_rdata_tag == req_tag);
+  assign hit = tag_rdata_valid && (&tag_match_group);
 
   sdp_block_ram #(
       .ADDR_WIDTH(IndexBits),
