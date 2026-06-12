@@ -38,4 +38,4 @@ set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets differential_clock_200mhz_
 
 # mem_ok crosses from the DDR controller's ui_clk domain into the core-clock
 # reset tree through a dedicated 2FF synchronizer: cut the timing into it.
-set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg\[0\]/D"}]
