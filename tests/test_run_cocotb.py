@@ -247,6 +247,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="uart_echo",
         description="UART RX echo demo (driven via cocotb UART input)",
     ),
+    # Fetch-latency fuzz: the same real programs with the simulation-only
+    # variable-latency fetch provider (random i_instr_valid gaps), proving the
+    # front end's fetch-invalid machinery before an I-cache sits behind it.
+    # Grouped adjacently so the shared -G build is reused across all four.
+    "hello_world_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        description="hello_world under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "branch_pred_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="branch_pred_test",
+        description="Branch-prediction stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "c_ext_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="c_ext_test",
+        description="C-extension alignment stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "call_stress_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="call_stress",
+        description="RAS call/return stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
     # Tomasulo unit tests
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",

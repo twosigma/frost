@@ -59,7 +59,9 @@ module frost #(
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports (hardware boards wire
     // them to their DDR controller subsystem).
-    parameter int unsigned USE_BEHAVIORAL_DDR = 1
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1,
+    // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
+    parameter int unsigned FETCH_VALID_FUZZ = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -191,7 +193,8 @@ module frost #(
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
-      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR)
+      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
+      .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,

@@ -42,6 +42,14 @@ module branch_prediction_controller (
     input logic i_reset,
     input logic i_stall,
     input logic i_stall_registered,
+    // Fetch progress (live window valid OR stall-replay bundle presented).
+    // New predictions are suppressed upstream via
+    // i_disable_branch_prediction when there is no progress; this input
+    // additionally HOLDS the registered prediction pipeline (metadata,
+    // pc_reg handoff, holdoffs) so a prediction consumed on the last
+    // delivered cycle keeps its bookkeeping until the deferred window
+    // arrives and the dance can resume.
+    input logic i_fetch_progress,
     input logic i_flush,
     // PD-stage redirect. Kills in-flight registered prediction metadata the
     // same way a flush does: a PD redirect steals the PC stream from any
@@ -513,17 +521,20 @@ module branch_prediction_controller (
       // cjpeg's Huffman zero-run loop, skipping one coefficient and emitting
       // a one-bit-short code (646-byte JPEG).
       o_sel_prediction_r <= 1'b0;
-      if (~i_stall) begin
+      if (~i_stall && i_fetch_progress) begin
         o_prediction_used_r <= prediction_used_effective;
       end
-    end else if (~i_stall) begin
+    end else if (~i_stall && i_fetch_progress) begin
+      // i_fetch_progress in the gate: a prediction consumed on the last
+      // cycle must keep its registered metadata and pc_reg handoff armed
+      // across fetch-invalid cycles until the deferred instruction arrives.
       o_prediction_used_r <= prediction_used_effective;
       o_sel_prediction_r  <= prediction_used_effective;
     end
   end
 
   always_ff @(posedge i_clk) begin
-    if (~i_stall) begin
+    if (~i_stall && i_fetch_progress) begin
       // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
@@ -550,8 +561,10 @@ module branch_prediction_controller (
       o_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
       o_prediction_holdoff <= 1'b0;
-    end else if (~i_stall) begin
-      // Set holdoff on cycle after prediction.
+    end else if (~i_stall && i_fetch_progress) begin
+      // Set holdoff on cycle after prediction.  Held through fetch-invalid
+      // cycles so the deferred predicted-branch delivery still gets its
+      // sel_nop exemption in if_stage.
       o_prediction_holdoff <= prediction_used_effective;
     end
   end
@@ -581,7 +594,7 @@ module branch_prediction_controller (
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
       o_btb_only_prediction_holdoff <= 1'b0;
-    end else if (~i_stall) begin
+    end else if (~i_stall && i_fetch_progress) begin
       o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
     end
   end
