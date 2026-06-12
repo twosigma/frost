@@ -6,7 +6,7 @@
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 
 # Per-board cache hierarchy wrapper (L1, optional URAM L2)
-$(ROOT)/hw/rtl/lib/cache/frost_cache_stack.sv
+$(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Line-port -> AXI4 master bridge (bottom of the hierarchy)
 $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv

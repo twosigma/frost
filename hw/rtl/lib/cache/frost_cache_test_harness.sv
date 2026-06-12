@@ -18,7 +18,7 @@
  * frost_cache_test_harness -- cocotb unit-bench top for the cache hierarchy.
  *
  * Exposes the upstream line port and wires the SAME backside topology the CPU
- * integration uses: frost_cache_stack -> line_port_axi_bridge ->
+ * integration uses: frost_cache_hierarchy -> line_port_axi_bridge ->
  * axi_behavioral_memory. The bench drives raw line transactions and checks
  * them against a reference model; -G parameters select the board shape
  * (HAS_L2) and shrink the caches so eviction/thrash paths are cheap to hit.
@@ -55,7 +55,7 @@ module frost_cache_test_harness #(
   logic stack_down_resp_valid;
   logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
 
-  frost_cache_stack #(
+  frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
       .HAS_L2(HAS_L2),
@@ -64,7 +64,7 @@ module frost_cache_test_harness #(
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY)
-  ) cache_stack (
+  ) cache_hierarchy (
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_up_req_valid(i_up_req_valid),

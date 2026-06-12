@@ -324,7 +324,7 @@ module cpu_and_mem #(
   // Cached tier: high-address region behind the cache hierarchy. The router
   // only asserts the cached read/write requests for addresses inside the
   // cached range; the adapter serializes them into line transactions through
-  // frost_cache_stack (L1 BRAM, optional L2 URAM) and the AXI bridge into
+  // frost_cache_hierarchy (L1 BRAM, optional L2 URAM) and the AXI bridge into
   // main memory. In simulation the main memory is the behavioral DDR model
   // (initialized from sw_ddr.mem, persistent across CPU resets like real
   // DDR); the hardware integration (Phase 2/3) exports the bridge's AXI port
@@ -369,13 +369,13 @@ module cpu_and_mem #(
     logic down_resp_valid;
     logic [255:0] down_resp_rdata;
 
-    frost_cache_stack #(
+    frost_cache_hierarchy #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
         .HAS_L2(CACHED_HAS_L2),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES)
-    ) cache_stack (
+    ) cache_hierarchy (
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_up_req_valid(line_req_valid),

@@ -16,7 +16,7 @@
 
 /*
  * cached_tier_adapter -- word<->line adapter between the data-memory request
- * router and the cache hierarchy (frost_cache_stack upstream port).
+ * router and the cache hierarchy (frost_cache_hierarchy upstream port).
  *
  * Router side mirrors the old URAM-tier signal shapes, but with handshake
  * (variable-latency) completion instead of fixed-latency shift registers:
@@ -61,7 +61,7 @@ module cached_tier_adapter #(
     output logic            o_write_done,
     output logic            o_write_inflight,
 
-    // Line port master (to the cache stack).
+    // Line port master (to the cache hierarchy).
     output logic                    o_line_req_valid,
     input  logic                    i_line_req_ready,
     output logic                    o_line_req_write,

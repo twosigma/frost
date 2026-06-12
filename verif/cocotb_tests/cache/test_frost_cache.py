@@ -15,7 +15,7 @@
 """Unit tests for the frost_cache hierarchy (frost_cache_test_harness DUT).
 
 The harness wires the same backside topology the CPU integration uses:
-frost_cache_stack (L1, optional L2) -> line_port_axi_bridge ->
+frost_cache_hierarchy (L1, optional L2) -> line_port_axi_bridge ->
 axi_behavioral_memory. The bench drives raw line-port transactions and checks
 every read against a byte-granular reference model. The harness defaults make
 the caches tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly
