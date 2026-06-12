@@ -174,29 +174,47 @@ module ooo_pipeline_control #(
   logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
   logic branch_unresolved;
   logic branch_unresolved_is_one;
+  // branch_unresolved_decrement arrives LATE (INT-RS issue -> branch
+  // resolution age compare -> resolved-correct). Precompute both update arms
+  // from early signals only, so the late decrement steers a single 2:1 mux in
+  // front of the flops instead of re-deriving the whole update case. The
+  // dont_touch attributes stop the arm nets from being flattened back into
+  // the late select cone (keep alone does not survive opt_design Explore).
+  // Behavior is identical to the previous alloc/decrement case statement
+  // (alloc+decrement in one cycle nets out to a hold).
+  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_dec;
+  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_not_dec;
+  (* dont_touch = "true" *) logic unresolved_is_one_if_dec;
+  (* dont_touch = "true" *) logic unresolved_is_one_if_not_dec;
+  always_comb begin
+    if (branch_unresolved_alloc_fire) begin
+      unresolved_count_if_not_dec  = branch_unresolved_count + 1'b1;
+      unresolved_is_one_if_not_dec = (branch_unresolved_count == '0);
+      // alloc and decrement together net out to a hold
+      unresolved_count_if_dec      = branch_unresolved_count;
+      unresolved_is_one_if_dec     = branch_unresolved_is_one;
+    end else begin
+      unresolved_count_if_not_dec  = branch_unresolved_count;
+      unresolved_is_one_if_not_dec = branch_unresolved_is_one;
+      if (branch_unresolved_count != '0) begin
+        unresolved_count_if_dec  = branch_unresolved_count - 1'b1;
+        unresolved_is_one_if_dec = (branch_unresolved_count == BranchInFlightCountWidth'(2));
+      end else begin
+        unresolved_count_if_dec  = branch_unresolved_count;
+        unresolved_is_one_if_dec = branch_unresolved_is_one;
+      end
+    end
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) begin
       branch_unresolved_count  <= '0;
       branch_unresolved_is_one <= 1'b0;
+    end else if (branch_unresolved_decrement) begin
+      branch_unresolved_count  <= unresolved_count_if_dec;
+      branch_unresolved_is_one <= unresolved_is_one_if_dec;
     end else begin
-      case ({
-        branch_unresolved_alloc_fire, branch_unresolved_decrement
-      })
-        2'b10: begin
-          branch_unresolved_count  <= branch_unresolved_count + 1'b1;
-          branch_unresolved_is_one <= (branch_unresolved_count == '0);
-        end
-        2'b01: begin
-          if (branch_unresolved_count != '0) begin
-            branch_unresolved_count  <= branch_unresolved_count - 1'b1;
-            branch_unresolved_is_one <= (branch_unresolved_count == BranchInFlightCountWidth'(2));
-          end
-        end
-        default: begin
-          branch_unresolved_count  <= branch_unresolved_count;
-          branch_unresolved_is_one <= branch_unresolved_is_one;
-        end
-      endcase
+      branch_unresolved_count  <= unresolved_count_if_not_dec;
+      branch_unresolved_is_one <= unresolved_is_one_if_not_dec;
     end
   end
   assign branch_unresolved = (branch_unresolved_count != '0);
@@ -267,7 +285,14 @@ module ooo_pipeline_control #(
   end
 
   // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle.
-  logic trap_taken_reg, mret_taken_reg;
+  // trap_taken_reg and mret_taken_reg fan out to the same redirect/flush
+  // selects across IF and the recovery/flush units (~200 leaf loads
+  // post-synthesis each); cap the fanout so synthesis replicates the
+  // registers instead of routing one copy everywhere. (mret only surfaced as
+  // a failing startpoint once trap was replicated -- they mask each other in
+  // per-endpoint timing reports, so both need the cap.)
+  (* max_fanout = 32 *) logic trap_taken_reg;
+  (* max_fanout = 32 *) logic mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
