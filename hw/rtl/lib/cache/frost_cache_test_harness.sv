@@ -55,7 +55,9 @@ module frost_cache_test_harness #(
     input  logic [LINE_BYTES*8-1:0] i_iup_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_iup_req_wstrb,
     output logic                    o_iup_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata
+    output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    input  logic                    i_fence_sync,
+    output logic                    o_fence_done
 );
 
   logic stack_down_req_valid, stack_down_req_ready, stack_down_req_write;
@@ -94,6 +96,8 @@ module frost_cache_test_harness #(
       .i_iup_req_wstrb(i_iup_req_wstrb),
       .o_iup_resp_valid(o_iup_resp_valid),
       .o_iup_resp_rdata(o_iup_resp_rdata),
+      .i_fence_sync(i_fence_sync),
+      .o_fence_done(o_fence_done),
       .o_down_req_valid(stack_down_req_valid),
       .i_down_req_ready(stack_down_req_ready),
       .o_down_req_write(stack_down_req_write),

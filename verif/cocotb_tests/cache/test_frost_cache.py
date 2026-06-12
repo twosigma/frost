@@ -50,6 +50,8 @@ RANDOM_BASE = BASE_ADDR + 0x140000
 IFETCH_BASE = BASE_ADDR + 0x180000
 ISTALE_BASE = BASE_ADDR + 0x1C0000
 MIXED_BASE = BASE_ADDR + 0x200000
+FENCE_BASE = BASE_ADDR + 0x240000
+FENCE2_BASE = BASE_ADDR + 0x280000
 
 RESP_TIMEOUT_CYCLES = 20_000
 SWEEP_TIMEOUT_CYCLES = 200_000
@@ -66,6 +68,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_iup_req_addr.value = 0
     dut.i_iup_req_wdata.value = 0
     dut.i_iup_req_wstrb.value = 0
+    dut.i_fence_sync.value = 0
 
 
 async def _setup(dut: Any) -> None:
@@ -374,3 +377,85 @@ async def test_mixed_id_traffic(dut: Any) -> None:
     tasks = [cocotb.start_soon(_d_master()), cocotb.start_soon(_i_master())]
     for task in tasks:
         await task
+
+
+async def _fence_sync(dut: Any) -> None:
+    """Run one fence.i cache-sync handshake (hold sync until done rises)."""
+    await FallingEdge(dut.i_clk)
+    dut.i_fence_sync.value = 1
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_fence_done.value) == 1:
+            break
+    else:
+        raise AssertionError("fence sync never completed")
+    dut.i_fence_sync.value = 0
+    await FallingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def test_fence_sync_publishes_dirty_lines(dut: Any) -> None:
+    """Fence sync alone (no manual eviction) makes L1D-dirty data fetchable.
+
+    This is the property fence.i is built on: writeback-all pushes every
+    dirty line to the level the I-side fills from, while the lines stay
+    valid and clean on the D-side.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+
+    addrs = [FENCE_BASE + line * LINE_BYTES for line in (0, 3, 17)]
+    for i, addr in enumerate(addrs):
+        wdata = _line_int(bytes([(0x30 + 13 * i + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    await _fence_sync(dut)
+
+    for addr in addrs:
+        got = await _port_transaction(dut, "iup", write=False, addr=addr)
+        assert got == model.read_line(addr), f"iup stale after fence @0x{addr:08x}"
+
+    # The lines stayed valid and clean on the D-side: reads still match, and
+    # a re-dirtying write round-trips as usual.
+    for addr in addrs:
+        await _check_read(dut, model, addr)
+    rewrite = _line_int(bytes([0x5C] * 32))
+    model.write_line(addrs[0], rewrite, full)
+    await _line_transaction(dut, write=True, addr=addrs[0], wdata=rewrite, wstrb=full)
+    await _check_read(dut, model, addrs[0])
+
+
+@cocotb.test()
+async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
+    """A line already cached in the L1I is refetched fresh after a fence."""
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    addr = FENCE2_BASE + 7 * LINE_BYTES
+
+    # Prime the L1I with the line's pre-write contents (zeros).
+    got = await _port_transaction(dut, "iup", write=False, addr=addr)
+    assert got == 0
+
+    # D-side writes new "code"; without a fence the L1I would keep hitting
+    # on the stale line.
+    wdata = _line_int(bytes([(0xC0 + b) & 0xFF for b in range(32)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    await _fence_sync(dut)
+
+    got = await _port_transaction(dut, "iup", write=False, addr=addr)
+    assert got == model.read_line(addr), "L1I served stale data after fence"
+
+
+@cocotb.test()
+async def test_fence_sync_idle_cache(dut: Any) -> None:
+    """A fence with nothing dirty completes and disturbs nothing."""
+    await _setup(dut)
+    await _fence_sync(dut)
+    await _fence_sync(dut)  # back-to-back syncs from idle
+    got = await _port_transaction(dut, "iup", write=False, addr=FENCE2_BASE)
+    assert got == 0

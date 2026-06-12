@@ -132,8 +132,12 @@ module reorder_buffer (
     // =========================================================================
     // Store Queue Coordination
     // =========================================================================
-    input logic i_sq_empty,           // Store queue has no entries at all
-    input logic i_sq_committed_empty, // No committed entries pending write (for FENCE)
+    input  logic i_sq_empty,            // Store queue has no entries at all
+    input  logic i_sq_committed_empty,  // No committed entries pending write (for FENCE)
+    // FENCE.I cache-sync handshake (see rob_serializer): request held while
+    // the serializer waits; done is a level while the request is high.
+    input  logic i_fence_i_sync_done,
+    output logic o_fence_i_sync_req,
 
     // =========================================================================
     // CSR Unit Coordination
@@ -1625,6 +1629,8 @@ module reorder_buffer (
       .i_early_recovery_en (i_early_recovery_en),
       .i_interrupt_pending (i_interrupt_pending),
       .i_sq_committed_empty(i_sq_committed_empty),
+      .i_fence_i_sync_done (i_fence_i_sync_done),
+      .o_fence_i_sync_req  (o_fence_i_sync_req),
       .i_csr_done          (i_csr_done),
       .i_mret_done         (i_mret_done),
       .i_trap_taken        (i_trap_taken),

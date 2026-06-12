@@ -74,6 +74,16 @@ module frost_cache_hierarchy #(
     output logic                    o_iup_resp_valid,
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
+    // fence.i cache sync: hold i_fence_sync until o_fence_done rises (done
+    // stays high while the request is held). Sequencing matters and is owned
+    // here: the data L1 writes back every dirty line FIRST, then the L1I
+    // invalidates -- so an instruction fill racing the sync can never leave
+    // pre-writeback data in a freshly invalidated L1I. The L2 needs no
+    // maintenance: it sits below the arbiter, so everything the L1D writes
+    // back is already visible to L1I fills.
+    input  logic i_fence_sync,
+    output logic o_fence_done,
+
     // Downstream line port (master) -- to the AXI bridge / main memory.
     output logic                    o_down_req_valid,
     input  logic                    i_down_req_ready,
@@ -114,6 +124,10 @@ module frost_cache_hierarchy #(
   logic                    arb_down_resp_valid;
   logic [LINE_BYTES*8-1:0] arb_down_resp_rdata;
 
+  // fence.i sequencer handshakes (FSM below, after the arbiter).
+  logic l1d_maint_busy, l1i_maint_busy;
+  logic l1d_writeback_req, l1i_invalidate_req;
+
   frost_cache #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
@@ -124,6 +138,9 @@ module frost_cache_hierarchy #(
   ) l1_cache (
       .i_clk(i_clk),
       .i_rst(i_rst),
+      .i_writeback_all(l1d_writeback_req),
+      .i_invalidate_all(1'b0),
+      .o_maint_busy(l1d_maint_busy),
       .i_up_req_valid(i_up_req_valid),
       .o_up_req_ready(o_up_req_ready),
       .i_up_req_write(i_up_req_write),
@@ -151,6 +168,9 @@ module frost_cache_hierarchy #(
   ) l1i_cache (
       .i_clk(i_clk),
       .i_rst(i_rst),
+      .i_writeback_all(1'b0),
+      .i_invalidate_all(l1i_invalidate_req),
+      .o_maint_busy(l1i_maint_busy),
       .i_up_req_valid(i_iup_req_valid),
       .o_up_req_ready(o_iup_req_ready),
       .i_up_req_write(i_iup_req_write),
@@ -202,6 +222,43 @@ module frost_cache_hierarchy #(
       .i_down_resp_rdata(arb_down_resp_rdata)
   );
 
+  // ---------------------------------------------------------------------------
+  // fence.i sync sequencer: L1D writeback-all, then L1I invalidate-all.
+  // ---------------------------------------------------------------------------
+  typedef enum logic [2:0] {
+    FENCE_IDLE,      // waiting for a sync request
+    FENCE_L1D_REQ,   // request the L1D writeback-all (until its busy rises)
+    FENCE_L1D_WAIT,  // wait out the writeback walk
+    FENCE_L1I_REQ,   // request the L1I invalidate-all (until its busy rises)
+    FENCE_L1I_WAIT,  // wait out the invalidate sweep
+    FENCE_DONE       // hold done until the requester drops the request
+  } fence_state_e;
+
+  fence_state_e fence_state_q;
+
+  assign l1d_writeback_req = (fence_state_q == FENCE_L1D_REQ);
+  assign l1i_invalidate_req = (fence_state_q == FENCE_L1I_REQ);
+  assign o_fence_done = (fence_state_q == FENCE_DONE);
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fence_state_q <= FENCE_IDLE;
+    end else begin
+      unique case (fence_state_q)
+        FENCE_IDLE:     if (i_fence_sync) fence_state_q <= FENCE_L1D_REQ;
+        FENCE_L1D_REQ:  if (l1d_maint_busy) fence_state_q <= FENCE_L1D_WAIT;
+        FENCE_L1D_WAIT: if (!l1d_maint_busy) fence_state_q <= FENCE_L1I_REQ;
+        FENCE_L1I_REQ:  if (l1i_maint_busy) fence_state_q <= FENCE_L1I_WAIT;
+        FENCE_L1I_WAIT: if (!l1i_maint_busy) fence_state_q <= FENCE_DONE;
+        // Once started the sequence always completes (the sweeps are not
+        // abortable); a requester that vanished mid-way (pipeline flush)
+        // just finds done already low again on its next request.
+        FENCE_DONE:     if (!i_fence_sync) fence_state_q <= FENCE_IDLE;
+        default:        fence_state_q <= FENCE_IDLE;
+      endcase
+    end
+  end
+
   if (HAS_L2 != 0) begin : gen_l2
     frost_cache #(
         .ADDR_WIDTH(ADDR_WIDTH),
@@ -213,6 +270,9 @@ module frost_cache_hierarchy #(
     ) l2_cache (
         .i_clk(i_clk),
         .i_rst(i_rst),
+        .i_writeback_all(1'b0),
+        .i_invalidate_all(1'b0),
+        .o_maint_busy(),
         .i_up_req_valid(arb_down_req_valid),
         .o_up_req_ready(arb_down_req_ready),
         .i_up_req_write(arb_down_req_write),
