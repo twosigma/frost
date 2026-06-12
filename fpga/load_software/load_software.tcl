@@ -133,15 +133,17 @@ if {[llength $all_hw_axis] == 1} {
     set ddr_axi [find_hw_axi_by_cell "*jtag_axi_ddr*"]
     if {$bram_axi eq "" || $ddr_axi eq ""} {
         puts "CELL_NAME unavailable; probing JTAG-AXI masters to identify them..."
-        set bram_axi ""
-        set ddr_axi ""
-        foreach axi $all_hw_axis {
-            set axi_name [get_property NAME $axi]
-            if {[probe_hw_axi_echoes $axi_name]} {
-                set ddr_axi $axi_name
-            } else {
-                set bram_axi $axi_name
-            }
+        # One probe suffices with two masters: if the first echoes it is the
+        # DDR loader and the other is the BRAM loader by elimination (and the
+        # BRAM side never sees the probe write at all).
+        set first_name [get_property NAME [lindex $all_hw_axis 0]]
+        set second_name [get_property NAME [lindex $all_hw_axis 1]]
+        if {[probe_hw_axi_echoes $first_name]} {
+            set ddr_axi $first_name
+            set bram_axi $second_name
+        } else {
+            set bram_axi $first_name
+            set ddr_axi $second_name
         }
     }
     if {$bram_axi eq ""} {
@@ -170,6 +172,8 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
     create_hw_axi_txn rst_assert [get_hw_axis $bram_axi] \
         -type write -address 0x00000000 -len 1 -data $first_word
     run_hw_axi [get_hw_axi_txns rst_assert]
+    set ddr_word_count [expr {[file size $ddr_text_file] / 9}]
+    puts "Loading ~${ddr_word_count} words into DDR via ${ddr_axi} (bursts)..."
     file2ddr $ddr_text_file $ddr_axi
 }
 

@@ -369,6 +369,19 @@ if {$step eq "synth"} {
         add_files -norecurse $ddr_subsys_wrapper
     }
 
+    if {$board_name eq "x3"} {
+        # DDR4 subsystem: controller (reference CONFIG) + SmartConnect + JTAG
+        # DDR-image loader, assembled as a small block design (see
+        # x3_ddr_bd.tcl). The generated wrapper is instantiated by x3_frost.sv;
+        # DDR4 pins are constrained in boards/x3/constr/x3.xdc.
+        source [file join [file dirname [info script]] x3_ddr_bd.tcl]
+        create_x3_ddr_bd
+        set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
+        generate_target all [get_files ddr_subsys.bd]
+        set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
+        add_files -norecurse $ddr_subsys_wrapper
+    }
+
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
 
     # Enable Xilinx primitive instantiations and Vivado-specific init handling
