@@ -108,6 +108,79 @@ package riscv_pkg;
   localparam int unsigned ImemSbNativeFpComputeLo = 6;
   localparam int unsigned ImemSbNativeFpComputeHi = 7;
 
+  // Predecode sideband generation: one 8-bit sideband byte per 32-bit
+  // instruction-memory word, a pure function of that word (no lookahead:
+  // each halfword's bits read only that halfword, and the "native" opcode
+  // classes read only the halfword's low 7 bits). Single RTL source of
+  // truth, shared by imem_predecode (init-file expansion + programming-port
+  // writes) and the L1I fill path (imem_predecode_line). The offline
+  // generator sw/common/generate_imem_predecode_init.py mirrors these
+  // functions for the Vivado power-up init files; the imem_predecode_line
+  // cocotb bench cross-checks RTL against it. Opcodes are compared as bit
+  // literals, not opc_e members: Yosys cannot resolve enum values inside
+  // package functions (see get_rs_type below).
+
+  // Compressed control flow: C.JAL/C.J/C.BEQZ/C.BNEZ (quadrant 01) and
+  // C.JR/C.JALR (quadrant 10 with rs2=0, rs1!=0).
+  function automatic logic imem_compressed_control(input logic [15:0] parcel);
+    logic [2:0] funct3;
+    logic [3:0] funct4;
+    logic [4:0] rs1;
+    logic [4:0] rs2;
+    logic [1:0] op;
+    begin
+      funct3 = parcel[15:13];
+      funct4 = parcel[15:12];
+      rs1 = parcel[11:7];
+      rs2 = parcel[6:2];
+      op = parcel[1:0];
+      imem_compressed_control =
+          ((op == 2'b01) &&
+           ((funct3 == 3'b001) || (funct3 == 3'b101) ||
+            (funct3 == 3'b110) || (funct3 == 3'b111))) ||
+          ((op == 2'b10) &&
+           (rs2 == 5'b00000) &&
+           (rs1 != 5'b00000) &&
+           ((funct4 == 4'b1000) || (funct4 == 4'b1001)));
+    end
+  endfunction
+
+  // Native instructions that must serialize dispatch: CSR, MISC-MEM, AMO.
+  function automatic logic imem_native_serialize(input logic [6:0] opcode);
+    begin
+      imem_native_serialize = (opcode == 7'b1110011) ||  // OPC_CSR
+      (opcode == 7'b0001111) ||  // OPC_MISC_MEM
+      (opcode == 7'b0101111);  // OPC_AMO
+    end
+  endfunction
+
+  // Native instructions that use an FP compute unit: OP-FP + the four FMAs.
+  function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
+    begin
+      imem_native_fp_compute = (opcode == 7'b1010011) ||  // OPC_OP_FP
+      (opcode == 7'b1000011) ||  // OPC_FMADD
+      (opcode == 7'b1000111) ||  // OPC_FMSUB
+      (opcode == 7'b1001011) ||  // OPC_FNMSUB
+      (opcode == 7'b1001111);  // OPC_FNMADD
+    end
+  endfunction
+
+  function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
+    logic [ImemSidebandWidth-1:0] sb;
+    begin
+      sb = '0;
+      sb[ImemSbIsCompressedLo] = (word[1:0] != 2'b11);
+      sb[ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
+      sb[ImemSbCompressedControlLo] = imem_compressed_control(word[15:0]);
+      sb[ImemSbCompressedControlHi] = imem_compressed_control(word[31:16]);
+      sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[6:0]);
+      sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
+      sb[ImemSbNativeFpComputeLo] = imem_native_fp_compute(word[6:0]);
+      sb[ImemSbNativeFpComputeHi] = imem_native_fp_compute(word[22:16]);
+      imem_make_sideband = sb;
+    end
+  endfunction
+
   // ===========================================================================
   // Section 2: Instruction Operations
   // ===========================================================================

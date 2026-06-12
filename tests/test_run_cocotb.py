@@ -360,6 +360,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
         verilator_extra_args=("-GHAS_L2=0",),
     ),
+    "line_port_arbiter": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_arbiter",
+        hdl_toplevel_module="line_port_arbiter_test_harness",
+        description="2:1 line-port arbiter unit tests (priority, lock, response routing)",
+    ),
+    "imem_predecode_line": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
+        hdl_toplevel_module="imem_predecode_line",
+        description="Per-line predecode sideband cross-checked against the python generator",
+    ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
         hdl_toplevel_module="frontend_validity_tracker",

@@ -8,6 +8,9 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 # Per-board cache hierarchy wrapper (L1, optional URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
+# 2:1 arbiter for single-outstanding line ports (L1I/L1D -> L2/bridge)
+$(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
+
 # Line-port -> AXI4 master bridge (bottom of the hierarchy)
 $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
 
@@ -16,3 +19,6 @@ $(ROOT)/hw/rtl/lib/cache/axi_behavioral_memory.sv
 
 # Cocotb unit-bench harness (stack + bridge + behavioral memory)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_test_harness.sv
+
+# Cocotb unit-bench harness (arbiter + bridge + behavioral memory)
+$(ROOT)/hw/rtl/lib/cache/line_port_arbiter_test_harness.sv

@@ -46,6 +46,9 @@
  * Sideband bits are stored alongside each 32-bit word.  The sideband carries
  * is-compressed and small opcode-class predecode for each halfword start,
  * letting IF avoid re-decoding raw instruction bits on the PC timing path.
+ * The bit definitions live in riscv_pkg (imem_make_sideband and helpers),
+ * shared with the L1I fill path and mirrored by the offline generator
+ * sw/common/generate_imem_predecode_init.py.
  *
  * BRAM resource impact: the two half-depth banks occupy the same total
  * BRAM as the original single bank — no additional cost.
@@ -99,63 +102,6 @@ module imem_predecode #(
   (* ram_style = "distributed" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
-  function automatic logic compressed_control(input logic [15:0] parcel);
-    logic [2:0] funct3;
-    logic [3:0] funct4;
-    logic [4:0] rs1;
-    logic [4:0] rs2;
-    logic [1:0] op;
-    begin
-      funct3 = parcel[15:13];
-      funct4 = parcel[15:12];
-      rs1 = parcel[11:7];
-      rs2 = parcel[6:2];
-      op = parcel[1:0];
-      compressed_control =
-          ((op == 2'b01) &&
-           ((funct3 == 3'b001) || (funct3 == 3'b101) ||
-            (funct3 == 3'b110) || (funct3 == 3'b111))) ||
-          ((op == 2'b10) &&
-           (rs2 == 5'b00000) &&
-           (rs1 != 5'b00000) &&
-           ((funct4 == 4'b1000) || (funct4 == 4'b1001)));
-    end
-  endfunction
-
-  function automatic logic native_serialize(input logic [6:0] opcode);
-    begin
-      native_serialize = (opcode == riscv_pkg::OPC_CSR) ||
-                         (opcode == riscv_pkg::OPC_MISC_MEM) ||
-                         (opcode == riscv_pkg::OPC_AMO);
-    end
-  endfunction
-
-  function automatic logic native_fp_compute(input logic [6:0] opcode);
-    begin
-      native_fp_compute = (opcode == riscv_pkg::OPC_OP_FP) ||
-                          (opcode == riscv_pkg::OPC_FMADD) ||
-                          (opcode == riscv_pkg::OPC_FMSUB) ||
-                          (opcode == riscv_pkg::OPC_FNMSUB) ||
-                          (opcode == riscv_pkg::OPC_FNMADD);
-    end
-  endfunction
-
-  function automatic logic [SidebandWidth-1:0] make_sideband(input logic [31:0] word);
-    logic [SidebandWidth-1:0] sb;
-    begin
-      sb = '0;
-      sb[riscv_pkg::ImemSbIsCompressedLo] = (word[1:0] != 2'b11);
-      sb[riscv_pkg::ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
-      sb[riscv_pkg::ImemSbCompressedControlLo] = compressed_control(word[15:0]);
-      sb[riscv_pkg::ImemSbCompressedControlHi] = compressed_control(word[31:16]);
-      sb[riscv_pkg::ImemSbNativeSerializeLo] = native_serialize(word[6:0]);
-      sb[riscv_pkg::ImemSbNativeSerializeHi] = native_serialize(word[22:16]);
-      sb[riscv_pkg::ImemSbNativeFpComputeLo] = native_fp_compute(word[6:0]);
-      sb[riscv_pkg::ImemSbNativeFpComputeHi] = native_fp_compute(word[22:16]);
-      make_sideband = sb;
-    end
-  endfunction
-
   // =========================================================================
   // Initialization — split sw.mem into even/odd banks
   // =========================================================================
@@ -181,10 +127,10 @@ module imem_predecode #(
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
           memory_even[i>>1] = init_mem[i];
-          memory_even_sideband[i>>1] = make_sideband(init_mem[i]);
+          memory_even_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
         end else begin
           memory_odd[i>>1] = init_mem[i];
-          memory_odd_sideband[i>>1] = make_sideband(init_mem[i]);
+          memory_odd_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
         end
       end
 `endif
@@ -192,8 +138,8 @@ module imem_predecode #(
       for (int i = 0; i < HalfDepth; i++) begin
         memory_even[i] = DataWidth'(2 * i);
         memory_odd[i] = DataWidth'(2 * i + 1);
-        memory_even_sideband[i] = make_sideband(memory_even[i]);
-        memory_odd_sideband[i] = make_sideband(memory_odd[i]);
+        memory_even_sideband[i] = riscv_pkg::imem_make_sideband(memory_even[i]);
+        memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(memory_odd[i]);
       end
     end
   end
@@ -212,7 +158,7 @@ module imem_predecode #(
 
   // Compute sideband from write data at write time.
   logic [SidebandWidth-1:0] write_sideband;
-  assign write_sideband = make_sideband(i_port_a_write_data);
+  assign write_sideband = riscv_pkg::imem_make_sideband(i_port_a_write_data);
 
   // Port A — even bank
   always_ff @(posedge i_port_a_clk) begin
