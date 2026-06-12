@@ -153,13 +153,13 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 # Format: One 32-bit word per line in hexadecimal (little-endian)
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
-	      -R .ddr_rodata -R .ddr_data $< $@
+	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
 
 # Generate raw binary file (stripped of ELF headers and metadata; cached-region
 # sections excluded so the binary spans only the low BRAM image)
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
-	      -R .ddr_rodata -R .ddr_data $< $@
+	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
 
 # Generate the cached-region (DDR) image: only the .ddr_* loaded sections,
 # rebased so file offset 0 = the cached-region base (0x8000_0000). Loaded by
@@ -167,7 +167,7 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 # Programs with no .ddr_* sections get a single zero word so consumers can
 # always $readmemh the file.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_rodata -j .ddr_data \
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_text -j .ddr_rodata -j .ddr_data \
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
@@ -175,7 +175,7 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 # (the .ddr_* sections start exactly at 0x8000_0000). Empty when the program
 # places nothing in the cached region; the loader skips empty files.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	-$(OBJCOPY) -O binary -j .ddr_text -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
 	@if [ -s sw_ddr.bin ]; then \
 	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
 	else \

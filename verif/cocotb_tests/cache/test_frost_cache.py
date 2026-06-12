@@ -47,6 +47,9 @@ EVICT_BASE = BASE_ADDR + 0x80000
 STROBE_BASE = BASE_ADDR + 0xC0000
 THRASH_BASE = BASE_ADDR + 0x100000
 RANDOM_BASE = BASE_ADDR + 0x140000
+IFETCH_BASE = BASE_ADDR + 0x180000
+ISTALE_BASE = BASE_ADDR + 0x1C0000
+MIXED_BASE = BASE_ADDR + 0x200000
 
 RESP_TIMEOUT_CYCLES = 20_000
 SWEEP_TIMEOUT_CYCLES = 200_000
@@ -58,6 +61,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_up_req_addr.value = 0
     dut.i_up_req_wdata.value = 0
     dut.i_up_req_wstrb.value = 0
+    dut.i_iup_req_valid.value = 0
+    dut.i_iup_req_write.value = 0
+    dut.i_iup_req_addr.value = 0
+    dut.i_iup_req_wdata.value = 0
+    dut.i_iup_req_wstrb.value = 0
 
 
 async def _setup(dut: Any) -> None:
@@ -71,43 +79,57 @@ async def _setup(dut: Any) -> None:
     dut.i_rst.value = 0
     for _ in range(SWEEP_TIMEOUT_CYCLES):
         await FallingEdge(dut.i_clk)
-        if int(dut.o_up_req_ready.value) == 1:
+        if int(dut.o_up_req_ready.value) == 1 and int(dut.o_iup_req_ready.value) == 1:
             return
     raise AssertionError("cache never became ready after reset (sweep stuck?)")
+
+
+async def _port_transaction(
+    dut: Any, port: str, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
+) -> int:
+    """Run one line transaction on a port ("up" = D-side, "iup" = I-side).
+
+    Returns the 256-bit read data (0 for writes). Inputs are driven at
+    falling edges so they are stable across the rising edge that samples
+    them; ready / resp_valid are likewise sampled mid-cycle at falling edges.
+    """
+    req_valid = getattr(dut, f"i_{port}_req_valid")
+    req_ready = getattr(dut, f"o_{port}_req_ready")
+    resp_valid = getattr(dut, f"o_{port}_resp_valid")
+    resp_rdata = getattr(dut, f"o_{port}_resp_rdata")
+
+    await FallingEdge(dut.i_clk)
+    req_valid.value = 1
+    getattr(dut, f"i_{port}_req_write").value = 1 if write else 0
+    getattr(dut, f"i_{port}_req_addr").value = addr
+    getattr(dut, f"i_{port}_req_wdata").value = wdata
+    getattr(dut, f"i_{port}_req_wstrb").value = wstrb
+
+    # Hold valid until a cycle where ready is high: that rising edge fires.
+    for cycle in range(RESP_TIMEOUT_CYCLES):
+        if int(req_ready.value) == 1:
+            break
+        await FallingEdge(dut.i_clk)
+    else:
+        raise AssertionError(f"{port} request never accepted (addr=0x{addr:08x})")
+
+    await FallingEdge(dut.i_clk)  # now in the cycle after the fire
+    req_valid.value = 0
+
+    for cycle in range(RESP_TIMEOUT_CYCLES):
+        if int(resp_valid.value) == 1:
+            return int(resp_rdata.value)
+        await FallingEdge(dut.i_clk)
+    raise AssertionError(f"no {port} response (addr=0x{addr:08x}, write={write})")
 
 
 async def _line_transaction(
     dut: Any, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
 ) -> int:
-    """Run one line transaction; returns the 256-bit read data (0 for writes).
-
-    Inputs are driven at falling edges so they are stable across the rising
-    edge that samples them; o_up_req_ready / o_up_resp_valid are likewise
-    sampled mid-cycle at falling edges.
-    """
-    await FallingEdge(dut.i_clk)
-    dut.i_up_req_valid.value = 1
-    dut.i_up_req_write.value = 1 if write else 0
-    dut.i_up_req_addr.value = addr
-    dut.i_up_req_wdata.value = wdata
-    dut.i_up_req_wstrb.value = wstrb
-
-    # Hold valid until a cycle where ready is high: that rising edge fires.
-    for _ in range(RESP_TIMEOUT_CYCLES):
-        if int(dut.o_up_req_ready.value) == 1:
-            break
-        await FallingEdge(dut.i_clk)
-    else:
-        raise AssertionError(f"request never accepted (addr=0x{addr:08x})")
-
-    await FallingEdge(dut.i_clk)  # now in the cycle after the fire
-    dut.i_up_req_valid.value = 0
-
-    for _ in range(RESP_TIMEOUT_CYCLES):
-        if int(dut.o_up_resp_valid.value) == 1:
-            return int(dut.o_up_resp_rdata.value)
-        await FallingEdge(dut.i_clk)
-    raise AssertionError(f"no response (addr=0x{addr:08x}, write={write})")
+    """Run one D-side line transaction (see _port_transaction)."""
+    return await _port_transaction(
+        dut, "up", write=write, addr=addr, wdata=wdata, wstrb=wstrb
+    )
 
 
 class ReferenceModel:
@@ -250,3 +272,105 @@ async def test_thrash_same_index(dut: Any) -> None:
             await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
         for addr in tags:
             await _check_read(dut, model, addr)
+
+
+async def _force_l1d_writeback(dut: Any, model: ReferenceModel, addr: int) -> None:
+    """Evict addr's L1 line so its dirty data reaches the shared level.
+
+    A write to an aliasing tag (same index) forces the writeback that makes
+    the data visible to L1I fills.
+    """
+    alias = addr + 1024  # L1 is 1 KiB in the harness: same index, new tag
+    full = (1 << LINE_BYTES) - 1
+    wdata = _line_int(bytes([0xE5] * 32))
+    model.write_line(alias, wdata, full)
+    await _line_transaction(dut, write=True, addr=alias, wdata=wdata, wstrb=full)
+
+
+@cocotb.test()
+async def test_iport_reads_written_back_data(dut: Any) -> None:
+    """The I-side reads D-side data once it reaches the shared level."""
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    addr = IFETCH_BASE + 5 * LINE_BYTES
+    wdata = _line_int(bytes([(0x42 + b) & 0xFF for b in range(32)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    await _force_l1d_writeback(dut, model, addr)
+
+    got = await _port_transaction(dut, "iup", write=False, addr=addr)
+    assert got == model.read_line(addr), f"iup read mismatch @0x{addr:08x}"
+
+    # Second read returns identical data (now an L1I hit).
+    got2 = await _port_transaction(dut, "iup", write=False, addr=addr)
+    assert got2 == got
+
+
+@cocotb.test()
+async def test_iport_does_not_snoop_l1d_dirty(dut: Any) -> None:
+    """v1 semantics: L1D-dirty data is invisible to the I-side.
+
+    The I-side fills from the shared level below the arbiter; fence.i exists
+    to force dirty data down before refetching.
+    """
+    await _setup(dut)
+    addr = ISTALE_BASE + 9 * LINE_BYTES
+    full = (1 << LINE_BYTES) - 1
+    wdata = _line_int(bytes([0xAA] * 32))
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    # The line is dirty in L1D and has never been written back: the I-side
+    # fill comes from the shared level, which still holds zeros.
+    got = await _port_transaction(dut, "iup", write=False, addr=addr)
+    assert got == 0, f"iup unexpectedly observed dirty L1D data @0x{addr:08x}"
+
+
+@cocotb.test()
+async def test_mixed_id_traffic(dut: Any) -> None:
+    """Concurrent D-side write/read traffic and I-side reads stay isolated."""
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    rng = random.Random(random.getrandbits(32))
+
+    # Phase 1: D-side writes the I-region with known patterns, then thrashes
+    # an aliasing region twice the L1 size so every I-region line is written
+    # back to the shared level.
+    icode_lines = 16
+    for line in range(icode_lines):
+        addr = MIXED_BASE + line * LINE_BYTES
+        wdata = _line_int(bytes([(line * 11 + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    for line in range(64):  # 2 KiB worth of aliases (L1 = 1 KiB)
+        addr = MIXED_BASE + 0x10000 + line * LINE_BYTES
+        wdata = _line_int(bytes([(0x77 + line + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    # Phase 2: hammer both ports concurrently.
+    async def _d_master() -> None:
+        for _ in range(120):
+            line = rng.randrange(64)
+            addr = MIXED_BASE + 0x10000 + line * LINE_BYTES
+            if rng.random() < 0.5:
+                wdata = rng.getrandbits(256)
+                model.write_line(addr, wdata, full)
+                await _line_transaction(
+                    dut, write=True, addr=addr, wdata=wdata, wstrb=full
+                )
+            else:
+                got = await _line_transaction(dut, write=False, addr=addr)
+                assert got == model.read_line(addr)
+
+    async def _i_master() -> None:
+        for _ in range(120):
+            line = rng.randrange(icode_lines)
+            addr = MIXED_BASE + line * LINE_BYTES
+            got = await _port_transaction(dut, "iup", write=False, addr=addr)
+            assert got == model.read_line(addr), f"iup mismatch @0x{addr:08x}"
+
+    tasks = [cocotb.start_soon(_d_master()), cocotb.start_soon(_i_master())]
+    for task in tasks:
+        await task

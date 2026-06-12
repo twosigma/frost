@@ -590,24 +590,24 @@ $(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(LINKER_SCRIPT)
 
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
-	      -R .ddr_rodata -R .ddr_data $< $@
+	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
 
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
-	      -R .ddr_rodata -R .ddr_data $< $@
+	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
 
 # Cached-region (DDR) image: only the .ddr_* loaded sections, rebased so file
 # offset 0 = CACHED_BASE (0x8000_0000). Always exists (zero word fallback) so
 # the behavioral DDR model / loader can unconditionally consume it.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_rodata -j .ddr_data \
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_text -j .ddr_rodata -j .ddr_data \
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
 # DDR image for the JTAG loader (dense words from the region base; empty when
 # nothing lives in the cached region -- the loader skips empty files).
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	-$(OBJCOPY) -O binary -j .ddr_text -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
 	@if [ -s sw_ddr.bin ]; then \
 	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
 	else \
