@@ -136,7 +136,7 @@ pytest test_arch_compliance.py -v -m slow
 - Verilator only
 - Tests with >5000 test cases are filtered by default (12 tests with 7K-14K cases that take >30 min each). Use `--no-sim-filter` for hardware validation runs
 - In CI, runs as 14 parallel jobs (one per extension) via GitHub Actions matrix strategy, plus 12 additional jobs that each run one slow F/D test excluded by the size filter
-- Simulation uses 2MB memory override (`-GMEM_SIZE_BYTES=2097152`) to fit large test data sections
+- Simulation uses the same 256 KiB low BRAM as hardware (`-GMEM_SIZE_BYTES=262144`); large test data sections fit within the 160 KiB RAM region
 
 ### `test_riscv_tests.py`
 

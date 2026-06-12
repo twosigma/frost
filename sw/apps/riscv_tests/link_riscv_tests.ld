@@ -1,18 +1,18 @@
 /* Linker script for riscv-tests on Frost
  *
  * ROM holds: code + data load image.
- * RAM holds: data runtime copy + BSS + stack.
+ * RAM holds: data runtime copy + BSS + heap + stack.
  *
- * NOTE: This linker script targets 2MB simulation memory.
- * It is NOT suitable for synthesis where hardware defaults to 128KB.
+ * Uses the 256KiB low-BRAM map shared with sw/common/link.ld (96K ROM +
+ * 160K RAM), so the tests link against the same memory the hardware has.
  */
 
 ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 1M
-    RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 1M
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K
+    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
 
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 40
 }

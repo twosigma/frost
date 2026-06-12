@@ -19,5 +19,4 @@
 # script, which places the heap at CACHED_BASE (0x8000_0000, ~1 GiB) while
 # code/data/stack stay in low BRAM.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/memory.c ../../lib/src/string.c ddr_heap_test.c
-LINKER_SCRIPT := ../../common/link_unified.ld
 include ../../common/common.mk

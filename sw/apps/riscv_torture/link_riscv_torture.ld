@@ -3,15 +3,16 @@
  * ROM holds: code (header + test + footer) + data load image
  * RAM holds: data runtime copy (including signature area) + BSS + stack
  *
- * NOTE: 2MB simulation memory. Not suitable for synthesis.
+ * Uses the 256KiB low-BRAM map shared with sw/common/link.ld (96K ROM +
+ * 160K RAM).
  */
 
 ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 1M
-    RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 1M
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K
+    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
 
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 40
 }

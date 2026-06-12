@@ -327,9 +327,9 @@ ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
-# Simulation-only memory override (2MB default, allows arch tests with large data)
-# Only for toplevels that have the MEM_SIZE_BYTES parameter
-SIM_MEM_SIZE_BYTES ?= 2097152
+# Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).
+# Only for toplevels that have the MEM_SIZE_BYTES parameter.
+SIM_MEM_SIZE_BYTES ?= 262144
 # Cached memory tier (high-address region behind the cache hierarchy).
 # Simulation enables the tier with the X3 shape (L1 -> URAM L2 -> DDR model)
 # by default; CACHED_HAS_L2=0 selects the Genesys2 shape (L1 -> DDR model).
@@ -351,4 +351,4 @@ clean:: clean-local
 
 .PHONY: clean-local
 clean-local:
-	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build
+	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build sim_build_arch2m

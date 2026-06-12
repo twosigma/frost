@@ -1,32 +1,55 @@
-/* Linker script for FROST RISC-V bare-metal programs
- * Defines memory layout and section placement for RV32GCB programs
- * IMPORTANT: Memory sizes here must match hardware configuration in cpu_and_mem.sv
+/* Unified linker script for FROST RISC-V bare-metal programs (all boards, all sims)
+ *
+ * Memory model (identical on Genesys2 and X3 — cache hierarchy is opaque):
+ *   [0x00000000, 0x00040000)  256KiB fast BRAM, uncached, 1-cycle, JTAG-loadable
+ *       ROM  96KiB: .text + small .rodata (+ .data/.sdata load image)
+ *       RAM 160KiB: .data/.sdata/.sbss/.bss + stack (top at 0x40000)
+ *   [0x40000000, +44B)        MMIO (unchanged)
+ *   [0x80000000, +1GiB)       cached region, DDR-backed, loadable
+ *       .ddr_rodata/.ddr_data: large loaded sections (e.g. radix2 FFT tables)
+ *       .ddr_bss:              large zero-init sections (zeroed by crt0)
+ *       .ddr_heap:             everything else, to the end of the gigabyte
+ *
+ * Hardware coupling:
+ *   - 256KiB low region must match MEM_SIZE_BYTES (hw/rtl/frost.sv) and the
+ *     axi_bram_ctrl MEM_DEPTH in fpga/build/build_step.tcl (65536 words).
+ *   - 0x80000000 must match CACHED_BASE (hw/rtl/frost.sv / the data-mem
+ *     request router).
+ *   - MMIO addresses must match cpu_and_mem.sv MmioAddr constants.
+ *
+ * Image emission (two files; loader/sim write the regions separately):
+ *   sw.mem      = objcopy -O verilog -R '.ddr_*' ...        (low BRAM image)
+ *   sw_ddr.mem  = objcopy -O verilog -j .ddr_rodata -j .ddr_data
+ *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
+ *
+ * Stack: lives in low BRAM for ALL programs (fast, uncached). The 112KiB
+ * reserve below is the measured CoreMark-PRO high-water (parser) + margin;
+ * the ASSERT keeps any program's data+bss from silently eating into it.
+ *
+ * .ddr_data caveat: loaded in place at its runtime address (LMA == VMA);
+ * unlike low .data it is NOT re-initialized by crt0 on a reset without a
+ * reload. The JTAG/sim flow always reloads, so this only matters if a future
+ * flow restarts the CPU without rewriting memory.
  */
 
 ENTRY(_start)
 
 MEMORY
 {
-    /* Read-only memory region for code and constants
-     * WARNING: If total memory size changes from 128K, must update hardware in cpu_and_mem.sv */
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K   /* Executable code + read-only data */
-
-    /* Read-write memory region for variables and stack
-     * Starts at 96K offset (0x18000) to follow ROM */
-    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 32K   /* Initialized data + BSS + stack + heap */
-
-    /* Memory-mapped I/O peripheral region - DO NOT USE for regular data/code!
-     * CRITICAL: If these addresses change, must also update:
-     *   - hw/rtl/cpu_and_mem/cpu_and_mem.sv (MmioAddr constants)
-     *   - This file's PROVIDE statements below
-     */
-    MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 44    /* Peripherals: UART TX/RX, FIFOs, Timer, MSIP */
+    ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 96K    /* code + read-only data */
+    RAM  (rwx) : ORIGIN = 0x00018000, LENGTH = 160K   /* data + bss + stack */
+    DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = 1024M  /* cached region: big data + heap */
+    MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals: UART, FIFOs, timer, MSIP */
 }
 
-/* Stack configuration - C stack grows downward from top of RAM
- * Stack pointer (sp) is initialized to this address in crt0.S */
+/* Stack grows downward from the top of low RAM (0x00040000).
+ * sp is initialized to this address in crt0.S */
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
+
+/* Measured CoreMark-PRO stack high-water is 112KiB (parser); reserve it for
+ * every program so the data+bss fit check below is a real guarantee. */
+__stack_reserve = 112K;
 
 /* FreeRTOS ISR stack top - reuses main's stack after scheduler starts */
 __freertos_irq_stack_top = _end_of_stack;
@@ -34,87 +57,106 @@ __freertos_irq_stack_top = _end_of_stack;
 SECTIONS
 {
     /* ================================================================
-     * ROM SECTIONS (Read-only, executed from flash/ROM)
+     * ROM SECTIONS (read-only, executed in place)
      * ================================================================ */
 
-    /* .text section - Executable code */
     .text : {
         KEEP(*(.init))      /* Startup code (crt0.S) - must be first */
-        *(.text*)           /* All code sections */
+        *(.text*)
         *(.text.*)
     } > ROM
 
-    /* .rodata section - Read-only data (constants, strings) */
+    /* Small/hot read-only data stays in fast BRAM. Large datasets destined
+     * for the cached region are EXCLUDEd here and collected in .ddr_rodata
+     * below — add one EXCLUDE_FILE glob per big-data object. Objects can
+     * also opt in explicitly with __attribute__((section(".ddr_rodata"))). */
     .rodata : {
-        *(.rodata*)         /* Large read-only data */
-        *(.rodata.*)
+        *(EXCLUDE_FILE(*data3_big*) .rodata*)   /* radix2-big-64k FFT tables -> DDR */
         *(.srodata*)        /* Small read-only data (accessed via gp) */
-        . = ALIGN(4);       /* Word-align for efficient access */
+        . = ALIGN(4);
     } > ROM
 
     /* ================================================================
-     * RAM SECTIONS (Read-write, must be copied from ROM at startup)
+     * RAM SECTIONS (read-write, copied from ROM by crt0.S)
      * ================================================================ */
 
-    /* .data section - Initialized global/static variables
-     * Stored in ROM, copied to RAM by crt0.S before main() */
     .data : AT(ADDR(.rodata) + SIZEOF(.rodata)) {
         __data_load_start = LOADADDR(.data);   /* Source address in ROM */
         __data_start      = .;                 /* Destination address in RAM */
-
-        *(.data*)           /* Initialized data */
+        *(.data*)
         . = ALIGN(4);
     } > RAM
 
-    /* .sdata section - Small initialized data (accessed via global pointer)
-     * Allows efficient access to frequently-used globals within ±2KB of gp */
     .sdata : AT(LOADADDR(.data) + SIZEOF(.data)) {
-        *(.sdata*)          /* Small initialized data */
+        *(.sdata*)
         . = ALIGN(4);
         __data_end = .;     /* End of data to copy from ROM */
     } > RAM
 
     /* ================================================================
-     * BSS SECTIONS (Zero-initialized, created at runtime)
+     * BSS SECTIONS (zero-initialized by crt0.S)
      * ================================================================ */
 
-    /* .sbss section - Small uninitialized data (accessed via gp)
-     * Zeroed by crt0.S before main() */
     .sbss : {
         __sbss_start = .;
-        *(.sbss*)           /* Small uninitialized data */
-        *(.scommon*)        /* Small common symbols */
+        *(.sbss*)
+        *(.scommon*)
         . = ALIGN(4);
         __sbss_end = .;
     } > RAM
 
-    /* .bss section - Uninitialized global/static variables
-     * Zeroed by crt0.S before main() */
     .bss : {
         __bss_start = .;
-        *(.bss*)            /* Uninitialized data */
-        *(COMMON)           /* Common symbols */
+        *(.bss*)
+        *(COMMON)
         . = ALIGN(4);
         __bss_end = .;
     } > RAM
 
-    /* .heap section - For dynamic heap allocations. */
-    .heap (NOLOAD) : {
-        . = ALIGN(4);
-        _heap_start = .;
-        . = . + 8K; /* 8K heap size */
-        _heap_end = .;
-    } > RAM
+    /* ================================================================
+     * DDR SECTIONS (cached region; loaded directly by JTAG/sim, not crt0)
+     * ================================================================ */
 
+    /* Large read-only datasets (LMA == VMA; written by the loader). */
+    .ddr_rodata : {
+        __ddr_rodata_start = .;
+        *data3_big*(.rodata*)   /* radix2-big-64k 64K-point FFT reference data */
+        *(.ddr_rodata*)         /* explicit opt-in via section attribute */
+        . = ALIGN(4);
+        __ddr_rodata_end = .;
+    } > DDR
+
+    /* Large initialized read-write data (LMA == VMA; see caveat in header). */
+    .ddr_data : {
+        __ddr_data_start = .;
+        *(.ddr_data*)
+        . = ALIGN(4);
+        __ddr_data_end = .;
+    } > DDR
+
+    /* Large zero-initialized data; zeroed by crt0. */
+    .ddr_bss (NOLOAD) : {
+        __ddr_bss_start = .;
+        *(.ddr_bss*)
+        . = ALIGN(4);
+        __ddr_bss_end = .;
+    } > DDR
+
+    /* Heap: the rest of the gigabyte. memory.c's _sbrk allocates
+     * [_heap_start, _heap_end); no fixed size carved out here. */
+    .ddr_heap (NOLOAD) : {
+        . = ALIGN(16);
+        _heap_start = .;
+    } > DDR
+    _heap_end = ORIGIN(DDR) + LENGTH(DDR);
 
     /* ================================================================
      * DISCARDED SECTIONS
      * ================================================================ */
 
-    /* Drop C++ exception handling info (not used in bare-metal) */
     /DISCARD/ : {
-        *(.eh_frame*)       /* Exception frame information */
-        *(.eh_frame_hdr*)   /* Exception frame header */
+        *(.eh_frame*)
+        *(.eh_frame_hdr*)
     }
 
     /* ================================================================
@@ -122,18 +164,10 @@ SECTIONS
      * ================================================================ */
 
     /* Global pointer (gp) for efficient small data access
-     * Must be within ±2048 bytes (±0x800) of all .sdata/.sbss objects
-     * Set to middle of small data region for optimal coverage */
+     * Must be within ±2048 bytes (±0x800) of all .sdata/.sbss objects */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
-    /* Cached-region BSS bounds: this script places nothing in the cached
-     * region, so provide empty bounds for crt0's .ddr_bss zeroing loop.
-     * (The unified linker script defines the real symbols.) */
-    PROVIDE(__ddr_bss_start = 0);
-    PROVIDE(__ddr_bss_end = 0);
-
     /* Memory-mapped I/O peripheral addresses
-     * These symbols are referenced by C code (uart.c, fifo.h, timer.h, trap.h)
      * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
     PROVIDE(UART_ADDR           = 0x40000000);  /* UART transmit register (write-only) */
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);  /* UART receive data (read consumes byte) */
@@ -148,3 +182,16 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);  /* mtimecmp[63:32] - Timer compare high */
     PROVIDE(MSIP_ADDR        = 0x40000020);  /* Machine software interrupt pending */
 }
+
+/* ====================================================================
+ * FIT CHECKS
+ * ==================================================================== */
+
+/* ROM load image (text + rodata + data/sdata copy source) must fit ROM.
+ * .data/.sdata use AT(expr), which ld does not check against the region. */
+ASSERT(LOADADDR(.sdata) + SIZEOF(.sdata) <= ORIGIN(ROM) + LENGTH(ROM),
+       "ROM overflow: .text + .rodata + .data/.sdata load image exceeds 96K")
+
+/* RAM data+bss must leave the full stack reserve free below _stack_top. */
+ASSERT(__bss_end <= _end_of_stack - __stack_reserve,
+       "RAM overflow: data+bss eats into the 112K stack reserve")

@@ -189,8 +189,15 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     # Set up the sw.mem symlink manually
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
+    # link_arch_test.ld uses a sim-only 2 MiB low region (the big compliance
+    # tests compile to >96K of code and FROST executes only from low BRAM).
+    # Build frost with the matching BRAM size in a DEDICATED build dir so the
+    # default sim_build (256 KiB, matching hardware) is never reused with the
+    # wrong memory size in either direction.
     sim_build_dir = runner._get_sim_build_dir(env)
+    sim_build_dir = sim_build_dir.parent / (sim_build_dir.name + "_arch2m")
     env["SIM_BUILD"] = str(sim_build_dir)
+    env["SIM_MEM_SIZE_BYTES"] = "2097152"
     # Arch tests with many test vectors need more cycles than the default 500K.
     # The fmadd/fmsub/fnmadd/fnmsub tests have ~14K test cases each, and
     # double-precision b11 tests have ~11K cases, needing well over 5M cycles.
@@ -200,10 +207,10 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     os.chdir(TESTS_DIR)
 
     try:
-        # Clean only if toplevel changed
+        # Clean only if toplevel changed (within the dedicated build dir)
         needs_clean = runner._verilator_needs_rebuild(sim_build_dir)
         if needs_clean:
-            subprocess.run(["make", "clean"], check=False)
+            subprocess.run(["make", "clean"], check=False, env=env)
 
         # Set up sw.mem symlink pointing to our compiled test
         sw_mem_path = Path("sw.mem")

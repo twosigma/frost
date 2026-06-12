@@ -1,19 +1,19 @@
 /* Linker script for FreeRTOS on FROST RISC-V
- * Based on common/link.ld but WITHOUT the heap section since FreeRTOS manages its own heap
- * IMPORTANT: Memory sizes here must match hardware configuration in cpu_and_mem.sv
+ * Based on common/link.ld but WITHOUT the heap section since FreeRTOS manages
+ * its own heap, and with no cached-DDR sections (everything lives in the
+ * 256KiB low BRAM).
+ * IMPORTANT: Memory sizes here must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
  */
 
 ENTRY(_start)
 
 MEMORY
 {
-    /* Read-only memory region for code and constants
-     * WARNING: If total memory size changes from 128K, must update hardware in cpu_and_mem.sv */
     ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K   /* Executable code + read-only data */
 
     /* Read-write memory region for variables and stack
      * Starts at 96K offset (0x18000) to follow ROM */
-    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 32K   /* Initialized data + BSS + stack + FreeRTOS heap */
+    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K  /* Initialized data + BSS + stack + FreeRTOS heap */
 
     /* Memory-mapped I/O peripheral region - DO NOT USE for regular data/code!
      * CRITICAL: If these addresses change, must also update:

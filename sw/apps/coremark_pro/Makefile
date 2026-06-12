@@ -470,11 +470,11 @@ INTERPOSE_CFLAGS := $(MITH_CFLAGS) -DCMP_PGO_TRAINING=$(WL_PGO) \
                     '-DCOREMARK_PRO_RUN_ARGS="$(COREMARK_PRO_RUN_ARGS)"'
 
 # --- Linker ----------------------------------------------------------------
-# Unified memory map (sw/common/link_unified.ld): code/data/stack in the
+# Unified memory map (sw/common/link.ld): code/data/stack in the
 # 256 KiB low BRAM, heap (and any .ddr_* sections, e.g. radix2's FFT tables)
 # in the DDR-backed 1 GiB cached region at 0x8000_0000 -- identical on both
 # boards and in simulation.
-LINKER_SCRIPT := ../../common/link_unified.ld
+LINKER_SCRIPT := ../../common/link.ld
 # -lm covers libm symbols (cos/sin/pow/sqrt/log10) used by the FP workloads
 # (linpack/loops/nnet/radix2); harmless for the integer workloads. -lgcc
 # supplies soft helpers (64-bit divide in the timing math, soft float helpers).
