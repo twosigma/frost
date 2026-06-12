@@ -59,10 +59,9 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
-        # 41 iterations ~= 10.2s, the minimum over the 10s score rule. Needs
-        # the 1936 KiB heap (112 KiB stack reserve, see coremark_pro.ld);
-        # -i42 needs ~1982 KiB worst-case and does not fit even with the
-        # stack reserve cut to the measured-safe minimum.
+        # 41 iterations ~= 10.2s, the minimum over the 10s score rule
+        # (calibrated against the pre-DDR 1936 KiB heap; the DDR heap no
+        # longer constrains iterations -- recalibrate with the sweep tooling).
         hardware_iterations=41,
     ),
     CoremarkProProgram(
@@ -77,7 +76,7 @@ COREMARK_PRO_PROGRAMS = (
         workload="loops-all-mid-10k-sp",
         description="CoreMark-PRO Livermore loops single-precision workload",
         # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
-        # Iteration count to be recalibrated on hardware once DDR lands.
+        # Iteration count to be recalibrated on hardware with the sweep tooling.
         hardware_iterations=5000,
     ),
     CoremarkProProgram(
@@ -90,8 +89,9 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_parser",
         workload="parser-125k",
         description="CoreMark-PRO XML parser workload",
-        # Parser runtime is heap-size sensitive (8.18s at -i8 after the heap
-        # grew to 1936 KiB, vs 10.78s with the 1792 KiB heap); -i10 ~= 10.2s.
+        # Parser runtime is heap-size sensitive (timings shifted with each
+        # heap-size change pre-DDR); -i10 ~= 10.2s on the 1936 KiB heap --
+        # recalibrate on the DDR heap with the sweep tooling.
         hardware_iterations=10,
     ),
     CoremarkProProgram(
@@ -114,7 +114,7 @@ COREMARK_PRO_PROGRAMS = (
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
-        # Iteration count to be recalibrated on hardware once DDR lands.
+        # Iteration count to be recalibrated on hardware with the sweep tooling.
         hardware_iterations=5000,
     ),
 )
