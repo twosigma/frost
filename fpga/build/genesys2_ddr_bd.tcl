@@ -17,19 +17,18 @@
 #
 # Genesys2 DDR3 subsystem block design.
 #
-# Transplanted from the hardware-verified vivado-risc-v genesys2 design
-# (board/genesys2/riscv-2025.2.tcl): the MIG 7-series controller configured by
-# the same mig_a.prj (MT41J256M16XX-107, 200 MHz input, 32-bit DDR3, 256-bit
-# AXI), the same mem-reset-control calibration sequencing, and a SmartConnect
-# in front of the MIG. Differences from the reference: the CPU-side AXI slave
-# port is external (FROST's cache-hierarchy bridge, 256-bit @ the core clock)
-# and a second JTAG-AXI master is added so the software loader can write the
-# DDR image (region-relative addresses, full AXI4 for bursts).
+# The MIG 7-series controller configured by mig_a.prj (MT41J256M16XX-107,
+# 200 MHz input, 32-bit DDR3, 256-bit AXI -- a configuration proven on this
+# board), mem_reset_control calibration sequencing, and a SmartConnect in
+# front of the MIG. The CPU-side AXI slave port is external (FROST's
+# cache-hierarchy bridge, 256-bit @ the core clock) and a second JTAG-AXI
+# master lets the software loader write the DDR image (region-relative
+# addresses, full AXI4 for bursts).
 #
 # The block design is created inside the synthesis project by build_step.tcl
 # (genesys2 only); genesys2_frost.sv instantiates the generated wrapper.
 
-# --- mig_a.prj writer (verbatim from the reference, module name adjusted) ---
+# --- mig_a.prj writer -------------------------------------------------------
 proc write_genesys2_mig_prj { str_mig_prj_filepath } {
 
    file mkdir [ file dirname "$str_mig_prj_filepath" ]
@@ -247,10 +246,9 @@ proc create_genesys2_ddr_bd {} {
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
-  # MIG 7-series DDR3 controller, configured by the transplanted mig_a.prj.
+  # MIG 7-series DDR3 controller, configured by the mig_a.prj above.
   # BOARD_MIG_PARAM is Custom (no Vivado board part in this flow); every pin
-  # LOC/IOSTANDARD comes from the prj's PinSelection, exactly as verified in
-  # the reference design.
+  # LOC/IOSTANDARD comes from the prj's PinSelection.
   set mig [create_bd_cell -type ip -vlnv xilinx.com:ip:mig_7series:4.2 mig_7series_0]
   set mig_dir [get_property IP_DIR [get_ips [get_property CONFIG.Component_Name $mig]]]
   write_genesys2_mig_prj ${mig_dir}/mig_a.prj
@@ -265,7 +263,7 @@ proc create_genesys2_ddr_bd {} {
   set jtag_ddr [create_bd_cell -type ip -vlnv xilinx.com:ip:jtag_axi:1.2 jtag_axi_ddr]
   set_property CONFIG.PROTOCOL {0} $jtag_ddr
 
-  # Reset/calibration sequencing (verbatim module from the reference design).
+  # Reset/calibration sequencing.
   set mrc [create_bd_cell -type module -reference mem_reset_control mem_reset_control_0]
 
   # AXI aggregation + clock/width conversion in front of the MIG.
@@ -294,7 +292,7 @@ proc create_genesys2_ddr_bd {} {
   connect_bd_net [get_bd_ports clk_200m] [get_bd_pins mig_7series_0/sys_clk_i] \
       [get_bd_pins mem_reset_control_0/clock]
 
-  # Reset / calibration sequencing (mirrors the reference wiring).
+  # Reset / calibration sequencing.
   connect_bd_net [get_bd_ports sys_reset] [get_bd_pins mem_reset_control_0/sys_reset]
   connect_bd_net [get_bd_ports pll_locked] [get_bd_pins mem_reset_control_0/clock_ok]
   connect_bd_net [get_bd_pins mig_7series_0/mmcm_locked] [get_bd_pins mem_reset_control_0/mmcm_locked]

@@ -4,14 +4,21 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 
 ## Supported Boards
 
-| Board                  | FPGA                               | CPU Clock  | URAM Tier        | Features                 |
-|------------------------|------------------------------------|------------|------------------|--------------------------|
-| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | No (no UltraRAM) | Entry-level development  |
-| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 2 MiB @ `0x0100_0000` | High-performance target  |
+| Board                  | FPGA                               | CPU Clock  | Cache hierarchy → main memory                | Features                 |
+|------------------------|------------------------------------|------------|----------------------------------------------|--------------------------|
+| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB BRAM L1 → 1 GiB DDR3                  | Entry-level development  |
+| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB BRAM L1 → 2 MiB URAM L2 → 1 GiB DDR4  | High-performance target  |
 
-The URAM tier (UltraScale+ only, `ENABLE_URAM_TIER` in `frost.sv`) is a 2 MiB
-UltraRAM data region with 6-cycle reads and 2-cycle writes; large-heap
-workloads such as CoreMark-PRO require it, so they run on X3 only.
+Both boards expose the identical software-visible memory map (256 KiB fast
+low BRAM + a 1 GiB cached region at `0x8000_0000`); only the hierarchy shape
+differs (`CACHED_HAS_L2` in the board top). Each board's DDR controller lives
+in a small `ddr_subsys` block design assembled by the build flow
+(`fpga/build/genesys2_ddr_bd.tcl` / `fpga/build/x3_ddr_bd.tcl`): the memory
+controller IP (MIG DDR3 / DDR4), a SmartConnect front end carrying the FROST
+cache-bridge AXI and a JTAG-AXI master for DDR image loading, and
+calibration/reset sequencing. The CPU is held in reset until the controller
+calibrates (`mem_ok`, synchronized into the core clock domain), and all nine
+CoreMark-PRO workloads run on both boards.
 
 ## Architecture Overview
 

@@ -45,9 +45,7 @@ set_property -dict {PACKAGE_PIN AR24 IOSTANDARD LVCMOS18} [get_ports i_uart_rx]
 
 #####################################################################
 # DDR4 SDRAM + dedicated 300 MHz system clock
-# Copied verbatim from the hardware-verified vivado-risc-v x3522pv
-# reference design (board/x3522pv/top.xdc); the ddr_subsys block design
-# exposes interfaces with matching port names.
+# The ddr_subsys block design exposes interfaces with matching port names.
 #####################################################################
 set_property PACKAGE_PIN AN27              [get_ports "default_300mhz_clk0_clk_p"]       ;#  Bank  66 VCCO - 1V2_VCCO - IO_L13P_T2L_N0_GC_QBC_66_AN27
 set_property IOSTANDARD LVDS               [get_ports "default_300mhz_clk0_clk_p"]       ;#  Bank  66 VCCO - 1V2_VCCO - IO_L13P_T2L_N0_GC_QBC_66_AN27

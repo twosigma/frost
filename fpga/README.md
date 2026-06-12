@@ -163,11 +163,15 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 # Load FreeRTOS demo on Genesys2
 ./fpga/load_software/load_software.py genesys2 freertos_demo
 
-# CoreMark-PRO workloads (X3 only — they need the 2 MiB URAM heap) take a
-# mandatory mode flag: -v1 runs self-validation, -v0 runs the performance
-# configuration with the per-workload iteration counts from
-# sw/apps/software_registry.py.
+# CoreMark-PRO workloads (both boards; heaps live in the 1 GiB cached DDR
+# region) take a mandatory mode flag: -v1 runs self-validation, -v0 runs the
+# performance configuration with the per-workload iteration counts from
+# sw/apps/software_registry.py. Workloads with data in the cached region
+# (e.g. radix2's ~800 KiB FFT tables in sw_ddr.txt) are burst-loaded into DDR
+# over a dedicated JTAG-AXI master before the low-BRAM image; the loader
+# identifies the two JTAG masters automatically and prints its selection.
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
+./fpga/load_software/load_software.py genesys2 coremark_pro_radix2 -v1
 ./fpga/load_software/load_software.py x3 coremark_pro_linear_alg -v0
 
 # List targets for this board (doesn't require app argument)

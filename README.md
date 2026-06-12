@@ -12,7 +12,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
 - **Solid performance** — 3.06 CoreMark/MHz (917 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
-- **Real workloads included** — CoreMark Pro benchmark, FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
+- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
@@ -99,7 +99,8 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **URAM memory tier** — a 2 MiB UltraRAM data region at `0x0100_0000` (X3 / UltraScale+ only; 6-cycle reads, 2-cycle writes) backing large heaps such as CoreMark-PRO's, alongside the 1-cycle 128 KiB low-BRAM window
+- **Write-back cache hierarchy over DDR** — a 1 GiB cached data region at `0x8000_0000` served by a recursive line-port cache (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate): a 128 KiB BRAM L1 on every board, plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
+- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (heap and large data); the hierarchy shape behind it is opaque to software
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
@@ -186,7 +187,7 @@ frost/
 │   │   ├── frost.sv          # Top-level module
 │   │   ├── frost.f           # File list for synthesis/simulation
 │   │   ├── cpu_and_mem/      # CPU core and memory subsystem
-│   │   ├── lib/              # Generic FPGA library (RAM, FIFO)
+│   │   ├── lib/              # Generic FPGA library (RAM, FIFO, cache)
 │   │   └── peripherals/      # UART, etc.
 │   └── sim/                  # Simulation-only files (testbenches)
 ├── sw/                       # Software
@@ -199,7 +200,7 @@ frost/
 │       ├── riscv_tests/      # riscv-tests ISA tests (126 tests)
 │       ├── riscv_torture/    # Random instruction torture tests (20 tests)
 │       ├── coremark/         # CPU benchmark
-│       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (X3 URAM heap)
+│       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
 ├── verif/                    # Verification infrastructure
@@ -247,8 +248,12 @@ pytest tests/ -s                           # With live output
 ./tests/test_run_cocotb.py hello_world     # Hello World program
 ./tests/test_run_cocotb.py isa_test        # ISA compliance
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
-./tests/test_run_cocotb.py coremark_pro_core  # CoreMark-PRO workload (also
-                                           # _cjpeg/_linear_alg/_nnet/_parser/_sha)
+./tests/test_run_cocotb.py coremark_pro_core  # CoreMark-PRO workload (all nine:
+                                           # _cjpeg/_linear_alg/_loops/_nnet/
+                                           # _parser/_radix2/_sha/_zip)
+./tests/test_run_cocotb.py ddr_test        # Cached-region (DDR) tier test
+./tests/test_run_cocotb.py ddr_heap_test   # Multi-MB malloc through the caches
+./tests/test_run_cocotb.py frost_cache     # Cache-hierarchy unit bench (X3 shape)
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
 # With waveform output
@@ -283,7 +288,7 @@ Running `pytest tests/` exercises:
 ### FPGA Deployment
 
 ```bash
-# 1. Build bitstream (~15-30 min)
+# 1. Build bitstream (~30-90 min with the DDR subsystem and timing sweeps)
 ./fpga/build/build.py x3
 
 # 2. Program FPGA
@@ -294,9 +299,12 @@ Running `pytest tests/` exercises:
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
 
-# CoreMark-PRO workloads (X3 only; -v1 = validation, -v0 = performance run
-# with calibrated iterations from sw/apps/software_registry.py)
+# CoreMark-PRO workloads (both boards; -v1 = validation, -v0 = performance run
+# with calibrated iterations from sw/apps/software_registry.py). Workloads with
+# data in the cached region (e.g. radix2's FFT tables) are loaded into DDR over
+# JTAG automatically before the low-BRAM image.
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
+./fpga/load_software/load_software.py genesys2 coremark_pro_radix2 -v1
 ```
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
@@ -304,34 +312,39 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 ## Supported FPGA Boards
 
-| Board              | FPGA                 | CPU Clock | URAM Tier             |
-|--------------------|----------------------|-----------|-----------------------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 2 MiB @ `0x0100_0000` |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | — (no UltraRAM)       |
+| Board              | FPGA                 | CPU Clock | Cache hierarchy → main memory               |
+|--------------------|----------------------|-----------|---------------------------------------------|
+| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB BRAM L1 → 2 MiB URAM L2 → 1 GiB DDR4 |
+| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB BRAM L1 → 1 GiB DDR3                 |
+
+Both boards also carry the 256 KiB fast (uncached, 1-cycle) low BRAM region and
+present the identical software-visible memory map: `[0, 256 KiB)` fast BRAM,
+`[0x8000_0000, +1 GiB)` cached DDR. The CPU is held in reset until the DDR
+controller calibrates, so software never observes an uninitialized main memory.
 
 
 <!-- FPGA_UTILIZATION_START -->
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz, post-place of the DDR4 + cache build)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 124,179 | 1,029,600 | 12.1% |
-|   LUT as Logic | 113,805 | 1,029,600 | 11.1% |
-|   LUT as Distributed RAM | 9,856 | — | — |
-|   LUT as Shift Register | 518 | — | — |
-| CLB Registers | 68,421 | 2,059,200 | 3.3% |
-| Block RAM Tile | 71.5 | 2,112 | 3.4% |
+| CLB LUTs | 162,789 | 1,029,600 | 15.8% |
+|   LUT as Logic | 142,345 | 1,029,600 | 13.8% |
+|   LUT as Distributed RAM | 19,274 | — | — |
+|   LUT as Shift Register | 1,170 | — | — |
+| CLB Registers | 111,790 | 2,059,200 | 5.4% |
+| Block RAM Tile | 223.5 | 2,112 | 10.6% |
 | URAM | 64 | 352 | 18.2% |
-| DSPs | 32 | 1,320 | 2.4% |
-| CARRY8 | 4,349 | 128,700 | 3.4% |
-| F7 Muxes | 98 | 514,800 | 0.0% |
+| DSPs | 35 | 1,320 | 2.7% |
+| CARRY8 | 4,416 | 128,700 | 3.4% |
+| F7 Muxes | 208 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
-| Bonded IOB | 4 | 364 | 1.1% |
-| MMCM | 1 | 11 | 9.1% |
-| PLL | 0 | 22 | 0.0% |
+| Bonded IOB | 132 | 364 | 36.3% |
+| MMCM | 2 | 11 | 18.2% |
+| PLL | 3 | 22 | 13.6% |
 
 **Digilent Genesys2** (Kintex-7 @ 133 MHz)
 
@@ -388,6 +401,8 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
+| **L1/L2 Cache** | Write-back line caches serving the 1 GiB cached DDR region |
+| **Cached region** | `[0x8000_0000, +1 GiB)` — heap and large data, behind L1[/L2]→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |
 | **DirPred**     | 1024-entry bimodal branch-direction predictor    |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |

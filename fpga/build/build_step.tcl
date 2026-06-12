@@ -352,7 +352,7 @@ if {$step eq "synth"} {
     synth_ip [get_ips]
 
     if {$board_name eq "genesys2"} {
-        # DDR3 subsystem: MIG (configured by the transplanted mig_a.prj) +
+        # DDR3 subsystem: MIG (configured by an inline mig_a.prj) +
         # SmartConnect + JTAG DDR-image loader + calibration/reset sequencing,
         # assembled as a small block design (see genesys2_ddr_bd.tcl). The
         # generated wrapper (ddr_subsys_wrapper) is instantiated by

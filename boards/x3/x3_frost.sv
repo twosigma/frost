@@ -29,8 +29,7 @@ module x3_frost (
     input logic default_300mhz_clk0_clk_p,
     input logic default_300mhz_clk0_clk_n,
 
-    // DDR4 SDRAM (pins constrained in constr/x3.xdc, copied from the
-    // hardware-verified reference design)
+    // DDR4 SDRAM (pins constrained in constr/x3.xdc)
     output logic [16:0] ddr4_sdram_c0_adr,
     output logic        ddr4_sdram_c0_act_n,
     output logic [ 1:0] ddr4_sdram_c0_ba,
@@ -200,8 +199,8 @@ module x3_frost (
   // tier is usable from the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000),
-      // X3 = UltraScale+ (VU23P): L1 BRAM + L2 URAM hierarchy shape, backed
-      // by the DDR4 controller through the AXI port below.
+      // X3 = UltraScale+: L1 BRAM + L2 URAM hierarchy shape, backed by the
+      // DDR4 controller through the AXI port below.
       .ENABLE_CACHED_TIER(1),
       .CACHED_HAS_L2(1),
       .USE_BEHAVIORAL_DDR(0)
