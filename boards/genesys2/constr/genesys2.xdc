@@ -36,6 +36,13 @@ set_property -dict {PACKAGE_PIN R19 IOSTANDARD LVCMOS33} [get_ports i_pb_resetn]
 # regions.
 set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets differential_clock_200mhz_buffered]
 
-# mem_ok crosses from the DDR controller's ui_clk domain into the core-clock
-# reset tree through a dedicated 2FF synchronizer: cut the timing into it.
-set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg\[0\]/D"}]
+# mem_ok crosses from the DDR controller's ui_clk (clk_pll_i) domain into the
+# core-clock (clock_from_mmcm) reset tree through a dedicated 2FF synchronizer:
+# cut the timing into it. Both clocks derive from the single 200 MHz i_sysclk_p
+# but through separate MMCM/PLLs, so the crossing has no meaningful phase
+# relationship and must not be timed.
+# NOTE: the brackets are LITERAL in a `-filter {NAME =~ ...}` glob -- do NOT
+# backslash-escape them. "reg\[0\]" matches a literal backslash and silently
+# selects nothing, leaving the crossing timed (the synchronizer then shows up
+# as the worst path, ~-0.5 ns, and poisons the build's WNS).
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
