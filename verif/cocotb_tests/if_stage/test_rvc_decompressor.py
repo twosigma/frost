@@ -363,9 +363,11 @@ async def test_c_lui_and_c_addi16sp_expand_and_reject_zero_immediates(
     )
 
     for illegal_raw in (
+        # C.LUI rd!=0 with imm==0 is reserved; C.ADDI16SP with imm==0 is
+        # reserved. (C.LUI rd=0 with imm!=0 is a HINT, not illegal -- see
+        # test_rvc_rd0_hints_are_legal_nops.)
         _pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=(10 << 5)),
         _pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=(2 << 5)),
-        _pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=0b10000),
     ):
         _drive(dut, illegal_raw)
         await _settle()
@@ -507,9 +509,12 @@ async def test_quadrant2_jr_jalr_ebreak_and_illegal_rd_zero(dut: Any) -> None:
 
 @cocotb.test()
 async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
-    """C.SLLI and C.LWSP reject rd=x0 and invalid RV32 shamt encodings."""
+    """C.SLLI rejects RV32 shamt[5]=1; C.LWSP rejects rd=x0.
+
+    (C.SLLI rd=x0 is NOT illegal -- it is a HINT; see
+    test_rvc_rd0_hints_are_legal_nops.)
+    """
     for raw in (
-        _pack_compressed(funct3=0b000, quadrant=0b10, bits12_2=0b00101),
         _pack_compressed(funct3=0b000, quadrant=0b10, bits12_2=(1 << 10) | (3 << 5)),
         _pack_compressed(funct3=0b010, quadrant=0b10, bits12_2=0b00101),
     ):
@@ -517,3 +522,29 @@ async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
         await _settle()
 
         assert bool(dut.o_illegal.value) is True
+
+
+@cocotb.test()
+async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
+    """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that must nop.
+
+    They expand to a write of x0 (architectural nop) and must NOT raise
+    illegal. Regression for the cadd arch-test livelock: these were wrongly
+    flagged illegal, and with no trap handler the trap looped to mtvec=0.
+    """
+    for raw, name in (
+        (0x900A, "c.add x0,x2"),  # C.ADD rd=0 (rs2!=0)
+        (0x800A, "c.mv x0,x2"),  # C.MV  rd=0 (rs2!=0)
+        # C.LUI x0, imm!=0  and  C.SLLI x0, shamt!=0
+        (_pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=0b10000), "c.lui x0"),
+        (_pack_compressed(funct3=0b000, quadrant=0b10, bits12_2=0b00101), "c.slli x0"),
+    ):
+        _drive(dut, raw)
+        await _settle()
+        assert (
+            bool(dut.o_illegal.value) is False
+        ), f"{name} ({raw:#06x}) flagged illegal"
+        # Expanded instruction must target x0 (rd = bits[11:7]) -> nop.
+        assert (
+            (int(dut.o_instr_expanded.value) >> 7) & 0x1F
+        ) == 0, f"{name} ({raw:#06x}) expansion does not write x0"
