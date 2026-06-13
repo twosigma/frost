@@ -56,6 +56,7 @@ def get_available_targets(vivado_path: str, remote_host: str = "") -> list[str]:
         capture_output=True,
         text=True,
     )
+    result.check_returncode()
 
     # Parse target list from stdout - look for lines starting with "TARGET:"
     targets = []
