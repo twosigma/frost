@@ -1,23 +1,27 @@
 /* Linker script for riscv-arch-test on Frost
  *
- * SIM-ONLY 2 MiB map, deliberately larger than the 256 KiB hardware low
- * region: the big compliance tests (fmadd/fnmadd/... with up to ~14K test
- * cases) compile to several hundred KiB of generated code plus large
- * signature areas, and FROST executes only from the low instruction BRAM,
- * so they cannot be split into the cached DDR region. The compliance
- * harness (tests/test_arch_compliance.py) passes the matching
- * SIM_MEM_SIZE_BYTES=2097152 override; this suite never runs on hardware.
+ * HARDWARE memory map: the boot stub runs from the low BRAM ROM and the
+ * test itself -- code, data and the signature area -- lives in the cached
+ * DDR region, fetched through the L1I and loaded/stored through the L1D.
+ * The big compliance tests (fadd/fmadd/... with thousands of generated
+ * cases) compile to several hundred KiB, far beyond the 96 KiB low ROM;
+ * execute-from-DDR removes that ceiling, so the suite runs the same image
+ * shape as real software (sw.mem = low BRAM stub, sw_ddr.mem = DDR
+ * sections) and no longer needs an oversized sim-only memory.
  *
- * The data load image lives in ROM and is copied forward into RAM by crt0
- * (ROM below RAM, so LMA < VMA and the ascending copy never overlaps).
+ * DDR sections load in place (LMA == VMA): the simulator preloads the
+ * behavioral DDR from sw_ddr.mem and the JTAG loader bursts the same image
+ * on hardware, so the boot stub only zeroes .bss/.sbss and jumps.
  */
 
 ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 1M
-    RAM (rwx) : ORIGIN = 0x00100000, LENGTH = 1M
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K
+    RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
+
+    DDR (rwx) : ORIGIN = 0x80000000, LENGTH = 64M
 
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 40
 }
@@ -27,31 +31,32 @@ PROVIDE(_stack_top = _end_of_stack);
 
 SECTIONS
 {
-    .text : {
+    /* Boot stub only: zero .bss/.sbss, far-jump to the DDR-resident test. */
+    .init : {
         KEEP(*(.init))
+    } > ROM
+
+    .text : {
         *(.text*)
         *(.text.*)
-    } > ROM
+    } > DDR
 
     .rodata : {
         *(.rodata*)
         *(.rodata.*)
         *(.srodata*)
         . = ALIGN(4);
-    } > ROM
+    } > DDR
 
-    .data : AT(ADDR(.rodata) + SIZEOF(.rodata)) {
-        __data_load_start = LOADADDR(.data);
-        __data_start      = .;
+    .data : {
         *(.data*)
         . = ALIGN(4);
-    } > RAM
+    } > DDR
 
-    .sdata : AT(LOADADDR(.data) + SIZEOF(.data)) {
+    .sdata : {
         *(.sdata*)
         . = ALIGN(4);
-        __data_end = .;
-    } > RAM
+    } > DDR
 
     .sbss : {
         __sbss_start = .;
@@ -59,7 +64,7 @@ SECTIONS
         *(.scommon*)
         . = ALIGN(4);
         __sbss_end = .;
-    } > RAM
+    } > DDR
 
     .bss : {
         __bss_start = .;
@@ -67,7 +72,7 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         __bss_end = .;
-    } > RAM
+    } > DDR
 
     /* No heap needed for arch tests */
 
