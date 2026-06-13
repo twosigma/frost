@@ -165,6 +165,8 @@ module cpu_ooo #(
   logic replay_after_serialize_stall_q;
   logic [1:0] post_flush_holdoff_q;
   logic trap_taken_reg, mret_taken_reg;
+  logic sq_committed_empty;  // committed-but-unwritten stores pending (drain gate)
+  logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
   ooo_pipeline_control #(
@@ -1054,6 +1056,7 @@ module cpu_ooo #(
 
       // ROB status
       .o_fence_i_flush(fence_i_flush),
+      .o_sq_committed_empty(sq_committed_empty),
       .i_fence_i_sync_done(i_fence_i_sync_done),
       .o_fence_i_sync_req(o_fence_i_sync_req),
       .o_rob_full(rob_full),
@@ -1274,7 +1277,10 @@ module cpu_ooo #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
-    else trap_mret_commit_hold_q <= trap_pending || mret_start;
+    // trap_drain_wait: a trap/MRET is waiting for committed stores to drain
+    // (see trap_unit) -- hold commit so the wait is bounded.
+    else
+      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait;
   end
 
   // ===========================================================================
@@ -1870,6 +1876,8 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
+      .i_sq_committed_empty(sq_committed_empty),
+      .o_trap_drain_wait(trap_drain_wait),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),

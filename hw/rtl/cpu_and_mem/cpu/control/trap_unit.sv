@@ -77,6 +77,16 @@ module trap_unit #(
     // Pipeline control
     input logic i_pipeline_stall,
 
+    // Committed-but-unwritten stores still draining to memory. Traps, MRET
+    // and interrupts must not fire while these exist: the full flush they
+    // trigger wipes the store queue, and committed stores are
+    // architecturally retired -- losing them corrupts memory. With the
+    // 1-cycle BRAM the drain window was invisible; cached-tier (DDR) stores
+    // keep entries queued for tens of cycles. o_trap_drain_wait holds
+    // commit while waiting so a store stream cannot starve the trap.
+    input  logic i_sq_committed_empty,
+    output logic o_trap_drain_wait,
+
     // CSR values from csr_file
     input logic [XLEN-1:0] i_mstatus,
     input logic [XLEN-1:0] i_mie,
@@ -234,14 +244,21 @@ module trap_unit #(
     interrupt_cause <= interrupt_cause_comb;
   end
 
-  // Trap taken: either interrupt or exception, and pipeline not stalled
-  // (except for WFI stall, which should be broken by interrupt)
+  // Trap taken: either interrupt or exception, the pipeline not stalled
+  // (except for WFI stall, which should be broken by interrupt), and no
+  // committed store still draining (see i_sq_committed_empty).
   logic take_trap;
-  assign take_trap = (interrupt_pending || exception_pending) && !i_pipeline_stall;
+  assign take_trap = (interrupt_pending || exception_pending) && !i_pipeline_stall &&
+      i_sq_committed_empty;
 
   // MRET execution (trap has priority: if interrupt/exception fires same cycle, trap wins)
   logic take_mret;
-  assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap;
+  assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
+
+  // Hold commit while a trap/MRET waits out the store drain, so the
+  // committed set shrinks monotonically and the wait is bounded.
+  assign o_trap_drain_wait = (interrupt_pending || exception_pending || i_mret_start) &&
+      !i_sq_committed_empty;
 
   // Output trap signals
   assign o_trap_taken = take_trap;
@@ -320,6 +337,10 @@ module trap_unit #(
       // MRET not during stall.
       p_mret_not_stalled : assert (!o_mret_taken || !i_pipeline_stall);
 
+      // Neither traps nor MRET may fire while committed stores drain.
+      p_trap_waits_drain : assert (!o_trap_taken || i_sq_committed_empty);
+      p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
+
       // MRET target is mepc: when MRET fires, target must be mepc.
       p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
 
@@ -384,6 +405,7 @@ module trap_unit #(
       cover_external_interrupt :
       cover (interrupt_pending && interrupt_cause == riscv_pkg::IntMachineExternal);
       cover_exception : cover (o_trap_taken && i_exception_valid && !interrupt_pending);
+      cover_trap_after_drain : cover (f_past_valid && o_trap_taken && $past(o_trap_drain_wait));
     end
   end
 

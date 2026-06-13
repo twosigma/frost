@@ -169,9 +169,12 @@ module tomasulo_wrapper #(
     // ROB Status
     // =========================================================================
     // FENCE.I cache-sync handshake (rob_serializer <-> the cache hierarchy).
-    input  logic                                        i_fence_i_sync_done,
-    output logic                                        o_fence_i_sync_req,
-    output logic                                        o_fence_i_flush,
+    input  logic i_fence_i_sync_done,
+    output logic o_fence_i_sync_req,
+    output logic o_fence_i_flush,
+
+    // Committed-but-unwritten stores pending (trap unit drain gate).
+    output logic                                        o_sq_committed_empty,
     output logic                                        o_rob_full,
     output logic                                        o_rob_full_for_2,
     output logic                                        o_rob_empty,
@@ -1064,6 +1067,7 @@ module tomasulo_wrapper #(
 
   // SQ committed-empty (SQ → LQ, ROB)
   logic sq_committed_empty;
+  assign o_sq_committed_empty = sq_committed_empty;
 
   // SC clear reservation: on any SC commit (success or failure clears reservation)
   // Uses pipelined commit bus to break ROB → LQ/SQ critical path.
