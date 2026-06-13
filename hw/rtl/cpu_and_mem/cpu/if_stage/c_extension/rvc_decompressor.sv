@@ -219,7 +219,9 @@ module rvc_decompressor (
               o_instr_expanded = {imm_lui, rd_full, OpcLui};
               if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
             end else begin
-              o_illegal = 1'b1;  // rd=0 is illegal
+              // C.LUI rd=0 is a HINT -> nop (lui x0); imm=0 is still reserved.
+              o_instr_expanded = {imm_lui, 5'd0, OpcLui};
+              if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
             end
           end
           3'b100: begin
@@ -298,9 +300,9 @@ module rvc_decompressor (
       // -----------------------------------------------------------------------
       2'b10: begin
         unique case (funct3)
-          3'b000: begin  // C.SLLI
+          3'b000: begin  // C.SLLI (rd=0 is a HINT -> nop; shamt[5] still reserved on RV32)
             o_instr_expanded = {7'b0000000, shamt, rd_full, 3'b001, rd_full, OpcOpImm};
-            if (i_instr_compressed[12] || (rd_full == 5'd0)) o_illegal = 1'b1;
+            if (i_instr_compressed[12]) o_illegal = 1'b1;
           end
           3'b010: begin  // C.LWSP
             o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
@@ -317,9 +319,8 @@ module rvc_decompressor (
               if (rs2_full == 5'd0) begin  // C.JR
                 o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
                 if (rd_full == 5'd0) o_illegal = 1'b1;
-              end else begin  // C.MV
+              end else begin  // C.MV (rd=0 is a HINT -> nop, not illegal)
                 o_instr_expanded = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
-                if (rd_full == 5'd0) o_illegal = 1'b1;
               end
             end else begin
               if (rs2_full == 5'd0) begin
@@ -329,8 +330,8 @@ module rvc_decompressor (
                   o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};  // C.JALR
                 end
               end else begin
-                o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};  // C.ADD
-                if (rd_full == 5'd0) o_illegal = 1'b1;
+                // C.ADD (rd=0 is a HINT -> nop, not illegal)
+                o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};
               end
             end
           end
