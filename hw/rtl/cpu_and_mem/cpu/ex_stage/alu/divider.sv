@@ -192,12 +192,20 @@ module divider #(
   wire [WIDTH-1:0] remainder_signed = remainder_sign_pipeline[NumPipelineStages] ?
                                       (~remainder_unsigned + 1'b1) : remainder_unsigned;
 
+  // Divide-by-zero remainder is the original dividend (sign preserved).  The
+  // pipeline carries the absolute value, so re-apply the dividend's sign using
+  // remainder_sign_pipeline (which equals dividend_is_negative for signed ops,
+  // and is 0 for unsigned ops so the absolute value passes through unchanged).
+  wire [WIDTH-1:0] dividend_signed = remainder_sign_pipeline[NumPipelineStages] ?
+                                     (~dividend_pipeline[NumPipelineStages] + 1'b1) :
+                                     dividend_pipeline[NumPipelineStages];
+
   // Output results - special case for divide by zero per RISC-V spec
   assign o_quotient  = divide_by_zero_pipeline[NumPipelineStages] ?
                        {WIDTH{1'b1}} :  // All 1s for divide by zero
       quotient_signed;
   assign o_remainder = divide_by_zero_pipeline[NumPipelineStages] ?
-                       dividend_pipeline[NumPipelineStages] :  // Return original dividend
+                       dividend_signed :  // Return original dividend (sign preserved)
       remainder_signed;
 
   assign o_valid_output = valid_pipeline[NumPipelineStages];
