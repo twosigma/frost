@@ -130,6 +130,7 @@ module tomasulo_wrapper #(
     output logic                                        o_trap_pending,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_pc,
     output riscv_pkg::exc_cause_t                       o_trap_cause,
+    output logic                  [riscv_pkg::XLEN-1:0] o_trap_value,
     input  logic                                        i_trap_taken,
     output logic                                        o_mret_start,
     input  logic                                        i_mret_done,
@@ -1156,6 +1157,12 @@ module tomasulo_wrapper #(
     store_misalign_fu_complete.exception = 1'b1;
     store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
         riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+    // Park the faulting address in the (otherwise unused) value slot so the
+    // ROB can forward it as mtval at trap entry (RISC-V requires mtval = the
+    // misaligned virtual address for a store-address-misaligned trap).
+    store_misalign_fu_complete.value = {
+      {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, sq_effective_addr
+    };
   end
 
   // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
@@ -1398,6 +1405,7 @@ module tomasulo_wrapper #(
       .o_trap_pending      (o_trap_pending),
       .o_trap_pc           (o_trap_pc),
       .o_trap_cause        (o_trap_cause),
+      .o_trap_value        (o_trap_value),
       .i_trap_taken        (i_trap_taken),
       .o_mret_start        (o_mret_start),
       .i_mret_done         (i_mret_done),

@@ -209,9 +209,10 @@ module cpu_and_mem #(
   logic        data_memory_cached_read_valid;
   logic        data_memory_cached_write_done;
   logic        data_memory_cached_write_inflight;
-  // Cached-tier write data is the store-queue drain data only (AMOs never
-  // target the cached region), kept separate from data_memory_write_data so
-  // the AMO write-data cone stays off the wide write-data path.
+  // Cached-tier write data: SQ-store drain data, or the AMO new value on the
+  // cycle a cached AMO read-modify-write launches (the router muxes the two).
+  // Kept separate from data_memory_write_data so the cached write path stays
+  // off the wide BRAM write-data cascade.
   logic [31:0] data_memory_cached_write_data;
   logic        mmio_read_pulse;
   logic        fifo0_rd_pulse_q;

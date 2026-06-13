@@ -153,6 +153,10 @@ module reorder_buffer (
     output logic o_trap_pending,  // Exception needs handling
     output logic [riscv_pkg::XLEN-1:0] o_trap_pc,  // PC of excepting instruction
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
+    // Head entry's CDB value at trap time. For a misaligned load/store the
+    // load_queue/SQ path parks the faulting address here (the value slot is
+    // unused for an exception), so cpu_ooo can write it to mtval.
+    output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     input logic i_trap_taken,  // Trap unit has taken the trap
 
     // MRET coordination
@@ -1713,6 +1717,7 @@ module reorder_buffer (
       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
+  assign o_trap_value = head_value[XLEN-1:0];
 
   // FENCE.I flush signal - pulse when FENCE.I commits
   always_ff @(posedge i_clk) begin

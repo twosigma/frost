@@ -1533,8 +1533,12 @@ module load_queue #(
 
   assign bypass_idx = resp_bypass_fire ? issued_idx : sq_check_idx;
   assign bypass_tag = resp_bypass_fire ? issued_rob_tag : sq_check_rob_tag_q;
+  // A misaligned load raises an exception instead of producing a register
+  // result, so its CDB value slot is free to carry the faulting address.
+  // The ROB forwards this as mtval at trap entry (RISC-V requires mtval =
+  // the misaligned virtual address for a load-address-misaligned trap).
   assign bypass_value =
-      misalign_bypass_fire ? '0 :
+      misalign_bypass_fire ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
       resp_bypass_fire ? resp_bypass_value :
       cache_hit_bypass_value;
 
