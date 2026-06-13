@@ -107,6 +107,15 @@ jobs:
       matrix:
         extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints]
         mem_config: [bram, ddr]
+        # Fencei (Zifencei) exercises self-modifying code: store an instruction,
+        # fence.i, then execute it. The low-BRAM tier is a Harvard split
+        # (separate instruction and data BRAMs), so a store reaches only the
+        # data BRAM and SMC is non-coherent there; fence.i's writeback +
+        # invalidate apply to the cached DDR tier alone. Fencei is therefore a
+        # DDR-tier-only compliance test.
+        exclude:
+          - extension: Zifencei
+            mem_config: bram
         # Individual jobs for slow tests (>5000 test cases) that are excluded
         # from the F/D extension jobs by the SIM_MAX_TEST_CASES filter. These
         # are the heavy D-side cached-tier tests, so they run in the ddr config.
