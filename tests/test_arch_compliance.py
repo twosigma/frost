@@ -188,13 +188,17 @@ def get_reference_path(test_src: Path) -> Path:
     return REFERENCES_DIR / ext_name / f"{test_stem}.reference_output"
 
 
-def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
-    """Compile a single arch test, returns True on success.
+def compile_test(
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG
+) -> tuple[bool, str]:
+    """Compile a single arch test.
 
-    mem_config selects the linker script + crt0 (and the BRAM/DDR section
-    split) via the arch_test Makefile's MEM_CONFIG variable.
+    Returns (success, combined_make_output). mem_config selects the linker
+    script + crt0 (and the BRAM/DDR section split) via the arch_test Makefile's
+    MEM_CONFIG variable. The output lets the caller distinguish a low-BRAM
+    capacity overflow (a DDR-only test) from a genuine compile failure.
     """
-    result = subprocess.run(
+    subprocess.run(
         ["make", "clean"],
         cwd=ARCH_TEST_APP_DIR,
         capture_output=True,
@@ -210,7 +214,7 @@ def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
         text=True,
         timeout=120,
     )
-    return result.returncode == 0
+    return result.returncode == 0, result.stdout + result.stderr
 
 
 def run_simulation() -> subprocess.CompletedProcess[str] | None:
@@ -353,9 +357,22 @@ def run_single_test(
         return TestResult(test_name, extension, "SKIP", "No reference output")
 
     # Compile
-    if not compile_test(test_src, mem_config):
-        # Code/data live in the cached DDR region, so size is no longer a
-        # plausible cause -- a compile failure here is a real problem.
+    compiled, compile_out = compile_test(test_src, mem_config)
+    if not compiled:
+        # A low-memory region overflow is not a failure in the bram/icache
+        # tiers: the test's .text/.data simply exceeds the 256 KiB low BRAM
+        # (96 KiB instruction + 160 KiB data) and belongs to the ddr tier,
+        # which has 64 MiB. The big control-flow tests (branches, jal) hit
+        # this. Report SKIP so the tier stays green; ddr still exercises them.
+        if mem_config != "ddr" and (
+            "will not fit in region" in compile_out or "overflowed by" in compile_out
+        ):
+            return TestResult(
+                test_name,
+                extension,
+                "SKIP",
+                f"exceeds low-BRAM capacity ({mem_config}); covered by the ddr tier",
+            )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
     # Simulate
