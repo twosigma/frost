@@ -5,14 +5,17 @@ cover
 [options]
 bmc: mode bmc
 # ROB BMC checks local safety invariants and one-cycle interface contracts.
-# The widened commit path makes deeper bounds hit a solver cliff in CI without
-# adding coverage for wraparound/full-buffer behavior.
-bmc: depth 8
+# Depth 16 reaches the full buffer and pointer wraparound (32 entries at
+# 2-per-cycle allocation); the btormc engine below clears it in seconds
+# where smtbmc spent minutes, and the fence.i sync state had pushed the
+# old smtbmc depth-8 run past the harness's 300 s CI ceiling.
+bmc: depth 16
 cover: mode cover
 cover: depth 30
 
 [engines]
-smtbmc boolector
+bmc: btor btormc
+cover: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv

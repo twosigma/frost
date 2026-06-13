@@ -2300,6 +2300,10 @@ module reorder_buffer (
       // MRET completes
       cover_mret_complete : cover (serial_state == riscv_pkg::SERIAL_MRET_EXEC && i_mret_done);
 
+      // FENCE.I cache sync completes
+      cover_fence_i_sync_complete :
+      cover (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC && i_fence_i_sync_done);
+
       // Exception triggers trap
       cover_exception_trap : cover (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
 
