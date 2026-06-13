@@ -97,12 +97,13 @@
 // RVMODEL_DATA_BEGIN / RVMODEL_DATA_END: signature area markers
 //-----------------------------------------------------------------------
 #define RVMODEL_DATA_BEGIN                                                                         \
-    .align 2; /* 4-byte alignment (2^2), must match spike reference */                             \
+    .align 3; /* 8-byte alignment: FLEN=64 signature stores (fsd) must not                         \
+                  misalign; matches the local spike_env reference */                               \
     .global begin_signature;                                                                       \
     begin_signature:
 
 #define RVMODEL_DATA_END                                                                           \
-    .align 2; /* 4-byte alignment (2^2), must match spike reference */                             \
+    .align 3; /* 8-byte alignment, see RVMODEL_DATA_BEGIN */                                       \
     .global end_signature;                                                                         \
     end_signature:
 

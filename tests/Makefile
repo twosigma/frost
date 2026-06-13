@@ -370,4 +370,4 @@ clean:: clean-local
 
 .PHONY: clean-local
 clean-local:
-	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build sim_build_arch2m
+	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build

@@ -80,6 +80,19 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
 }
 
+# Tests excluded by filename prefix: Frost implements Zba/Zbb/Zbs but not
+# Zbc, so the carry-less multiply tests cannot even compile for its march;
+# the C directory likewise mixes in Zcb tests (clbu/clh/csb/cmul/...),
+# which Frost does not implement.
+EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
+    "B": {"clmul"},
+    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+    # menvcfg_m does not assemble at this suite snapshot (`sw t0,offset(0x30a)`
+    # -- a raw CSR number where the macro needs a symbol); excluded until the
+    # submodule moves.
+    "privilege": {"menvcfg_m"},
+}
+
 # Maximum test case count for simulation. Tests with more than this many
 # inst_ entries are too slow for Verilator simulation (>30 min each) and
 # should be validated on hardware instead. The 12 excluded tests all have
@@ -130,6 +143,13 @@ def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
             t
             for t in tests
             if any(t.stem.startswith(prefix) for prefix in allowed_prefixes)
+        ]
+    excluded_prefixes = EXTENSION_TEST_EXCLUDES.get(extension)
+    if excluded_prefixes is not None:
+        tests = [
+            t
+            for t in tests
+            if not any(t.stem.startswith(prefix) for prefix in excluded_prefixes)
         ]
     if not include_all:
         filtered = []
@@ -189,15 +209,10 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     # Set up the sw.mem symlink manually
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
-    # link_arch_test.ld uses a sim-only 2 MiB low region (the big compliance
-    # tests compile to >96K of code and FROST executes only from low BRAM).
-    # Build frost with the matching BRAM size in a DEDICATED build dir so the
-    # default sim_build (256 KiB, matching hardware) is never reused with the
-    # wrong memory size in either direction.
+    # Arch tests use the HARDWARE memory map: boot stub in the 256 KiB low
+    # BRAM, test code/data/signature in the cached DDR region (sw_ddr.mem,
+    # preloaded into the behavioral DDR). The standard sim_build applies.
     sim_build_dir = runner._get_sim_build_dir(env)
-    sim_build_dir = sim_build_dir.parent / (sim_build_dir.name + "_arch2m")
-    env["SIM_BUILD"] = str(sim_build_dir)
-    env["SIM_MEM_SIZE_BYTES"] = "2097152"
     # Arch tests with many test vectors need more cycles than the default 500K.
     # The fmadd/fmsub/fnmadd/fnmsub tests have ~14K test cases each, and
     # double-precision b11 tests have ~11K cases, needing well over 5M cycles.
@@ -212,12 +227,12 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
         if needs_clean:
             subprocess.run(["make", "clean"], check=False, env=env)
 
-        # Set up sw.mem symlink pointing to our compiled test
-        sw_mem_path = Path("sw.mem")
-        if sw_mem_path.exists() or sw_mem_path.is_symlink():
-            sw_mem_path.unlink()
-        sw_mem_target = ARCH_TEST_APP_DIR / "sw.mem"
-        sw_mem_path.symlink_to(sw_mem_target)
+        # Set up sw.mem / sw_ddr.mem symlinks pointing to our compiled test
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            mem_path = Path(mem_name)
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
+            mem_path.symlink_to(ARCH_TEST_APP_DIR / mem_name)
 
         # Run simulation
         pythonpath = env.get("PYTHONPATH", "")
@@ -321,9 +336,9 @@ def run_single_test(test_src: Path, extension: str) -> TestResult:
 
     # Compile
     if not compile_test(test_src):
-        return TestResult(
-            test_name, extension, "SKIP", "Compilation failed (may exceed ROM)"
-        )
+        # Code/data live in the cached DDR region, so size is no longer a
+        # plausible cause -- a compile failure here is a real problem.
+        return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
     # Simulate
     result = run_simulation()
