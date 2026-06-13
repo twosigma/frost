@@ -78,6 +78,8 @@ backend notes.
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
+| `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
+| `cpu_and_mem/fetch_provider.sv` | In use | Quadrant-steered fetch: 1-cycle BRAM window or the two-line L1I fetch buffer (owed-ask register, next-line prefetch, fence.i invalidate) |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
@@ -99,22 +101,33 @@ served by the cache hierarchy:
 | ROM | `0x0000_0000` | 96 KiB | Code and read-only data (fast BRAM) |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
 | MMIO | `0x4000_0000` | 44 B | UART, FIFOs, CLINT-style timer, software interrupt |
-| DDR | `0x8000_0000` | 1 GiB | Cached region: heap and large data (see below) |
+| DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
-The cached tier is data-only (loads/stores; no instruction fetch). The low
-BRAM range and MMIO stay 1-cycle; cached accesses complete by HANDSHAKE with
-variable latency — an L1 hit in a few cycles, a miss after a writeback/fill
-round trip through `frost_cache` (direct-mapped, 32 B lines, write-back
-write-allocate, single-outstanding) and, on X3, the URAM L2, down to the DDR
-AXI port. `cached_tier_adapter` converts CPU words to cache lines and
-serializes one transaction at a time; `data_mem_request_router` folds the
-handshake completions into the LQ/SQ ordering gates so reads never pass an
-in-flight write. The caches re-invalidate on ANY reset (tag sweep), so a
-JTAG program reload never observes stale lines. `ENABLE_CACHED_TIER=0`
-omits the hierarchy (cached-region accesses complete with zero data);
-`CACHED_HAS_L2` selects the board shape, and `USE_BEHAVIORAL_DDR=0` routes
-the bridge's AXI master to the top-level `o_ddr_axi_*` ports for the board
-DDR controller instead of the simulation-only behavioral model.
+The cached tier serves both sides of the core: loads/stores through the
+data L1, and instruction fetch through a dedicated 16 KiB L1I
+(`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
+`line_port_arbiter` (D-side priority) merges the two L1s below the level
+the L2 or DDR bridge sees. The low BRAM range and MMIO stay 1-cycle; cached
+accesses complete by HANDSHAKE with variable latency — an L1 hit in a few
+cycles, a miss after a writeback/fill round trip through `frost_cache`
+(direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)
+and, on X3, the URAM L2, down to the DDR AXI port. `cached_tier_adapter`
+converts CPU words to cache lines and serializes one transaction at a time;
+`data_mem_request_router` folds the handshake completions into the LQ/SQ
+ordering gates so reads never pass an in-flight write.
+
+Stores publish code via `fence.i`: the ROB serializer drains the store
+queue, then holds commit while the hierarchy writes back every dirty L1D
+line and invalidates the L1I (strictly in that order, so an instruction
+fill racing the sync can never survive with stale data), and the commit's
+flush pulse drops the fetch buffer before the refetch. The caches
+re-invalidate on ANY reset (tag sweep), so a JTAG program reload never
+observes stale lines. `ENABLE_CACHED_TIER=0` omits the hierarchy
+(cached-region accesses complete with zero data and fetch falls back to
+the low-BRAM-only path); `CACHED_HAS_L2` selects the board shape, and
+`USE_BEHAVIORAL_DDR=0` routes the bridge's AXI master to the top-level
+`o_ddr_axi_*` ports for the board DDR controller instead of the
+simulation-only behavioral model.
 
 MMIO registers:
 
