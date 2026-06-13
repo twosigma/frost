@@ -664,20 +664,29 @@ module if_stage #(
   // This registered signal is NOT on the critical path (FF output → 1 OR gate).
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
-    // Stall-gated (bug #5): this wrong-path bubble pulse must survive a
-    // stall that freezes the front-end mid-bubble. control_flow_holdoff and
-    // prediction_holdoff are both stall-held, so without the gate a stall
-    // covering the bubble cycle outlives the one-cycle pulse: on release
-    // the colliding BTB hit's prediction_holdoff still defeats the
+    // Fetch-progress-gated (bug #5 + L1I-miss variant): this wrong-path bubble
+    // pulse must survive ANY front-end freeze that stretches the bubble cycle.
+    // control_flow_holdoff and prediction_holdoff are both held across both a
+    // pipeline stall (i_pipeline_ctrl.stall) AND a no-progress fetch cycle
+    // (the stall-capable L1I fetch provider withholds valid through a miss),
+    // so without a matching gate the override pulse outlives the freeze: on
+    // release the colliding BTB hit's prediction_holdoff still defeats the
     // control-flow NOP term, the lead-restoring bubble cycle presents (and
-    // dispatch consumes) the bundle, and the realigned next cycle presents
-    // the SAME pc_reg again — a duplicate ROB allocation (observed in the
-    // cjpeg tiny sim as a re-executed zero-run-loop pair: one skipped
-    // coefficient, one-bit-short Huffman code, 646-byte JPEG). Mirrors
-    // o_slot2_redirect_q, which has carried the same !i_stall gate since
-    // Session Q. See test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble.
+    // dispatch consumes) the bundle, and the realigned next cycle presents the
+    // SAME pc_reg again — a duplicate ROB allocation. The original fix gated on
+    // !i_pipeline_ctrl.stall only (cjpeg tiny sim re-executed a zero-run-loop
+    // pair). The L1I-miss variant: a pd-redirect target whose cache line misses
+    // stretches the bubble across the no-progress fetch cycles, by which point
+    // a stall-only gate has already advanced (and cleared) the pulse — so the
+    // branch-target instruction is dispatched twice (arch signature dump: a
+    // digit-convert addi at a branch target re-added '0', storing char+0x30).
+    // Gate the update on a DELIVERED cycle (fetch_progress) so the override
+    // holds through both stalls and fetch misses until the bubble is NOP'd.
+    // This matches o_slot2_redirect_q, whose pc_controller gate is already the
+    // full fetch_stall form (!i_stall && i_fetch_progress); pd_redirect_q was
+    // the lone override still gated on !i_pipeline_ctrl.stall alone.
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
-    else if (!i_pipeline_ctrl.stall) pd_redirect_q <= i_pd_redirect;
+    else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
   end
 
   // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
