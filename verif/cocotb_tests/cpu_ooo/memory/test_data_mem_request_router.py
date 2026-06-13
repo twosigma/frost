@@ -253,15 +253,64 @@ async def test_amo_write_bram_and_priority(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_amo_cached_write_fully_masked(dut: Any) -> None:
-    """Check a cached-region AMO write is masked from BRAM and the cache."""
+async def test_amo_cached_write_handshake(dut: Any) -> None:
+    """A cached-region AMO write is masked off BRAM and forwarded to the cache.
+
+    The LQ holds i_amo_mem_write_en high for the whole write phase, so the
+    adapter must see a SINGLE-CYCLE cached byte-enable pulse (it re-enqueues on
+    every non-zero strobe cycle), the new value on o_data_mem_cached_wr_data
+    that same cycle, and the AMO done only when the adapter reports completion.
+    """
     await _setup_test(dut)
     dut.i_amo_mem_write_en.value = 1
     dut.i_amo_mem_write_addr.value = CACHED_ADDR
+    dut.i_amo_mem_write_data.value = 0xCAFEF00D
+    await _settle()
+    # Launch cycle: masked off BRAM, single word-wide strobe to the cache, with
+    # the AMO new value on the cached write-data bus. No done yet.
+    assert (
+        int(dut.o_data_mem_bram_byte_wr_en.value) == 0
+    ), "cached AMO must not hit BRAM"
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0b1111
+    assert int(dut.o_data_mem_cached_wr_data.value) == 0xCAFEF00D
+    assert int(dut.o_amo_mem_write_done.value) == 0, "no fast done for a cached AMO"
+    await _advance_cycle(dut)
+    # Adapter is now busy; the held enable must NOT re-pulse the cached strobe.
+    dut.i_cached_write_inflight.value = 1
+    await _settle()
+    assert (
+        int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+    ), "cached AMO strobe must be a single-cycle pulse"
+    assert int(dut.o_amo_mem_write_done.value) == 0
+    for _ in range(4):
+        await _advance_cycle(dut)
+        assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+        assert int(dut.o_amo_mem_write_done.value) == 0
+    # Adapter reports completion: AMO done pulses, SQ done stays low (no store).
+    dut.i_cached_write_done.value = 1
+    dut.i_cached_write_inflight.value = 0
+    await _settle()
+    assert int(dut.o_amo_mem_write_done.value) == 1
+    assert (
+        int(dut.o_sq_mem_write_done.value) == 0
+    ), "cached AMO done must not hit the SQ"
+    dut.i_amo_mem_write_en.value = 0
+    dut.i_cached_write_done.value = 0
+    await _advance_cycle(dut)
+    assert int(dut.o_amo_mem_write_done.value) == 0
+
+
+@cocotb.test()
+async def test_amo_mmio_write_still_dropped(dut: Any) -> None:
+    """An AMO to the MMIO window is masked from BRAM and the cache (undefined)."""
+    await _setup_test(dut)
+    dut.i_amo_mem_write_en.value = 1
+    dut.i_amo_mem_write_addr.value = MMIO_ADDR + 0x10
     dut.i_amo_mem_write_data.value = 0x55
     await _settle()
     assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
     assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
+    # MMIO AMO completes combinationally (it is not a cached write).
     assert int(dut.o_amo_mem_write_done.value) == 1
     dut.i_amo_mem_write_en.value = 0
     await _advance_cycle(dut)

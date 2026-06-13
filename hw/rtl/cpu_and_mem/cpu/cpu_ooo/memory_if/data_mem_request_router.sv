@@ -84,6 +84,9 @@ module data_mem_request_router #(
     output logic            o_data_mem_read_enable,
     // Cached-tier write/read requests (asserted only for cached-range accesses).
     output logic [     3:0] o_data_mem_cached_byte_wr_en,
+    // Cached-tier write data. SQ-store drain data normally; the AMO new value
+    // on the single cycle a cached AMO write is launched to the adapter.
+    output logic [XLEN-1:0] o_data_mem_cached_wr_data,
     output logic            o_data_mem_cached_read_enable,
     output logic            o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
@@ -161,11 +164,11 @@ module data_mem_request_router #(
   // WRITE side: the SQ flag arrives pre-registered (i_sq_mem_write_is_cached,
   // computed at the SQ drain alongside is_mmio), keeping the late
   // address-range test off the BRAM WEA pin. The AMO write flag is decoded
-  // locally like amo_mem_write_is_mmio; AMOs are restricted to the low BRAM
-  // tier by the linker, so the cached decode only provides the "never corrupt
-  // an aliased BRAM word" safety -- a (forbidden) cached AMO write is masked
-  // from the BRAM and dropped, NOT forwarded to the cache, so the adapter's
-  // write-done pulses can only ever belong to SQ stores.
+  // locally like amo_mem_write_is_mmio. A cached AMO write is masked off the
+  // BRAM (so its aliased low word is never corrupted) and instead forwarded to
+  // the cached tier just like a cached SQ store -- the AMO read-modify-write
+  // must reach DDR or the modified value is lost. AMO MMIO writes stay
+  // dropped (undefined by spec; the BRAM-mask safety is preserved).
   logic lq_mem_request_is_cached;
   assign lq_mem_request_is_cached =
       (lq_mem_request_addr_eff >= CACHED_BASE[XLEN-1:0]) &&
@@ -175,6 +178,28 @@ module data_mem_request_router #(
   assign amo_mem_write_is_cached =
       (amo_mem_write_addr >= CACHED_BASE[XLEN-1:0]) &&
       (amo_mem_write_addr <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
+
+  // Cached AMO write handshake. The LQ holds i_amo_mem_write_en high for the
+  // whole AMO write phase (until it sees o_amo_mem_write_done), but the
+  // cached_tier_adapter must see the byte-write-enable as a SINGLE-CYCLE pulse
+  // (it re-enqueues on every cycle the strobe is non-zero). amo_cached_inflight
+  // is set the cycle a cached AMO write is launched to the adapter and held
+  // until the adapter pulses i_cached_write_done, suppressing re-launch in
+  // between. A non-cached AMO never sets it (its done is combinational).
+  logic amo_cached_inflight;
+  logic amo_cached_write_launch;
+  assign amo_cached_write_launch =
+      amo_mem_write_en && amo_mem_write_is_cached && !amo_cached_inflight;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      amo_cached_inflight <= 1'b0;
+    end else if (amo_cached_write_launch) begin
+      amo_cached_inflight <= 1'b1;
+    end else if (i_cached_write_done) begin
+      amo_cached_inflight <= 1'b0;
+    end
+  end
 
   // A cached store owns the write port from its fire (sq_mem_write_en) until
   // its done pulse (i_cached_write_inflight covers the cycles in between), so
@@ -215,11 +240,20 @@ module data_mem_request_router #(
         (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached) ?
             4'b1111 : 4'b0000;
 
-    // Cached-tier byte-write-enable: SQ stores only. AMO cached writes are
-    // linker-forbidden; they are masked from the BRAM above and intentionally
-    // NOT forwarded here (see the decode comment).
+    // Cached-tier byte-write-enable: a cached SQ store, or the single-cycle
+    // launch pulse of a cached AMO write (word-width). The launch qualifier
+    // (amo_cached_write_launch) drops once amo_cached_inflight is set, so the
+    // held i_amo_mem_write_en presents exactly one strobe to the adapter. SQ
+    // and AMO writes are mutually exclusive at the cached tier: AMOs issue only
+    // at the ROB head with an empty SQ, so a cached SQ store can never be
+    // draining while a cached AMO write is in flight.
     o_data_mem_cached_byte_wr_en =
-        (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en : 4'b0000;
+        (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en :
+        amo_cached_write_launch ? 4'b1111 : 4'b0000;
+
+    // Cached-tier write data: SQ-store drain data normally; the AMO new value
+    // on the launch pulse. Off the BRAM WEA cone (separate cached-only port).
+    o_data_mem_cached_wr_data = amo_cached_write_launch ? amo_mem_write_data : sq_mem_write_data;
 
     // Cached-tier read enable: the accepted-load pulse qualified by is_cached.
     // The enable lands on the adapter's request register (not a memory enable
@@ -228,7 +262,13 @@ module data_mem_request_router #(
     // (miss/fill/evict) and must not fire for low-BRAM loads.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
 
-    amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en;
+    // AMO write completion. Fast tier (BRAM): the write lands the same cycle,
+    // so done is combinational as before. Cached tier: the adapter completes
+    // the line write with a variable-latency i_cached_write_done pulse, so the
+    // cached AMO done is sourced from that (the LQ holds the write request until
+    // it sees done, keeping its result/cache-invalidate ordering correct).
+    amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en &&
+                         (amo_mem_write_is_cached ? i_cached_write_done : 1'b1);
 
     o_mmio_load_addr = lq_mem_request_addr_eff;
     o_mmio_load_valid = o_data_mem_read_enable && lq_mem_request_is_mmio;
@@ -315,7 +355,12 @@ module data_mem_request_router #(
   assign o_mmio_read_pulse = lq_mem_read_accepted && lq_mem_request_is_mmio;
 
   // --- Output wiring.
-  assign o_sq_mem_write_done = sq_write_done_fast | i_cached_write_done;
+  // The adapter's cached done is shared by cached SQ stores and cached AMO
+  // writes (the adapter cannot tell them apart). They are mutually exclusive
+  // (an AMO issues only at the ROB head with an empty SQ), so steer a cached
+  // done to the SQ only when no cached AMO write is in flight, and to the AMO
+  // path otherwise (amo_mem_write_done already qualifies it).
+  assign o_sq_mem_write_done = sq_write_done_fast | (i_cached_write_done && !amo_cached_inflight);
   assign o_amo_mem_write_done = amo_mem_write_done;
   assign o_lq_mem_request_valid = lq_mem_request_valid;
   assign o_lq_mem_read_data = lq_mem_read_data;

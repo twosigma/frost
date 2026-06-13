@@ -258,6 +258,73 @@ int main(void)
         }
     }
 
+    /* --- Phase 8: atomic read-modify-write (AMO) on cached words. --------- */
+    /* AMOs are executed by the LQ: it reads the old value through the cached
+     * tier, computes the new value, and writes it back through the cached
+     * tier. This exercises the cached AMO write path (the router must forward
+     * the modified word to the cache hierarchy as a single-cycle line write,
+     * not drop it). Each case seeds a known word, runs one amo*.w, then checks
+     * BOTH the returned old value AND that the memory now holds the new value. */
+    {
+        const uint32_t amo_off = OFF_MID_B + 32u; /* distinct cached word */
+        volatile uint32_t *p = &ddr[amo_off];
+        int amo_fail = 0;
+        uint32_t old;
+
+        /* amoswap.w: seed 0xAAAA0001, swap in 0x5555BEEF. */
+        *p = 0xAAAA0001u;
+        __asm__ volatile("amoswap.w %0, %2, (%1)"
+                         : "=r"(old)
+                         : "r"(p), "r"(0x5555BEEFu)
+                         : "memory");
+        if (old != 0xAAAA0001u || *p != 0x5555BEEFu) {
+            uart_printf(
+                "AMOSWAP old=0x%08lx mem=0x%08lx FAIL\n", (unsigned long) old, (unsigned long) *p);
+            failures++;
+            amo_fail = 1;
+        }
+
+        /* amoadd.w: seed 0x00000010, add 0x00000025 -> 0x00000035. */
+        *p = 0x00000010u;
+        __asm__ volatile("amoadd.w %0, %2, (%1)" : "=r"(old) : "r"(p), "r"(0x00000025u) : "memory");
+        if (old != 0x00000010u || *p != 0x00000035u) {
+            uart_printf(
+                "AMOADD old=0x%08lx mem=0x%08lx FAIL\n", (unsigned long) old, (unsigned long) *p);
+            failures++;
+            amo_fail = 1;
+        }
+
+        /* amoor.w: seed 0x0F0F0000, or 0x00F000F0 -> 0x0FFF00F0. */
+        *p = 0x0F0F0000u;
+        __asm__ volatile("amoor.w %0, %2, (%1)" : "=r"(old) : "r"(p), "r"(0x00F000F0u) : "memory");
+        if (old != 0x0F0F0000u || *p != 0x0FFF00F0u) {
+            uart_printf(
+                "AMOOR old=0x%08lx mem=0x%08lx FAIL\n", (unsigned long) old, (unsigned long) *p);
+            failures++;
+            amo_fail = 1;
+        }
+
+        /* amoand.w then re-read through a fresh load to confirm the modified
+         * word actually reached the cache/DDR (not just store-to-load forward).
+         * seed 0xFFFFFFFF, and 0x12345678 -> 0x12345678. */
+        *p = 0xFFFFFFFFu;
+        __asm__ volatile("amoand.w %0, %2, (%1)" : "=r"(old) : "r"(p), "r"(0x12345678u) : "memory");
+        {
+            uint32_t reread = ddr[amo_off];
+            if (old != 0xFFFFFFFFu || reread != 0x12345678u) {
+                uart_printf("AMOAND old=0x%08lx reread=0x%08lx FAIL\n",
+                            (unsigned long) old,
+                            (unsigned long) reread);
+                failures++;
+                amo_fail = 1;
+            }
+        }
+
+        if (!amo_fail) {
+            uart_printf("AMO cached read-modify-write OK\n");
+        }
+    }
+
     if (failures == 0) {
         uart_printf("<<PASS>>\n");
     } else {

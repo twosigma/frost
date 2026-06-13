@@ -75,12 +75,12 @@ module cpu_ooo #(
     // (already qualified by is_cached in the router) plus the handshake
     // completion inputs from the cached_tier_adapter.
     output logic [3:0] o_data_mem_cached_byte_wr_en,
-    // Cached-tier write data: the store-queue drain data ONLY. AMOs are pinned
-    // to the BRAM tier (never write the cached region), so routing the AMO
-    // write-data mux here was dead logic -- but it dragged the long
-    // (amo_entry_idx -> AMO ALU) cone onto the wide write-data cascade, which
-    // was the dominant post-opt timing failure before the AMO pinning. Feeding
-    // the SQ drain data directly drops that cone.
+    // Cached-tier write data: SQ-store drain data, or the AMO new value on the
+    // single cycle a cached AMO read-modify-write is launched to the adapter.
+    // Driven by the router, which owns the SQ-vs-AMO cached-write mux. The mux
+    // sits on the cached-only write-data path (not the wide BRAM write-data
+    // cascade that was the old post-opt timing offender), and the AMO ALU cone
+    // only reaches it through the rare, ROB-head-serialized cached AMO.
     output logic [XLEN-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
     input logic [XLEN-1:0] i_cached_read_data,
@@ -832,6 +832,7 @@ module cpu_ooo #(
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
+  logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -1034,6 +1035,7 @@ module cpu_ooo #(
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
       .o_trap_cause(rob_trap_cause),
+      .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .i_mret_done(mret_done_ack),
@@ -1711,10 +1713,9 @@ module cpu_ooo #(
   // Priority: SQ writes > AMO writes > queued LQ reads
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
-  // Cached-tier write data is store-queue drain data only (AMOs never target
-  // the cached region); see the o_data_mem_cached_wr_data port comment. Off
-  // the AMO write-data cone.
-  assign o_data_mem_cached_wr_data = sq_mem_write_data;
+  // Cached-tier write data (SQ-store drain data, or the AMO new value on the
+  // single cycle a cached AMO write launches) is produced by the router, which
+  // owns the SQ-vs-AMO cached-write mux.
 
   data_mem_request_router #(
       .XLEN(XLEN),
@@ -1748,6 +1749,7 @@ module cpu_ooo #(
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
       .o_data_mem_read_enable(o_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
+      .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
@@ -1806,6 +1808,27 @@ module cpu_ooo #(
                                     (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.nx);
   end
 
+  // mtval for synchronous exceptions, per the RISC-V privileged spec:
+  //   - BREAKPOINT (EBREAK): mtval = the breakpoint instruction's virtual
+  //     address (the faulting PC, which equals mepc).
+  //   - LOAD/STORE address-misaligned: mtval = the misaligned virtual
+  //     address. The load_queue / SQ park that address in the head entry's
+  //     CDB value slot (unused for an exception), exposed as rob_trap_value.
+  //   - Everything else FROST raises here (ECALL): mtval = 0.
+  logic [XLEN-1:0] csr_trap_value;
+  always_comb begin
+    unique case (rob_trap_cause)
+      riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
+      riscv_pkg::ExcLoadAddrMisalign[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
+          rob_trap_cause
+      )-1:0]:
+      csr_trap_value = rob_trap_value;
+      default: csr_trap_value = '0;
+    endcase
+  end
+
   csr_file #(
       .XLEN(XLEN)
   ) csr_file_inst (
@@ -1824,7 +1847,7 @@ module cpu_ooo #(
       .i_trap_taken(trap_taken),
       .i_trap_pc(rob_trap_pc),
       .i_trap_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
-      .i_trap_value('0),
+      .i_trap_value(csr_trap_value),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
       .o_mie(csr_mie),
