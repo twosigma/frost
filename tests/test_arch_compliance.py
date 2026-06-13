@@ -103,6 +103,17 @@ SIM_MAX_TEST_CASES = 5000
 # Slow fused FP arch tests can run for more than three hours under Verilator.
 ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
+# Memory configurations: where each test's code vs data/signature lives, so a
+# failure is attributable to one path. Selected with --mem-config; passed to
+# the arch_test Makefile as MEM_CONFIG, which picks the linker script + crt0.
+#   bram   - code + data + signature all in low BRAM (pure ISA conformance).
+#   icache - code in DDR (L1I fetch path under test), data + signature in low
+#            BRAM (isolates instruction fetch from the D-side cached tier).
+#   ddr    - code + data + signature in DDR (also exercises the D-side cached
+#            tier on every load/store); the historical default.
+MEM_CONFIGS = ("bram", "icache", "ddr")
+DEFAULT_MEM_CONFIG = "ddr"
+
 
 @dataclass
 class TestResult:
@@ -177,8 +188,12 @@ def get_reference_path(test_src: Path) -> Path:
     return REFERENCES_DIR / ext_name / f"{test_stem}.reference_output"
 
 
-def compile_test(test_src: Path) -> bool:
-    """Compile a single arch test, returns True on success."""
+def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
+    """Compile a single arch test, returns True on success.
+
+    mem_config selects the linker script + crt0 (and the BRAM/DDR section
+    split) via the arch_test Makefile's MEM_CONFIG variable.
+    """
     result = subprocess.run(
         ["make", "clean"],
         cwd=ARCH_TEST_APP_DIR,
@@ -189,7 +204,7 @@ def compile_test(test_src: Path) -> bool:
 
     rel_src = test_src.relative_to(ARCH_TEST_APP_DIR)
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}"],
+        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
         cwd=ARCH_TEST_APP_DIR,
         capture_output=True,
         text=True,
@@ -258,9 +273,10 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     except subprocess.TimeoutExpired:
         return None
     finally:
-        sw_mem_path = Path("sw.mem")
-        if sw_mem_path.exists() or sw_mem_path.is_symlink():
-            sw_mem_path.unlink()
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            mem_path = Path(mem_name)
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
         os.chdir(original_dir)
 
 
@@ -325,8 +341,10 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     return False, "\n".join(diff_lines)
 
 
-def run_single_test(test_src: Path, extension: str) -> TestResult:
-    """Build, simulate, and verify a single arch test."""
+def run_single_test(
+    test_src: Path, extension: str, mem_config: str = DEFAULT_MEM_CONFIG
+) -> TestResult:
+    """Build, simulate, and verify a single arch test in the given mem config."""
     test_name = test_src.stem
 
     # Check for reference file
@@ -335,7 +353,7 @@ def run_single_test(test_src: Path, extension: str) -> TestResult:
         return TestResult(test_name, extension, "SKIP", "No reference output")
 
     # Compile
-    if not compile_test(test_src):
+    if not compile_test(test_src, mem_config):
         # Code/data live in the cached DDR region, so size is no longer a
         # plausible cause -- a compile failure here is a real problem.
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
@@ -377,9 +395,9 @@ def run_single_test(test_src: Path, extension: str) -> TestResult:
         )
 
 
-def _run_test_worker(args: tuple[str, str, str]) -> TestResult:
+def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
     """Worker function for parallel test execution."""
-    test_src_str, extension, arch_test_app_dir_str = args
+    test_src_str, extension, arch_test_app_dir_str, mem_config = args
     # Restore module-level paths in worker process
     global ARCH_TEST_APP_DIR, ARCH_TEST_DIR, SUITE_DIR, REFERENCES_DIR
     ARCH_TEST_APP_DIR = Path(arch_test_app_dir_str)
@@ -387,13 +405,14 @@ def _run_test_worker(args: tuple[str, str, str]) -> TestResult:
     SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
     REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-    return run_single_test(Path(test_src_str), extension)
+    return run_single_test(Path(test_src_str), extension, mem_config)
 
 
 def run_extension_tests(
     extension: str,
     parallel: int = 1,
     include_all: bool = False,
+    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all tests for a given extension."""
     tests = discover_tests(extension, include_all=include_all)
@@ -401,13 +420,15 @@ def run_extension_tests(
         print(f"  No tests found for extension {extension}")
         return []
 
-    print(f"\nExtension: {extension} ({len(tests)} tests)")
+    print(f"\nExtension: {extension} ({len(tests)} tests, mem-config={mem_config})")
 
     results = []
 
     if parallel > 1:
         # Parallel execution
-        work_items = [(str(t), extension, str(ARCH_TEST_APP_DIR)) for t in tests]
+        work_items = [
+            (str(t), extension, str(ARCH_TEST_APP_DIR), mem_config) for t in tests
+        ]
         with ProcessPoolExecutor(max_workers=parallel) as executor:
             futures = {
                 executor.submit(_run_test_worker, item): item[0] for item in work_items
@@ -424,7 +445,7 @@ def run_extension_tests(
     else:
         # Sequential execution
         for test_src in tests:
-            result = run_single_test(test_src, extension)
+            result = run_single_test(test_src, extension, mem_config)
             results.append(result)
             _print_result(result)
 
@@ -463,11 +484,16 @@ class TestArchCompliance:
         """Run arch compliance tests for a single ISA extension.
 
         Parametrized by extension (not individual test) for manageable pytest output.
+        The memory config defaults to ddr; override with FROST_ARCH_MEM_CONFIG.
         """
         os.environ["SIM"] = "verilator"
+        mem_config = os.environ.get("FROST_ARCH_MEM_CONFIG", DEFAULT_MEM_CONFIG)
         with capsys.disabled():
-            print(f"\nRunning arch compliance tests for extension {extension}...")
-            results = run_extension_tests(extension)
+            print(
+                f"\nRunning arch compliance tests for extension {extension} "
+                f"(mem-config={mem_config})..."
+            )
+            results = run_extension_tests(extension, mem_config=mem_config)
 
         failed = [r for r in results if r.status == "FAIL"]
         if failed:
@@ -524,6 +550,17 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         action="store_true",
         help="Include all tests, even those too large for simulation (>5000 test cases)",
     )
+    parser.add_argument(
+        "--mem-config",
+        choices=MEM_CONFIGS,
+        default=DEFAULT_MEM_CONFIG,
+        help=(
+            "Memory configuration: 'bram' (code+data+signature in low BRAM), "
+            "'icache' (code in DDR, data+signature in BRAM -- isolates the "
+            "instruction-fetch path), or 'ddr' (code+data+signature in DDR -- "
+            f"also exercises the D-side cached tier). Default: {DEFAULT_MEM_CONFIG}."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -541,8 +578,10 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         parts = Path(args.test).parts
         ext = parts[1] if len(parts) > 1 else "unknown"
 
-        print(f"=== RISC-V Architecture Test: {args.test} ===")
-        result = run_single_test(test_path, ext)
+        print(
+            f"=== RISC-V Architecture Test: {args.test} (mem-config={args.mem_config}) ==="
+        )
+        result = run_single_test(test_path, ext, args.mem_config)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
@@ -558,12 +597,16 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     print("=" * 60)
     print("RISC-V Architecture Test Results")
     print(f"Extensions: {', '.join(extensions)}")
+    print(f"Memory config: {args.mem_config}")
     print("=" * 60)
 
     all_results: list[TestResult] = []
     for ext in extensions:
         results = run_extension_tests(
-            ext, parallel=args.parallel, include_all=args.no_sim_filter
+            ext,
+            parallel=args.parallel,
+            include_all=args.no_sim_filter,
+            mem_config=args.mem_config,
         )
         all_results.extend(results)
 
