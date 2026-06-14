@@ -21,16 +21,17 @@ module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz - must match actual clock from board wrapper
     // Used for UART baud rate calculation (UART runs at CLK_FREQ_HZ / 4)
     parameter int unsigned CLK_FREQ_HZ = 300000000,
-    // Cached-tier configuration, set by the board top. ENABLE_CACHED_TIER
-    // stays 0 on every board until its DDR controller is integrated
-    // (Phase 2/3); CACHED_HAS_L2 selects the hierarchy shape (x3_frost=1
-    // splices the URAM L2, genesys2_frost=0 is L1-only -- no UltraRAM on
-    // 7-series).
+    // Cached-tier configuration, set by the board top. Both boards now enable
+    // it against a real DDR controller (x3_frost and genesys2_frost set
+    // ENABLE_CACHED_TIER=1, USE_BEHAVIORAL_DDR=0); the defaults here stay
+    // conservative (tier off) for any board that has not wired up DDR yet.
+    // CACHED_HAS_L2 selects the hierarchy shape (x3_frost=1 splices the URAM
+    // L2, genesys2_frost=0 is L1-only -- no UltraRAM on 7-series).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     parameter int unsigned CACHED_HAS_L2 = 1,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
-    // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below (hardware: wire
-    // them to the board's DDR controller subsystem).
+    // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below, wired to the
+    // board's DDR controller subsystem (both boards drive 0).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1
 ) (
     input logic i_clk,       // Main CPU clock

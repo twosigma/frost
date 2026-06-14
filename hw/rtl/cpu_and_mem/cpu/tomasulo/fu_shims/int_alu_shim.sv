@@ -24,7 +24,7 @@
  * Signal flow:  INT_RS -> int_alu_shim (translate + ALU) -> fu_complete_t
  *
  * The ALU is single-cycle for all INT_RS operations (ADD, SUB, shifts,
- * LUI, AUIPC, JAL/JALR link, CSR read, bit-manipulation).  MUL/DIV are
+ * LUI, AUIPC, JALR link, CSR read, bit-manipulation).  MUL/DIV are
  * routed to MUL_RS, so the internal multiplier/divider are never triggered
  * (i_is_multiply_operation = 0, i_is_divide_operation = 0).
  *
@@ -33,9 +33,9 @@
  *     (controls the ALU's internal operand_b mux)
  *   - i_instruction.source_reg_2 : imm[4:0] for shift-amount in SLLI/SRLI/
  *     SRAI/BSETI/BCLRI/BINVI/BEXTI/RORI
- *   - i_link_address : pre-computed PC + 2 / PC + 4 for JAL/JALR
+ *   - i_link_address : pre-computed PC + 2 / PC + 4 for JALR
  *   - Conditional branches hit the ALU's default case (o_write_enable = 0),
- *     producing fu_complete.valid = 0. JAL/JALR still produce a link-address
+ *     producing fu_complete.valid = 0. JALR still produces a link-address
  *     result on the CDB while branch resolution uses a separate path.
  */
 module int_alu_shim (
@@ -105,7 +105,7 @@ module int_alu_shim (
   // Pack output into fu_complete_t
   // ---------------------------------------------------------------------------
   // Conditional branches complete only through branch_update.
-  // JAL/JALR also produce a link-address result and must wake dependents.
+  // JALR also produces a link-address result and must wake dependents.
   // CSR ops pass through rs1/imm value (actual CSR read/write happens at commit).
   logic is_csr_imm_op;
   assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||

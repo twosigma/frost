@@ -25,10 +25,14 @@
  *   - Self-modifying code needs instruction cache coherency (fence_i)
  *   - Memory ordering guarantees are needed between cores/devices (fence)
  *
- * On Frost (RV32GCB with Zifencei), these are lightweight barriers:
- *   - No instruction cache exists, so fence.i has no cache to invalidate
- *   - The single-core memory system completes loads/stores in program order
- *     at commit
+ * On Frost (RV32GCB with Zifencei), their cost depends on the memory tier:
+ *   - With the cached tier active, fence.i drives an L1D writeback followed
+ *     by an L1I invalidate so instruction fetches observe prior data stores
+ *     (the L1I is read-only and does not snoop the L1D on its own)
+ *   - In the low-BRAM tier there is no cache hierarchy, so fence.i completes
+ *     immediately
+ *   - fence orders the single-core memory system, which already retires
+ *     loads/stores in program order at commit
  *
  * However, using these primitives ensures code portability to more
  * complex RISC-V implementations where they have real effects.
@@ -57,9 +61,10 @@ static inline __attribute__((always_inline)) void fence(void)
  * writing instructions to memory (self-modifying code, JIT compilation,
  * dynamic code loading) to ensure the processor fetches the new instructions.
  *
- * On Frost with unified instruction/data memory and no I-cache, this is
- * a NOP. On systems with separate I-caches, this would invalidate the
- * instruction cache.
+ * On Frost this writes back the L1D and then invalidates the L1I when the
+ * cached tier is active; in the low-BRAM tier (no caches) it is a NOP. On
+ * systems with separate I-caches, it likewise invalidates the instruction
+ * cache.
  */
 static inline __attribute__((always_inline)) void fence_i(void)
 {
