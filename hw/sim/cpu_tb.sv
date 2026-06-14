@@ -57,6 +57,7 @@ module cpu_tb
   logic o_mmio_read_pulse;  // Unused in testbench; required for CPU .* connection
   logic [31:0] o_mmio_load_addr;  // Unused in testbench; required for CPU .* connection
   logic o_mmio_load_valid;  // Unused in testbench; required for CPU .* connection
+  logic o_pipeline_stall;  // Unused in testbench; required for CPU .* connection
 
   // Interrupt and timer signals for CPU (controllable from testbench)
   // Use reg type to allow testbench to drive values via force/deposit

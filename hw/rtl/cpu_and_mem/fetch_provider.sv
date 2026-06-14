@@ -66,6 +66,12 @@ module fetch_provider #(
     // stall the replay bundle survives.
     input logic [31:0] i_pc,
     input logic i_fetch_replay_consume,
+    // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall).  While high the
+    // decode cannot consume a window: publish-valid is withheld and the owed
+    // ask is held, so a window the stalled decode cannot accept is never
+    // presented (nor drifted to the leading PC).  Feeds the valid flop and the
+    // owed-ask bookkeeping only -- never the imem/fill address path.
+    input logic i_pipeline_stall,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
@@ -105,42 +111,49 @@ module fetch_provider #(
   // ===========================================================================
   logic [31:0] ask_q;  // the address whose window is owed/presented
   logic [31:0] pc_prev_q;
-  logic served_prev_q;
+  logic accepted_prev_q;
 
-  logic served_now;
-  assign served_now = o_instr_valid;
+  // ACCEPTED, not merely served: a window presented (o_instr_valid high) on a
+  // cycle the front end was stalled was NOT consumed.  Keying the owed-ask
+  // bookkeeping off "accepted" (valid AND not stalled) keeps a redirect that
+  // lands the cycle after a stall-presented window from being misread as flow
+  // -- see retarget_now.
+  logic accepted_now;
+  assign accepted_now = o_instr_valid && !i_pipeline_stall;
 
-  // Retarget: the PC moved between two unserved cycles -- a backend redirect
-  // (the core's hold arms keep the PC still on every other unserved cycle,
+  // Retarget: the PC moved between two un-accepted cycles -- a backend redirect
+  // (the core's hold arms keep the PC still on every other un-accepted cycle,
   // and a replay consumption's advance is classified out by the registered
   // i_fetch_replay_consume).
   logic retarget_now;
-  assign retarget_now = !served_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
+  assign retarget_now = !accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
 
   // The ask presented this cycle; its window is due (and its validity is
   // decided) for the next cycle.
   logic [31:0] fetch_addr;
-  // TIMING: the retarget term lives only in the ask REGISTER update below,
-  // not in this combinational mux -- the retarget's 32-bit compare otherwise
-  // stacks with the presence compares into the fill engine and the imem
-  // address pins (measured -0.42 post-opt from the o_pc flops).  On a
-  // retarget cycle this address is therefore the stale old ask for one
-  // extra cycle; the window it yields is squashed by the core's
-  // control-flow holdoff, which the redirect that caused the retarget has
-  // already armed and which extends through no-progress cycles.
-  assign fetch_addr  = served_now ? i_pc : ask_q;
+  // TIMING: neither the retarget 32-bit compare nor the pipeline stall lives in
+  // this combinational mux -- both would otherwise stack with the presence
+  // compares into the fill engine and the imem address pins (the retarget
+  // compare measured -0.42 post-opt from the o_pc flops).  The stall gates only
+  // the o_instr_valid flop (below): while stalled o_instr_valid is held low, so
+  // this mux holds ask_q and the owed window persists for the stalled decode
+  // instead of advancing to the leading PC.  On a retarget cycle this address
+  // is the stale old ask for one extra cycle; the window it yields is squashed
+  // by the core's control-flow holdoff, which the redirect that caused the
+  // retarget has already armed and which extends through no-progress cycles.
+  assign fetch_addr  = o_instr_valid ? i_pc : ask_q;
 
   assign o_bram_addr = fetch_addr;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      ask_q         <= '0;
-      pc_prev_q     <= '0;
-      served_prev_q <= 1'b0;
+      ask_q           <= '0;
+      pc_prev_q       <= '0;
+      accepted_prev_q <= 1'b0;
     end else begin
-      ask_q         <= (served_now || retarget_now) ? i_pc : ask_q;
-      pc_prev_q     <= i_pc;
-      served_prev_q <= served_now;
+      ask_q           <= (o_instr_valid || retarget_now) ? i_pc : ask_q;
+      pc_prev_q       <= i_pc;
+      accepted_prev_q <= accepted_now;
     end
   end
 
@@ -198,7 +211,15 @@ module fetch_provider #(
     if (i_rst || i_invalidate) begin
       o_instr_valid <= 1'b0;
     end else begin
-      o_instr_valid <= window_ready;
+      // Withhold publish-valid while the front end is stalled (above): the owed
+      // window stays parked (fetch_addr holds ask_q) and is published only when
+      // the decode can accept it, so a miss that completes mid-stall delivers
+      // the owed window on release rather than flashing it for one unconsumable
+      // cycle and then drifting to the leading PC.  o_instr_valid is registered,
+      // so the first stall cycle still carries the pre-stall valid: the IF
+      // stage's first-cycle stall capture is preserved; the replay path holds
+      // fetch_progress for the rest of the stall.
+      o_instr_valid <= window_ready && !i_pipeline_stall;
     end
   end
 
