@@ -1,0 +1,177 @@
+/*
+ *    Copyright 2026 Two Sigma Open Source, LLC
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
+/*
+ * line_port_arbiter_test_harness -- cocotb unit-bench top for the arbiter.
+ *
+ * Exposes both upstream line ports and drains the arbiter into the same
+ * backside the hierarchy uses below it: line_port_axi_bridge ->
+ * axi_behavioral_memory. The bench plays the two L1s itself so contention
+ * windows (simultaneous requests, requests landing mid-transaction) are
+ * driven cycle-precisely; MEM_LATENCY widens the in-flight window the
+ * loser must wait out.
+ */
+module line_port_arbiter_test_harness #(
+    parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned LINE_BYTES = 32,
+    parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
+    parameter int unsigned MEM_BYTES = 1024 * 1024,
+    parameter int unsigned MEM_LATENCY = 12
+) (
+    input logic i_clk,
+    input logic i_rst,
+
+    input  logic                    i_up0_req_valid,
+    output logic                    o_up0_req_ready,
+    input  logic                    i_up0_req_write,
+    input  logic [  ADDR_WIDTH-1:0] i_up0_req_addr,
+    input  logic [LINE_BYTES*8-1:0] i_up0_req_wdata,
+    input  logic [  LINE_BYTES-1:0] i_up0_req_wstrb,
+    output logic                    o_up0_resp_valid,
+    output logic [LINE_BYTES*8-1:0] o_up0_resp_rdata,
+
+    input  logic                    i_up1_req_valid,
+    output logic                    o_up1_req_ready,
+    input  logic                    i_up1_req_write,
+    input  logic [  ADDR_WIDTH-1:0] i_up1_req_addr,
+    input  logic [LINE_BYTES*8-1:0] i_up1_req_wdata,
+    input  logic [  LINE_BYTES-1:0] i_up1_req_wstrb,
+    output logic                    o_up1_resp_valid,
+    output logic [LINE_BYTES*8-1:0] o_up1_resp_rdata
+);
+
+  logic arb_down_req_valid, arb_down_req_ready, arb_down_req_write;
+  logic [ADDR_WIDTH-1:0] arb_down_req_addr;
+  logic [LINE_BYTES*8-1:0] arb_down_req_wdata;
+  logic [LINE_BYTES-1:0] arb_down_req_wstrb;
+  logic arb_down_resp_valid;
+  logic [LINE_BYTES*8-1:0] arb_down_resp_rdata;
+
+  line_port_arbiter #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .LINE_BYTES(LINE_BYTES)
+  ) arbiter (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_up0_req_valid(i_up0_req_valid),
+      .o_up0_req_ready(o_up0_req_ready),
+      .i_up0_req_write(i_up0_req_write),
+      .i_up0_req_addr(i_up0_req_addr),
+      .i_up0_req_wdata(i_up0_req_wdata),
+      .i_up0_req_wstrb(i_up0_req_wstrb),
+      .o_up0_resp_valid(o_up0_resp_valid),
+      .o_up0_resp_rdata(o_up0_resp_rdata),
+      .i_up1_req_valid(i_up1_req_valid),
+      .o_up1_req_ready(o_up1_req_ready),
+      .i_up1_req_write(i_up1_req_write),
+      .i_up1_req_addr(i_up1_req_addr),
+      .i_up1_req_wdata(i_up1_req_wdata),
+      .i_up1_req_wstrb(i_up1_req_wstrb),
+      .o_up1_resp_valid(o_up1_resp_valid),
+      .o_up1_resp_rdata(o_up1_resp_rdata),
+      .o_down_req_valid(arb_down_req_valid),
+      .i_down_req_ready(arb_down_req_ready),
+      .o_down_req_write(arb_down_req_write),
+      .o_down_req_addr(arb_down_req_addr),
+      .o_down_req_wdata(arb_down_req_wdata),
+      .o_down_req_wstrb(arb_down_req_wstrb),
+      .i_down_resp_valid(arb_down_resp_valid),
+      .i_down_resp_rdata(arb_down_resp_rdata)
+  );
+
+  logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
+  logic axi_arvalid, axi_arready, axi_rvalid, axi_rready, axi_rlast;
+  logic [31:0] axi_awaddr, axi_araddr;
+  logic [7:0] axi_awlen, axi_arlen;
+  logic [2:0] axi_awsize, axi_arsize;
+  logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
+  logic [LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
+  logic [LINE_BYTES-1:0] axi_wstrb;
+  logic axi_wlast;
+
+  line_port_axi_bridge #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .LINE_BYTES(LINE_BYTES),
+      .BASE_ADDR (BASE_ADDR)
+  ) bridge (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_req_valid(arb_down_req_valid),
+      .o_req_ready(arb_down_req_ready),
+      .i_req_write(arb_down_req_write),
+      .i_req_addr(arb_down_req_addr),
+      .i_req_wdata(arb_down_req_wdata),
+      .i_req_wstrb(arb_down_req_wstrb),
+      .o_resp_valid(arb_down_resp_valid),
+      .o_resp_rdata(arb_down_resp_rdata),
+      .o_axi_awvalid(axi_awvalid),
+      .i_axi_awready(axi_awready),
+      .o_axi_awaddr(axi_awaddr),
+      .o_axi_awlen(axi_awlen),
+      .o_axi_awsize(axi_awsize),
+      .o_axi_awburst(axi_awburst),
+      .o_axi_wvalid(axi_wvalid),
+      .i_axi_wready(axi_wready),
+      .o_axi_wdata(axi_wdata),
+      .o_axi_wstrb(axi_wstrb),
+      .o_axi_wlast(axi_wlast),
+      .i_axi_bvalid(axi_bvalid),
+      .o_axi_bready(axi_bready),
+      .i_axi_bresp(axi_bresp),
+      .o_axi_arvalid(axi_arvalid),
+      .i_axi_arready(axi_arready),
+      .o_axi_araddr(axi_araddr),
+      .o_axi_arlen(axi_arlen),
+      .o_axi_arsize(axi_arsize),
+      .o_axi_arburst(axi_arburst),
+      .i_axi_rvalid(axi_rvalid),
+      .o_axi_rready(axi_rready),
+      .i_axi_rdata(axi_rdata),
+      .i_axi_rresp(axi_rresp),
+      .i_axi_rlast(axi_rlast)
+  );
+
+  axi_behavioral_memory #(
+      .LINE_BYTES(LINE_BYTES),
+      .MEM_BYTES(MEM_BYTES),
+      .LATENCY(MEM_LATENCY),
+      .USE_INIT_FILE(1'b0)
+  ) main_memory (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_axi_awvalid(axi_awvalid),
+      .o_axi_awready(axi_awready),
+      .i_axi_awaddr(axi_awaddr),
+      .i_axi_awlen(axi_awlen),
+      .i_axi_wvalid(axi_wvalid),
+      .o_axi_wready(axi_wready),
+      .i_axi_wdata(axi_wdata),
+      .i_axi_wstrb(axi_wstrb),
+      .o_axi_bvalid(axi_bvalid),
+      .i_axi_bready(axi_bready),
+      .o_axi_bresp(axi_bresp),
+      .i_axi_arvalid(axi_arvalid),
+      .o_axi_arready(axi_arready),
+      .i_axi_araddr(axi_araddr),
+      .i_axi_arlen(axi_arlen),
+      .o_axi_rvalid(axi_rvalid),
+      .i_axi_rready(axi_rready),
+      .o_axi_rdata(axi_rdata),
+      .o_axi_rresp(axi_rresp),
+      .o_axi_rlast(axi_rlast)
+  );
+
+endmodule : line_port_arbiter_test_harness

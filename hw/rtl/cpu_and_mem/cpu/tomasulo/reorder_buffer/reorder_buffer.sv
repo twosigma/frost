@@ -132,8 +132,12 @@ module reorder_buffer (
     // =========================================================================
     // Store Queue Coordination
     // =========================================================================
-    input logic i_sq_empty,           // Store queue has no entries at all
-    input logic i_sq_committed_empty, // No committed entries pending write (for FENCE)
+    input  logic i_sq_empty,            // Store queue has no entries at all
+    input  logic i_sq_committed_empty,  // No committed entries pending write (for FENCE)
+    // FENCE.I cache-sync handshake (see rob_serializer): request held while
+    // the serializer waits; done is a level while the request is high.
+    input  logic i_fence_i_sync_done,
+    output logic o_fence_i_sync_req,
 
     // =========================================================================
     // CSR Unit Coordination
@@ -149,6 +153,10 @@ module reorder_buffer (
     output logic o_trap_pending,  // Exception needs handling
     output logic [riscv_pkg::XLEN-1:0] o_trap_pc,  // PC of excepting instruction
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
+    // Head entry's CDB value at trap time. For a misaligned load/store the
+    // load_queue/SQ path parks the faulting address here (the value slot is
+    // unused for an exception), so cpu_ooo can write it to mtval.
+    output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     input logic i_trap_taken,  // Trap unit has taken the trap
 
     // MRET coordination
@@ -1625,6 +1633,8 @@ module reorder_buffer (
       .i_early_recovery_en (i_early_recovery_en),
       .i_interrupt_pending (i_interrupt_pending),
       .i_sq_committed_empty(i_sq_committed_empty),
+      .i_fence_i_sync_done (i_fence_i_sync_done),
+      .o_fence_i_sync_req  (o_fence_i_sync_req),
       .i_csr_done          (i_csr_done),
       .i_mret_done         (i_mret_done),
       .i_trap_taken        (i_trap_taken),
@@ -1707,6 +1717,7 @@ module reorder_buffer (
       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
   assign o_trap_cause = head_exc_cause;
+  assign o_trap_value = head_value[XLEN-1:0];
 
   // FENCE.I flush signal - pulse when FENCE.I commits
   always_ff @(posedge i_clk) begin
@@ -2293,6 +2304,10 @@ module reorder_buffer (
 
       // MRET completes
       cover_mret_complete : cover (serial_state == riscv_pkg::SERIAL_MRET_EXEC && i_mret_done);
+
+      // FENCE.I cache sync completes
+      cover_fence_i_sync_complete :
+      cover (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC && i_fence_i_sync_done);
 
       // Exception triggers trap
       cover_exception_trap : cover (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);

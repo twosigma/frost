@@ -86,9 +86,18 @@ jobs:
               --ignore=tests/test_riscv_tests.py \
               --ignore=tests/test_riscv_torture.py
 
-  # RISC-V Architecture Compliance Tests - parallelized by extension
+  # RISC-V Architecture Compliance Tests - parallelized by extension x memory
+  # tier. The two compliance tiers a program actually runs from:
+  #   bram - code + data + signature in low BRAM (pure ISA conformance, the
+  #          low tier programs use when they fit).
+  #   ddr  - code + data + signature in cached DDR (also exercises the L1I
+  #          fetch path and the D-side cached tier on every load/store).
+  # A third diagnostic config, icache (code in DDR, data + signature in BRAM),
+  # isolates the instruction-fetch path from the D-side cached tier; it is not
+  # a compliance target, so it stays a local aid (--mem-config icache) rather
+  # than a CI job.
   test-arch-compliance:
-    name: Arch Tests (${{ matrix.extension }})
+    name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     # Allows slow extension batches enough room beyond the per-test simulator timeout.
     timeout-minutes: 300
@@ -97,32 +106,55 @@ jobs:
       fail-fast: false
       matrix:
         extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints]
+        mem_config: [bram, ddr]
+        # Fencei (Zifencei) exercises self-modifying code: store an instruction,
+        # fence.i, then execute it. The low-BRAM tier is a Harvard split
+        # (separate instruction and data BRAMs), so a store reaches only the
+        # data BRAM and SMC is non-coherent there; fence.i's writeback +
+        # invalidate apply to the cached DDR tier alone. Fencei is therefore a
+        # DDR-tier-only compliance test.
+        exclude:
+          - extension: Zifencei
+            mem_config: bram
         # Individual jobs for slow tests (>5000 test cases) that are excluded
-        # from the F/D extension jobs by the SIM_MAX_TEST_CASES filter.
+        # from the F/D extension jobs by the SIM_MAX_TEST_CASES filter. These
+        # are the heavy D-side cached-tier tests, so they run in the ddr config.
         include:
           - extension: "F fadd_b11"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fadd_b11-01.S
           - extension: "F fmadd_b1"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fmadd_b1-01.S
           - extension: "F fmsub_b1"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fmsub_b1-01.S
           - extension: "F fnmadd_b1"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fnmadd_b1-01.S
           - extension: "F fnmsub_b1"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fnmsub_b1-01.S
           - extension: "F fsub_b11"
+            mem_config: ddr
             test_path: rv32i_m/F/src/fsub_b11-01.S
           - extension: "D fadd.d_b11"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fadd.d_b11-01.S
           - extension: "D fmadd.d_b1"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fmadd.d_b1-01.S
           - extension: "D fmsub.d_b1"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fmsub.d_b1-01.S
           - extension: "D fnmadd.d_b1"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fnmadd.d_b1-01.S
           - extension: "D fnmsub.d_b1"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fnmsub.d_b1-01.S
           - extension: "D fssub.d_b11"
+            mem_config: ddr
             test_path: rv32i_m/D/src/fssub.d_b11-01.S
     steps:
       - name: Checkout repository
@@ -139,14 +171,16 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run arch compliance tests (${{ matrix.extension }})
+      - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
         run: |
           if [ -n "${{ matrix.test_path }}" ]; then
             docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --test ${{ matrix.test_path }}
+              python3 tests/test_arch_compliance.py --test ${{ matrix.test_path }} \
+                --mem-config ${{ matrix.mem_config }}
           else
             docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }}
+              python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
+                --mem-config ${{ matrix.mem_config }}
           fi
 
   # riscv-tests ISA Tests - parallelized by suite
@@ -207,11 +241,15 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }}
 
-  # riscv-torture Random Instruction Tests
+  # riscv-torture Random Instruction Tests - parallelized by memory tier
   test-riscv-torture:
-    name: riscv-torture Tests
+    name: riscv-torture Tests (${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -227,10 +265,10 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-torture tests
+      - name: Run riscv-torture tests (${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_torture.py --all
+            python3 tests/test_riscv_torture.py --all --mem-config ${{ matrix.mem_config }}
 
   # Run Yosys synthesis check
   test-synthesis:

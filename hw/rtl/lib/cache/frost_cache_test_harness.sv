@@ -17,17 +17,19 @@
 /*
  * frost_cache_test_harness -- cocotb unit-bench top for the cache hierarchy.
  *
- * Exposes the upstream line port and wires the SAME backside topology the CPU
- * integration uses: frost_cache_hierarchy -> line_port_axi_bridge ->
- * axi_behavioral_memory. The bench drives raw line transactions and checks
- * them against a reference model; -G parameters select the board shape
- * (HAS_L2) and shrink the caches so eviction/thrash paths are cheap to hit.
+ * Exposes both upstream line ports (data side + instruction side) and wires
+ * the SAME backside topology the CPU integration uses:
+ * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
+ * The bench drives raw line transactions and checks them against a reference
+ * model; -G parameters select the board shape (HAS_L2) and shrink the caches
+ * so eviction/thrash paths are cheap to hit.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 1024,
+    parameter int unsigned L1I_CACHE_BYTES = 1024,
     parameter int unsigned L2_CACHE_BYTES = 4096,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
@@ -45,7 +47,17 @@ module frost_cache_test_harness #(
     input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
     output logic                    o_up_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_up_resp_rdata
+    output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
+    input  logic                    i_iup_req_valid,
+    output logic                    o_iup_req_ready,
+    input  logic                    i_iup_req_write,
+    input  logic [  ADDR_WIDTH-1:0] i_iup_req_addr,
+    input  logic [LINE_BYTES*8-1:0] i_iup_req_wdata,
+    input  logic [  LINE_BYTES-1:0] i_iup_req_wstrb,
+    output logic                    o_iup_resp_valid,
+    output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    input  logic                    i_fence_sync,
+    output logic                    o_fence_done
 );
 
   logic stack_down_req_valid, stack_down_req_ready, stack_down_req_write;
@@ -61,6 +73,7 @@ module frost_cache_test_harness #(
       .HAS_L2(HAS_L2),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1_DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
+      .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY)
@@ -75,6 +88,16 @@ module frost_cache_test_harness #(
       .i_up_req_wstrb(i_up_req_wstrb),
       .o_up_resp_valid(o_up_resp_valid),
       .o_up_resp_rdata(o_up_resp_rdata),
+      .i_iup_req_valid(i_iup_req_valid),
+      .o_iup_req_ready(o_iup_req_ready),
+      .i_iup_req_write(i_iup_req_write),
+      .i_iup_req_addr(i_iup_req_addr),
+      .i_iup_req_wdata(i_iup_req_wdata),
+      .i_iup_req_wstrb(i_iup_req_wstrb),
+      .o_iup_resp_valid(o_iup_resp_valid),
+      .o_iup_resp_rdata(o_iup_resp_rdata),
+      .i_fence_sync(i_fence_sync),
+      .o_fence_done(o_fence_done),
       .o_down_req_valid(stack_down_req_valid),
       .i_down_req_ready(stack_down_req_ready),
       .o_down_req_write(stack_down_req_write),

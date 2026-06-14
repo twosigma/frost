@@ -86,6 +86,13 @@ module if_stage #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
+    // Fetch window valid: the {i_instr, i_instr_sideband, i_instr_bank_sel_r}
+    // window corresponds to the fetch address presented last cycle.  When low
+    // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
+    // PC and all per-delivery front-end state freeze, and the provider keeps
+    // working on the owed fetch address; backend redirects still land.  The
+    // low-BRAM path ties this 1, reducing every gate below to today's logic.
+    input logic i_instr_valid,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
     input logic i_frontend_state_flush,
@@ -102,6 +109,15 @@ module if_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
+    // REGISTERED: the stall-release cycle one cycle ago consumed the
+    // stall-captured replay bundle (no live window needed).  The fetch
+    // provider only needs this for served-vs-redirect classification of the
+    // PC movement it observes -- which it evaluates one cycle later anyway --
+    // so the export is registered to keep the late stall cone out of the
+    // provider's combinational ask/address paths.  The owed-ask VALUE needs
+    // no correction: o_pc is frozen at the owed ask through any stall a
+    // replay bundle can survive (redirects kill the replay capture).
+    output logic o_fetch_replay_consume,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
     // Slot-2 IF→PD packet (2-wide dispatch, Session F).  When slot-2 is invalid
     // this cycle (slot-1 is a NOP/branch, slot-2 doesn't fit, etc.), sel_nop is
@@ -192,6 +208,7 @@ module if_stage #(
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic sel_nop;  // Select NOP (during holdoff/flush)
+  logic fetch_progress;  // live window valid OR replay bundle presented
   logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
@@ -247,7 +264,7 @@ module if_stage #(
   // PD redirect cycle are cleaned up via redirect_kill_pending_q and pd_redirect_q.
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush;
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress;
   assign ras_instruction_valid_live = !sel_nop &&
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
@@ -347,6 +364,7 @@ module if_stage #(
       // with the older instruction's eventual mispredict recovery.
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
+      .i_fetch_progress(fetch_progress),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
       // PD redirect kills in-flight slot-1 prediction metadata (see module).
@@ -450,6 +468,7 @@ module if_stage #(
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(pc_controller_stall),
       .i_stall_registered(if_stage_stall_registered),
+      .i_fetch_progress(fetch_progress),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
       .i_fence_i_flush(i_fence_i_flush),
@@ -555,6 +574,7 @@ module if_stage #(
 
       .i_is_compressed(is_compressed),
       .i_sel_nop(sel_nop),
+      .i_fetch_progress(fetch_progress),
       .i_slot2_valid(slot2_valid),
       // Align sideband to match instruction word selection
       .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ?
@@ -644,20 +664,29 @@ module if_stage #(
   // This registered signal is NOT on the critical path (FF output → 1 OR gate).
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
-    // Stall-gated (bug #5): this wrong-path bubble pulse must survive a
-    // stall that freezes the front-end mid-bubble. control_flow_holdoff and
-    // prediction_holdoff are both stall-held, so without the gate a stall
-    // covering the bubble cycle outlives the one-cycle pulse: on release
-    // the colliding BTB hit's prediction_holdoff still defeats the
+    // Fetch-progress-gated (bug #5 + L1I-miss variant): this wrong-path bubble
+    // pulse must survive ANY front-end freeze that stretches the bubble cycle.
+    // control_flow_holdoff and prediction_holdoff are both held across both a
+    // pipeline stall (i_pipeline_ctrl.stall) AND a no-progress fetch cycle
+    // (the stall-capable L1I fetch provider withholds valid through a miss),
+    // so without a matching gate the override pulse outlives the freeze: on
+    // release the colliding BTB hit's prediction_holdoff still defeats the
     // control-flow NOP term, the lead-restoring bubble cycle presents (and
-    // dispatch consumes) the bundle, and the realigned next cycle presents
-    // the SAME pc_reg again — a duplicate ROB allocation (observed in the
-    // cjpeg tiny sim as a re-executed zero-run-loop pair: one skipped
-    // coefficient, one-bit-short Huffman code, 646-byte JPEG). Mirrors
-    // o_slot2_redirect_q, which has carried the same !i_stall gate since
-    // Session Q. See test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble.
+    // dispatch consumes) the bundle, and the realigned next cycle presents the
+    // SAME pc_reg again — a duplicate ROB allocation. The original fix gated on
+    // !i_pipeline_ctrl.stall only (cjpeg tiny sim re-executed a zero-run-loop
+    // pair). The L1I-miss variant: a pd-redirect target whose cache line misses
+    // stretches the bubble across the no-progress fetch cycles, by which point
+    // a stall-only gate has already advanced (and cleared) the pulse — so the
+    // branch-target instruction is dispatched twice (arch signature dump: a
+    // digit-convert addi at a branch target re-added '0', storing char+0x30).
+    // Gate the update on a DELIVERED cycle (fetch_progress) so the override
+    // holds through both stalls and fetch misses until the bubble is NOP'd.
+    // This matches o_slot2_redirect_q, whose pc_controller gate is already the
+    // full fetch_stall form (!i_stall && i_fetch_progress); pd_redirect_q was
+    // the lone override still gated on !i_pipeline_ctrl.stall alone.
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
-    else if (!i_pipeline_ctrl.stall) pd_redirect_q <= i_pd_redirect;
+    else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
   end
 
   // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
@@ -682,7 +711,7 @@ module if_stage #(
   // stall-held, so a stall covering the bubble cycle let the bubble
   // present-and-dispatch on release alongside the realigned repeat. Fixed
   // by stall-gating pd_redirect_q (see its always_ff above).
-  assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe ||
+  assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
@@ -824,9 +853,11 @@ module if_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       prediction_from_buffer_holdoff <= 1'b0;
-    end else if (!if_stage_stall) begin
+    end else if (!if_stage_stall && fetch_progress) begin
       // Set when prediction happens while using buffered instruction.
       // Next cycle's instruction data will be stale and needs suppression.
+      // Held through fetch-invalid cycles (like a stall) so the deferred
+      // stale-suppression and the c_ext use-buffer edge stay sequenced.
       prediction_from_buffer_holdoff <= prediction_used_from_buffer;
     end
   end
@@ -851,6 +882,19 @@ module if_stage #(
                                    !flush_for_c_ext_safe &&
                                    saved_values_valid &&
                                    !sel_nop_saved;
+
+  // Fetch progress: a bundle is being presented for consumption this cycle --
+  // either the provider's live window is valid, or the replay path is
+  // presenting the stall-captured bundle (whose data needs no live window).
+  // This, not i_instr_valid alone, is what gates the PC hold arms and the
+  // per-delivery state freezes: on the stall-release cycle the replayed
+  // bundle IS consumed, so freezing there would re-present (and re-dispatch)
+  // the same pc_reg on the next live cycle.
+  assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) o_fetch_replay_consume <= 1'b0;
+    else o_fetch_replay_consume <= replay_saved_if_outputs && !if_stage_stall;
+  end
 
   // ===========================================================================
   // Outputs to PD Stage

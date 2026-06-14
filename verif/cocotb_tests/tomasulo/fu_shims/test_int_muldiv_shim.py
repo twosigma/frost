@@ -572,6 +572,36 @@ async def test_rem_by_zero(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 16b: REM by zero with a negative dividend -> remainder = dividend
+# (sign must be preserved; a divider that returns |dividend| is wrong)
+# ============================================================================
+@cocotb.test()
+async def test_rem_by_zero_negative_dividend(dut: Any) -> None:
+    """REM: (-x) % 0 = -x per RISC-V spec (sign preserved)."""
+    iface = await setup(dut)
+
+    rob_tag = 14
+    dividend = 0xAAAA_AAAA  # -0x55555556 as signed 32-bit
+    iface.drive_issue(
+        valid=True,
+        rob_tag=rob_tag,
+        op=_op("REM"),
+        src1_value=dividend,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    result = await wait_for_div_complete(iface)
+    assert (
+        result["tag"] == rob_tag
+    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert (
+        result["value"] == dividend
+    ), f"REM by zero (negative) should return 0x{dividend:08X}, got 0x{result['value']:08X}"
+
+
+# ============================================================================
 # Test 17: DIV signed overflow (-2^31 / -1 = -2^31)
 # ============================================================================
 @cocotb.test()

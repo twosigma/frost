@@ -278,6 +278,25 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
+# Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cache/cache.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),imem_predecode_line)
+# Per-line predecode sideband unit bench (cross-check vs the python generator)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),fetch_provider)
+# Fetch window provider unit bench (quadrant steer, fetch buffer, fills)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
+VERILOG_SOURCES :=
 else
 # Full chip or CPU tests - use complete RTL
 COMPILE_ARGS := \
@@ -351,4 +370,4 @@ clean:: clean-local
 
 .PHONY: clean-local
 clean-local:
-	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build sim_build_arch2m
+	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build

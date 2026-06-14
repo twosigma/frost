@@ -33,6 +33,10 @@ module rob_serializer (
     input logic i_early_recovery_en,
     input logic i_interrupt_pending,
     input logic i_sq_committed_empty,
+    // FENCE.I cache sync handshake: the request is a level (decoded from the
+    // sync state) held until the cache side reports done; done is a level
+    // that stays high while the request is high, so no pulses can be missed.
+    input logic i_fence_i_sync_done,
     input logic i_csr_done,
     input logic i_mret_done,
     input logic i_trap_taken,
@@ -47,11 +51,14 @@ module rob_serializer (
     input logic head_is_lr,
 
     output riscv_pkg::serial_state_e o_serial_state,
+    output logic o_fence_i_sync_req,
     output logic o_commit_stall
 );
 
   riscv_pkg::serial_state_e serial_state, serial_state_next;
   logic commit_stall;
+
+  assign o_fence_i_sync_req = (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC);
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -91,11 +98,19 @@ module rob_serializer (
             serial_state_next = riscv_pkg::SERIAL_CSR_EXEC;
             commit_stall = 1'b1;
           end else if (head_is_fence || head_is_fence_i) begin
-            // FENCE/FENCE.I: wait for committed SQ entries to drain
+            // FENCE/FENCE.I: wait for committed SQ entries to drain.
+            // FENCE.I additionally syncs the caches before committing (the
+            // drained stores sit dirty in the write-back L1D; the L1I and
+            // the fetch buffer must refill from post-writeback data).
             if (i_sq_committed_empty) begin
-              // No committed entries pending write, can commit
-              serial_state_next = riscv_pkg::SERIAL_IDLE;
-              commit_stall = 1'b0;
+              if (head_is_fence_i) begin
+                serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;
+                commit_stall = 1'b1;
+              end else begin
+                // No committed entries pending write, can commit
+                serial_state_next = riscv_pkg::SERIAL_IDLE;
+                commit_stall = 1'b0;
+              end
             end else begin
               serial_state_next = riscv_pkg::SERIAL_WAIT_SQ;
               commit_stall = 1'b1;
@@ -116,7 +131,20 @@ module rob_serializer (
       riscv_pkg::SERIAL_WAIT_SQ: begin
         commit_stall = 1'b1;
         if (i_sq_committed_empty) begin
-          // Committed SQ entries drained, can commit
+          if (head_is_fence_i) begin
+            // FENCE.I continues into the cache sync once the SQ drains.
+            serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;
+          end else begin
+            // Committed SQ entries drained, can commit
+            serial_state_next = riscv_pkg::SERIAL_IDLE;
+            commit_stall = 1'b0;
+          end
+        end
+      end
+
+      riscv_pkg::SERIAL_FENCE_I_SYNC: begin
+        commit_stall = 1'b1;
+        if (i_fence_i_sync_done) begin
           serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end

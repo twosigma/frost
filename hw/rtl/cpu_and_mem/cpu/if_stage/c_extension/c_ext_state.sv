@@ -60,6 +60,13 @@ module c_ext_state #(
     // Instruction type detection (from instruction aligner)
     input logic i_is_compressed,  // Current parcel is compressed
     input logic i_sel_nop,  // IF is outputting a stale/invalid bubble this cycle
+    // Fetch progress (live window valid OR stall-replay bundle presented).
+    // The buffer state machines below enumerate registered bubble sources
+    // individually (instead of consuming the BRAM-late i_sel_nop); a
+    // no-progress fetch cycle is a new bubble source they must also
+    // exclude, except when the consumed data comes from the saved stall
+    // snapshot.
+    input logic i_fetch_progress,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
 
     // 2-wide bundle metadata (Session F): slot-2 valid this cycle.  When set
@@ -272,7 +279,7 @@ module c_ext_state #(
       if (capture_pending_prediction_buffer) begin
         o_prev_was_compressed_at_lo <= 1'b1;
       end
-    end else if (!i_stall && !i_any_holdoff_safe &&
+    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_prediction_from_buffer_holdoff &&
                  !o_use_buffer_after_prediction &&
@@ -292,7 +299,8 @@ module c_ext_state #(
   // the buffer after a prediction redirect. Without this, stale data could be read later
   // when use_instr_buffer is true.
   always_ff @(posedge i_clk) begin
-    if (!i_stall && (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
+    if (!i_stall && (i_fetch_progress || use_saved_values) &&
+        (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
         !i_flush &&
         !pending_prediction_target_holdoff_needs_buffer &&
         (!i_prediction_holdoff || capture_pending_prediction_buffer) &&

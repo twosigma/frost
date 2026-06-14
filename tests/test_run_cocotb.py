@@ -139,6 +139,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached-region (DDR) tier store/load test through the cache hierarchy",
     ),
+    "ddr_exec_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_exec_test",
+        description="Execute-from-DDR test (.ddr_text through the fetch provider + L1I)",
+    ),
+    "ddr_smc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_smc_test",
+        description="Self-modifying code test (stores + fence.i + execute, full sync chain)",
+    ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -246,6 +258,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="uart_echo",
         description="UART RX echo demo (driven via cocotb UART input)",
+    ),
+    # Fetch-latency fuzz: the same real programs with the simulation-only
+    # variable-latency fetch provider (random i_instr_valid gaps), proving the
+    # front end's fetch-invalid machinery before an I-cache sits behind it.
+    # Grouped adjacently so the shared -G build is reused across all four.
+    "hello_world_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        description="hello_world under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "branch_pred_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="branch_pred_test",
+        description="Branch-prediction stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "c_ext_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="c_ext_test",
+        description="C-extension alignment stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "call_stress_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="call_stress",
+        description="RAS call/return stress under randomized fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
     # Tomasulo unit tests
     "reorder_buffer": CocotbRunConfig(
@@ -359,6 +403,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
         verilator_extra_args=("-GHAS_L2=0",),
+    ),
+    "line_port_arbiter": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_arbiter",
+        hdl_toplevel_module="line_port_arbiter_test_harness",
+        description="2:1 line-port arbiter unit tests (priority, lock, response routing)",
+    ),
+    "imem_predecode_line": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
+        hdl_toplevel_module="imem_predecode_line",
+        description="Per-line predecode sideband cross-checked against the python generator",
+    ),
+    "fetch_provider": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_fetch_provider",
+        hdl_toplevel_module="fetch_provider",
+        description="Fetch provider unit tests (quadrant steer, fetch buffer, fills, invalidate)",
     ),
     "frontend_validity_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",

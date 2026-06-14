@@ -268,6 +268,8 @@ class TomasuloInterface:
         self.dut.i_rob_checkpoint_id.value = 0
 
         # ROB external coordination
+        # Zero-latency fence.i cache sync (mirrors the no-cached-tier shape).
+        self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0

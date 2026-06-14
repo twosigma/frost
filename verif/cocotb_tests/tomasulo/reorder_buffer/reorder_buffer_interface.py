@@ -373,6 +373,10 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_empty.value = 1
         self.dut.i_sq_committed_empty.value = 1
+        # Zero-latency cache sync by default (mirrors the no-cached-tier
+        # shape's done=req): FENCE.I spends exactly one cycle in
+        # SERIAL_FENCE_I_SYNC before committing.
+        self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_widen_commit_ok.value = 1
         self.dut.i_commit_hold.value = 0
         self.dut.i_csr_done.value = 0
@@ -599,6 +603,15 @@ class ReorderBufferInterface:
     def mret_start(self) -> bool:
         """MRET start signal."""
         return bool(self.dut.o_mret_start.value)
+
+    @property
+    def fence_i_sync_req(self) -> bool:
+        """True while the serializer is requesting the fence.i cache sync."""
+        return bool(self.dut.o_fence_i_sync_req.value)
+
+    def set_fence_i_sync_done(self, done: bool) -> None:
+        """Drive the cache-sync completion input."""
+        self.dut.i_fence_i_sync_done.value = 1 if done else 0
 
     @property
     def fence_i_flush(self) -> bool:

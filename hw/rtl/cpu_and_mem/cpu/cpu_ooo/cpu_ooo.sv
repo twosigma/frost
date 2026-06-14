@@ -46,6 +46,22 @@ module cpu_ooo #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
+    // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
+    input logic i_instr_valid,
+    // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
+    // provider counts it as a served cycle for its owed-ask tracking.
+    output logic o_fetch_replay_consume,
+    // Front-end pipeline stall (pipeline_ctrl.stall): the fetch provider
+    // withholds publish-valid and holds its owed ask while this is high so a
+    // window the stalled decode cannot consume is never presented.
+    output logic o_pipeline_stall,
+    // FENCE.I support: the cache-sync handshake (request held while the ROB
+    // serializer stalls the fence at the head; done is a level while the
+    // request is high) and the committed-fence flush pulse that drops the
+    // fetch provider's buffered lines.
+    output logic o_fence_i_sync_req,
+    input logic i_fence_i_sync_done,
+    output logic o_fence_i_flush,
     // Data memory interface
     input logic [XLEN-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -63,12 +79,12 @@ module cpu_ooo #(
     // (already qualified by is_cached in the router) plus the handshake
     // completion inputs from the cached_tier_adapter.
     output logic [3:0] o_data_mem_cached_byte_wr_en,
-    // Cached-tier write data: the store-queue drain data ONLY. AMOs are pinned
-    // to the BRAM tier (never write the cached region), so routing the AMO
-    // write-data mux here was dead logic -- but it dragged the long
-    // (amo_entry_idx -> AMO ALU) cone onto the wide write-data cascade, which
-    // was the dominant post-opt timing failure before the AMO pinning. Feeding
-    // the SQ drain data directly drops that cone.
+    // Cached-tier write data: SQ-store drain data, or the AMO new value on the
+    // single cycle a cached AMO read-modify-write is launched to the adapter.
+    // Driven by the router, which owns the SQ-vs-AMO cached-write mux. The mux
+    // sits on the cached-only write-data path (not the wide BRAM write-data
+    // cascade that was the old post-opt timing offender), and the AMO ALU cone
+    // only reaches it through the rare, ROB-head-serialized cached AMO.
     output logic [XLEN-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
     input logic [XLEN-1:0] i_cached_read_data,
@@ -153,6 +169,8 @@ module cpu_ooo #(
   logic replay_after_serialize_stall_q;
   logic [1:0] post_flush_holdoff_q;
   logic trap_taken_reg, mret_taken_reg;
+  logic sq_committed_empty;  // committed-but-unwritten stores pending (drain gate)
+  logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
   ooo_pipeline_control #(
@@ -305,6 +323,7 @@ module cpu_ooo #(
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
   assign dbg_csr_in_flight = csr_in_flight;
   assign dbg_pipeline_stall = pipeline_ctrl.stall;
+  assign o_pipeline_stall = pipeline_ctrl.stall;
   assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
   assign dbg_dispatch_stall = dispatch_stall;
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
@@ -385,6 +404,8 @@ module cpu_ooo #(
       .i_instr,
       .i_instr_sideband,
       .i_instr_bank_sel_r,
+      .i_instr_valid,
+      .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
@@ -807,6 +828,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
+  assign o_fence_i_flush = fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
 
   // CSR coordination
@@ -815,6 +837,7 @@ module cpu_ooo #(
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
+  logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
   logic [XLEN-1:0] mepc_value;
@@ -1017,6 +1040,7 @@ module cpu_ooo #(
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
       .o_trap_cause(rob_trap_cause),
+      .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .i_mret_done(mret_done_ack),
@@ -1039,6 +1063,9 @@ module cpu_ooo #(
 
       // ROB status
       .o_fence_i_flush(fence_i_flush),
+      .o_sq_committed_empty(sq_committed_empty),
+      .i_fence_i_sync_done(i_fence_i_sync_done),
+      .o_fence_i_sync_req(o_fence_i_sync_req),
       .o_rob_full(rob_full),
       .o_rob_full_for_2(rob_full_for_2),
       .o_rob_empty(rob_empty),
@@ -1257,7 +1284,10 @@ module cpu_ooo #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) trap_mret_commit_hold_q <= 1'b0;
-    else trap_mret_commit_hold_q <= trap_pending || mret_start;
+    // trap_drain_wait: a trap/MRET is waiting for committed stores to drain
+    // (see trap_unit) -- hold commit so the wait is bounded.
+    else
+      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait;
   end
 
   // ===========================================================================
@@ -1688,10 +1718,9 @@ module cpu_ooo #(
   // Priority: SQ writes > AMO writes > queued LQ reads
   // The L0 cache is inside the tomasulo_wrapper (lq_l0_cache).
 
-  // Cached-tier write data is store-queue drain data only (AMOs never target
-  // the cached region); see the o_data_mem_cached_wr_data port comment. Off
-  // the AMO write-data cone.
-  assign o_data_mem_cached_wr_data = sq_mem_write_data;
+  // Cached-tier write data (SQ-store drain data, or the AMO new value on the
+  // single cycle a cached AMO write launches) is produced by the router, which
+  // owns the SQ-vs-AMO cached-write mux.
 
   data_mem_request_router #(
       .XLEN(XLEN),
@@ -1725,6 +1754,7 @@ module cpu_ooo #(
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
       .o_data_mem_read_enable(o_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
+      .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
@@ -1783,6 +1813,27 @@ module cpu_ooo #(
                                     (rob_commit_2_fp_flags_valid && rob_commit_2.fp_flags.nx);
   end
 
+  // mtval for synchronous exceptions, per the RISC-V privileged spec:
+  //   - BREAKPOINT (EBREAK): mtval = the breakpoint instruction's virtual
+  //     address (the faulting PC, which equals mepc).
+  //   - LOAD/STORE address-misaligned: mtval = the misaligned virtual
+  //     address. The load_queue / SQ park that address in the head entry's
+  //     CDB value slot (unused for an exception), exposed as rob_trap_value.
+  //   - Everything else FROST raises here (ECALL): mtval = 0.
+  logic [XLEN-1:0] csr_trap_value;
+  always_comb begin
+    unique case (rob_trap_cause)
+      riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
+      riscv_pkg::ExcLoadAddrMisalign[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
+          rob_trap_cause
+      )-1:0]:
+      csr_trap_value = rob_trap_value;
+      default: csr_trap_value = '0;
+    endcase
+  end
+
   csr_file #(
       .XLEN(XLEN)
   ) csr_file_inst (
@@ -1801,7 +1852,7 @@ module cpu_ooo #(
       .i_trap_taken(trap_taken),
       .i_trap_pc(rob_trap_pc),
       .i_trap_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
-      .i_trap_value('0),
+      .i_trap_value(csr_trap_value),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
       .o_mie(csr_mie),
@@ -1853,6 +1904,8 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
+      .i_sq_committed_empty(sq_committed_empty),
+      .o_trap_drain_wait(trap_drain_wait),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),

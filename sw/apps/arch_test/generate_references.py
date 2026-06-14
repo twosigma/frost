@@ -27,6 +27,7 @@ Usage:
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,31 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 ARCH_TEST_DIR = SCRIPT_DIR / "riscv-arch-test"
 SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
-SPIKE_ENV = ARCH_TEST_DIR / "riscof-plugins" / "rv32" / "spike_simple" / "env"
 REFERENCES_DIR = SCRIPT_DIR / "references"
+
+# Spike reference env, derived at runtime from the submodule's riscof
+# spike_simple plugin with one change: the signature area is force-aligned to
+# 8 bytes. Frost runs FLEN=64, so the framework's signature stores (fsd,
+# SIGALIGN=8) must not misalign, and this Spike build has no --misaligned. We
+# patch ALIGNMENT into a throwaway dir rather than committing a derived copy of
+# the framework header (whose inline-asm macros must not be reformatted).
+_SUBMODULE_SPIKE_ENV = (
+    ARCH_TEST_DIR / "riscof-plugins" / "rv32" / "spike_simple" / "env"
+)
+
+
+def _build_spike_env() -> Path:
+    """Materialize an 8-byte-signature-aligned copy of the submodule env."""
+    env_dir = Path(tempfile.mkdtemp(prefix="frost_spike_env_"))
+    shutil.copy(_SUBMODULE_SPIKE_ENV / "link.ld", env_dir / "link.ld")
+    header = (_SUBMODULE_SPIKE_ENV / "model_test.h").read_text()
+    # Force ALIGNMENT to 3 (8 bytes) on both XLEN branches.
+    header = re.sub(r"#define ALIGNMENT\s+\d+", "#define ALIGNMENT 3", header)
+    (env_dir / "model_test.h").write_text(header)
+    return env_dir
+
+
+SPIKE_ENV = _build_spike_env()
 
 # Frost ISA string — must match what Frost implements
 FROST_ISA = "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
@@ -73,6 +97,16 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     },
 }
 
+# Excluded by filename prefix: Frost has no Zbc (clmul/clmulh/clmulr), and
+# the K dir holds the full crypto suite of which Frost implements only Zbkb.
+EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
+    "B": {"clmul"},
+    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+    # menvcfg_m does not assemble at this suite snapshot.
+    "privilege": {"menvcfg_m"},
+}
+EXTENSION_TEST_FILTERS["K"] = {"pack", "packh", "brev8", "zip", "unzip"}
+
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
 
 
@@ -89,7 +123,27 @@ def discover_tests(extension: str) -> list[Path]:
             for t in tests
             if any(t.stem.startswith(prefix) for prefix in allowed_prefixes)
         ]
+    excluded_prefixes = EXTENSION_TEST_EXCLUDES.get(extension)
+    if excluded_prefixes is not None:
+        tests = [
+            t
+            for t in tests
+            if not any(t.stem.startswith(prefix) for prefix in excluded_prefixes)
+        ]
     return tests
+
+
+def test_defines(test_src: Path) -> list[str]:
+    """Extract the compile defines a test declares in its RVTEST_CASE strings.
+
+    riscof parses `def NAME=True` clauses from each case string and passes
+    them as -D flags; this standalone flow does the same. Every test
+    defines TEST_CASE_1 (gating its body); tests that need the framework
+    trap handler additionally define rvtest_mtrap_routine.
+    """
+    text = test_src.read_text(errors="replace")
+    names = sorted(set(re.findall(r"def\s+(\w+)\s*=\s*True", text)))
+    return [f"-D{name}=True" for name in names]
 
 
 def generate_one_reference(
@@ -104,6 +158,8 @@ def generate_one_reference(
     ref_dir = REFERENCES_DIR / extension
     ref_dir.mkdir(parents=True, exist_ok=True)
     ref_path = ref_dir / f"{test_name}.reference_output"
+
+    defines = test_defines(test_src)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         elf_path = Path(tmpdir) / "test.elf"
@@ -127,6 +183,7 @@ def generate_one_reference(
             f"-I{ARCH_TEST_DIR / 'riscv-test-suite' / 'env'}",
             "-DXLEN=32",
             "-DFLEN=64",
+            *defines,
             "-o",
             str(elf_path),
             str(test_src),
@@ -141,9 +198,13 @@ def generate_one_reference(
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
             return test_name, "SKIP", f"Compile failed: {msg}"
 
-        # Run on Spike
+        # Run on Spike. The signature area is 8-aligned (see _build_spike_env),
+        # so FLEN=64 signature stores never misalign and no --misaligned
+        # support is needed; tests that deliberately misalign install the
+        # framework trap handler and trap identically here and on Frost.
+        spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
-            "spike",
+            spike,
             f"--isa={FROST_ISA}",
             f"+signature={sig_path}",
             "+signature-granularity=4",
@@ -193,7 +254,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Check prerequisites
-    if not shutil.which("spike"):
+    if not shutil.which(os.environ.get("FROST_SPIKE", "spike")):
         print("Error: spike not found in PATH. Install riscv-isa-sim first.")
         return 1
     if not shutil.which(f"{RISCV_PREFIX}gcc"):
