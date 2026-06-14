@@ -49,6 +49,14 @@ TORTURE_APP_DIR = REPO_ROOT / "sw" / "apps" / "riscv_torture"
 TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests"
 REFERENCES_DIR = TORTURE_APP_DIR / "references"
 
+# Memory configurations -- passed to the torture Makefile as MEM_CONFIG, which
+# selects the linker script (+ ROM boot stub for ddr).  bram = code+data+
+# signature in low BRAM (pure ISA path); ddr = the test runs from the cached
+# DDR region (exercises the L1I fetch path and the D-side cached tier).
+# Mirrors tests/test_arch_compliance.py.
+MEM_CONFIGS = ("bram", "ddr")
+DEFAULT_MEM_CONFIG = "bram"
+
 
 @dataclass
 class TestResult:
@@ -71,7 +79,7 @@ def get_reference_path(test_src: Path) -> Path:
     return REFERENCES_DIR / f"{test_src.stem}.reference_output"
 
 
-def compile_test(test_src: Path) -> bool:
+def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
     """Compile a single torture test, returns True on success."""
     subprocess.run(
         ["make", "clean"],
@@ -83,7 +91,7 @@ def compile_test(test_src: Path) -> bool:
 
     rel_src = test_src.relative_to(TORTURE_APP_DIR)
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}"],
+        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
         cwd=TORTURE_APP_DIR,
         capture_output=True,
         text=True,
@@ -105,6 +113,11 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
     env["COCOTB_MAX_CYCLES"] = "10000000"
+    # One run per test: the behavioral DDR model persists across reset and the
+    # ddr tier loads .data in place (LMA == VMA), so a torture test's heavy
+    # memory mutations would carry into a second run and corrupt its signature.
+    # The signature is dumped once anyway (mirrors test_riscv_tests.py).
+    env["COCOTB_NUM_RUNS"] = "1"
 
     original_dir = os.getcwd()
     os.chdir(TESTS_DIR)
@@ -121,6 +134,14 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
             sw_mem_path.unlink()
         sw_mem_target = TORTURE_APP_DIR / "sw.mem"
         sw_mem_path.symlink_to(sw_mem_target)
+
+        # The ddr config splits the test into the DDR image; the sim preloads
+        # the behavioral DDR from sw_ddr.mem (empty for the bram config).
+        sw_ddr_path = Path("sw_ddr.mem")
+        if sw_ddr_path.exists() or sw_ddr_path.is_symlink():
+            sw_ddr_path.unlink()
+        sw_ddr_target = TORTURE_APP_DIR / "sw_ddr.mem"
+        sw_ddr_path.symlink_to(sw_ddr_target)
 
         pythonpath = env.get("PYTHONPATH", "")
         cmd = (
@@ -145,9 +166,10 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     except subprocess.TimeoutExpired:
         return None
     finally:
-        sw_mem_path = Path("sw.mem")
-        if sw_mem_path.exists() or sw_mem_path.is_symlink():
-            sw_mem_path.unlink()
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            mem_path = Path(mem_name)
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
         os.chdir(original_dir)
 
 
@@ -227,7 +249,9 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     return False, "\n".join(diff_lines)
 
 
-def run_single_test(test_src: Path, simulator: str) -> TestResult:
+def run_single_test(
+    test_src: Path, simulator: str, mem_config: str = DEFAULT_MEM_CONFIG
+) -> TestResult:
     """Build, simulate, and verify a single torture test."""
     test_name = test_src.stem
 
@@ -235,8 +259,11 @@ def run_single_test(test_src: Path, simulator: str) -> TestResult:
     if not ref_path.exists():
         return TestResult(test_name, "SKIP", "No reference output")
 
-    if not compile_test(test_src):
-        return TestResult(test_name, "SKIP", "Compilation failed")
+    if not compile_test(test_src, mem_config):
+        # FAIL (not SKIP): torture tests fit both tiers, so a compile failure is
+        # a real build regression (e.g. a broken ddr linker/boot stub) and must
+        # turn the CI job red rather than silently skip.
+        return TestResult(test_name, "FAIL", "Compilation failed")
 
     result = run_simulation(simulator)
     if result is None:
@@ -272,15 +299,15 @@ def run_single_test(test_src: Path, simulator: str) -> TestResult:
     return TestResult(test_name, "FAIL", "No signature data in output")
 
 
-def _run_test_worker(args: tuple[str, str, str]) -> TestResult:
+def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
     """Worker function for parallel test execution."""
-    test_src_str, simulator, app_dir_str = args
+    test_src_str, simulator, app_dir_str, mem_config = args
     global TORTURE_APP_DIR, TORTURE_TESTS_DIR, REFERENCES_DIR
     TORTURE_APP_DIR = Path(app_dir_str)
     TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests"
     REFERENCES_DIR = TORTURE_APP_DIR / "references"
 
-    return run_single_test(Path(test_src_str), simulator)
+    return run_single_test(Path(test_src_str), simulator, mem_config)
 
 
 def _print_result(result: TestResult) -> None:
@@ -296,6 +323,7 @@ def _print_result(result: TestResult) -> None:
 def run_all_tests(
     simulator: str,
     parallel: int = 1,
+    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all torture tests."""
     tests = discover_tests()
@@ -303,12 +331,14 @@ def run_all_tests(
         print(f"  No torture tests found in {TORTURE_TESTS_DIR}")
         return []
 
-    print(f"\nriscv-torture ({len(tests)} tests)")
+    print(f"\nriscv-torture ({len(tests)} tests, mem-config={mem_config})")
 
     results = []
 
     if parallel > 1:
-        work_items = [(str(t), simulator, str(TORTURE_APP_DIR)) for t in tests]
+        work_items = [
+            (str(t), simulator, str(TORTURE_APP_DIR), mem_config) for t in tests
+        ]
         with ProcessPoolExecutor(max_workers=parallel) as executor:
             futures = {
                 executor.submit(_run_test_worker, item): item[0] for item in work_items
@@ -324,7 +354,7 @@ def run_all_tests(
                 _print_result(result)
     else:
         for test_src in tests:
-            result = run_single_test(test_src, simulator)
+            result = run_single_test(test_src, simulator, mem_config)
             results.append(result)
             _print_result(result)
 
@@ -398,6 +428,16 @@ Examples:
         metavar="N",
         help="Number of parallel test workers (default: 1)",
     )
+    parser.add_argument(
+        "--mem-config",
+        choices=MEM_CONFIGS,
+        default=DEFAULT_MEM_CONFIG,
+        help=(
+            f"Memory configuration: {', '.join(MEM_CONFIGS)} "
+            f"(default: {DEFAULT_MEM_CONFIG}). bram = low-BRAM ISA path; "
+            "ddr = run from the cached DDR region."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -419,18 +459,20 @@ Examples:
             print(f"Error: Test not found: {test_path}")
             return 1
 
-        print(f"=== riscv-torture: {args.test} ===")
-        result = run_single_test(test_path, "verilator")
+        print(f"=== riscv-torture: {args.test} (mem-config={args.mem_config}) ===")
+        result = run_single_test(test_path, "verilator", args.mem_config)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
     # All tests mode
     print("=" * 60)
     print("riscv-torture Test Results")
-    print("Simulator: verilator")
+    print(f"Simulator: verilator   Memory config: {args.mem_config}")
     print("=" * 60)
 
-    all_results = run_all_tests("verilator", parallel=args.parallel)
+    all_results = run_all_tests(
+        "verilator", parallel=args.parallel, mem_config=args.mem_config
+    )
 
     n_pass = sum(1 for r in all_results if r.status == "PASS")
     n_fail = sum(1 for r in all_results if r.status == "FAIL")
