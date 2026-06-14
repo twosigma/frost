@@ -699,8 +699,22 @@ module pc_controller #(
   end
 
 `ifndef SYNTHESIS
+  // The fast predictor pc_reg_next_misses_fetch_pc_for_prediction models only a
+  // plain instruction-size advance of pc_reg. seq_next_pc_reg (the full result)
+  // is overridden when that increment is held or NOP-forced: under a fetch stall
+  // or a no-progress L1I miss (fetch_stall = i_stall || !i_fetch_progress), under
+  // a registered control-flow/reset holdoff (o_any_holdoff_safe), or under
+  // i_sel_nop (the +2 force). In those cases the two legitimately diverge -- but
+  // the fast signal's only functional consumer, prediction_needs_pending, is
+  // itself gated by !fetch_stall (see the pending_prediction_valid update above),
+  // so the divergence is never acted upon. Gate the oracle to match that consumer
+  // so it only checks cycles where seq_next_pc_reg really is the size-based
+  // advance. (The BRAM-era assertion 7d8c058 predates the stall-capable fetch of
+  // 969b9fb, whose no-progress freeze the original !i_stall-only gate never
+  // covered -- which is why coremark_pro_loops tripped it in the ddr tier.)
   always_ff @(posedge i_clk) begin
-    if (!i_reset && !i_stall && i_prediction_used && !i_ras_predicted &&
+    if (!i_reset && !fetch_stall && !o_any_holdoff_safe && !i_sel_nop &&
+        i_prediction_used && !i_ras_predicted &&
         !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
         i_prediction_requires_pc_reg_handoff) begin
       p_pending_prediction_fast_miss_matches_full :
