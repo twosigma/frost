@@ -101,6 +101,17 @@ pytest test_run_cocotb.py -k unit                  # Run Tomasulo unit tests
 pytest test_run_cocotb.py -s                       # Show live output
 ```
 
+**Memory tier for real programs (`FROST_COCOTB_MEM_CONFIG`):**
+
+By default real-program tests are linked whole-program into low BRAM (`bram`). Setting `FROST_COCOTB_MEM_CONFIG=ddr` relinks every app into the cached DDR region, exercising the L1I fetch path and the D-side cached tier:
+
+```bash
+FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py hello_world
+FROST_COCOTB_MEM_CONFIG=ddr pytest test_run_cocotb.py -k test_real_program
+```
+
+Tests in `DDR_TIER_EXCLUDE` self-skip in the `ddr` tier: the `*_fetch_fuzz` fetch fuzzers, and the already-DDR-focused `ddr_*` programs (`ddr_test`, `ddr_exec_test`, `ddr_smc_test`, `ddr_heap_test`) whose fixed-address writes a whole-program relocation would clobber. Unit benches are tier-independent and run only once (in the `bram` job).
+
 ### `test_arch_compliance.py`
 
 Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite on Frost. Each test compiles an assembly test case, runs it in Verilator simulation, extracts the signature from UART output, and compares it against Spike-generated golden references.
@@ -124,7 +135,19 @@ Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-
 
 # Include tests too large for simulation (hardware validation)
 ./test_arch_compliance.py --all --no-sim-filter
+
+# Select the memory tier the test runs from (default: ddr)
+./test_arch_compliance.py --extensions I --mem-config bram     # code+data+signature in low BRAM
+./test_arch_compliance.py --extensions Zifencei --mem-config ddr  # whole test in cached DDR
+./test_arch_compliance.py --extensions I --mem-config icache   # code in DDR, data+signature in BRAM
 ```
+
+**Memory tiers (`--mem-config`):** Each test selects where its code vs data/signature lives, so a failure is attributable to one path. The Makefile knob `MEM_CONFIG` picks the linker script + crt0 boot stub accordingly:
+- `bram` - code + data + signature all in low BRAM (pure ISA conformance).
+- `icache` - code in DDR (L1I fetch path under test), data + signature in low BRAM (isolates instruction fetch from the D-side cached tier). Diagnostic only; not a CI job.
+- `ddr` - code + data + signature in DDR; also exercises the D-side cached tier on every load/store. **This is the default** (`DEFAULT_MEM_CONFIG`).
+
+The pytest entry point honors `FROST_ARCH_MEM_CONFIG` to override the default.
 
 **Pytest Usage:**
 
@@ -134,9 +157,10 @@ pytest test_arch_compliance.py -v -m slow
 
 **Notes:**
 - Verilator only
-- Tests with >5000 test cases are filtered by default (12 tests with 7K-14K cases that take >30 min each). Use `--no-sim-filter` for hardware validation runs
-- In CI, runs as 14 parallel jobs (one per extension) via GitHub Actions matrix strategy, plus 12 additional jobs that each run one slow F/D test excluded by the size filter
-- Simulation uses the same 256 KiB low BRAM as hardware (`-GMEM_SIZE_BYTES=262144`); large test data sections fit within the 160 KiB RAM region
+- Tests with >5000 test cases are filtered by default (the 12 slow F/D fused tests, 7K-14K cases each, that take a long time under Verilator). Use `--no-sim-filter` for hardware validation runs
+- In CI, runs as a GitHub Actions matrix of extension x memory tier (`[bram, ddr]`), with `fail-fast: false`. Zifencei (fence.i / self-modifying code) is excluded from the `bram` tier — the low-BRAM Harvard split has separate instruction and data memories, so a store reaches only the data BRAM; fence.i's writeback + invalidate apply to the cached DDR tier alone, making it a DDR-tier-only compliance test. Each slow F/D test excluded by the size filter is added back as its own `ddr`-tier job via `test_path`
+- In the `bram`/`icache` tiers, a test whose `.text`/`.data` exceeds the 256 KiB low BRAM (96 KiB instruction + 160 KiB data) is reported SKIP rather than FAIL — the `ddr` tier still exercises it
+- Low BRAM is sized to match hardware (`-GMEM_SIZE_BYTES=262144`, 256 KiB); the cached DDR region is provided by the behavioral DDR model and preloaded from `sw_ddr.mem`
 
 ### `test_riscv_tests.py`
 
@@ -159,9 +183,14 @@ Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests 
 # Parallel execution
 ./test_riscv_tests.py --all --parallel 4
 
+# Select the memory tier (default: bram)
+./test_riscv_tests.py --all --mem-config ddr     # run every test from the cached DDR region
+
 # List available tests
 ./test_riscv_tests.py --list
 ```
+
+**Memory tiers (`--mem-config`):** `bram` (default) keeps code + data in low BRAM (pure ISA path); `ddr` runs the test from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). The Makefile knob `MEM_CONFIG` selects the linker script (+ ROM boot stub for `ddr`).
 
 **Pytest Usage:**
 
@@ -171,7 +200,9 @@ pytest test_riscv_tests.py -v -m slow
 
 **Notes:**
 - Verilator only (skips automatically for non-Verilator sims)
-- A small number of tests are skipped due to architectural incompatibility (Harvard architecture, M-mode only, misaligned access trapping). See `ISA_SKIP_TESTS` in the script for details.
+- A small number of tests are skipped in every tier due to architectural incompatibility (M-mode only, misaligned access trapping, RV64-only encodings). See `ISA_SKIP_TESTS` in the script for details.
+- `rv32ui/fence_i` is skipped in the `bram` tier only (`ISA_SKIP_TESTS_BRAM`): self-modifying code is meaningful only against the cached DDR L1I, so it runs in `ddr` alone.
+- In CI, runs as a suite x memory tier (`[bram, ddr]`) matrix; benchmarks run as a benchmark x memory tier matrix.
 
 ### `test_riscv_torture.py`
 
@@ -186,9 +217,14 @@ Runs random instruction torture tests on Frost. A Python-based generator creates
 # Run a single test
 ./test_riscv_torture.py --test test_001
 
+# Select the memory tier (default: bram)
+./test_riscv_torture.py --all --mem-config ddr     # run from the cached DDR region
+
 # List available tests and reference status
 ./test_riscv_torture.py --list
 ```
+
+**Memory tiers (`--mem-config`):** `bram` (default) runs from low BRAM (pure ISA path); `ddr` runs from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). In CI, runs as a memory tier (`[bram, ddr]`) matrix.
 
 **Generating Tests:**
 
@@ -276,6 +312,7 @@ pytest -k "not slow"                               # Skip slow tests
 | `COCOTB_TEST_FILTER` | Regex selecting test functions to run (set by `--testcase`) | (all)      |
 | `COCOTB_RANDOM_SEED` | Random seed for reproducibility (set by `--random-seed`)    | (random)   |
 | `WAVES`              | Generate waveform file (1/0)                         | `0`        |
+| `FROST_COCOTB_MEM_CONFIG` | Memory tier for real-program tests (`bram` / `ddr`) | `bram`   |
 
 ## Test Output
 
@@ -311,9 +348,16 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 
 ## CI Integration
 
-All tests are run automatically in CI. Tests gracefully skip if required tools are not installed.
+All tests are run automatically in CI (`.github/workflows/ci.yml`). Tests gracefully skip if required tools are not installed.
 
-Architecture compliance tests run as 14 parallel GitHub Actions jobs (one per extension), plus 12 individual jobs for slow F/D tests excluded by the size filter, using a matrix strategy with `fail-fast: false`, so all extensions are tested even if one fails. These are separate from the main Cocotb test job to avoid blocking it with long-running FP tests.
+The arch-compliance, riscv-tests, riscv-torture, and Cocotb real-program suites each run in BOTH a `bram` tier (whole program in low BRAM) AND a `ddr` tier (whole program in the cached DDR region) as separate jobs:
+
+- **Cocotb**: one `bram` job (`Cocotb Tests (Verilator)`, also covers the tier-independent unit benches) and one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
+- **Arch compliance**: an extension x memory tier (`[bram, ddr]`) matrix with `fail-fast: false`. Zifencei is excluded from the `bram` tier (DDR-tier-only), and each slow F/D test excluded by the size filter is added as its own `ddr`-tier job. Kept separate from the main Cocotb job to avoid blocking it with long-running FP tests.
+- **riscv-tests**: a suite x memory tier matrix (ISA tests) plus a benchmark x memory tier matrix (benchmarks).
+- **riscv-torture**: a memory tier (`[bram, ddr]`) matrix.
+
+The `icache` arch config (code in DDR, data + signature in BRAM) is a local diagnostic, not a CI job.
 
 ### Test Markers
 

@@ -2,7 +2,7 @@
 
 The Tomasulo back-end provides dynamic instruction scheduling, register
 renaming, speculation, and out-of-order completion while preserving precise exceptions and the
-existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zihintpause).
+existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zifencei + Zihintpause).
 The front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) supplies decoded
 instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
@@ -116,7 +116,7 @@ A small FSM in the ROB pins most of these instructions at the commit head
 |---------------------|----------|
 | **WFI**             | Stalls at head until an interrupt is pending. |
 | **CSR**             | Read result rides the CDB; the side effect is applied at commit via a `csr_file` handshake. |
-| **FENCE / FENCE.I** | Drains the SQ before commit. FENCE.I additionally pulses a one-cycle pipeline + icache flush. |
+| **FENCE / FENCE.I** | Drains the SQ before commit. FENCE.I then enters a cache-sync state (`SERIAL_FENCE_I_SYNC`): it asserts the cache-sync request and holds the head until the hierarchy reports done (L1D writeback-all, then L1I invalidate-all), and pulses the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
 | **MRET**            | Hand-shakes with `trap_unit`; redirect PC = `mepc`. |
 | **AMO / LR / SC**   | Head-ordered atomics, not stalled by the ROB FSM. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight) — AMO is gated at LQ issue, SC at the wrapper's reservation check; LR fires at the head. |
 

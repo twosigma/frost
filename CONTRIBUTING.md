@@ -46,8 +46,11 @@ IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
 
 | Address Range | Description |
 |---------------|-------------|
-| `0x0000_0000` - `0x0000_FFFF` | Main memory (64KB) |
-| `0x4000_0000` | MMIO region (UART, FIFOs) |
+| `0x0000_0000` | ROM: code and read-only data, fast BRAM (96 KiB) |
+| `0x4000_0000` | MMIO region (UART, FIFOs, CLINT-style timer) |
+| `0x8000_0000` | DDR: cached region for code (`.ddr_text`), heap, and large data (1 GiB) |
+
+See `hw/rtl/README.md` for the authoritative memory map and per-register MMIO layout.
 
 ## Getting Started
 
@@ -447,7 +450,7 @@ Run the full CPU test suite:
 pytest tests/test_run_cocotb.py::TestCPU -s
 
 # ISA compliance tests
-pytest tests/test_run_cocotb.py::TestRealPrograms::test_frost_isa_test -s
+pytest "tests/test_run_cocotb.py::TestRealPrograms::test_real_program[isa_test]" -s
 
 # Synthesis verification
 pytest tests/test_run_yosys.py -s
@@ -458,7 +461,7 @@ pytest tests/test_run_yosys.py -s
 Build and run Hello World:
 ```bash
 cd sw/apps/hello_world && make
-pytest tests/test_run_cocotb.py::TestRealPrograms::test_frost_hello_world -s
+pytest "tests/test_run_cocotb.py::TestRealPrograms::test_real_program[hello_world]" -s
 ```
 
 Build all applications to verify no breakage:

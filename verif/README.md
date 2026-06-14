@@ -71,8 +71,17 @@ verif/
 │   ├── cpu_model.py       # CPU software reference model
 │   ├── instruction_generator.py  # Random instruction generation
 │   ├── instruction_executor.py  # Execute-and-model helper (encode/model/drive)
-│   ├── test_real_program.py  # Integration tests with real programs
+│   ├── test_real_program.py  # Integration tests with real programs (UART-driven)
 │   ├── test_helpers.py    # Test infrastructure helpers
+│   ├── if_stage/          # IF-stage block tests (PC controller, aligner, RVC
+│   │                      #   decompressor, branch prediction, RAS, BTB, ...)
+│   ├── pd_stage/          # Predecode-stage top-level block tests
+│   ├── id_stage/          # Decode-stage top-level block tests
+│   ├── ex_stage/          # EX-stage block tests (branch/jump unit)
+│   ├── predecode/         # Fetch provider + predecode-line block tests (L1I fetch seam)
+│   ├── cache/             # Cache hierarchy + line-port arbiter block tests
+│   ├── cpu_ooo/           # OOO block tests (commit, recovery, memory router,
+│   │                      #   register files, perf counters, pipeline control)
 │   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
 │                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)
 ├── models/                # Reference models for verification
@@ -243,30 +252,60 @@ Structured logging output example:
 
 ### Running Tests
 
-Run the default random instruction test:
+All commands below run from the `tests/` directory. The registry-driven real
+program / unit tests are launched with `./test_run_cocotb.py <name>`; use
+`./test_run_cocotb.py --list-tests` for the canonical target list (the single
+source of truth is `TEST_REGISTRY` in `tests/test_run_cocotb.py`).
+
+The random-regression and directed CPU tests (`test_cpu`,
+`test_directed_atomics`, `test_directed_traps`, `test_compressed`,
+`test_directed_multicycle`) all run on the `cpu_tb` testbench, which is the
+`tests/Makefile` default (`TOPLEVEL=cpu_tb`, `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`).
+They are not `test_run_cocotb.py` registry targets; run them directly:
+
+Run the default random instruction test (all cpu_tb modules):
 ```bash
-./tests/test_run_cocotb.py cpu
+make
 ```
 
-Run with forced single address (stress memory hazards):
+Run a single cpu_tb test function by setting cocotb's `COCOTB_TEST_FILTER`
+(a regex; anchor with `$` for an exact match):
 ```bash
-./tests/test_run_cocotb.py cpu --testcase test_random_riscv_regression_force_one_address
+# Forced single address (stress memory hazards)
+COCOTB_TEST_FILTER='test_random_riscv_regression_force_one_address$' make
+# LR.W/SC.W atomic instructions
+COCOTB_TEST_FILTER='test_directed_lr_sc$' make
+# Trap handling (ECALL, EBREAK, MRET)
+COCOTB_TEST_FILTER='test_directed_trap_handling$' make
 ```
 
-Run integration tests with real programs:
+Run integration tests with real programs (registry targets):
 ```bash
-./tests/test_run_cocotb.py hello_world
+./test_run_cocotb.py hello_world
+./test_run_cocotb.py hello_world --testcase test_real_program   # one test function
 ```
 
-Run directed test for LR.W/SC.W atomic instructions:
+### Memory tier (BRAM vs cached DDR)
+
+Real-program tests run in two memory tiers. The default `bram` tier loads the
+whole program into low BRAM. Setting `FROST_COCOTB_MEM_CONFIG=ddr` relinks the
+program into the cached DDR region (`0x8000_0000`, behind the L1/L2 cache
+hierarchy) so it executes through the L1I fetch path and D-side cache; the
+behavioral DDR model loads the program's `sw_ddr.mem` image. Both tiers run as
+separate CI jobs (the ddr job adds `-e FROST_COCOTB_MEM_CONFIG=ddr`).
+
 ```bash
-./tests/test_run_cocotb.py cpu --testcase test_directed_lr_sc
+FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py coremark
 ```
 
-Run directed test for trap handling (ECALL, EBREAK, MRET):
-```bash
-./tests/test_run_cocotb.py cpu --testcase test_directed_trap_handling
-```
+In the ddr tier the behavioral DDR persists across reset and `.data` is loaded
+in place, so the runner forces `COCOTB_NUM_RUNS=1` (the bram tier keeps its
+two-run default to verify reset robustness). `*_fetch_fuzz` and `ddr_*` programs
+self-skip in the ddr tier.
+
+`test_real_program.py` honors two env knobs directly: `COCOTB_NUM_RUNS`
+(reset-and-rerun count, default 2) and `COCOTB_MAX_CYCLES` (timeout budget;
+CoreMark-style benchmarks use a larger default).
 
 ### Customizing for Different DUT Implementations
 

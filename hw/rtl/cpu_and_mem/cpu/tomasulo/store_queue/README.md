@@ -37,8 +37,8 @@ freed until both writes complete.
 ## Registered memory-write outputs
 
 The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`,
-`_byte_en`, `_is_mmio`) are driven from registers rather than
-straight off the head-pointer mux. Post-synth the `head_ptr →
+`_byte_en`, `_is_mmio`, `_is_cached`) are driven from registers rather
+than straight off the head-pointer mux. Post-synth the `head_ptr →
 head_ready → BRAM address` combinational path was the dominant
 timing cone; breaking it at the SQ source adds one cycle to the
 drain (3 cycles per store instead of 2) but cuts hundreds of ps of
@@ -49,7 +49,16 @@ The registered `o_mem_write_is_mmio` flag lets `cpu_ooo.sv` gate
 the BRAM byte-write-enable at the SQ source instead of recomputing
 the MMIO address range on the muxed data-memory address — that
 recomputation used to pull the LQ issue cone into the BRAM write
-enable whenever no store was firing.
+enable whenever no store was firing. The parallel
+`o_mem_write_is_cached` flag (set when the committed store's address
+falls in the cached DDR region `[0x8000_0000, 0xC000_0000)`) is
+registered the same way, so the router can steer the store's
+byte-write enables to the cached tier — and mask them off the BRAM —
+without the late address-range test reaching the BRAM write-enable
+cone. Cached drains share the single `write_outstanding` serializer
+with BRAM stores; the head holds until the router pulses
+`i_mem_write_done`, so a multi-cycle cached write back-pressures the
+drain naturally instead of needing a separate busy-stretch.
 
 ## 2-wide allocation: pure ring tail
 

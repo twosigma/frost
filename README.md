@@ -99,7 +99,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **M-mode trap handling** for RTOS support (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Write-back cache hierarchy over DDR** — a 1 GiB cached data region at `0x8000_0000` served by a recursive line-port cache (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate): a 128 KiB BRAM L1 on every board, plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
+- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a 16 KiB read-only L1I) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
 - **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (heap and large data); the hierarchy shape behind it is opaque to software
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
@@ -172,10 +172,10 @@ You should see "Hello, world!" in the output.
 ### Run the CPU Verification Suite
 
 ```bash
-./tests/test_run_cocotb.py cpu
+make -C tests        # constrained-random regression on the cpu_tb testbench
 ```
 
-This runs constrained-random instructions through the CPU, verifying each against a software reference model.
+This runs constrained-random instructions through the CPU, verifying each against a software reference model. (The random regression runs on the `cpu_tb` testbench — the `tests/` Makefile default — rather than as a `test_run_cocotb.py` target.)
 
 ## Directory Structure
 
@@ -244,7 +244,7 @@ git submodule update --init
 pytest tests/                              # Run all tests
 pytest tests/ -s                           # With live output
 # Standalone test runner
-./tests/test_run_cocotb.py cpu             # CPU verification
+make -C tests                              # CPU constrained-random verification (cpu_tb)
 ./tests/test_run_cocotb.py hello_world     # Hello World program
 ./tests/test_run_cocotb.py isa_test        # ISA compliance
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
@@ -257,7 +257,7 @@ pytest tests/ -s                           # With live output
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
 # With waveform output
-WAVES=1 ./tests/test_run_cocotb.py cpu
+WAVES=1 make -C tests
 ```
 
 ### Running Synthesis
@@ -284,6 +284,8 @@ Running `pytest tests/` exercises:
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
 - **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
+
+Most program-level suites (architecture compliance, riscv-tests, riscv-torture, and the Cocotb real programs) run in **two memory tiers as separate CI jobs**: a `bram` tier (whole program in low BRAM — pure ISA correctness) and a `ddr` tier (whole program relocated to the cached DDR region — exercising the L1I fetch path and the D-side cache). A test that passes in `bram` but fails in `ddr` isolates the bug to the cache/fetch path rather than the ISA logic.
 
 ### FPGA Deployment
 
@@ -314,8 +316,8 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 | Board              | FPGA                 | CPU Clock | Cache hierarchy → main memory               |
 |--------------------|----------------------|-----------|---------------------------------------------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB BRAM L1 → 2 MiB URAM L2 → 1 GiB DDR4 |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB BRAM L1 → 1 GiB DDR3                 |
+| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
+| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB L1D + 16 KiB L1I → 1 GiB DDR3                 |
 
 Both boards also carry the 256 KiB fast (uncached, 1-cycle) low BRAM region and
 present the identical software-visible memory map: `[0, 256 KiB)` fast BRAM,
@@ -401,8 +403,9 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1/L2 Cache** | Write-back line caches serving the 1 GiB cached DDR region |
-| **Cached region** | `[0x8000_0000, +1 GiB)` — heap and large data, behind L1[/L2]→DDR |
+| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data) over the cached DDR region, through a shared 2:1 line-port arbiter |
+| **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s (UltraScale+ only)        |
+| **Cached region** | `[0x8000_0000, +1 GiB)` — code (execute-from-DDR), heap, and large data, behind L1[/L2]→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |
 | **DirPred**     | 1024-entry bimodal branch-direction predictor    |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |
