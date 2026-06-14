@@ -15,8 +15,22 @@
 # Makefile for FreeRTOS Demo on FROST RISC-V
 # Uses FROST-specific port code (like coremark integration pattern)
 
+# Memory configuration -- selects the FreeRTOS linker script. common.mk then
+# supplies the ROM boot stub (DDR_BOOT_STUB) and the image split
+# (DDR_SPLIT_SECTIONS) automatically for the ddr tier.
+#   bram (default): whole program in low BRAM (FreeRTOS heap/stacks in BRAM).
+#   ddr:            whole program (incl. FreeRTOS heap in .bss) relocated to the
+#                   cached DDR region behind a ROM boot stub.
+# We must set LINKER_SCRIPT BEFORE including common.mk; it uses ?= so this wins.
+MEM_CONFIG ?= bram
+
+ifeq ($(MEM_CONFIG),ddr)
+# Use FreeRTOS-specific DDR linker script (whole program -> DDR behind boot stub)
+LINKER_SCRIPT := link_freertos_ddr.ld
+else
 # Use FreeRTOS-specific linker script (no heap section - FreeRTOS manages its own)
 LINKER_SCRIPT := link_freertos.ld
+endif
 
 # FreeRTOS kernel root directory (third-party, untouched)
 FREERTOS_DIR := ../../FreeRTOS-Kernel

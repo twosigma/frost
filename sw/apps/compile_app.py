@@ -45,12 +45,25 @@ def get_apps_directory() -> Path:
     return Path(__file__).parent
 
 
-def compile_app(app_name: str, verbose: bool = False) -> bool:
+def compile_app(
+    app_name: str,
+    verbose: bool = False,
+    mem_config: str = "bram",
+    clean_first: bool = False,
+) -> bool:
     """Compile a software application for simulation.
 
     Args:
         app_name: Name of the application (e.g., "hello_world", "coremark")
         verbose: If True, print compilation output
+        mem_config: Memory tier passed to the app's Makefile as MEM_CONFIG
+            ("bram" = low BRAM, today's default; "ddr" = whole program in the
+            cached DDR region behind a ROM boot stub).
+        clean_first: Force `make clean` before building. The cocotb runner sets
+            this so a build can never reuse a stale image from the OTHER memory
+            tier: sw.elf/sw.mem/sw.bin are shared filenames and make's mtime
+            check does not catch a linker-script swap, so a bram build after a
+            ddr build of the same app would otherwise keep running from DDR.
 
     Returns:
         True if compilation succeeded, False otherwise
@@ -93,8 +106,16 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
             for key, value in make_vars.items():
                 print(f"  Setting {key}={value}")
 
-        # Clean first if app has special settings to ensure recompilation
-        if app_name in APP_SIM_SETTINGS or make_vars:
+        # Clean first when explicitly requested (the cocotb path always does, so
+        # a build never reuses a stale image from the other memory tier -- make's
+        # mtime check does not catch a linker-script swap), or for app-specific
+        # settings / coremark-pro vars / a non-default tier.
+        if (
+            clean_first
+            or app_name in APP_SIM_SETTINGS
+            or make_vars
+            or mem_config != "bram"
+        ):
             subprocess.run(
                 ["make", "clean"],
                 cwd=app_dir,
@@ -105,7 +126,7 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
             )
 
         # Run make in the application directory
-        make_command = ["make"]
+        make_command = ["make", f"MEM_CONFIG={mem_config}"]
         make_command.extend(f"{key}={value}" for key, value in make_vars.items())
         result = subprocess.run(
             make_command,
@@ -122,11 +143,14 @@ def compile_app(app_name: str, verbose: bool = False) -> bool:
                 print(result.stderr, file=sys.stderr)
             return False
 
-        # Verify the output file was created
-        sw_mem = app_dir / "sw.mem"
-        if not sw_mem.exists():
-            print(f"Error: sw.mem not created for {app_name}", file=sys.stderr)
-            return False
+        # Verify BOTH memory images were created. The cocotb runner symlinks
+        # sw.mem AND sw_ddr.mem for every app; a missing sw_ddr.mem would dangle
+        # and the sim would silently run with zeroed DDR. Every app's build emits
+        # both (sw_ddr.mem is a single zero word when the app has no DDR data).
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            if not (app_dir / mem_name).exists():
+                print(f"Error: {mem_name} not created for {app_name}", file=sys.stderr)
+                return False
 
         if verbose:
             print(f"Successfully compiled {app_name}")
@@ -156,9 +180,17 @@ def main() -> int:
         action="store_true",
         help="Show compilation output",
     )
+    parser.add_argument(
+        "--mem-config",
+        choices=("bram", "ddr"),
+        default="bram",
+        help="Memory tier: bram (low BRAM, default) or ddr (cached DDR region)",
+    )
     args = parser.parse_args()
 
-    success = compile_app(args.app_name, verbose=args.verbose)
+    success = compile_app(
+        args.app_name, verbose=args.verbose, mem_config=args.mem_config
+    )
     return 0 if success else 1
 
 
