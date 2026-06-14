@@ -51,6 +51,10 @@ module cpu_ooo #(
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
     // provider counts it as a served cycle for its owed-ask tracking.
     output logic o_fetch_replay_consume,
+    // Front-end pipeline stall (pipeline_ctrl.stall): the fetch provider
+    // withholds publish-valid and holds its owed ask while this is high so a
+    // window the stalled decode cannot consume is never presented.
+    output logic o_pipeline_stall,
     // FENCE.I support: the cache-sync handshake (request held while the ROB
     // serializer stalls the fence at the head; done is a level while the
     // request is high) and the committed-fence flush pulse that drops the
@@ -319,6 +323,7 @@ module cpu_ooo #(
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
   assign dbg_csr_in_flight = csr_in_flight;
   assign dbg_pipeline_stall = pipeline_ctrl.stall;
+  assign o_pipeline_stall = pipeline_ctrl.stall;
   assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
   assign dbg_dispatch_stall = dispatch_stall;
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
