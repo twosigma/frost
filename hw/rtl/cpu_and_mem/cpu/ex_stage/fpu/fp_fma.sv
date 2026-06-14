@@ -442,12 +442,15 @@ module fp_fma #(
       sign_small_s5a_comb = c_sign_s5;
     end else begin
       if (prod_aligned_s5 > c_aligned_s5) begin
-        sum_s5a_comb = {1'b0, prod_aligned_s5} - {1'b0, c_aligned_s5};
+        // Propagate the borrow from the smaller operand's shifted-out residual
+        // (sticky_c_sub_s5) into the subtraction so the mantissa is exact-rounded.
+        sum_s5a_comb = ({1'b0, prod_aligned_s5} - {1'b0, c_aligned_s5}) - SumBits'(sticky_c_sub_s5);
         result_sign_s5a_comb = prod_sign_s5;
         sign_large_s5a_comb = prod_sign_s5;
         sign_small_s5a_comb = c_sign_s5;
       end else if (c_aligned_s5 > prod_aligned_s5) begin
-        sum_s5a_comb = {1'b0, c_aligned_s5} - {1'b0, prod_aligned_s5};
+        // Symmetric borrow propagation (c is the larger operand here).
+        sum_s5a_comb = ({1'b0, c_aligned_s5} - {1'b0, prod_aligned_s5}) - SumBits'(sticky_c_sub_s5);
         result_sign_s5a_comb = c_sign_s5;
         sign_large_s5a_comb = c_sign_s5;
         sign_small_s5a_comb = prod_sign_s5;
@@ -496,7 +499,6 @@ module fp_fma #(
   logic sum_is_zero_s6;
   logic [LzcSumBits-1:0] lzc_s6;
   logic sum_sticky_s6;
-  logic sticky_c_sub_s6;  // Sticky from addend shifted out during subtraction
   logic result_sign_s6;
   logic sign_large_s6;
   logic sign_small_s6;
@@ -544,7 +546,6 @@ module fp_fma #(
   logic signed [ExpExtBits-1:0] normalized_exp_s7;
   logic sum_is_zero_s7;
   logic sum_sticky_s7;
-  logic sticky_c_sub_s7;  // Sticky from addend shifted out during subtraction
   logic norm_sticky_s7;  // Sticky from normalization right-shift
   logic result_sign_s7;
   logic sign_large_s7;
@@ -581,12 +582,13 @@ module fp_fma #(
 
   assign mantissa_retained_s7 = pre_round_mant_s7[MantBits:1];
   assign guard_bit_raw_s7 = pre_round_mant_s7[0];
-  // When the addend was shifted out during subtraction AND guard=1 AND bits[22:0]=0,
-  // the exact result is just below the boundary, so guard should be 0.
-  // This handles the FMA precision case where subtracting a small value causes
-  // a borrow that flips the guard bit.
-  assign guard_bit_s7 = guard_bit_raw_s7 &
-                        ~(sticky_c_sub_s7 & (normalized_sum_s7[FracBits-1:0] == '0));
+  // The shifted-out-residual borrow is now propagated into sum_s5a_comb (the
+  // effective-subtraction path subtracts sticky_c_sub_s5), so the normalized
+  // mantissa and its guard bit are already exact-rounded -- no heuristic needed.
+  // The old special-case only patched the round-to-nearest TIE and left the
+  // directed rounding modes (RTZ/RDN/RUP) rounding up by 1 ULP, which failed the
+  // F/D arch-test FMA b4-b7 cases.
+  assign guard_bit_s7 = guard_bit_raw_s7;
   assign round_bit_s7 = normalized_sum_s7[FracBits-1];
   assign sticky_bit_s7 = normalized_sum_s7[FracBits-2] | final_sticky_s7;
 
@@ -825,7 +827,6 @@ module fp_fma #(
         sum_is_zero_s6 <= sum_is_zero_s5a;
         lzc_s6 <= lzc_s5b_comb;
         sum_sticky_s6 <= sticky_s5;
-        sticky_c_sub_s6 <= sticky_c_sub_s5;
         result_sign_s6 <= result_sign_s5a;
         sign_large_s6 <= sign_large_s5a;
         sign_small_s6 <= sign_small_s5a;
@@ -840,7 +841,6 @@ module fp_fma #(
         normalized_exp_s7 <= normalized_exp_s6_comb;
         sum_is_zero_s7 <= sum_is_zero_s6;
         sum_sticky_s7 <= sum_sticky_s6;
-        sticky_c_sub_s7 <= sticky_c_sub_s6;
         norm_sticky_s7 <= norm_sticky_s6_comb;
         result_sign_s7 <= result_sign_s6;
         sign_large_s7 <= sign_large_s6;
