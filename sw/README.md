@@ -9,10 +9,12 @@ This directory contains libraries and applications that run directly on Frost ha
 ```
 sw/
 ├── common/           # Shared build infrastructure
-│   ├── common.mk     # Common Makefile definitions
+│   ├── common.mk     # Common Makefile definitions (MEM_CONFIG bram|ddr)
 │   ├── crt0.S        # C runtime startup (runs before main)
+│   ├── crt0_ddr_boot.S # ROM boot stub: far-jumps to a DDR-resident _start (MEM_CONFIG=ddr)
 │   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
-│   └── link.ld       # Unified linker script (low BRAM + 1 GiB cached DDR)
+│   ├── link.ld       # Unified linker script (low BRAM + 1 GiB cached DDR)
+│   └── link_ddr.ld   # DDR-tier linker: whole program in the cached DDR region (MEM_CONFIG=ddr)
 ├── lib/              # Reusable libraries
 │   ├── include/      # Header files
 │   └── src/          # Source files
@@ -229,7 +231,10 @@ fence_i();                                // Instruction fetch fence
 
 **Use cases:**
 - `fence()`: Ensure memory operations complete before subsequent accesses
-- `fence_i()`: Synchronize instruction stream after modifying code in memory (no I-cache on Frost)
+- `fence_i()`: Synchronize instruction stream after modifying code in memory. On
+  Frost this is a real cache-sync (writes the L1D back through the line port, then
+  invalidates the L1I and the fetch buffer), required for self-modifying code in
+  the cached region — see `apps/ddr_smc_test/`
 
 ### CSR Access (`lib/include/csr.h`)
 
@@ -356,7 +361,9 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
 | `tomasulo_test/` | Tomasulo correctness test -- RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
+| `ddr_exec_test/` | Execute-from-DDR test: runs `.ddr_text` functions through the L1I fetch path (leaf/loop/recursion, cross-quadrant calls, bodies larger than the fetch buffer, warm-vs-cold) |
 | `ddr_heap_test/` | Multi-MB malloc capacity test through the cache hierarchy into DDR |
+| `ddr_smc_test/` | Self-modifying-code / `fence.i` test: writes instruction words into a DDR buffer and executes them, exercising the full L1D-writeback then L1I-invalidate sync chain |
 | `ddr_test/` | Cached-region bring-up test (stores/loads, byte strobes, eviction sweeps, and the preloaded `.ddr_rodata` image path) |
 
 ## Building
@@ -401,16 +408,19 @@ make
 ./sw/apps/clean_all_apps.py
 ```
 
-This removes all build artifacts (sw.elf, sw.mem, sw.bin, sw.txt, sw.S, and any
-split-bank `sw_imem_*.mem` files) from every application directory.
+This removes all build artifacts (sw.elf, sw.mem, sw.bin, sw.txt, sw.S, the
+cached-region `sw_ddr.mem`/`sw_ddr.txt`/`sw_ddr.bin` images, and any split-bank
+`sw_imem_*.mem` files) from every application directory.
 
 ### Build Outputs
 
 Compilation produces:
 - `sw.elf` - ELF executable with debug symbols
-- `sw.mem` - Verilog hex format for `$readmemh`
-- `sw.bin` - Raw binary
+- `sw.mem` - Verilog hex format for `$readmemh` (low BRAM image)
+- `sw.bin` - Raw binary (low BRAM image)
 - `sw.txt` - BRAM initialization for Vivado
+- `sw_ddr.mem` - Cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region
+- `sw_ddr.txt` - Cached-region (DDR) image for the JTAG loader (dense words)
 - `sw.S` - Disassembly listing
 
 ### Toolchain Override
@@ -418,6 +428,33 @@ Compilation produces:
 ```bash
 make RISCV_PREFIX=riscv-none-elf-
 ```
+
+### Memory Configuration (BRAM vs DDR tier)
+
+`common.mk` takes a `MEM_CONFIG` knob selecting which memory tier the *whole*
+program is linked into:
+
+```bash
+make                    # MEM_CONFIG=bram (default): whole program in low BRAM
+make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
+```
+
+- `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
+  (and the malloc heap) sit in the cached DDR region. Every board/FPGA flow uses
+  this.
+- `ddr`: the program is linked at `0x8000_0000` behind a ROM boot stub
+  (`common/crt0_ddr_boot.S`) that far-jumps to the DDR-resident `_start`, so the
+  L1I fetch path and the D-side cached load/store path are both exercised. This
+  selects `common/link_ddr.ld` and splits all loadable sections into the DDR
+  image (`sw_ddr.mem`), leaving only the boot stub in `sw.mem`.
+
+The CI runs the cocotb, arch-compliance, riscv-tests, and riscv-torture suites in
+both a `bram` tier and a `ddr` tier as separate jobs. The harnesses select the
+tier via `--mem-config` (`test_arch_compliance.py`, `test_riscv_tests.py`,
+`test_riscv_torture.py`) or `FROST_COCOTB_MEM_CONFIG=ddr`
+(`test_run_cocotb.py` / `compile_app.py`). A handful of suites
+(`riscv_tests`, `arch_test`, `riscv_torture`, `freertos_demo`) keep their own
+per-config linker scripts and boot stubs (`link_*_ddr.ld`, `crt0_*_ddr*.S`).
 
 ### Clock Frequency
 
@@ -488,10 +525,11 @@ The C runtime (`common/crt0.S`) executes before `main()`:
 
 1. Initialize stack pointer (`sp`) to top of RAM
 2. Initialize global pointer (`gp`) for small data access
-3. Copy `.data` section from ROM to RAM
-4. Zero-initialize `.bss` and `.sbss` sections
-5. Call `main()`
-6. Loop forever if `main()` returns
+3. Copy `.data`/`.sdata` section from ROM to RAM
+4. Zero-initialize `.sbss` and `.bss` sections
+5. Zero-initialize the cached-region `.ddr_bss` (empty unless a program places zero-init data there)
+6. Call `main()`
+7. Loop forever if `main()` returns
 
 ## Adding a New Application
 

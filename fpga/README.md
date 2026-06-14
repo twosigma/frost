@@ -61,7 +61,7 @@ The FPGA tooling is organized into three main workflows:
 | Board    | FPGA                       | FROST Clock | Status         |
 |----------|----------------------------|-------------|----------------|
 | X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | Primary target |
-| Genesys2 | Kintex-7 (xc7k325t)        | 133 MHz     | Supported      |
+| Genesys2 | Kintex-7 (xc7k325t)        | 133.33 MHz  | Supported      |
 
 ## Quick Start
 
@@ -259,29 +259,42 @@ To program or load software on a remote FPGA:
 1. Create `boards/<board>/` with:
    - `<board>_frost.sv` - Top-level wrapper with clock generation
      - Generate CPU clock and /4 clock using MMCM
-     - Instantiate `xilinx_frost_subsystem` (see `boards/xilinx_frost_subsystem.sv`)
+     - Instantiate the board's DDR controller subsystem (the `ddr_subsys`
+       block design built by `build/<board>_ddr_bd.tcl`) and the FROST
+       cache-bridge AXI / `mem_ok` calibration wiring
+     - Instantiate `xilinx_frost_subsystem` (see `boards/xilinx_frost_subsystem.sv`),
+       passing `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` for the board's hierarchy
+       shape (`CACHED_HAS_L2=1` only where UltraRAM exists, e.g. X3)
    - `constr/<board>.xdc` - Pin assignments and timing constraints
    - `<board>_frost.f` - File list for synthesis (include the subsystem and core)
 
-   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) are created on the fly
-   during synthesis by `build/build_step.tcl`, so no per-board `ip/` directory is
-   needed.
+   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and the per-board DDR
+   `ddr_subsys` block design are created on the fly during synthesis by
+   `build/build_step.tcl`, so no per-board `ip/` directory is needed.
 
-2. Add the board (FPGA part, clock frequency) to:
+2. Add a `build/<board>_ddr_bd.tcl` that assembles the DDR `ddr_subsys` block
+   design (memory controller + SmartConnect + a JTAG-AXI DDR-image-load master)
+   and have `build/build_step.tcl` source it during the synth step.
+
+3. Add the board (FPGA part, clock frequency) to:
    - `BOARD_CONFIG` in `build/build.py` and in `load_software/load_software.py`
+     (the loader entry also carries `coremark_iterations` and a `has_ddr` flag)
    - the board-name argument `choices` in `build/build.py`,
      `program_bitstream/program_bitstream.py`, and `load_software/load_software.py`
    - the board/part handling in `build/build_step.tcl`
 
-3. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
+4. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
    so the programming and loading scripts can auto-select its JTAG target
 
-4. See `boards/README.md` for detailed instructions and board comparison
+5. See `boards/README.md` for detailed instructions and board comparison
 
 ### Adding a New Application
 
 1. Add a `sw/apps/<app>/` directory whose `make` produces `sw.txt` (hex format,
-   one 32-bit word per line) and `sw.mem`
+   one 32-bit word per line) and `sw.mem`. An app that places a working set in
+   the cached DDR region (built with `MEM_CONFIG=ddr`) also produces a
+   `sw_ddr.txt`/`sw_ddr.mem` image that the loader bursts into DDR over a
+   second JTAG-AXI master.
 
 2. Register the app name in both `VALID_APPS` in
    `load_software/load_software.py` and the `valid_apps` list in

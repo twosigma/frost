@@ -20,8 +20,9 @@ underlying FU's pipeline depth:
   shim is essentially a wire with operand-format conversion. The
   result tag flows directly with the data. Conditional branches
   don't write the CDB at all — branch resolution lives in
-  `branch_jump_unit` at top level — but JAL and JALR write their
-  link addresses through here.
+  `branch_jump_unit` at top level — but JALR writes its
+  link address through here. (JAL is `RS_NONE`: it never reaches an
+  RS, and its link value is written at ROB allocation instead.)
 - **`fp_add_shim`** and **`fp_mul_shim`** wrap shallow FPU pipelines
   (~2–10 cycles) with one in-flight op at a time. A single tag
   register and a one-hot subunit selector are enough. Both NaN-box

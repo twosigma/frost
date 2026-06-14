@@ -17,35 +17,45 @@ This document covers bare-metal software contributions. For RTL, verification, o
 ```
 sw/
 ├── common/             # Shared build infrastructure
-│   ├── common.mk       # RISC-V compilation rules and flags
+│   ├── common.mk       # RISC-V compilation rules and flags (MEM_CONFIG bram|ddr)
 │   ├── crt0.S          # Assembly startup code (stack init, BSS zeroing)
-│   └── link.ld         # Linker script (64KB memory layout)
+│   ├── crt0_ddr_boot.S # ROM boot stub for MEM_CONFIG=ddr (far-jumps to DDR _start)
+│   ├── link.ld         # Linker script (low BRAM + 1 GiB cached DDR region)
+│   └── link_ddr.ld     # DDR-tier linker (whole program in the cached DDR region)
 ├── lib/                # Reusable bare-metal libraries
 │   ├── include/        # Public headers (uart.h, timer.h, memory.h, etc.)
 │   └── src/            # Library implementations
 ├── apps/               # Application programs (each independently buildable)
 │   ├── hello_world/    # Basic UART demo
 │   ├── coremark/       # CoreMark benchmark
-│   ├── isa_test/       # ISA compliance tests (366 tests)
+│   ├── isa_test/       # ISA self-test for the Frost extensions
 │   ├── freertos_demo/  # FreeRTOS RTOS example
+│   ├── build_all_apps.py # Build script for all applications
 │   └── ...             # Other applications
-├── FreeRTOS-Kernel/    # FreeRTOS submodule (git submodule)
-└── build_all_apps.py   # Build script for all applications
+└── FreeRTOS-Kernel/    # FreeRTOS submodule (git submodule)
 ```
 
 ## Memory Constraints
 
-FROST has a **64KB memory** (addresses `0x0000_0000` - `0x0000_FFFF`) shared between code and data:
+FROST programs link into **256 KiB of low BRAM** (96 KiB ROM at `0x0000_0000` +
+160 KiB RAM at `0x0001_8000`, 1-cycle, uncached) plus a **1 GiB cached DDR
+region** at `0x8000_0000`. See `common/link.ld` for the full map; the [main
+README](README.md#memory-map) has the address table.
 
-| Section | Description |
-|---------|-------------|
-| `.text` | Code (starts at 0x0) |
-| `.rodata` | Read-only data |
-| `.data` | Initialized data |
-| `.bss` | Zero-initialized data |
-| Stack | Grows down from top of memory |
+| Section | Region | Description |
+|---------|--------|-------------|
+| `.text` | ROM | Code (starts at 0x0) |
+| `.rodata` | ROM | Read-only data |
+| `.data` / `.sdata` | RAM | Initialized data (copied from ROM by crt0) |
+| `.sbss` / `.bss` | RAM | Zero-initialized data |
+| Stack | RAM | Grows down from top of low RAM (`0x0004_0000`) |
+| `.ddr_*` / heap | DDR | Opt-in large sections and the malloc heap (cached region) |
 
-Keep applications compact. Use `make size` to check memory usage.
+Keep the low-BRAM footprint compact (the linker asserts on ROM/stack overflow).
+Use `make size` to check memory usage. Large datasets and the heap belong in the
+cached DDR region via the `.ddr_*` sections or the allocator. The whole program
+can instead be relocated into the cached region with `make MEM_CONFIG=ddr` (see
+the [README build options](README.md#memory-configuration-bram-vs-ddr-tier)).
 
 ## License Headers
 
@@ -206,7 +216,9 @@ SRC_C := ../../lib/src/uart.c your_app.c
 include ../../common/common.mk
 ```
 
-4. Add to `build_all_apps.py` if appropriate
+4. `build_all_apps.py` auto-discovers every app directory with a `Makefile`, so
+   no manual registration is needed (it only skips suites that require special
+   parameters, e.g. `arch_test`)
 
 5. Document the application purpose in its source file
 
@@ -217,9 +229,10 @@ Each application generates these files:
 | File | Purpose |
 |------|---------|
 | `sw.elf` | ELF executable with debug info |
-| `sw.mem` | Verilog hex format for `$readmemh` (simulation) |
-| `sw.bin` | Raw binary (no ELF headers) |
+| `sw.mem` | Verilog hex for `$readmemh` (low BRAM image) |
+| `sw.bin` | Raw binary (no ELF headers, low BRAM image) |
 | `sw.txt` | BRAM initialization format (Vivado) |
+| `sw_ddr.mem` / `sw_ddr.txt` | Cached-region (DDR) image for sim/JTAG, region-relative to `0x8000_0000` |
 | `sw.S` | Human-readable disassembly |
 
 ### Build Options
@@ -231,9 +244,12 @@ The `common.mk` provides these overridable options (set before `include`):
 | `RISCV_PREFIX` | `riscv-none-elf-` | Toolchain prefix |
 | `OPT_LEVEL` | `-O3` | Optimization level |
 | `UNROLL_LOOPS` | `-funroll-loops` | Loop unrolling (set empty to disable) |
-| `LINKER_SCRIPT` | `../../common/link.ld` | Linker script path |
+| `MABI` | `ilp32d` | ABI (e.g. `ilp32f` for some apps) |
+| `MEM_CONFIG` | `bram` | Memory tier: `bram` (low BRAM) or `ddr` (whole program in the cached DDR region) |
+| `LINKER_SCRIPT` | `../../common/link.ld` | Linker script path (defaults to `link_ddr.ld` when `MEM_CONFIG=ddr`) |
 | `EXTRA_ASM_SRC` | (empty) | Additional assembly files |
 | `EXTRA_CFLAGS` | (empty) | Additional C flags |
+| `EXTRA_LDFLAGS` | (empty) | Additional linker flags (e.g. `-lgcc`) |
 
 ## ISA Support
 
@@ -269,15 +285,22 @@ These markers are detected by the Cocotb verification framework.
 
 ```bash
 # Build all applications
-./build_all_apps.py
+./apps/build_all_apps.py
 
-# Run specific test in simulation
+# Run a specific test in simulation (from the tests/ directory)
 cd ../tests
-pytest test_run_cocotb.py::TestRealPrograms::test_frost_hello_world -s
+./test_run_cocotb.py hello_world
 
-# Run ISA compliance tests
-pytest test_run_cocotb.py::TestRealPrograms::test_frost_isa_test -s
+# Run the ISA self-test
+./test_run_cocotb.py isa_test
+
+# List the available tests
+./test_run_cocotb.py --list-tests
 ```
+
+To run a suite in the DDR memory tier instead of low BRAM, set
+`FROST_COCOTB_MEM_CONFIG=ddr` before the runner (or pass `--mem-config ddr` to
+`test_arch_compliance.py` / `test_riscv_tests.py` / `test_riscv_torture.py`).
 
 ### Hardware Testing
 
@@ -319,7 +342,7 @@ Remember these constraints when writing software:
 ## Pull Request Guidelines
 
 1. Keep changes focused and atomic - one feature or fix per PR
-2. Ensure all affected applications still build: `./build_all_apps.py`
+2. Ensure all affected applications still build: `./apps/build_all_apps.py`
 3. Test your changes on hardware or in simulation
 4. Add license headers to new files
 5. Update documentation if adding or changing functionality

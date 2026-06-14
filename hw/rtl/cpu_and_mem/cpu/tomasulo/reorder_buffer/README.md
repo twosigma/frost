@@ -53,24 +53,38 @@ the submodule share it) holds the commit head when the head entry needs external
 coordination:
 
 ```
-SERIAL_IDLE ──► WAIT_SQ      (FENCE / FENCE.I, drain committed SQ entries)
-            ├─► CSR_EXEC     (CSR side effect handshake)
-            ├─► MRET_EXEC    (MRET handshake with trap_unit)
-            ├─► WFI_WAIT     (stall until interrupt pending)
-            └─► TRAP_WAIT    (stall until trap_unit takes the trap)
+SERIAL_IDLE ──► WAIT_SQ       (FENCE / FENCE.I, drain committed SQ entries)
+            ├─► FENCE_I_SYNC  (FENCE.I cache sync, once the SQ is drained)
+            ├─► CSR_EXEC      (CSR side effect handshake)
+            ├─► MRET_EXEC     (MRET handshake with trap_unit)
+            ├─► WFI_WAIT      (stall until interrupt pending)
+            └─► TRAP_WAIT     (stall until trap_unit takes the trap)
 ```
+
+WAIT_SQ falls through to IDLE for a plain FENCE once the committed SQ
+entries drain, but FENCE.I instead advances into FENCE_I_SYNC (entering
+it directly from IDLE if the SQ is already committed-empty).
 
 Each non-IDLE state asserts `commit_stall`. CSR reads execute
 speculatively (their result rides the CDB), but the side effect is
 applied only when the entry reaches the head and the `csr_file`
 handshake completes — that way a flushed CSR never mutates
-architectural state. FENCE.I additionally pulses a one-cycle
-pipeline + icache flush after commit.
+architectural state. FENCE.I holds in FENCE_I_SYNC driving a level
+cache-sync request (`o_fence_i_sync_req` / `i_fence_i_sync_done`) so the
+L1D writes back and the L1I invalidates against post-writeback data
+before commit; on commit it then pulses a one-cycle pipeline + icache
+flush (`o_fence_i_flush`).
 
 AMO / LR / SC have no serial state of their own: their store ordering
 is enforced at LQ issue time (the load waits for the ROB head plus a
 committed-empty SQ), so once the CDB marks the entry done it commits
 through the ordinary path.
+
+When the head exception fires, the ROB exports the head entry's value
+slot as `o_trap_value` alongside `o_trap_pc` / `o_trap_cause`. For a
+misaligned load/store the load_queue / SQ path parks the faulting
+address in that otherwise-unused value slot, so `cpu_ooo` can mux it
+into `mtval`.
 
 ## Two-wide commit
 

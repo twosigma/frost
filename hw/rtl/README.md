@@ -33,9 +33,11 @@ frost.sv
   cpu_and_mem.sv
     instruction RAM  <---- JTAG/software-load port on clk_div4
     data RAM (low 256 KiB BRAM, 1-cycle)
-    cached tier @ 0x8000_0000 (1 GiB):
-      cached_tier_adapter -> L1 (128 KiB BRAM) [-> L2 (2 MiB URAM, X3)]
-        -> line_port_axi_bridge -> DDR AXI port
+    fetch_provider -> two-line L1I fetch buffer (cached fetch @ 0x8000_0000)
+    cached tier @ 0x8000_0000 (1 GiB), frost_cache_hierarchy:
+      data: cached_tier_adapter -> L1D (128 KiB BRAM) -\
+      instr: L1I (16 KiB BRAM, read-only) ------------- line_port_arbiter
+        [-> L2 (2 MiB URAM, X3)] -> line_port_axi_bridge -> DDR AXI port
            (behavioral DDR model in sim; board DDR controller on hardware)
     MMIO timer/UART/FIFOs
     cpu_ooo.sv
@@ -192,17 +194,20 @@ sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 | `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 instantiates the cache hierarchy (simulation enables via `-G`; boards enable with their DDR controller) |
 | `frost.sv` | `CACHED_HAS_L2` | `1` | 1 splices the 2 MiB URAM L2 between L1 and main memory (X3 shape); 0 is L1-only (Genesys2) |
-| `frost.sv` | `L1_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `2 MiB` | Cache sizes |
+| `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | Data L1, instruction L1I, and L2 cache sizes |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation-only DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
+| `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation-only: 1 wraps the low BRAM in a variable-latency fetch model (LFSR fetch-valid gaps) that mirrors the L1I provider's fetch contract; hardware keeps 0 |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
 | `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size |
 
 Simulation overrides parameters through Verilator generics (`-G`): the test
 Makefile enables the cached tier with the X3 hierarchy shape by default
-(`CACHED_HAS_L2=0` selects the Genesys2 shape) and sets the behavioral DDR
-model's size/latency; the low-BRAM size converges on the 256 KiB hardware
-value as part of the memory-map consolidation.
+(`CACHED_HAS_L2=0` selects the Genesys2 shape), sets the behavioral DDR
+model's size/latency, and sizes the low BRAM at the 256 KiB hardware value
+(`SIM_MEM_SIZE_BYTES`). The cache unit benches drive `frost_cache_hierarchy`
+directly with `-GHAS_L2={0,1}`, and the fetch-fuzz program runs select a
+separate `-GFETCH_VALID_FUZZ=1` build.
 
 ## Notes for RTL Changes
 

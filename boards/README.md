@@ -105,6 +105,7 @@ boards/
 ├── genesys2/
 │   ├── genesys2_frost.sv        # Top-level board wrapper (clock generation)
 │   ├── genesys2_frost.f         # File list for synthesis tools
+│   ├── mem_reset_control.v      # DDR3 calibration/reset sequencing (BD cell)
 │   └── constr/
 │       └── genesys2.xdc         # Pin assignments & timing constraints
 └── x3/
@@ -114,7 +115,9 @@ boards/
         └── x3.xdc               # Pin assignments & timing constraints
 ```
 
-**Note:** Xilinx IP cores (jtag_axi, axi_bram_ctrl) are generated on-the-fly during synthesis to ensure compatibility across Vivado versions.
+**Note:** Xilinx IP cores (jtag_axi, axi_bram_ctrl) and each board's DDR
+`ddr_subsys` block design are generated on-the-fly during synthesis (see
+`fpga/build/<board>_ddr_bd.tcl`) to ensure compatibility across Vivado versions.
 
 ## Building
 
@@ -138,7 +141,7 @@ For manual Vivado project setup:
    - `boards/xilinx_frost_subsystem.sv` (common subsystem)
    - The board-specific wrapper (e.g., `genesys2/genesys2_frost.sv`)
 3. Add the constraint file from `constr/`
-4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) - see `fpga/build/build_step.tcl` for configuration
+4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) and the board's DDR `ddr_subsys` block design - see `fpga/build/build_step.tcl` and `fpga/build/<board>_ddr_bd.tcl` for configuration
 5. Set the top module (e.g., `genesys2_frost`)
 6. Run synthesis and implementation
 7. Generate the bitstream
@@ -214,14 +217,23 @@ To add support for a new Xilinx FPGA board:
    - Adjust MMCM parameters for your board's input clock frequency
    - Configure CLKOUT0 for CPU clock and CLKOUT1 for /4 clock
    - Use appropriate clock buffers (BUFG for 7-series, BUFGCE_DIV for UltraScale+)
-4. Instantiate `xilinx_frost_subsystem` with your clocks and reset
-5. Create a constraint file with your board's pin assignments
+4. Instantiate the board's DDR controller subsystem (the `ddr_subsys` block
+   design from `fpga/build/<board>_ddr_bd.tcl`) and `xilinx_frost_subsystem`,
+   wiring the FROST cache-bridge AXI and holding the CPU in reset until
+   `mem_ok` (DDR calibrated). Pass `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` for the
+   board's hierarchy shape (`CACHED_HAS_L2=1` only where UltraRAM exists)
+5. Create a constraint file with your board's pin assignments (including the
+   DDR pins, unless they come from a MIG `.prj`/board interface)
 6. Update the file list (`.f` file) to include the subsystem
-7. Update `fpga/build/build_step.tcl` to handle the new board name
+7. Add a `fpga/build/<board>_ddr_bd.tcl` for the DDR `ddr_subsys` block design
+   and update `fpga/build/build_step.tcl` to handle the new board name (and
+   source the DDR BD script during synthesis)
 8. Update this README with the new board's specifications
 
 Key considerations:
 - Match the MMCM VCO frequency to your target CPU clock
 - Ensure timing constraints match your input clock period
 - Verify I/O voltage standards match your board's bank voltages
+- Configure the DDR controller (MIG for 7-series, native DDR4 IP for
+  UltraScale+) for your board's soldered/SODIMM memory
 - For non-Xilinx FPGAs (Altera, Lattice), a new subsystem would be needed
