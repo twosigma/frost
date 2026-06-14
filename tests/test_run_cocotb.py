@@ -538,6 +538,18 @@ UNIT_TESTS = [
     if config.app_name is None and config.include_in_pytest
 ]
 
+# Real-program tests that do NOT run in the ddr memory tier
+# (FROST_COCOTB_MEM_CONFIG=ddr):
+#   - *_fetch_fuzz: a different -G build (FETCH_VALID_FUZZ=1), orthogonal to tier.
+#   - ddr_*: already DDR-focused (execute-from-DDR, SMC, cached-region writes at
+#     CACHED_BASE) -- a whole-program DDR relocation would be redundant or clobber
+#     their fixed-address writes; they run in the bram-tier job as today.
+DDR_TIER_EXCLUDE = {
+    name
+    for name in REAL_PROGRAM_TESTS
+    if name.endswith("_fetch_fuzz") or name.startswith("ddr_")
+}
+
 
 # =============================================================================
 # CocotbRunner Class
@@ -572,6 +584,9 @@ class CocotbRunner:
         self.verilator_extra_args = verilator_extra_args
         self.test_directory = Path(__file__).parent.resolve()
         self.repository_root_directory = self.test_directory.parent
+        # Memory tier for the compiled app (real-program tests). The ddr CI job
+        # sets FROST_COCOTB_MEM_CONFIG=ddr to run every program from cached DDR.
+        self.mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
 
     @classmethod
     def from_config(cls, config: CocotbRunConfig) -> "CocotbRunner":
@@ -602,7 +617,12 @@ class CocotbRunner:
         try:
             from compile_app import compile_app
 
-            return compile_app(self.app_name, verbose=True)
+            return compile_app(
+                self.app_name,
+                verbose=True,
+                mem_config=self.mem_config,
+                clean_first=True,
+            )
         finally:
             sys.path.pop(0)
 
@@ -633,6 +653,12 @@ class CocotbRunner:
         if verif_path not in current_pythonpath:
             current_pythonpath = verif_path + ":" + current_pythonpath
         environment_variables["PYTHONPATH"] = current_pythonpath
+
+        # In the ddr tier the behavioral DDR persists across reset and .data is
+        # loaded in place (LMA == VMA), so a second run would see the program's
+        # mutated memory. Force a single run (the bram tier keeps its default).
+        if self.mem_config == "ddr":
+            environment_variables["COCOTB_NUM_RUNS"] = "1"
 
         return environment_variables
 
@@ -929,6 +955,9 @@ class TestRealPrograms:
             test_real_program[hello_world]
             test_real_program[coremark]
         """
+        mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
+        if mem_config == "ddr" and test_name in DDR_TIER_EXCLUDE:
+            pytest.skip(f"{test_name} does not run in the ddr tier (fuzz/ddr-only)")
         run_test(test_name, capsys)
 
 

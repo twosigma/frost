@@ -469,12 +469,35 @@ FROST_CFLAGS := $(BASE_FLAGS) -I$(LIB_DIR)/include \
 INTERPOSE_CFLAGS := $(MITH_CFLAGS) -DCMP_PGO_TRAINING=$(WL_PGO) \
                     '-DCOREMARK_PRO_RUN_ARGS="$(COREMARK_PRO_RUN_ARGS)"'
 
-# --- Linker ----------------------------------------------------------------
-# Unified memory map (sw/common/link.ld): code/data/stack in the
-# 256 KiB low BRAM, heap (and any .ddr_* sections, e.g. radix2's FFT tables)
-# in the DDR-backed 1 GiB cached region at 0x8000_0000 -- identical on both
-# boards and in simulation.
-LINKER_SCRIPT := ../../common/link.ld
+# --- Linker / memory configuration -----------------------------------------
+# MEM_CONFIG selects the linker script and image split (CI/cocotb pass this):
+#   bram (default): unified memory map (sw/common/link.ld) -- code/data/stack in
+#                   the 256 KiB low BRAM, heap (and any opt-in .ddr_* sections,
+#                   e.g. radix2's FFT tables) in the DDR-backed 1 GiB cached
+#                   region at 0x8000_0000. sw.mem = the whole low-BRAM program.
+#   ddr:            the WHOLE program (code + data + bss) relocated to the cached
+#                   DDR region behind a ROM boot stub (crt0_ddr_boot.S); the core
+#                   resets at PC=0 in low BRAM and far-jumps to the DDR-resident
+#                   _start. sw.mem = the ROM boot stub only; sw_ddr.mem = the
+#                   whole program, region-relative. Exercises the L1I fetch path
+#                   plus the D-side cached load/store path.
+MEM_CONFIG ?= bram
+
+ifeq ($(MEM_CONFIG),bram)
+LINKER_SCRIPT      := ../../common/link.ld
+DDR_BOOT_STUB      :=
+# Only the opt-in cached-region sections go to the DDR image (current behavior).
+DDR_SPLIT_SECTIONS := .ddr_text .ddr_rodata .ddr_data
+else ifeq ($(MEM_CONFIG),ddr)
+LINKER_SCRIPT      := ../../common/link_ddr.ld
+DDR_BOOT_STUB      := ../../common/crt0_ddr_boot.S
+# Whole program is in DDR: split ALL loadable sections into the DDR image, so the
+# low-BRAM sw.mem contains only the ROM boot stub (no huge sparse image).
+DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data
+else
+$(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
+endif
+
 # -lm covers libm symbols (cos/sin/pow/sqrt/log10) used by the FP workloads
 # (linpack/loops/nnet/radix2); harmless for the integer workloads. -lgcc
 # supplies soft helpers (64-bit divide in the timing math, soft float helpers).
@@ -584,30 +607,37 @@ frost_mith_main.o: frost_mith_main.c
 	$(CC) $(INTERPOSE_CFLAGS) -c $< -o $@
 
 # Link everything. The libc definitions resolve from the FROST objects; the
-# MITH code saw correct system-header declarations at compile time.
-$(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(LINKER_SCRIPT)
-	$(CC) $(BASE_FLAGS) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o $@
+# MITH code saw correct system-header declarations at compile time. The ddr
+# config also links the ROM boot stub ($(DDR_BOOT_STUB), a .boot section that
+# far-jumps to the DDR-resident _start); the bram config leaves it empty
+# (crt0's _start already sits at 0x0).
+$(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(DDR_BOOT_STUB) $(LINKER_SCRIPT)
+	$(CC) $(BASE_FLAGS) $(DDR_BOOT_STUB) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o $@
 
+# Low BRAM image: everything NOT split out to the DDR image. The bram config
+# excludes only the opt-in .ddr_* sections; the ddr config excludes the whole
+# program, leaving just the ROM boot stub.
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
-	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
+	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
-	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
+	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
-# Cached-region (DDR) image: only the .ddr_* loaded sections, rebased so file
-# offset 0 = CACHED_BASE (0x8000_0000). Always exists (zero word fallback) so
-# the behavioral DDR model / loader can unconditionally consume it.
+# Cached-region (DDR) image: the split-out sections, rebased so file offset 0 =
+# CACHED_BASE (0x8000_0000). bram = only the opt-in .ddr_* sections; ddr = the
+# whole program. Always exists (zero word fallback) so the behavioral DDR model
+# / loader can unconditionally consume it.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_text -j .ddr_rodata -j .ddr_data \
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
 # DDR image for the JTAG loader (dense words from the region base; empty when
 # nothing lives in the cached region -- the loader skips empty files).
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary -j .ddr_text -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	-$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) $< sw_ddr.bin 2>/dev/null
 	@if [ -s sw_ddr.bin ]; then \
 	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
 	else \

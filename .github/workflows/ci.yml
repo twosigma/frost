@@ -86,6 +86,35 @@ jobs:
               --ignore=tests/test_riscv_tests.py \
               --ignore=tests/test_riscv_torture.py
 
+  # Cocotb real programs in the DDR memory tier: the same programs as the bram
+  # job above, but linked whole-program into the cached DDR region (exercises the
+  # L1I fetch path + the D-side cached tier). Real programs only; unit benches are
+  # tier-independent and run once in the bram job. FROST_COCOTB_MEM_CONFIG=ddr
+  # flips every app to the ddr build; fuzz/ddr_* programs self-skip in this tier.
+  test-verilator-ddr:
+    name: Cocotb Real Programs (Verilator / ddr)
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run Cocotb real programs in the DDR tier
+        run: |
+          docker run --rm -e FROST_COCOTB_MEM_CONFIG=ddr -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            pytest tests/test_run_cocotb.py -m cocotb -k test_real_program -v
+
   # RISC-V Architecture Compliance Tests - parallelized by extension x memory
   # tier. The two compliance tiers a program actually runs from:
   #   bram - code + data + signature in low BRAM (pure ISA conformance, the

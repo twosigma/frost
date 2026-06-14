@@ -94,8 +94,29 @@ RISCV_FLAGS  = -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
                -ffunction-sections -fdata-sections \
                $(OPT_LEVEL) $(UNROLL_LOOPS) -fno-strict-aliasing
 
+# Memory configuration -- selects the linker + image split (apps/CI pass this via
+# MEM_CONFIG):
+#   bram (default): whole program in low BRAM; only opt-in .ddr_* sections in DDR.
+#   ddr:            whole program relocated to the cached DDR region behind a ROM
+#                   boot stub (exercises the L1I fetch path + D-side cached tier).
+# DEFAULT is bram, so every board/FPGA flow is unaffected.
+MEM_CONFIG ?= bram
+
+ifeq ($(MEM_CONFIG),ddr)
+# App Makefiles may still override LINKER_SCRIPT (e.g. freertos sets its own ddr
+# linker before including this file); ?= respects that.
+LINKER_SCRIPT ?= ../../common/link_ddr.ld
+DDR_BOOT_STUB := ../../common/crt0_ddr_boot.S
+# Whole program is in DDR: split ALL loadable sections into the DDR image, so the
+# low-BRAM sw.mem/sw.bin contain only the ROM boot stub (no huge sparse image).
+DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data
+else
 # Linker script (can be overridden by app-specific Makefiles before including common.mk)
 LINKER_SCRIPT ?= ../../common/link.ld
+DDR_BOOT_STUB :=
+# Only the opt-in cached-region sections go to the DDR image (current behavior).
+DDR_SPLIT_SECTIONS := .ddr_text .ddr_rodata .ddr_data
+endif
 
 # Linker flags - includes RISC-V flags plus linker script and section garbage collection
 EXTRA_LDFLAGS ?=
@@ -139,8 +160,8 @@ all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM
      $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
 # Link C sources and assembly startup into ELF executable
-$(EXECUTABLE_ELF_FILE): $(SRC_C) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
-	$(CC) $(CFLAGS) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) -o $@
+$(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
+	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) -o $@
 
 # Generate disassembly listing for debugging
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
@@ -153,13 +174,13 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 # Format: One 32-bit word per line in hexadecimal (little-endian)
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
-	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
+	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
 # Generate raw binary file (stripped of ELF headers and metadata; cached-region
 # sections excluded so the binary spans only the low BRAM image)
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
-	      -R .ddr_text -R .ddr_rodata -R .ddr_data $< $@
+	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
 # Generate the cached-region (DDR) image: only the .ddr_* loaded sections,
 # rebased so file offset 0 = the cached-region base (0x8000_0000). Loaded by
@@ -167,7 +188,7 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 # Programs with no .ddr_* sections get a single zero word so consumers can
 # always $readmemh the file.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 -j .ddr_text -j .ddr_rodata -j .ddr_data \
+	-$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
 	      --change-addresses -0x80000000 $< $@ 2>/dev/null
 	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
 
@@ -175,7 +196,7 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 # (the .ddr_* sections start exactly at 0x8000_0000). Empty when the program
 # places nothing in the cached region; the loader skips empty files.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary -j .ddr_text -j .ddr_rodata -j .ddr_data $< sw_ddr.bin 2>/dev/null
+	-$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) $< sw_ddr.bin 2>/dev/null
 	@if [ -s sw_ddr.bin ]; then \
 	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
 	else \
