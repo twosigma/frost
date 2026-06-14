@@ -241,11 +241,15 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }}
 
-  # riscv-torture Random Instruction Tests
+  # riscv-torture Random Instruction Tests - parallelized by memory tier
   test-riscv-torture:
-    name: riscv-torture Tests
+    name: riscv-torture Tests (${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -261,10 +265,10 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-torture tests
+      - name: Run riscv-torture tests (${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_torture.py --all
+            python3 tests/test_riscv_torture.py --all --mem-config ${{ matrix.mem_config }}
 
   # Run Yosys synthesis check
   test-synthesis:
