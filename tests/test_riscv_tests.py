@@ -71,10 +71,17 @@ ISA_TEST_SUITES = {
     # rv32uzfh: SKIP — Frost does not implement Zfh
 }
 
-# ISA tests to skip (known incompatible with Frost)
+# Memory configurations -- passed to the riscv_tests Makefiles as MEM_CONFIG,
+# which selects the linker script (+ ROM boot stub for ddr).  bram = code+data
+# in low BRAM (pure ISA path); ddr = the test runs from the cached DDR region
+# (exercises the L1I fetch path and the D-side cached tier).  Mirrors
+# tests/test_arch_compliance.py.
+MEM_CONFIGS = ("bram", "ddr")
+DEFAULT_MEM_CONFIG = "bram"
+
+# ISA tests to skip in EVERY tier (genuinely unsupported on Frost).
 ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv32ui": {
-        "fence_i",  # Harvard architecture: stores go to data RAM, fetches from instruction ROM
         "ma_data",  # Frost traps on misaligned access rather than handling in hardware
     },
     "rv32ud": {
@@ -87,6 +94,17 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "csr",  # Tests user-mode CSR restrictions via SRET; Frost is M-mode only
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
+    },
+}
+
+# ISA tests to skip in the BRAM tier only -- they exercise the cached DDR tier
+# and are meaningless in the low Harvard BRAM (separate I/D memories), so they
+# run only in ddr (cf. the arch suite's Zifencei being ddr-only).
+ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
+    "rv32ui": {
+        # fence.i SMC: a store reaches only the data BRAM, while fence.i's
+        # invalidate applies to the cached DDR L1I -- meaningful only in ddr.
+        "fence_i",
     },
 }
 
@@ -115,8 +133,8 @@ class TestResult:
     message: str = ""
 
 
-def discover_isa_tests(suite: str) -> list[Path]:
-    """Find all .S test files for an ISA test suite."""
+def discover_isa_tests(suite: str, mem_config: str = DEFAULT_MEM_CONFIG) -> list[Path]:
+    """Find all .S test files for an ISA test suite (tier-aware skips)."""
     suite_dir = ISA_DIR / suite
     if not suite_dir.is_dir():
         return []
@@ -126,15 +144,17 @@ def discover_isa_tests(suite: str) -> list[Path]:
     # Filter out Makefrag and other non-test files
     tests = [t for t in tests if t.stem != "Makefrag"]
 
-    # Apply skip list
-    skip_set = ISA_SKIP_TESTS.get(suite, set())
+    # Apply skip lists: always-skip, plus the bram-only skips in the bram tier.
+    skip_set = set(ISA_SKIP_TESTS.get(suite, set()))
+    if mem_config == "bram":
+        skip_set |= ISA_SKIP_TESTS_BRAM.get(suite, set())
     if skip_set:
         tests = [t for t in tests if t.stem not in skip_set]
 
     return tests
 
 
-def compile_isa_test(test_src: Path) -> bool:
+def compile_isa_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
     """Compile a single ISA test, returns True on success."""
     result = subprocess.run(
         ["make", "clean"],
@@ -146,7 +166,7 @@ def compile_isa_test(test_src: Path) -> bool:
 
     rel_src = test_src.relative_to(RISCV_TESTS_APP_DIR)
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}"],
+        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
         cwd=RISCV_TESTS_APP_DIR,
         capture_output=True,
         text=True,
@@ -157,7 +177,7 @@ def compile_isa_test(test_src: Path) -> bool:
     return True
 
 
-def compile_benchmark(bench_name: str) -> bool:
+def compile_benchmark(bench_name: str, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
     """Compile a single benchmark, returns True on success."""
     result = subprocess.run(
         ["make", "clean"],
@@ -168,7 +188,13 @@ def compile_benchmark(bench_name: str) -> bool:
     )
 
     result = subprocess.run(
-        ["make", "-f", "Makefile.bench", f"BENCH={bench_name}"],
+        [
+            "make",
+            "-f",
+            "Makefile.bench",
+            f"BENCH={bench_name}",
+            f"MEM_CONFIG={mem_config}",
+        ],
         cwd=RISCV_TESTS_APP_DIR,
         capture_output=True,
         text=True,
@@ -212,6 +238,14 @@ def run_simulation(
         sw_mem_target = RISCV_TESTS_APP_DIR / "sw.mem"
         sw_mem_path.symlink_to(sw_mem_target)
 
+        # The ddr config splits the test into the DDR image; the sim preloads
+        # the behavioral DDR from sw_ddr.mem (empty for the bram config).
+        sw_ddr_path = Path("sw_ddr.mem")
+        if sw_ddr_path.exists() or sw_ddr_path.is_symlink():
+            sw_ddr_path.unlink()
+        sw_ddr_target = RISCV_TESTS_APP_DIR / "sw_ddr.mem"
+        sw_ddr_path.symlink_to(sw_ddr_target)
+
         pythonpath = env.get("PYTHONPATH", "")
         cmd = (
             f"export PYTHONPATH='{pythonpath}' && "
@@ -235,9 +269,10 @@ def run_simulation(
     except subprocess.TimeoutExpired:
         return None
     finally:
-        sw_mem_path = Path("sw.mem")
-        if sw_mem_path.exists() or sw_mem_path.is_symlink():
-            sw_mem_path.unlink()
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            mem_path = Path(mem_name)
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
         os.chdir(original_dir)
 
 
@@ -272,12 +307,16 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
     return "FAIL", "No <<PASS>> or <<FAIL>> marker in output"
 
 
-def run_single_isa_test(test_src: Path, suite: str, simulator: str) -> TestResult:
+def run_single_isa_test(
+    test_src: Path, suite: str, simulator: str, mem_config: str = DEFAULT_MEM_CONFIG
+) -> TestResult:
     """Build, simulate, and verify a single ISA test."""
     test_name = test_src.stem
 
-    if not compile_isa_test(test_src):
-        return TestResult(test_name, suite, "SKIP", "Compilation failed")
+    if not compile_isa_test(test_src, mem_config):
+        # FAIL (not SKIP): these tests fit both tiers, so a compile failure is a
+        # real build regression (e.g. a broken ddr linker/boot stub).
+        return TestResult(test_name, suite, "FAIL", "Compilation failed")
 
     result = run_simulation(simulator)
     if result is None:
@@ -287,15 +326,17 @@ def run_single_isa_test(test_src: Path, suite: str, simulator: str) -> TestResul
     return TestResult(test_name, suite, status, message)
 
 
-def run_single_benchmark(bench_name: str, simulator: str) -> TestResult:
+def run_single_benchmark(
+    bench_name: str, simulator: str, mem_config: str = DEFAULT_MEM_CONFIG
+) -> TestResult:
     """Build, simulate, and verify a single benchmark."""
     if bench_name not in BENCHMARKS:
         return TestResult(
             bench_name, "benchmarks", "SKIP", f"Unknown benchmark: {bench_name}"
         )
 
-    if not compile_benchmark(bench_name):
-        return TestResult(bench_name, "benchmarks", "SKIP", "Compilation failed")
+    if not compile_benchmark(bench_name, mem_config):
+        return TestResult(bench_name, "benchmarks", "FAIL", "Compilation failed")
 
     # Benchmarks may need more cycles than ISA tests
     result = run_simulation(simulator, max_cycles="50000000")
@@ -306,15 +347,15 @@ def run_single_benchmark(bench_name: str, simulator: str) -> TestResult:
     return TestResult(bench_name, "benchmarks", status, message)
 
 
-def _run_isa_test_worker(args: tuple[str, str, str, str]) -> TestResult:
+def _run_isa_test_worker(args: tuple[str, str, str, str, str]) -> TestResult:
     """Worker function for parallel ISA test execution."""
-    test_src_str, suite, simulator, app_dir_str = args
+    test_src_str, suite, simulator, app_dir_str, mem_config = args
     global RISCV_TESTS_APP_DIR, RISCV_TESTS_DIR, ISA_DIR
     RISCV_TESTS_APP_DIR = Path(app_dir_str)
     RISCV_TESTS_DIR = RISCV_TESTS_APP_DIR / "riscv-tests"
     ISA_DIR = RISCV_TESTS_DIR / "isa"
 
-    return run_single_isa_test(Path(test_src_str), suite, simulator)
+    return run_single_isa_test(Path(test_src_str), suite, simulator, mem_config)
 
 
 def _print_result(result: TestResult) -> None:
@@ -331,21 +372,23 @@ def run_suite_tests(
     suite: str,
     simulator: str,
     parallel: int = 1,
+    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all tests for a given ISA test suite."""
-    tests = discover_isa_tests(suite)
+    tests = discover_isa_tests(suite, mem_config)
     if not tests:
         print(f"  No tests found for suite {suite}")
         return []
 
     desc = ISA_TEST_SUITES.get(suite, suite)
-    print(f"\nSuite: {suite} - {desc} ({len(tests)} tests)")
+    print(f"\nSuite: {suite} - {desc} ({len(tests)} tests, mem-config={mem_config})")
 
     results = []
 
     if parallel > 1:
         work_items = [
-            (str(t), suite, simulator, str(RISCV_TESTS_APP_DIR)) for t in tests
+            (str(t), suite, simulator, str(RISCV_TESTS_APP_DIR), mem_config)
+            for t in tests
         ]
         with ProcessPoolExecutor(max_workers=parallel) as executor:
             futures = {
@@ -363,7 +406,7 @@ def run_suite_tests(
                 _print_result(result)
     else:
         for test_src in tests:
-            result = run_single_isa_test(test_src, suite, simulator)
+            result = run_single_isa_test(test_src, suite, simulator, mem_config)
             results.append(result)
             _print_result(result)
 
@@ -373,13 +416,14 @@ def run_suite_tests(
 def run_benchmark_tests(
     bench_names: list[str],
     simulator: str,
+    mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run specified benchmarks."""
-    print(f"\nBenchmarks ({len(bench_names)} tests)")
+    print(f"\nBenchmarks ({len(bench_names)} tests, mem-config={mem_config})")
 
     results = []
     for bench_name in bench_names:
-        result = run_single_benchmark(bench_name, simulator)
+        result = run_single_benchmark(bench_name, simulator, mem_config)
         results.append(result)
         _print_result(result)
 
@@ -499,6 +543,16 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
         metavar="N",
         help="Number of parallel test workers (default: 1, sequential)",
     )
+    parser.add_argument(
+        "--mem-config",
+        choices=MEM_CONFIGS,
+        default=DEFAULT_MEM_CONFIG,
+        help=(
+            f"Memory configuration: {', '.join(MEM_CONFIGS)} "
+            f"(default: {DEFAULT_MEM_CONFIG}). bram = low-BRAM ISA path; "
+            "ddr = run from the cached DDR region."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -526,8 +580,8 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
             print(f"Error: Test file not found: {test_path}")
             return 1
 
-        print(f"=== riscv-tests: {args.test} ===")
-        result = run_single_isa_test(test_path, suite, "verilator")
+        print(f"=== riscv-tests: {args.test} (mem-config={args.mem_config}) ===")
+        result = run_single_isa_test(test_path, suite, "verilator", args.mem_config)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
@@ -550,7 +604,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
         print(f"Benchmarks: {', '.join(bench_names)}")
         print("=" * 60)
 
-        all_results = run_benchmark_tests(bench_names, "verilator")
+        all_results = run_benchmark_tests(bench_names, "verilator", args.mem_config)
         n_pass = sum(1 for r in all_results if r.status == "PASS")
         n_fail = sum(1 for r in all_results if r.status == "FAIL")
         n_skip = sum(1 for r in all_results if r.status == "SKIP")
@@ -577,7 +631,9 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
 
     all_results = []
     for suite in suites:
-        results = run_suite_tests(suite, "verilator", parallel=args.parallel)
+        results = run_suite_tests(
+            suite, "verilator", parallel=args.parallel, mem_config=args.mem_config
+        )
         all_results.extend(results)
 
     # Summary

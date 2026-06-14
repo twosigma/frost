@@ -183,15 +183,16 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
-  # riscv-tests ISA Tests - parallelized by suite
+  # riscv-tests ISA Tests - parallelized by suite x memory tier
   test-riscv-tests:
-    name: riscv-tests (${{ matrix.suite }})
+    name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb]
+        mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -207,20 +208,22 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-tests ISA suite (${{ matrix.suite }})
+      - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }}
+            python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
+              --mem-config ${{ matrix.mem_config }}
 
-  # riscv-tests Benchmarks
+  # riscv-tests Benchmarks - parallelized by benchmark x memory tier
   test-riscv-benchmarks:
-    name: riscv-tests Benchmarks (${{ matrix.benchmark }})
+    name: riscv-tests Benchmarks (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         benchmark: [median, multiply, qsort, rsort, towers, vvadd, dhrystone, mm, spmv]
+        mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -236,10 +239,11 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-tests benchmark (${{ matrix.benchmark }})
+      - name: Run riscv-tests benchmark (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }}
+            python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
+              --mem-config ${{ matrix.mem_config }}
 
   # riscv-torture Random Instruction Tests - parallelized by memory tier
   test-riscv-torture:
