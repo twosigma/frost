@@ -290,27 +290,27 @@ def extract_signature(sim_output: str) -> list[str]:
     The RVMODEL_HALT macro prints each signature word as 8 lowercase hex
     characters followed by a newline, then <<PASS>>.
 
-    We collect all 8-char hex lines that appear immediately before a
-    standalone <<PASS>> marker (one that starts the line, not embedded in
-    a log message like "success_marker=<<PASS>>").
+    We collect every 8-char hex line up to the standalone <<PASS>> marker
+    (one that starts the line, not embedded in a log message like
+    "success_marker=<<PASS>>"), IGNORING any interspersed cocotb log lines.
     """
     lines = sim_output.splitlines()
     sig_lines: list[str] = []
-    collecting = False
     for line in lines:
         stripped = line.strip()
-        # Signature lines are exactly 8 hex characters
+        # Signature words are exactly 8 hex characters, one per line.
         if len(stripped) == 8 and all(c in "0123456789abcdefABCDEF" for c in stripped):
-            collecting = True
             sig_lines.append(stripped.lower())
-        elif collecting and stripped.startswith("<<PASS>>"):
-            # Found the PASS marker after collecting signature data - done
+        elif sig_lines and stripped.startswith("<<PASS>>"):
+            # The signature dump is terminated by the standalone <<PASS>> marker.
             break
-        elif collecting and stripped:
-            # Non-hex, non-empty line after we started collecting: this run's
-            # signature block ended (cocotb log line). Reset for next run.
-            sig_lines = []
-            collecting = False
+        # Any other line (interspersed cocotb INFO logs, banners, blanks) is
+        # IGNORED -- do NOT reset.  Over a long dump the UART hex stream is
+        # interleaved with periodic cocotb log lines; the old reset-on-non-hex
+        # truncated the signature to whatever followed the last log line and
+        # produced false "signature mismatch" diffs (the long b3/b8/b9 arch
+        # tests).  Signature words are the only bare-8-hex lines the program
+        # emits, so collecting them all up to <<PASS>> is exact.
     return sig_lines
 
 
@@ -329,17 +329,19 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     if actual == expected:
         return True, ""
 
-    diff_lines = []
+    # Always surface the word counts first so a length mismatch (e.g. a
+    # truncated/extracted-wrong signature) is obvious even when <6 words differ.
+    diff_lines = [f"  (actual={len(actual)} words, expected={len(expected)} words)"]
     max_len = max(len(actual), len(expected))
+    shown = 0
     for i in range(max_len):
         act = actual[i] if i < len(actual) else "<missing>"
         exp = expected[i] if i < len(expected) else "<missing>"
         if act != exp:
             diff_lines.append(f"  word {i}: got {act}, expected {exp}")
-            if len(diff_lines) >= 5:
-                diff_lines.append(
-                    f"  ... and more (actual={len(actual)} words, expected={len(expected)} words)"
-                )
+            shown += 1
+            if shown >= 5:
+                diff_lines.append("  ... and more")
                 break
 
     return False, "\n".join(diff_lines)
