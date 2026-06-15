@@ -281,7 +281,16 @@ module fp_convert #(
         sticky_bit = (unbiased_exp_s2 == -1) ? |extended_mant[ExtMantBits-2:0] : |extended_mant;
         fp_to_int_inexact_pre_s2_comb = 1'b1;
       end else if (unbiased_exp_s2 > MaxExpSignedExt) begin
-        if (is_unsigned_conv && !fp_sign_s2 && (unbiased_exp_s2 <= MaxExpUnsignedExt)) begin
+        if (!is_unsigned_conv && fp_sign_s2 &&
+            (unbiased_exp_s2 == MaxExpUnsignedExt) &&
+            (fp_mantissa_s2 == {1'b1, {FracBits{1'b0}}})) begin
+          // -2^(XLEN-1) is the one signed value with exponent XLEN-1 that is
+          // still in range. Let stage 4's signed path produce IntMin without NV.
+          shifted_value = IntMin;
+          round_bit = 1'b0;
+          sticky_bit = 1'b0;
+        end else if (is_unsigned_conv && !fp_sign_s2 &&
+                     (unbiased_exp_s2 <= MaxExpUnsignedExt)) begin
           if (unbiased_exp_s2 >= MantBitsMinus1Ext) begin
             fp_to_int_shift_amt = ShiftBits'(unbiased_exp_s2 - MantBitsMinus1Ext);
             fp_to_int_shifted_ext = mant_shifted_lsb << fp_to_int_shift_amt;

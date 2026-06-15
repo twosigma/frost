@@ -89,13 +89,20 @@ module control_flow_tracker #(
   // ===========================================================================
   // Detect any control flow change this cycle (branches, traps, predictions)
 
-  // FENCE.I performs a full front-end flush without an explicit redirect
-  // target. Treat its registered flush pulse as a control-flow event so the
-  // IF holdoff machinery suppresses stale in-flight fetch data for one cycle
-  // before the post-fence sequential stream resumes.
-  assign o_control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
-                                 i_pd_redirect || i_prediction_used ||
-                                 i_slot2_prediction_used || i_fence_i_flush;
+  // FENCE.I performs a full front-end flush and PC redirect in pc_controller,
+  // so its same-cycle bubble is handled by the pipeline/frontend flush inputs.
+  // Keep it out of this combinational change term: the ROB's registered
+  // FENCE.I pulse has high fanout, and feeding it through the generic IF
+  // holdoff cone puts it on the PC critical path. A separate registered
+  // holdoff below still suppresses the stale post-fence fetch response.
+  logic control_flow_change;
+  logic control_flow_holdoff_q;
+  logic fence_i_fetch_holdoff_q;
+
+  assign control_flow_change = i_trap_taken || i_mret_taken || i_branch_taken ||
+                               i_pd_redirect || i_prediction_used ||
+                               i_slot2_prediction_used;
+  assign o_control_flow_change = control_flow_change;
 
   // ===========================================================================
   // Holdoff Registers
@@ -110,14 +117,16 @@ module control_flow_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
-      o_control_flow_holdoff <= 1'b0;
+      control_flow_holdoff_q <= 1'b0;
+      fence_i_fetch_holdoff_q <= 1'b0;
       o_reset_holdoff <= 1'b1;
     end else begin
       // Latch redirect holdoff even if the front-end is stalled. Otherwise a
       // mispredict/redirect that arrives into back-pressure can skip the stale
       // BRAM-suppression window and pair new-path instruction data with an old PC.
-      o_control_flow_holdoff <= o_control_flow_change || (o_control_flow_holdoff && fetch_stall);
-      o_reset_holdoff <= o_reset_holdoff && (fetch_stall || o_control_flow_change);
+      control_flow_holdoff_q <= control_flow_change || (control_flow_holdoff_q && fetch_stall);
+      fence_i_fetch_holdoff_q <= i_fence_i_flush || (fence_i_fetch_holdoff_q && fetch_stall);
+      o_reset_holdoff <= o_reset_holdoff && (fetch_stall || control_flow_change);
     end
   end
 
@@ -127,6 +136,7 @@ module control_flow_tracker #(
   // any_holdoff: All sources (includes combinational control_flow_change)
   // any_holdoff_safe: Only registered sources (breaks timing from branch_taken)
 
+  assign o_control_flow_holdoff = control_flow_holdoff_q || fence_i_fetch_holdoff_q;
   assign o_any_holdoff = o_control_flow_change || o_control_flow_holdoff || o_reset_holdoff;
   assign o_any_holdoff_safe = o_control_flow_holdoff || o_reset_holdoff;
 

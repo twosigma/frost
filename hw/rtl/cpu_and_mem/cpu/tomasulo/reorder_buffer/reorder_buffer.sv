@@ -464,7 +464,7 @@ module reorder_buffer (
   logic commit_misprediction;
 
   // FENCE.I commit tracking
-  logic fence_i_committed;
+  (* max_fanout = 32 *) logic fence_i_committed;
 
   // ===========================================================================
   // Pointer Logic
