@@ -58,6 +58,7 @@ module branch_prediction_controller (
     // pulse only suppresses the handoff for one cycle and is not stall-aware;
     // clearing at the source keeps a stall from replaying a dead prediction.
     input logic i_pd_redirect,
+    input logic [riscv_pkg::XLEN-1:0] i_pd_redirect_target,
 
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
@@ -487,6 +488,19 @@ module branch_prediction_controller (
   // If prediction was blocked (e.g., halfword-aligned PC), but we still pass
   // the raw BTB output, EX stage will think we predicted and skip the redirect.
 
+  // A PD or slot-2 redirect can steal the fetch stream from a younger slot-1
+  // prediction.  If the redirect target differs from the registered slot-1
+  // prediction target, the registered metadata/holdoff belong to the killed
+  // younger path and must not be replayed onto the redirect target after a miss.
+  // Matching targets preserve the existing cjpeg behavior: the predicted-taken
+  // marker remains attached to the already-redirected branch.
+  logic redirect_kills_prediction_metadata;
+  assign redirect_kills_prediction_metadata =
+      (i_pd_redirect &&
+       (!o_prediction_used_r || (o_predicted_target_r != i_pd_redirect_target))) ||
+      (o_slot2_prediction_used &&
+       (!o_prediction_used_r || (o_predicted_target_r != btb_predicted_target_2)));
+
   // Keep branch filtering in prediction_used_effective so registered metadata
   // only tracks predictions that were actually used.
   always_ff @(posedge i_clk) begin
@@ -521,7 +535,9 @@ module branch_prediction_controller (
       // cjpeg's Huffman zero-run loop, skipping one coefficient and emitting
       // a one-bit-short code (646-byte JPEG).
       o_sel_prediction_r <= 1'b0;
-      if (~i_stall && i_fetch_progress) begin
+      if (redirect_kills_prediction_metadata) begin
+        o_prediction_used_r <= 1'b0;
+      end else if (~i_stall && i_fetch_progress) begin
         o_prediction_used_r <= prediction_used_effective;
       end
     end else if (~i_stall && i_fetch_progress) begin
@@ -561,6 +577,8 @@ module branch_prediction_controller (
       o_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
       o_prediction_holdoff <= 1'b0;
+    end else if (redirect_kills_prediction_metadata) begin
+      o_prediction_holdoff <= 1'b0;
     end else if (~i_stall && i_fetch_progress) begin
       // Set holdoff on cycle after prediction.  Held through fetch-invalid
       // cycles so the deferred predicted-branch delivery still gets its
@@ -593,6 +611,8 @@ module branch_prediction_controller (
     if (i_reset) begin
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
+      o_btb_only_prediction_holdoff <= 1'b0;
+    end else if (redirect_kills_prediction_metadata) begin
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (~i_stall && i_fetch_progress) begin
       o_btb_only_prediction_holdoff <= btb_only_prediction_effective;

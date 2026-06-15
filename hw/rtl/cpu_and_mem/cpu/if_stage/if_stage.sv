@@ -369,6 +369,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       // PD redirect kills in-flight slot-1 prediction metadata (see module).
       .i_pd_redirect(i_pd_redirect),
+      .i_pd_redirect_target(i_pd_redirect_target),
 
       // Current PC for BTB lookup
       .i_pc(pc),

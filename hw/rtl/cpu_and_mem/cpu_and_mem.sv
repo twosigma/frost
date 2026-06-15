@@ -336,7 +336,7 @@ module cpu_and_mem #(
     // Mirror the real fetch_provider contract: withhold publish-valid while the
     // decode is stalled.  Gate on the REGISTERED stall so the first stall cycle
     // still carries valid (preserving the IF first-cycle capture); the real
-    // provider's o_instr_valid flop produces the same 1-cycle lag.
+    // provider's registered stall produces the same 1-cycle lag.
     assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q;
     assign fuzz_accepted = instruction_valid && !pipeline_stall;
     // The BRAM chases the owed ask while unserved and the live PC once

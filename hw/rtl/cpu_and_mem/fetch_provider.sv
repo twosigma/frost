@@ -40,11 +40,11 @@
  *   movement was not a stall-replay consumption (the registered
  *   i_fetch_replay_consume classifies that) -- every other unserved-cycle
  *   movement is a backend redirect, because the core holds the PC otherwise.
- *   o_instr_valid is computed one cycle early from the presented ask and
- *   registered: a redirect on a served cycle therefore yields one
- *   stale-window valid cycle, which the core's control-flow holdoff already
- *   squashes -- the exact BRAM redirect dance.  The simulation fuzz wrapper
- *   in cpu_and_mem implements this same contract over the bare BRAM.
+ *   The window data and the address it was fetched for are registered
+ *   together.  A window publishes valid only when that served-address tag still
+ *   matches the owed ask (with the same registered-stall lag as the simulation
+ *   fuzz wrapper in cpu_and_mem), so redirected stale data can sit on the
+ *   payload wires without being accepted as the new ask's instruction.
  *
  * MISS ENGINE: single-outstanding line-port master.  Wanted line = the
  * window's first absent line, else the following line (prefetch) -- one rule
@@ -69,7 +69,7 @@ module fetch_provider #(
     // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall).  While high the
     // decode cannot consume a window: publish-valid is withheld and the owed
     // ask is held, so a window the stalled decode cannot accept is never
-    // presented (nor drifted to the leading PC).  Feeds the valid flop and the
+    // presented (nor drifted to the leading PC).  Feeds publish-valid and the
     // owed-ask bookkeeping only -- never the imem/fill address path.
     input logic i_pipeline_stall,
     output logic [63:0] o_instr,
@@ -135,7 +135,7 @@ module fetch_provider #(
   // this combinational mux -- both would otherwise stack with the presence
   // compares into the fill engine and the imem address pins (the retarget
   // compare measured -0.42 post-opt from the o_pc flops).  The stall gates only
-  // the o_instr_valid flop (below): while stalled o_instr_valid is held low, so
+  // publish-valid (below): while stalled o_instr_valid is held low, so
   // this mux holds ask_q and the owed window persists for the stalled decode
   // instead of advancing to the leading PC.  On a retarget cycle this address
   // is the stale old ask for one extra cycle; the window it yields is squashed
@@ -191,7 +191,7 @@ module fetch_provider #(
   assign ddr_sb1   = slot_sb_q[win_line1[0]][word_sel1*SbWidth+:SbWidth];
 
   // ===========================================================================
-  // Window readiness (computed for the presented ask, registered into valid)
+  // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
   logic quadrant_ddr;
   assign quadrant_ddr = fetch_addr[31];
@@ -206,24 +206,28 @@ module fetch_provider #(
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
   logic bank_sel_q;
+  logic [31:0] served_addr_q;
+  logic window_ready_q;
+  logic pipeline_stall_q;
+
+  // Withhold publish-valid while the front end is stalled (above): the owed
+  // window stays parked (fetch_addr holds ask_q) and is published only when
+  // the decode can accept it, so a miss that completes mid-stall delivers the
+  // owed window on release rather than flashing it for one unconsumable cycle
+  // and then drifting to the leading PC.  The registered stall preserves the
+  // IF stage's first-cycle stall capture; the replay path holds fetch_progress
+  // for the rest of the stall.
+  assign o_instr_valid = window_ready_q && (served_addr_q == ask_q) && !pipeline_stall_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
-      o_instr_valid <= 1'b0;
+      window_ready_q   <= 1'b0;
+      pipeline_stall_q <= 1'b0;
     end else begin
-      // Withhold publish-valid while the front end is stalled (above): the owed
-      // window stays parked (fetch_addr holds ask_q) and is published only when
-      // the decode can accept it, so a miss that completes mid-stall delivers
-      // the owed window on release rather than flashing it for one unconsumable
-      // cycle and then drifting to the leading PC.  o_instr_valid is registered,
-      // so the first stall cycle still carries the pre-stall valid: the IF
-      // stage's first-cycle stall capture is preserved; the replay path holds
-      // fetch_progress for the rest of the stall.
-      o_instr_valid <= window_ready && !i_pipeline_stall;
+      window_ready_q   <= window_ready;
+      pipeline_stall_q <= i_pipeline_stall;
     end
-  end
-
-  always_ff @(posedge i_clk) begin
+    served_addr_q  <= fetch_addr;
     quadrant_ddr_q <= quadrant_ddr;
     bank_sel_q     <= fetch_addr[2];
     ddr_instr_q    <= {ddr_word1, ddr_word0};
