@@ -12,16 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the fetch_provider (quadrant steer, fetch buffer, fills).
+"""Unit tests for the high-address fetch_provider (fetch buffer, fills).
 
 The bench plays both of the provider's neighbours: the core (driving i_pc
 like pc_controller would and consuming valid windows) and the L1I line port
-slave (accepting fill requests and returning patterned lines). Covered: the
-BRAM-quadrant pass-through with the post-redirect stale-valid dance, DDR
-fills with the sequential walk across a line boundary (straddle + next-line
-prefetch), ask retargeting when a redirect lands while unserved, and the
-invalidate-discard of an in-flight fill (the fence.i path -- unreachable in
-integration until fence.i is wired, so this bench is its only coverage).
+slave (accepting fill requests and returning patterned lines). Covered: low
+addresses staying out of the provider, DDR fills with the sequential walk
+across a line boundary (straddle + next-line prefetch), ask retargeting when a
+redirect lands while unserved, and the invalidate-discard of an in-flight fill.
 """
 
 import importlib.util
@@ -31,7 +29,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge
 
 CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
@@ -73,9 +71,7 @@ def _line_at(line_addr: int) -> int:
 def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = 0
     dut.i_fetch_replay_consume.value = 0
-    dut.i_bram_instr.value = 0
-    dut.i_bram_sideband.value = 0
-    dut.i_bram_bank_sel_r.value = 0
+    dut.i_pipeline_stall.value = 0
     dut.i_line_req_ready.value = 0
     dut.i_line_resp_valid.value = 0
     dut.i_line_resp_rdata.value = 0
@@ -91,27 +87,6 @@ async def _setup(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
     await FallingEdge(dut.i_clk)
-
-
-async def _bram_model(dut: Any) -> None:
-    """1-cycle BRAM emulation: window = pattern(o_bram_addr last cycle).
-
-    The address is sampled in the ReadOnly phase of the falling edge so
-    same-reaction pc writes from the test have settled -- that settled value
-    is exactly what the real imem registers at the next rising edge.
-    """
-    while True:
-        await FallingEdge(dut.i_clk)
-        await ReadOnly()
-        addr = int(dut.o_bram_addr.value) & ~0x3
-        word0 = _word_at(addr)
-        word1 = _word_at(addr + 4)
-        await RisingEdge(dut.i_clk)
-        dut.i_bram_instr.value = (word1 << 32) | word0
-        dut.i_bram_sideband.value = (
-            _GENERATOR.make_sideband(word1) << 8
-        ) | _GENERATOR.make_sideband(word0)
-        dut.i_bram_bank_sel_r.value = (addr >> 2) & 1
 
 
 async def _line_slave(dut: Any, latency: int, log: list[int]) -> None:
@@ -177,36 +152,25 @@ def _check_window(dut: Any, addr: int) -> None:
 
 
 @cocotb.test()
-async def test_bram_passthrough_and_redirect_dance(dut: Any) -> None:
-    """BRAM quadrant: 1-cycle windows, and the stale-valid redirect cycle."""
+async def test_low_addresses_stay_idle(dut: Any) -> None:
+    """Low BRAM fetches are handled outside this provider."""
     await _setup(dut)
-    cocotb.start_soon(_bram_model(dut))
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=2, log=reqs))
 
-    await FallingEdge(dut.i_clk)
-    dut.i_pc.value = 0x100
-    await _wait_window(dut, 0x100)
-
-    # Sequential walk: on each served cycle the core advances the PC.
-    for pc in (0x104, 0x108, 0x10C):
+    for pc in (0x100, 0x104, 0x108, 0x10C, 0x200):
         dut.i_pc.value = pc
         await FallingEdge(dut.i_clk)
-        assert int(dut.o_instr_valid.value) == 1
-        _check_window(dut, pc)
+        assert int(dut.o_instr_valid.value) == 0
+        assert int(dut.o_line_req_valid.value) == 0
 
-    # Redirect: the provider simply serves the new ask one cycle later (the
-    # core-side stale-squash dance comes from pc_controller's registered PC
-    # and is exercised by the full-system tests, not here).
-    dut.i_pc.value = 0x200
-    await FallingEdge(dut.i_clk)
-    assert int(dut.o_instr_valid.value) == 1
-    _check_window(dut, 0x200)
+    assert reqs == []
 
 
 @cocotb.test()
 async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     """DDR quadrant: fill, sequential walk, line straddle, prefetch."""
     await _setup(dut)
-    cocotb.start_soon(_bram_model(dut))
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
 
@@ -240,7 +204,6 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
 async def test_redirect_while_unserved_retargets(dut: Any) -> None:
     """A redirect during a miss abandons the old ask for the new target."""
     await _setup(dut)
-    cocotb.start_soon(_bram_model(dut))
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=20, log=reqs))
 
@@ -248,8 +211,6 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
     dut.i_pc.value = DDR_BASE  # miss; fill takes 20+ cycles
     for _ in range(5):
         await FallingEdge(dut.i_clk)
-    # Any early valid cycles belong to the pre-jump (reset) ask; once those
-    # pass, the DDR miss holds valid low.
     for _ in range(3):
         await FallingEdge(dut.i_clk)
         assert int(dut.o_instr_valid.value) == 0
@@ -265,7 +226,6 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
 async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     """i_invalidate mid-fill: the completing line must not validate a slot."""
     await _setup(dut)
-    cocotb.start_soon(_bram_model(dut))
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
 

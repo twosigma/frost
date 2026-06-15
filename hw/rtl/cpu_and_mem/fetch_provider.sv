@@ -17,21 +17,16 @@
 /*
  * fetch_provider -- the variable-latency fetch window provider.
  *
- * Serves the core's fetch seam ({instr64, sideband16, bank_sel_r} + valid)
- * from two sources, steered by the fetch address quadrant (bit 31, the same
- * quadrant style as the D-side decode -- never >= compares):
- *
- *   addr[31] == 0:  the low instruction BRAM (imem_predecode port B), fixed
- *                   1-cycle service exactly as before -- the provider only
- *                   relays its registered window.
- *   addr[31] == 1:  a two-line fetch buffer over the L1I line port.  Each
- *                   filled line carries per-word predecode sideband computed
- *                   on fill (imem_predecode_line), so DDR code predecodes
- *                   bit-identically to BRAM code.  The buffer's two slots are
- *                   parity-mapped (line address bit 0), so the current line
- *                   and the prefetched next line can never collide, and a
- *                   window spanning a line boundary always has both halves
- *                   resident before valid asserts.
+ * Serves the high-address side of the core's fetch seam
+ * ({instr64, sideband16, bank_sel_r} + valid) from a two-line fetch buffer
+ * over the L1I line port.  The low instruction BRAM fast path is selected in
+ * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
+ * drives the low-BRAM address pins.  Each filled line carries per-word
+ * predecode sideband computed on fill (imem_predecode_line), so DDR code
+ * predecodes bit-identically to BRAM code.  The buffer's two slots are
+ * parity-mapped (line address bit 0), so the current line and the prefetched
+ * next line can never collide, and a window spanning a line boundary always
+ * has both halves resident before valid asserts.
  *
  * FETCH CONTRACT (established with the core in if_stage):
  *   The provider owns the 1-deep OWED-ASK register.  Each served cycle
@@ -76,13 +71,6 @@ module fetch_provider #(
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
     output logic o_instr_valid,
-
-    // Low instruction BRAM window (imem_predecode port B): 1-cycle registered
-    // read of the address presented on o_bram_addr.
-    output logic [31:0] o_bram_addr,
-    input logic [63:0] i_bram_instr,
-    input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_bram_sideband,
-    input logic i_bram_bank_sel_r,
 
     // L1I line port (master; read-only -- write/wdata/wstrb tied inactive).
     output logic o_line_req_valid,
@@ -132,18 +120,16 @@ module fetch_provider #(
   // decided) for the next cycle.
   logic [31:0] fetch_addr;
   // TIMING: neither the retarget 32-bit compare nor the pipeline stall lives in
-  // this combinational mux -- both would otherwise stack with the presence
-  // compares into the fill engine and the imem address pins (the retarget
-  // compare measured -0.42 post-opt from the o_pc flops).  The stall gates only
-  // publish-valid (below): while stalled o_instr_valid is held low, so
+  // this combinational mux; both would otherwise stack with the presence
+  // compares into the fill path.  The low BRAM address pins are not driven from
+  // this mux: cpu_and_mem keeps that path direct from o_pc.  The stall gates
+  // only publish-valid (below): while stalled o_instr_valid is held low, so
   // this mux holds ask_q and the owed window persists for the stalled decode
   // instead of advancing to the leading PC.  On a retarget cycle this address
   // is the stale old ask for one extra cycle; the window it yields is squashed
   // by the core's control-flow holdoff, which the redirect that caused the
   // retarget has already armed and which extends through no-progress cycles.
-  assign fetch_addr  = o_instr_valid ? i_pc : ask_q;
-
-  assign o_bram_addr = fetch_addr;
+  assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -193,16 +179,14 @@ module fetch_provider #(
   // ===========================================================================
   // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
-  logic quadrant_ddr;
-  assign quadrant_ddr = fetch_addr[31];
+  logic fetch_high;
+  assign fetch_high = fetch_addr[31];
 
   logic window_ready;
-  assign window_ready = quadrant_ddr ? (present0 && present1) : 1'b1;
+  assign window_ready = fetch_high && present0 && present1;
 
-  // Registered DDR window: presented next cycle alongside the BRAM window;
-  // the registered quadrant selects between them.  An invalidate kills the
-  // in-flight validity so a pre-invalidate window is never consumed.
-  logic quadrant_ddr_q;
+  // Registered high-address window.  An invalidate kills the in-flight
+  // validity so a pre-invalidate window is never consumed.
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
   logic bank_sel_q;
@@ -217,7 +201,8 @@ module fetch_provider #(
   // and then drifting to the leading PC.  The registered stall preserves the
   // IF stage's first-cycle stall capture; the replay path holds fetch_progress
   // for the rest of the stall.
-  assign o_instr_valid = window_ready_q && (served_addr_q == ask_q) && !pipeline_stall_q;
+  assign o_instr_valid = served_addr_q[31] && window_ready_q && (served_addr_q == ask_q) &&
+      !pipeline_stall_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
@@ -227,16 +212,15 @@ module fetch_provider #(
       window_ready_q   <= window_ready;
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q  <= fetch_addr;
-    quadrant_ddr_q <= quadrant_ddr;
-    bank_sel_q     <= fetch_addr[2];
-    ddr_instr_q    <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q  <= {ddr_sb1, ddr_sb0};
+    served_addr_q <= fetch_addr;
+    bank_sel_q    <= fetch_addr[2];
+    ddr_instr_q   <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q <= {ddr_sb1, ddr_sb0};
   end
 
-  assign o_instr = quadrant_ddr_q ? ddr_instr_q : i_bram_instr;
-  assign o_instr_sideband = quadrant_ddr_q ? ddr_sb_pair_q : i_bram_sideband;
-  assign o_instr_bank_sel_r = quadrant_ddr_q ? bank_sel_q : i_bram_bank_sel_r;
+  assign o_instr = ddr_instr_q;
+  assign o_instr_sideband = ddr_sb_pair_q;
+  assign o_instr_bank_sel_r = bank_sel_q;
 
   // ===========================================================================
   // Miss engine: single-outstanding line fills + next-line prefetch

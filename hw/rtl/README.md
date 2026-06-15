@@ -81,7 +81,7 @@ backend notes.
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
-| `cpu_and_mem/fetch_provider.sv` | In use | Quadrant-steered fetch: 1-cycle BRAM window or the two-line L1I fetch buffer (owed-ask register, next-line prefetch, fence.i invalidate) |
+| `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, next-line prefetch, and fence.i invalidate |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
