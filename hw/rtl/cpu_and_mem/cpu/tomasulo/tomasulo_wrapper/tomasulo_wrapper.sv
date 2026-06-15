@@ -2477,8 +2477,13 @@ module tomasulo_wrapper #(
       // queued-load register holds exactly ONE blocked load, so launches
       // during the (arbitrarily long) handshake write flight must be held
       // here -- with only the fire-cycle skew load able to queue.
+      // Store commits are pipelined into the SQ. While sq_commit_valid is
+      // high, the SQ forwarding result visible to the LQ can still be from
+      // the cycle before the store was marked committed, so block L0 hits
+      // and new memory launches until the SQ has made the store visible and
+      // can launch/invalidate it normally on the following cycle.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
-                        i_slow_write_inflight),
+                        i_slow_write_inflight || sq_commit_valid || sq_commit_valid_2),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),

@@ -4,20 +4,28 @@
 // This file provides _start in the .init section (placed first by
 // the linker) which copies .data from ROM to RAM, zeros .bss, and
 // jumps to the framework's rvtest_init entry point.
+//
+// Some near-capacity BRAM tests place the .data load image just below RAM with
+// a small overlap into the destination range. Copy backward so the startup
+// behaves like memmove when dest > src.
 
     .section .init
     .globl _start
 _start:
-    // Copy .data/.sdata from ROM to RAM
+    // Copy .data/.sdata from ROM to RAM, backward-safe for overlapping ranges.
     la   t0, __data_load_start
     la   t1, __data_start
     la   t2, __data_end
-1:  beq  t1, t2, 2f
+    beq  t1, t2, 2f
+    sub  t3, t2, t1
+    add  t0, t0, t3
+    mv   t4, t1
+    mv   t1, t2
+1:  addi t0, t0, -4
+    addi t1, t1, -4
     lw   t3, 0(t0)
     sw   t3, 0(t1)
-    addi t0, t0, 4
-    addi t1, t1, 4
-    j    1b
+    bne  t1, t4, 1b
 
     // Zero .sbss
 2:  la   t0, __sbss_start
