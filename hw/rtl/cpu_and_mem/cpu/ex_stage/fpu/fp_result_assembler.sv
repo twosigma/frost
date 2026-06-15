@@ -77,6 +77,11 @@ module fp_result_assembler #(
         adjusted_exponent = i_exp_work + 1;
       end
       final_mantissa = rounded_mantissa[MantBits-1:1];
+    end else if ((i_exp_work <= '0) && rounded_mantissa[MantBits-1]) begin
+      // Tininess is detected after rounding. A subnormal-path value that rounds
+      // up into the hidden bit is the minimum normal, not an underflowed zero.
+      adjusted_exponent = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
+      final_mantissa = rounded_mantissa[FracBits-1:0];
     end else begin
       adjusted_exponent = i_exp_work;
       final_mantissa = rounded_mantissa[FracBits-1:0];

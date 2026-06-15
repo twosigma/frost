@@ -253,7 +253,7 @@ async def test_redirect_holdoff_stays_asserted_while_stalled(dut: Any) -> None:
 async def test_fence_i_flush_generates_holdoff_without_halfword_target(
     dut: Any,
 ) -> None:
-    """FENCE.I flush behaves as a redirect without latching a halfword target."""
+    """FENCE.I flush arms a registered stale-fetch holdoff without a target."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
 
@@ -262,10 +262,10 @@ async def test_fence_i_flush_generates_holdoff_without_halfword_target(
 
     _assert_holdoffs(
         dut,
-        change=True,
+        change=False,
         holdoff=False,
         reset=False,
-        any_holdoff=True,
+        any_holdoff=False,
         safe=False,
     )
     assert not dut.o_control_flow_to_halfword.value
