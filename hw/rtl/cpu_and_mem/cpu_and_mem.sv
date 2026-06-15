@@ -169,8 +169,10 @@ module cpu_and_mem #(
   logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
   logic fence_i_flush;  // committed fence.i pipeline-flush pulse (provider invalidate)
 
-  // Low instruction BRAM window (imem_predecode port B outputs); the active
-  // fetch generate below turns this into the core-facing window.
+  // Low instruction BRAM window (imem_predecode port B outputs).  In hardware
+  // cached-tier builds, imem port B stays on the direct o_pc fast path and the
+  // fetch generate below muxes these registered outputs against the high DDR
+  // provider outputs.
   logic [63:0] bram_fetch_instr;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
   logic bram_fetch_bank_sel_r;
@@ -388,8 +390,32 @@ module cpu_and_mem #(
       end
     end
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
-    // The real provider: quadrant-steered between the 1-cycle BRAM window
-    // and the two-line L1I fetch buffer (see fetch_provider.sv).
+    // Hardware fast path: keep low instruction BRAM fetches cycle-equivalent
+    // to the direct build.  The source select is registered from the address
+    // presented last cycle, matching imem_predecode's registered read latency;
+    // low windows remain always-valid, while high windows wait for the L1I
+    // provider.
+    logic fetch_high_q;
+    logic [63:0] cached_fetch_instr;
+    logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
+    logic cached_fetch_bank_sel_r;
+    logic cached_fetch_valid;
+
+    assign fetch_address = program_counter;
+
+    always_ff @(posedge i_clk) begin
+      if (i_rst) fetch_high_q <= 1'b0;
+      else fetch_high_q <= program_counter[31];
+    end
+
+    assign instruction_valid      = fetch_high_q ? cached_fetch_valid : 1'b1;
+    assign instruction            = fetch_high_q ? cached_fetch_instr : bram_fetch_instr;
+    assign instruction_sideband   = fetch_high_q ? cached_fetch_sideband : bram_fetch_sideband;
+    assign instruction_bank_sel_r = fetch_high_q ? cached_fetch_bank_sel_r : bram_fetch_bank_sel_r;
+
+    // High-address provider: two-line L1I fetch buffer for cached/DDR code.
+    // It no longer drives the low-BRAM address pins; that path stays direct
+    // above for timing and IPC.
     fetch_provider #(
         .LINE_BYTES(32)
     ) u_fetch_provider (
@@ -398,14 +424,10 @@ module cpu_and_mem #(
         .i_pc(program_counter),
         .i_fetch_replay_consume(fetch_replay_consume),
         .i_pipeline_stall(pipeline_stall),
-        .o_instr(instruction),
-        .o_instr_sideband(instruction_sideband),
-        .o_instr_bank_sel_r(instruction_bank_sel_r),
-        .o_instr_valid(instruction_valid),
-        .o_bram_addr(fetch_address),
-        .i_bram_instr(bram_fetch_instr),
-        .i_bram_sideband(bram_fetch_sideband),
-        .i_bram_bank_sel_r(bram_fetch_bank_sel_r),
+        .o_instr(cached_fetch_instr),
+        .o_instr_sideband(cached_fetch_sideband),
+        .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
+        .o_instr_valid(cached_fetch_valid),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
         .o_line_req_write(iup_req_write),

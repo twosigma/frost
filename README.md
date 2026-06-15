@@ -329,19 +329,19 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz, post-place of the DDR4 + cache build)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 162,789 | 1,029,600 | 15.8% |
-|   LUT as Logic | 142,345 | 1,029,600 | 13.8% |
+| CLB LUTs | 164,233 | 1,029,600 | 15.9% |
+|   LUT as Logic | 143,790 | 1,029,600 | 14.0% |
 |   LUT as Distributed RAM | 19,274 | — | — |
-|   LUT as Shift Register | 1,170 | — | — |
-| CLB Registers | 111,790 | 2,059,200 | 5.4% |
-| Block RAM Tile | 223.5 | 2,112 | 10.6% |
+|   LUT as Shift Register | 1,169 | — | — |
+| CLB Registers | 112,835 | 2,059,200 | 5.5% |
+| Block RAM Tile | 228 | 2,112 | 10.8% |
 | URAM | 64 | 352 | 18.2% |
-| DSPs | 35 | 1,320 | 2.7% |
-| CARRY8 | 4,416 | 128,700 | 3.4% |
+| DSPs | 35 | 1,320 | 2.6% |
+| CARRY8 | 4,434 | 128,700 | 3.5% |
 | F7 Muxes | 208 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |
@@ -352,12 +352,12 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 145,223 | 203,800 | 71.3% |
-|   LUT as Logic | 124,372 | 203,800 | 61.0% |
-|   LUT as Distributed RAM | 20,006 | — | — |
+| Slice LUTs | 146,022 | 203,800 | 71.7% |
+|   LUT as Logic | 125,159 | 203,800 | 61.4% |
+|   LUT as Distributed RAM | 20,018 | — | — |
 |   LUT as Shift Register | 845 | — | — |
-| Slice Registers | 85,115 | 407,600 | 20.9% |
-| Block RAM Tile | 173 | 445 | 38.9% |
+| Slice Registers | 86,722 | 407,600 | 21.3% |
+| Block RAM Tile | 177.5 | 445 | 39.9% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 98 | 101,900 | 0.1% |
 | F8 Muxes | 33 | 50,950 | 0.1% |
