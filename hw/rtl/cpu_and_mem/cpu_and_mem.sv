@@ -405,7 +405,7 @@ module cpu_and_mem #(
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
-    logic cached_fetch_bank_sel_unused;
+    logic cached_fetch_bank_sel_r;
     logic cached_fetch_valid;
 
     assign fetch_address = program_counter;
@@ -432,7 +432,8 @@ module cpu_and_mem #(
     assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
     assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
                                   bram_fetch_sideband;
-    assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
+    assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
+                                                         bram_fetch_bank_sel_cpu_r;
 
     // High-address provider: two-line L1I fetch buffer for cached/DDR code.
     // It no longer drives the low-BRAM address pins; that path stays direct
@@ -447,7 +448,7 @@ module cpu_and_mem #(
         .i_pipeline_stall(pipeline_stall),
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
-        .o_instr_bank_sel_r(cached_fetch_bank_sel_unused),
+        .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
         .o_instr_valid(cached_fetch_valid),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
