@@ -311,7 +311,9 @@ async def test_jal_resolves_target_without_branch_update(dut: Any) -> None:
     )
     await _settle()
 
+    update = _read_branch_update(dut)
     _assert_no_branch_update(dut)
+    assert not update["mispredicted"]
     assert dut.o_branch_taken_resolved.value
     assert int(dut.o_branch_target_resolved.value) == 0x900
     assert not dut.o_is_jalr_issue.value

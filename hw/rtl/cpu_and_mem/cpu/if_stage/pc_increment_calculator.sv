@@ -120,11 +120,25 @@ module pc_increment_calculator #(
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
   // 1-wide options (existing) plus 2-wide bundle options (+6 / +8).
+  // Build these from the word index so pc[1] selects between precomputed
+  // word increments instead of feeding the full carry chain.
+  localparam int unsigned PcWordBits = XLEN - 2;
+  localparam logic [PcWordBits-1:0] PcWordInc1 = {{(PcWordBits - 1) {1'b0}}, 1'b1};
+  localparam logic [PcWordBits-1:0] PcWordInc2 = {{(PcWordBits - 2) {1'b0}}, 2'b10};
+  logic [PcWordBits-1:0] pc_word;
+  logic [PcWordBits-1:0] pc_word_plus_1;
+  logic [PcWordBits-1:0] pc_word_plus_2;
+  logic                  pc_halfword;
+  assign pc_word        = i_pc[XLEN-1:2];
+  assign pc_halfword    = i_pc[1];
+  assign pc_word_plus_1 = pc_word + PcWordInc1;
+  assign pc_word_plus_2 = pc_word + PcWordInc2;
+
   logic [XLEN-1:0] next_pc_plus_2, next_pc_plus_4, next_pc_plus_6, next_pc_plus_8;
-  assign next_pc_plus_2 = i_pc + IncC;
-  assign next_pc_plus_4 = i_pc + Inc4;
-  assign next_pc_plus_6 = i_pc + 32'd6;
-  assign next_pc_plus_8 = i_pc + 32'd8;
+  assign next_pc_plus_2 = {pc_halfword ? pc_word_plus_1 : pc_word, ~pc_halfword, i_pc[0]};
+  assign next_pc_plus_4 = {pc_word_plus_1, pc_halfword, i_pc[0]};
+  assign next_pc_plus_6 = {pc_halfword ? pc_word_plus_2 : pc_word_plus_1, ~pc_halfword, i_pc[0]};
+  assign next_pc_plus_8 = {pc_word_plus_2, pc_halfword, i_pc[0]};
 
   // Default-case 2-wide bundle advance: select +2/+4/+6/+8 based on slot-1
   // size, slot-2 valid, and slot-2 size.  The select drives only the final

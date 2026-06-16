@@ -129,11 +129,17 @@ module instruction_aligner #(
   //
   // When the instruction buffer is active, the buffer provides word(W)
   // directly and the BRAM alignment doesn't matter for the current word.
-  logic fetch_word_swapped;
-  assign fetch_word_swapped = i_instr_bank_sel_r ^ i_pc_reg[2];
+  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_word;
+  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_sideband;
+  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_fast;
+  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_slot2;
+  assign fetch_word_swapped_word = i_instr_bank_sel_r ^ i_pc_reg[2];
+  assign fetch_word_swapped_sideband = i_instr_bank_sel_r ^ i_pc_reg[2];
+  assign fetch_word_swapped_fast = i_instr_bank_sel_r ^ i_pc_reg[2];
+  assign fetch_word_swapped_slot2 = i_instr_bank_sel_r ^ i_pc_reg[2];
 
   logic [31:0] bram_current_word;  // BRAM word aligned to pc_reg
-  assign bram_current_word = fetch_word_swapped ? i_instr[63:32] : i_instr[31:0];
+  assign bram_current_word = fetch_word_swapped_word ? i_instr[63:32] : i_instr[31:0];
 
   logic [31:0] current_word;
   assign current_word = o_use_instr_buffer ? i_instr_buffer : bram_current_word;
@@ -162,16 +168,25 @@ module instruction_aligner #(
   localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
 
   logic [SbWidth-1:0] aligned_current_sb, aligned_next_sb;
-  assign aligned_current_sb = fetch_word_swapped ? i_instr_sideband[(2*SbWidth)-1:SbWidth] :
-                                                    i_instr_sideband[SbWidth-1:0];
-  assign aligned_next_sb    = fetch_word_swapped ? i_instr_sideband[SbWidth-1:0] :
-                                                    i_instr_sideband[(2*SbWidth)-1:SbWidth];
+  logic [SbWidth-1:0] aligned_current_sb_fast;
+  assign aligned_current_sb = fetch_word_swapped_sideband ?
+                              i_instr_sideband[(2*SbWidth)-1:SbWidth] :
+                              i_instr_sideband[SbWidth-1:0];
+  assign aligned_next_sb    = fetch_word_swapped_sideband ?
+                              i_instr_sideband[SbWidth-1:0] :
+                              i_instr_sideband[(2*SbWidth)-1:SbWidth];
+  assign aligned_current_sb_fast = fetch_word_swapped_fast ?
+                                   i_instr_sideband[(2*SbWidth)-1:SbWidth] :
+                                   i_instr_sideband[SbWidth-1:0];
 
   logic is_comp_instr_lo, is_comp_instr_hi, is_comp_buf_lo, is_comp_buf_hi;
+  logic is_comp_instr_lo_fast, is_comp_instr_hi_fast;
   assign is_comp_instr_lo = aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
   assign is_comp_instr_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
-  assign is_comp_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
-  assign is_comp_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
+  assign is_comp_instr_lo_fast = aligned_current_sb_fast[riscv_pkg::ImemSbIsCompressedLo];
+  assign is_comp_instr_hi_fast = aligned_current_sb_fast[riscv_pkg::ImemSbIsCompressedHi];
+  assign is_comp_buf_lo = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
+  assign is_comp_buf_hi = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
 
   // 4:1 mux for the 1-bit is_compressed result
   always_comb begin
@@ -216,8 +231,8 @@ module instruction_aligner #(
       (sel_saved    & i_is_compressed_saved) |
       (sel_buf_hi   & is_comp_buf_hi) |
       (sel_buf_lo   & is_comp_buf_lo) |
-      (sel_instr_hi & is_comp_instr_hi) |
-      (sel_instr_lo & is_comp_instr_lo);
+      (sel_instr_hi & is_comp_instr_hi_fast) |
+      (sel_instr_lo & is_comp_instr_lo_fast);
 
   // ===========================================================================
   // Instruction Selection Signals
@@ -271,7 +286,7 @@ module instruction_aligner #(
   // does NOT select).  In the buffer case where fetch_word_swapped=1, this
   // resolves to word(W+1) (= the word AFTER the buffer).
   logic [31:0] bram_next_word;
-  assign bram_next_word = fetch_word_swapped ? i_instr[31:0] : i_instr[63:32];
+  assign bram_next_word = fetch_word_swapped_word ? i_instr[31:0] : i_instr[63:32];
 
   logic [1:0] slot2_pos;
   always_comb begin
@@ -410,7 +425,7 @@ module instruction_aligner #(
   // but the explicit gate documents the invariant and protects against any
   // future case that lets a non-NOP cycle land in !buf+swap.
   logic slot2_bram_unsafe;
-  assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped;
+  assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
   // Slot-2 compressed-branch detector — historical Session G guard.  Slot-2
   // branch gates were dropped after the done-repair, checkpoint-owner, and
   // dual-port BTB fixes; detector retained as documentation and not used in

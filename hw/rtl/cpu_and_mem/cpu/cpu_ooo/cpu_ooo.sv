@@ -94,6 +94,9 @@ module cpu_ooo #(
     output logic o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic o_mmio_load_valid,
+    output logic o_mmio_fifo0_read_pulse,
+    output logic o_mmio_fifo1_read_pulse,
+    output logic o_mmio_uart_rx_ready_pulse,
     // Status
     output logic o_rst_done,
     output logic o_vld,
@@ -1514,6 +1517,24 @@ module cpu_ooo #(
   logic                                        early_recovery_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
   logic                                        early_backend_recovery_hold;
+  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
+  logic                                        early_recovery_trap_taken_reg;
+  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
+  logic                                        early_recovery_mret_taken_reg;
+
+  // Local phase-equivalent copies of the registered full-flush pulses.  The
+  // pipeline-control copies also drive IF and global flush logic; using these
+  // local copies keeps the MRET/trap kill routing out of the early-recovery
+  // capture flops.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      early_recovery_trap_taken_reg <= 1'b0;
+      early_recovery_mret_taken_reg <= 1'b0;
+    end else begin
+      early_recovery_trap_taken_reg <= trap_taken;
+      early_recovery_mret_taken_reg <= mret_taken;
+    end
+  end
 
   early_misprediction_recovery #(
       .XLEN(XLEN)
@@ -1529,10 +1550,10 @@ module cpu_ooo #(
       .i_fence_i_flush(fence_i_flush),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_flush_all(flush_all),
-      .i_flush_for_trap(flush_for_trap),
-      .i_flush_for_mret(flush_for_mret),
-      .i_trap_taken_reg(trap_taken_reg),
-      .i_mret_taken_reg(mret_taken_reg),
+      .i_flush_for_trap(early_recovery_trap_taken_reg),
+      .i_flush_for_mret(early_recovery_mret_taken_reg),
+      .i_trap_taken_reg(early_recovery_trap_taken_reg),
+      .i_mret_taken_reg(early_recovery_mret_taken_reg),
       .o_early_mispredict_active(early_mispredict_active),
       .o_early_backend_recovery_pending(early_backend_recovery_pending),
       .o_early_backend_flush_tag(early_backend_flush_tag),
@@ -1759,6 +1780,9 @@ module cpu_ooo #(
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
       .o_mmio_load_valid(o_mmio_load_valid),
+      .o_mmio_fifo0_read_pulse(o_mmio_fifo0_read_pulse),
+      .o_mmio_fifo1_read_pulse(o_mmio_fifo1_read_pulse),
+      .o_mmio_uart_rx_ready_pulse(o_mmio_uart_rx_ready_pulse),
       .o_sq_mem_write_done(sq_mem_write_done),
       .o_amo_mem_write_done(amo_mem_write_done),
       .o_lq_mem_request_valid(lq_mem_request_valid),

@@ -91,6 +91,9 @@ module data_mem_request_router #(
     output logic            o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic            o_mmio_load_valid,
+    output logic            o_mmio_fifo0_read_pulse,
+    output logic            o_mmio_fifo1_read_pulse,
+    output logic            o_mmio_uart_rx_ready_pulse,
 
     // Status back to SQ / AMO / LQ.
     output logic            o_sq_mem_write_done,
@@ -125,6 +128,10 @@ module data_mem_request_router #(
   assign lq_mem_addr_valid      = i_lq_mem_addr_valid;
 
   // Router-internal state / nets.
+  localparam logic [XLEN-1:0] UartRxDataMmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'h4);
+  localparam logic [XLEN-1:0] Fifo0MmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'h8);
+  localparam logic [XLEN-1:0] Fifo1MmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'hC);
+
   logic            sq_write_done_fast;
   logic            write_port_busy;
   logic            amo_mem_write_done;
@@ -347,12 +354,30 @@ module data_mem_request_router #(
   assign lq_mem_read_valid = fast_read_valid | i_cached_read_valid;
   // Select the cached data only when its valid is asserted; otherwise the
   // BRAM / MMIO combinational data.
-  assign lq_mem_read_data = i_cached_read_valid ? i_cached_read_data : i_data_mem_rd_data;
+  assign lq_mem_read_data  = i_cached_read_valid ? i_cached_read_data : i_data_mem_rd_data;
 
   // MMIO read pulse.  Read side effects are driven only by LQ reads; using the
   // full data-port address mux here needlessly pulls SQ/AMO write addresses
   // into FIFO/UART consume-pulse timing.
   assign o_mmio_read_pulse = lq_mem_read_accepted && lq_mem_request_is_mmio;
+
+  // Register destructive MMIO read side effects inside the router so the
+  // LQ/AMO arbitration cone stops at local flops instead of crossing back out
+  // to the top-level FIFO/UART pulse registers.  The load data itself is still
+  // sampled by cpu_and_mem on o_mmio_read_pulse, so the visible load response
+  // timing is unchanged.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      o_mmio_fifo0_read_pulse <= 1'b0;
+      o_mmio_fifo1_read_pulse <= 1'b0;
+      o_mmio_uart_rx_ready_pulse <= 1'b0;
+    end else begin
+      o_mmio_fifo0_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo0MmioAddr);
+      o_mmio_fifo1_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo1MmioAddr);
+      o_mmio_uart_rx_ready_pulse <= o_mmio_read_pulse &&
+                                    (lq_mem_request_addr_eff == UartRxDataMmioAddr);
+    end
+  end
 
   // --- Output wiring.
   // The adapter's cached done is shared by cached SQ stores and cached AMO
