@@ -279,20 +279,17 @@ module if_stage #(
   (* max_fanout = 16 *)logic instr_bank_sel_for_c_ext;
   (* max_fanout = 16 *)logic instr_bank_sel_for_aligner;
   (* max_fanout = 16 *)logic instr_bank_sel_for_spanning;
-  logic fetch_window_pre_aligned;
   logic fetch_word_swapped_for_c_ext;
   logic fetch_word_swapped_for_spanning;
-  // High-address fetch windows come from fetch_provider already ordered as
-  // {next_word,current_word}; low BRAM windows still need bank-select
-  // compensation because the physical BRAM bank order can differ from pc_reg.
-  assign fetch_window_pre_aligned = pc_reg[31];
-  assign instr_bank_sel_for_c_ext = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
-  assign instr_bank_sel_for_aligner = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
-  assign instr_bank_sel_for_spanning = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
-  assign fetch_word_swapped_for_c_ext = fetch_window_pre_aligned ? 1'b0 :
-                                        (instr_bank_sel_for_c_ext ^ pc_reg[2]);
-  assign fetch_word_swapped_for_spanning = fetch_window_pre_aligned ? 1'b0 :
-                                           (instr_bank_sel_for_spanning ^ pc_reg[2]);
+  // The bank-select sideband is registered with the fetch window.  High DDR
+  // fetches must use fetch_provider's served-window bit, not live pc_reg[2],
+  // because redirect/stall windows can briefly put a payload for one ask next
+  // to a different live PC.
+  assign instr_bank_sel_for_c_ext = i_instr_bank_sel_r;
+  assign instr_bank_sel_for_aligner = i_instr_bank_sel_r;
+  assign instr_bank_sel_for_spanning = i_instr_bank_sel_r;
+  assign fetch_word_swapped_for_c_ext = instr_bank_sel_for_c_ext ^ pc_reg[2];
+  assign fetch_word_swapped_for_spanning = instr_bank_sel_for_spanning ^ pc_reg[2];
 
   // ===========================================================================
   // Branch Prediction Controller
