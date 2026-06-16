@@ -27,6 +27,9 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 MMIO_ADDR = 0x40000000
+UART_RX_DATA_MMIO_ADDR = MMIO_ADDR + 0x4
+FIFO0_MMIO_ADDR = MMIO_ADDR + 0x8
+FIFO1_MMIO_ADDR = MMIO_ADDR + 0xC
 CACHED_BASE = 0x80000000
 FAST_ADDR = 0x100
 CACHED_ADDR = CACHED_BASE + 0x1234
@@ -226,6 +229,42 @@ async def test_mmio_read_pulse(dut: Any) -> None:
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
+
+
+@cocotb.test()
+async def test_mmio_destructive_read_pulses_registered(dut: Any) -> None:
+    """FIFO/UART-RX destructive-read side effects pulse one cycle after accept."""
+    await _setup_test(dut)
+    pulse_outputs = [
+        "o_mmio_fifo0_read_pulse",
+        "o_mmio_fifo1_read_pulse",
+        "o_mmio_uart_rx_ready_pulse",
+    ]
+    cases = [
+        (FIFO0_MMIO_ADDR, "o_mmio_fifo0_read_pulse"),
+        (FIFO1_MMIO_ADDR, "o_mmio_fifo1_read_pulse"),
+        (UART_RX_DATA_MMIO_ADDR, "o_mmio_uart_rx_ready_pulse"),
+    ]
+
+    for addr, expected_pulse in cases:
+        dut.i_lq_mem_read_en.value = 1
+        dut.i_lq_mem_read_addr.value = addr
+        dut.i_lq_mem_addr_valid.value = 1
+        await _settle()
+        assert int(dut.o_mmio_read_pulse.value) == 1
+        for output_name in pulse_outputs:
+            assert int(getattr(dut, output_name).value) == 0
+
+        await _advance_cycle(dut)
+        for output_name in pulse_outputs:
+            expected = 1 if output_name == expected_pulse else 0
+            assert int(getattr(dut, output_name).value) == expected
+
+        dut.i_lq_mem_read_en.value = 0
+        dut.i_lq_mem_addr_valid.value = 0
+        await _advance_cycle(dut)
+        for output_name in pulse_outputs:
+            assert int(getattr(dut, output_name).value) == 0
 
 
 @cocotb.test()

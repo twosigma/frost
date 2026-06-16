@@ -152,6 +152,8 @@ module branch_resolution #(
   logic is_jal_issue, is_jalr_issue;
   assign is_jal_issue  = is_branch_issue && (rs_issue_int.op == riscv_pkg::JAL);
   assign is_jalr_issue = is_branch_issue && (rs_issue_int.op == riscv_pkg::JALR);
+  logic is_branch_update_issue;
+  assign is_branch_update_issue = is_branch_issue && !is_jal_issue;
 
   // Map instr_op_e → branch_taken_op_e for branch_jump_unit
   riscv_pkg::branch_taken_op_e branch_op_resolved;
@@ -193,7 +195,7 @@ module branch_resolution #(
   // Misprediction detection (authoritative — the ROB trusts this flag)
   logic branch_mispredicted;
   always_comb begin
-    if (!is_branch_issue) begin
+    if (!is_branch_update_issue) begin
       branch_mispredicted = 1'b0;
     end else if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
       // Direction misprediction (taken vs not-taken)
@@ -214,7 +216,7 @@ module branch_resolution #(
     // JAL is resolved architecturally at ROB allocation time, so its later
     // branch-unit issue must not write back into a possibly already-committed
     // ROB slot.
-    branch_update.valid        = is_branch_issue && !is_jal_issue;
+    branch_update.valid        = is_branch_update_issue;
     branch_update.tag          = rs_issue_int.rob_tag;
     branch_update.taken        = branch_taken_resolved;
     branch_update.target       = branch_target_resolved;

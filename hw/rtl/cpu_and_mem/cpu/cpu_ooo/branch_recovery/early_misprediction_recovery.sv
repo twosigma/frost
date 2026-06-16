@@ -113,8 +113,7 @@ module early_misprediction_recovery #(
   // JALR remains on the older commit-time recovery path for now.
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
-  assign early_mispredict_capture = branch_update.valid && branch_update.mispredicted &&
-                                    !early_mispredict_pending &&
+  assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
   assign early_mispredict_fire = early_mispredict_capture &&
                                   rs_issue_int.has_checkpoint && !is_jalr_issue &&
@@ -178,9 +177,14 @@ module early_misprediction_recovery #(
   assign early_recovery_en  = early_mispredict_active;
   assign early_recovery_tag = early_mispredict_tag;
 
-  // Hold dispatch/issue/dequeue across both early-recovery phases.
+  // Hold dispatch/issue/dequeue while the frontend redirects and the RAT
+  // restores.  The following backend phase is a real partial flush
+  // (flush_en + early_backend_flush_tag), which already blocks stage1 issue
+  // and squashes younger side effects in the RS/FU paths.  Keeping the global
+  // hold out of that delayed phase avoids a backend-pending -> INT issue ready
+  // -> branch_update -> early-capture timing loop.
   logic early_backend_recovery_hold;
-  assign early_backend_recovery_hold = early_mispredict_active || early_backend_recovery_pending;
+  assign early_backend_recovery_hold = early_mispredict_pending;
 
   // --- Output wiring.
   assign o_early_mispredict_active = early_mispredict_active;

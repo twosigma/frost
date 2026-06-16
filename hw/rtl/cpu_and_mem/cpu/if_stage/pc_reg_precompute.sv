@@ -58,16 +58,32 @@ module pc_reg_precompute #(
     output logic [XLEN-1:0] o_pc_reg_plus_8
 );
 
-  localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
-  localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
+  localparam int unsigned PcRegWordBits = XLEN - 2;
+  localparam logic [PcRegWordBits-1:0] PcRegWordInc1 = {{(PcRegWordBits - 1) {1'b0}}, 1'b1};
+  localparam logic [PcRegWordBits-1:0] PcRegWordInc2 = {{(PcRegWordBits - 2) {1'b0}}, 2'b10};
+
+  logic [PcRegWordBits-1:0] pc_reg_word;
+  logic [PcRegWordBits-1:0] pc_reg_word_plus_1;
+  logic [PcRegWordBits-1:0] pc_reg_word_plus_2;
+  logic                     pc_reg_halfword;
+  assign pc_reg_word        = i_pc_reg[XLEN-1:2];
+  assign pc_reg_halfword    = i_pc_reg[1];
+  assign pc_reg_word_plus_1 = pc_reg_word + PcRegWordInc1;
+  assign pc_reg_word_plus_2 = pc_reg_word + PcRegWordInc2;
 
   logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
   logic [XLEN-1:0] pc_reg_plus_6, pc_reg_plus_8;
   assign pc_reg_plus_0 = i_pc_reg;
-  assign pc_reg_plus_2 = i_pc_reg + IncC;
-  assign pc_reg_plus_4 = i_pc_reg + Inc4;
-  assign pc_reg_plus_6 = i_pc_reg + 32'd6;
-  assign pc_reg_plus_8 = i_pc_reg + 32'd8;
+  // Use word-index adders so pc_reg[1] only drives final muxes, not the full
+  // high-bit carry chain.
+  assign pc_reg_plus_2 = {
+    pc_reg_halfword ? pc_reg_word_plus_1 : pc_reg_word, ~pc_reg_halfword, i_pc_reg[0]
+  };
+  assign pc_reg_plus_4 = {pc_reg_word_plus_1, pc_reg_halfword, i_pc_reg[0]};
+  assign pc_reg_plus_6 = {
+    pc_reg_halfword ? pc_reg_word_plus_2 : pc_reg_word_plus_1, ~pc_reg_halfword, i_pc_reg[0]
+  };
+  assign pc_reg_plus_8 = {pc_reg_word_plus_2, pc_reg_halfword, i_pc_reg[0]};
 
   // Hold pc_reg at +0 for spanning wait, holdoff cycles
   logic pc_reg_hold;

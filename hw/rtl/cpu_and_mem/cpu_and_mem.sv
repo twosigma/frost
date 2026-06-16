@@ -176,6 +176,7 @@ module cpu_and_mem #(
   logic [63:0] bram_fetch_instr;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
   logic bram_fetch_bank_sel_r;
+  (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
 
   // Instruction-side line port into the cache hierarchy: driven by the fetch
   // provider when the cached tier is enabled, tied off otherwise.
@@ -218,9 +219,9 @@ module cpu_and_mem #(
   // off the wide BRAM write-data cascade.
   logic [31:0] data_memory_cached_write_data;
   logic        mmio_read_pulse;
-  logic        fifo0_rd_pulse_q;
-  logic        fifo1_rd_pulse_q;
-  logic        uart_rx_ready_q;
+  logic        mmio_fifo0_read_pulse;
+  logic        mmio_fifo1_read_pulse;
+  logic        mmio_uart_rx_ready_pulse;
 `ifndef SYNTHESIS
   logic [31:0] data_memory_store_last_addr;
   localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
@@ -286,6 +287,9 @@ module cpu_and_mem #(
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
       .o_mmio_load_valid(mmio_load_valid),
+      .o_mmio_fifo0_read_pulse(mmio_fifo0_read_pulse),
+      .o_mmio_fifo1_read_pulse(mmio_fifo1_read_pulse),
+      .o_mmio_uart_rx_ready_pulse(mmio_uart_rx_ready_pulse),
       .i_data_mem_rd_data(data_memory_or_peripheral_read_data),
       .o_rst_done(/*not connected*/),
       .o_vld   (/*not connected*/),
@@ -346,7 +350,7 @@ module cpu_and_mem #(
     assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
-    assign instruction_bank_sel_r = bram_fetch_bank_sel_r;
+    assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
     // No instruction-side cache traffic in fuzz mode (low-BRAM programs).
     assign iup_req_valid = 1'b0;
@@ -395,23 +399,40 @@ module cpu_and_mem #(
     // presented last cycle, matching imem_predecode's registered read latency;
     // low windows remain always-valid, while high windows wait for the L1I
     // provider.
-    logic fetch_high_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_valid_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
+    logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
-    logic cached_fetch_bank_sel_r;
+    logic cached_fetch_bank_sel_unused;
     logic cached_fetch_valid;
 
     assign fetch_address = program_counter;
 
     always_ff @(posedge i_clk) begin
-      if (i_rst) fetch_high_q <= 1'b0;
-      else fetch_high_q <= program_counter[31];
+      if (i_rst) begin
+        fetch_high_valid_q    <= 1'b0;
+        fetch_high_instr_q    <= 1'b0;
+        fetch_high_sideband_q <= 1'b0;
+      end else begin
+        fetch_high_valid_q    <= program_counter[31];
+        fetch_high_instr_q    <= program_counter[31];
+        fetch_high_sideband_q <= program_counter[31];
+      end
     end
 
-    assign instruction_valid      = fetch_high_q ? cached_fetch_valid : 1'b1;
-    assign instruction            = fetch_high_q ? cached_fetch_instr : bram_fetch_instr;
-    assign instruction_sideband   = fetch_high_q ? cached_fetch_sideband : bram_fetch_sideband;
-    assign instruction_bank_sel_r = fetch_high_q ? cached_fetch_bank_sel_r : bram_fetch_bank_sel_r;
+    // The source select is registered to match the fetch payload latency.  On
+    // low<->high tier crossings, suppress one delivery cycle until the select
+    // matches the live PC; otherwise a stale low-BRAM valid can advance the
+    // front end while the high-cache provider still owes the branch target.
+    assign fetch_high_transition = fetch_high_valid_q ^ program_counter[31];
+    assign instruction_valid = fetch_high_transition ? 1'b0 :
+                               (fetch_high_valid_q ? cached_fetch_valid : 1'b1);
+    assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
+    assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
+                                  bram_fetch_sideband;
+    assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
     // High-address provider: two-line L1I fetch buffer for cached/DDR code.
     // It no longer drives the low-BRAM address pins; that path stays direct
@@ -426,7 +447,7 @@ module cpu_and_mem #(
         .i_pipeline_stall(pipeline_stall),
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
-        .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
+        .o_instr_bank_sel_r(cached_fetch_bank_sel_unused),
         .o_instr_valid(cached_fetch_valid),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
@@ -445,7 +466,7 @@ module cpu_and_mem #(
     assign fetch_address = program_counter;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
-    assign instruction_bank_sel_r = bram_fetch_bank_sel_r;
+    assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
     assign iup_req_write = 1'b0;
     assign iup_req_addr = '0;
@@ -479,6 +500,29 @@ module cpu_and_mem #(
       .o_port_b_sideband(bram_fetch_sideband),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
+
+  // CPU-local copy of the low-BRAM fetch-word parity.  It samples the same
+  // fetch address bit, on the same edge, as imem_predecode.bank_sel_r but
+  // avoids using the instruction-memory mux control as a long-distance IF
+  // control net.
+  always_ff @(posedge i_clk) begin
+    bram_fetch_bank_sel_cpu_r <= fetch_address[2];
+  end
+
+`ifndef SYNTHESIS
+  logic bram_fetch_bank_sel_compare_valid;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      bram_fetch_bank_sel_compare_valid <= 1'b0;
+    end else begin
+      if (bram_fetch_bank_sel_compare_valid) begin
+        assert (bram_fetch_bank_sel_cpu_r == bram_fetch_bank_sel_r)
+        else $error("BRAM fetch bank-select CPU copy diverged from imem_predecode");
+      end
+      bram_fetch_bank_sel_compare_valid <= 1'b1;
+    end
+  end
+`endif
 
   // Memory 1: Data memory
   // Port A: Instruction programming (div4 clock, write only - fan out)
@@ -833,22 +877,8 @@ module cpu_and_mem #(
   end
 `endif
 
-  // Register MMIO consume side effects so the load-issue cone stops at the
-  // MMIO read-data capture flops instead of reaching into peripheral storage.
-  // The load queue only allows one outstanding read, so the data sampled on
-  // mmio_read_pulse remains the architecturally visible response when the
-  // consume pulse fires on the following cycle.
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      fifo0_rd_pulse_q <= 1'b0;
-      fifo1_rd_pulse_q <= 1'b0;
-      uart_rx_ready_q  <= 1'b0;
-    end else begin
-      fifo0_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo0MmioAddr);
-      fifo1_rd_pulse_q <= mmio_read_pulse && (mmio_load_addr == Fifo1MmioAddr);
-      uart_rx_ready_q  <= mmio_read_pulse && (mmio_load_addr == UartRxDataMmioAddr);
-    end
-  end
+  // Destructive MMIO read side effects are decoded and registered inside the
+  // memory router; keep this boundary as direct routing to the peripherals.
 
   // Multiplexer for read data - selects between RAM and registered MMIO data
   always_comb begin
@@ -873,9 +903,9 @@ module cpu_and_mem #(
 
   // FIFO/UART consume pulses fire one cycle after the MMIO read request is
   // accepted. The response data itself was already captured above.
-  assign o_fifo0_rd_en = fifo0_rd_pulse_q;
-  assign o_fifo1_rd_en = fifo1_rd_pulse_q;
-  assign o_uart_rx_ready = uart_rx_ready_q;
+  assign o_fifo0_rd_en = mmio_fifo0_read_pulse;
+  assign o_fifo1_rd_en = mmio_fifo1_read_pulse;
+  assign o_uart_rx_ready = mmio_uart_rx_ready_pulse;
 
   // Timer register updates
   // mtime increments every clock cycle (provides wall-clock time)

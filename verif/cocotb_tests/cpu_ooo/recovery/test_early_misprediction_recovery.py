@@ -206,7 +206,7 @@ async def test_taken_mispredict_redirects_then_flushes_backend(dut: Any) -> None
     assert not dut.o_early_mispredict_active.value
     assert not dut.o_early_recovery_en.value
     assert dut.o_early_backend_recovery_pending.value
-    assert dut.o_early_backend_recovery_hold.value
+    assert not dut.o_early_backend_recovery_hold.value
     assert int(dut.o_early_backend_flush_tag.value) == 9
 
     await _settle_after_edge(dut)

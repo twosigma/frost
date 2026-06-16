@@ -276,6 +276,23 @@ module if_stage #(
   assign if_stage_stall = i_pipeline_ctrl.stall;
   assign if_stage_stall_registered = i_pipeline_ctrl.stall_registered;
   assign pc_controller_stall = if_stage_stall;
+  (* max_fanout = 16 *)logic instr_bank_sel_for_c_ext;
+  (* max_fanout = 16 *)logic instr_bank_sel_for_aligner;
+  (* max_fanout = 16 *)logic instr_bank_sel_for_spanning;
+  logic fetch_window_pre_aligned;
+  logic fetch_word_swapped_for_c_ext;
+  logic fetch_word_swapped_for_spanning;
+  // High-address fetch windows come from fetch_provider already ordered as
+  // {next_word,current_word}; low BRAM windows still need bank-select
+  // compensation because the physical BRAM bank order can differ from pc_reg.
+  assign fetch_window_pre_aligned = pc_reg[31];
+  assign instr_bank_sel_for_c_ext = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
+  assign instr_bank_sel_for_aligner = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
+  assign instr_bank_sel_for_spanning = fetch_window_pre_aligned ? pc_reg[2] : i_instr_bank_sel_r;
+  assign fetch_word_swapped_for_c_ext = fetch_window_pre_aligned ? 1'b0 :
+                                        (instr_bank_sel_for_c_ext ^ pc_reg[2]);
+  assign fetch_word_swapped_for_spanning = fetch_window_pre_aligned ? 1'b0 :
+                                           (instr_bank_sel_for_spanning ^ pc_reg[2]);
 
   // ===========================================================================
   // Branch Prediction Controller
@@ -569,7 +586,7 @@ module if_stage #(
       // the BRAM is aligned (bank_sel_r == pc_reg[2]).  When misaligned, the
       // fetch_word_swapped guard inside c_ext_state blocks the update entirely.
       .i_instr_next_word(i_instr[63:32]),
-      .i_fetch_word_swapped(i_instr_bank_sel_r ^ pc_reg[2]),
+      .i_fetch_word_swapped(fetch_word_swapped_for_c_ext),
       .i_pc(pc),
       .i_pc_reg(pc_reg),
 
@@ -578,7 +595,7 @@ module if_stage #(
       .i_fetch_progress(fetch_progress),
       .i_slot2_valid(slot2_valid),
       // Align sideband to match instruction word selection
-      .i_instr_sideband((i_instr_bank_sel_r ^ pc_reg[2]) ?
+      .i_instr_sideband(fetch_word_swapped_for_c_ext ?
                             i_instr_sideband[(2*riscv_pkg::ImemSidebandWidth)-1:
                                              riscv_pkg::ImemSidebandWidth] :
                             i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
@@ -616,7 +633,7 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
-      .i_instr_bank_sel_r(i_instr_bank_sel_r),
+      .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
       .i_pc_reg(pc_reg),
@@ -773,7 +790,7 @@ module if_stage #(
   //
   // Parity: bank_sel_r == pc_reg[2] → next word at [63:32], bits at [47:32].
   //         bank_sel_r != pc_reg[2] → next word at [31:0],  bits at [15:0].
-  assign spanning_second_half = (i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr[15:0] : i_instr[47:32];
+  assign spanning_second_half = fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32];
   always_comb begin
     if (pc_reg[1] && !is_compressed) begin
       // 32-bit instruction at halfword boundary — assemble from two words
