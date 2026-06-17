@@ -342,11 +342,6 @@ module instruction_aligner #(
     end
   end
 
-  // Slot-2 fits in this cycle's fetch.
-  logic slot2_fits_in_fetch;
-  assign slot2_fits_in_fetch = (slot2_pos != Slot2InvalidPos) &&
-                               (o_is_compressed_2 || (slot2_pos != Slot2AtNextHi));
-
   // Slot-1 branch detection (decision #1: terminates the 2-wide bundle).
   // Mirrors cpu_ooo's if_stage_has_control_flow but operates on this stage's
   // raw signals so the signal is available before the IF→PD register.
@@ -571,41 +566,48 @@ module instruction_aligner #(
   assign slot1_compressed_branch_terminates_slot2 =
       o_is_compressed && slot1_compressed_control_sideband;
 
-  logic slot2_native_serialize_sideband;
-  logic slot2_native_fp_compute_sideband;
-  always_comb begin
-    unique case (slot2_pos)
-      Slot2AtCurrentHi: begin
-        slot2_native_serialize_sideband  = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeHi];
-        slot2_native_fp_compute_sideband = aligned_current_sb[riscv_pkg::ImemSbNativeFpComputeHi];
-      end
-      Slot2AtNextLo: begin
-        slot2_native_serialize_sideband  = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeLo];
-        slot2_native_fp_compute_sideband = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeLo];
-      end
-      Slot2AtNextHi: begin
-        slot2_native_serialize_sideband  = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeHi];
-        slot2_native_fp_compute_sideband = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeHi];
-      end
-      default: begin
-        slot2_native_serialize_sideband  = 1'b0;
-        slot2_native_fp_compute_sideband = 1'b0;
-      end
-    endcase
-  end
+  // PC-critical slot-2 valid path.  Slot-2 can only dispatch behind a
+  // compressed slot-1, so the only valid positions are CURRENT_HI and NEXT_LO.
+  // Spell those as one-hot predicates instead of routing PC advance through the
+  // general slot2_pos mux tree used by the data path above.
+  logic slot2_current_hi_candidate;
+  logic slot2_next_lo_candidate;
+  assign slot2_current_hi_candidate = !o_sel_nop && o_is_compressed &&
+                                      !slot1_compressed_branch_terminates_slot2 &&
+                                      !o_use_instr_buffer && !i_pc_reg[1];
+  assign slot2_next_lo_candidate = !o_sel_nop && o_is_compressed &&
+                                   !slot1_compressed_branch_terminates_slot2 &&
+                                   i_pc_reg[1];
+
+  logic slot2_current_hi_compressed;
+  logic slot2_next_lo_compressed;
+  logic slot2_current_hi_serialize;
+  logic slot2_next_lo_serialize;
+  logic slot2_current_hi_fp_compute;
+  logic slot2_next_lo_fp_compute;
+  assign slot2_current_hi_compressed = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
+  assign slot2_next_lo_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
+  assign slot2_current_hi_serialize = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeHi];
+  assign slot2_next_lo_serialize = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeLo];
+  assign slot2_current_hi_fp_compute = aligned_current_sb[riscv_pkg::ImemSbNativeFpComputeHi];
+  assign slot2_next_lo_fp_compute = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeLo];
+
+  logic slot2_current_hi_invalid;
+  logic slot2_next_lo_invalid;
+  assign slot2_current_hi_invalid =
+      !slot2_current_hi_compressed &&
+      (slot2_bram_unsafe || slot2_current_hi_serialize || slot2_current_hi_fp_compute);
+  assign slot2_next_lo_invalid =
+      slot2_bram_unsafe ||
+      (!slot2_next_lo_compressed && (slot2_next_lo_serialize || slot2_next_lo_fp_compute));
+
+  logic slot2_valid_when_enabled;
+  assign slot2_valid_when_enabled =
+      (slot2_current_hi_candidate && !slot2_current_hi_invalid) ||
+      (slot2_next_lo_candidate && !slot2_next_lo_invalid);
 
   logic slot2_sel_nop_when_enabled;
-  assign slot2_sel_nop_when_enabled = o_sel_nop ||
-                                      !o_is_compressed ||
-                                      slot1_compressed_branch_terminates_slot2 ||
-                                      !slot2_fits_in_fetch ||
-                                      ((!(slot2_pos == Slot2AtCurrentHi &&
-                                          o_is_compressed_2)) &&
-                                       slot2_bram_unsafe) ||
-                                      (!o_is_compressed_2 &&
-                                       slot2_native_serialize_sideband) ||
-                                      (!o_is_compressed_2 &&
-                                       slot2_native_fp_compute_sideband);
+  assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;
   // SESSION I: slot-2 firing is now enabled.  if_stage.sv adds two correctness
   // gates around the aligner's view of slot2_sel_nop_when_enabled before it
   // becomes the OUTPUT slot-2 sel_nop:

@@ -1086,6 +1086,16 @@ module tomasulo_wrapper #(
   logic sc_discard;
   assign sc_discard = commit_bus_q_valid && commit_q_sc_failed;
 
+  // Store commit pulses.  These are also consumed by the LQ bus-busy gate
+  // before the SQ instance, so keep the declarations near the commit-bus
+  // derived SC/SQ wires instead of at the store_queue instantiation.
+  logic sq_commit_valid;
+  assign sq_commit_valid = commit_bus_q_valid && commit_q_is_store_like && !sc_discard;
+  // Widen-commit slot 2: a second simultaneous store retire.  Slot 2 can
+  // never be an SC, so no sc_discard gate.
+  logic sq_commit_valid_2;
+  assign sq_commit_valid_2 = commit_bus_2_q_valid && commit_q_2_is_store_like;
+
   // ===========================================================================
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
   // ===========================================================================
@@ -1770,8 +1780,11 @@ module tomasulo_wrapper #(
   // ---------------------------------------------------------------------------
   // MEM_RS (depth 8): Loads/stores (both INT and FP)
   // ---------------------------------------------------------------------------
-  riscv_pkg::rs_dispatch_t mem_rs_dispatch;
-  riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
+  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch_2;
+  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
+  logic                                                           mem_rs_pre_issue_needs_lq;
+
   always_comb begin
     mem_rs_dispatch         = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
     mem_rs_dispatch.valid   = mem_rs_dispatch_valid;
@@ -1837,9 +1850,6 @@ module tomasulo_wrapper #(
       .o_head_query_rs_ready(),
       .o_head_query_in_stage2()
   );
-
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
-  logic                                        mem_rs_pre_issue_needs_lq;
 
   assign o_mem_rs_issue = mem_rs_issue_w;
 
@@ -2477,8 +2487,12 @@ module tomasulo_wrapper #(
       // queued-load register holds exactly ONE blocked load, so launches
       // during the (arbitrarily long) handshake write flight must be held
       // here -- with only the fire-cycle skew load able to queue.
+      // Store commits are pipelined into the SQ. While sq_commit_valid is
+      // high, the SQ forwarding/invalidation state visible to the LQ is still
+      // from the cycle before the store was marked committed, so block L0 hits
+      // and new memory launches until the SQ has made the store visible.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
-                        i_slow_write_inflight),
+                        i_slow_write_inflight || sq_commit_valid || sq_commit_valid_2),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
@@ -2663,17 +2677,6 @@ module tomasulo_wrapper #(
     sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
     sq_data_update.data = o_mem_rs_issue.src2_value;
   end
-
-  // ===========================================================================
-  // Store Queue: Commit from ROB
-  // ===========================================================================
-  // Uses pipelined commit bus to break ROB → SQ critical path.
-  logic sq_commit_valid;
-  assign sq_commit_valid = commit_bus_q_valid && commit_q_is_store_like && !sc_discard;
-  // Widen-commit slot 2: a second simultaneous store retire.  Slot 2 can
-  // never be an SC, so no sc_discard gate.
-  logic sq_commit_valid_2;
-  assign sq_commit_valid_2 = commit_bus_2_q_valid && commit_q_2_is_store_like;
 
   // ===========================================================================
   // Store Queue Instance
