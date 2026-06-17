@@ -112,6 +112,7 @@ module load_queue #(
     output riscv_pkg::mem_size_e o_sq_check_size,
     input logic i_sq_all_older_addrs_known,
     input riscv_pkg::sq_forward_result_t i_sq_forward,
+    input logic i_sq_commit_pending,
 
     // =========================================================================
     // Memory Interface (to data memory bus)
@@ -267,6 +268,16 @@ module load_queue #(
     endcase
   endfunction
 
+  function automatic logic is_cached_addr(input logic [XLEN-1:0] addr);
+    logic [XLEN-1:0] cached_base;
+    logic [XLEN-1:0] cached_limit;
+    begin
+      cached_base = CACHED_BASE[XLEN-1:0];
+      cached_limit = CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0];
+      is_cached_addr = (addr >= cached_base) && (addr < cached_limit);
+    end
+  endfunction
+
   // ===========================================================================
   // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
   // ===========================================================================
@@ -410,6 +421,7 @@ module load_queue #(
   logic [IdxWidth-1:0] issue_mem_idx;
   logic [IdxWidth-1:0] issue_mem_stored_idx;
   logic issue_mem_from_update;
+  logic [XLEN-1:0] issue_mem_addr;
   logic block_younger_mem;
   logic issue_cdb_fire;
   logic cdb_stage_slot_available;
@@ -1013,11 +1025,20 @@ module load_queue #(
   logic sq_check_will_clear;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
+  logic sq_check_is_cached_region;
+  logic issue_mem_is_cached_region;
+  logic sq_commit_capture_block;
+  logic sq_commit_check_block;
   assign sq_check_misaligned = i_trap_misaligned_accesses &&
       sq_check_entry_valid && sq_check_entry_issueable &&
       is_load_misaligned(
       sq_check_size_q, sq_check_addr_q
   );
+  assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
+  assign issue_mem_is_cached_region = issue_mem_found && is_cached_addr(issue_mem_addr);
+  assign sq_commit_capture_block = i_sq_commit_pending && issue_mem_is_cached_region;
+  assign sq_commit_check_block =
+      i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire);
@@ -1028,10 +1049,12 @@ module load_queue #(
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
       issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
+      !drop_mem_response_pending && !i_mem_bus_busy && !sq_commit_capture_block &&
+      !i_flush_all && !i_flush_en;
 
   assign sq_check_replace = sq_check_pending && issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
+      !drop_mem_response_pending && !i_mem_bus_busy && !sq_commit_capture_block &&
+      !i_flush_all && !i_flush_en &&
       (!sq_check_entry_valid || is_younger(
       sq_check_rob_tag_q, issue_mem_rob_tag, i_rob_head_tag
   ));
@@ -1054,7 +1077,7 @@ module load_queue #(
     o_sq_check_size    = sq_check_size_q;
 
     if (!i_flush_all && !i_flush_en && !drop_mem_response_pending &&
-        !i_mem_bus_busy && sq_check_entry_issueable &&
+        !i_mem_bus_busy && !sq_commit_check_block && sq_check_entry_issueable &&
         !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
@@ -1081,13 +1104,17 @@ module load_queue #(
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic sq_no_older_store;
+  logic sq_commit_interlock;
   assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
+  assign sq_commit_interlock = sq_commit_check_block && sq_check_phase2;
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
       !sq_check_misaligned &&
+      !sq_commit_interlock &&
       (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
       !sq_check_misaligned &&
+      !sq_commit_interlock &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
@@ -1258,9 +1285,7 @@ module load_queue #(
   // registered slow_outstanding set and the issued_is_cached snapshot, never the
   // launch gate itself).
   logic launching_is_cached;
-  assign launching_is_cached =
-      (launch_mem_issue_addr >= CACHED_BASE[XLEN-1:0]) &&
-      (launch_mem_issue_addr <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
+  assign launching_is_cached = is_cached_addr(launch_mem_issue_addr);
 
   // Memory issue: bypass the staging register when the port is already free.
   always_comb begin
@@ -1671,7 +1696,7 @@ module load_queue #(
       // launch_mem_issue keeps the slot held through bus_busy stalls.
       sq_check_pending_next = 1'b0;
       sq_check_in_flight_mask_next = '0;
-    end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty) begin
+    end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty && !sq_commit_check_block) begin
       sq_check_phase2_next = 1'b1;
     end else if (o_sq_check_valid && !sq_check_phase2) begin
       sq_check_phase2_next = 1'b1;
@@ -2013,7 +2038,6 @@ module load_queue #(
   // Internal data: SQ check candidate index
   // -----------------------------------------------------------------
   logic issue_mem_uses_addr_update;
-  logic [XLEN-1:0] issue_mem_addr;
   logic [IdxWidth-1:0] update_issue_payload_idx;
   logic [MemSizeWidth-1:0] issue_mem_size_bits;
   logic issue_mem_is_fp;

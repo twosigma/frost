@@ -698,7 +698,7 @@ module store_queue #(
   // between launch and done nobody can read the old memory word either (the
   // router owns the shared port and queues/replays reads behind the write
   // flight), so the only reachable outcomes are an L0 miss plus a
-  // correctly-ordered memory read. Early invalidation is always safe — at
+  // correctly-ordered memory read. Early invalidation is always safe -- at
   // worst it costs one refill miss. The previous done-time pulse left the
   // L0 line live during a multi-cycle cached write flight; papering over that
   // with a busy-stretch in the LQ taxed every BRAM store drain (~2%
@@ -1191,15 +1191,18 @@ module store_queue #(
   // Debug: trace SQ drains + flush events (disabled for clean logs)
   // always @(posedge i_clk) begin
   //   if (i_rst_n && o_mem_write_en && o_mem_write_addr[31:16] == 16'h0001)
-  //     $display("[SQ_DRAIN] t=%0t addr=%08x data=%08x", $time, o_mem_write_addr, o_mem_write_data);
+  //     $display("[SQ_DRAIN] t=%0t addr=%08x data=%08x",
+  //              $time, o_mem_write_addr, o_mem_write_data);
   //   if (i_rst_n && i_flush_en) begin
   //     for (int i = 0; i < DEPTH; i++) begin
   //       if (sq_valid[i] && !sq_committed[i] &&
   //           !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
   //           !(i_commit_valid      && sq_rob_tag[i] == i_commit_rob_tag) &&
-  //           (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)) &&
+  //           (flush_all_uncommitted ||
+  //            is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)) &&
   //           sq_addr_valid[i] && sq_address[i][31:16] == 16'h0001)
-  //         $display("[SQ_ACTUALLY_FLUSHED] t=%0t idx=%0d tag=%0d addr=%08x flush_tag=%0d head=%0d",
+  //         $display("[SQ_ACTUALLY_FLUSHED] t=%0t idx=%0d tag=%0d addr=%08x "
+  //                  "flush_tag=%0d head=%0d",
   //             $time, i, sq_rob_tag[i], sq_address[i], i_flush_tag, i_rob_head_tag);
   //     end
   //   end
