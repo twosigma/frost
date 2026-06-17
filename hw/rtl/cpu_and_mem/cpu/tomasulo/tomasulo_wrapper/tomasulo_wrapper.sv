@@ -2472,6 +2472,7 @@ module tomasulo_wrapper #(
       .o_sq_check_size           (sq_check_size),
       .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
       .i_sq_forward              (sq_forward),
+      .i_sq_commit_pending       (sq_commit_valid || sq_commit_valid_2),
 
       // Memory interface (external)
       .o_mem_read_en(o_lq_mem_read_en),
@@ -2487,12 +2488,8 @@ module tomasulo_wrapper #(
       // queued-load register holds exactly ONE blocked load, so launches
       // during the (arbitrarily long) handshake write flight must be held
       // here -- with only the fire-cycle skew load able to queue.
-      // Store commits are pipelined into the SQ. While sq_commit_valid is
-      // high, the SQ forwarding/invalidation state visible to the LQ is still
-      // from the cycle before the store was marked committed, so block L0 hits
-      // and new memory launches until the SQ has made the store visible.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
-                        i_slow_write_inflight || sq_commit_valid || sq_commit_valid_2),
+                        i_slow_write_inflight),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
