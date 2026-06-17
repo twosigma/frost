@@ -110,11 +110,16 @@ module id_stage #(
   // Pre-computed branch/jump targets and prediction verification
   logic [XLEN-1:0] branch_target_precomputed;
   logic [XLEN-1:0] jal_target_precomputed;
+  logic [XLEN-1:0] link_address_precomputed;
   logic [XLEN-1:0] ras_expected_rs1_precomputed;
   logic [XLEN-1:0] btb_expected_rs1_precomputed;
   logic btb_correct_non_jalr_precomputed;
 
   assign instruction = i_from_pd_to_id.instruction;
+  assign link_address_precomputed =
+      i_from_pd_to_id.program_counter +
+      (i_from_pd_to_id.is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                       riscv_pkg::PcIncrement32bit);
 
   // ===========================================================================
   // Submodule Instantiations
@@ -660,6 +665,7 @@ module id_stage #(
     // On reset, insert a NOP (no operation) into the pipeline
     if (i_pipeline_ctrl.reset) begin
       o_from_id_to_ex.instruction               <= riscv_pkg::NOP;
+      o_from_id_to_ex.is_compressed             <= 1'b0;
       o_from_id_to_ex.instruction_operation     <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
       o_from_id_to_ex.is_load_instruction       <= 1'b0;
       o_from_id_to_ex.is_load_byte              <= 1'b0;
@@ -722,6 +728,7 @@ module id_stage #(
       // When pipeline is not stalled, pass decoded instruction to Execute stage
       // If flushing (e.g., due to branch), insert NOP instead
       o_from_id_to_ex.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
+      o_from_id_to_ex.is_compressed <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.is_compressed;
       o_from_id_to_ex.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
                                                                        instruction_operation;
       o_from_id_to_ex.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
@@ -803,8 +810,9 @@ module id_stage #(
       o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
       o_from_id_to_ex.csr_address <= csr_address;
       o_from_id_to_ex.csr_imm <= csr_imm;
-      // Pre-computed link address from IF stage
-      o_from_id_to_ex.link_address <= i_from_pd_to_id.link_address;
+      // Compute link address from registered PD inputs instead of the live IF
+      // sideband path.
+      o_from_id_to_ex.link_address <= link_address_precomputed;
       // Pre-computed branch/jump targets (computed here, used by EX stage)
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
@@ -880,11 +888,16 @@ module id_stage #(
 
   logic                        [XLEN-1:0] branch_target_precomputed_2;
   logic                        [XLEN-1:0] jal_target_precomputed_2;
+  logic                        [XLEN-1:0] link_address_precomputed_2;
   logic                        [XLEN-1:0] ras_expected_rs1_precomputed_2;
   logic                        [XLEN-1:0] btb_expected_rs1_precomputed_2;
   logic                                   btb_correct_non_jalr_precomputed_2;
 
   assign instruction_2 = i_from_pd_to_id_2.instruction;
+  assign link_address_precomputed_2 =
+      i_from_pd_to_id_2.program_counter +
+      (i_from_pd_to_id_2.is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                         riscv_pkg::PcIncrement32bit);
 
   logic decoder_illegal_2;
 
@@ -1362,6 +1375,7 @@ module id_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       o_from_id_to_ex_2.instruction               <= riscv_pkg::NOP;
+      o_from_id_to_ex_2.is_compressed             <= 1'b0;
       o_from_id_to_ex_2.instruction_operation     <= riscv_pkg::ADDI;
       o_from_id_to_ex_2.is_load_instruction       <= 1'b0;
       o_from_id_to_ex_2.is_load_byte              <= 1'b0;
@@ -1415,6 +1429,8 @@ module id_stage #(
       o_from_id_to_ex_2.is_not_nop                <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
       o_from_id_to_ex_2.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
+      o_from_id_to_ex_2.is_compressed <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                                   i_from_pd_to_id_2.is_compressed;
       o_from_id_to_ex_2.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
                                                                          instruction_operation_2;
       o_from_id_to_ex_2.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction_2;
@@ -1487,7 +1503,7 @@ module id_stage #(
       o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
       o_from_id_to_ex_2.csr_address <= csr_address_2;
       o_from_id_to_ex_2.csr_imm <= csr_imm_2;
-      o_from_id_to_ex_2.link_address <= i_from_pd_to_id_2.link_address;
+      o_from_id_to_ex_2.link_address <= link_address_precomputed_2;
       o_from_id_to_ex_2.branch_target_precomputed <= branch_target_precomputed_2;
       o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
       o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
