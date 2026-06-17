@@ -1156,10 +1156,7 @@ module dispatch (
     o_rob_alloc_req.is_amo = i_from_id_to_ex.is_amo_instruction;
     o_rob_alloc_req.is_lr = i_from_id_to_ex.is_lr;
     o_rob_alloc_req.is_sc = i_from_id_to_ex.is_sc;
-    // Compressed instruction detection: link_address == PC + 2 (vs PC + 4 for 32-bit).
-    // Cannot check opcode[1:0] because decompression expands all instructions to 32-bit.
-    o_rob_alloc_req.is_compressed =
-        (i_from_id_to_ex.link_address == i_from_id_to_ex.program_counter + 32'd2);
+    o_rob_alloc_req.is_compressed = i_from_id_to_ex.is_compressed;
 
     // CSR info (stored in ROB for commit-time serialized execution)
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
@@ -1210,8 +1207,7 @@ module dispatch (
     o_rob_alloc_req_2.is_amo = i_from_id_to_ex_2.is_amo_instruction;
     o_rob_alloc_req_2.is_lr = i_from_id_to_ex_2.is_lr;
     o_rob_alloc_req_2.is_sc = i_from_id_to_ex_2.is_sc;
-    o_rob_alloc_req_2.is_compressed =
-        (i_from_id_to_ex_2.link_address == i_from_id_to_ex_2.program_counter + 32'd2);
+    o_rob_alloc_req_2.is_compressed = i_from_id_to_ex_2.is_compressed;
 
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
     o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;

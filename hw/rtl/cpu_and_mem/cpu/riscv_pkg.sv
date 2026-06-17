@@ -618,6 +618,8 @@ package riscv_pkg;
     instr_t instruction;
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
+    // Original instruction size before RVC decompression.
+    logic is_compressed;
     // Early source registers for decode and dispatch timing optimization.
     // These are extracted in parallel with decompression for better timing
     logic [4:0] source_reg_1_early;
@@ -705,6 +707,8 @@ package riscv_pkg;
     logic [FpWidth-1:0] fp_source_reg_3_data;  // For FMA instructions
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
+    // Original instruction size before RVC decompression.
+    logic is_compressed;
     // Pre-computed branch/jump targets (pipeline balancing - computed in ID stage)
     // These remove adders from EX stage critical path. Only JALR target needs
     // forwarded rs1, so it's still computed in EX stage.

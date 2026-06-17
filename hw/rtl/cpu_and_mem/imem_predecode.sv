@@ -96,10 +96,11 @@ module imem_predecode #(
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "block" *) logic [DataWidth-1:0] memory_even[HalfDepth];
   (* ram_style = "block" *) logic [DataWidth-1:0] memory_odd[HalfDepth];
-  // Keep the small predecode sideband out of the instruction BRAM output path.
-  // It is read and registered with the same fetch address/clock as the data.
-  (* ram_style = "distributed" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
-  (* ram_style = "distributed" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
+  // Keep the predecode sideband in BRAM.  LUTRAM looked attractive for size,
+  // but on X3 it spreads the sideband arrays across fabric and puts pc_reg on
+  // a long distributed-memory address route in the low-BRAM fetch path.
+  (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
+  (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
