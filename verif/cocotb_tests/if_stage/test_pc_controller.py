@@ -30,6 +30,9 @@ TRAP_TARGET = 0x80005000
 SLOT2_TARGET = 0x80006000
 PRED_TARGET = 0x80007000
 HALFWORD_PRED_TARGET = 0x80008002
+PC_ADV_PLUS2 = 0
+PC_ADV_PLUS4 = 1
+PC_ADV_PLUS6 = 2
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -56,6 +59,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_is_compressed_for_pc.value = 0
     dut.i_slot2_valid.value = 0
     dut.i_slot2_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_predicted_taken.value = 0
     dut.i_predicted_target.value = 0
     dut.i_predicted_target_r.value = 0
@@ -269,11 +274,13 @@ async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     await _start_word_stream_at(dut, BASE_PC)
 
     dut.i_slot2_valid.value = 1
-    dut.i_is_compressed.value = 0
+    dut.i_is_compressed.value = 1
     dut.i_slot2_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
     await _advance_cycle(dut)
 
-    _assert_pc(dut, pc=BASE_PC + 12, pc_reg=BASE_PC + 8)
+    _assert_pc(dut, pc=BASE_PC + 10, pc_reg=BASE_PC + 6)
 
 
 @cocotb.test()

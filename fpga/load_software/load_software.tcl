@@ -179,3 +179,11 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
 
 # Write software to instruction memory starting at address 0
 file2bram $bram_base_address $firmware_text_file $bram_axi
+
+# Load complete. The CPU was held in reset for the entire transfer above and
+# only begins executing this image now, so any UART output received before this
+# point is stale data from the previously loaded program. Emit a flushed
+# sentinel on stdout so non-interactive harnesses (e.g.
+# fpga/sweep_coremark_pro.py) can mark that boundary and ignore the stale tail.
+puts "FROST_LOAD_COMPLETE"
+flush stdout

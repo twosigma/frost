@@ -333,15 +333,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 164,233 | 1,029,600 | 15.9% |
-|   LUT as Logic | 143,790 | 1,029,600 | 14.0% |
-|   LUT as Distributed RAM | 19,274 | — | — |
-|   LUT as Shift Register | 1,169 | — | — |
-| CLB Registers | 112,835 | 2,059,200 | 5.5% |
-| Block RAM Tile | 228 | 2,112 | 10.8% |
+| CLB LUTs | 147,519 | 1,029,600 | 14.3% |
+|   LUT as Logic | 137,315 | 1,029,600 | 13.3% |
+|   LUT as Distributed RAM | 9,034 | — | — |
+|   LUT as Shift Register | 1,170 | — | — |
+| CLB Registers | 112,522 | 2,059,200 | 5.5% |
+| Block RAM Tile | 244 | 2,112 | 11.6% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 35 | 1,320 | 2.6% |
-| CARRY8 | 4,434 | 128,700 | 3.5% |
+| CARRY8 | 4,419 | 128,700 | 3.4% |
 | F7 Muxes | 208 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |

@@ -17,7 +17,7 @@
 /*
  * imem_predecode_line -- predecode sideband for one cache line.
  *
- * Computes the 8-bit predecode sideband byte for every 32-bit word of a
+ * Computes the predecode sideband value for every 32-bit word of a
  * line, combinationally. Each byte is a pure function of its own word
  * (riscv_pkg::imem_make_sideband -- no lookahead), so per-line generation
  * at L1I fill time produces bit-identical sideband to the low instruction

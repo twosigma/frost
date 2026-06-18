@@ -108,11 +108,13 @@ module pc_controller #(
     input logic i_is_compressed,  // Combinational (for spanning detection, etc.)
     input logic i_is_compressed_for_pc,  // Registered (TIMING OPTIMIZATION: for PC increment)
 
-    // 2-wide bundle metadata (Session F).  When slot-2 fires this cycle, the
-    // bundle advances PC by slot-1 size + slot-2 size (+4/+6/+8).  When
-    // slot-2 is invalid, falls back to the 1-wide +2/+4 advance.
+    // 2-wide bundle metadata.  Slot-2 only fires behind a compressed slot-1,
+    // so valid bundles advance by +4 or +6.  When slot-2 is invalid, this
+    // falls back to the 1-wide +2/+4 advance.
     input logic i_slot2_valid,
     input logic i_slot2_is_compressed,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
 
     // Branch prediction (from branch_prediction_controller)
     input logic i_predicted_taken,  // BTB predicts taken (combinational)
@@ -229,7 +231,7 @@ module pc_controller #(
   // Computes next sequential PC values using parallel adders for timing optimization.
   // See pc_increment_calculator.sv for detailed implementation.
 
-  logic [XLEN-1:0] seq_next_pc, seq_next_pc_reg;
+  logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
 
   pc_increment_calculator #(
       .XLEN(XLEN)
@@ -247,8 +249,8 @@ module pc_controller #(
       .i_is_compressed,
       .i_is_compressed_for_pc,
       .i_sel_nop,
-      .i_slot2_valid,
-      .i_slot2_is_compressed,
+      .i_pc_fetch_advance_sel,
+      .i_pc_reg_advance_sel,
 
       // Holdoff and control signals
       .i_any_holdoff_safe(o_any_holdoff_safe),
@@ -262,6 +264,7 @@ module pc_controller #(
 
       // Outputs
       .o_seq_next_pc(seq_next_pc),
+      .o_seq_next_pc_plus_2(seq_next_pc_plus_2),
       .o_seq_next_pc_reg(seq_next_pc_reg)
   );
 
@@ -394,8 +397,10 @@ module pc_controller #(
   always_comb begin
     if (i_slot2_valid) begin
       // Slot-2 valid implies a two-instruction bundle. Same-size advances
-      // preserve bit 1; mixed-size +6 advances flip it.
-      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ (i_is_compressed ^ i_slot2_is_compressed);
+      // preserve bit 1; mixed-size +6 advances flip it.  Slot-1 is always
+      // compressed here, so keep the live slot-1 compressed sideband off this
+      // PC-control path.
+      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ !i_slot2_is_compressed;
     end else begin
       // One-wide: compressed advances by +2 and flips bit 1; 32-bit advances
       // by +4 and preserves it.
@@ -643,7 +648,7 @@ module pc_controller #(
       // already consuming the target word. Restore the normal fetch lead by
       // skipping the extra halfword-parcel step and requesting the following
       // word immediately.
-      next_pc = seq_next_pc + riscv_pkg::PcIncrementCompressed;
+      next_pc = seq_next_pc_plus_2;
     else if (hold_pending_prediction_fetch_pc_mux)
       next_pc = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
           pending_prediction_pc;

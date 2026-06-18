@@ -97,7 +97,7 @@ package riscv_pkg;
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
   // The fetch interface returns two words, so its sideband bus is twice this
   // width: {next_word_sideband, current_word_sideband}.
-  localparam int unsigned ImemSidebandWidth = 8;
+  localparam int unsigned ImemSidebandWidth = 12;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
@@ -107,8 +107,12 @@ package riscv_pkg;
   localparam int unsigned ImemSbNativeSerializeHi = 5;
   localparam int unsigned ImemSbNativeFpComputeLo = 6;
   localparam int unsigned ImemSbNativeFpComputeHi = 7;
+  localparam int unsigned ImemSbAllowsSlot2AfterLo = 8;
+  localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
+  localparam int unsigned ImemSbSlot2StartValidLo = 10;
+  localparam int unsigned ImemSbSlot2StartValidHi = 11;
 
-  // Predecode sideband generation: one 8-bit sideband byte per 32-bit
+  // Predecode sideband generation: one sideband value per 32-bit
   // instruction-memory word, a pure function of that word (no lookahead:
   // each halfword's bits read only that halfword, and the "native" opcode
   // classes read only the halfword's low 7 bits). Single RTL source of
@@ -177,6 +181,14 @@ package riscv_pkg;
       sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
       sb[ImemSbNativeFpComputeLo] = imem_native_fp_compute(word[6:0]);
       sb[ImemSbNativeFpComputeHi] = imem_native_fp_compute(word[22:16]);
+      sb[ImemSbAllowsSlot2AfterLo] = sb[ImemSbIsCompressedLo] && !sb[ImemSbCompressedControlLo];
+      sb[ImemSbAllowsSlot2AfterHi] = sb[ImemSbIsCompressedHi] && !sb[ImemSbCompressedControlHi];
+      sb[ImemSbSlot2StartValidLo] =
+          sb[ImemSbIsCompressedLo] ||
+          !(sb[ImemSbNativeSerializeLo] || sb[ImemSbNativeFpComputeLo]);
+      sb[ImemSbSlot2StartValidHi] =
+          sb[ImemSbIsCompressedHi] ||
+          !(sb[ImemSbNativeSerializeHi] || sb[ImemSbNativeFpComputeHi]);
       imem_make_sideband = sb;
     end
   endfunction
@@ -535,6 +547,10 @@ package riscv_pkg;
   // PC increment constants for instruction length handling
   localparam int unsigned PcIncrementCompressed = 2;  // 16-bit compressed instruction
   localparam int unsigned PcIncrement32bit = 4;  // 32-bit standard instruction
+  localparam int unsigned PcAdvanceSelWidth = 2;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
 
   // Magic number constants for RISC-V 32-bit operations
   // Used in ALU for special case handling (e.g., division overflow)

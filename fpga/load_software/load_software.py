@@ -42,10 +42,17 @@ VALID_APPS = [
     "branch_pred_test",
     "c_ext_test",
     "call_stress",
+    "cf_ext_test",
     "coremark",
     *COREMARK_PRO_APP_NAMES,
     "csr_test",
+    "ddr_exec_test",
+    "ddr_heap_test",
+    "ddr_smc_test",
+    "ddr_test",
     "freertos_demo",
+    "fpu_assembly_test",
+    "fpu_test",
     "hello_world",
     "isa_test",
     "memory_test",
@@ -54,10 +61,11 @@ VALID_APPS = [
     "ras_stress_test",
     "ras_test",
     "spanning_test",
+    "sprintf_test",
     "strings_test",
+    "tomasulo_perf",
+    "tomasulo_test",
     "uart_echo",
-    "ddr_heap_test",
-    "ddr_test",
 ]
 
 # Board configurations: clock frequency in Hz and CoreMark iterations
@@ -80,7 +88,12 @@ BOARD_CONFIG = {
 # cached (DDR-backed) region. They only run on boards whose bitstream wires
 # the cached tier to a real DDR controller (has_ddr=True); on other builds
 # that address range reads back zero. Rejected below until then.
-DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {"ddr_test", "ddr_heap_test"}
+DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
+    "ddr_exec_test",
+    "ddr_heap_test",
+    "ddr_smc_test",
+    "ddr_test",
+}
 
 
 def compile_app_for_board(
@@ -370,6 +383,7 @@ def main() -> None:
         args.software_app,
         hardware=True,
         hardware_mode=args.coremark_pro_mode or "performance",
+        board=args.board,
     )
     if args.coremark_pro_parser_gen_ref or args.coremark_pro_parser_size is not None:
         if args.coremark_pro_parser_size is None:

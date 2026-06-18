@@ -66,10 +66,11 @@ EXECUTABLE_ELF_FILE  = sw.elf
 VERILOG_HEX_FILE     = sw.mem
 DDR_VERILOG_HEX_FILE = sw_ddr.mem
 RAW_BINARY_FILE      = sw.bin
+VIVADO_BRAM_FILE     = sw.txt
 DISASSEMBLY_FILE     = sw.S
 
 # Build targets
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
 
 # Assemble and link. The ddr config additionally links a ROM boot stub
 # ($(BOOT_STUB_OBJ)) that far-jumps to the DDR-resident _start; the bram config
@@ -103,11 +104,15 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 		$(addprefix -R ,$(DDR_SECTIONS)) $< $@
 
+# Generate Vivado BRAM text file
+$(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
+	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
+
 # Generate disassembly
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
 clean:
-	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(DISASSEMBLY_FILE) cf_ext_test.o $(DDR_BOOT_STUB_OBJ)
+	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) cf_ext_test.o $(DDR_BOOT_STUB_OBJ)
 
 .PHONY: all clean

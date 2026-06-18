@@ -35,7 +35,6 @@ from cocotb.triggers import Timer
 
 LINE_BYTES = 32
 WORDS_PER_LINE = LINE_BYTES // 4
-SIDEBAND_WIDTH = 8
 
 # Native opcodes with sideband significance (and near-misses that share
 # most bits with them), from the generator/riscv_pkg definitions.
@@ -83,6 +82,7 @@ def _load_generator() -> ModuleType:
 
 
 _GENERATOR = _load_generator()
+SIDEBAND_WIDTH = _GENERATOR.SIDEBAND_WIDTH
 
 
 async def _check_line(dut: Any, words: list[int]) -> None:
@@ -95,11 +95,12 @@ async def _check_line(dut: Any, words: list[int]) -> None:
     await Timer(1, unit="ns")
     sideband = int(dut.o_sideband.value)
     for i, word in enumerate(words):
-        got = (sideband >> (SIDEBAND_WIDTH * i)) & 0xFF
+        mask = (1 << SIDEBAND_WIDTH) - 1
+        got = (sideband >> (SIDEBAND_WIDTH * i)) & mask
         expected = _GENERATOR.make_sideband(word)
         assert got == expected, (
-            f"word {i} (0x{word:08x}): rtl sideband 0x{got:02x} "
-            f"!= generator 0x{expected:02x}"
+            f"word {i} (0x{word:08x}): rtl sideband 0x{got:03x} "
+            f"!= generator 0x{expected:03x}"
         )
 
 

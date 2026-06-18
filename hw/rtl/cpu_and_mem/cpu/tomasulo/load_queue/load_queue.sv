@@ -464,6 +464,7 @@ module load_queue #(
   logic [DEPTH-1:0] sq_check_in_flight_mask_next;
   logic sq_check_capture;
   logic sq_check_replace;
+  (* keep = "true", max_fanout = 16 *) logic sq_check_mask_update_en;
   logic sq_check_entry_valid;
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
@@ -916,36 +917,42 @@ module load_queue #(
   logic stored_scan_found;
   logic [IdxWidth-1:0] stored_scan_idx;
   logic [IdxWidth-1:0] stored_scan_pos;
+  logic [DEPTH-1:0] stored_scan_onehot;
   logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
 
   logic update_scan_found;
   logic [IdxWidth-1:0] update_scan_idx;
   logic [IdxWidth-1:0] update_scan_pos;
+  logic [DEPTH-1:0] update_scan_onehot;
   logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
 
   always_comb begin
     stored_scan_found   = 1'b0;
     stored_scan_idx     = '0;
     stored_scan_pos     = '0;
+    stored_scan_onehot  = '0;
     stored_scan_rob_tag = '0;
     update_scan_found   = 1'b0;
     update_scan_idx     = '0;
     update_scan_pos     = '0;
+    update_scan_onehot  = '0;
     update_scan_rob_tag = '0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (mem_issue_stored_mask[i] && !stored_scan_found) begin
-        stored_scan_found   = 1'b1;
-        stored_scan_idx     = scan_idx[i];
-        stored_scan_pos     = IdxWidth'(i);
-        stored_scan_rob_tag = lq_rob_tag[scan_idx[i]];
+        stored_scan_found               = 1'b1;
+        stored_scan_idx                 = scan_idx[i];
+        stored_scan_pos                 = IdxWidth'(i);
+        stored_scan_onehot[scan_idx[i]] = 1'b1;
+        stored_scan_rob_tag             = lq_rob_tag[scan_idx[i]];
       end
 
       if (mem_issue_update_mask[i] && !update_scan_found) begin
-        update_scan_found   = 1'b1;
-        update_scan_idx     = scan_idx[i];
-        update_scan_pos     = IdxWidth'(i);
-        update_scan_rob_tag = lq_rob_tag[scan_idx[i]];
+        update_scan_found               = 1'b1;
+        update_scan_idx                 = scan_idx[i];
+        update_scan_pos                 = IdxWidth'(i);
+        update_scan_onehot[scan_idx[i]] = 1'b1;
+        update_scan_rob_tag             = lq_rob_tag[scan_idx[i]];
       end
     end
   end
@@ -953,6 +960,7 @@ module load_queue #(
   logic [IdxWidth-1:0] stored_issue_idx;
   logic [ReorderBufferTagWidth-1:0] stored_issue_rob_tag;
   logic [ReorderBufferTagWidth-1:0] update_issue_rob_tag;
+  logic [DEPTH-1:0] issue_mem_onehot;
   logic update_scan_older_than_stored_scan;
   logic update_scan_issueable;
   logic update_scan_wins;
@@ -979,26 +987,31 @@ module load_queue #(
     issue_mem_stored_idx  = stored_issue_idx;
     issue_mem_from_update = 1'b0;
     issue_mem_rob_tag     = '0;
+    issue_mem_onehot      = '0;
     block_younger_mem     = 1'b0;  // kept for interface compat; unused in restructured scan
 
     if (head_mem_stored_found) begin
-      issue_mem_found   = 1'b1;
-      issue_mem_idx     = head_mem_stored_idx;
-      issue_mem_rob_tag = stored_issue_rob_tag;
+      issue_mem_found                       = 1'b1;
+      issue_mem_idx                         = head_mem_stored_idx;
+      issue_mem_rob_tag                     = stored_issue_rob_tag;
+      issue_mem_onehot[head_mem_stored_idx] = 1'b1;
     end else if (i_addr_update.valid && head_mem_update_found) begin
-      issue_mem_found       = 1'b1;
-      issue_mem_idx         = head_mem_update_idx;
-      issue_mem_from_update = 1'b1;
-      issue_mem_rob_tag     = update_issue_rob_tag;
+      issue_mem_found                       = 1'b1;
+      issue_mem_idx                         = head_mem_update_idx;
+      issue_mem_from_update                 = 1'b1;
+      issue_mem_rob_tag                     = update_issue_rob_tag;
+      issue_mem_onehot[head_mem_update_idx] = 1'b1;
     end else if (update_scan_wins) begin
       issue_mem_found       = 1'b1;
       issue_mem_idx         = update_scan_idx;
       issue_mem_from_update = 1'b1;
       issue_mem_rob_tag     = update_scan_rob_tag;
+      issue_mem_onehot      = update_scan_onehot;
     end else if (stored_scan_found) begin
       issue_mem_found   = 1'b1;
       issue_mem_idx     = stored_scan_idx;
       issue_mem_rob_tag = stored_scan_rob_tag;
+      issue_mem_onehot  = stored_scan_onehot;
     end
   end
 
@@ -1026,8 +1039,6 @@ module load_queue #(
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
   logic sq_check_is_cached_region;
-  logic issue_mem_is_cached_region;
-  logic sq_commit_capture_block;
   logic sq_commit_check_block;
   assign sq_check_misaligned = i_trap_misaligned_accesses &&
       sq_check_entry_valid && sq_check_entry_issueable &&
@@ -1035,8 +1046,6 @@ module load_queue #(
       sq_check_size_q, sq_check_addr_q
   );
   assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
-  assign issue_mem_is_cached_region = issue_mem_found && is_cached_addr(issue_mem_addr);
-  assign sq_commit_capture_block = i_sq_commit_pending && issue_mem_is_cached_region;
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   assign sq_check_will_clear = sq_check_pending &&
@@ -1047,14 +1056,16 @@ module load_queue #(
   // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
   // comparison uses issue_mem_rob_tag extracted alongside the priority encoder
   // output to avoid a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
+  //
+  // The SQ-commit/cache interlock is applied after capture via the registered
+  // sq_check_* payload.  Keeping it off the capture gate avoids a same-cycle
+  // candidate-address RAM read on the SQ-check control/mask update path.
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
       issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !sq_commit_capture_block &&
-      !i_flush_all && !i_flush_en;
+      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
   assign sq_check_replace = sq_check_pending && issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !sq_commit_capture_block &&
-      !i_flush_all && !i_flush_en &&
+      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
       (!sq_check_entry_valid || is_younger(
       sq_check_rob_tag_q, issue_mem_rob_tag, i_rob_head_tag
   ));
@@ -1186,6 +1197,13 @@ module load_queue #(
       // Invalidation (from SQ or AMO write completion)
       .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
       .i_invalidate_addr (amo_cache_inv ? lq_address_amo_rd : i_cache_invalidate_addr),
+
+      // Only SQ/store invalidation must suppress same-cycle L0 lookup hits.
+      // AMO write completion is serialized at ROB head and blocks younger
+      // memory candidates, so keeping AMO off this combinational lookup cone
+      // avoids an AMO-address LUTRAM read on the cache-hit/CDB path.
+      .i_lookup_invalidate_valid(i_cache_invalidate_valid),
+      .i_lookup_invalidate_addr (i_cache_invalidate_addr),
 
       // Flush: L0 contents always reflect architectural memory state
       // (stores invalidate matching lines; loads only fill with data the
@@ -1684,12 +1702,11 @@ module load_queue #(
       sq_check_no_older_store_next = 1'b0;
       sq_check_phase2_next         = 1'b0;
       sq_check_in_flight_mask_next = '0;
-    end else if (sq_check_capture || sq_check_replace) begin
-      sq_check_pending_next                           = 1'b1;
-      sq_check_no_older_store_next                    = i_sq_empty;
-      sq_check_phase2_next                            = i_sq_empty;
-      sq_check_in_flight_mask_next                    = '0;
-      sq_check_in_flight_mask_next[sq_check_idx_next] = 1'b1;
+    end else if (sq_check_mask_update_en) begin
+      sq_check_pending_next        = 1'b1;
+      sq_check_no_older_store_next = i_sq_empty;
+      sq_check_phase2_next         = i_sq_empty;
+      sq_check_in_flight_mask_next = issue_mem_onehot;
     end else if (sq_check_pending &&
                  (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
                   launch_mem_issue || misalign_bypass_fire)) begin
@@ -2046,7 +2063,7 @@ module load_queue #(
   logic issue_mem_fp64_phase;
   logic issue_mem_is_lr;
   logic issue_mem_is_amo;
-  logic sq_check_payload_en;
+  (* keep = "true", max_fanout = 32 *) logic sq_check_payload_en;
   logic [IdxWidth-1:0] sq_check_idx_next;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
   logic [XLEN-1:0] sq_check_addr_next;
@@ -2058,6 +2075,7 @@ module load_queue #(
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
+  assign sq_check_mask_update_en = sq_check_capture || sq_check_replace;
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;

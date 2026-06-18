@@ -146,8 +146,15 @@ def _check_window(dut: Any, addr: int) -> None:
         f"want 0x{((want1 << 32) | want0):016x}"
     )
     sb = int(dut.o_instr_sideband.value)
-    want_sb = (_GENERATOR.make_sideband(want1) << 8) | _GENERATOR.make_sideband(want0)
-    assert sb == want_sb, f"sideband @0x{addr:08x}: got 0x{sb:04x} want 0x{want_sb:04x}"
+    width = _GENERATOR.SIDEBAND_WIDTH
+    want_sb = (_GENERATOR.make_sideband(want1) << width) | _GENERATOR.make_sideband(
+        want0
+    )
+    hex_digits = (2 * width + 3) // 4
+    assert sb == want_sb, (
+        f"sideband @0x{addr:08x}: got 0x{sb:0{hex_digits}x} "
+        f"want 0x{want_sb:0{hex_digits}x}"
+    )
     assert int(dut.o_instr_bank_sel_r.value) == ((base >> 2) & 1)
 
 
