@@ -105,10 +105,10 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_parser",
         workload="parser-125k",
         description="CoreMark-PRO XML parser workload",
-        # Parser runtime is heap-size sensitive. X3: -i10 ~= 10.2s on the pre-DDR
-        # 1936 KiB heap (recheck on the DDR heap). genesys2: 5.19 s/iter measured
-        # at -v0, so 2 iters ~= 10.4s.
-        hardware_iterations={"x3": 10, "genesys2": 2},
+        # Parser runtime is heap-size sensitive (per-iteration isn't constant).
+        # X3: -i10 ~= 10.2s on the pre-DDR 1936 KiB heap (recheck on the DDR
+        # heap). genesys2: 3 iters measured 13.2s at -v0 (2 fell short at 7.6s).
+        hardware_iterations={"x3": 10, "genesys2": 3},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -116,9 +116,9 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO radix-2 FFT workload",
         # The ~800 KiB of constant FFT data is placed in the cached region
         # (.ddr_rodata via the unified linker) and delivered through the
-        # sw_ddr.mem image. PROVISIONAL: both counts are -v1-derived estimates
-        # (no trustworthy -v0 timing yet); confirm with a -v0 re-sweep.
-        hardware_iterations={"x3": 12, "genesys2": 5},
+        # sw_ddr.mem image. Measured at -v0: X3 0.166 s/iter -> 61 iters ~= 10.1s;
+        # genesys2 0.94 s/iter -> 11 iters ~= 10.3s.
+        hardware_iterations={"x3": 61, "genesys2": 11},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
@@ -131,10 +131,10 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_zip",
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
-        # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
-        # PROVISIONAL: both counts are -v1-derived estimates (the -v0 run timed
-        # out before recalibration); confirm with a -v0 re-sweep.
-        hardware_iterations={"x3": 80, "genesys2": 32},
+        # ~3.3 MiB heap, satisfied by the DDR-backed cached region. Measured at
+        # -v0: X3 0.582 s/iter -> 18 iters ~= 10.5s; genesys2 1.45 s/iter ->
+        # 7 iters ~= 10.2s.
+        hardware_iterations={"x3": 18, "genesys2": 7},
     ),
 )
 
