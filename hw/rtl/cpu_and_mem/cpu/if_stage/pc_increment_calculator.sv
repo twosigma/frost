@@ -62,11 +62,10 @@ module pc_increment_calculator #(
     input logic i_is_compressed_for_pc,
     input logic i_sel_nop,  // IF outputs NOP (stale BRAM data — is_compressed unreliable)
 
-    // 2-wide bundle metadata (Session F).  When slot-2 is valid this cycle
-    // (slot-1 not a branch, slot-2 fits, etc.), the bundle advances by
-    // slot-1 size + slot-2 size: total +4/+6/+8.
-    input logic i_slot2_valid,         // Slot-2 contributes to PC advance
-    input logic i_slot2_is_compressed, // Slot-2 is RVC
+    // Encoded instruction-bundle advance.  Slot-2 only fires behind a
+    // compressed slot-1, so valid two-wide bundles advance by +4 or +6.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
 
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
@@ -80,6 +79,7 @@ module pc_increment_calculator #(
 
     // Outputs for final PC mux in pc_controller
     output logic [XLEN-1:0] o_seq_next_pc,     // Sequential PC for fetch
+    output logic [XLEN-1:0] o_seq_next_pc_plus_2,
     output logic [XLEN-1:0] o_seq_next_pc_reg  // Sequential PC for instruction address
 );
 
@@ -119,7 +119,7 @@ module pc_increment_calculator #(
   localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
   localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
 
-  // 1-wide options (existing) plus 2-wide bundle options (+6 / +8).
+  // 1-wide options plus the 2-wide bundle +6/+8 options.
   // Build these from the word index so pc[1] selects between precomputed
   // word increments instead of feeding the full carry chain.
   localparam int unsigned PcWordBits = XLEN - 2;
@@ -140,36 +140,46 @@ module pc_increment_calculator #(
   assign next_pc_plus_6 = {pc_halfword ? pc_word_plus_2 : pc_word_plus_1, ~pc_halfword, i_pc[0]};
   assign next_pc_plus_8 = {pc_word_plus_2, pc_halfword, i_pc[0]};
 
-  // Default-case 2-wide bundle advance: select +2/+4/+6/+8 based on slot-1
-  // size, slot-2 valid, and slot-2 size.  The select drives only the final
-  // mux — both adder chains settle from i_pc independently.
-  logic [XLEN-1:0] bundle_seq_next_pc;
-  always_comb begin
-    if (!i_slot2_valid) begin
-      bundle_seq_next_pc = pc_inc_comb_sel_2 ? next_pc_plus_2 : next_pc_plus_4;
-    end else begin
-      unique case ({
-        i_is_compressed, i_slot2_is_compressed
-      })
-        2'b11:   bundle_seq_next_pc = next_pc_plus_4;  // RVC + RVC
-        2'b10:   bundle_seq_next_pc = next_pc_plus_6;  // RVC + 32b
-        2'b01:   bundle_seq_next_pc = next_pc_plus_6;  // 32b + RVC
-        2'b00:   bundle_seq_next_pc = next_pc_plus_8;  // 32b + 32b
-        default: bundle_seq_next_pc = next_pc_plus_4;
-      endcase
-    end
-  end
+  // Default-case bundle advance.  The sideband-heavy work is already collapsed
+  // into i_pc_reg_advance_sel in if_stage, so this module only has a narrow
+  // encoded select on the wide fetch-PC mux.
+  logic [XLEN-1:0] fetch_seq_next_pc;
+  logic [XLEN-1:0] fetch_seq_next_pc_plus_2;
+  pc_fetch_advance_mux #(
+      .XLEN(XLEN)
+  ) u_pc_fetch_advance_mux (
+      .i_next_pc_plus_2(next_pc_plus_2),
+      .i_next_pc_plus_4(next_pc_plus_4),
+      .i_next_pc_plus_6(next_pc_plus_6),
+      .i_next_pc_plus_8(next_pc_plus_8),
+      .i_advance_sel(i_pc_fetch_advance_sel),
+      .o_fetch_seq_next_pc(fetch_seq_next_pc),
+      .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2)
+  );
 
   // Compute next_sequential_pc (raw sequential PC before corrections)
   logic [XLEN-1:0] next_sequential_pc;
+  logic [XLEN-1:0] next_sequential_pc_plus_2;
   always_comb begin
     casez ({
       pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
     })
-      3'b1??:  next_sequential_pc = next_pc_plus_4;
-      3'b01?:  next_sequential_pc = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
-      3'b001:  next_sequential_pc = next_pc_plus_2;  // halfword: +2
-      default: next_sequential_pc = bundle_seq_next_pc;
+      3'b1??: begin
+        next_sequential_pc        = next_pc_plus_4;
+        next_sequential_pc_plus_2 = next_pc_plus_6;
+      end
+      3'b01?: begin
+        next_sequential_pc        = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+        next_sequential_pc_plus_2 = !i_pc[1] ? next_pc_plus_6 : next_pc_plus_4;
+      end
+      3'b001: begin
+        next_sequential_pc        = next_pc_plus_2;  // halfword: +2
+        next_sequential_pc_plus_2 = next_pc_plus_4;
+      end
+      default: begin
+        next_sequential_pc        = fetch_seq_next_pc;
+        next_sequential_pc_plus_2 = fetch_seq_next_pc_plus_2;
+      end
     endcase
   end
 
@@ -200,10 +210,9 @@ module pc_increment_calculator #(
   // The submodule instance with dont_touch prevents this: Vivado cannot
   // dissolve the boundary, so the adders and registered-select MUXes stay
   // inside the submodule while the is_compressed MUX stays outside.
-  logic [XLEN-1:0] pc_reg_if_compressed;
-  logic [XLEN-1:0] pc_reg_if_32bit;
-  logic [XLEN-1:0] pc_reg_plus_6;
-  logic [XLEN-1:0] pc_reg_plus_8;
+  (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
+  (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
+  (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
 
   (* dont_touch = "yes" *) pc_reg_precompute #(
       .XLEN(XLEN)
@@ -216,8 +225,7 @@ module pc_increment_calculator #(
       .i_spanning_eligible              (i_spanning_eligible),
       .o_pc_reg_if_compressed           (pc_reg_if_compressed),
       .o_pc_reg_if_32bit                (pc_reg_if_32bit),
-      .o_pc_reg_plus_6                  (pc_reg_plus_6),
-      .o_pc_reg_plus_8                  (pc_reg_plus_8)
+      .o_pc_reg_plus_6                  (pc_reg_plus_6)
   );
 
   // Final: select based on live is_compressed and slot-2 metadata.  Only the
@@ -232,37 +240,31 @@ module pc_increment_calculator #(
   // 2-wide: when slot-2 is valid this cycle, use the bundle advance:
   //   RVC + RVC = +4 (= pc_reg_if_32bit, semantically identical)
   //   RVC + 32b = +6
-  //   32b + RVC = +6
-  //   32b + 32b = +8
   logic [XLEN-1:0] pc_reg_normal;
-  always_comb begin
-    if (i_sel_nop) begin
-      pc_reg_normal = pc_reg_if_compressed;  // +2 / hold per existing rules
-    end else if (!i_slot2_valid) begin
-      pc_reg_normal = i_is_compressed ? pc_reg_if_compressed : pc_reg_if_32bit;
-    end else begin
-      unique case ({
-        i_is_compressed, i_slot2_is_compressed
-      })
-        2'b11:   pc_reg_normal = pc_reg_if_32bit;  // +4
-        2'b10:   pc_reg_normal = pc_reg_plus_6;
-        2'b01:   pc_reg_normal = pc_reg_plus_6;
-        2'b00:   pc_reg_normal = pc_reg_plus_8;
-        default: pc_reg_normal = pc_reg_if_32bit;
-      endcase
-    end
-  end
+  pc_reg_advance_mux #(
+      .XLEN(XLEN)
+  ) u_pc_reg_advance_mux (
+      .i_pc_reg_if_compressed(pc_reg_if_compressed),
+      .i_pc_reg_if_32bit(pc_reg_if_32bit),
+      .i_pc_reg_plus_6(pc_reg_plus_6),
+      .i_advance_sel(i_pc_reg_advance_sel),
+      .o_pc_reg_normal(pc_reg_normal)
+  );
 
   // ===========================================================================
   // Special PC Corrections
   // ===========================================================================
   logic [XLEN-1:0] pc_mid_32bit_correction;
+  logic [XLEN-1:0] pc_mid_32bit_correction_plus_2;
   logic [XLEN-1:0] pc_reg_mid_32bit_correction;
   logic [XLEN-1:0] pc_spanning_to_halfword;
+  logic [XLEN-1:0] pc_spanning_to_halfword_plus_2;
 
   assign pc_mid_32bit_correction = ((i_pc_reg + IncC) & ~32'd3) + Inc4;
+  assign pc_mid_32bit_correction_plus_2 = pc_mid_32bit_correction + IncC;
   assign pc_reg_mid_32bit_correction = i_pc_reg + IncC;
   assign pc_spanning_to_halfword = i_pc_reg + Inc4;
+  assign pc_spanning_to_halfword_plus_2 = pc_spanning_to_halfword + IncC;
 
   // ===========================================================================
   // Final Sequential PC Selection (used by final PC mux in pc_controller)
@@ -277,17 +279,77 @@ module pc_increment_calculator #(
   always_comb begin
     if (seq_sel_holdoff) begin
       o_seq_next_pc = next_sequential_pc;
+      o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
       o_seq_next_pc_reg = i_pc_reg;  // holdoff: hold pc_reg
     end else if (seq_sel_mid_32bit) begin
       o_seq_next_pc = pc_mid_32bit_correction;
+      o_seq_next_pc_plus_2 = pc_mid_32bit_correction_plus_2;
       o_seq_next_pc_reg = pc_reg_mid_32bit_correction;
     end else if (seq_sel_spanning_hw) begin
       o_seq_next_pc = pc_spanning_to_halfword;
+      o_seq_next_pc_plus_2 = pc_spanning_to_halfword_plus_2;
       o_seq_next_pc_reg = pc_reg_normal;
     end else begin
       o_seq_next_pc = next_sequential_pc;
+      o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
       o_seq_next_pc_reg = pc_reg_normal;
     end
   end
 
 endmodule : pc_increment_calculator
+
+module pc_fetch_advance_mux #(
+    parameter int unsigned XLEN = 32
+) (
+    input logic [XLEN-1:0] i_next_pc_plus_2,
+    input logic [XLEN-1:0] i_next_pc_plus_4,
+    input logic [XLEN-1:0] i_next_pc_plus_6,
+    input logic [XLEN-1:0] i_next_pc_plus_8,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_advance_sel,
+    output logic [XLEN-1:0] o_fetch_seq_next_pc,
+    output logic [XLEN-1:0] o_fetch_seq_next_pc_plus_2
+);
+
+  always_comb begin
+    unique case (i_advance_sel)
+      riscv_pkg::PcAdvancePlus2: begin
+        o_fetch_seq_next_pc        = i_next_pc_plus_2;
+        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_4;
+      end
+      riscv_pkg::PcAdvancePlus4: begin
+        o_fetch_seq_next_pc        = i_next_pc_plus_4;
+        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_6;
+      end
+      riscv_pkg::PcAdvancePlus6: begin
+        o_fetch_seq_next_pc        = i_next_pc_plus_6;
+        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_8;
+      end
+      default: begin
+        o_fetch_seq_next_pc        = i_next_pc_plus_2;
+        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_4;
+      end
+    endcase
+  end
+
+endmodule : pc_fetch_advance_mux
+
+module pc_reg_advance_mux #(
+    parameter int unsigned XLEN = 32
+) (
+    input logic [XLEN-1:0] i_pc_reg_if_compressed,
+    input logic [XLEN-1:0] i_pc_reg_if_32bit,
+    input logic [XLEN-1:0] i_pc_reg_plus_6,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_advance_sel,
+    output logic [XLEN-1:0] o_pc_reg_normal
+);
+
+  always_comb begin
+    unique case (i_advance_sel)
+      riscv_pkg::PcAdvancePlus2: o_pc_reg_normal = i_pc_reg_if_compressed;
+      riscv_pkg::PcAdvancePlus4: o_pc_reg_normal = i_pc_reg_if_32bit;
+      riscv_pkg::PcAdvancePlus6: o_pc_reg_normal = i_pc_reg_plus_6;
+      default:                   o_pc_reg_normal = i_pc_reg_if_compressed;
+    endcase
+  end
+
+endmodule : pc_reg_advance_mux

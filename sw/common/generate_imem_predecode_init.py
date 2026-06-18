@@ -35,6 +35,7 @@ OPC_FMSUB = 0b1000111
 OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
+SIDEBAND_WIDTH = 12
 
 
 def parse_verilog_hex(path: Path) -> dict[int, int]:
@@ -105,6 +106,14 @@ def make_sideband(word: int) -> int:
         sideband |= 1 << 6
     if native_fp_compute(opcode_hi):
         sideband |= 1 << 7
+    if (sideband & (1 << 0)) and not (sideband & (1 << 2)):
+        sideband |= 1 << 8
+    if (sideband & (1 << 1)) and not (sideband & (1 << 3)):
+        sideband |= 1 << 9
+    if (sideband & (1 << 0)) or not (sideband & ((1 << 4) | (1 << 6))):
+        sideband |= 1 << 10
+    if (sideband & (1 << 1)) or not (sideband & ((1 << 5) | (1 << 7))):
+        sideband |= 1 << 11
 
     return sideband
 
@@ -157,8 +166,17 @@ def main() -> int:
 
     write_word_file(args.even_data, even_words, 8)
     write_word_file(args.odd_data, odd_words, 8)
-    write_word_file(args.even_sideband, [make_sideband(word) for word in even_words], 2)
-    write_word_file(args.odd_sideband, [make_sideband(word) for word in odd_words], 2)
+    sideband_hex_digits = (SIDEBAND_WIDTH + 3) // 4
+    write_word_file(
+        args.even_sideband,
+        [make_sideband(word) for word in even_words],
+        sideband_hex_digits,
+    )
+    write_word_file(
+        args.odd_sideband,
+        [make_sideband(word) for word in odd_words],
+        sideband_hex_digits,
+    )
 
     return 0
 

@@ -36,6 +36,11 @@ SB_NATIVE_SERIALIZE_LO = 4
 SB_NATIVE_SERIALIZE_HI = 5
 SB_NATIVE_FP_COMPUTE_LO = 6
 SB_NATIVE_FP_COMPUTE_HI = 7
+SB_ALLOWS_SLOT2_AFTER_LO = 8
+SB_ALLOWS_SLOT2_AFTER_HI = 9
+SB_SLOT2_START_VALID_LO = 10
+SB_SLOT2_START_VALID_HI = 11
+SIDEBAND_WIDTH = 12
 
 
 def _word(*, lo: int, hi: int) -> int:
@@ -64,7 +69,15 @@ def _sideband(
     native_fp_compute_lo: bool = False,
     native_fp_compute_hi: bool = False,
 ) -> int:
-    """Build one 32-bit-word instruction-memory sideband byte."""
+    """Build one 32-bit-word instruction-memory sideband value."""
+    allows_slot2_after_lo = compressed_lo and not compressed_control_lo
+    allows_slot2_after_hi = compressed_hi and not compressed_control_hi
+    slot2_start_valid_lo = compressed_lo or not (
+        native_serialize_lo or native_fp_compute_lo
+    )
+    slot2_start_valid_hi = compressed_hi or not (
+        native_serialize_hi or native_fp_compute_hi
+    )
     return (
         _bit(compressed_lo, SB_IS_COMPRESSED_LO)
         | _bit(compressed_hi, SB_IS_COMPRESSED_HI)
@@ -74,12 +87,17 @@ def _sideband(
         | _bit(native_serialize_hi, SB_NATIVE_SERIALIZE_HI)
         | _bit(native_fp_compute_lo, SB_NATIVE_FP_COMPUTE_LO)
         | _bit(native_fp_compute_hi, SB_NATIVE_FP_COMPUTE_HI)
+        | _bit(allows_slot2_after_lo, SB_ALLOWS_SLOT2_AFTER_LO)
+        | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
+        | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
+        | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
     )
 
 
 def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     """Pack the fetch sideband bus as {next_word_sideband, current_word_sideband}."""
-    return ((next_sb & 0xFF) << 8) | (current_sb & 0xFF)
+    mask = (1 << SIDEBAND_WIDTH) - 1
+    return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
 def _clear_inputs(dut: Any) -> None:

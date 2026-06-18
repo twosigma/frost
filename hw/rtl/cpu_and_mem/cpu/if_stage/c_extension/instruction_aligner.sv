@@ -89,6 +89,11 @@ module instruction_aligner #(
     output logic o_sel_nop_2,
     // Slot-2 RVC select for PD's instruction-mux (mirror of slot-1).
     output logic o_sel_compressed_2,
+    // Early slot-2 metadata for the PC increment path.  This is equivalent to
+    // the live, non-replay slot-2 decision below, but avoids routing the PC
+    // path through the final IF->PD packet mux.
+    output logic o_slot2_valid_for_pc,
+    output logic o_slot2_is_compressed_for_pc,
     // Slot-1 is a branch (BRANCH/JAL/JALR or compressed equivalent).  Used by
     // pc_controller to terminate the bundle and by upstream consumers (e.g.,
     // c_ext_state) that need to know the bundle terminated early.
@@ -540,71 +545,60 @@ module instruction_aligner #(
   // size mismatch (BTB compressed but live is 32-bit, or vice versa)
   // suppresses prediction in BPC, retaining the original safety property
   // that drove Session Q's strict guard.
-  // Slot-2 can only fire behind a compressed slot-1.  Once !o_is_compressed
-  // forces slot-2 invalid, native slot-1 branch decoding is redundant in this
-  // gate; keeping the slot-2 path compressed-only avoids routing the native
-  // opcode compare into the PC/BTB timing cone.
-  logic slot1_compressed_control_sideband;
+  // PC-critical slot-2 valid path.  Slot-2 can only dispatch behind a
+  // compressed slot-1, so the only valid positions are CURRENT_HI and NEXT_LO.
+  // The per-halfword sideband predecodes the compressed-and-not-control slot-1
+  // predicate and the slot-2 start-valid predicate.  That keeps the PC advance
+  // path from rebuilding those conditions from several raw sideband bits.
+  logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({
       o_use_instr_buffer, i_pc_reg[1]
     })
-      2'b00:
-      slot1_compressed_control_sideband = aligned_current_sb[riscv_pkg::ImemSbCompressedControlLo];
-      2'b01:
-      slot1_compressed_control_sideband = aligned_current_sb[riscv_pkg::ImemSbCompressedControlHi];
+      2'b00: slot1_allows_slot2_for_pc = aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+      2'b01: slot1_allows_slot2_for_pc = aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterHi];
       2'b10:
-      slot1_compressed_control_sideband =
-          i_instr_buffer_sideband[riscv_pkg::ImemSbCompressedControlLo];
+      slot1_allows_slot2_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbAllowsSlot2AfterLo];
       2'b11:
-      slot1_compressed_control_sideband =
-          i_instr_buffer_sideband[riscv_pkg::ImemSbCompressedControlHi];
-      default: slot1_compressed_control_sideband = 1'b0;
+      slot1_allows_slot2_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+      default: slot1_allows_slot2_for_pc = 1'b0;
     endcase
   end
-  logic slot1_compressed_branch_terminates_slot2;
-  assign slot1_compressed_branch_terminates_slot2 =
-      o_is_compressed && slot1_compressed_control_sideband;
 
-  // PC-critical slot-2 valid path.  Slot-2 can only dispatch behind a
-  // compressed slot-1, so the only valid positions are CURRENT_HI and NEXT_LO.
-  // Spell those as one-hot predicates instead of routing PC advance through the
-  // general slot2_pos mux tree used by the data path above.
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
-  assign slot2_current_hi_candidate = !o_sel_nop && o_is_compressed &&
-                                      !slot1_compressed_branch_terminates_slot2 &&
-                                      !o_use_instr_buffer && !i_pc_reg[1];
-  assign slot2_next_lo_candidate = !o_sel_nop && o_is_compressed &&
-                                   !slot1_compressed_branch_terminates_slot2 &&
-                                   i_pc_reg[1];
+  assign slot2_current_hi_candidate = !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+                                      aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+  assign slot2_next_lo_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc;
 
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
-  logic slot2_current_hi_serialize;
-  logic slot2_next_lo_serialize;
-  logic slot2_current_hi_fp_compute;
-  logic slot2_next_lo_fp_compute;
+  logic slot2_current_hi_start_valid;
+  logic slot2_next_lo_start_valid;
   assign slot2_current_hi_compressed = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
   assign slot2_next_lo_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
-  assign slot2_current_hi_serialize = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeHi];
-  assign slot2_next_lo_serialize = aligned_next_sb[riscv_pkg::ImemSbNativeSerializeLo];
-  assign slot2_current_hi_fp_compute = aligned_current_sb[riscv_pkg::ImemSbNativeFpComputeHi];
-  assign slot2_next_lo_fp_compute = aligned_next_sb[riscv_pkg::ImemSbNativeFpComputeLo];
+  assign slot2_current_hi_start_valid = aligned_current_sb[riscv_pkg::ImemSbSlot2StartValidHi];
+  assign slot2_next_lo_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidLo];
 
   logic slot2_current_hi_invalid;
   logic slot2_next_lo_invalid;
   assign slot2_current_hi_invalid =
-      !slot2_current_hi_compressed &&
-      (slot2_bram_unsafe || slot2_current_hi_serialize || slot2_current_hi_fp_compute);
-  assign slot2_next_lo_invalid =
-      slot2_bram_unsafe ||
-      (!slot2_next_lo_compressed && (slot2_next_lo_serialize || slot2_next_lo_fp_compute));
+      !slot2_current_hi_start_valid || (slot2_bram_unsafe && !slot2_current_hi_compressed);
+  assign slot2_next_lo_invalid = slot2_bram_unsafe || !slot2_next_lo_start_valid;
+
+  logic slot2_current_hi_valid_for_pc;
+  logic slot2_next_lo_valid_for_pc;
+  assign slot2_current_hi_valid_for_pc = slot2_current_hi_candidate && !slot2_current_hi_invalid;
+  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate && !slot2_next_lo_invalid;
 
   logic slot2_valid_when_enabled;
-  assign slot2_valid_when_enabled =
-      (slot2_current_hi_candidate && !slot2_current_hi_invalid) ||
-      (slot2_next_lo_candidate && !slot2_next_lo_invalid);
+  assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc || slot2_next_lo_valid_for_pc;
+  assign o_slot2_valid_for_pc = slot2_valid_when_enabled;
+  // Consumers only inspect the compression bit when slot-2 is valid.  Keep the
+  // valid predicate out of this high-fanout select so the sideband "allows
+  // slot-2" bit does not also drive the slot-2-size mux cone.
+  assign o_slot2_is_compressed_for_pc =
+      slot2_current_hi_candidate ? slot2_current_hi_compressed : slot2_next_lo_compressed;
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;

@@ -28,19 +28,32 @@ class CoremarkProProgram:
     app_name: str
     workload: str
     description: str
-    hardware_iterations: int
+    # -v0 iteration count per board (keys match BOARD_CONFIG in load_software.py).
+    # Each is calibrated so the score run clears CoreMark-PRO's ~10s score-rule
+    # minimum on that board; the slower genesys2 (133MHz) needs fewer iterations
+    # than X3 (300MHz) to reach it.
+    hardware_iterations: dict[str, int]
     hardware_supported: bool = True
     hardware_unsupported_reason: str = ""
+
+    def iterations_for(self, board: str) -> int:
+        """Return the calibrated -v0 iteration count for board."""
+        try:
+            return self.hardware_iterations[board]
+        except KeyError:
+            raise ValueError(
+                f"{self.app_name}: no CoreMark-PRO iteration count calibrated for "
+                f"board '{board}'; add it to hardware_iterations."
+            ) from None
 
     @property
     def simulation_run_args(self) -> str:
         """Simulation keeps the default verified single-iteration run."""
         return ""
 
-    @property
-    def hardware_performance_run_args(self) -> str:
-        """Hardware performance runs use score mode and explicit iterations."""
-        return f"-v0 -i{self.hardware_iterations}"
+    def hardware_performance_run_args(self, board: str) -> str:
+        """Hardware performance runs use score mode and per-board iterations."""
+        return f"-v0 -i{self.iterations_for(board)}"
 
     @property
     def hardware_validation_run_args(self) -> str:
@@ -53,46 +66,49 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_core",
         workload="core",
         description="CoreMark-PRO core workload",
-        hardware_iterations=1,
+        # One iteration runs ~60s on genesys2 / well over 10s on X3.
+        hardware_iterations={"x3": 1, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
-        # 41 iterations ~= 10.2s, the minimum over the 10s score rule
-        # (calibrated against the pre-DDR 1936 KiB heap; the DDR heap no
-        # longer constrains iterations -- recalibrate with the sweep tooling).
-        hardware_iterations=41,
+        # X3: 41 iters ~= 10.2s (pre-DDR 1936 KiB heap calibration).
+        # genesys2: 0.586 s/iter measured at -v0, so 18 iters ~= 10.5s.
+        hardware_iterations={"x3": 41, "genesys2": 18},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_linear_alg",
         workload="linear_alg-mid-100x100-sp",
         description="CoreMark-PRO LINPACK single-precision workload",
-        # 0.96 s/iteration on the X3 300MHz build; 12 iterations ~= 11.6s.
-        hardware_iterations=12,
+        # X3: 0.96 s/iter, 12 iters ~= 11.6s.
+        # genesys2: 2.535 s/iter measured at -v0, so 4 iters ~= 10.1s.
+        hardware_iterations={"x3": 12, "genesys2": 4},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_loops",
         workload="loops-all-mid-10k-sp",
         description="CoreMark-PRO Livermore loops single-precision workload",
         # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
-        # Iteration count to be recalibrated on hardware with the sweep tooling.
-        hardware_iterations=5000,
+        # A single pass already clears the 10s score-rule minimum (~17s on X3,
+        # ~39s on genesys2), so one iteration suffices on both.
+        hardware_iterations={"x3": 1, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_nnet",
         workload="nnet_test",
         description="CoreMark-PRO neural net workload",
-        hardware_iterations=1,
+        # One iteration runs ~40s on genesys2 / well over 10s on X3.
+        hardware_iterations={"x3": 1, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_parser",
         workload="parser-125k",
         description="CoreMark-PRO XML parser workload",
-        # Parser runtime is heap-size sensitive (timings shifted with each
-        # heap-size change pre-DDR); -i10 ~= 10.2s on the 1936 KiB heap --
-        # recalibrate on the DDR heap with the sweep tooling.
-        hardware_iterations=10,
+        # Parser runtime is heap-size sensitive. X3: -i10 ~= 10.2s on the pre-DDR
+        # 1936 KiB heap (recheck on the DDR heap). genesys2: 5.19 s/iter measured
+        # at -v0, so 2 iters ~= 10.4s.
+        hardware_iterations={"x3": 10, "genesys2": 2},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -100,22 +116,25 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO radix-2 FFT workload",
         # The ~800 KiB of constant FFT data is placed in the cached region
         # (.ddr_rodata via the unified linker) and delivered through the
-        # sw_ddr.mem image. Iteration count to be recalibrated on hardware.
-        hardware_iterations=1000,
+        # sw_ddr.mem image. PROVISIONAL: both counts are -v1-derived estimates
+        # (no trustworthy -v0 timing yet); confirm with a -v0 re-sweep.
+        hardware_iterations={"x3": 12, "genesys2": 5},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
         workload="sha-test",
         description="CoreMark-PRO SHA-256 workload",
-        hardware_iterations=75,
+        # X3: 75 iters. genesys2: 0.312 s/iter measured at -v0, 33 iters ~= 10.3s.
+        hardware_iterations={"x3": 75, "genesys2": 33},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_zip",
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
-        # Iteration count to be recalibrated on hardware with the sweep tooling.
-        hardware_iterations=5000,
+        # PROVISIONAL: both counts are -v1-derived estimates (the -v0 run timed
+        # out before recalibration); confirm with a -v0 re-sweep.
+        hardware_iterations={"x3": 80, "genesys2": 32},
     ),
 )
 
@@ -146,16 +165,28 @@ def coremark_pro_hardware_error(app_name: str) -> str | None:
 
 
 def coremark_pro_make_vars(
-    app_name: str, *, hardware: bool, hardware_mode: str = "performance"
+    app_name: str,
+    *,
+    hardware: bool,
+    hardware_mode: str = "performance",
+    board: str | None = None,
 ) -> dict[str, str]:
-    """Return Makefile overrides for a CoreMark-PRO program alias."""
+    """Return Makefile overrides for a CoreMark-PRO program alias.
+
+    ``board`` is required only for hardware performance (-v0) runs, which use a
+    per-board iteration count; validation and simulation ignore it.
+    """
     program = COREMARK_PRO_PROGRAM_BY_APP.get(app_name)
     if program is None:
         return {}
 
     if hardware:
         if hardware_mode == "performance":
-            run_args = program.hardware_performance_run_args
+            if board is None:
+                raise ValueError(
+                    "board is required for CoreMark-PRO performance (-v0) make vars"
+                )
+            run_args = program.hardware_performance_run_args(board)
         elif hardware_mode == "validation":
             run_args = program.hardware_validation_run_args
         else:

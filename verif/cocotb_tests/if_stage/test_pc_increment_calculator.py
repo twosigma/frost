@@ -24,6 +24,9 @@ PC = 0x80001000
 PC_HALFWORD = PC | 0x2
 PC_REG = 0x80002000
 PC_REG_HALFWORD = PC_REG | 0x2
+PC_ADV_PLUS2 = 0
+PC_ADV_PLUS4 = 1
+PC_ADV_PLUS6 = 2
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -38,8 +41,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_is_compressed.value = 0
     dut.i_is_compressed_for_pc.value = 0
     dut.i_sel_nop.value = 0
-    dut.i_slot2_valid.value = 0
-    dut.i_slot2_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
@@ -71,32 +74,34 @@ async def test_single_wide_compressed_and_32bit_increments(dut: Any) -> None:
     await _setup_test(dut)
 
     dut.i_is_compressed.value = 1
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     await _settle()
 
     _assert_next(dut, pc=PC + 2, pc_reg=PC_REG + 2)
 
     dut.i_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     await _settle()
 
     _assert_next(dut, pc=PC + 4, pc_reg=PC_REG + 4)
 
 
 @cocotb.test()
-async def test_two_wide_bundle_increments_cover_all_size_pairs(dut: Any) -> None:
-    """Two-wide bundles advance by the sum of slot-1 and slot-2 instruction sizes."""
+async def test_two_wide_bundle_increments_from_compressed_slot1(dut: Any) -> None:
+    """Two-wide IF bundles advance pc_reg by +4 or +6 behind compressed slot-1."""
     await _setup_test(dut)
 
-    cases: tuple[tuple[bool, bool, int], ...] = (
-        (True, True, 4),
-        (True, False, 6),
-        (False, True, 6),
-        (False, False, 8),
+    cases: tuple[tuple[bool, int, int], ...] = (
+        (True, 4, PC_ADV_PLUS4),
+        (True, 6, PC_ADV_PLUS6),
     )
 
-    dut.i_slot2_valid.value = 1
-    for slot1_compressed, slot2_compressed, increment in cases:
+    for slot1_compressed, increment, pc_advance_sel in cases:
         dut.i_is_compressed.value = int(slot1_compressed)
-        dut.i_slot2_is_compressed.value = int(slot2_compressed)
+        dut.i_pc_fetch_advance_sel.value = pc_advance_sel
+        dut.i_pc_reg_advance_sel.value = pc_advance_sel
         await _settle()
 
         _assert_next(dut, pc=PC + increment, pc_reg=PC_REG + increment)
@@ -125,8 +130,7 @@ async def test_redirect_holdoff_holds_pc_reg_and_forces_fetch_plus_four(
 
     dut.i_pc.value = PC_HALFWORD
     dut.i_is_compressed.value = 1
-    dut.i_slot2_valid.value = 1
-    dut.i_slot2_is_compressed.value = 1
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 1
     dut.i_prediction_holdoff.value = 1
     dut.i_control_flow_to_halfword_r.value = 1
@@ -155,19 +159,19 @@ async def test_prediction_holdoff_distinguishes_word_and_halfword_fetch_pc(
 
 
 @cocotb.test()
-async def test_sel_nop_forces_pc_reg_compressed_path_even_for_two_wide_inputs(
+async def test_sel_nop_forces_pc_reg_compressed_path_while_fetch_advances(
     dut: Any,
 ) -> None:
-    """NOP cycles force pc_reg to the compressed path while fetch follows the bundle."""
+    """NOP cycles can force pc_reg +2 while fetch follows its own selector."""
     await _setup_test(dut)
 
     dut.i_is_compressed.value = 0
-    dut.i_slot2_valid.value = 1
-    dut.i_slot2_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_next(dut, pc=PC + 8, pc_reg=PC_REG + 2)
+    _assert_next(dut, pc=PC + 4, pc_reg=PC_REG + 2)
 
 
 @cocotb.test()
@@ -195,12 +199,11 @@ async def test_prediction_from_buffer_holdoff_blocks_pc_reg_bundle_advance(
     await _setup_test(dut)
 
     dut.i_is_compressed.value = 0
-    dut.i_slot2_valid.value = 1
-    dut.i_slot2_is_compressed.value = 0
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
     dut.i_prediction_from_buffer_holdoff.value = 1
     await _settle()
 
-    _assert_next(dut, pc=PC + 8, pc_reg=PC_REG)
+    _assert_next(dut, pc=PC + 6, pc_reg=PC_REG)
 
 
 @cocotb.test()

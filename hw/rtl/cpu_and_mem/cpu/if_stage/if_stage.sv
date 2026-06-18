@@ -220,6 +220,18 @@ module if_stage #(
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
   logic sel_compressed_2;
+  logic slot2_valid_for_pc_live;
+  logic slot2_is_compressed_for_pc_live;
+  logic slot2_valid_for_pc_saved;
+  logic slot2_is_compressed_for_pc_saved;
+  logic slot2_valid_for_pc;
+  logic slot2_is_compressed_for_pc;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_live;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_saved;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_live;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_saved;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel;
   logic slot1_is_branch;
   logic slot2_valid;  // matches the OUTPUT slot-2 valid sent to PD/dispatch
   logic slot2_prediction_valid;  // live-only valid for same-cycle slot-2 BTB lookup
@@ -508,13 +520,15 @@ module if_stage #(
       // behavior but is computed locally in instruction_aligner for better timing.
       .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
-      // 2-wide bundle metadata (Session F).  Drives the +6/+8 PC advance
-      // selection inside pc_increment_calculator.  SESSION I fix: pass the
+      // 2-wide bundle metadata.  Drives the +4/+6 PC advance selection inside
+      // pc_increment_calculator.  SESSION I fix: pass the
       // OUTPUT slot-2 valid + is_compressed_2 (= replay-aware via stall
       // capture register), not the live aligner outputs.  This keeps PC
       // inc consistent with what dispatch sees during stall replay.
-      .i_slot2_valid(slot2_valid),
-      .i_slot2_is_compressed(o_from_if_to_pd_2.sel_compressed),
+      .i_slot2_valid(slot2_valid_for_pc),
+      .i_slot2_is_compressed(slot2_is_compressed_for_pc),
+      .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
+      .i_pc_reg_advance_sel(pc_reg_advance_sel),
 
       // Branch prediction (from branch_prediction_controller)
       .i_predicted_taken(btb_predicted_taken),
@@ -666,6 +680,8 @@ module if_stage #(
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
+      .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
+      .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot1_is_branch(slot1_is_branch)
   );
 
@@ -1198,6 +1214,58 @@ module if_stage #(
       sel_nop_2_saved <= sel_nop_2;
     end
   end
+
+  always_comb begin
+    pc_fetch_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
+                                                     riscv_pkg::PcAdvancePlus4;
+    if (!sel_nop && slot2_valid_for_pc_live) begin
+      pc_fetch_advance_sel_live = slot2_is_compressed_for_pc_live ?
+                                  riscv_pkg::PcAdvancePlus4 :
+                                  riscv_pkg::PcAdvancePlus6;
+    end
+  end
+
+  always_comb begin
+    pc_reg_advance_sel_live = riscv_pkg::PcAdvancePlus2;
+    if (!sel_nop) begin
+      if (slot2_valid_for_pc_live) begin
+        pc_reg_advance_sel_live = slot2_is_compressed_for_pc_live ?
+                                  riscv_pkg::PcAdvancePlus4 :
+                                  riscv_pkg::PcAdvancePlus6;
+      end else begin
+        pc_reg_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
+                                                       riscv_pkg::PcAdvancePlus4;
+      end
+    end
+  end
+
+  // Save the PC-only bundle metadata directly at stall entry.  Reconstructing
+  // this from the replayed PD packet (`sel_compressed_2_sc`) puts the general
+  // slot-2 aligner mux back on the fetch-PC path even when the replay arm is
+  // inactive.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      slot2_valid_for_pc_saved         <= 1'b0;
+      slot2_is_compressed_for_pc_saved <= 1'b0;
+      pc_fetch_advance_sel_saved       <= riscv_pkg::PcAdvancePlus2;
+      pc_reg_advance_sel_saved         <= riscv_pkg::PcAdvancePlus2;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      slot2_valid_for_pc_saved         <= !sel_nop && slot2_valid_for_pc_live;
+      slot2_is_compressed_for_pc_saved <= slot2_is_compressed_for_pc_live;
+      pc_fetch_advance_sel_saved       <= pc_fetch_advance_sel_live;
+      pc_reg_advance_sel_saved         <= pc_reg_advance_sel_live;
+    end
+  end
+
+  assign slot2_valid_for_pc = replay_saved_if_outputs ? slot2_valid_for_pc_saved :
+                              (!sel_nop && slot2_valid_for_pc_live);
+  assign slot2_is_compressed_for_pc =
+      replay_saved_if_outputs ? slot2_is_compressed_for_pc_saved :
+                                slot2_is_compressed_for_pc_live;
+  assign pc_fetch_advance_sel =
+      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
+  assign pc_reg_advance_sel =
+      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
 
   // Slot-2 PC = slot-1 PC + slot-1 size; slot-2 link = slot-2 PC + slot-2 size.
   // Use the stall-replayed slot-1 PC and is_compressed_for_link so slot-2's

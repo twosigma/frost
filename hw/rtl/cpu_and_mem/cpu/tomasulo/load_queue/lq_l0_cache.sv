@@ -49,9 +49,15 @@ module lq_l0_cache #(
     input logic [XLEN-1:0] i_fill_addr,
     input logic [XLEN-1:0] i_fill_data,
 
-    // Invalidate (for future SQ integration)
+    // Invalidate valid bits on the clock edge.
     input logic            i_invalidate_valid,
     input logic [XLEN-1:0] i_invalidate_addr,
+
+    // Same-cycle lookup-hit suppression for stores.  AMO write completion is
+    // serialized by the LQ, so it can use the sequential invalidation above
+    // without feeding its AMO-address LUTRAM read into the lookup-hit cone.
+    input logic            i_lookup_invalidate_valid,
+    input logic [XLEN-1:0] i_lookup_invalidate_addr,
 
     // Flush all (pipeline flush)
     input logic i_flush_all
@@ -88,6 +94,9 @@ module lq_l0_cache #(
 
   wire  [IndexWidth-1:0] inv_index = i_invalidate_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] inv_tag = i_invalidate_addr[(2+IndexWidth)+:TagWidth];
+
+  wire  [IndexWidth-1:0] lookup_inv_index = i_lookup_invalidate_addr[2+:IndexWidth];
+  wire  [  TagWidth-1:0] lookup_inv_tag = i_lookup_invalidate_addr[(2+IndexWidth)+:TagWidth];
   logic                  invalidate_fill_entry;
   logic                  invalidate_existing_entry;
   logic                  lookup_hit_array;
@@ -159,11 +168,13 @@ module lq_l0_cache #(
   // a sibling load's response; in every other case the LUTRAM is already
   // updated by next cycle and the normal lookup_hit_array path wins. Drop
   // the bypass term so o_lookup_hit depends only on registered signals
-  // (sq_check_addr_q, valid[], tag LUTRAM, i_invalidate_valid). Cost: a
-  // missed bypass forces one extra memory cycle for the same-cycle case.
+  // (sq_check_addr_q, valid[], tag LUTRAM, i_lookup_invalidate_valid). Cost:
+  // a missed bypass forces one extra memory cycle for the same-cycle case.
   assign lookup_fill_bypass = 1'b0;
   assign lookup_invalidated =
-      i_invalidate_valid && (inv_index == lookup_index) && (inv_tag == lookup_tag);
+      i_lookup_invalidate_valid &&
+      (lookup_inv_index == lookup_index) &&
+      (lookup_inv_tag == lookup_tag);
   assign o_lookup_hit = !lookup_mmio && lookup_hit_array && !lookup_invalidated;
   assign o_lookup_data = data_lookup_rd;
 
@@ -254,8 +265,8 @@ module lq_l0_cache #(
         && !i_flush_all
         && i_lookup_addr[XLEN-1:2] == f_fill_addr_q[XLEN-1:2]
         && !(i_lookup_addr[XLEN-1:XLEN-2] == 2'b01)
-        && !(i_invalidate_valid
-             && i_invalidate_addr[2+:IndexWidth]
+        && !(i_lookup_invalidate_valid
+             && i_lookup_invalidate_addr[2+:IndexWidth]
                 == f_fill_addr_q[2+:IndexWidth])
         && !(i_fill_valid
              && i_fill_addr[2+:IndexWidth]
