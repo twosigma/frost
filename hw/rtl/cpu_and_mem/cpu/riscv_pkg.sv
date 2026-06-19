@@ -475,6 +475,13 @@ package riscv_pkg;
   // mstatus bit positions (RV32)
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
+  // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17 (RV32).
+  localparam int unsigned MstatusMppLo = 11;
+  localparam int unsigned MstatusMprvBit = 17;
+
+  // Privilege modes (RISC-V encoding). FROST implements Machine and User only.
+  localparam logic [1:0] PrivU = 2'b00;
+  localparam logic [1:0] PrivM = 2'b11;
 
   // mie/mip bit positions
   localparam int unsigned MieMsiBit = 3;  // Machine Software Interrupt
@@ -486,6 +493,7 @@ package riscv_pkg;
   localparam bit [31:0] ExcBreakpoint = 32'd3;
   localparam bit [31:0] ExcLoadAddrMisalign = 32'd4;
   localparam bit [31:0] ExcStoreAddrMisalign = 32'd6;
+  localparam bit [31:0] ExcEcallUmode = 32'd8;
   localparam bit [31:0] ExcEcallMmode = 32'd11;
 
   // Interrupt cause codes (mcause values when interrupt bit = 1)

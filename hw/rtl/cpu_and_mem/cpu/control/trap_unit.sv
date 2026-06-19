@@ -96,6 +96,10 @@ module trap_unit #(
     // Direct MIE bit input keeps mstatus bit extraction out of this path.
     input logic i_mstatus_mie_direct,
 
+    // Current privilege mode. Machine interrupts are taken whenever running
+    // below M (priv != PrivM) regardless of mstatus.MIE (RISC-V privileged spec).
+    input logic [1:0] i_priv,
+
     // Interrupt pending inputs
     input riscv_pkg::interrupt_t i_interrupts,
 
@@ -143,11 +147,16 @@ module trap_unit #(
     else trap_taken_prev <= o_trap_taken;
   end
 
-  // Interrupt pending and enabled (gate by !trap_taken_prev to prevent re-entry)
+  // Interrupt pending and enabled (gate by !trap_taken_prev to prevent re-entry).
+  // Global M-interrupt enable: mstatus.MIE while in M, but ALWAYS enabled while
+  // running below M (priv != PrivM) so a machine timer/SW/ext interrupt can
+  // preempt U-mode even with MIE=0 (RISC-V privileged spec).
+  logic m_int_globally_enabled;
+  assign m_int_globally_enabled = mstatus_mie || (i_priv != riscv_pkg::PrivM);
   logic meip_enabled, mtip_enabled, msip_enabled;
-  assign meip_enabled = i_interrupts.meip && mie_meie && mstatus_mie && !trap_taken_prev;
-  assign mtip_enabled = i_interrupts.mtip && mie_mtie && mstatus_mie && !trap_taken_prev;
-  assign msip_enabled = i_interrupts.msip && mie_msie && mstatus_mie && !trap_taken_prev;
+  assign meip_enabled = i_interrupts.meip && mie_meie && m_int_globally_enabled && !trap_taken_prev;
+  assign mtip_enabled = i_interrupts.mtip && mie_mtie && m_int_globally_enabled && !trap_taken_prev;
+  assign msip_enabled = i_interrupts.msip && mie_msie && m_int_globally_enabled && !trap_taken_prev;
 
   // TIMING OPTIMIZATION: Register interrupt_pending to break critical path.
   // The combinational path from msip -> interrupt_pending -> take_trap -> stall -> cache

@@ -91,6 +91,11 @@ module csr_file #(
     // Direct output of mstatus MIE bit for timing and simpler consumers.
     output logic o_mstatus_mie_direct,
 
+    // Current privilege mode (PrivM/PrivU): consumed by trap_unit (interrupt
+    // enable while in U) and the commit-time ECALL cause select. Changes only
+    // on trap entry and MRET.
+    output logic [1:0] o_priv,
+
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
     input logic i_fp_flags_valid,  // Valid when FP instruction retires (gated by o_vld)
@@ -140,8 +145,14 @@ module csr_file #(
   // do not require read/modify/write of the full CSR word.
   logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
-  logic [XLEN-1:0] mstatus;  // Constructed from mie and mpie
-  assign mstatus = {19'b0, 2'b11, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0};
+  logic [     1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
+  logic            mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
+  logic [XLEN-1:0] mstatus;  // Constructed from the fields above
+  assign mstatus = {
+    14'b0, mstatus_mprv, 4'b0, mstatus_mpp, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0
+  };
+  assign o_priv = priv_q;
 
   // mie CSR: store each interrupt enable as separate register
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
@@ -153,6 +164,9 @@ module csr_file #(
   // Next-state signals for mstatus bits (computed combinationally)
   logic next_mstatus_mie;
   logic next_mstatus_mpie;
+  logic [1:0] next_mstatus_mpp;
+  logic next_mstatus_mprv;
+  logic [1:0] next_priv;
   // Next-state signals for mie bits
   logic next_mie_msie;
   logic next_mie_mtie;
@@ -169,10 +183,11 @@ module csr_file #(
   logic [XLEN-1:0] mip;
   assign mip = {20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0};
 
-  // misa is read-only: RV32IMAFDC + B (= RV32GCB)
-  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M) = 0x0000_112F
+  // misa is read-only: RV32IMAFDC + B + U (= RV32GCB with User mode)
+  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M),
+  // Bit 20 (U) = 0x0010_112F
   // MXL = 1 (32-bit) in bits [31:30]
-  localparam logic [XLEN-1:0] MisaValue = 32'h4000_112F;
+  localparam logic [XLEN-1:0] MisaValue = 32'h4010_112F;
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
@@ -318,22 +333,35 @@ module csr_file #(
     // Default: keep current values
     next_mstatus_mie = mstatus_mie;
     next_mstatus_mpie = mstatus_mpie;
+    next_mstatus_mpp = mstatus_mpp;
+    next_mstatus_mprv = mstatus_mprv;
+    next_priv = priv_q;
     next_mie_msie = mie_msie;
     next_mie_mtie = mie_mtie;
     next_mie_meie = mie_meie;
 
     if (i_trap_taken) begin
-      // Trap entry: save MIE to MPIE, clear MIE
+      // Trap entry: save MIE->MPIE, clear MIE, save priv->MPP, enter M-mode.
       next_mstatus_mpie = mstatus_mie;
       next_mstatus_mie  = 1'b0;
+      next_mstatus_mpp  = priv_q;
+      next_priv         = riscv_pkg::PrivM;
     end else if (i_mret_taken) begin
-      // MRET: restore MIE from MPIE, set MPIE to 1
+      // MRET: restore MIE<-MPIE, MPIE=1, return to MPP's privilege, set MPP=U,
+      // and clear MPRV if returning below M (per the privileged spec).
       next_mstatus_mie  = mstatus_mpie;
       next_mstatus_mpie = 1'b1;
+      next_priv         = mstatus_mpp;
+      if (mstatus_mpp != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
+      next_mstatus_mpp = riscv_pkg::PrivU;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
-        next_mstatus_mie  = csr_new_value[3];
+        next_mstatus_mie = csr_new_value[3];
         next_mstatus_mpie = csr_new_value[7];
+        // MPP is WARL: FROST implements only M and U, so fold S/reserved -> U.
+        next_mstatus_mpp  = (csr_new_value[12:11] == riscv_pkg::PrivM) ?
+            riscv_pkg::PrivM : riscv_pkg::PrivU;
+        next_mstatus_mprv = csr_new_value[17];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
         next_mie_msie = csr_new_value[3];
         next_mie_mtie = csr_new_value[7];
@@ -348,12 +376,18 @@ module csr_file #(
     if (i_rst) begin
       mstatus_mie <= 1'b0;
       mstatus_mpie <= 1'b0;
+      mstatus_mpp <= riscv_pkg::PrivU;
+      mstatus_mprv <= 1'b0;
+      priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
       mie_meie <= 1'b0;
     end else begin
       mstatus_mie <= next_mstatus_mie;
       mstatus_mpie <= next_mstatus_mpie;
+      mstatus_mpp <= next_mstatus_mpp;
+      mstatus_mprv <= next_mstatus_mprv;
+      priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
       mie_meie <= next_mie_meie;
