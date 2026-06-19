@@ -193,7 +193,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="ddr_atomic_test",
         description="RV32-A atomics to the cached DDR region (LR/SC, AMO)",
-        include_in_pytest=False,
+        include_in_pytest=True,
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
