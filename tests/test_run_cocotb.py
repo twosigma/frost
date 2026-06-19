@@ -181,6 +181,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="clint_test",
         description="SiFive CLINT alias directed test (Linux glue)",
     ),
+    "linux_boot": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_boot",
+        description="No-MMU Linux boot (kernel Image in DDR)",
+        include_in_pytest=False,
+    ),
+    "ddr_atomic_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_atomic_test",
+        description="RV32-A atomics to the cached DDR region (LR/SC, AMO)",
+        include_in_pytest=False,
+    ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
