@@ -448,13 +448,16 @@ make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
   selects `common/link_ddr.ld` and splits all loadable sections into the DDR
   image (`sw_ddr.mem`), leaving only the boot stub in `sw.mem`.
 
-The CI runs the cocotb, arch-compliance, riscv-tests, and riscv-torture suites in
-both a `bram` tier and a `ddr` tier as separate jobs. The harnesses select the
-tier via `--mem-config` (`test_arch_compliance.py`, `test_riscv_tests.py`,
-`test_riscv_torture.py`) or `FROST_COCOTB_MEM_CONFIG=ddr`
-(`test_run_cocotb.py` / `compile_app.py`). A handful of suites
-(`riscv_tests`, `arch_test`, `riscv_torture`, `freertos_demo`) keep their own
-per-config linker scripts and boot stubs (`link_*_ddr.ld`, `crt0_*_ddr*.S`).
+The CI runs the cocotb real-program, riscv-tests, and riscv-torture suites in
+both a `bram` tier and a `ddr` tier as separate jobs. Arch compliance uses the
+same memory-tier machinery, but CI skips the very slow F/D DDR permutations;
+FPU conformance remains covered by F/D BRAM jobs, and DDR/cache behavior by the
+other DDR tiers. The harnesses select the tier via `--mem-config`
+(`test_arch_compliance.py`, `test_riscv_tests.py`, `test_riscv_torture.py`) or
+`FROST_COCOTB_MEM_CONFIG=ddr` (`test_run_cocotb.py` / `compile_app.py`). A
+handful of suites (`riscv_tests`, `arch_test`, `riscv_torture`, `freertos_demo`)
+keep their own per-config linker scripts and boot stubs (`link_*_ddr.ld`,
+`crt0_*_ddr*.S`).
 
 ### Clock Frequency
 
@@ -470,8 +473,9 @@ and benchmark normalization match the target board.
 ## Memory Map
 
 The unified memory map is identical on every board and in simulation; the
-cache hierarchy behind the cached region (L1 BRAM on every board, plus a
-URAM L2 on UltraScale+, over the board's DDR) is opaque to software.
+cache hierarchy behind the cached region (128 KiB L1D + 16 KiB L1I on every
+board, plus a URAM L2 on UltraScale+, over the board's DDR) is opaque to
+software.
 
 Defined in `common/link.ld`:
 
@@ -480,7 +484,7 @@ Defined in `common/link.ld`:
 | ROM    | `0x00000000` | 96 KiB  | Code and small read-only data (fast BRAM, 1-cycle) |
 | RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack (fast BRAM, 1-cycle)     |
 | MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals                      |
-| DDR    | `0x80000000` | 1 GiB   | Cached region: malloc heap, large `.ddr_*` data    |
+| DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
 
 Within the DDR region, loaded `.ddr_rodata`/`.ddr_data` sections (e.g.
 radix2's ~800 KiB FFT tables, routed there by per-object linker rules or an

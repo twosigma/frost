@@ -619,8 +619,9 @@ def enc_fence() -> int:
 def enc_fence_i() -> int:
     """Encode FENCE.I instruction (opcode 0x0F, funct3 0x1).
 
-    FENCE.I synchronizes instruction and data streams. In implementations
-    without instruction cache, this is effectively a NOP.
+    FENCE.I synchronizes instruction and data streams. On FROST this publishes
+    self-modified cached-region code by forcing the cache-sync path: L1D dirty
+    writeback, L1I invalidate, and front-end fetch-buffer flush.
 
     Format: imm[11:0] | rs1 | funct3 | rd | opcode
     Standard encoding: 0x0000100f (imm=0, rs1=0, rd=0)

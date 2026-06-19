@@ -49,13 +49,14 @@ README](README.md#memory-map) has the address table.
 | `.data` / `.sdata` | RAM | Initialized data (copied from ROM by crt0) |
 | `.sbss` / `.bss` | RAM | Zero-initialized data |
 | Stack | RAM | Grows down from top of low RAM (`0x0004_0000`) |
-| `.ddr_*` / heap | DDR | Opt-in large sections and the malloc heap (cached region) |
+| `.ddr_*` / heap | DDR | Opt-in code/data sections and the malloc heap (cached region) |
 
 Keep the low-BRAM footprint compact (the linker asserts on ROM/stack overflow).
 Use `make size` to check memory usage. Large datasets and the heap belong in the
 cached DDR region via the `.ddr_*` sections or the allocator. The whole program
-can instead be relocated into the cached region with `make MEM_CONFIG=ddr` (see
-the [README build options](README.md#memory-configuration-bram-vs-ddr-tier)).
+can instead be relocated into the cached region and executed through L1I with
+`make MEM_CONFIG=ddr` (see the
+[README build options](README.md#memory-configuration-bram-vs-ddr-tier)).
 
 ## License Headers
 

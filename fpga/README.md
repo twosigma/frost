@@ -29,13 +29,14 @@ This directory contains the complete infrastructure for building, programming, a
 │                                 │                           │               │
 │                                 v                           │               │
 │                        ┌──────────────────┐                 │               │
-│                        │  sw.txt (hex)    │                 │               │
+│                        │  sw.txt          │                 │               │
+│                        │ (+sw_ddr.txt)    │                 │               │
 │                        └────────┬─────────┘                 │               │
 │                                 │                           │               │
 │                                 v                           v               │
 │                        ┌──────────────────────────────────────────────┐     │
 │                        │         load_software/load_software.py       │     │
-│                        │    (loads program to BRAM via JTAG - fast)   │     │
+│                        │ (loads BRAM + optional DDR via JTAG - fast)  │     │
 │                        └──────────────────────────────────────────────┘     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -47,7 +48,7 @@ The FPGA tooling is organized into three main workflows:
 |----------------------|--------------------------------------------|
 | `build/`             | Synthesize and generate bitstream          |
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
-| `load_software/`     | Load software into BRAM without reprogramming |
+| `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
 
 ## Prerequisites
 
@@ -134,7 +135,11 @@ Program the FPGA with the generated bitstream via JTAG.
 
 ## Loading Software
 
-Load software into instruction memory without regenerating the bitstream. This enables rapid iteration during development. Applications are compiled automatically before loading—no manual build step required. The board argument sets the correct clock frequency and scales CoreMark iterations appropriately.
+Load software without regenerating the bitstream. The loader writes the
+low-BRAM image and, when the app emits a non-empty `sw_ddr.txt`, bursts that
+cached-region image into DDR before releasing reset. Applications are compiled
+automatically before loading—no manual build step required. The board argument
+sets the correct clock frequency and scales CoreMark iterations appropriately.
 
 ```bash
 ./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]
@@ -147,7 +152,9 @@ Load software into instruction memory without regenerating the bitstream. This e
 - `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
 - `--list-targets` - (Optional) List available hardware targets for this board and exit (does not require `app`)
 
-The script compiles the application with the correct clock frequency for the target board and writes the resulting hex file to BRAM starting at address `0x00000000`.
+The script compiles the application with the correct clock frequency for the
+target board, writes `sw.txt` to low BRAM starting at address `0x00000000`, and
+loads `sw_ddr.txt` into DDR first when the application uses the cached region.
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 1 stop bit (8N1) to view the board UART console.
@@ -291,10 +298,9 @@ To program or load software on a remote FPGA:
 ### Adding a New Application
 
 1. Add a `sw/apps/<app>/` directory whose `make` produces `sw.txt` (hex format,
-   one 32-bit word per line) and `sw.mem`. An app that places a working set in
-   the cached DDR region (built with `MEM_CONFIG=ddr`) also produces a
-   `sw_ddr.txt`/`sw_ddr.mem` image that the loader bursts into DDR over a
-   second JTAG-AXI master.
+   one 32-bit word per line) and `sw.mem`. An app that places code or data in
+   the cached DDR region also produces a `sw_ddr.txt`/`sw_ddr.mem` image that
+   the loader bursts into DDR over a second JTAG-AXI master.
 
 2. Register the app name in both `VALID_APPS` in
    `load_software/load_software.py` and the `valid_apps` list in
@@ -324,7 +330,7 @@ To program or load software on a remote FPGA:
 
 **Software not running after load**
 - Verify the hex file format (one 32-bit word per line, no address prefix)
-- Check that the program fits in available BRAM
+- Check that the low-BRAM image fits and any required `sw_ddr.txt` image was loaded
 
 ## License
 

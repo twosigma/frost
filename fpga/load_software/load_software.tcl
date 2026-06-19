@@ -12,8 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Vivado TCL script to load software into FPGA instruction memory via JTAG
-# Writes compiled program into BRAM through AXI interface without reprogramming bitstream
+# Vivado TCL script to load software images via JTAG.
+# Writes the low-BRAM image through AXI and, when present, bursts the
+# cached-region image into DDR through the board's second JTAG-AXI master.
 
 if { $argc < 3 } {
     puts "Error: Project root, software application name, and hardware target required"
@@ -36,11 +37,14 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
                             coremark_pro_radix2 coremark_pro_sha \
                             coremark_pro_zip]
 
-# Valid software applications (alphabetically sorted)
-set valid_apps [list branch_pred_test c_ext_test call_stress coremark \
-                     {*}$coremark_pro_apps csr_test freertos_demo hello_world isa_test memory_test \
+# Valid software applications (mirrors load_software.py VALID_APPS)
+set valid_apps [list branch_pred_test c_ext_test call_stress cf_ext_test coremark \
+                     {*}$coremark_pro_apps csr_test ddr_exec_test ddr_heap_test \
+                     ddr_smc_test ddr_test freertos_demo fpu_assembly_test fpu_test \
+                     hello_world isa_test memory_test \
                      packet_parser print_clock_speed ras_stress_test ras_test \
-                     spanning_test strings_test uart_echo ddr_heap_test ddr_test]
+                     spanning_test sprintf_test strings_test tomasulo_perf \
+                     tomasulo_test uart_echo]
 
 if { [lsearch -exact $valid_apps $software_application_name] == -1 } {
     puts "Error: Invalid software app '$software_application_name'"
@@ -177,7 +181,7 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
     file2ddr $ddr_text_file $ddr_axi
 }
 
-# Write software to instruction memory starting at address 0
+# Write software to low BRAM starting at address 0.
 file2bram $bram_base_address $firmware_text_file $bram_axi
 
 # Load complete. The CPU was held in reset for the entire transfer above and

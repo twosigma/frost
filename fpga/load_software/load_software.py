@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Load software application to FPGA instruction memory via JTAG."""
+"""Load a software application image to FPGA low BRAM and optional DDR via JTAG."""
 
 import argparse
 import os
@@ -72,14 +72,13 @@ VALID_APPS = [
 # Iterations are calibrated for ~10 second runtime on each board
 BOARD_CONFIG = {
     # has_ddr: the bitstream wires the cached tier to a real DDR controller.
-    # Both stay False until the Phase 2 (genesys2 DDR3) / Phase 3 (X3 DDR4)
-    # hardware integration lands; until then DDR-region apps are sim-only.
-    # Requires the Phase-3 bitstream (DDR4 + L1/L2 cache hierarchy).
+    # Both supported boards now provide the JTAG DDR-image loader and the
+    # DDR-backed cached region; leave this flag available for future board
+    # bring-up where the low-BRAM loader exists before the DDR path.
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
     "genesys2": {
         "clock_freq": 133333333,
         "coremark_iterations": 5000,
-        # Requires the Phase-2 bitstream (DDR3 + cache hierarchy).
         "has_ddr": True,
     },
 }
@@ -175,12 +174,13 @@ def compile_app_for_board(
 
 
 def main() -> None:
-    """Load software application to FPGA instruction memory via JTAG.
+    """Load software application images to FPGA low BRAM and optional DDR via JTAG.
 
-    Writes compiled program to BRAM through JTAG interface without reprogramming FPGA.
+    Writes the low-BRAM image and optional cached-region DDR image through JTAG
+    without reprogramming FPGA.
     """
     parser = argparse.ArgumentParser(
-        description="Load software application to FPGA instruction memory via JTAG"
+        description="Load software application images to FPGA low BRAM and optional DDR via JTAG"
     )
     parser.add_argument(
         "board",
@@ -334,15 +334,12 @@ def main() -> None:
         parser.error("parser reference diagnostics require -v1 validation mode")
 
     # Guard: DDR-region apps need a bitstream with the cached tier wired to a
-    # real DDR controller. Until the DDR hardware integration lands for this
-    # board, that address range reads back zero -- refuse rather than silently
-    # load a broken image.
+    # real DDR controller. Refuse rather than silently load a broken image if a
+    # future board enables the low-BRAM loader before its DDR path is wired.
     if args.software_app in DDR_APPS and not BOARD_CONFIG[args.board]["has_ddr"]:
         parser.error(
             f"'{args.software_app}' uses the DDR-backed cached region, which "
-            f"board '{args.board}' does not provide yet (DDR controller "
-            f"integration pending). These apps currently run in simulation "
-            f"only."
+            f"board '{args.board}' does not provide in this bitstream."
         )
 
     coremark_pro_error = coremark_pro_hardware_error(args.software_app)
