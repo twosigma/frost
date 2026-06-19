@@ -163,6 +163,15 @@ module cpu_and_mem #(
   localparam int unsigned Ns16550Msr = 32'h4000_1018;  // read-only modem status
   localparam int unsigned Ns16550Scr = 32'h4000_101C;  // scratch
 
+  // SiFive CLINT alias for Linux (compatible "sifive,clint0") @ 0x4001_0000.
+  // These map onto the SAME msip/mtimecmp/mtime registers as the native FROST
+  // timer block; the kernel reaches the timer through the CLINT layout via DTB.
+  localparam int unsigned ClintMsip = 32'h4001_0000;  // hart-0 software interrupt
+  localparam int unsigned ClintMtimecmpLo = 32'h4001_4000;  // mtimecmp[31:0]
+  localparam int unsigned ClintMtimecmpHi = 32'h4001_4004;  // mtimecmp[63:32]
+  localparam int unsigned ClintMtimeLo = 32'h4001_BFF8;  // mtime[31:0]
+  localparam int unsigned ClintMtimeHi = 32'h4001_BFFC;  // mtime[63:32]
+
   // Timer register defaults
   // Default mtimecmp to max value so no timer interrupt fires until software configures it
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
@@ -861,6 +870,12 @@ module cpu_and_mem #(
       mmio_read_data_comb = {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid};
       Ns16550Msr: mmio_read_data_comb = {24'b0, 8'hB0};  // DCD|DSR|CTS asserted
       Ns16550Scr: mmio_read_data_comb = {24'b0, ns_scr};
+      // SiFive CLINT alias (same registers as the native timer block).
+      ClintMsip: mmio_read_data_comb = {31'b0, msip};
+      ClintMtimecmpLo: mmio_read_data_comb = mtimecmp[31:0];
+      ClintMtimecmpHi: mmio_read_data_comb = mtimecmp[63:32];
+      ClintMtimeLo: mmio_read_data_comb = mtime[31:0];
+      ClintMtimeHi: mmio_read_data_comb = mtime[63:32];
       default: ;
     endcase
   end
@@ -971,9 +986,11 @@ module cpu_and_mem #(
   // This would cause the non-written half to increment during a write, which is wrong.
   logic writing_mtime_low, writing_mtime_high;
   assign writing_mtime_low = |data_memory_byte_write_enable_registered &&
-                             (data_memory_address_registered == MtimeLowMmioAddr);
+                             ((data_memory_address_registered == MtimeLowMmioAddr) ||
+                              (data_memory_address_registered == ClintMtimeLo));
   assign writing_mtime_high = |data_memory_byte_write_enable_registered &&
-                              (data_memory_address_registered == MtimeHighMmioAddr);
+                              ((data_memory_address_registered == MtimeHighMmioAddr) ||
+                               (data_memory_address_registered == ClintMtimeHi));
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -997,11 +1014,12 @@ module cpu_and_mem #(
       if (|data_memory_byte_write_enable_registered) begin
         unique case (data_memory_address_registered)
           // mtimecmp controls timer interrupt threshold
-          MtimecmpLowMmioAddr:  mtimecmp[31:0] <= data_memory_write_data_registered;
-          MtimecmpHighMmioAddr: mtimecmp[63:32] <= data_memory_write_data_registered;
+          MtimecmpLowMmioAddr, ClintMtimecmpLo: mtimecmp[31:0] <= data_memory_write_data_registered;
+          MtimecmpHighMmioAddr, ClintMtimecmpHi:
+          mtimecmp[63:32] <= data_memory_write_data_registered;
           // msip controls software interrupt (only bit 0 is writable)
-          MsipMmioAddr:         msip <= data_memory_write_data_registered[0];
-          default:              ;
+          MsipMmioAddr, ClintMsip: msip <= data_memory_write_data_registered[0];
+          default: ;
         endcase
       end
     end
