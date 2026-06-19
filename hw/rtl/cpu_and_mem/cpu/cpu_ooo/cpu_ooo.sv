@@ -840,6 +840,8 @@ module cpu_ooo #(
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
+  riscv_pkg::exc_cause_t rob_trap_cause_remapped;
+  logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
   logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
@@ -1858,6 +1860,25 @@ module cpu_ooo #(
     endcase
   end
 
+  // ECALL cause is privilege-dependent (U-mode = 8, M-mode = 11). The FU shim
+  // tags every ECALL as ExcEcallMmode (it has no architectural privilege), so
+  // remap at commit using the current privilege. csr_file writes this to mcause
+  // -- the load-bearing path. It is also fed to trap_unit.i_exception_cause for
+  // symmetry, though FROST does not vector mtvec on synchronous-exception causes
+  // (only interrupts vector) and trap_unit's own o_trap_cause is unused. The
+  // csr_trap_value (mtval) mux above intentionally keeps the ORIGINAL cause
+  // (ECALL mtval is 0 either way).
+  //
+  // SAFE against the cause==11 / IntMachineExternal (0x8000_000B) low-bit
+  // collision: rob_trap_cause carries synchronous-exception causes ONLY (ROB
+  // o_trap_cause = head_exc_cause; the ROB's i_interrupt_pending is WFI-wakeup
+  // only, never a cause source), so a value of 11 here is unambiguously an
+  // M-mode ECALL.
+  assign rob_trap_cause_remapped =
+      ((rob_trap_cause == riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]) &&
+       (csr_priv == riscv_pkg::PrivU)) ?
+      riscv_pkg::ExcEcallUmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
+
   csr_file #(
       .XLEN(XLEN)
   ) csr_file_inst (
@@ -1875,7 +1896,7 @@ module cpu_ooo #(
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
       .i_trap_pc(rob_trap_pc),
-      .i_trap_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
+      .i_trap_cause({{(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped}),
       .i_trap_value(csr_trap_value),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
@@ -1883,6 +1904,7 @@ module cpu_ooo #(
       .o_mtvec(csr_mtvec),
       .o_mepc(csr_mepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .o_priv(csr_priv),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
@@ -1935,10 +1957,13 @@ module cpu_ooo #(
       .i_mtvec(csr_mtvec),
       .i_mepc(csr_mepc),
       .i_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .i_priv(csr_priv),
       .i_interrupts(i_interrupts),
       // Exception from ROB commit
       .i_exception_valid(trap_pending),
-      .i_exception_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
+      .i_exception_cause({
+        {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
+      }),
       .i_exception_tval('0),
       .i_exception_pc(rob_trap_pc),
       .i_mret_start(mret_start),
