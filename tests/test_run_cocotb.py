@@ -163,6 +163,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="csr_test",
         description="CSR test",
     ),
+    "umode_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="umode_test",
+        description="U-mode (User privilege) directed test",
+    ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
