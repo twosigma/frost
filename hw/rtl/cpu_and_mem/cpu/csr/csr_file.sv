@@ -169,10 +169,10 @@ module csr_file #(
   logic [XLEN-1:0] mip;
   assign mip = {20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0};
 
-  // misa is read-only: RV32IMAFB
-  // Bit 0 (A), Bit 1 (B), Bit 5 (F), Bit 8 (I), Bit 12 (M) = 0x0000_1123
+  // misa is read-only: RV32IMAFDC + B (= RV32GCB)
+  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M) = 0x0000_112F
   // MXL = 1 (32-bit) in bits [31:30]
-  localparam logic [XLEN-1:0] MisaValue = 32'h4000_1123;
+  localparam logic [XLEN-1:0] MisaValue = 32'h4000_112F;
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
