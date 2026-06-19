@@ -71,8 +71,9 @@ module xilinx_frost_subsystem #(
     input  logic         i_ddr_axi_rlast
 );
 
-  // AXI4-Lite interface signals between JTAG-to-AXI bridge and AXI-to-BRAM controller
-  // Used for programming instruction memory via JTAG without reprogramming FPGA
+  // AXI4-Lite interface signals between JTAG-to-AXI bridge and AXI-to-BRAM controller.
+  // Used for programming the low-BRAM image via JTAG without reprogramming the FPGA;
+  // cached-region DDR images are loaded through the board's separate DDR JTAG master.
   logic [31:0] axi_write_address;
   logic [ 2:0] axi_write_protection;
   logic        axi_write_address_valid;
@@ -93,7 +94,7 @@ module xilinx_frost_subsystem #(
   logic        axi_read_data_valid;
   logic        axi_read_data_ready;
 
-  // BRAM interface signals for instruction memory programming
+  // BRAM interface signals for low-BRAM image programming.
   logic        instruction_memory_enable;
   logic [ 3:0] instruction_memory_write_enable;
   logic [17:0] instruction_memory_address;

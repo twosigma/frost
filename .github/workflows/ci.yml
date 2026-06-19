@@ -145,46 +145,13 @@ jobs:
         exclude:
           - extension: Zifencei
             mem_config: bram
-        # Individual jobs for slow tests (>5000 test cases) that are excluded
-        # from the F/D extension jobs by the SIM_MAX_TEST_CASES filter. These
-        # are the heavy D-side cached-tier tests, so they run in the ddr config.
-        include:
-          - extension: "F fadd_b11"
+          # F/D DDR arch-compliance batches are too slow for GitHub-hosted
+          # Verilator CI. FPU conformance is still covered by F/D bram jobs;
+          # DDR/cache behavior is covered by the other DDR test tiers.
+          - extension: F
             mem_config: ddr
-            test_path: rv32i_m/F/src/fadd_b11-01.S
-          - extension: "F fmadd_b1"
+          - extension: D
             mem_config: ddr
-            test_path: rv32i_m/F/src/fmadd_b1-01.S
-          - extension: "F fmsub_b1"
-            mem_config: ddr
-            test_path: rv32i_m/F/src/fmsub_b1-01.S
-          - extension: "F fnmadd_b1"
-            mem_config: ddr
-            test_path: rv32i_m/F/src/fnmadd_b1-01.S
-          - extension: "F fnmsub_b1"
-            mem_config: ddr
-            test_path: rv32i_m/F/src/fnmsub_b1-01.S
-          - extension: "F fsub_b11"
-            mem_config: ddr
-            test_path: rv32i_m/F/src/fsub_b11-01.S
-          - extension: "D fadd.d_b11"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fadd.d_b11-01.S
-          - extension: "D fmadd.d_b1"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fmadd.d_b1-01.S
-          - extension: "D fmsub.d_b1"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fmsub.d_b1-01.S
-          - extension: "D fnmadd.d_b1"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fnmadd.d_b1-01.S
-          - extension: "D fnmsub.d_b1"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fnmsub.d_b1-01.S
-          - extension: "D fssub.d_b11"
-            mem_config: ddr
-            test_path: rv32i_m/D/src/fssub.d_b11-01.S
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

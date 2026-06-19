@@ -100,7 +100,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
 - **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a 16 KiB read-only L1I) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
-- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (heap and large data); the hierarchy shape behind it is opaque to software
+- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (execute-from-DDR code, heap, and large data); the hierarchy shape behind it is opaque to software
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
@@ -285,7 +285,7 @@ Running `pytest tests/` exercises:
 - **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
 - **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
 
-Most program-level suites (architecture compliance, riscv-tests, riscv-torture, and the Cocotb real programs) run in **two memory tiers as separate CI jobs**: a `bram` tier (whole program in low BRAM — pure ISA correctness) and a `ddr` tier (whole program relocated to the cached DDR region — exercising the L1I fetch path and the D-side cache). A test that passes in `bram` but fails in `ddr` isolates the bug to the cache/fetch path rather than the ISA logic.
+Most program-level suites run in **two memory tiers as separate CI jobs**: a `bram` tier (whole program in low BRAM — pure ISA correctness) and a `ddr` tier (whole program relocated to the cached DDR region — exercising the L1I fetch path and the D-side cache). Arch compliance keeps the same tier model, but CI skips the very slow F/D DDR permutations because FPU conformance is covered by F/D BRAM jobs and DDR/cache behavior is covered by the other DDR tiers.
 
 ### FPGA Deployment
 
@@ -333,15 +333,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 147,519 | 1,029,600 | 14.3% |
-|   LUT as Logic | 137,315 | 1,029,600 | 13.3% |
+| CLB LUTs | 148,337 | 1,029,600 | 14.4% |
+|   LUT as Logic | 138,133 | 1,029,600 | 13.4% |
 |   LUT as Distributed RAM | 9,034 | — | — |
 |   LUT as Shift Register | 1,170 | — | — |
-| CLB Registers | 112,522 | 2,059,200 | 5.5% |
-| Block RAM Tile | 244 | 2,112 | 11.6% |
+| CLB Registers | 113,144 | 2,059,200 | 5.5% |
+| Block RAM Tile | 240 | 2,112 | 11.4% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 35 | 1,320 | 2.6% |
-| CARRY8 | 4,419 | 128,700 | 3.4% |
+| CARRY8 | 4,415 | 128,700 | 3.4% |
 | F7 Muxes | 208 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |

@@ -317,6 +317,7 @@ FROM_ID_TO_EX_FIELDS = [
     ("fp_source_reg_2_data", FLEN),
     ("fp_source_reg_3_data", FLEN),
     ("link_address", XLEN),
+    ("is_compressed", 1),
     ("branch_target_precomputed", XLEN),
     ("jal_target_precomputed", XLEN),
     ("instruction", INSTR_WIDTH),

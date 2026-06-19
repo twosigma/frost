@@ -66,6 +66,7 @@ PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
     ("instruction", 32),
     ("link_address", XLEN),
+    ("is_compressed", 1),
     ("source_reg_1_early", 5),
     ("source_reg_2_early", 5),
     ("fp_source_reg_3_early", 5),
@@ -242,6 +243,7 @@ async def _setup_test(dut: Any) -> None:
 def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     """Assert that a PD output packet contains an idle instruction slot."""
     assert packet["instruction"] == NOP_INSTR
+    assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
     assert packet["fp_source_reg_3_early"] == 0
@@ -299,7 +301,8 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     packet = _read_pd_packet(dut)
     assert packet["program_counter"] == BASE_PC
     assert packet["instruction"] == instruction
-    assert packet["link_address"] == BASE_PC + 4
+    assert packet["link_address"] == 0
+    assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 11
     assert packet["source_reg_2_early"] == 12
     assert packet["fp_source_reg_3_early"] == 0
@@ -340,6 +343,8 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
     packet = _read_pd_packet(dut)
     assert packet["instruction"] == expected
+    assert packet["link_address"] == 0
+    assert packet["is_compressed"] is True
     assert packet["source_reg_1_early"] == 3
     assert packet["source_reg_2_early"] == 1
     assert packet["fp_source_reg_3_early"] == 0
@@ -375,6 +380,7 @@ async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
     packet = _read_pd_packet(dut)
     assert packet["program_counter"] == BASE_PC
     assert packet["instruction"] == NOP_INSTR
+    assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
     assert packet["fp_source_reg_3_early"] == 0

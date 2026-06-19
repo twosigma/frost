@@ -4,15 +4,16 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 
 ## Supported Boards
 
-| Board                  | FPGA                               | CPU Clock  | Cache hierarchy → main memory                | Features                 |
-|------------------------|------------------------------------|------------|----------------------------------------------|--------------------------|
-| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB BRAM L1 → 1 GiB DDR3                  | Entry-level development  |
-| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB BRAM L1 → 2 MiB URAM L2 → 1 GiB DDR4  | High-performance target  |
+| Board                  | FPGA                               | CPU Clock  | Cache hierarchy → main memory                         | Features                 |
+|------------------------|------------------------------------|------------|-------------------------------------------------------|--------------------------|
+| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB L1D + 16 KiB L1I → 1 GiB DDR3                 | Entry-level development  |
+| [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 | High-performance target  |
 
 Both boards expose the identical software-visible memory map (256 KiB fast
-low BRAM + a 1 GiB cached region at `0x8000_0000`); only the hierarchy shape
-differs (`CACHED_HAS_L2` in the board top). Each board's DDR controller lives
-in a small `ddr_subsys` block design assembled by the build flow
+low BRAM + a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code,
+heap, and large data); only the hierarchy shape differs (`CACHED_HAS_L2` in
+the board top). Each board's DDR controller lives in a small `ddr_subsys`
+block design assembled by the build flow
 (`fpga/build/genesys2_ddr_bd.tcl` / `fpga/build/x3_ddr_bd.tcl`): the memory
 controller IP (MIG DDR3 / DDR4), a SmartConnect front end carrying the FROST
 cache-bridge AXI and a JTAG-AXI master for DDR image loading, and
@@ -60,14 +61,14 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 │  │  │      │                    FROST CPU                           │  │  │
 │  │  │      v                                                        │  │  │
 │  │  │  ┌─────────────┐   ┌────────────────────┐   ┌─────────────┐   │  │  │
-│  │  │  │ Instruction │<──│  FROST OOO CPU     │   │  UART TX    │───┼──┼─>│
-│  │  │  │   Memory    │   │ (IF-PD-ID+Tomasulo)│   │  UART RX    │<──┼──┼──│
-│  │  │  │   (BRAM)    │   └────────────────────┘   └─────────────┘   │  │  │
+│  │  │  │  Low BRAM   │<──│  FROST OOO CPU     │   │  UART TX    │───┼──┼─>│
+│  │  │  │ code/data   │   │ (IF-PD-ID+Tomasulo)│   │  UART RX    │<──┼──┼──│
+│  │  │  │  + loader   │   └────────────────────┘   └─────────────┘   │  │  │
 │  │  │  └─────────────┘                                              │  │  │
 │  │  │                                                               │  │  │
 │  │  │  ┌─────────────────────────────────────────────────────────┐  │  │  │
 │  │  │  │ Image Load Reset Logic                                  │  │  │  │
-│  │  │  │ • Detects JTAG writes to instruction memory             │  │  │  │
+│  │  │  │ • Detects JTAG software-image loads                     │  │  │  │
 │  │  │  │ • Holds CPU in reset during software loading            │  │  │  │
 │  │  │  │ • Releases reset after counter expires                  │  │  │  │
 │  │  │  └─────────────────────────────────────────────────────────┘  │  │  │
@@ -77,11 +78,18 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
+The diagram is simplified: low BRAM is the fast uncached region, while
+high-address instruction fetch and data accesses go through the L1I/L1D cache
+hierarchy and the board DDR subsystem described above.
+
 ## Key Features
 
 ### JTAG-Based Software Loading
 
-Programs are loaded into instruction memory via JTAG without reprogramming the FPGA bitstream. This enables rapid software iteration:
+Programs are loaded via JTAG without reprogramming the FPGA bitstream. The
+loader always writes the low-BRAM image and, when the app emits `sw_ddr.txt`,
+bursts the cached-region image into DDR through the board's second JTAG-AXI
+master before releasing the CPU. This enables rapid software iteration:
 
 1. Synthesize and program the FPGA bitstream once
 2. Load new software via Vivado Hardware Manager as needed
@@ -90,7 +98,7 @@ Programs are loaded into instruction memory via JTAG without reprogramming the F
 ### Automatic Reset Synchronization
 
 The board wrappers include logic that:
-- Detects when software is being written to instruction memory
+- Detects when a software image is being loaded
 - Holds the CPU in reset during the load process
 - Releases reset automatically when loading completes
 
@@ -150,15 +158,11 @@ For manual Vivado project setup:
 
 After the FPGA is programmed with the bitstream:
 
-1. Open Vivado Hardware Manager
-2. Connect to the target board
-3. Use the JTAG-AXI core to write your program to instruction memory:
-   ```tcl
-   # Example: Write instruction words starting at address 0
-   create_hw_axi_txn write_txn [get_hw_axis hw_axi_1] \
-       -type write -address 0x00000000 -data {<your_program_hex>}
-   run_hw_axi write_txn
-   ```
+1. Build the application under `sw/apps/<app>/`.
+2. Run `fpga/load_software/load_software.py <board> <app>`.
+3. The loader writes `sw.txt` to low BRAM and, when the app emits a non-empty
+   `sw_ddr.txt`, bursts that cached-region image into DDR before releasing the
+   CPU from reset.
 
 ## I/O Connections
 

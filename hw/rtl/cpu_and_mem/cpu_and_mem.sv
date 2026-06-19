@@ -555,9 +555,9 @@ module cpu_and_mem #(
   // frost_cache_hierarchy (L1 BRAM, optional L2 URAM) and the AXI bridge into
   // main memory. In simulation the main memory is the behavioral DDR model
   // (initialized from sw_ddr.mem, persistent across CPU resets like real
-  // DDR); the hardware integration (Phase 2/3) exports the bridge's AXI port
-  // to the DDR controller instead. Boards keep ENABLE_CACHED_TIER=0 until
-  // their DDR controller is wired up.
+  // DDR); board builds export the bridge's AXI port to the DDR controller
+  // instead. A new board can keep ENABLE_CACHED_TIER=0 until its DDR
+  // controller is wired up.
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
     logic line_req_valid, line_req_ready, line_req_write;
     logic [31:0] line_req_addr;
