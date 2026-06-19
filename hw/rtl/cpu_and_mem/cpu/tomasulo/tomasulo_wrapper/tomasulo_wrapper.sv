@@ -1331,8 +1331,13 @@ module tomasulo_wrapper #(
   logic mem_rs_fu_ready_base;
   logic mem_rs_fu_ready;
 
+  // Do NOT gate SC issue on (sc_pending && next_is_sc). That single-SC
+  // serialization deadlocked Linux: under speculation a YOUNGER SC issues
+  // out-of-order, sets sc_pending, and then this gate blocked the OLDER head SC
+  // from ever issuing -- so it never fired, sc_pending never cleared, and the
+  // core hung at _prb_commit. sc_pending_unit now tracks multiple in-flight SCs
+  // (a table keyed by ROB tag), so several SCs may legitimately be in flight.
   assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
-                                !(sc_pending && mem_rs_next_is_sc) &&
                                 !sc_fu_complete_reg.valid &&
                                 !mem_adapter_result_pending &&
                                 !i_backend_recovery_hold;
