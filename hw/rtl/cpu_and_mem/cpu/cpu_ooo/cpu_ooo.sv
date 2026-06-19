@@ -1013,6 +1013,9 @@ module cpu_ooo #(
       .i_alloc_req_2(rob_alloc_req_2),
       .o_alloc_resp_2(rob_alloc_resp_2),
 
+      // Current privilege (PrivM/PrivU) for U-mode CSR/MRET illegal checks
+      .i_priv(csr_priv),
+
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
 
