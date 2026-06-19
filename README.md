@@ -2,7 +2,7 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and full machine-mode privilege support for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
+An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
@@ -55,7 +55,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │                                                                              │
 │   ┌──────────────────────────┐    ┌─────────────────────────────────────┐    │
 │   │ Trap Unit                │    │ Peripherals                         │    │
-│   │ (M-mode, mret, wfi,      │    │ UART, mtime/mtimecmp, FIFO0/1       │    │
+│   │ (M/U traps, mret, wfi,   │    │ UART, mtime/mtimecmp, FIFO0/1       │    │
 │   │  interrupts, exceptions) │    │                                     │    │
 │   └──────────────────────────┘    └─────────────────────────────────────┘    │
 │                                                                              │
@@ -82,6 +82,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
+| **User Mode**    | U-mode privilege (ecall traps to M-mode)       |
 
 ### Architecture Highlights
 
@@ -96,7 +97,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
 - **Branch prediction** with a 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 1024-entry bimodal direction predictor, 8-entry return address stack, and PD-stage computed-target redirects for conditional BTB misses predicted taken
 - **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
-- **M-mode trap handling** for RTOS support (interrupts and exceptions)
+- **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
 - **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a 16 KiB read-only L1I) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge

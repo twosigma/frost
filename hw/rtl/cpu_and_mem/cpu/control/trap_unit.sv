@@ -15,10 +15,13 @@
  */
 
 /*
- * Trap Unit - Machine-mode exception and interrupt handling
+ * Trap Unit - exception and interrupt handling
  *
  * This module implements the RISC-V privileged architecture trap mechanism,
  * supporting both synchronous exceptions and asynchronous interrupts.
+ * Traps originate from M-mode or U-mode and are always taken in M-mode (mtvec).
+ * Machine interrupts are taken while running in U-mode regardless of mstatus.MIE,
+ * so the timer can preempt user code.
  *
  * Responsibilities:
  * =================

@@ -30,9 +30,9 @@
  *   - Privileged instructions (WFI, ECALL, EBREAK)
  *   - Timer interrupt configuration
  *
- * Frost implements machine-mode only (no S-mode or U-mode), so all code
- * runs with full privilege. Traps jump to the address in mtvec, saving
- * the return address in mepc and the cause in mcause.
+ * Frost implements Machine (M) and User (U) privilege modes (no S-mode).
+ * Traps from both M and U are taken in M-mode: they jump to the address in
+ * mtvec, saving the return address in mepc and the cause in mcause.
  *
  * Usage:
  *   // Set up trap handler
@@ -74,7 +74,7 @@ static inline __attribute__((always_inline)) void wfi(void)
 /**
  * ECALL - Environment Call
  *
- * Generates a synchronous exception (mcause = 11 for M-mode).
+ * Generates a synchronous exception (mcause = 8 from U-mode, 11 from M-mode).
  * Used for system calls in OS environments.
  */
 static inline __attribute__((always_inline)) void ecall(void)

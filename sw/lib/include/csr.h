@@ -89,7 +89,7 @@
 /* ========================================================================== */
 #define MSTATUS_MIE (1U << 3)  /* Machine Interrupt Enable */
 #define MSTATUS_MPIE (1U << 7) /* Machine Previous Interrupt Enable */
-#define MSTATUS_MPP (3U << 11) /* Machine Previous Privilege (2 bits) */
+#define MSTATUS_MPP (3U << 11) /* Machine Previous Privilege (2 bits, WARL {M,U}) */
 
 /* ========================================================================== */
 /* mie/mip bit definitions (interrupt enable/pending)                         */

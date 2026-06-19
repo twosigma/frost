@@ -381,7 +381,7 @@ package riscv_pkg;
   // Section 3: CSR Definitions
   // ===========================================================================
   // Control and Status Register addresses, bit positions, and cause codes.
-  // Includes Zicsr instruction encodings and M-mode trap support.
+  // Includes Zicsr instruction encodings and M/U-mode trap support.
 
   // CSR instruction funct3 encoding
   typedef enum bit [2:0] {
@@ -844,7 +844,7 @@ package riscv_pkg;
   // Section 9: Trap/Exception Handling
   // ===========================================================================
   // Structures for trap control.
-  // Used by trap_unit.sv for M-mode exception/interrupt handling.
+  // Used by trap_unit.sv for M/U-mode exception/interrupt handling.
   // Trap control signals (from trap unit to pipeline)
   typedef struct packed {
     logic            trap_taken;   // Trap is being taken this cycle

@@ -20,7 +20,7 @@ This document provides guidelines for contributors. The detailed style sections 
 
 ## Project Overview
 
-FROST is an out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and full machine-mode privilege support. Understanding the architecture helps you contribute effectively:
+FROST is an out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes. Understanding the architecture helps you contribute effectively:
 
 ### Architecture Outline
 
@@ -577,7 +577,7 @@ We welcome contributions in these areas:
 |------|----------|
 | Bug fixes | OOO ordering, instruction encoding, timing issues |
 | ISA extensions | Additional standard or custom extensions |
-| Privilege modes | S-mode (supervisor), U-mode (user) support |
+| Privilege modes | S-mode (supervisor), PMP, virtual memory (M and U modes already supported) |
 | Board support | New FPGA boards, SoC integrations |
 | Performance | Branch predictor, scheduler, memory-system, or cache improvements |
 | Peripherals | SPI, I2C, GPIO, timers |

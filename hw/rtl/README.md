@@ -4,7 +4,7 @@ This directory contains the synthesizable SystemVerilog for FROST. The current
 CPU is an **out-of-order RV32GCB implementation with a 2-wide front-end and
 2-wide commit**: a 2-wide in-order IF/PD/ID front-end, Tomasulo register renaming
 and dynamic scheduling, out-of-order execution across six function units, and
-precise 2-wide in-order commit, with machine-mode traps and separate
+precise 2-wide in-order commit, with M/U-mode traps and separate
 instruction/data memory ports.
 
 The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
@@ -88,7 +88,7 @@ backend notes.
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
-| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | Machine-mode exception/interrupt handling |
+| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M- and U-mode exception/interrupt handling (traps taken in M-mode) |
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model) and `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays) |
 | `peripherals/` | In use | UART TX/RX blocks |
 
