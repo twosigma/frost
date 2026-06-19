@@ -136,7 +136,11 @@ module tomasulo_wrapper #(
     input  logic                                        i_mret_done,
     input  logic                  [riscv_pkg::XLEN-1:0] i_mepc,
     input  logic                                        i_interrupt_pending,
-    input  logic                                        i_trap_misaligned_accesses,
+
+    // Current privilege (PrivM/PrivU), forwarded to the ROB for U-mode
+    // CSR/MRET illegal-instruction checks.
+    input logic [1:0] i_priv,
+    input logic       i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
     // retire path can accept a second commit this cycle.  cpu_ooo ties this
@@ -1421,6 +1425,7 @@ module tomasulo_wrapper #(
       .i_mret_done         (i_mret_done),
       .i_mepc              (i_mepc),
       .i_interrupt_pending (i_interrupt_pending),
+      .i_priv              (i_priv),
       .i_commit_hold       (i_commit_hold),
 
       // Flush

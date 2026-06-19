@@ -169,6 +169,10 @@ module reorder_buffer (
     // =========================================================================
     input logic i_interrupt_pending,  // Interrupt is pending (wake from WFI)
 
+    // Current privilege (PrivM/PrivU). A U-mode access to MRET or to a CSR that
+    // requires more privilege is an illegal instruction, detected at the head.
+    input logic [1:0] i_priv,
+
     // =========================================================================
     // Pipeline Flush Control
     // =========================================================================
@@ -349,7 +353,10 @@ module reorder_buffer (
   logic head_valid;
   logic head_done;
   logic head_exception;
-  riscv_pkg::exc_cause_t head_exc_cause;  // from RAM
+  logic head_exception_raw;  // stored ROB exception flag (before U-mode priv fault)
+  logic head_priv_fault;  // U-mode access to MRET / an M-CSR -> illegal instruction
+  riscv_pkg::exc_cause_t head_exc_cause;  // effective cause (includes priv fault)
+  riscv_pkg::exc_cause_t head_exc_cause_raw;  // from RAM
   logic [XLEN-1:0] head_pc;  // from RAM
   logic head_dest_rf;
   logic [RegAddrWidth-1:0] head_dest_reg;  // from RAM
@@ -492,7 +499,19 @@ module reorder_buffer (
   // Head entry fields from FF-backed packed vectors / distributed RAM
   assign head_valid = rob_valid[head_idx];
   assign head_done = rob_done[head_idx];
-  assign head_exception = rob_exception[head_idx];
+  assign head_exception_raw = rob_exception[head_idx];
+  // U-mode privilege fault: MRET, or a CSR access requiring more privilege than
+  // the current mode (csr_addr[9:8] > priv), is an illegal instruction. Folding
+  // it into head_exception/head_exc_cause makes every consumer (commit_en,
+  // o_csr_start/o_mret_start, o_trap_pending, the serial FSM, the commit record)
+  // treat it as a precise exception, so the faulting op never executes or
+  // retires. The faulting op rides the same single-cycle exception path, so the
+  // double-trap guard in trap_unit already covers it.
+  assign head_priv_fault = (head_is_mret && (i_priv != riscv_pkg::PrivM)) ||
+                           (head_is_csr && (head_csr_addr[9:8] > i_priv));
+  assign head_exception = head_exception_raw || head_priv_fault;
+  assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
+      riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
   assign head_branch_taken = rob_branch_taken[head_idx];
   assign head_mispredicted = rob_mispredicted[head_idx];
   assign head_early_recovered = rob_early_recovered[head_idx];
@@ -1124,7 +1143,7 @@ module reorder_buffer (
         i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
       }),
       .i_read_address(head_idx),
-      .o_read_data(head_exc_cause)
+      .o_read_data(head_exc_cause_raw)
   );
 
   // Widen-commit replica: head+1 read port for exc_cause.
