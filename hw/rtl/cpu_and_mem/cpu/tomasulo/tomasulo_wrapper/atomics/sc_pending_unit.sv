@@ -23,12 +23,15 @@
 // reaches the ROB head can ALWAYS fire -- even when an LR/SC retry loop is
 // branch-speculated and the core issues several SCs (one per speculated
 // iteration) before the oldest resolves. A single pending-SC register failed
-// here: a younger speculative SC overwrote the head SC's rob_tag, so the head
-// SC's tag never matched, it never fired, the branch never resolved, and the
-// core deadlocked. Observed on Linux printk's _prb_commit cmpxchg loop (11 SCs
-// issued, 8-deep speculation; head=tag15 but the register held tag19). BRAM
-// LR/SC resolves before a second SC issues, so BRAM/FreeRTOS were unaffected;
-// the longer cached-tier (DDR) latency exposes the overlap.
+// here: under speculation the MEM_RS issues SCs out of program order, so a
+// younger SC took the one register, and the wrapper's former issue-
+// serialization gate (!(sc_pending && mem_rs_next_is_sc)) then blocked the
+// OLDER head SC from issuing at all -- so it never fired and the core
+// deadlocked. Observed on Linux printk's _prb_commit cmpxchg loop (11 SCs
+// issued, 8-deep speculation; head=tag15 never issued, the register held
+// tag19). This table pairs with removing that gate (see tomasulo_wrapper.sv).
+// BRAM LR/SC resolves before a second SC issues, so BRAM/FreeRTOS were
+// unaffected; the longer cached-tier (DDR) latency exposes the overlap.
 //
 // Two flush rules matter and were both bugs in the single-register version:
 //   * an SC fires when head_tag matches a VALID entry and the SQ is drained;
