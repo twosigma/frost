@@ -73,8 +73,12 @@ SUPPORTED_EXTENSIONS = [
 # Extensions not listed here run all their tests.
 # Frost implements Zbkb (pack, packh, brev8, zip, unzip) from the K extension
 # but not Zbkx (xperm4/xperm8), Zkn (AES/SHA256/SHA512), or Zks (SM3/SM4).
-# Frost is M-mode only (no S/U mode), so privilege tests are filtered
-# to exclude supervisor, user, and hypervisor tests.
+# Frost implements Machine and User privilege (no Supervisor/Hypervisor). The
+# privilege suite's U-mode tests (menvcfg/senvcfg/henvcfg *_illegal_u) drive an
+# S-mode trap routine and require S/H ISA extensions (Ssdtso/Sstc/...), so they
+# cannot run on M+U-only Frost and stay filtered out. Frost's U-mode -- including
+# illegal M-CSR/MRET access from U -- is covered by the directed sw/apps/umode_test
+# instead. Supervisor and hypervisor tests are likewise excluded.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "brev8", "zip", "unzip"},
     "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
