@@ -137,7 +137,7 @@ module cpu_and_mem #(
   // - sw/common/link.ld (MMIO memory region and PROVIDE statements)
   // - cpu module parameters
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  localparam int unsigned MmioSizeBytes = 32'h2C;
+  localparam int unsigned MmioSizeBytes = 32'h1_C000;  // ns16550 @ +0x1000, CLINT @ +0x10000
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
@@ -151,6 +151,17 @@ module cpu_and_mem #(
   localparam int unsigned MtimecmpHighMmioAddr = 32'h4000_001C;  // mtimecmp[63:32]
   // Software interrupt register
   localparam int unsigned MsipMmioAddr = 32'h4000_0020;
+
+  // ns16550a UART face for Linux (word-stride; DTB reg-shift=2, reg-io-width=4).
+  // Aliases the native UART TX/RX. DLAB (LCR[7]) remaps offsets 0/4 to DLL/DLM.
+  localparam int unsigned Ns16550ThrRbr = 32'h4000_1000;  // THR(w)/RBR(r) | DLL when DLAB
+  localparam int unsigned Ns16550IerDlm = 32'h4000_1004;  // IER | DLM when DLAB
+  localparam int unsigned Ns16550IirFcr = 32'h4000_1008;  // IIR(r) / FCR(w)
+  localparam int unsigned Ns16550Lcr = 32'h4000_100C;
+  localparam int unsigned Ns16550Mcr = 32'h4000_1010;
+  localparam int unsigned Ns16550Lsr = 32'h4000_1014;  // read-only line status
+  localparam int unsigned Ns16550Msr = 32'h4000_1018;  // read-only modem status
+  localparam int unsigned Ns16550Scr = 32'h4000_101C;  // scratch
 
   // Timer register defaults
   // Default mtimecmp to max value so no timer interrupt fires until software configures it
@@ -229,12 +240,15 @@ module cpu_and_mem #(
 `endif
 
   // Timer registers (CLINT-style)
-  logic                  [63:0] mtime;  // Machine time counter
-  logic                  [63:0] mtimecmp;  // Machine timer compare register
-  logic                         msip;  // Machine software interrupt pending
+  logic [63:0] mtime;  // Machine time counter
+  logic [63:0] mtimecmp;  // Machine timer compare register
+  logic        msip;  // Machine software interrupt pending
+
+  // ns16550a UART face register file (8-bit). DLAB = ns_lcr[7].
+  logic [7:0] ns_dll, ns_dlm, ns_ier, ns_fcr, ns_lcr, ns_mcr, ns_scr;
 
   // Interrupt signals to CPU
-  riscv_pkg::interrupt_t        interrupts;
+  riscv_pkg::interrupt_t interrupts;
   // Clamp unknown external interrupt values to 0 for simulation stability.
   // This avoids X-propagation into mip when the top-level input is left un-driven.
   assign interrupts.meip = (i_external_interrupt === 1'b1);
@@ -824,19 +838,30 @@ module cpu_and_mem #(
     // Use MA-stage address captured from CPU for MMIO reads
     unique case (mmio_load_addr)
       // UART RX data - returns received byte in lower 8 bits (reading consumes byte)
-      UartRxDataMmioAddr:   mmio_read_data_comb = {24'b0, i_uart_rx_data};
+      UartRxDataMmioAddr: mmio_read_data_comb = {24'b0, i_uart_rx_data};
       // UART RX status - bit 0 indicates data available (non-destructive read)
       UartRxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_rx_valid};
       // UART TX status - bit 0 indicates the TX FIFO can accept at least one byte.
       UartTxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_tx_ready};
-      Fifo0MmioAddr:        mmio_read_data_comb = i_fifo0_rd_data;
-      Fifo1MmioAddr:        mmio_read_data_comb = i_fifo1_rd_data;
-      MtimeLowMmioAddr:     mmio_read_data_comb = mtime[31:0];
-      MtimeHighMmioAddr:    mmio_read_data_comb = mtime[63:32];
-      MtimecmpLowMmioAddr:  mmio_read_data_comb = mtimecmp[31:0];
+      Fifo0MmioAddr: mmio_read_data_comb = i_fifo0_rd_data;
+      Fifo1MmioAddr: mmio_read_data_comb = i_fifo1_rd_data;
+      MtimeLowMmioAddr: mmio_read_data_comb = mtime[31:0];
+      MtimeHighMmioAddr: mmio_read_data_comb = mtime[63:32];
+      MtimecmpLowMmioAddr: mmio_read_data_comb = mtimecmp[31:0];
       MtimecmpHighMmioAddr: mmio_read_data_comb = mtimecmp[63:32];
-      MsipMmioAddr:         mmio_read_data_comb = {31'b0, msip};
-      default:              ;
+      MsipMmioAddr: mmio_read_data_comb = {31'b0, msip};
+      // ns16550a UART face (aliases native UART TX/RX). DLAB selects DLL/DLM.
+      Ns16550ThrRbr: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dll} : {24'b0, i_uart_rx_data};
+      Ns16550IerDlm: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dlm} : {24'b0, ns_ier};
+      Ns16550IirFcr: mmio_read_data_comb = {24'b0, 8'hC1};  // FIFO enabled, no int pending
+      Ns16550Lcr: mmio_read_data_comb = {24'b0, ns_lcr};
+      Ns16550Mcr: mmio_read_data_comb = {24'b0, ns_mcr};
+      // LSR: TEMT|THRE from TX-ready (bits 6,5); DR from RX-valid (bit 0).
+      Ns16550Lsr:
+      mmio_read_data_comb = {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid};
+      Ns16550Msr: mmio_read_data_comb = {24'b0, 8'hB0};  // DCD|DSR|CTS asserted
+      Ns16550Scr: mmio_read_data_comb = {24'b0, ns_scr};
+      default: ;
     endcase
   end
 
@@ -887,11 +912,39 @@ module cpu_and_mem #(
     if (mmio_read_data_valid) data_memory_or_peripheral_read_data = mmio_read_data_reg;
   end
 
-  // write to UART
+  // write to UART (native 0x4000_0000 TX, or the ns16550 THR at 0x4000_1000
+  // when DLAB is clear -- both funnel into the same TX byte stream).
   always_ff @(posedge i_clk) begin
     o_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
     o_uart_wr_en   <= |data_memory_byte_write_enable_registered &&
-                       data_memory_address_registered == UartMmioAddr;
+                       ((data_memory_address_registered == UartMmioAddr) ||
+                        (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
+  end
+
+  // ns16550a register-file writes. DLAB (LCR[7]) routes offsets 0/4 to the
+  // baud divisor (DLL/DLM); the THR write itself transmits via o_uart_wr_en.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      ns_dll <= 8'h01;
+      ns_dlm <= 8'h00;
+      ns_ier <= 8'h00;
+      ns_fcr <= 8'h00;
+      ns_lcr <= 8'h00;
+      ns_mcr <= 8'h00;
+      ns_scr <= 8'h00;
+    end else if (|data_memory_byte_write_enable_registered) begin
+      unique case (data_memory_address_registered)
+        Ns16550ThrRbr: if (ns_lcr[7]) ns_dll <= data_memory_write_data_registered[7:0];
+        Ns16550IerDlm:
+        if (ns_lcr[7]) ns_dlm <= data_memory_write_data_registered[7:0];
+        else ns_ier <= data_memory_write_data_registered[7:0];
+        Ns16550IirFcr: ns_fcr <= data_memory_write_data_registered[7:0];
+        Ns16550Lcr: ns_lcr <= data_memory_write_data_registered[7:0];
+        Ns16550Mcr: ns_mcr <= data_memory_write_data_registered[7:0];
+        Ns16550Scr: ns_scr <= data_memory_write_data_registered[7:0];
+        default: ;
+      endcase
+    end
   end
 
   // FIFO write logic - write to FIFOs when CPU writes to FIFO MMIO addresses

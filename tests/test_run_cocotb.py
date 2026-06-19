@@ -169,6 +169,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test",
     ),
+    "ns16550_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ns16550_test",
+        description="ns16550a UART face directed test (Linux glue)",
+    ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
