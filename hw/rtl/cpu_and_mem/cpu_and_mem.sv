@@ -251,7 +251,7 @@ module cpu_and_mem #(
   end
   assign interrupts.mtip = mtip_registered;
 
-  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine-mode
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine/User-mode
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),

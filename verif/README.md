@@ -37,7 +37,7 @@ This directory contains a comprehensive Python-based verification framework for 
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table.
+The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) with M and U privilege modes. See the [root README](../README.md) for the full ISA extension table.
 
 Additional features:
 - 32 general-purpose registers plus a separate FP register file

@@ -15,7 +15,7 @@
  */
 
 /*
-  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine-mode + F extensions.
+  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine/User-mode + F extensions.
 
   This module implements:
 
@@ -31,9 +31,9 @@
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
 
-  Machine-mode CSRs (for trap/interrupt handling):
-    - mstatus (0x300): Machine status (MIE, MPIE bits)
-    - misa (0x301): Machine ISA (read-only, reports RV32IMAFB)
+  Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
+    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
+    - misa (0x301): Machine ISA (read-only, reports RV32GCB + U: 0x4010_112F)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
     - mtvec (0x305): Machine trap vector base address
     - mscratch (0x340): Machine scratch register

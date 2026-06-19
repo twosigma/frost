@@ -550,7 +550,7 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-Frost implements **RV32GCB** with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table and architecture details.
+Frost implements **RV32GCB** with Machine (M) and User (U) privilege modes. See the [root README](../README.md) for the full ISA extension table and architecture details.
 
 ### Test Result Markers
 
