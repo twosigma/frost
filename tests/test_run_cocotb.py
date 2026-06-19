@@ -175,6 +175,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ns16550_test",
         description="ns16550a UART face directed test (Linux glue)",
     ),
+    "clint_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="clint_test",
+        description="SiFive CLINT alias directed test (Linux glue)",
+    ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
