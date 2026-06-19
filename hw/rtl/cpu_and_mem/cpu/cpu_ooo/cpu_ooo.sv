@@ -842,6 +842,10 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
+  // Arbitrated trap cause from trap_unit (interrupt cause with bit 31, or the
+  // remapped synchronous-exception cause) -> csr_file mcause. Declared here so
+  // it is visible above the trap_unit instantiation that drives it.
+  logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
@@ -1896,7 +1900,10 @@ module cpu_ooo #(
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
       .i_trap_pc(rob_trap_pc),
-      .i_trap_cause({{(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped}),
+      // mcause from trap_unit's arbitrated cause: interrupt cause (with the
+      // interrupt bit) for interrupts, or the remapped exception cause (which
+      // carries the U-mode ECALL remap via trap_unit.i_exception_cause below).
+      .i_trap_cause(trap_cause_internal),
       .i_trap_value(csr_trap_value),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
@@ -1942,7 +1949,7 @@ module cpu_ooo #(
   assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip;
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
-  logic [XLEN-1:0] trap_cause_internal, trap_value_internal;
+  logic [XLEN-1:0] trap_value_internal;
 
   trap_unit #(
       .XLEN(XLEN)
