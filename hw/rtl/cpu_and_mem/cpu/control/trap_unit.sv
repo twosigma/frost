@@ -168,7 +168,13 @@ module trap_unit #(
   // Note: mtip is already registered in cpu_and_mem.sv for similar timing reasons.
   logic interrupt_pending_comb;
   logic interrupt_pending;
-  assign interrupt_pending_comb = meip_enabled || mtip_enabled || msip_enabled;
+  // Gate with !o_trap_taken so a still-pending interrupt is NOT re-latched on
+  // the cycle its own trap is taken. interrupt_pending is registered, so
+  // otherwise the latched value fires a second, spurious trap entry the next
+  // cycle (re-saving mstatus.MPP=M and corrupting a U-mode trap). NOT a comb
+  // loop: o_trap_taken derives from the REGISTERED interrupt_pending, so the
+  // feedback path passes through a flop.
+  assign interrupt_pending_comb = (meip_enabled || mtip_enabled || msip_enabled) && !o_trap_taken;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) interrupt_pending <= 1'b0;
@@ -188,6 +194,12 @@ module trap_unit #(
     if (i_rst) begin
       exception_pending <= 1'b0;
     end else if (o_trap_taken) begin
+      exception_pending <= 1'b0;
+    end else if (trap_taken_prev) begin
+      // Hold cleared one extra cycle: i_exception_valid (the ROB's trap_pending)
+      // stays high until the trap is acked (~1 cycle after o_trap_taken), so
+      // without this the exception re-arms and the trap is taken a second time
+      // (now in M, corrupting mstatus.MPP / mcause for a U-mode trap).
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
       exception_pending <= 1'b1;
