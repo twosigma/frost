@@ -481,3 +481,75 @@ lines as hints only; rely on clean kernel lines and directed sim for proof.
 6. Build the directed MRET-to-U plus timer-pending sim.
 7. Only after the sim proves or disproves the current hypothesis, decide whether to
    patch RTL, add Linux restore instrumentation, or ask the user for another bitstream.
+
+## UPDATE 2026-06-21 (Claude): boots to userspace; one flaky RTL race remains
+
+The `0x80388bba` panic is fixed (RTL, committed: `718f8cc` + productionization
+`3d7766c` + rebuild-robust patch `21d5af7`). Since then the bring-up went much
+further on real Genesys2 hardware. Current state below.
+
+### Kernel boots fully to the userspace handoff
+
+No-MMU Linux 6.18.7 boots cleanly reset -> console (`ttyS0` 16550A) -> initramfs
+-> `Run /sbin/init` at ~2.8s, clean log. The unpatched-kernel test proved the
+hardware `interrupt_resume_pc` fix is the real cure for the U-mode MRET panic
+(the `patch_ret_from_exception.py` MIE-clear is a *separate* partial mitigation
+for the M-mode variant; see below).
+
+### Userspace execution is PROVEN working
+
+Built minimal bFLT test inits with the Buildroot toolchain
+(`riscv32-buildroot-linux-uclibc-gcc -O2 -Wl,-elf2flt=-r`; no-MMU userspace is
+bFLT `ram gotpic`, NOT plain ELF/FDPIC) and ran them as `/sbin/init`:
+- single process `write()` + spin -> prints `USERSPACE_OK`.
+- `vfork`+`exec` of a child, child + parent both run -> all markers.
+- `vfork`+`exec`+child `_exit`+parent `waitpid` -> all markers, child reaped.
+
+So U-mode execution, the `ecall` syscall round-trip, process creation, child
+MRET-to-U, exit and reap all work. FROST hardware is solid for Linux userspace.
+
+### Blocker 1 (software, root-caused): BusyBox bFLT stack + RAM
+
+- `init: out of mem` -> BusyBox's bFLT stack/heap was only `0x3e80` (16 KiB),
+  too small for no-MMU. `flthdr -s 0x100000 bin/busybox` clears it. PROPER FIX:
+  set the FLAT stack size in Buildroot (covers all applets, which are symlinks
+  to the one busybox binary).
+- 16 MiB RAM was a temp sim-speed shrink; reverted `MEM_SIZE` to 64 MiB in
+  `linux-mvp/frost-artifacts/build_fpga_boot.py`. (Memory size does NOT affect
+  the flaky hang below.)
+
+### Blocker 2 (RTL, isolated, NOT yet fixed): residual M-mode timer race
+
+After Blocker 1, the late-kernel boot is intermittently hung (~33-67% of boots),
+non-deterministic, at varying points in the timer-active region — frequently at
+the exact `[0.14] clocksource: Switched to clocksource clint_clocksource` where
+the UNPATCHED kernel hung 100% deterministically. Cheap isolation proved it is:
+- NOT memory size: 2/6 flaky at both 32 and 64 MiB.
+- NOT DDR / board state: 4/6 flaky on a freshly reprogrammed bitstream.
+- => a residual machine-timer-interrupt trap-return race. The U-mode RTL fix +
+  the MIE-clear patch reduced it from deterministic to flaky but did not close
+  it. This is the "proper M-mode-window fix" that was deferred — the real
+  reliability blocker, back in FROST-RTL territory.
+
+NEXT STEP: directed sim of an M-mode machine-timer interrupt taken through the
+`ret_from_exception` restore / MRET path (sweep the timer-injection cycle to hit
+the bad window, like the original IRQ-precision tests), find the residual race,
+fix in RTL, re-verify on hardware (re-run the 6-boot flaky-rate measurement,
+expect 0 hangs).
+
+### Operational notes for the next agent
+
+- Program the FPGA yourself: `./fpga/program_bitstream/program_bitstream.py
+  genesys2` (no need to ask the user). Reprogram to reset board state.
+- Hardware boot/reload: `python3 /tmp/linux_boot_watch.py` (loads the patched
+  image over JTAG via `load_software.py`; no bitstream reprogram needed for
+  software/kernel changes). It now also breaks on `Run /sbin/init` / `out of
+  mem` with a 30s post-load window — handy for fast flaky-rate loops (see
+  `/tmp/flaky_iso.sh`).
+- Kernel rebuild: edit `linux-mvp/.../linux-6.18.7/arch/riscv/kernel/entry.S`
+  then `make -C linux-mvp/buildroot linux-rebuild`; the FROST IRQ debug probes
+  and the false-triggering `FROST_BAD_RET` canary (it tripped on the legitimate
+  `RA=0` at first return-to-userspace) are already removed.
+- `patch_ret_from_exception.py` now locates its target by unique machine-code
+  word (survives kernel rebuilds). It is STILL REQUIRED until the M-mode race is
+  fixed; drop it after.
