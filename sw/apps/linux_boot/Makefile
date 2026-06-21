@@ -24,6 +24,15 @@
 # boot; to be replaced by an in-repo build once Linux boots to a shell.
 ARTIFACTS ?= $(HOME)/bigger_l0/linux-mvp/frost-artifacts
 
+# The ret_from_exception restore-window patch (patch_ret_from_exception.py)
+# clears mstatus.MIE in the MRET restore window. The U-mode variant of that
+# timer-interrupt-resume-PC race is now fixed in hardware (cpu_ooo.sv seeds
+# interrupt_resume_pc from csr_mepc on mret_taken), but the M-mode restore-window
+# variant is not yet: an unpatched kernel hangs at the CLINT clocksource switch
+# once the periodic timer tick ramps up. So the patch is still required for now.
+# The patch locates its target by unique machine-code word, so it survives kernel
+# rebuilds. Drop it once the M-mode restore window is fixed properly (RTL or a
+# clean kernel change that keeps the sc.w reservation-clear).
 all: patch_linux_image
 
 .PHONY: patch_linux_image
