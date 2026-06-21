@@ -82,6 +82,7 @@ verif/
 │   ├── cache/             # Cache hierarchy + line-port arbiter block tests
 │   ├── cpu_ooo/           # OOO block tests (commit, recovery, memory router,
 │   │                      #   register files, perf counters, pipeline control)
+│   ├── control/           # Control-block tests (trap_unit interrupt/MRET arbitration)
 │   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
 │                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)
 ├── models/                # Reference models for verification

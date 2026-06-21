@@ -2112,37 +2112,6 @@ module cpu_ooo #(
       .o_stall_for_wfi()  // WFI stall handled at ROB head
   );
 
-`ifndef SYNTHESIS
-  // FROST DEBUG (TEMP -- remove after the first-timer-IRQ ra-corruption hunt):
-  // (1) every trap taken -- does a commit write-port collide this cycle (codex
-  //     #3: async interrupt + same-cycle commit corrupting x1/ra + saved PC)?
-  // (2/3) any commit that writes x1/ra a bogus LOW value (the 0xcc0 panic ra).
-  // (4) heartbeat every 500k cycles: is the CPU progressing (head_pc advancing)
-  //     or stuck (e.g. a DDR load that never returns) before the first IRQ?
-  int unsigned frost_cyc = 0;
-  always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
-      frost_cyc <= frost_cyc + 1;
-      if ((frost_cyc % 500000) == 0)
-        $display("FROST_HB cyc=%0d head_pc=%08x trap_taken=%b cmt_vld=%b p0we=%b p0a=%0d",
-                 frost_cyc, rob_trap_pc, trap_taken, rob_commit_valid, port0_int_we,
-                 port0_int_addr);
-      if (trap_taken)
-        $display("FROST_DBG %0t TRAP cause=%08x csr_pc=%08x rob_pc=%08x resume_pc=%08x mepc=%08x | p0we=%b p0a=%0d p0d=%08x p1we=%b p1a=%0d p1d=%08x cmt_vld=%b",
-                 $time, trap_cause_internal, trap_pc_internal, rob_trap_pc,
-                 interrupt_resume_pc, csr_mepc, port0_int_we, port0_int_addr,
-                 port0_int_data, port1_int_we, port1_int_addr, port1_int_data,
-                 rob_commit_valid);
-      if (port0_int_we && (port0_int_addr == 5'd1) && (port0_int_data < 32'h0000_1000))
-        $display("FROST_DBG %0t *** RA<-%08x PORT0 trap_taken=%b rob_trap_pc=%08x mepc=%08x",
-                 $time, port0_int_data, trap_taken, rob_trap_pc, csr_mepc);
-      if (port1_int_we && (port1_int_addr == 5'd1) && (port1_int_data < 32'h0000_1000))
-        $display("FROST_DBG %0t *** RA<-%08x PORT1 trap_taken=%b rob_trap_pc=%08x mepc=%08x",
-                 $time, port1_int_data, trap_taken, rob_trap_pc, csr_mepc);
-    end
-  end
-`endif
-
   // Use the registered trap/mret pulses when driving the front-end flush so
   // flush_pipeline no longer rides on the combinational
   //   rob_valid[head_idx] → commit_en → trap_unit → trap_taken
