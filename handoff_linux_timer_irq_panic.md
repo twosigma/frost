@@ -553,3 +553,29 @@ expect 0 hangs).
 - `patch_ret_from_exception.py` now locates its target by unique machine-code
   word (survives kernel rebuilds). It is STILL REQUIRED until the M-mode race is
   fixed; drop it after.
+
+### M-mode race hunt status (in progress)
+
+Reproduction approach scoped; race not yet reproduced in sim:
+- Full `linux_boot` in Verilator is NOT viable: it is DDR-latency-bound, so 25M
+  cycles only reached the early pre-timer `[0.000000] SLUB` line. Reaching the
+  clocksource switch (~18.6M *instructions*) would take hundreds of millions of
+  cycles / many hours. Don't retry full-kernel sim for this.
+- New synthetic reproducer `sw/apps/mtimer_stress/` (registered; run from
+  `frost/tests` with `COCOTB_MAX_CYCLES=3000000`): M-mode loop preempted by a
+  frequent machine timer with the period swept (mtime + 24..87) each tick to hit
+  every cycle offset around the MRET. It PASSES (survived 9851 IRQs) -> does NOT
+  reproduce the race. The existing `linux_irq_*_test` DDR tests also pass. So the
+  trigger is more specific than "M-mode timer + MRET + phase sweep".
+- The `SQ: allocation attempted during flush` $warning (store_queue.sv:1178)
+  fires during the stress but is a generic, handled condition (test passes) --
+  likely benign, not the race.
+
+Next ideas to try (untried): (a) a handler that saves/restores ALL 31 GPRs to a
+DDR stack like the kernel (heavy in-flight DDR mem-ops during the trap-return
+flush); (b) a WFI-idle + timer-wake deadlock stress (the clocksource hang may be
+the first idle WFI not waking); (c) deep RTL analysis of deadlock paths in the
+SERIAL FSM (rob_serializer.sv: SERIAL_MRET_EXEC / SERIAL_TRAP_WAIT waiting
+forever) and the SQ/LQ full-flush drain (load_queue.sv ~1140-1152) when a timer
+flush races in-flight memory ops; (d) if reliability is needed sooner, a stronger
+kernel-side interrupt mask around the critical windows as an interim mitigation.
