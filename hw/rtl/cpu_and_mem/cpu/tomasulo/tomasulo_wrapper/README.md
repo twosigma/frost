@@ -110,6 +110,20 @@ misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
+The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
+are additionally masked combinationally with `!i_flush_all`. The valid flops
+clear on the flush edge, but downstream consumers still observe the previous
+valid value during that same cycle; masking immediately prevents a commit that
+overlaps a trap / MRET / FENCE.I full flush from performing one more
+architectural side effect while the back-end is being squashed.
+
+The wrapper also drives the SQ slot-2 combinational commit guard from the raw
+head+1 store-commit pulse (`i_commit_valid_comb_2 = commit_2_store_like_raw`,
+`i_commit_rob_tag_comb_2 = commit_bus_2.tag`; previously tied to `1'b0`/`'0`).
+Slot 2 has the same raw-commit race as slot 1: `commit_bus_2_q_valid` reaches the
+SQ one cycle late, so without this a full-flush trap (e.g. a machine-timer IRQ)
+could observe `sq_committed_empty` and squash a store the SQ has not yet owned.
+
 ### Dispatch routing
 
 Dispatch now emits already-routed per-RS packets for slot 1 and slot 2. The

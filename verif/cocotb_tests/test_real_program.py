@@ -651,10 +651,10 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                     # Just needs to print the first hello message
                     return (None, "Hello, world!", False, app_name)
                 if app_name == "linux_boot":
-                    # FROST DEBUG (TEMP): run PAST the banner to the first-timer-IRQ
-                    # panic so the RTL trace fires; stop at the panic (or time out
-                    # at max_cycles if it hangs). Revert to "Linux version" after.
-                    return (None, "Kernel panic - not syncing", False, app_name)
+                    # Passes once the kernel reaches its boot banner. (Interim
+                    # bring-up criterion; tighten to a userspace/shell marker
+                    # once no-MMU Linux boots that far.)
+                    return (None, "Linux version", False, app_name)
                 if app_name == "uart_echo":
                     # Interactive test handled separately (UART input injection)
                     return (None, None, False, app_name)
