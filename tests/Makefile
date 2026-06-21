@@ -145,6 +145,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),trap_unit)
+# Trap unit interrupt/MRET arbitration unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frontend_validity_tracker)
 # CPU OOO frontend validity/control-flow tracker unit test
 COMPILE_ARGS := \

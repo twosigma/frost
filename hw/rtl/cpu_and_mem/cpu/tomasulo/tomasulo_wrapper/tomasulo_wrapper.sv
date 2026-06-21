@@ -2731,12 +2731,12 @@ module tomasulo_wrapper #(
       .i_commit_valid_comb  (commit_store_like_raw),
       .i_commit_rob_tag_comb(head_tag),
 
-      // Slot 2 is always older than any ordinary partial-flush boundary that
-      // can overlap commit_2_fire, and delayed recovery sees it through the
-      // registered commit path.  Keep the raw head+1 ROB metadata cone out of
-      // the SQ valid flops.
-      .i_commit_valid_comb_2  (1'b0),
-      .i_commit_rob_tag_comb_2('0),
+      // Slot 2 has the same raw commit race as slot 1 for full-trap drains:
+      // commit_bus_2_q_valid is still one cycle away from SQ, so a timer IRQ
+      // must not observe committed-empty and full-flush the entry before SQ
+      // sees the registered commit.
+      .i_commit_valid_comb_2  (commit_2_store_like_raw),
+      .i_commit_rob_tag_comb_2(commit_bus_2.tag),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),

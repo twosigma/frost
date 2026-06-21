@@ -525,6 +525,7 @@ module load_queue #(
   // Response acceptance/drain control
   logic flush_all_entries;
   logic issued_entry_flushed;
+  logic full_flush_response_drain;
   logic accept_mem_response;
   logic drop_mem_response_now;
 
@@ -1133,16 +1134,21 @@ module load_queue #(
 
   // Data memory has fixed 1-cycle latency in this design. If a partial flush
   // kills the outstanding load, drop that next response explicitly so the slot
-  // can be safely reused before the stale data returns.
+  // can be safely reused before the stale data returns. A full flush clears all
+  // entries at the edge; a same-cycle response is therefore drained here rather
+  // than accepted, so it cannot complete a killed load or refill the persistent
+  // L0 cache from a flushed context.
   assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] &&
       (flush_all_entries || is_younger(
       issued_rob_tag, i_flush_tag, i_rob_head_tag
   ));
+  assign full_flush_response_drain = i_flush_all && i_mem_read_valid && mem_outstanding;
   assign accept_mem_response = i_mem_read_valid && mem_outstanding &&
-                               !drop_mem_response_pending && !issued_entry_flushed &&
+                               !i_flush_all && !drop_mem_response_pending && !issued_entry_flushed &&
                                lq_valid[issued_idx];
   assign drop_mem_response_now = i_mem_read_valid &&
-                                 (drop_mem_response_pending || issued_entry_flushed ||
+                                 (full_flush_response_drain ||
+                                  drop_mem_response_pending || issued_entry_flushed ||
                                   (mem_outstanding && !lq_valid[issued_idx]));
 
   // ===========================================================================
@@ -2344,6 +2350,10 @@ module load_queue #(
         $warning("LQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("LQ: slot-2 alloc attempted alone when full");
+      if (i_flush_all && accept_mem_response)
+        $error("LQ: accepted memory response during full flush");
+      if (i_flush_all && cache_fill_valid)
+        $error("LQ: filled L0 cache during full flush");
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
@@ -2536,6 +2546,15 @@ module load_queue #(
   always_comb begin
     if (i_rst_n && cache_hit_fast_path) begin
       p_cache_hit_needs_sq : assert (sq_can_issue && (sq_no_older_store || !i_sq_forward.match));
+    end
+  end
+
+  // Full-flush-cycle responses are drains only. They must not perform any
+  // architectural or persistent-cache side effect.
+  always_comb begin
+    if (i_rst_n && i_flush_all) begin
+      p_no_accept_during_full_flush : assert (!accept_mem_response);
+      p_no_l0_fill_during_full_flush : assert (!cache_fill_valid);
     end
   end
 

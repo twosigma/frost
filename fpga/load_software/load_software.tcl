@@ -41,7 +41,7 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
 set valid_apps [list branch_pred_test c_ext_test call_stress cf_ext_test coremark \
                      {*}$coremark_pro_apps csr_test ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test freertos_demo fpu_assembly_test fpu_test \
-                     hello_world isa_test memory_test \
+                     hello_world isa_test linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test memory_test \
                      packet_parser print_clock_speed ras_stress_test ras_test \
                      spanning_test sprintf_test strings_test tomasulo_perf \
                      tomasulo_test uart_echo]

@@ -298,6 +298,39 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rat_alloc_rob_tag  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_last_a0_alloc_pc  /* verilator public_flat_rd */;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_last_a0_alloc_tag  /* verilator public_flat_rd */;
+  logic dbg_trap_taken_raw  /* verilator public_flat_rd */;
+  logic dbg_trap_taken_q  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_trap_cause_internal  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_trap_pc_internal  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_interrupt_resume_pc  /* verilator public_flat_rd */;
+  logic dbg_port0_int_we  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_port0_int_addr  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_port0_int_data  /* verilator public_flat_rd */;
+  logic dbg_port1_int_we  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_port1_int_addr  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_port1_int_data  /* verilator public_flat_rd */;
+  logic dbg_commit_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_commit_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_commit_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_value  /* verilator public_flat_rd */;
+  logic dbg_commit_2_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_2_pc  /* verilator public_flat_rd */;
+  logic dbg_commit_2_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_commit_2_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_commit_2_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_2_value  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_reg_pc  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_rob_commit_reg_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_reg_value  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_2_reg_pc  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_rob_commit_2_reg_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_2_reg_value  /* verilator public_flat_rd */;
   // verilog_lint: waive-stop line-length
 `endif
 
@@ -636,6 +669,11 @@ module cpu_ooo #(
   logic rob_commit_2_store_like_raw;
   logic rob_commit_2_valid;
   assign rob_commit_2_valid = rob_commit_2.valid;
+  logic rob_commit_store_like_raw;
+  logic sq_committed_empty_for_trap;
+  assign rob_commit_store_like_raw =
+      rob_commit_valid_raw &&
+      (rob_commit_comb.is_store || rob_commit_comb.is_fp_store || rob_commit_comb.is_sc);
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
@@ -1639,6 +1677,42 @@ module cpu_ooo #(
   // The wrapper already provides a registered observation port for commit.
   assign rob_commit_valid = rob_commit.valid;
 
+`ifndef SYNTHESIS
+  assign dbg_trap_taken_raw = trap_taken;
+  assign dbg_trap_taken_q = trap_taken_reg;
+  assign dbg_trap_cause_internal = trap_cause_internal;
+  assign dbg_trap_pc_internal = trap_pc_internal;
+  assign dbg_interrupt_resume_pc = interrupt_resume_pc;
+  assign dbg_port0_int_we = port0_int_we;
+  assign dbg_port0_int_addr = port0_int_addr;
+  assign dbg_port0_int_data = port0_int_data;
+  assign dbg_port1_int_we = port1_int_we;
+  assign dbg_port1_int_addr = port1_int_addr;
+  assign dbg_port1_int_data = port1_int_data;
+  assign dbg_commit_dest_valid = rob_commit_comb.dest_valid;
+  assign dbg_commit_dest_rf = rob_commit_comb.dest_rf;
+  assign dbg_commit_dest_reg = rob_commit_comb.dest_reg;
+  assign dbg_commit_value = rob_commit_comb.value[XLEN-1:0];
+  assign dbg_commit_2_valid = rob_commit_comb_2.valid;
+  assign dbg_commit_2_pc = rob_commit_comb_2.pc;
+  assign dbg_commit_2_dest_valid = rob_commit_comb_2.dest_valid;
+  assign dbg_commit_2_dest_rf = rob_commit_comb_2.dest_rf;
+  assign dbg_commit_2_dest_reg = rob_commit_comb_2.dest_reg;
+  assign dbg_commit_2_value = rob_commit_comb_2.value[XLEN-1:0];
+  assign dbg_rob_commit_reg_valid = rob_commit.valid;
+  assign dbg_rob_commit_reg_pc = rob_commit.pc;
+  assign dbg_rob_commit_reg_dest_valid = rob_commit.dest_valid;
+  assign dbg_rob_commit_reg_dest_rf = rob_commit.dest_rf;
+  assign dbg_rob_commit_reg_dest_reg = rob_commit.dest_reg;
+  assign dbg_rob_commit_reg_value = rob_commit.value[XLEN-1:0];
+  assign dbg_rob_commit_2_reg_valid = rob_commit_2.valid;
+  assign dbg_rob_commit_2_reg_pc = rob_commit_2.pc;
+  assign dbg_rob_commit_2_reg_dest_valid = rob_commit_2.dest_valid;
+  assign dbg_rob_commit_2_reg_dest_rf = rob_commit_2.dest_rf;
+  assign dbg_rob_commit_2_reg_dest_reg = rob_commit_2.dest_reg;
+  assign dbg_rob_commit_2_reg_value = rob_commit_2.value[XLEN-1:0];
+`endif
+
   // DEBUG: verify early recovery redirect_pc matches commit-time redirect_pc
   // (Disabled for performance — re-enable for debugging.)
   // always @(posedge i_clk) begin
@@ -1902,7 +1976,7 @@ module cpu_ooo #(
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
-      .i_trap_pc(rob_trap_pc),
+      .i_trap_pc(trap_pc_internal),
       // mcause from trap_unit's arbitrated cause: interrupt cause (with the
       // interrupt bit) for interrupts, or the remapped exception cause (which
       // carries the U-mode ECALL remap via trap_unit.i_exception_cause below).
@@ -1953,6 +2027,56 @@ module cpu_ooo #(
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
   logic [XLEN-1:0] trap_value_internal;
+  logic [XLEN-1:0] interrupt_resume_pc;
+
+  function automatic logic [XLEN-1:0] retired_next_pc(
+      input riscv_pkg::reorder_buffer_commit_t commit
+  );
+    logic [XLEN-1:0] step;
+    begin
+      step = commit.is_compressed ? {{(XLEN - 2){1'b0}}, 2'b10} :
+                                    {{(XLEN - 3){1'b0}}, 3'b100};
+      if (commit.is_branch || commit.is_mret) begin
+        retired_next_pc = commit.redirect_pc;
+      end else begin
+        retired_next_pc = commit.pc + step;
+      end
+    end
+  endfunction
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      interrupt_resume_pc <= '0;
+    end else if (mret_taken) begin
+      // An MRET retires through the trap/MRET full flush, NOT the normal commit
+      // path: the cycle after o_mret_taken, flush_all (from mret_taken_reg)
+      // wipes the ROB head and gates commit_en, so the MRET never appears on
+      // rob_commit_valid_raw and never updates interrupt_resume_pc via the
+      // branches below. Without this seed, interrupt_resume_pc keeps the
+      // architectural next-PC of the instruction *before* the MRET -- which is
+      // the MRET instruction's own PC -- for the entire MRET-to-U window (until
+      // the first post-MRET instruction commits). A machine interrupt taken
+      // after privilege drops below M (eligible once the trap_unit inhibit
+      // lifts, ~2 cycles later, long before that first commit) would then save
+      // mepc = <MRET PC>, an M-mode handler address, which Linux later restores
+      // and MRETs to illegally in U-mode (the ret_from_exception 0x80388bba
+      // panic). Seed the resume PC from the MRET target (mepc, == the MRET
+      // redirect target) now so it is already correct before the inhibit
+      // window closes. csr_mepc is stable here: MRET does not write mepc and
+      // cannot coincide with a trap entry that would.
+      interrupt_resume_pc <= csr_mepc;
+    end else if (rob_commit_2_valid_raw) begin
+      interrupt_resume_pc <= retired_next_pc(rob_commit_comb_2);
+    end else if (rob_commit_valid_raw) begin
+      interrupt_resume_pc <= retired_next_pc(rob_commit_comb);
+    end
+  end
+
+  // A same-cycle store-like ROB commit is not yet in the SQ committed set.
+  // If a trap full-flushes here, the registered commit can be masked before
+  // SQ observes it. Delay trap/MRET one cycle so SQ can own and drain it.
+  assign sq_committed_empty_for_trap =
+      sq_committed_empty && !rob_commit_store_like_raw && !rob_commit_2_store_like_raw;
 
   trap_unit #(
       .XLEN(XLEN)
@@ -1960,7 +2084,7 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
-      .i_sq_committed_empty(sq_committed_empty),
+      .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
@@ -1976,6 +2100,7 @@ module cpu_ooo #(
       }),
       .i_exception_tval('0),
       .i_exception_pc(rob_trap_pc),
+      .i_interrupt_pc(interrupt_resume_pc),
       .i_mret_start(mret_start),
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       .o_trap_taken(trap_taken),
@@ -1986,6 +2111,37 @@ module cpu_ooo #(
       .o_trap_value(trap_value_internal),
       .o_stall_for_wfi()  // WFI stall handled at ROB head
   );
+
+`ifndef SYNTHESIS
+  // FROST DEBUG (TEMP -- remove after the first-timer-IRQ ra-corruption hunt):
+  // (1) every trap taken -- does a commit write-port collide this cycle (codex
+  //     #3: async interrupt + same-cycle commit corrupting x1/ra + saved PC)?
+  // (2/3) any commit that writes x1/ra a bogus LOW value (the 0xcc0 panic ra).
+  // (4) heartbeat every 500k cycles: is the CPU progressing (head_pc advancing)
+  //     or stuck (e.g. a DDR load that never returns) before the first IRQ?
+  int unsigned frost_cyc = 0;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      frost_cyc <= frost_cyc + 1;
+      if ((frost_cyc % 500000) == 0)
+        $display("FROST_HB cyc=%0d head_pc=%08x trap_taken=%b cmt_vld=%b p0we=%b p0a=%0d",
+                 frost_cyc, rob_trap_pc, trap_taken, rob_commit_valid, port0_int_we,
+                 port0_int_addr);
+      if (trap_taken)
+        $display("FROST_DBG %0t TRAP cause=%08x csr_pc=%08x rob_pc=%08x resume_pc=%08x mepc=%08x | p0we=%b p0a=%0d p0d=%08x p1we=%b p1a=%0d p1d=%08x cmt_vld=%b",
+                 $time, trap_cause_internal, trap_pc_internal, rob_trap_pc,
+                 interrupt_resume_pc, csr_mepc, port0_int_we, port0_int_addr,
+                 port0_int_data, port1_int_we, port1_int_addr, port1_int_data,
+                 rob_commit_valid);
+      if (port0_int_we && (port0_int_addr == 5'd1) && (port0_int_data < 32'h0000_1000))
+        $display("FROST_DBG %0t *** RA<-%08x PORT0 trap_taken=%b rob_trap_pc=%08x mepc=%08x",
+                 $time, port0_int_data, trap_taken, rob_trap_pc, csr_mepc);
+      if (port1_int_we && (port1_int_addr == 5'd1) && (port1_int_data < 32'h0000_1000))
+        $display("FROST_DBG %0t *** RA<-%08x PORT1 trap_taken=%b rob_trap_pc=%08x mepc=%08x",
+                 $time, port1_int_data, trap_taken, rob_trap_pc, csr_mepc);
+    end
+  end
+`endif
 
   // Use the registered trap/mret pulses when driving the front-end flush so
   // flush_pipeline no longer rides on the combinational

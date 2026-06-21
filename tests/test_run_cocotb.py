@@ -169,6 +169,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test",
     ),
+    "csr_rmw_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="csr_rmw_test",
+        description="CSR read-modify-write directed test (csrrw/csrrs/csrrc; kernel trap path)",
+    ),
+    "wfi_mepc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="wfi_mepc_test",
+        description="Timer-interrupt-at-WFI mepc directed test (empty-ROB interrupt resume PC)",
+    ),
+    "mret_timer_resume_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mret_timer_resume_test",
+        description="MRET-to-U + pending-timer mepc directed test (stale interrupt resume PC)",
+    ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -187,6 +205,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="linux_boot",
         description="No-MMU Linux boot (kernel Image in DDR)",
         include_in_pytest=False,
+    ),
+    "linux_irq_ddr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_ddr_test",
+        description="Linux-like machine-timer IRQ path with DDR code/data/stack",
+    ),
+    "linux_irq_active_ddr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_active_ddr_test",
+        description="Linux-like active-code machine-timer IRQ path with DDR call/return traffic",
+    ),
+    "linux_irq_stack_slot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_stack_slot_test",
+        description="Linux-like timer IRQ over a poisoned DDR callee return-address stack slot",
+    ),
+    "linux_irq_find_next_slot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_find_next_slot_test",
+        description="Linux _find_next_bit-shaped IRQ over a poisoned DDR return slot",
     ),
     "ddr_atomic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -423,6 +465,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",
         description="CPU OOO data-memory request router tests",
+    ),
+    "trap_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.control.test_trap_unit",
+        hdl_toplevel_module="trap_unit",
+        description="Trap unit tests (interrupt/MRET arbitration)",
     ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
