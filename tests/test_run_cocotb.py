@@ -187,6 +187,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="mret_timer_resume_test",
         description="MRET-to-U + pending-timer mepc directed test (stale interrupt resume PC)",
     ),
+    "mtimer_stress": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mtimer_stress",
+        description="M-mode machine-timer + MRET deadlock stress (phase-swept; flaky-hang repro)",
+    ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
