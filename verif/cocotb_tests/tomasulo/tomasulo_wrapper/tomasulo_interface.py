@@ -601,6 +601,11 @@ class TomasuloInterface:
         """Return unregistered widen-commit slot-2 valid."""
         return bool(self.dut.o_commit_2_valid_raw.value)
 
+    @property
+    def commit_2_store_like_raw(self) -> bool:
+        """Return unregistered widen-commit slot-2 store-like marker."""
+        return bool(self.dut.o_commit_2_store_like_raw.value)
+
     # =========================================================================
     # ROB Status
     # =========================================================================
@@ -1090,6 +1095,11 @@ class TomasuloInterface:
     def sq_empty(self) -> bool:
         """Return whether SQ is empty."""
         return bool(self.dut.o_sq_empty.value)
+
+    @property
+    def sq_committed_empty(self) -> bool:
+        """Return whether SQ has no committed stores waiting to drain."""
+        return bool(self.dut.o_sq_committed_empty.value)
 
     @property
     def sq_count(self) -> int:

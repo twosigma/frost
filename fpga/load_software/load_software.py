@@ -55,6 +55,10 @@ VALID_APPS = [
     "fpu_test",
     "hello_world",
     "isa_test",
+    "linux_irq_active_ddr_test",
+    "linux_boot",
+    "linux_irq_ddr_test",
+    "linux_irq_stack_slot_test",
     "memory_test",
     "packet_parser",
     "print_clock_speed",
@@ -92,6 +96,10 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
+    "linux_irq_active_ddr_test",
+    "linux_boot",
+    "linux_irq_ddr_test",
+    "linux_irq_stack_slot_test",
 }
 
 
@@ -101,6 +109,7 @@ def compile_app_for_board(
     clock_freq: int,
     coremark_iterations: int,
     make_vars: dict[str, str] | None = None,
+    mem_config: str | None = None,
 ) -> bool:
     """Compile the application with board-specific settings.
 
@@ -110,6 +119,7 @@ def compile_app_for_board(
         clock_freq: CPU clock frequency for this board
         coremark_iterations: Number of iterations for CoreMark
         make_vars: Extra make variable overrides
+        mem_config: If set, exported as MEM_CONFIG to relink the app (e.g. "ddr")
 
     Returns:
         True if compilation succeeded, False otherwise
@@ -123,6 +133,11 @@ def compile_app_for_board(
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
+    # MEM_CONFIG=ddr relinks the app's code into the cached DDR region (the app
+    # Makefiles default to bram); this lets an arbitrary app run from DDR like
+    # the dedicated ddr_* apps. The Makefile's `?=` honors this env override.
+    if mem_config:
+        env["MEM_CONFIG"] = mem_config
 
     try:
         # Clean first to force recompilation with new settings
@@ -203,6 +218,15 @@ def main() -> None:
         "--vivado-path",
         default="vivado",
         help="Path to Vivado executable (default: vivado from PATH)",
+    )
+    parser.add_argument(
+        "--ddr",
+        action="store_true",
+        help=(
+            "Build the app to execute from the cached DDR region (passes "
+            "MEM_CONFIG=ddr to the app Makefile), so an otherwise BRAM-resident "
+            "app runs its code from DDR. Requires a board with has_ddr."
+        ),
     )
     coremark_pro_mode = parser.add_mutually_exclusive_group()
     coremark_pro_mode.add_argument(
@@ -427,7 +451,8 @@ def main() -> None:
         elif args.coremark_pro_mode == "validation":
             print("  CoreMark-PRO run type: validation (-v1)")
     if not compile_app_for_board(
-        args.software_app, app_dir, clock_freq, coremark_iterations, make_vars
+        args.software_app, app_dir, clock_freq, coremark_iterations, make_vars,
+        mem_config="ddr" if args.ddr else None,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

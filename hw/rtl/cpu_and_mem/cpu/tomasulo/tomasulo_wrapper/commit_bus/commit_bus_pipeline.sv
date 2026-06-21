@@ -117,9 +117,13 @@ module commit_bus_pipeline (
     commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
   end
 
-  // Drive the output ports from the registered locals.
+  // Drive the output ports from the registered locals.  The flops above clear
+  // valid on the flush edge, but consumers see the previous valid value during
+  // that same cycle.  Mask the qualified valid outputs immediately so a
+  // commit that overlaps a trap/MRET/FENCE.I full flush cannot perform one
+  // more architectural side effect while the backend is being squashed.
   assign o_commit_bus_q             = commit_bus_q;
-  assign o_commit_bus_q_valid       = commit_bus_q_valid;
+  assign o_commit_bus_q_valid       = commit_bus_q_valid && !i_flush_all;
   assign o_commit_q_dest_valid      = commit_q_dest_valid;
   assign o_commit_q_dest_rf         = commit_q_dest_rf;
   assign o_commit_q_dest_reg        = commit_q_dest_reg;
@@ -128,7 +132,7 @@ module commit_bus_pipeline (
   assign o_commit_q_is_store_like   = commit_q_is_store_like;
   assign o_commit_q_sc_failed       = commit_q_sc_failed;
   assign o_commit_bus_2_q           = commit_bus_2_q;
-  assign o_commit_bus_2_q_valid     = commit_bus_2_q_valid;
+  assign o_commit_bus_2_q_valid     = commit_bus_2_q_valid && !i_flush_all;
   assign o_commit_q_2_dest_valid    = commit_q_2_dest_valid;
   assign o_commit_q_2_dest_rf       = commit_q_2_dest_rf;
   assign o_commit_q_2_dest_reg      = commit_q_2_dest_reg;

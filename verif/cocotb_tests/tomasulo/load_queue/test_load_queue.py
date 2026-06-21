@@ -1309,6 +1309,68 @@ async def test_cached_response_after_invalidate_does_not_refill_l0(dut: Any) -> 
     await accept_fu_complete(dut_if)
 
 
+@cocotb.test()
+async def test_cached_response_during_flush_all_does_not_refill_l0(dut: Any) -> None:
+    """A cached-tier response coincident with flush_all must be drained only."""
+    dut_if, model = await setup(dut)
+
+    addr = 0x8000_0300
+    stale_word = 0x0000_0CC0
+    fresh_word = 0xA5A5_5A5A
+
+    dut_if.drive_sq_empty(True)
+
+    # Launch a cached-region load and delay its response until full flush.
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Expected cached load to issue"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    # The response arrives in the same cycle as trap/MRET-style full flush.
+    # It must not complete the killed load and must not refill the persistent L0.
+    dut_if.drive_flush_all()
+    model.flush_all()
+    dut_if.drive_mem_response(stale_word)
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_fill.value), "Full-flush response filled L0"
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.clear_mem_response()
+
+    assert dut_if.empty, "Full flush should clear the LQ"
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=1)).valid
+
+    # A later load to the same word must miss L0 and fetch the fresh value.
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+
+    assert not bool(dut.o_l0_hit.value), "Flushed response left a stale L0 hit"
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=4)
+    assert mem_req["en"], "Later load should miss L0 and issue to memory"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    dut_if.drive_mem_response(fresh_word)
+    model.mem_response(fresh_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Later load should complete from memory"
+    assert result.tag == 2
+    assert result.value == fresh_word
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await accept_fu_complete(dut_if)
+
+
 # ============================================================================
 # Test 26: Cache miss fills cache, subsequent hit
 # ============================================================================

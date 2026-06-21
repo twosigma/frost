@@ -52,6 +52,10 @@ Two things the cache intentionally *doesn't* do:
   so there's nothing speculative to throw away. Leaving cached lines
   hot across mispredict recovery roughly doubles the steady-state hit
   rate on CoreMark (36.5% → 72.4%).
+- **No fill from a full-flush-cycle response.** Trap/MRET/FENCE.I full
+  flushes keep existing L0 lines hot, but a memory response that arrives
+  on the flush cycle is treated as a drained response for a killed load
+  and is not allowed to install a new L0 line.
 - **No same-cycle fill → lookup bypass.** Forwarding the in-flight
   fill into a same-cycle lookup dragged the back-end flush cone
   (`i_flush_en` → `accept_mem_response` → fill → bypass → hit →
