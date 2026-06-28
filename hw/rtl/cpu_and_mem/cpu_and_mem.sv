@@ -49,6 +49,9 @@ module cpu_and_mem #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Simulation-only fast cache maintenance for fence.i (see frost_cache).
+    // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
+    parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
@@ -675,7 +678,8 @@ module cpu_and_mem #(
         .HAS_L2(CACHED_HAS_L2),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
-        .L2_CACHE_BYTES(L2_CACHE_BYTES)
+        .L2_CACHE_BYTES(L2_CACHE_BYTES),
+        .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) cache_hierarchy (
         .i_clk(i_clk),
         .i_rst(i_rst),

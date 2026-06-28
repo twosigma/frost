@@ -575,6 +575,48 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
         verilator_extra_args=("-GHAS_L2=0",),
     ),
+    # Same functional suite, but with the sim-only fast maintenance path
+    # (SIM_FAST_MAINT=1) enabled: proves invalidate-all / writeback-all stay
+    # functionally identical when the fence.i fast path is active.
+    "frost_cache_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GSIM_FAST_MAINT=1"),
+    ),
+    "frost_cache_l1_only_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=0", "-GSIM_FAST_MAINT=1"),
+    ),
+    # fence.i maintenance cycle-count measurement at the real L1 geometry
+    # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) vs fast, so the
+    # speedup is directly observable in the logs. Not part of the pytest sweep.
+    "fence_speed_slow": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_fence_speed",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="fence.i maintenance cost, FPGA-path FSM (SIM_FAST_MAINT=0)",
+        verilator_extra_args=(
+            "-GHAS_L2=0",
+            "-GL1_CACHE_BYTES=131072",
+            "-GL1I_CACHE_BYTES=16384",
+            "-GSIM_FAST_MAINT=0",
+        ),
+        include_in_pytest=False,
+    ),
+    "fence_speed_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_fence_speed",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="fence.i maintenance cost, fast sim path (SIM_FAST_MAINT=1)",
+        verilator_extra_args=(
+            "-GHAS_L2=0",
+            "-GL1_CACHE_BYTES=131072",
+            "-GL1I_CACHE_BYTES=16384",
+            "-GSIM_FAST_MAINT=1",
+        ),
+        include_in_pytest=False,
+    ),
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
         hdl_toplevel_module="line_port_arbiter_test_harness",

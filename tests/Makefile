@@ -364,8 +364,14 @@ ENABLE_CACHED_TIER ?= 1
 CACHED_HAS_L2 ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
+# Fast cache maintenance (fence.i) for simulation: completes invalidate-all /
+# writeback-all in drastically fewer cycles while preserving the exact
+# functional effect, so the real Linux kernel's fence.i-heavy patching boots
+# tractably. Defaults ON for sim; the FPGA default in the RTL stays 0 and the
+# board builds never set it.
+SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 
 # Include Cocotb simulation makefile rules
