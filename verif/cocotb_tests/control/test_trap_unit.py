@@ -1,3 +1,17 @@
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
 """Unit tests for trap_unit interrupt/MRET arbitration."""
 
 from typing import Any
@@ -44,6 +58,7 @@ async def _reset(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
+    """Verify that a pending timer interrupt is deferred while MRET is in flight."""
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
     await _reset(dut)
 
@@ -75,11 +90,19 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
-    assert int(dut.o_trap_taken.value) == 0
+    # Once the MRET-recovery inhibit lifts, the still-live machine timer -- HELD
+    # across the inhibit rather than force-cleared -- is taken at the first
+    # eligible boundary (U-mode here, where a machine interrupt preempts regardless
+    # of MIE). Holding a live source avoids LOSING a real timer tick; the 0x80388bba
+    # panic stays guarded by cpu_ooo's interrupt_resume_pc seed on mret_taken, not
+    # by this latch (commit 718f8cc).
+    assert int(dut.o_trap_taken.value) == 1
+    assert int(dut.o_trap_cause.value) == 0x80000007
 
 
 @cocotb.test()
 async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
+    """Verify that a latched timer interrupt is taken immediately when no MRET is in flight."""
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
     await _reset(dut)
 
@@ -101,6 +124,7 @@ async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
 
 @cocotb.test()
 async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
+    """Verify that a held interrupt is only taken when current MIE is asserted."""
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
     await _reset(dut)
 
@@ -124,14 +148,19 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 0
 
-    # Once MIE is restored, the still-asserted timer interrupt is sampled again
-    # and should trap on the registered path.
+    # Once MIE is restored, the timer interrupt was HELD across the MIE-low window
+    # (not erased), so it is eligible and taken IMMEDIATELY on the restore cycle --
+    # one cycle earlier than the old clear-then-re-latch path, which could LOSE the
+    # tick if MIE never stayed high long enough (the no-MMU boot lost-tick hang). It
+    # still requires CURRENT MIE to be taken (eligible gates on live
+    # m_int_globally_enabled), so the name still holds.
     dut.i_mstatus.value = MSTATUS_MIE
     dut.i_mstatus_mie_direct.value = 1
     await Timer(1, unit="ns")
-    assert int(dut.o_trap_taken.value) == 0
-
-    await RisingEdge(dut.i_clk)
-    await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_trap_cause.value) == 0x80000007
+
+    # Cleared on take (trap_taken_prev gates re-entry); does not re-fire next cycle.
+    await RisingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value) == 0

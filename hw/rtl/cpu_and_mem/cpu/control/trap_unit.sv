@@ -193,10 +193,45 @@ module trap_unit #(
   // feedback path passes through a flop.
   assign interrupt_pending_comb = (meip_enabled || mtip_enabled || msip_enabled) && !o_trap_taken;
 
+  // Source-level qualification: pending AND locally enabled (mie.x) and not in a
+  // trap/MRET recovery window -- but NOT gated by the live global mstatus.MIE.
+  //
+  // Once interrupt_pending has been LATCHED (while fully eligible, MIE=1), a
+  // YOUNGER csr clear of mstatus.MIE (e.g. the kernel idle `csrsi; ...; csrci`)
+  // must not retroactively erase it: the interrupt was eligible at an instruction
+  // boundary the csr-clear is younger than, so per the spec it is taken (the
+  // csr-clear is squashed by the trap). interrupt_pending is registered (1-cycle
+  // late) and interrupt_pending_eligible re-checks the LIVE global enable, so
+  // without a hold a csr-clear's delayed mstatus.MIE side-effect lands in the
+  // sample-to-service gap, drops interrupt_pending_comb, and clears the
+  // already-qualified bit -> the interrupt is LOST. On the no-MMU kernel that
+  // dropped machine-timer tick freezes jiffies and hangs the boot. (Usually the
+  // service is delayed one cycle by a draining store via i_sq_committed_empty,
+  // widening the window.) Hold across a global-MIE drop; still release when the
+  // source itself de-qualifies (mtip/meip/msip drops or mie.x cleared) or the
+  // trap is taken, so masking and acks behave normally.
+  // interrupt_source_live: a REAL, current interrupt source exists -- pending AND
+  // locally enabled (mie.x), gated ONLY by !trap_taken_prev. NOT gated by the live
+  // global mstatus.MIE and NOT by mret_interrupt_inhibit, so a persistent timer is
+  // HELD across both a global-MIE drop AND the MRET-recovery window rather than
+  // erased. It is still never TAKEN there (interrupt_pending_eligible keeps
+  // !mret_interrupt_inhibit + live m_int_globally_enabled), and the 0x80388bba
+  // panic stays guarded by the cpu_ooo interrupt_resume_pc seed on mret_taken (not
+  // by this latch) -- per commit 718f8cc the seed is THE panic fix and the old
+  // trap_unit MRET/interrupt cancel was incidental bring-up timing. A stale sample
+  // whose source has dropped (source_live=0) is still cleared, preserving the
+  // "cancel a stale one-cycle sample before MRET" property.
+  logic interrupt_source_live;
+  assign interrupt_source_live =
+      ((i_interrupts.meip && mie_meie) || (i_interrupts.mtip && mie_mtie) ||
+       (i_interrupts.msip && mie_msie)) && !trap_taken_prev;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) interrupt_pending <= 1'b0;
-    else if (mret_interrupt_inhibit) interrupt_pending <= 1'b0;
-    else interrupt_pending <= interrupt_pending_comb;
+    else if (interrupt_pending_comb) interrupt_pending <= 1'b1;  // latch when fully eligible
+    else if (interrupt_pending && interrupt_source_live && !o_trap_taken)
+      interrupt_pending <= 1'b1;  // hold a live source across a global-MIE drop AND MRET inhibit
+    else interrupt_pending <= 1'b0;  // clear stale (no live source) / on take
   end
 
   // Register synchronous exceptions from the ROB head before trap entry.
@@ -283,7 +318,13 @@ module trap_unit #(
   end
 
   always_ff @(posedge i_clk) begin
-    interrupt_cause <= interrupt_cause_comb;
+    // Hold the cause while interrupt_pending is held (across a global-MIE drop or
+    // the MRET inhibit); interrupt_cause_comb is built from the gated *_enabled so
+    // it decays to 0 there, which would default interrupt_latched_source_enabled
+    // false and leave the held interrupt ineligible when it can finally trap.
+    if (interrupt_cause_comb != '0) interrupt_cause <= interrupt_cause_comb;
+    else if (interrupt_pending && interrupt_source_live) interrupt_cause <= interrupt_cause;
+    else interrupt_cause <= '0;
   end
 
   // A registered interrupt request must still be enabled when it reaches the
@@ -397,8 +438,8 @@ module trap_unit #(
       p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
 
       // Trap needs source: trap_taken requires interrupt or exception.
-      p_trap_needs_source : assert (!o_trap_taken || (interrupt_pending_eligible ||
-          exception_pending));
+      p_trap_needs_source :
+      assert (!o_trap_taken || (interrupt_pending_eligible || exception_pending));
 
       // Trap not during stall: traps only fire when pipeline not stalled.
       p_trap_not_stalled : assert (!o_trap_taken || !i_pipeline_stall);

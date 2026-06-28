@@ -129,6 +129,7 @@ module tomasulo_wrapper #(
     input  logic                                        i_csr_done,
     output logic                                        o_trap_pending,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_pc,
+    output logic                                        o_head_is_wfi,
     output riscv_pkg::exc_cause_t                       o_trap_cause,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_value,
     input  logic                                        i_trap_taken,
@@ -636,9 +637,15 @@ module tomasulo_wrapper #(
   // CDB Arbiter: FU completions → single CDB broadcast
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
-  riscv_pkg::cdb_broadcast_t cdb_bus;  // registered — feeds RS/ROB wakeup
+  // registered — feeds RS/ROB wakeup
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus;
+  // same-cycle INT_RS-local copy
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
-  riscv_pkg::cdb_broadcast_t cdb_bus_2;  // registered lane-1 — feeds RS/ROB wakeup
+  // registered lane-1 — feeds RS/ROB wakeup
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2;
+  // same-cycle INT_RS-local copy
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
   riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
@@ -693,7 +700,8 @@ module tomasulo_wrapper #(
   // max_fanout forces replication across the RS snoop / ROB-write consumers —
   // the high-fanout report (609 loads) showed this net being one of the top
   // drivers into the flush-recovery cone that failed timing at -0.947 ns.
-  (* max_fanout = 32 *) logic cdb_bus_valid;
+  (* max_fanout = 32 *)logic cdb_bus_valid;
+  (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_int_rs_valid;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_valid <= 1'b0;
@@ -701,7 +709,13 @@ module tomasulo_wrapper #(
   end
 
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus_int_rs_valid <= 1'b0;
+    else cdb_bus_int_rs_valid <= cdb_bus_comb.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
     cdb_bus <= cdb_bus_comb;
+    cdb_bus_int_rs <= cdb_bus_comb;
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
@@ -712,6 +726,16 @@ module tomasulo_wrapper #(
   always_comb begin
     cdb_bus_qualified       = cdb_bus;
     cdb_bus_qualified.valid = cdb_bus_valid;
+  end
+
+  // INT_RS is physically far from the shared CDB register on Genesys2 and
+  // snoops many value bits in parallel.  Give it an equivalent same-cycle CDB
+  // register so placement can keep that high-fanout payload local without
+  // changing wakeup latency.
+  riscv_pkg::cdb_broadcast_t cdb_bus_int_rs_qualified;
+  always_comb begin
+    cdb_bus_int_rs_qualified       = cdb_bus_int_rs;
+    cdb_bus_int_rs_qualified.valid = cdb_bus_int_rs_valid;
   end
 
   // Derive ROB CDB write from CDB broadcast
@@ -726,18 +750,29 @@ module tomasulo_wrapper #(
   end
 
   // ---- 2-wide CDB lane-1: registered mirror of the lane-0 pipeline above.
-  (* max_fanout = 32 *) logic cdb_bus_2_valid;
+  (* max_fanout = 32 *)logic cdb_bus_2_valid;
+  (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_2_int_rs_valid;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_2_valid <= 1'b0;
     else cdb_bus_2_valid <= cdb_bus_2_comb.valid;
   end
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus_2_int_rs_valid <= 1'b0;
+    else cdb_bus_2_int_rs_valid <= cdb_bus_2_comb.valid;
+  end
+  always_ff @(posedge i_clk) begin
     cdb_bus_2 <= cdb_bus_2_comb;
+    cdb_bus_2_int_rs <= cdb_bus_2_comb;
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
   always_comb begin
     cdb_bus_2_qualified       = cdb_bus_2;
     cdb_bus_2_qualified.valid = cdb_bus_2_valid;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs_qualified;
+  always_comb begin
+    cdb_bus_2_int_rs_qualified       = cdb_bus_2_int_rs;
+    cdb_bus_2_int_rs_qualified.valid = cdb_bus_2_int_rs_valid;
   end
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter_2;
   always_comb begin
@@ -1423,6 +1458,7 @@ module tomasulo_wrapper #(
       .i_csr_done          (i_csr_done),
       .o_trap_pending      (o_trap_pending),
       .o_trap_pc           (o_trap_pc),
+      .o_head_is_wfi       (o_head_is_wfi),
       .o_trap_cause        (o_trap_cause),
       .o_trap_value        (o_trap_value),
       .i_trap_taken        (i_trap_taken),
@@ -1658,8 +1694,8 @@ module tomasulo_wrapper #(
       .o_full_for_2(int_rs_full_for_2_w),
 
       // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus_qualified),
-      .i_cdb_2(cdb_bus_2_qualified),
+      .i_cdb(cdb_bus_int_rs_qualified),
+      .i_cdb_2(cdb_bus_2_int_rs_qualified),
       .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),

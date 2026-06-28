@@ -62,7 +62,9 @@ module frost #(
     // them to their DDR controller subsystem).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
-    parameter int unsigned FETCH_VALID_FUZZ = 0
+    parameter int unsigned FETCH_VALID_FUZZ = 0,
+    // Optional on-silicon boot-hang classifier that can emit over UART.
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -196,7 +198,8 @@ module frost #(
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
-      .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ)
+      .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,

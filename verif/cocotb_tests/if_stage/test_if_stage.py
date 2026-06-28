@@ -768,3 +768,108 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
         effective=COMPRESSED_HINT,
         compressed=True,
     )
+
+
+@cocotb.test()
+async def test_pd_redirect_stall_32bit_target_no_plus2_desync(dut: Any) -> None:
+    """PD-redirect+BTB-collision+stall must not advance pc_reg by +2 onto a 32-bit instruction.
+
+    Same race as test_pd_redirect_with_stall_kills_registered_prediction_handoff
+    but the wrong-ADVANCE (+2) variant rather than wrong-TARGET: on genesys2 the
+    HW lands pc_reg 2 bytes into a 32-bit insn (epc=0x8038d7fa, mid sw zero,4(s1))
+    at workqueue_init_early -> illegal-instruction Oops. Drive a 32-bit stream at
+    the PD target; every dispatched PC must be 4-byte aligned.
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    branch_pc = BASE_PC + 8
+    stale_pred_target = 0x80005000
+    pd_target = 0x80006000
+
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": branch_pc,
+            "btb_update_target": stale_pred_target,
+            "btb_update_taken": True,
+            "btb_update_compressed": False,
+            "btb_update_requires_pc_reg_handoff": True,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+
+    await _redirect_to(dut, BASE_PC)
+    prediction_cycle_found = False
+    for _ in range(20):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = pd_target
+    await _advance_cycle(dut)
+    dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_target.value = 0
+
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    for _ in range(3):
+        _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+        await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {})
+
+    bad: list[int] = []
+    for _ in range(8):
+        _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+        await _settle()
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"]:
+            pc = packet["program_counter"]
+            if pc & 0x2:
+                bad.append(pc)
+        await _advance_cycle(dut)
+    assert not bad, (
+        "pc_reg landed mid-32-bit-instruction (+2 desync) after PD-redirect+stall: "
+        f"{[hex(x) for x in bad]}"
+    )
+
+
+@cocotb.test()
+async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
+    """Fetch window leading pc_reg by one word (F=W+1) -> is_compressed_fast reads word(W+2)'s size bit.
+
+    If that word's low parcel predecodes compressed, a
+    word-aligned 32-bit insn at pc_reg advances +2 (mid-instruction). This is the
+    workqueue_init_early HW Oops shape (epc 2 bytes into a word-aligned 32-bit sw).
+    fetch_word_swapped = i_instr_bank_sel_r ^ pc_reg[2] is a 1-bit parity that
+    cannot represent F=W+1 (instruction_aligner.sv:141-147,235-240).
+    """
+    await _setup_test(dut)
+    await _redirect_to(
+        dut, BASE_PC
+    )  # pc_reg -> 0x80001000 (bit1=0, bit2=0); 32-bit insn here
+
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,  # i_instr[31:0]
+        next_word=0x00000004,  # i_instr[63:32] = word(W+2); lo parcel 0x0004 -> "compressed"
+        current_sb=_sideband(),  # 32-bit at pc_reg
+        next_sb=_sideband(compressed_lo=True, compressed_hi=False),
+        bank_sel=1,  # = ~pc_reg[2]; models served window one word AHEAD (F=W+1)
+    )
+    await _settle()
+    assert int(_read_if_packet(dut)["program_counter"]) == BASE_PC
+
+    await _advance_cycle(dut)
+    _drive_fetch(dut, current_word=ADD_INSTR_B, next_word=ADD_INSTR_C, bank_sel=1)
+    await _settle()
+    pc2 = int(_read_if_packet(dut)["program_counter"])
+    assert (pc2 & 0x2) == 0, (
+        f"pc_reg landed mid-32-bit-instruction at {pc2:#x} "
+        "(F=W+1 fetch-window-lead parity hole; is_compressed_fast read the wrong word)"
+    )

@@ -46,6 +46,7 @@ module cpu_ooo #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
+    input logic [31:0] i_served_addr,  // Served fetch-window tag (served-window guard)
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
@@ -104,6 +105,10 @@ module cpu_ooo #(
     // Interrupts
     input riscv_pkg::interrupt_t i_interrupts,
     input logic [63:0] i_mtime,
+    output logic [5:0] o_debug_irq_status,
+    output logic [XLEN-1:0] o_debug_commit_pc,
+    output logic [XLEN-1:0] o_debug_commit_2_pc,
+    output logic [1:0] o_debug_commit_valid,
     // Debug
     input logic i_disable_branch_prediction
 );
@@ -440,6 +445,7 @@ module cpu_ooo #(
       .i_instr,
       .i_instr_sideband,
       .i_instr_bank_sel_r,
+      .i_served_addr,
       .i_instr_valid,
       .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
@@ -877,6 +883,7 @@ module cpu_ooo #(
   logic trap_pending;
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
+  logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
@@ -1089,6 +1096,7 @@ module cpu_ooo #(
       .i_csr_done(csr_done_ack),
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
+      .o_head_is_wfi(rob_head_is_wfi),
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
@@ -2030,12 +2038,10 @@ module cpu_ooo #(
   logic [XLEN-1:0] interrupt_resume_pc;
 
   function automatic logic [XLEN-1:0] retired_next_pc(
-      input riscv_pkg::reorder_buffer_commit_t commit
-  );
+      input riscv_pkg::reorder_buffer_commit_t commit);
     logic [XLEN-1:0] step;
     begin
-      step = commit.is_compressed ? {{(XLEN - 2){1'b0}}, 2'b10} :
-                                    {{(XLEN - 3){1'b0}}, 3'b100};
+      step = commit.is_compressed ? {{(XLEN - 2) {1'b0}}, 2'b10} : {{(XLEN - 3) {1'b0}}, 3'b100};
       if (commit.is_branch || commit.is_mret) begin
         retired_next_pc = commit.redirect_pc;
       end else begin
@@ -2069,6 +2075,17 @@ module cpu_ooo #(
       interrupt_resume_pc <= retired_next_pc(rob_commit_comb_2);
     end else if (rob_commit_valid_raw) begin
       interrupt_resume_pc <= retired_next_pc(rob_commit_comb);
+    end else if (rob_head_is_wfi && head_valid) begin
+      // Bug#2 (drain-gated WFI mepc): while a WFI stalls at the ROB head, the
+      // architectural resume PC is always wfi_pc+4 (WFI never redirects). Seed it
+      // here so that if a machine interrupt is taken at the WFI -- including the
+      // narrow window where a committed store finishes draining and take_trap
+      // fires the same cycle, before the WFI's own commit can advance
+      // interrupt_resume_pc -- mepc is the spec-required wfi_pc+4 rather than the
+      // pre-WFI instruction's next-PC (== wfi_pc). Lowest priority: a real commit
+      // (incl. a dual-commit retiring the WFI and its successor) always wins, and
+      // WFI is never compressed so +4 is exact. Mirrors the mret_taken seed above.
+      interrupt_resume_pc <= rob_trap_pc + 32'd4;
     end
   end
 
@@ -2131,6 +2148,15 @@ module cpu_ooo #(
   // commit hold above blocks younger retirement during the delay.
   assign rob_trap_taken_ack = trap_taken_reg;
   assign mret_done_ack = mret_taken_reg;
+
+  // Passive on-silicon debug tap for the top-level hang triage UART. Packed as:
+  // [5]=mret, [4]=trap, [3:2]=priv, [1]=mstatus.MIE, [0]=mie.MTIE.
+  assign o_debug_irq_status = {
+    mret_taken, trap_taken, csr_priv, csr_mstatus_mie_direct, csr_mie[riscv_pkg::MieMtiBit]
+  };
+  assign o_debug_commit_pc = rob_commit.pc;
+  assign o_debug_commit_2_pc = rob_commit_2.pc;
+  assign o_debug_commit_valid = {rob_commit_2.valid, rob_commit.valid};
 
   // ===========================================================================
   // Profiling Counter Aggregation

@@ -152,6 +152,8 @@ module reorder_buffer (
     // Exception detected at head - signal trap unit
     output logic o_trap_pending,  // Exception needs handling
     output logic [riscv_pkg::XLEN-1:0] o_trap_pc,  // PC of excepting instruction
+    // Head decodes as WFI (drives WFI interrupt-resume-PC seed in cpu_ooo)
+    output logic o_head_is_wfi,
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
     // Head entry's CDB value at trap time. For a misaligned load/store the
     // load_queue/SQ path parks the faulting address here (the value slot is
@@ -1712,14 +1714,35 @@ module reorder_buffer (
                        head_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
 
-  // MRET execution signal - asserted when entering MRET_EXEC state.
+  // MRET execution signal - asserted when entering MRET_EXEC and SUSTAINED while
+  // waiting there for committed stores to drain.
+  //
+  // take_mret (trap_unit) only fires when i_sq_committed_empty is high IN THE
+  // SAME CYCLE as o_mret_start, and it has no retry. Without the
+  // SERIAL_MRET_EXEC sustaining term o_mret_start is a one-cycle pulse on the
+  // IDLE->MRET_EXEC cycle: if a committed store is still draining then, take_mret
+  // misses its only chance and the serializer wedges in SERIAL_MRET_EXEC forever
+  // (no later flush can rescue it -- the stuck MRET never restores MIE, so no
+  // interrupt becomes eligible to flush it). The sustaining term mirrors
+  // o_trap_pending (below) and lets take_mret retry every cycle until the SQ
+  // drains.
+  //
+  // The i_sq_committed_empty gate keeps o_mret_start (hence i_mret_start ->
+  // trap_drain_wait -> i_commit_hold) low during the drain wait, which (a)
+  // prevents a commit-hold/o_mret_start f/2 oscillation and (b) keeps mret_taken
+  // a single-cycle pulse so flush_all fires exactly once. It is free on the
+  // common path: a retiring MRET normally finds the committed SQ already empty.
+  //
   // Note: !i_flush_en/!i_flush_all intentionally omitted — flush signals are
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
-  assign o_mret_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
+  assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
+                         (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
+                        head_ready &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
-                        head_is_mret && !head_exception;
+                        head_is_mret && !head_exception &&
+                        i_sq_committed_empty;
 
   // Trap pending signal - asserted when exception at head.
   // Note: during the IDLE->TRAP_WAIT transition, both the state check and the
@@ -1735,6 +1758,13 @@ module reorder_buffer (
       (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
   assign o_trap_pc = head_pc;
+  // WFI interrupt-resume-PC seed (Bug#2): expose that the ROB head is a WFI so
+  // cpu_ooo can seed interrupt_resume_pc = wfi_pc+4 while the WFI stalls at the
+  // head. A machine interrupt taken at a *drain-gated* WFI (a committed store
+  // still draining) otherwise flushes the WFI before it commits, leaving
+  // interrupt_resume_pc at the pre-WFI instruction's next-PC (== the WFI's own
+  // PC) -> mepc=wfi_pc instead of the spec-required wfi_pc+4.
+  assign o_head_is_wfi = head_is_wfi;
   assign o_trap_cause = head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
 

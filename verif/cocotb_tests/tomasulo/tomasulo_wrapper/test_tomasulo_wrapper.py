@@ -949,16 +949,16 @@ async def test_slot2_store_raw_commit_blocks_sq_committed_empty(dut: Any) -> Non
 
     await RisingEdge(dut_if.clock)
     await Timer(1, unit="ps")
-    sq_committed_empty = dut_if.sq_committed_empty
+    sq_committed_empty = bool(dut_if.sq_committed_empty)
     await FallingEdge(dut_if.clock)
 
     assert commit_1["valid"] and commit_1["tag"] == tag_1
     assert commit_2["valid"] and commit_2["tag"] == tag_2
     assert commit_2_valid_raw, "Slot-2 raw commit should be visible"
     assert commit_2_store_like_raw, "Slot-2 raw commit should be store-like"
-    assert not sq_committed_empty, (
-        "Slot-2 raw store commit must feed SQ's same-cycle committed_empty guard"
-    )
+    assert (
+        not sq_committed_empty
+    ), "Slot-2 raw store commit must feed SQ's same-cycle committed_empty guard"
 
     cocotb.log.info("=== Test Passed ===")
 
