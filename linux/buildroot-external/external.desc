@@ -1,0 +1,2 @@
+name: FROST
+desc: FROST RV32 no-MMU M-mode Linux board support (kernel + initramfs + FPGA boot-image packaging)
