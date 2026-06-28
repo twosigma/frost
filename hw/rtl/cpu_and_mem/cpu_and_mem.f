@@ -25,5 +25,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 # High-address fetch window provider (two-line L1I buffer)
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 
+# On-silicon hang triage (synthesizable boot-hang classifier over UART)
+$(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
+
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv

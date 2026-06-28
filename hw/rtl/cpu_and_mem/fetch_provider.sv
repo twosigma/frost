@@ -70,6 +70,11 @@ module fetch_provider #(
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
+    // Full served-window address (its tag).  if_stage uses this to detect a fetch
+    // stall that left pc_reg outside the served window (>1 word away), which the
+    // 1-bit bank_sel parity cannot represent -> wrong-word size sample / mid-insn
+    // pc_reg drift.  Observe-only output; does not change fetch behaviour here.
+    output logic [31:0] o_served_addr,
     output logic o_instr_valid,
 
     // L1I line port (master; read-only -- write/wdata/wstrb tied inactive).
@@ -221,6 +226,7 @@ module fetch_provider #(
   assign o_instr = ddr_instr_q;
   assign o_instr_sideband = ddr_sb_pair_q;
   assign o_instr_bank_sel_r = bank_sel_q;
+  assign o_served_addr = served_addr_q;
 
   // ===========================================================================
   // Miss engine: single-outstanding line fills + next-line prefetch

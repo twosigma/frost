@@ -1329,3 +1329,431 @@ async def run_directed_illegal_instruction_test(
 async def test_directed_illegal_instruction(dut: Any) -> None:
     """Directed test for illegal instruction trapping (mcause=2)."""
     await run_directed_illegal_instruction_test(dut)
+
+
+# ============================================================================
+# Directed Test for Precise-Interrupt / Commit Race (mepc off-by-one detector)
+# ============================================================================
+#
+# Confirmed-by-RTL bug under test:
+#   When an async machine-timer interrupt is recognized in the SAME cycle an
+#   ordinary instruction commits, precise state is mis-handled.
+#     * commit_en (reorder_buffer.sv) is gated only by the REGISTERED
+#       trap_mret_commit_hold_q (cpu_ooo.sv), which for an async interrupt stays
+#       low (it tracks trap_pending/mret/drain, none of which an async timer IRQ
+#       asserts). So a normal commit can fire in the cycle o_trap_taken asserts.
+#     * interrupt_resume_pc (cpu_ooo.sv), the source of mepc for async
+#       interrupts, is updated from the COMBINATIONAL rob_commit_valid_raw, so a
+#       commit in the trap cycle advances it to that instruction's next-PC.
+#     * The registered ROB commit (reorder_buffer.sv o_commit.valid) and the
+#       regfile write (commit_actions.sv) are NOT gated by the coincident flush /
+#       trap, so the racing instruction's architectural write still lands.
+#   Net effect: mepc and the set of architecturally-retired instructions can
+#   disagree by one -- a precise-state violation (on Linux this surfaced as a
+#   lost callee-saved restore, s2 = 0x19999998).
+#
+# Detector (prefix invariant): at trap entry the architectural regfile must
+# reflect EXACTLY the instructions with PC < mepc -- every such instruction's
+# destination register holds its marker, and no instruction with PC >= mepc has
+# its marker visible.  This sweeps the interrupt fire-cycle across a stream of
+# distinct register-writing ALU ops in a SINGLE simulation and flags any offset
+# where the invariant breaks.
+#
+# Regfile note: the architectural integer regfile is a multi-write distributed
+# RAM (generic_regfile -> mwp_dist_ram) with a per-address live-value table, so
+# a register's committed value is g_banks[lvt[r]].u_bank.ram[r] (read port 0).
+
+
+async def run_directed_interrupt_commit_race_test(
+    dut: Any, config: TestConfig | None = None, mode: str = "alu"
+) -> None:
+    """Sweep an async timer interrupt cycle-by-cycle over a register-writing stream.
+
+    Assert the trap-entry precise-state prefix invariant.
+
+    mode="alu":  stream is `addi xK, x0, marker` (result produced in EX).
+    mode="load": stream is `lw  xK, off(x4)`     (result produced via the load
+                 queue / data memory) -- mirrors the Linux symptom, which was a
+                 lost callee-saved *load* restore (s2 = 0x19999998).
+    """
+    from encoders.op_tables import I_ALU, CSRS, LOADS
+    from encoders.instruction_encode import CSRAddress
+
+    if config is None:
+        config = TestConfig(num_loops=100)
+
+    # ---- parameters --------------------------------------------------------
+    nop = 0x00000013
+    base_reg = 5  # stream writes x5..x{4+n_stream}
+    n_stream = 27  # x5..x31
+    warmup = 6
+    gap = 4  # NOPs between serialized CSR writes
+    obs = 56  # stream + observation cycles per offset
+    post_trap = 8  # cycles to keep observing after o_trap_taken
+    fire_lo, fire_hi = 0, 40
+    mem_base = 0x400  # byte base of the load region (x4); BRAM, non-cached
+    word_base = mem_base >> 2
+
+    enc_addi = I_ALU["addi"][0]
+    enc_slli = I_ALU["slli"][0]
+    enc_csrrw = CSRS["csrrw"]
+    enc_lw = LOADS["lw"][0]
+
+    # Iteration-unique expected destination value: distinct per (stream index,
+    # generation) and never 0, so a leftover value from a prior sweep iteration
+    # can never masquerade as a commit in the current one (neither the regfile
+    # RAM nor the data BRAM is reset between runs).
+    def expected_val(i: int, gen: int) -> int:
+        if mode == "load":
+            # 32-bit memory word loaded into the dest register.
+            return (0x19990000 | ((gen & 0xFF) << 8) | (i & 0xFF)) & MASK32
+        return 0x40 + gen * 48 + i  # 12-bit addi immediate (<= 1914)
+
+    def stream_instr(c: int, gen: int) -> int:
+        if mode == "load":
+            return enc_lw(base_reg + c, 4, c * 4)  # lw x{5+c}, (c*4)(x4)
+        return enc_addi(base_reg + c, 0, expected_val(c, gen))
+
+    dut_if = DUTInterface(dut)
+    clk = dut_if.clock
+    d = dut.device_under_test
+
+    def ri(handle: Any) -> int | None:
+        try:
+            return int(handle.value)
+        except Exception:
+            return None
+
+    # Read port 0 of the architectural integer regfile (multi-write banked RAM).
+    def _read_port0() -> Any:
+        return d.ooo_register_files_inst.regfile_inst.gen_read_port[
+            0
+        ].gen_multi_write.read_port_ram
+
+    def read_reg(r: int) -> int | None:
+        if r == 0:
+            return 0
+        try:
+            rp = _read_port0()
+            sel = int(rp.lvt[r].value)
+            return int(rp.g_banks[sel].u_bank.ram[r].value) & MASK32
+        except Exception as e:  # pragma: no cover - surfaced as a clear failure
+            raise AssertionError(
+                f"regfile read path failed for x{r}: {e}. "
+                f"Expected ooo_register_files_inst.regfile_inst."
+                f"gen_read_port[0].gen_multi_write.read_port_ram.{{lvt,g_banks[*].u_bank.ram}}"
+            ) from e
+
+    # one clock for the whole sweep
+    cocotb.start_soon(Clock(clk, config.clock_period_ns, unit="ns").start())
+
+    async def feed(instr: int) -> None:
+        await FallingEdge(clk)
+        await dut_if.wait_ready()
+        dut_if.instruction = instr
+        await RisingEdge(clk)
+
+    gen_counter = {"g": 0}
+
+    async def setup_phase() -> int:
+        """Reset and rebuild mtvec/mie/mstatus via fed instructions.
+
+        Enables the machine-timer interrupt; i_interrupts remains 0 so nothing fires yet.
+        """
+        gen = gen_counter["g"]
+        gen_counter["g"] += 1
+        dut.i_interrupts_reg.value = 0
+        dut_if.instruction = nop
+        await dut_if.reset_dut(config.reset_cycles)
+        for _ in range(6):
+            await feed(nop)
+        # Preload the load region with this generation's expected values (the
+        # data BRAM persists across reset, so refresh it every iteration).
+        if mode == "load":
+            for i in range(n_stream):
+                dut.data_memory_for_simulation.memory[
+                    word_base + i
+                ].value = expected_val(i, gen)
+        # Construct CSR operands (no deposits needed): x1=mtvec(0x1000),
+        # x2=mie.MTIE(0x80), x3=mstatus.MIE(0x08), x4=load base.
+        await feed(enc_addi(1, 0, 1))  # x1 = 1
+        await feed(enc_slli(1, 1, 12))  # x1 = 0x1000
+        await feed(enc_addi(2, 0, 0x80))  # x2 = MTIE
+        await feed(enc_addi(3, 0, 0x08))  # x3 = MIE
+        await feed(enc_addi(4, 0, mem_base))  # x4 = load base address
+        for _ in range(warmup):
+            await feed(nop)
+        await feed(enc_csrrw(0, CSRAddress.MTVEC, 1))
+        for _ in range(gap):
+            await feed(nop)
+        await feed(enc_csrrw(0, CSRAddress.MIE, 2))
+        for _ in range(gap):
+            await feed(nop)
+        await feed(enc_csrrw(0, CSRAddress.MSTATUS, 3))
+        for _ in range(gap):
+            await feed(nop)
+        return gen
+
+    async def calibrate() -> list[int]:
+        """Run the stream with no interrupt to learn each stream instruction's PC.
+
+        Captures PCs from regfile write ports and confirms a clean run commits
+        every marker in order.
+        """
+        gen = await setup_phase()
+        reg_pc: dict[int, int] = {}
+        for c in range(obs):
+            await FallingEdge(clk)
+            await dut_if.wait_ready()
+            dut_if.instruction = stream_instr(c, gen) if c < n_stream else nop
+            await RisingEdge(clk)
+            we0, a0, pc0 = (
+                ri(d.dbg_port0_int_we),
+                ri(d.dbg_port0_int_addr),
+                ri(d.dbg_rob_commit_reg_pc),
+            )
+            we1, a1, pc1 = (
+                ri(d.dbg_port1_int_we),
+                ri(d.dbg_port1_int_addr),
+                ri(d.dbg_rob_commit_2_reg_pc),
+            )
+            if (
+                we0
+                and a0 is not None
+                and pc0 is not None
+                and base_reg <= a0 < base_reg + n_stream
+            ):
+                reg_pc.setdefault(a0, pc0)
+            if (
+                we1
+                and a1 is not None
+                and pc1 is not None
+                and base_reg <= a1 < base_reg + n_stream
+            ):
+                reg_pc.setdefault(a1, pc1)
+        missing = [
+            base_reg + i for i in range(n_stream) if (base_reg + i) not in reg_pc
+        ]
+        assert not missing, f"calibration missed regfile writes for {missing}: {reg_pc}"
+        stream_pcs = [reg_pc[base_reg + i] for i in range(n_stream)]
+        for i in range(1, n_stream):
+            assert (
+                stream_pcs[i] == stream_pcs[0] + 4 * i
+            ), f"stream PCs not contiguous: {[hex(p) for p in stream_pcs]}"
+        for i in range(n_stream):
+            v = read_reg(base_reg + i)
+            assert v == expected_val(i, gen), (
+                f"clean-run marker mismatch x{base_reg + i}: "
+                f"got {v:#x} want {expected_val(i, gen):#x}"
+            )
+        cocotb.log.info(
+            f"Calibrated stream PCs x{base_reg}..x{base_reg + n_stream - 1}: "
+            f"{stream_pcs[0]:#x}..{stream_pcs[-1]:#x} (step 4); clean run committed "
+            f"all {n_stream} markers."
+        )
+        return stream_pcs
+
+    async def run_offset(fire_offset: int, stream_pcs: list[int]) -> dict[str, Any]:
+        gen = await setup_phase()
+        trap_c: int | None = None
+        racer: dict[str, Any] | None = None
+        resume_at_trap: int | None = None
+        last_mepc: int | None = None
+        for c in range(obs):
+            await FallingEdge(clk)
+            await dut_if.wait_ready()
+            # Stop injecting new stream writes once the trap is taken so the
+            # post-trap handler (NOPs) cannot perturb the x5..x31 snapshot.
+            if c < n_stream and trap_c is None:
+                dut_if.instruction = stream_instr(c, gen)
+            else:
+                dut_if.instruction = nop
+            # Cycle-exact injection: assert mtip for the cycle ending at this edge.
+            if c == fire_offset:
+                dut.i_interrupts_reg.value = 0b010
+            await RisingEdge(clk)
+            ttr = ri(d.dbg_trap_taken_raw)
+            mepc = ri(d.csr_file_inst.mepc)
+            if mepc is not None:
+                last_mepc = mepc
+            if trap_c is None and ttr == 1:
+                trap_c = c
+                resume_at_trap = ri(d.dbg_interrupt_resume_pc)
+                racer = dict(
+                    valid=ri(d.dbg_commit_valid),
+                    pc=ri(d.dbg_commit_pc),
+                    dest_valid=ri(d.dbg_commit_dest_valid),
+                    dest_reg=ri(d.dbg_commit_dest_reg),
+                    value=ri(d.dbg_commit_value),
+                    c2_valid=ri(d.dbg_commit_2_valid),
+                    c2_pc=ri(d.dbg_commit_2_pc),
+                )
+            if trap_c is not None and c >= trap_c + post_trap:
+                break
+        mepc_final = ri(d.csr_file_inst.mepc)
+        if mepc_final is None:
+            mepc_final = last_mepc
+        regs = {base_reg + i: read_reg(base_reg + i) for i in range(n_stream)}
+        dut.i_interrupts_reg.value = 0
+        return dict(
+            fire_offset=fire_offset,
+            gen=gen,
+            trap_c=trap_c,
+            mepc=mepc_final,
+            resume_at_trap=resume_at_trap,
+            racer=racer,
+            regs=regs,
+        )
+
+    def analyze(res: dict[str, Any], stream_pcs: list[int]) -> dict[str, Any]:
+        gen = res["gen"]
+        mepc = res["mepc"]
+        regs = res["regs"]
+        committed = [
+            regs[base_reg + i] == expected_val(i, gen) for i in range(n_stream)
+        ]
+        ncommit = sum(committed)
+        longest_prefix = 0
+        while longest_prefix < n_stream and committed[longest_prefix]:
+            longest_prefix += 1
+        lost: list[int] = []
+        leaked: list[int] = []
+        r: int | None = None
+        no_trap = res["trap_c"] is None
+        if mepc is not None and not no_trap:
+            # Expected #committed stream instrs == those with PC < mepc.
+            r = sum(1 for pc in stream_pcs if pc < mepc)
+            for i in range(n_stream):
+                if stream_pcs[i] < mepc and not committed[i]:
+                    lost.append(i)  # mepc skipped it, but its write is missing
+                elif stream_pcs[i] >= mepc and committed[i]:
+                    leaked.append(i)  # committed though mepc resumes at/before it
+        violation = bool(lost or leaked) and not no_trap
+        return dict(
+            committed=committed,
+            ncommit=ncommit,
+            longest_prefix=longest_prefix,
+            R=r,
+            lost=lost,
+            leaked=leaked,
+            violation=violation,
+            no_trap=no_trap,
+        )
+
+    # ---- sweep -------------------------------------------------------------
+    cocotb.log.info(f"=== Precise-interrupt sweep: stream mode={mode} ===")
+    cocotb.log.info("=== Calibrating clean stream PCs (no interrupt) ===")
+    stream_pcs = await calibrate()
+
+    cocotb.log.info("=== Sweeping interrupt fire-cycle (single simulation) ===")
+    results: list[dict[str, Any]] = []
+    for fire_offset in range(fire_lo, fire_hi):
+        res = await run_offset(fire_offset, stream_pcs)
+        an = analyze(res, stream_pcs)
+        res["an"] = an
+        results.append(res)
+
+        def _h(x: int | None) -> str:
+            return "None" if x is None else f"0x{x:08x}"
+
+        racer = res["racer"] or {}
+        tag = (
+            "  <<< VIOLATION"
+            if an["violation"]
+            else ("  (no trap)" if an["no_trap"] else "")
+        )
+        cocotb.log.info(
+            f"offset={fire_offset:2d} trap_c={res['trap_c']} mepc={_h(res['mepc'])} "
+            f"resume@trap={_h(res['resume_at_trap'])} R={an['R']} "
+            f"committed={an['ncommit']} prefix={an['longest_prefix']} "
+            f"lost={an['lost']} leaked={an['leaked']} "
+            f"racer[pc={_h(racer.get('pc'))} x{racer.get('dest_reg')}={_h(racer.get('value'))} "
+            f"v={racer.get('valid')}]{tag}"
+        )
+
+    violations = [r for r in results if r["an"]["violation"]]
+
+    # ---- detailed evidence for each violation ------------------------------
+    for r in violations[:8]:
+        an = r["an"]
+        gen = r["gen"]
+        fo = r["fire_offset"]
+        cocotb.log.error(
+            f"--- VIOLATION fire_offset={fo} mepc=0x{r['mepc']:08x} "
+            f"resume_pc@trap="
+            f"{f'0x{r['resume_at_trap']:08x}' if r['resume_at_trap'] is not None else None} ---"
+        )
+        for i in an["lost"]:
+            reg = base_reg + i
+            cocotb.log.error(
+                f"   LOST  x{reg} (stream #{i}, pc=0x{stream_pcs[i]:08x} < mepc): "
+                f"expected marker 0x{expected_val(i, gen):08x}, regfile=0x{r['regs'][reg]:08x} "
+                f"-- mepc advanced past this instruction but its write is missing"
+            )
+        for i in an["leaked"]:
+            reg = base_reg + i
+            cocotb.log.error(
+                f"   LEAK  x{reg} (stream #{i}, pc=0x{stream_pcs[i]:08x} >= mepc): "
+                f"regfile=0x{r['regs'][reg]:08x} == marker 0x{expected_val(i, gen):08x} "
+                f"-- committed although mepc resumes at/before it (re-execution)"
+            )
+        rc = r["racer"]
+        if rc and rc.get("valid"):
+            cocotb.log.error(
+                f"   trap-cycle committer: pc=0x{rc['pc']:08x} "
+                f"x{rc['dest_reg']}<=0x{(rc['value'] or 0):08x} -- this combinational "
+                f"commit advanced interrupt_resume_pc in the o_trap_taken cycle"
+            )
+
+    # ---- per-offset mepc table (visibility, incl. negative results) --------
+    cocotb.log.info("=== Per-offset mepc / commit summary ===")
+    for r in results:
+        an = r["an"]
+        cocotb.log.info(
+            f"  offset={r['fire_offset']:2d} "
+            f"mepc={f'0x{r['mepc']:08x}' if r['mepc'] is not None else None} "
+            f"committed={an['ncommit']} prefix={an['longest_prefix']} "
+            f"violation={an['violation']}"
+        )
+
+    n_trapped = sum(1 for r in results if not r["an"]["no_trap"])
+    cocotb.log.info(
+        f"Swept {len(results)} offsets ({n_trapped} took the trap); "
+        f"{len(violations)} violated the prefix invariant."
+    )
+
+    assert not violations, (
+        f"PRECISE-INTERRUPT BUG REPRODUCED (mode={mode}): {len(violations)}/{len(results)} "
+        f"interrupt fire-offsets violate the trap-entry prefix invariant (architectural "
+        f"regfile != instructions with PC < mepc). First failing "
+        f"offset={violations[0]['fire_offset']}, mepc=0x{violations[0]['mepc']:08x}, "
+        f"lost={violations[0]['an']['lost']}, leaked={violations[0]['an']['leaked']}. "
+        f"See per-offset log above for the exact lost/leaked register (expected vs "
+        f"actual value) and the trap-cycle committer that advanced interrupt_resume_pc."
+    )
+    cocotb.log.info(
+        f"=== mode={mode}: no violations across all fire offsets; "
+        f"trap-entry prefix invariant holds. ==="
+    )
+
+
+@cocotb.test()
+async def test_directed_interrupt_commit_race(dut: Any) -> None:
+    """Deterministic precise-interrupt repro (ALU stream): sweep an async M-timer interrupt.
+
+    Sweep cycle-by-cycle across a register-writing ALU stream and check that,
+    at trap entry, the architectural regfile reflects exactly the instructions
+    with PC < mepc (precise-state prefix invariant).
+    """
+    await run_directed_interrupt_commit_race_test(dut, mode="alu")
+
+
+@cocotb.test()
+async def test_directed_interrupt_commit_race_loads(dut: Any) -> None:
+    """Deterministic precise-interrupt repro (LOAD stream): same cycle-exact interrupt sweep.
+
+    The stream is `lw` instructions whose results come from
+    the load queue / data memory -- mirroring the Linux symptom (a lost
+    callee-saved load restore, s2 = 0x19999998).
+    """
+    await run_directed_interrupt_commit_race_test(dut, mode="load")

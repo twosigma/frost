@@ -196,7 +196,10 @@ module genesys2_frost (
       // backed by the DDR3 controller through the AXI port below.
       .ENABLE_CACHED_TIER(1),
       .CACHED_HAS_L2(0),
-      .USE_BEHAVIORAL_DDR(0)
+      .USE_BEHAVIORAL_DDR(0),
+      // Bump L1I 16 KiB -> 128 KiB: hold the kernel tick/softirq/scheduler
+      // working set to defeat the periodic-tick catch-up livelock (no L2 here).
+      .L1I_CACHE_BYTES(128 * 1024)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

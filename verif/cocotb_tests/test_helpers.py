@@ -228,12 +228,39 @@ class DUTInterface:
             path = self.paths.regfile_ram_rs2_path
         return self._navigate_signal_path(path)
 
+    # Number of read ports on the architectural integer register file
+    # (generic_regfile in the current cpu_ooo).
+    _INT_RF_READ_PORTS = 8
+
+    def _int_regfile_inst(self) -> Any | None:
+        """Return the architectural integer register-file instance for the cpu_ooo DUT.
+
+        Returns None when the hierarchy does not expose it (other toplevels).
+        """
+        try:
+            return self.dut.device_under_test.ooo_register_files_inst.regfile_inst
+        except Exception:
+            return None
+
+    def _int_read_port_ram(self, regfile_inst: Any, port: int) -> tuple[Any, bool]:
+        """Return (read_port_ram_handle, is_multi_write) for one read port.
+
+        generic_regfile gives each read port its own RAM: a multi-write banked
+        RAM (mwp_dist_ram, under gen_multi_write) when there are 2+ write ports,
+        otherwise a single-write sdp_dist_ram (under gen_single_write).
+        """
+        rp = regfile_inst.gen_read_port[port]
+        try:
+            return rp.gen_multi_write.read_port_ram, True
+        except Exception:
+            return rp.gen_single_write.read_port_ram, False
+
     def read_register(self, reg: int, ram_index: int = 0) -> int:
-        """Read register value from hardware.
+        """Read an architectural integer register value from hardware.
 
         Args:
             reg: Register index (0-31)
-            ram_index: Which RAM instance to read from (0=rs1, 1=rs2)
+            ram_index: Legacy RAM-instance selector (only used by the fallback)
 
         Returns:
             Register value
@@ -241,23 +268,50 @@ class DUTInterface:
         HardwareAssertions.assert_register_valid(reg)
         if reg == 0:
             return 0
+        regfile_inst = self._int_regfile_inst()
+        if regfile_inst is not None:
+            ram, multi = self._int_read_port_ram(regfile_inst, 0)
+            if multi:
+                # Committed value = the bank chosen by the live-value table.
+                sel = int(ram.lvt[reg].value)
+                return int(ram.g_banks[sel].u_bank.ram[reg].value)
+            return int(ram.ram[reg].value)
+        # Fallback: legacy flat regfile RAM via the configured signal path.
         ram = self._get_regfile_ram(ram_index)
         return int(ram[reg].value)
 
     def write_register(self, reg: int, value: int) -> None:
-        """Write register value to hardware (both RAM instances).
+        """Deposit an architectural integer register value into hardware.
 
         Args:
             reg: Register index (0-31)
             value: Value to write
         """
         HardwareAssertions.assert_register_valid(reg)
-        if reg > 0:  # x0 is always zero
-            # Write to both RAM instances for consistency
-            ram_rs1 = self._get_regfile_ram(0)
-            ram_rs2 = self._get_regfile_ram(1)
-            ram_rs1[reg].value = value
-            ram_rs2[reg].value = value
+        if reg == 0:  # x0 is always zero
+            return
+        regfile_inst = self._int_regfile_inst()
+        if regfile_inst is not None:
+            # Deposit into every read port (and, for the banked RAM, both banks
+            # with the live-value table cleared) so all dispatch read ports and
+            # the snapshot read return the deposited value.
+            for port in range(self._INT_RF_READ_PORTS):
+                try:
+                    ram, multi = self._int_read_port_ram(regfile_inst, port)
+                except Exception:
+                    break
+                if multi:
+                    ram.g_banks[0].u_bank.ram[reg].value = value
+                    ram.g_banks[1].u_bank.ram[reg].value = value
+                    ram.lvt[reg].value = 0
+                else:
+                    ram.ram[reg].value = value
+            return
+        # Fallback: legacy flat regfile RAM (rs1 + rs2 instances).
+        ram_rs1 = self._get_regfile_ram(0)
+        ram_rs2 = self._get_regfile_ram(1)
+        ram_rs1[reg].value = value
+        ram_rs2[reg].value = value
 
     def initialize_registers(self, seed_value: int | None = None) -> list[int]:
         """Initialize all registers randomly and return the values."""

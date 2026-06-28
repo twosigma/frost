@@ -49,6 +49,16 @@ static void puts_(const char *s)
 
 /* Lives in the cached DDR region. */
 __attribute__((section(".ddr_data"))) static volatile uint32_t ddr_var = 0x10;
+struct pde_like {
+    uint32_t in_use;
+    uint32_t refcnt;
+    uint8_t pad[88];
+    uint16_t mode;
+    uint8_t flags;
+    uint8_t namelen;
+    uint32_t tail;
+};
+__attribute__((section(".ddr_data"))) static volatile struct pde_like ddr_pde_like;
 
 int main(void)
 {
@@ -66,12 +76,57 @@ int main(void)
     /* 2. AMO to DDR (amoadd.w). Hangs here if AMO-to-cached deadlocks. */
     uint32_t old_amo;
     __asm__ volatile("amoadd.w %0, %2, (%1)" : "=r"(old_amo) : "r"(&ddr_var), "r"(1u) : "memory");
+    if (old_amo != 0x20) {
+        puts_("\r\n<<FAIL>> amo old value\r\n");
+        for (;;) {
+        }
+    }
     if (ddr_var != 0x21) {
         puts_("\r\n<<FAIL>> amo result\r\n");
         for (;;) {
         }
     }
     putc_('A');
+
+    /* 2b. Refcount-like repeated AMO increments: validate both old and new values. */
+    ddr_var = 1;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t old_loop;
+        __asm__ volatile("amoadd.w %0, %2, (%1)"
+                         : "=r"(old_loop)
+                         : "r"(&ddr_var), "r"(1u)
+                         : "memory");
+        if (old_loop != i + 1 || ddr_var != i + 2) {
+            puts_("\r\n<<FAIL>> amo loop value\r\n");
+            for (;;) {
+            }
+        }
+    }
+    putc_('R');
+
+    /* 2c. Proc-dir-entry-like layout: AMO at +4 must not corrupt mode at +96. */
+    ddr_pde_like.in_use = 0x11111111u;
+    ddr_pde_like.refcnt = 1u;
+    ddr_pde_like.mode = 0x8124u;
+    ddr_pde_like.flags = 0x5au;
+    ddr_pde_like.namelen = 7u;
+    ddr_pde_like.tail = 0xa5a55a5au;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t old_ref;
+        __asm__ volatile("amoadd.w %0, %2, (%1)"
+                         : "=r"(old_ref)
+                         : "r"(&ddr_pde_like.refcnt), "r"(1u)
+                         : "memory");
+        if (old_ref != i + 1 || ddr_pde_like.refcnt != i + 2 ||
+            ddr_pde_like.in_use != 0x11111111u || ddr_pde_like.mode != 0x8124u ||
+            ddr_pde_like.flags != 0x5au || ddr_pde_like.namelen != 7u ||
+            ddr_pde_like.tail != 0xa5a55a5au) {
+            puts_("\r\n<<FAIL>> amo struct corruption\r\n");
+            for (;;) {
+            }
+        }
+    }
+    putc_('P');
 
     /* 3. LR/SC compare-exchange to DDR (matches the kernel's sc.w.rl). */
     uint32_t prev;

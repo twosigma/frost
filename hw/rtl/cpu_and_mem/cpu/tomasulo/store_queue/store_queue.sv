@@ -1356,7 +1356,8 @@ module store_queue #(
     end
   end
 
-  // Forwarding outputs are registered, so they reflect the previous check.
+  // Forwarding outputs are driven from staged SQ CAM results, so they reflect
+  // the previous check.
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(
             i_rst_n

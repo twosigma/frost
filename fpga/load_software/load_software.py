@@ -47,6 +47,7 @@ VALID_APPS = [
     *COREMARK_PRO_APP_NAMES,
     "csr_test",
     "ddr_exec_test",
+    "ddr_atomic_test",
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
@@ -61,6 +62,7 @@ VALID_APPS = [
     "linux_irq_stack_slot_test",
     "memory_test",
     "packet_parser",
+    "pde_return_hazard",
     "print_clock_speed",
     "ras_stress_test",
     "ras_test",
@@ -93,6 +95,7 @@ BOARD_CONFIG = {
 # that address range reads back zero. Rejected below until then.
 DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "ddr_exec_test",
+    "ddr_atomic_test",
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
@@ -100,6 +103,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "linux_boot",
     "linux_irq_ddr_test",
     "linux_irq_stack_slot_test",
+    "pde_return_hazard",
 }
 
 
@@ -451,7 +455,11 @@ def main() -> None:
         elif args.coremark_pro_mode == "validation":
             print("  CoreMark-PRO run type: validation (-v1)")
     if not compile_app_for_board(
-        args.software_app, app_dir, clock_freq, coremark_iterations, make_vars,
+        args.software_app,
+        app_dir,
+        clock_freq,
+        coremark_iterations,
+        make_vars,
         mem_config="ddr" if args.ddr else None,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)

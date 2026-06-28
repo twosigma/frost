@@ -86,6 +86,7 @@ module if_stage #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
+    input logic [XLEN-1:0] i_served_addr,  // Served fetch-window tag (full address)
     // Fetch window valid: the {i_instr, i_instr_sideband, i_instr_bank_sel_r}
     // window corresponds to the fetch address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
@@ -506,6 +507,7 @@ module if_stage #(
 
       .i_pd_redirect(i_pd_redirect),
       .i_pd_redirect_target(i_pd_redirect_target),
+      .i_window_cannot_serve(window_resteer_pc_reg),
 
       .i_trap_taken (i_trap_ctrl.trap_taken),
       .i_mret_taken (i_trap_ctrl.mret_taken),
@@ -742,12 +744,54 @@ module if_stage #(
   // stall-held, so a stall covering the bubble cycle let the bubble
   // present-and-dispatch on release alongside the realigned repeat. Fixed
   // by stall-gating pd_redirect_q (see its always_ff above).
-  assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe || !fetch_progress ||
+  // Served-window invariant: the fetched 64-bit window covers exactly the two
+  // words {word(i_served_addr), word(i_served_addr)+1}.  pc_reg must lie in that
+  // window or the 1-bit bank-sel parity in instruction_aligner silently selects
+  // the wrong word -> wrong instruction-size sample -> pc_reg advances onto a
+  // mid-instruction byte (the workqueue_init_early epc 0x8038d7fa boot Oops).
+  // A fetch stall (L1I line-fill) can leave the served window >1 word from
+  // pc_reg, which the single parity bit cannot represent.  Detect it from the
+  // full served address; pc_controller squashes (sel_nop below), holds pc_reg,
+  // and resteers fetch onto pc_reg's word until the correct window is served.
+  logic signed [XLEN-1:0] served_word_delta;
+  assign served_word_delta = $signed(
+      {2'b00, i_served_addr[XLEN-1:2]}
+  ) - $signed(
+      {2'b00, pc_reg[XLEN-1:2]}
+  );
+  logic window_cannot_serve_pc_reg;
+  // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
+  // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
+  // tracking is approximate -- firing there only causes spurious squashes.
+  assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
+      (served_word_delta != $signed(
+      0
+  )) && (served_word_delta != -$signed(
+      1
+  )) && !((served_word_delta == $signed(
+      1
+  )) && use_instr_buffer);
+
+  // The existing (pre-served-window-guard) squash conditions.
+  logic sel_nop_existing;
+  assign sel_nop_existing = i_pipeline_ctrl.flush ||
+                   flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+
+  // Resteer fetch onto pc_reg's word + hold pc_reg ONLY at a real consume cycle
+  // (not during an existing holdoff, where pc_reg is already managed and a resteer
+  // would thrash the front end -- the cause of the earlier isa_test/boot regression).
+  // At a holdoff release with the served window still stale (fetch ran ahead during
+  // the redirect bubble), this fires the cycle the wrong-word decode would otherwise
+  // advance pc_reg onto a mid-instruction byte.
+  logic window_resteer_pc_reg;
+  assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing;
+
+  assign sel_nop = sel_nop_existing || window_cannot_serve_pc_reg;
 
   // ===========================================================================
   // Stall State Registers

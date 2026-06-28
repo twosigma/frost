@@ -32,7 +32,7 @@ import re
 from collections import Counter
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from typing import Any
 
 CLK_PERIOD_NS = 3
@@ -301,18 +301,16 @@ class UartRxDriver:
         """Match uart_rx.sv prescaler math to compute cycles per bit.
 
         uart_rx uses CLK_FREQ_HZ/4 (since it runs on clk_div4) and computes:
-        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / (BAUD_RATE * DATA_WIDTH)
-        Then it waits ClockCyclesPerBit * DATA_WIDTH cycles per bit.
+        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / BAUD_RATE.
         """
         clk_freq = _read_u64(getattr(self.dut, "CLK_FREQ_HZ", None))
         if clk_freq is None:
             clk_freq = UART_CLK_FREQ_HZ_DEFAULT
         uart_clk_freq = clk_freq // 4
-        base = uart_clk_freq // (UART_BAUD_RATE * UART_DATA_BITS)
-        bit_cycles = base * UART_DATA_BITS
+        bit_cycles = uart_clk_freq // UART_BAUD_RATE
         cocotb.log.info(
             f"UartRxDriver: clk_freq={clk_freq}, uart_clk_freq={uart_clk_freq}, "
-            f"base={base}, bit_cycles={bit_cycles}"
+            f"bit_cycles={bit_cycles}"
         )
         return max(1, bit_cycles)
 
@@ -321,20 +319,26 @@ class UartRxDriver:
         for _ in range(cycles):
             await RisingEdge(self.dut.i_clk_div4)
 
+    async def _wait_bit_edges(self, cycles: int) -> None:
+        """Wait bit-time cycles using the non-sampling edge for UART transitions."""
+        for _ in range(cycles):
+            await FallingEdge(self.dut.i_clk_div4)
+
     async def send_byte(self, value: int) -> None:
         """Send a single byte over UART RX (LSB first)."""
+        await FallingEdge(self.dut.i_clk_div4)
         # Start bit
         self.dut.i_uart_rx.value = 0
-        await self._wait_cycles(self.bit_cycles)
+        await self._wait_bit_edges(self.bit_cycles)
         # Data bits
         for bit in range(UART_DATA_BITS):
             self.dut.i_uart_rx.value = (value >> bit) & 0x1
-            await self._wait_cycles(self.bit_cycles)
+            await self._wait_bit_edges(self.bit_cycles)
         # Stop bit
         self.dut.i_uart_rx.value = 1
-        await self._wait_cycles(self.bit_cycles)
+        await self._wait_bit_edges(self.bit_cycles)
 
-    async def send(self, data: bytes) -> None:
+    async def send(self, data: bytes, inter_byte_cycles: int = 0) -> None:
         """Send a byte string over UART RX."""
         # Ensure line is idle for multiple bit times before starting
         # This gives the receiver time to sync after any glitches
@@ -342,8 +346,8 @@ class UartRxDriver:
         await self._wait_cycles(self.bit_cycles * 4)
         for byte in data:
             await self.send_byte(byte)
-            # Extra idle time between characters for receiver to process
-            await self._wait_cycles(self.bit_cycles)
+            if inter_byte_cycles > 0:
+                await self._wait_cycles(inter_byte_cycles)
 
 
 async def wait_for_uart_text(
@@ -651,6 +655,10 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                     # Just needs to print the first hello message
                     return (None, "Hello, world!", False, app_name)
                 if app_name == "linux_boot":
+                    if os.environ.get("FROST_LINUX_RUN_FULL") == "1":
+                        # Diagnostic: never matches -> run to COCOTB_LINUX_MAX_CYCLES
+                        # capturing all UART, to observe post-banner behavior.
+                        return ("<<__never_matches__>>", None, True, app_name)
                     # Passes once the kernel reaches its boot banner. (Interim
                     # bring-up criterion; tighten to a userspace/shell marker
                     # once no-MMU Linux boots that far.)
@@ -714,7 +722,9 @@ async def run_until_complete(
     external_irq_enabled = bool(external_irq_symbol)
     external_irq_offset = int(os.environ.get("FROST_EXTERNAL_IRQ_OFFSET", "0"), 0)
     external_irq_max_pulses = int(os.environ.get("FROST_EXTERNAL_IRQ_MAX_PULSES", "1"))
-    external_irq_hold_cycles = int(os.environ.get("FROST_EXTERNAL_IRQ_HOLD_CYCLES", "1"))
+    external_irq_hold_cycles = int(
+        os.environ.get("FROST_EXTERNAL_IRQ_HOLD_CYCLES", "1")
+    )
     retire_sig = None
     pc_sig = None
     pc_vld_sig = None
@@ -903,13 +913,11 @@ async def run_until_complete(
     rob_commit0_reg_dest_valid_sig = None
     rob_commit0_reg_dest_rf_sig = None
     rob_commit0_reg_dest_reg_sig = None
-    rob_commit0_reg_value_sig = None
     rob_commit1_reg_valid_sig = None
     rob_commit1_reg_pc_sig = None
     rob_commit1_reg_dest_valid_sig = None
     rob_commit1_reg_dest_rf_sig = None
     rob_commit1_reg_dest_reg_sig = None
-    rob_commit1_reg_value_sig = None
     coremark_cf_debug_enabled = (
         is_coremark_like and os.environ.get("FROST_COREMARK_CF_DEBUG") == "1"
     )
@@ -1724,9 +1732,6 @@ async def run_until_complete(
         rob_commit0_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
         )
-        rob_commit0_reg_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_value"
-        )
         rob_commit1_reg_valid_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
         )
@@ -1741,9 +1746,6 @@ async def run_until_complete(
         )
         rob_commit1_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
-        )
-        rob_commit1_reg_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_value"
         )
         flush_pipeline_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_pipeline"
@@ -1930,9 +1932,6 @@ async def run_until_complete(
         rob_commit0_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
         )
-        rob_commit0_reg_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_value"
-        )
         rob_commit1_reg_valid_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
         )
@@ -1947,9 +1946,6 @@ async def run_until_complete(
         )
         rob_commit1_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
-        )
-        rob_commit1_reg_value_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_value"
         )
 
     retired_pc_hist: Counter[int] = Counter()
@@ -2108,7 +2104,9 @@ async def run_until_complete(
             if external_irq_active:
                 if external_irq_hold_remaining > 0:
                     external_irq_hold_remaining -= 1
-                if trap_taken_live_sig is not None and bool(_read_bool(trap_taken_live_sig)):
+                if trap_taken_live_sig is not None and bool(
+                    _read_bool(trap_taken_live_sig)
+                ):
                     external_irq_hold_remaining = 0
                 if external_irq_hold_remaining == 0:
                     dut.i_external_interrupt.value = 0
@@ -2125,7 +2123,11 @@ async def run_until_complete(
                 retire_pc = _read_int(retire_pc_sig)
                 lo, hi = external_irq_range
                 trigger_pc = lo + external_irq_offset
-                if retire_valid and retire_pc is not None and trigger_pc <= retire_pc < hi:
+                if (
+                    retire_valid
+                    and retire_pc is not None
+                    and trigger_pc <= retire_pc < hi
+                ):
                     dut.i_external_interrupt.value = 1
                     external_irq_active = True
                     external_irq_hold_remaining = max(1, external_irq_hold_cycles)
@@ -2147,7 +2149,14 @@ async def run_until_complete(
 
         if irq_precision_check:
             raw_x2_events = []
-            for valid_sig, pc_sig, dest_valid_sig, dest_rf_sig, dest_reg_sig, value_sig in (
+            for (
+                valid_sig,
+                pc_sig,
+                dest_valid_sig,
+                dest_rf_sig,
+                dest_reg_sig,
+                value_sig,
+            ) in (
                 (
                     commit_valid_live_sig,
                     commit_pc_live_sig,
@@ -2257,7 +2266,9 @@ async def run_until_complete(
                     current_x2_commit_pc is not None
                     and callee_lo <= current_x2_commit_pc < callee_hi
                 )
-                stale_sp_body = callee_lo + 4 <= trap_pc < callee_hi and not x2_from_callee
+                stale_sp_body = (
+                    callee_lo + 4 <= trap_pc < callee_hi and not x2_from_callee
+                )
 
             if trap and is_irq:
                 event = (
@@ -2329,8 +2340,18 @@ async def run_until_complete(
                 )
 
         for we_sig, addr_sig, data_sig, pc_sig in (
-            (port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig, rob_commit0_reg_pc_sig),
-            (port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig, rob_commit1_reg_pc_sig),
+            (
+                port0_int_we_sig,
+                port0_int_addr_sig,
+                port0_int_data_sig,
+                rob_commit0_reg_pc_sig,
+            ),
+            (
+                port1_int_we_sig,
+                port1_int_addr_sig,
+                port1_int_data_sig,
+                rob_commit1_reg_pc_sig,
+            ),
         ):
             if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 2:
                 last_x2_commit = _read_int(data_sig)
@@ -3048,6 +3069,14 @@ async def run_until_complete(
                 f"lq_cache_hit_fast_path={lq_cache_hit_fast_path} "
                 f"lq_mem_outstanding={lq_mem_outstanding}"
                 f"{cf_debug_suffix}"
+            )
+            cocotb.log.info(
+                f"Run {run_number} CLINT/serial: cycle={cycle + 1} "
+                f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtime')) or 0):016x} "
+                f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtimecmp')) or 0):016x} "
+                f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.mtip_registered'))} "
+                f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_priv'))} "
+                f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_mstatus')) or 0):08x}"
             )
             last_progress_retired = retired_count
             last_progress_mispredicts = retired_mispredicts

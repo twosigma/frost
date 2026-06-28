@@ -18,7 +18,8 @@
 // lq_issue_selector
 // =============================================================================
 // Extracted verbatim from load_queue.sv (pure RTL boundary move, zero functional
-// change).  Parallel issue selection: Phase A (oldest CDB-ready entry), Phase B
+// change, except for the optional registered deadlock break input).  Parallel
+// issue selection: Phase A (oldest CDB-ready entry), Phase B
 // (memory-issue eligibility masks with MMIO/LR/AMO head gating + older-AMO
 // blocking), and the explicit ROB-head priority result.  Replaces the old serial
 // 16-level scan with per-entry masks + tree encoders.  issue_cdb_idx is exported
@@ -42,11 +43,20 @@ module lq_issue_selector #(
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic i_sq_committed_empty,
+    input logic i_force_head_amo,
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
-    output logic [DEPTH-1:0] o_mem_issue_stored_mask,
-    output logic [DEPTH-1:0] o_mem_issue_update_mask,
+    output logic o_stored_scan_found,
+    output logic [$clog2(DEPTH)-1:0] o_stored_scan_idx,
+    output logic [$clog2(DEPTH)-1:0] o_stored_scan_pos,
+    output logic [DEPTH-1:0] o_stored_scan_onehot,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_stored_scan_rob_tag,
+    output logic o_update_scan_found,
+    output logic [$clog2(DEPTH)-1:0] o_update_scan_idx,
+    output logic [$clog2(DEPTH)-1:0] o_update_scan_pos,
+    output logic [DEPTH-1:0] o_update_scan_onehot,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_update_scan_rob_tag,
     output logic o_head_mem_stored_found,
     output logic [$clog2(DEPTH)-1:0] o_head_mem_stored_idx,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_stored_rob_tag,
@@ -173,6 +183,54 @@ module lq_issue_selector #(
   assign mem_issue_stored_mask = mem_eligible_stored_mask & ~blocked_by_amo;
   assign mem_issue_update_mask = mem_eligible_update_mask & ~blocked_by_amo;
 
+  // Encode the oldest normal stored-address and current-update candidates here
+  // while scan_idx is already local. Exporting encoded candidates avoids
+  // re-scanning the masks in load_queue on the SQ-check payload enable path.
+  logic stored_scan_found;
+  logic [IdxWidth-1:0] stored_scan_idx;
+  logic [IdxWidth-1:0] stored_scan_pos;
+  logic [DEPTH-1:0] stored_scan_onehot;
+  logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
+
+  logic update_scan_found;
+  logic [IdxWidth-1:0] update_scan_idx;
+  logic [IdxWidth-1:0] update_scan_pos;
+  logic [DEPTH-1:0] update_scan_onehot;
+  logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
+
+  always_comb begin
+    stored_scan_found   = 1'b0;
+    stored_scan_idx     = '0;
+    stored_scan_pos     = '0;
+    stored_scan_onehot  = '0;
+    stored_scan_rob_tag = '0;
+    update_scan_found   = 1'b0;
+    update_scan_idx     = '0;
+    update_scan_pos     = '0;
+    update_scan_onehot  = '0;
+    update_scan_rob_tag = '0;
+
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (mem_issue_stored_mask[i] && !stored_scan_found) begin
+        stored_scan_found = 1'b1;
+        stored_scan_idx = scan_idx[i];
+        stored_scan_pos = IdxWidth'(i);
+        stored_scan_onehot[scan_idx[i]] = 1'b1;
+        stored_scan_rob_tag =
+            lq_rob_tag_flat[scan_idx[i]*ReorderBufferTagWidth+:ReorderBufferTagWidth];
+      end
+
+      if (mem_issue_update_mask[i] && !update_scan_found) begin
+        update_scan_found = 1'b1;
+        update_scan_idx = scan_idx[i];
+        update_scan_pos = IdxWidth'(i);
+        update_scan_onehot[scan_idx[i]] = 1'b1;
+        update_scan_rob_tag =
+            lq_rob_tag_flat[scan_idx[i]*ReorderBufferTagWidth+:ReorderBufferTagWidth];
+      end
+    end
+  end
+
   // The sparse queue can reuse reclaimed holes after flushes, so physical
   // queue order is not always identical to ROB age.  To avoid starving the
   // oldest architectural load behind a younger blocked entry, explicitly
@@ -200,7 +258,7 @@ module lq_issue_selector #(
           !in_flight_mask[i] &&
           !lq_is_mmio[i] &&
           !lq_is_lr[i] &&
-          !lq_is_amo[i]) begin
+          (!lq_is_amo[i] || (i_force_head_amo && i_sq_committed_empty))) begin
         head_mem_stored_found   = 1'b1;
         head_mem_stored_idx     = IdxWidth'(i);
         head_mem_stored_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
@@ -214,7 +272,7 @@ module lq_issue_selector #(
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
           !lq_is_lr[i] &&
-          !lq_is_amo[i]) begin
+          (!lq_is_amo[i] || (i_force_head_amo && i_sq_committed_empty))) begin
         head_mem_update_found   = 1'b1;
         head_mem_update_idx     = IdxWidth'(i);
         head_mem_update_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
@@ -224,8 +282,16 @@ module lq_issue_selector #(
 
   assign o_issue_cdb_found = issue_cdb_found;
   assign o_issue_cdb_idx = issue_cdb_idx;
-  assign o_mem_issue_stored_mask = mem_issue_stored_mask;
-  assign o_mem_issue_update_mask = mem_issue_update_mask;
+  assign o_stored_scan_found = stored_scan_found;
+  assign o_stored_scan_idx = stored_scan_idx;
+  assign o_stored_scan_pos = stored_scan_pos;
+  assign o_stored_scan_onehot = stored_scan_onehot;
+  assign o_stored_scan_rob_tag = stored_scan_rob_tag;
+  assign o_update_scan_found = update_scan_found;
+  assign o_update_scan_idx = update_scan_idx;
+  assign o_update_scan_pos = update_scan_pos;
+  assign o_update_scan_onehot = update_scan_onehot;
+  assign o_update_scan_rob_tag = update_scan_rob_tag;
   assign o_head_mem_stored_found = head_mem_stored_found;
   assign o_head_mem_stored_idx = head_mem_stored_idx;
   assign o_head_mem_stored_rob_tag = head_mem_stored_rob_tag;

@@ -91,8 +91,9 @@ module pc_controller #(
     input logic [XLEN-1:0] i_branch_target,
 
     // PD backward-branch heuristic redirect (from pd_stage)
-    input logic            i_pd_redirect,
+    input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
+    input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
 
     // Trap control
     input logic            i_trap_taken,
@@ -407,7 +408,19 @@ module pc_controller #(
       pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ i_is_compressed;
     end
   end
-  assign pc_reg_next_misses_fetch_pc_for_prediction = pc_reg_next_bit1_for_prediction != o_pc[1];
+  // BOOT-HANG FIX (verification form): the bit1-only fast predictor
+  // (pc_reg_next_bit1_for_prediction != o_pc[1]) diverges from the full result
+  // when pc_reg is >=2 words behind the word-aligned fetch PC -- both are
+  // word-aligned so bit 1 matches, but the words differ. There the fast value
+  // is 0 ("no miss") while the truth (seq_next_pc_reg != o_pc) is 1, so
+  // prediction_needs_pending is wrongly false, the prediction is applied without
+  // the pc_reg handoff, and fetch redirects to the wrong PC (silent on HW where
+  // the assert below is compiled out -> the no-MMU Linux boot hang at pid_max).
+  // Use the full compare; conservative-safe (only ever pends MORE, exactly in
+  // the cases the bit1 proxy missed). NOTE: this reintroduces the
+  // seq_next_pc_reg compare on the prediction cone that the bit1 proxy existed
+  // to avoid -- a timing-friendly correct form is a follow-up if WNS regresses.
+  assign pc_reg_next_misses_fetch_pc_for_prediction = (seq_next_pc_reg != o_pc);
 
   assign prediction_needs_pending =
       i_prediction_used && !i_ras_predicted && !i_slot2_prediction_used &&
@@ -607,6 +620,7 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc = i_fence_i_target;
     else if (i_branch_taken) next_pc = i_branch_target;
     else if (i_pd_redirect) next_pc = i_pd_redirect_target;
+    else if (i_window_cannot_serve) next_pc = {o_pc_reg[XLEN-1:2], 2'b00};
     // No fetch progress: hold the fetch address so the provider can keep
     // working on the owed ask.  Sits above the prediction/pending arms
     // (their state is frozen and predictions are suppressed while invalid)
@@ -670,6 +684,7 @@ module pc_controller #(
     else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
     else if (i_branch_taken) next_pc_reg = i_branch_target;
     else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
+    else if (i_window_cannot_serve) next_pc_reg = o_pc_reg;
     // No fetch progress: hold the instruction address (nothing is being
     // delivered).  Same placement rationale as the next_pc hold arm above.
     else if (!i_fetch_progress) next_pc_reg = o_pc_reg;
