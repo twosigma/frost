@@ -48,7 +48,12 @@ module frost_cache_hierarchy #(
     parameter int unsigned L1I_DATA_READ_LATENCY = 2,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
-    parameter int unsigned L2_DATA_WRITE_LATENCY = 2
+    parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
+    // Simulation-only fast cache maintenance for fence.i (see frost_cache).
+    // 0 = FPGA cycle-accurate FSM; non-zero = sim fast path. Applied to the two
+    // L1s -- the only caches that run fence.i maintenance; the L2 sits below the
+    // arbiter and needs none, so it keeps the default.
+    parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -134,7 +139,8 @@ module frost_cache_hierarchy #(
       .LINE_BYTES(LINE_BYTES),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
-      .DATA_WRITE_LATENCY(L1_DATA_WRITE_LATENCY)
+      .DATA_WRITE_LATENCY(L1_DATA_WRITE_LATENCY),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1_cache (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -164,7 +170,8 @@ module frost_cache_hierarchy #(
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
       .DATA_MEMORY_PRIMITIVE("block"),
-      .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY)
+      .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) l1i_cache (
       .i_clk(i_clk),
       .i_rst(i_rst),

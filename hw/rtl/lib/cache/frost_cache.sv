@@ -72,7 +72,17 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter DATA_MEMORY_PRIMITIVE = "block",
     parameter int unsigned DATA_READ_LATENCY = 2,
-    parameter int unsigned DATA_WRITE_LATENCY = 1
+    parameter int unsigned DATA_WRITE_LATENCY = 1,
+    // Simulation-only fast cache maintenance (fence.i). 0 = FPGA: the
+    // cycle-accurate maintenance FSM below is byte-for-byte unchanged. Non-zero
+    // = simulation: invalidate-all completes in a single cycle (a tag bulk
+    // clear) and writeback-all iterates only the dirty lines -- O(dirty) rather
+    // than O(NumLines) -- guided by a sim-only shadow of the dirty bits. The
+    // functional effect is identical to the slow path: every line is left
+    // invalid after invalidate-all, and every valid+dirty line is still written
+    // downstream and marked clean by writeback-all. Threaded in only for the
+    // cocotb sim build; never set for board/synthesis builds.
+    parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -156,12 +166,23 @@ module frost_cache #(
   logic   [IndexBits-1:0] flush_idx_q;
   logic   [  TagBits-1:0] flush_tag_q;
 
+  // Fast maintenance (SIM_FAST_MAINT, simulation only).
+  // tag_bulk_clear: one-cycle invalidate-all of the whole tag array.
+  // any_dirty_*/first_dirty_*: lowest dirty line index from the sim-only dirty
+  // shadow, used to walk only dirty lines during writeback-all. All driven to
+  // constants when the feature is off, so the FPGA build carries none of it.
+  logic                   tag_bulk_clear;
+  logic any_dirty_full, any_dirty_excl;
+  logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
+
   // Writeback-all walk states (data/tag addressing + busy).
-  logic                   flush_active;
+  logic flush_active;
   assign flush_active = (state_q == S_FLUSH_SCAN) || (state_q == S_FLUSH_CHECK) ||
       (state_q == S_FLUSH_DATA) || (state_q == S_FLUSH_WB_REQ) ||
       (state_q == S_FLUSH_WB_WAIT);
   assign o_maint_busy = flush_active || (state_q == S_SWEEP);
+  // Fast invalidate-all: hold the tag bulk clear for the (now one-cycle) sweep.
+  assign tag_bulk_clear = (SIM_FAST_MAINT != 0) && (state_q == S_SWEEP);
   logic [             7:0] wait_cnt_q;  // data-array latency countdown (latencies are small)
   logic [     TagBits-1:0] victim_tag_q;
   logic [    LineBits-1:0] victim_line_q;
@@ -197,15 +218,61 @@ module frost_cache #(
 
   sdp_block_ram #(
       .ADDR_WIDTH(IndexBits),
-      .DATA_WIDTH(TagEntryBits)
+      .DATA_WIDTH(TagEntryBits),
+      .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
   ) tag_array (
       .i_clk(i_clk),
       .i_write_enable(tag_we),
+      .i_bulk_clear(tag_bulk_clear),
       .i_write_address(tag_waddr),
       .i_read_address(tag_raddr),
       .i_write_data(tag_wdata),
       .o_read_data(tag_rdata)
   );
+
+  // ---- Fast maintenance dirty shadow (SIM_FAST_MAINT, simulation only) ------
+  // A shadow of the tag array's dirty bits, updated by the exact same writes
+  // that update the tag RAM, so writeback-all can jump straight to dirty lines
+  // instead of scanning every index. Elaborated only when the feature is on:
+  // FPGA/synthesis builds carry none of this logic and read the constant
+  // outputs below.
+  if (SIM_FAST_MAINT != 0) begin : gen_fast_maint
+    logic [NumLines-1:0] dirty_shadow_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) dirty_shadow_q <= '0;
+      else if (tag_bulk_clear) dirty_shadow_q <= '0;  // invalidate-all / reset
+      // tag_wdata = {valid, dirty, tag}: bit TagBits is the dirty bit.
+      else if (tag_we) dirty_shadow_q[tag_waddr] <= tag_wdata[TagBits];
+    end
+
+    // Lowest set dirty index over the whole shadow (first_dirty_full) and
+    // excluding the line being written back this cycle (first_dirty_excl). The
+    // scan is gated to the writeback-all states, so ordinary traffic never pays
+    // for it -- a dirty store just toggles one shadow bit above.
+    always_comb begin
+      any_dirty_full   = 1'b0;
+      first_dirty_full = '0;
+      any_dirty_excl   = 1'b0;
+      first_dirty_excl = '0;
+      if ((state_q == S_IDLE && i_writeback_all) || flush_active) begin
+        for (int idx = int'(NumLines) - 1; idx >= 0; idx--) begin
+          if (dirty_shadow_q[idx]) begin
+            any_dirty_full   = 1'b1;
+            first_dirty_full = IndexBits'(idx);
+            if (IndexBits'(idx) != flush_idx_q) begin
+              any_dirty_excl   = 1'b1;
+              first_dirty_excl = IndexBits'(idx);
+            end
+          end
+        end
+      end
+    end
+  end else begin : gen_no_fast_maint
+    assign any_dirty_full   = 1'b0;
+    assign first_dirty_full = '0;
+    assign any_dirty_excl   = 1'b0;
+    assign first_dirty_excl = '0;
+  end
 
   // Tag read address: the incoming request's index, sampled at the fire so
   // the entry is readable in S_TAG_CHECK; the walk index during the
@@ -273,9 +340,14 @@ module frost_cache #(
 
     unique case (state_q)
       S_SWEEP: begin
-        tag_we    = 1'b1;
-        tag_waddr = sweep_idx_q;
-        tag_wdata = '0;  // valid=0, dirty=0
+        // FPGA: clear one tag entry per cycle. Fast (sim): the tag bulk clear
+        // (tag_bulk_clear -> tag_array.i_bulk_clear) zeroes every entry this
+        // single cycle, so no per-index write is issued here.
+        if (SIM_FAST_MAINT == 0) begin
+          tag_we    = 1'b1;
+          tag_waddr = sweep_idx_q;
+          tag_wdata = '0;  // valid=0, dirty=0
+        end
       end
 
       S_TAG_CHECK: begin
@@ -353,8 +425,13 @@ module frost_cache #(
     end else begin
       unique case (state_q)
         S_SWEEP: begin
-          sweep_idx_q <= sweep_idx_q + 1'b1;
-          if (sweep_idx_q == {IndexBits{1'b1}}) state_q <= S_IDLE;
+          if (SIM_FAST_MAINT != 0) begin
+            // Fast: tag_bulk_clear zeroed every entry this cycle -- done.
+            state_q <= S_IDLE;
+          end else begin
+            sweep_idx_q <= sweep_idx_q + 1'b1;
+            if (sweep_idx_q == {IndexBits{1'b1}}) state_q <= S_IDLE;
+          end
         end
 
         S_IDLE: begin
@@ -364,7 +441,9 @@ module frost_cache #(
             sweep_idx_q <= '0;
             state_q     <= S_SWEEP;
           end else if (i_writeback_all) begin
-            flush_idx_q <= '0;
+            // Fast: jump straight to the first dirty line (O(dirty) walk).
+            // FPGA: start the full index walk at 0.
+            flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : '0;
             state_q     <= S_FLUSH_SCAN;
           end else if (up_req_fire) begin
             req_write_q <= i_up_req_write;
@@ -446,6 +525,10 @@ module frost_cache #(
             wait_cnt_q  <= 8'(DATA_READ_LATENCY);
             flush_tag_q <= tag_rdata_tag;
             state_q     <= S_FLUSH_DATA;
+          end else if (SIM_FAST_MAINT != 0) begin
+            // Fast: a non-dirty line is only reached when the shadow is empty
+            // (no dirty lines to start with), so the writeback-all is done.
+            state_q <= S_IDLE;
           end else if (flush_idx_q == {IndexBits{1'b1}}) begin
             state_q <= S_IDLE;
           end else begin
@@ -466,7 +549,18 @@ module frost_cache #(
 
         S_FLUSH_WB_WAIT: begin
           if (i_down_resp_valid) begin
-            if (flush_idx_q == {IndexBits{1'b1}}) begin
+            // This line's dirty bit is cleared this cycle (combinational tag
+            // write above), and the sim-only shadow mirrors that clear.
+            if (SIM_FAST_MAINT != 0) begin
+              // Fast: jump to the next still-dirty line (excluding this one);
+              // when none remain the writeback-all is complete.
+              if (any_dirty_excl) begin
+                flush_idx_q <= first_dirty_excl;
+                state_q     <= S_FLUSH_SCAN;
+              end else begin
+                state_q <= S_IDLE;
+              end
+            end else if (flush_idx_q == {IndexBits{1'b1}}) begin
               state_q <= S_IDLE;
             end else begin
               flush_idx_q <= flush_idx_q + 1'b1;
