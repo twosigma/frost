@@ -1,0 +1,188 @@
+# =============================================================================
+# linux-nommu-frost.config.fragment
+#
+# Kernel CONFIG delta to retarget the working rv32 / nommu / M-mode kernel
+# (6.18.7, built for QEMU "virt") at the FROST SoC.
+#
+# Apply ON TOP of the known-good virt config:
+#   board/qemu/riscv32-virt/linux-nommu.config
+#
+# Each line below is: CONFIG symbol = value, with a one-line rationale.
+# A "# CONFIG_x is not set" line DISABLES the symbol (kbuild syntax), and is
+# the correct way to drop a feature in a fragment — do NOT write "=n".
+#
+# -----------------------------------------------------------------------------
+# !!! READ THIS FIRST — HARDWARE REALITY (verified against FROST RTL) !!!
+# -----------------------------------------------------------------------------
+# The task brief and the pre-existing frost-nommu.dts assume an 8250/16550 UART
+# at 0x40001000 and a SiFive CLINT at 0x40010000. NEITHER matches the actual
+# FROST hardware. Verified from:
+#   frost/hw/rtl/cpu_and_mem/cpu_and_mem.sv (MMIO decode, lines ~139-153, 825-838)
+#   frost/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
+#   frost/sw/common/link.ld  /  link_ddr.ld   (MEMORY{} + PROVIDE() addresses)
+#
+# FROST MMIO map (single 44-byte window at 0x4000_0000):
+#   0x4000_0000  UART TX data        (write low byte to transmit)
+#   0x4000_0004  UART RX data        (read consumes one byte)
+#   0x4000_0008  FIFO0               (general-purpose)
+#   0x4000_000C  FIFO1               (general-purpose)
+#   0x4000_0010  mtime[31:0]         (on-chip, NOT at a SiFive-CLINT offset)
+#   0x4000_0014  mtime[63:32]
+#   0x4000_0018  mtimecmp[31:0]
+#   0x4000_001C  mtimecmp[63:32]
+#   0x4000_0020  msip                (bit0 writable)
+#   0x4000_0024  UART RX status      (bit0 = RX data available)
+#   0x4000_0028  UART TX status      (bit0 = TX can accept a byte)
+#
+# Consequences for Linux (these are DESIGN GAPS, not config knobs):
+#   * The UART is NOT 16550-register-compatible. CONFIG_SERIAL_8250 cannot
+#     drive it: 8250 expects THR@+0, LSR@+5(DR=bit0,THRE=bit5), IER/FCR/LCR.
+#     FROST has TX@+0, RX@+4, RXstat@+0x24, TXstat@+0x28 with 1-bit status.
+#     => A small custom earlycon + a tiny serial driver are required, OR a
+#        16550-register-shim must be added to the RTL UART. Until then, 8250
+#        is kept enabled ONLY so the kernel still links/boots on QEMU virt
+#        (the validation harness), where the UART really is a 16550.
+#   * There is NO PLIC. The only external-IRQ path is a single i_external_interrupt
+#     pin -> MEIP. UART RX is poll-only (no IRQ wire). => no PLIC node, and the
+#     FROST console must be polled (no IRQ-driven RX).
+#   * The timer (mtime/mtimecmp) is on-chip but NOT at the SiFive-CLINT layout
+#     (mtimecmp would need base+0x4000, mtime base+0xBFF8). Linux's
+#     riscv,clint0 driver will mis-address it. => either add a CLINT-layout
+#     alias in RTL, or rely on the rv32 riscv,cpu-intc + a FROST timer driver.
+#     For first bring-up, the in-core CSR cycle/time counters
+#     (riscv,timer / rdtime) are the pragmatic clocksource.
+#
+# This fragment therefore does two things at once:
+#   (A) the FROST-correct CONFIG deltas that ARE expressible today
+#       (rootfs=initramfs, drop virtio/PCI/net, OF/DTB, keep M-mode/rv32);
+#   (B) leaves SERIAL_8250* + EARLYCON on (brief item b) so the SAME Image
+#       boots on QEMU virt for DTB+initramfs validation. The FROST console
+#       itself needs the driver/RTL work noted above before sim bring-up.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# (c) Core ISA / mode — KEEP from virt (M-mode, no-MMU, rv32, nonportable).
+#     Restated here so the fragment is self-describing and a merge that drops
+#     the base config still asserts them. These MUST stay set for FROST.
+# -----------------------------------------------------------------------------
+CONFIG_NONPORTABLE=y            # gate for the M-mode/no-MMU "not upstream-portable" combo
+CONFIG_RISCV_M_MODE=y           # FROST runs the hart in M-mode only (no S/U, no SBI)
+CONFIG_ARCH_RV32I=y             # FROST is RV32 (XLEN=32)
+# CONFIG_MMU is not set         # FROST has no MMU/page tables -> nommu kernel
+CONFIG_BINFMT_FLAT=y            # nommu userspace needs bFLT executables (busybox FLAT)
+
+
+# -----------------------------------------------------------------------------
+# (a) Rootfs: virtio-blk + ext2 disk  ->  INITRAMFS (cpio in RAM)
+#     FROST has no block device; the rootfs must be an initramfs. Two ways to
+#     supply it: (1) external "-initrd rootfs.cpio" at boot (QEMU) / a second
+#     JTAG blob (FROST), leaving CONFIG_INITRAMFS_SOURCE empty; or (2) embed
+#     the cpio in the Image via CONFIG_INITRAMFS_SOURCE. We default to (1) for
+#     flexibility and leave the embed knob present-but-empty.
+# -----------------------------------------------------------------------------
+CONFIG_BLK_DEV_INITRD=y         # enable initrd/initramfs as the root filesystem
+CONFIG_INITRAMFS_SOURCE=""      # empty => supply cpio externally (-initrd / JTAG blob); set to a path to embed
+CONFIG_RD_GZIP=y                # allow a gzip-compressed external initramfs image
+# --- drop the disk-based rootfs path ---
+# CONFIG_VIRTIO_BLK is not set  # no virtio-blk on FROST
+# CONFIG_EXT2_FS is not set     # ext2 was only for the virtio-blk disk; initramfs uses ramfs/tmpfs
+# CONFIG_BLOCK is not set       # no block layer needed once virtio-blk/ext2 are gone (drop if any kept driver needs it)
+
+
+# -----------------------------------------------------------------------------
+# (b) Console over the FROST UART.
+#     Brief asks for 8250 console + earlycon. We keep these ENABLED, but note
+#     they bind to the FROST UART ONLY on QEMU virt (a real 16550). On FROST
+#     silicon the 8250 layout does not match (see header) — a custom driver or
+#     an RTL 16550-shim is required. Keeping them on lets the one Image be
+#     validated on QEMU before sim.
+# -----------------------------------------------------------------------------
+CONFIG_SERIAL_8250=y            # 8250/16550 core (drives QEMU virt's 16550; FROST needs shim/driver)
+CONFIG_SERIAL_8250_CONSOLE=y    # register ttyS0 as the system console
+CONFIG_SERIAL_EARLYCON=y        # generic earlycon framework (pre-driver boot messages)
+CONFIG_SERIAL_8250_NR_UARTS=1   # FROST exposes one UART; trim the static port table
+CONFIG_SERIAL_8250_RUNTIME_UARTS=1
+CONFIG_SERIAL_OF_PLATFORM=y     # bind the 8250 from the DT "serial@..." node (no PCI probing)
+CONFIG_SERIAL_CORE=y            # (auto-selected) tty serial core
+CONFIG_SERIAL_CORE_CONSOLE=y    # (auto-selected) serial-as-console support
+# NOTE: the matching DTB (frost-nommu.dts) must carry, for QEMU-virt validation,
+#   chosen/bootargs: "earlycon=uart8250,mmio,<UART_BASE> console=ttyS0 ..."
+#   For the REAL FROST UART, plan instead a custom earlycon name, e.g.
+#   "earlycon=frostuart,mmio32,0x40000000" backed by a ~30-line earlycon stub
+#   that writes 0x40000000 and polls bit0 @ 0x40000028.
+
+
+# -----------------------------------------------------------------------------
+# (e) OF / DTB usage with the FROST DTB (frost-nommu.dts), not virt's.
+#     nommu rv32 has no bootloader passing a /dtb pointer the usual way; the
+#     two supported paths are (1) QEMU "-dtb frost-nommu.dtb" (external), or
+#     (2) a DTB appended/built-in to the Image for FROST. We enable OF and the
+#     built-in-DTB knob (empty by default = external -dtb) so both work.
+# -----------------------------------------------------------------------------
+CONFIG_OF=y                     # device-tree support (probe UART/timer/memory from DT)
+CONFIG_OF_EARLY_FLATTREE=y      # parse the FDT early (needed for earlycon + memory setup)
+CONFIG_USE_BUILTIN_DTB=n        # default: pass the DTB externally (QEMU -dtb / FROST blob)
+CONFIG_BUILTIN_DTB_SOURCE=""    # if embedding instead: set to "frost-nommu" and drop frost-nommu.dts into arch/riscv/boot/dts/
+# (Do NOT set CONFIG_SOC_VIRT here — see the SoC section below.)
+
+
+# -----------------------------------------------------------------------------
+# SoC selection: virt -> FROST.
+#     CONFIG_SOC_VIRT pulls in the virt machine glue (goldfish-rtc, virtio
+#     plumbing, the virt CLINT/PLIC expectations). FROST is a bare SoC. There
+#     is no in-tree CONFIG_SOC_FROST, so for first bring-up we KEEP SOC_VIRT
+#     enabled (it is what makes the rv32 nommu kernel actually boot today, and
+#     it is harmless on QEMU). Flagged as an open question: a minimal
+#     "FROST/generic nommu" machine may be cleaner than riding SOC_VIRT.
+# -----------------------------------------------------------------------------
+CONFIG_SOC_VIRT=y               # KEEP for now (boot glue + earlycon table); revisit once a FROST machine exists
+
+
+# -----------------------------------------------------------------------------
+# (d) Drop virtio / PCI / networking not needed for the MVP.
+#     These were only there for the virtio-net/blk virt target. FROST has none.
+#     Removing them shrinks the Image (helps the 256 KiB BRAM stub / DDR load).
+# -----------------------------------------------------------------------------
+# CONFIG_VIRTIO_MMIO is not set            # no virtio transport on FROST
+# CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES is not set
+# CONFIG_VIRTIO_NET is not set             # no NIC
+# CONFIG_VIRTIO_BLK is not set             # (also above) no disk
+# CONFIG_VIRTIO is not set                 # drop the virtio core
+# CONFIG_VIRTIO_MENU is not set
+# CONFIG_PCI is not set                    # FROST has no PCI host bridge
+# CONFIG_NET is not set                    # no networking stack for the MVP
+# CONFIG_PACKET is not set
+# CONFIG_INET is not set
+# CONFIG_UNIX is not set                   # (re-enable if userspace needs AF_UNIX later)
+# CONFIG_NETDEVICES is not set
+
+
+# -----------------------------------------------------------------------------
+# Interrupt controller: NO PLIC on FROST.
+#     The virt config pulls a PLIC (boot.log shows "riscv-plic ... mapped 95
+#     interrupts"). FROST has only the per-hart riscv,cpu-intc (MEIP/MTIP/MSIP
+#     direct lines). Disable PLIC so the kernel does not expect/probe one.
+#     (riscv,cpu-intc is always built for RISC-V; no symbol to set.)
+# -----------------------------------------------------------------------------
+# CONFIG_SIFIVE_PLIC is not set   # FROST has no PLIC; UART RX is poll-only, IRQs are direct cpu-intc lines
+
+
+# -----------------------------------------------------------------------------
+# Timer / clocksource.
+#     virt uses the SiFive CLINT timer (boot.log: "clint_clocksource"). FROST's
+#     mtime/mtimecmp are NOT at the SiFive-CLINT layout, so the riscv,clint0
+#     driver will mis-address them. Safest first-boot clocksource is the in-core
+#     rdtime/timebase (riscv,timer). Keep the CLINT driver available for the
+#     QEMU-virt validation pass; the FROST DTB simply must not present a
+#     mis-located clint node (use riscv,cpu-intc + timebase-frequency instead).
+# -----------------------------------------------------------------------------
+CONFIG_RISCV_TIMER=y            # in-core rdtime-based clocksource/clockevent (works in M-mode nommu)
+CONFIG_RISCV_M_MODE=y           # (restated) in M-mode, mtime/mtimecmp are accessed directly, not via SBI
+
+
+# -----------------------------------------------------------------------------
+# Quality-of-life (carry over from virt; cheap and useful for bring-up).
+# -----------------------------------------------------------------------------
+CONFIG_PRINTK_TIME=y            # timestamped boot log (matches the virt build, eases triage)
+CONFIG_SLOB=y                   # tiny allocator (carry from virt; appropriate for the small FROST footprint)
