@@ -184,6 +184,11 @@ COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000)
 # sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting on RV32
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
+# pde_return_hazard runs PDE_VIS_ITERATIONS(16) x 5 lookups x 2 variants (one with
+# cache churn) plus the s2l sub-tests; the full pass takes ~1.12M cycles (it used to
+# bail early on the unreachable-"maps" tree bug, masking the real budget).
+PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
+
 # No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
 LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 
@@ -3305,6 +3310,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = COREMARK_MAX_CYCLES
     elif app_name == "sprintf_test":
         max_cycles = SPRINTF_TEST_MAX_CYCLES
+    elif app_name == "pde_return_hazard":
+        max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES
     else:

@@ -446,13 +446,21 @@ static void setup_multi_proc_tree(void)
     init_multi_pde(MULTI_VERSION, version_name);
 
     /*
-     * A small rb-tree with the same comparison properties as /proc root:
-     * loadavg -> left cmdline, right meminfo; meminfo -> left maps, right version.
+     * A small rb-tree keyed (namelen, then name) like /proc root.  set_rb_links
+     * takes (node, RIGHT, LEFT).  The lookup walk (pde_subdir_find_asm) is
+     * LENGTH-FIRST: a search name shorter than the node descends LEFT, longer
+     * descends RIGHT.  "maps" (len 4) is shorter than every other node (len 7),
+     * so it must live on the left spine to be reachable: loadavg.left=cmdline,
+     * cmdline.left=maps.  (It used to be meminfo.left — i.e. inside loadavg's
+     * RIGHT subtree — which a len-4 query can NEVER reach, because the len-7
+     * root sends every len-4 query LEFT into the cmdline subtree, hits
+     * cmdline.left=NULL, and returns 0.  That made the "maps" lookup assert fail
+     * by tree construction, not by any RTL fault.)
      */
     write32(root_pde, PDE_SUBDIR_ROOT_OFFSET, multi_node(MULTI_LOADAVG));
     set_rb_links(MULTI_LOADAVG, MULTI_MEMINFO, MULTI_CMDLINE);
-    set_rb_links(MULTI_MEMINFO, MULTI_VERSION, MULTI_MAPS);
-    set_rb_links(MULTI_CMDLINE, -1, -1);
+    set_rb_links(MULTI_MEMINFO, MULTI_VERSION, -1);
+    set_rb_links(MULTI_CMDLINE, -1, MULTI_MAPS);
     set_rb_links(MULTI_MAPS, -1, -1);
     set_rb_links(MULTI_VERSION, -1, -1);
 
