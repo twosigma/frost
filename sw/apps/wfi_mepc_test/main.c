@@ -83,7 +83,14 @@ int main(void)
                      "1:\n"
                      : "=r"(resume_pc)
                      :
-                     : "t0", "memory");
+                     /* The timer interrupt fires DURING the wfi, and the naked
+                      * handler clobbers BOTH t0 and t1 (it uses t1 to address
+                      * g_mepc/g_taken and then to ack MTIMECMP_HI).  Both must be
+                      * listed so the compiler does not keep a live value (e.g.
+                      * g_taken's base) pinned in t1 across the wfi -- otherwise the
+                      * post-wfi `while(!g_taken)` reads a stale clobbered address
+                      * (DDR layout: 2008(t1=0x4000001C)=0x400007f4) and spins. */
+                     : "t0", "t1", "memory");
 
     while (!g_taken) {
     }
@@ -92,7 +99,8 @@ int main(void)
     if (g_mepc == resume_pc) {
         uart_printf("<<PASS>>\n");
     } else {
-        uart_printf("<<FAIL>> interrupt-from-empty-ROB saved a stale mepc (not the WFI resume PC)\n");
+        uart_printf(
+            "<<FAIL>> interrupt-from-empty-ROB saved a stale mepc (not the WFI resume PC)\n");
     }
     for (;;) {
     }
