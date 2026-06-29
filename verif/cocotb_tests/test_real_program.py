@@ -288,6 +288,215 @@ def _read_bool(signal: Any) -> bool | None:
     return bool(value)
 
 
+async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
+    """Observe a trap/MRET deadlock wedge by sampling ground-truth signals.
+
+    Enabled with FROST_WEDGE_MONITOR=1. Samples the trap/MRET/flush/IRQ/store-
+    drain state every clock and emits an aggregated snapshot every
+    FROST_WEDGE_DUMP_INTERVAL cycles (default 2000). It also raises a one-shot
+    "STALL DETECTED" banner once UART output stops advancing for
+    FROST_WEDGE_STALL_CYCLES cycles (default 20000) and then emits up to
+    FROST_WEDGE_POST_STALL_DUMPS (default 16) full snapshots before it stops
+    logging (the simulation keeps running to the cycle cap).
+
+    Every tap is None-safe: signals that do not resolve are reported once in the
+    "missing_taps" list and counted as 0. This is pure instrumentation -- it
+    drives no signals and changes no behaviour.
+    """
+    dump_interval = int(os.environ.get("FROST_WEDGE_DUMP_INTERVAL", "2000"))
+    stall_cycles = int(os.environ.get("FROST_WEDGE_STALL_CYCLES", "20000"))
+    post_stall_dump_limit = int(os.environ.get("FROST_WEDGE_POST_STALL_DUMPS", "16"))
+
+    def g(path: str) -> Any:
+        return _get_signal(dut, path)
+
+    cpu = "cpu_and_memory_subsystem.cpu_inst"
+    mem = "cpu_and_memory_subsystem"
+
+    # 1-bit signals: aggregated as cycles-high + 0->1 edge counts per interval.
+    bool_sig = {
+        "trap_taken": g(f"{cpu}.trap_taken"),
+        "trap_taken_reg": _first_signal(
+            dut, [f"{cpu}.trap_taken_reg", f"{cpu}.dbg_trap_taken_q"]
+        ),
+        "mret_taken": g(f"{cpu}.mret_taken"),
+        "mret_taken_reg": g(f"{cpu}.mret_taken_reg"),
+        "flush_all": g(f"{cpu}.flush_all"),
+        "flush_en": g(f"{cpu}.flush_en"),
+        "trap_pending": g(f"{cpu}.trap_pending"),
+        "mret_start": g(f"{cpu}.mret_start"),
+        "trap_drain_wait": g(f"{cpu}.trap_drain_wait"),
+        "sq_committed_empty": g(f"{cpu}.sq_committed_empty"),
+        "commit_hold_q": g(f"{cpu}.trap_mret_commit_hold_q"),
+        "mispredict_recovery_pending": g(f"{cpu}.mispredict_recovery_pending"),
+        "interrupt_pending": g(f"{cpu}.interrupt_pending"),
+        "csr_mstatus_mie_direct": g(f"{cpu}.csr_mstatus_mie_direct"),
+        "rob_head_is_wfi": g(f"{cpu}.rob_head_is_wfi"),
+        "head_valid": g(f"{cpu}.head_valid"),
+        "dbg_commit_valid": g(f"{cpu}.dbg_commit_valid"),
+        # CLINT / store-drain taps live in the cpu_and_mem parent scope.
+        "mtip_registered": g(f"{mem}.mtip_registered"),
+        "mtip_comparison": g(f"{mem}.mtip_comparison"),
+        "mtimecmp_write_pulse": g(f"{mem}.mtimecmp_write_pulse"),
+        "cached_write_inflight": g(f"{mem}.data_memory_cached_write_inflight"),
+    }
+    # Load-address taps: prove which address the spin-loop load targets
+    # (decisive for distinguishing a clobbered base register from a lost store).
+    mem_addr_sig = g(f"{cpu}.o_data_mem_addr")
+    mem_rd_en_sig = g(f"{cpu}.o_data_mem_read_enable")
+    mem_cached_rd_en_sig = g(f"{cpu}.o_data_mem_cached_read_enable")
+
+    # Multi-bit signals: sampled at dump time (steady-state snapshot value).
+    val_sig = {
+        "dbg_commit_pc": g(f"{cpu}.dbg_commit_pc"),
+        "head_pc": g(f"{cpu}.u_tomasulo.u_rob.head_pc"),
+        "head_idx": g(f"{cpu}.u_tomasulo.u_rob.head_idx"),
+        "sq_count": g(f"{cpu}.sq_count"),
+        "rob_count": g(f"{cpu}.rob_count"),
+        "csr_priv": g(f"{cpu}.csr_priv"),
+        "csr_mstatus": g(f"{cpu}.csr_mstatus"),
+        "csr_mie": g(f"{cpu}.csr_mie"),
+        "csr_mepc": g(f"{cpu}.csr_mepc"),
+        "resume_pc": _first_signal(
+            dut,
+            [f"{cpu}.dbg_interrupt_resume_pc", f"{cpu}.interrupt_resume_pc"],
+        ),
+        "o_pc": g(f"{cpu}.o_pc"),
+        "mtime": g(f"{mem}.mtime"),
+        "mtimecmp": g(f"{mem}.mtimecmp"),
+    }
+
+    missing = sorted(k for k, v in {**bool_sig, **val_sig}.items() if v is None)
+    cocotb.log.info(
+        f"WEDGE monitor armed: dump_interval={dump_interval} "
+        f"stall_cycles={stall_cycles} post_stall_dumps={post_stall_dump_limit} "
+        f"missing_taps={missing}"
+    )
+
+    bool_keys = list(bool_sig.keys())
+    hi = {k: 0 for k in bool_keys}
+    edges = {k: 0 for k in bool_keys}
+    prev = {k: 0 for k in bool_keys}
+    head_pc_ctr: Counter[int] = Counter()
+    commit_pc_ctr: Counter[int] = Counter()
+    read_addr_ctr: Counter[int] = Counter()
+    commit_count = 0
+    interval_start = 0
+
+    def hx(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else f"0x{v:08x}"
+
+    def hx64(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else f"0x{v:016x}"
+
+    def iv(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else str(v)
+
+    def topn(ctr: Counter[int], n: int = 5) -> str:
+        if not ctr:
+            return "{}"
+        return "{" + ", ".join(f"0x{pc:08x}:{c}" for pc, c in ctr.most_common(n)) + "}"
+
+    def emit(mc: int, length: int, stalled: bool, uart_len: int) -> None:
+        committed_pending = length - hi["sq_committed_empty"]
+        cocotb.log.info(
+            f"WEDGE mc={mc} ilen={length} stalled={stalled} uart_len={uart_len}\n"
+            f"  COMMIT: valid_cyc={hi['dbg_commit_valid']} commits={commit_count} "
+            f"distinct_pc={len(commit_pc_ctr)} top={topn(commit_pc_ctr)} o_pc={hx('o_pc')}\n"
+            f"  HEAD: head_valid_cyc={hi['head_valid']} distinct_head_pc={len(head_pc_ctr)} "
+            f"top={topn(head_pc_ctr)} head_idx={iv('head_idx')} wfi_cyc={hi['rob_head_is_wfi']} "
+            f"rob_count={iv('rob_count')} sq_count={iv('sq_count')}\n"
+            f"  LOAD: read_addrs={topn(read_addr_ctr)}\n"
+            f"  FLUSH: flush_all_hi={hi['flush_all']} flush_en_hi={hi['flush_en']} "
+            f"trap_taken(hi={hi['trap_taken']},edges={edges['trap_taken']}) "
+            f"trap_taken_reg_hi={hi['trap_taken_reg']} "
+            f"mret_taken(hi={hi['mret_taken']},edges={edges['mret_taken']}) "
+            f"mret_taken_reg_hi={hi['mret_taken_reg']} "
+            f"mispred_recov_hi={hi['mispredict_recovery_pending']}\n"
+            f"  GATE: trap_pending_hi={hi['trap_pending']} mret_start_hi={hi['mret_start']} "
+            f"drain_wait_hi={hi['trap_drain_wait']} commit_hold_hi={hi['commit_hold_q']} "
+            f"sq_committed_pending_cyc={committed_pending} "
+            f"cached_inflight_hi={hi['cached_write_inflight']}\n"
+            f"  IRQ: int_pending_hi={hi['interrupt_pending']} mtip_reg_hi={hi['mtip_registered']} "
+            f"mtip_cmp_hi={hi['mtip_comparison']} mtimecmp_writes={hi['mtimecmp_write_pulse']} "
+            f"mtime={hx64('mtime')} mtimecmp={hx64('mtimecmp')}\n"
+            f"  CSR: priv={iv('csr_priv')} mstatus={hx('csr_mstatus')} mie={hx('csr_mie')} "
+            f"mstatus_mie_hi={hi['csr_mstatus_mie_direct']} mepc={hx('csr_mepc')} "
+            f"resume_pc={hx('resume_pc')}"
+        )
+
+    def reset_interval(mc: int) -> None:
+        nonlocal commit_count, interval_start
+        for k in bool_keys:
+            hi[k] = 0
+            edges[k] = 0
+        head_pc_ctr.clear()
+        commit_pc_ctr.clear()
+        read_addr_ctr.clear()
+        commit_count = 0
+        interval_start = mc
+
+    mc = 0
+    last_uart_len = 0
+    last_uart_change = 0
+    stall_announced = False
+    post_stall_dumps = 0
+
+    while True:
+        await RisingEdge(dut.i_clk)
+        mc += 1
+        for k in bool_keys:
+            raw = _read_int(bool_sig[k])
+            v = 1 if raw else 0
+            hi[k] += v
+            if v and not prev[k]:
+                edges[k] += 1
+            prev[k] = v
+        if prev["head_valid"] and len(head_pc_ctr) < 256:
+            hp = _read_int(val_sig["head_pc"])
+            if hp is not None:
+                head_pc_ctr[hp] += 1
+        if prev["dbg_commit_valid"]:
+            cp = _read_int(val_sig["dbg_commit_pc"])
+            if cp is not None:
+                commit_count += 1
+                if len(commit_pc_ctr) < 256:
+                    commit_pc_ctr[cp] += 1
+        rd = _read_int(mem_rd_en_sig)
+        crd = _read_int(mem_cached_rd_en_sig)
+        if (rd or crd) and len(read_addr_ctr) < 256:
+            ra = _read_int(mem_addr_sig)
+            if ra is not None:
+                read_addr_ctr[ra] += 1
+
+        uart_len = len(uart_monitor.get_output()) if uart_monitor is not None else 0
+        if uart_len != last_uart_len:
+            last_uart_len = uart_len
+            last_uart_change = mc
+        stalled = (mc - last_uart_change) >= stall_cycles
+        if stalled and not stall_announced:
+            cocotb.log.info(
+                f"WEDGE STALL DETECTED at mc={mc}: no UART progress for "
+                f"{stall_cycles} cycles (uart_len={uart_len})"
+            )
+            stall_announced = True
+
+        if mc % dump_interval == 0:
+            emit(mc, mc - interval_start, stalled, uart_len)
+            if stalled:
+                post_stall_dumps += 1
+                if post_stall_dumps >= post_stall_dump_limit:
+                    cocotb.log.info(
+                        "WEDGE monitor: post-stall snapshot budget reached; "
+                        "stopping further logging (sim continues to cap)."
+                    )
+                    return
+            reset_interval(mc)
+
+
 class UartRxDriver:
     """Drive UART RX serial input to the DUT (8N1)."""
 
@@ -3326,6 +3535,11 @@ async def test_real_program(dut: Any) -> None:
     # Start UART monitor (runs throughout both program executions)
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
+
+    # Optional trap/MRET deadlock wedge observer (pure instrumentation).
+    if os.environ.get("FROST_WEDGE_MONITOR") == "1":
+        cocotb.start_soon(wedge_monitor(dut, uart_monitor))
+
     uart_driver = None
     debug_monitor = None
     if app_name == "uart_echo":
