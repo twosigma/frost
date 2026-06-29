@@ -508,6 +508,7 @@ module if_stage #(
       .i_pd_redirect(i_pd_redirect),
       .i_pd_redirect_target(i_pd_redirect_target),
       .i_window_cannot_serve(window_resteer_pc_reg),
+      .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
 
       .i_trap_taken (i_trap_ctrl.trap_taken),
       .i_mret_taken (i_trap_ctrl.mret_taken),

@@ -94,6 +94,10 @@ module pc_controller #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
+    // Raw window-cannot-serve (UNGATED by sel_nop) -- the exact gremlin DROP condition.
+    // Narrows the immediate-predecessor carve-out to fire ONLY when the load would
+    // actually be dropped (wcs=1), not at the ~50k benign wcs=0 dual-issue sites.
+    input logic i_window_cannot_serve_raw,
 
     // Trap control
     input logic            i_trap_taken,
@@ -324,6 +328,9 @@ module pc_controller #(
   logic [XLEN-1:0] pending_prediction_pc;
   logic [XLEN-1:0] pending_prediction_target;
   logic            pending_prediction_effective;
+  logic            pending_imm_pred_emit;
+  logic            pim_base;  // immediate-predecessor + pending (pre-narrowing)
+  logic            carve_out_engaged_q;  // latched: raw wcs=1 seen this episode
   logic            pending_prediction_from_buffer;
   logic            prediction_needs_pending;
   logic            use_pending_prediction_for_pc_reg;
@@ -469,9 +476,63 @@ module pc_controller #(
   assign stale_pending_prediction = pending_prediction_effective &&
                                     !use_pending_prediction_for_pc_reg &&
                                     (pc_reg_hw > pending_prediction_pc_hw);
+  // GREMLIN fix (Option 1b): immediate-predecessor carve-out.  When a pending BTB
+  // prediction is in flight for a branch that is the COMPRESSED parcel immediately
+  // after pc_reg (pending_prediction_pc == o_pc_reg + 2) and pc_reg has NOT yet
+  // reached it (!use_pending, !stale), the parcel currently at pc_reg is a
+  // correct-path OLDER instruction that MUST execute (e.g. the no-MMU IRQ revmap_size
+  // load at 0x8005a19a sitting between the fetch point and the predicted bgeu at
+  // 0x8005a19c).  Without this, hold_pending_prediction_fetch squashes it (->
+  // o_pending_prediction_fetch_holdoff -> if_stage sel_nop) and the land-on-branch arm
+  // jumps pc_reg straight to pending_prediction_pc, DROPPING it.  pending_imm_pred_emit
+  // suppresses the fetch-holdoff squash + the land-on-branch jump so the parcel emits
+  // and pc_reg advances SEQUENTIALLY onto the branch.  pending_prediction_valid stays
+  // live, so the prediction still applies (metadata-replay path unchanged) once pc_reg
+  // reaches the branch.  This is the documented design intent of
+  // prediction_metadata_tracker ("IF keeps walking older instructions after a BTB
+  // redirect").
+  //
+  // LOOP-BREAK: the predicate uses ONLY registered state -- o_pc_reg and
+  // pending_prediction_pc + a constant.  An earlier form used seq_next_pc_reg, which
+  // depends on pc_reg_advance_sel -> sel_nop; combined with gate (a) feeding
+  // pending_imm_pred_emit BACK into sel_nop (via o_pending_prediction_fetch_holdoff)
+  // that closed a combinational cycle (Verilator "Active region did not converge" at
+  // ~16.6M, masked by -Wno-UNOPTFLAT).  o_pc_reg + PcIncrementCompressed is exactly the
+  // value seq_next_pc_reg held while the parcel was squashed (pc_reg_advance_sel_live
+  // DEFAULTS to +2 when sel_nop=1, if_stage.sv ~1297), so behaviour is preserved for
+  // the compressed immediate-predecessor (the observed gremlin) while the cycle is
+  // broken.  A 32-bit predecessor is intentionally NOT covered: it cannot be
+  // identified sel_nop-free here (the served instruction-size signals are unreliable
+  // under the coincident served-window guard) and the prior form did not cover it
+  // either (it too saw +2 during the squash), so the scope is unchanged.
+  // NARROWING: the base condition (pim_base, below) by itself fires ~50k times/boot, at
+  // wcs=0 dual-issue load+branch bundles where the load already emits -- and there, the
+  // carve-out clearing sel_nop makes pc_reg_advance_sel_live pick +4 (slot-2) so pc_reg
+  // jumps PAST the branch, mishandling the pending prediction -> stale-ra wild ret
+  // (of_prop_next_string 0x8021fcae).
+  assign pim_base =
+      pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+      !stale_pending_prediction &&
+      (pending_prediction_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
+  // NARROW to the true gremlin: the load is only DROPPED when the served window cannot
+  // deliver it (raw wcs=1).  But the load can only EMIT on the wcs=0 cycle (one after the
+  // resteer), so a plain "&& wcs" would drop pim exactly then and re-NOP the load.  Instead
+  // LATCH the engagement once wcs=1 is seen during the episode, and hold it until the
+  // episode ends (pc_reg reaches the branch -> pim_base falls) or any redirect.  This is
+  // NOT a pc_reg hold -- pim still advances pc_reg via the carve-out -- so it cannot
+  // deadlock.  At wcs=0 sites it never engages.  Acyclic: raw wcs is independent of sel_nop.
+  assign pending_imm_pred_emit = pim_base && (i_window_cannot_serve_raw || carve_out_engaged_q);
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush || !pim_base) begin
+      carve_out_engaged_q <= 1'b0;
+    end else if (!fetch_stall && i_window_cannot_serve_raw) begin
+      carve_out_engaged_q <= 1'b1;
+    end
+  end
   assign hold_pending_prediction_fetch =
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
-      !stale_pending_prediction;
+      !stale_pending_prediction && !pending_imm_pred_emit;
   assign hold_pending_prediction_consume_fetch =
       pending_prediction_effective && use_pending_prediction_for_pc_reg;
   // Keep a PC-mux-local copy of the pending-handoff cone so synthesis can
@@ -498,7 +559,7 @@ module pc_controller #(
   assign hold_pending_prediction_fetch_pc_mux =
       pending_prediction_effective &&
       !use_pending_prediction_for_pc_reg_pc_mux &&
-      !stale_pending_prediction_pc_mux;
+      !stale_pending_prediction_pc_mux && !pending_imm_pred_emit;
   assign hold_pending_prediction_consume_fetch_pc_mux =
       pending_prediction_effective &&
       use_pending_prediction_for_pc_reg_pc_mux;
@@ -699,8 +760,13 @@ module pc_controller #(
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
     else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
+    // GREMLIN fix (Option 1b): suppress the land-on-branch JUMP in the immediate-
+    // predecessor carve-out so pc_reg advances SEQUENTIALLY (seq_next_pc_reg, which
+    // equals pending_prediction_pc here) and the intervening older parcel emits first
+    // instead of being skipped.  pending_prediction_valid stays live -> the target
+    // handoff (below) still fires when pc_reg actually reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
-             !use_pending_prediction_for_pc_reg_pc_mux)
+             !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
       next_pc_reg = pending_prediction_pc;
     else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
     else if (pending_prediction_target_handoff_pc_mux) next_pc_reg = pending_prediction_target;
