@@ -189,6 +189,15 @@ SPRINTF_TEST_MAX_CYCLES = 2000000
 # bail early on the unreachable-"maps" tree bug, masking the real budget).
 PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 
+# wfi_lost_tick sweeps ITERS(3000) idle/WFI iterations, each taking exactly one
+# deferred timer trap. On the bram axis the whole sweep finishes in ~345k cycles,
+# but on the ddr axis (FROST_COCOTB_MEM_CONFIG=ddr) the .text + g_jiffies live in
+# DDR: a ~70k-cycle cold-boot I-cache fill plus a slightly slower per-tick round
+# trip push the 3000-tick sweep just past the 500k default cap (timeout, not a
+# lost tick -- the tick rate stays flat to the end). Give it room like the other
+# legitimately-long tests rather than shrinking the phase-sweep coverage.
+WFI_LOST_TICK_MAX_CYCLES = 800000
+
 # No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
 LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 
@@ -3521,6 +3530,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = SPRINTF_TEST_MAX_CYCLES
     elif app_name == "pde_return_hazard":
         max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
+    elif app_name == "wfi_lost_tick":
+        max_cycles = WFI_LOST_TICK_MAX_CYCLES
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES
     else:
