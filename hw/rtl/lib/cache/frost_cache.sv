@@ -166,12 +166,20 @@ module frost_cache #(
   logic   [IndexBits-1:0] flush_idx_q;
   logic   [  TagBits-1:0] flush_tag_q;
 
+  // Real-FSM (FPGA) writeback-all acceleration: bound the index walk to the
+  // [wb_lo_q, wb_hi_q] span of lines made dirty since the last writeback-all,
+  // instead of scanning all NumLines on every fence.i. Cheap and synthesizable
+  // (two index regs + a 1-bit "any dirty" flag), unlike the SIM_FAST_MAINT
+  // shadow's NumLines-bit priority encoder. wb_any_q == 0 means no dirty lines.
+  logic [IndexBits-1:0] wb_lo_q, wb_hi_q;
+  logic wb_any_q;
+
   // Fast maintenance (SIM_FAST_MAINT, simulation only).
   // tag_bulk_clear: one-cycle invalidate-all of the whole tag array.
   // any_dirty_*/first_dirty_*: lowest dirty line index from the sim-only dirty
   // shadow, used to walk only dirty lines during writeback-all. All driven to
   // constants when the feature is off, so the FPGA build carries none of it.
-  logic                   tag_bulk_clear;
+  logic tag_bulk_clear;
   logic any_dirty_full, any_dirty_excl;
   logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
 
@@ -272,6 +280,35 @@ module frost_cache #(
     assign first_dirty_full = '0;
     assign any_dirty_excl   = 1'b0;
     assign first_dirty_excl = '0;
+  end
+
+  // ---- Real-FSM writeback-all dirty-range tracker ---------------------------
+  // Mirror the dirty-bit writes (tag_we with the dirty bit set, at tag_waddr --
+  // i.e. the S_TAG_CHECK write-hit and the S_ALLOC write-allocate) into the
+  // lowest/highest dirty index. The real (FPGA) writeback-all walk then scans
+  // only [wb_lo_q, wb_hi_q]. No upstream request is accepted while a walk runs
+  // (o_up_req_ready is low for the duration), so the span is stable across it.
+  // real_wb_done is exactly the cycle the real walk returns to S_IDLE; clearing
+  // the span there is safe because every dirty line in the span has been written
+  // back and lines outside it were never dirty -> wb_any_q==0 iff no dirty line.
+  logic dirty_set;
+  assign dirty_set = tag_we && tag_wdata[TagBits];
+  logic real_wb_done;
+  assign real_wb_done = (SIM_FAST_MAINT == 0) &&
+      ((state_q == S_FLUSH_CHECK && !(tag_rdata_valid && tag_rdata_dirty) &&
+            (!wb_any_q || (flush_idx_q == wb_hi_q))) ||
+       (state_q == S_FLUSH_WB_WAIT && i_down_resp_valid && (flush_idx_q == wb_hi_q)));
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || real_wb_done) begin
+      wb_lo_q  <= {IndexBits{1'b1}};
+      wb_hi_q  <= '0;
+      wb_any_q <= 1'b0;
+    end else if (dirty_set) begin
+      wb_lo_q  <= (!wb_any_q || (tag_waddr < wb_lo_q)) ? tag_waddr : wb_lo_q;
+      wb_hi_q  <= (!wb_any_q || (tag_waddr > wb_hi_q)) ? tag_waddr : wb_hi_q;
+      wb_any_q <= 1'b1;
+    end
   end
 
   // Tag read address: the incoming request's index, sampled at the fire so
@@ -442,8 +479,9 @@ module frost_cache #(
             state_q     <= S_SWEEP;
           end else if (i_writeback_all) begin
             // Fast: jump straight to the first dirty line (O(dirty) walk).
-            // FPGA: start the full index walk at 0.
-            flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : '0;
+            // FPGA: start the walk at the bottom of the dirty span (0 if the
+            // cache holds no dirty line -- a single scan cycle then finishes).
+            flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : (wb_any_q ? wb_lo_q : '0);
             state_q     <= S_FLUSH_SCAN;
           end else if (up_req_fire) begin
             req_write_q <= i_up_req_write;
@@ -529,7 +567,8 @@ module frost_cache #(
             // Fast: a non-dirty line is only reached when the shadow is empty
             // (no dirty lines to start with), so the writeback-all is done.
             state_q <= S_IDLE;
-          end else if (flush_idx_q == {IndexBits{1'b1}}) begin
+          end else if (!wb_any_q || (flush_idx_q == wb_hi_q)) begin
+            // Real FSM: scanned the whole dirty span (or nothing was dirty).
             state_q <= S_IDLE;
           end else begin
             flush_idx_q <= flush_idx_q + 1'b1;
@@ -560,7 +599,8 @@ module frost_cache #(
               end else begin
                 state_q <= S_IDLE;
               end
-            end else if (flush_idx_q == {IndexBits{1'b1}}) begin
+            end else if (flush_idx_q == wb_hi_q) begin
+              // Real FSM: just wrote back the top dirty line of the span -- done.
               state_q <= S_IDLE;
             end else begin
               flush_idx_q <= flush_idx_q + 1'b1;
