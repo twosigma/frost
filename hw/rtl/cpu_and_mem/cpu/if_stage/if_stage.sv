@@ -995,11 +995,35 @@ module if_stage #(
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
-  // Use the same stall-safe compressed selection metadata that PD consumes.
-  // This keeps link_address aligned with the actual instruction that will be
-  // seen downstream, including prediction/stall replay cases.
+  // link_address (the fall-through PC) must reflect the TRUE size of the slot-1
+  // instruction held across a stall.  The shared sel_compressed_sc is flush-zeroed
+  // by its stall_capture_reg (stall_capture_reg.sv: `if (i_flush) saved <= '0`),
+  // so on a flush-inside-stall a *compressed* branch held at fetch reads
+  // is_compressed_for_link = 0 -> link_address = pc_reg + 4 (one halfword too far).
+  // That stale fall-through link is then consumed as the not-taken redirect target
+  // (early_misprediction_recovery: `... : rs_issue_int.link_addr`), making fetch
+  // skip the branch's successor parcel.  This is the no-MMU-Linux timer-IRQ
+  // "gremlin": the revmap_size load (`lw a5,80(a0)`) right after a not-taken
+  // `c.beqz` is dropped, so the dependent `bgeu a1,a5` reads a stale a5 and takes
+  // the wrong IRQ-dispatch path.  Capture sel_compressed for the link WITHOUT the
+  // flush-zero so the held size matches the actual held instruction (pc_reg+2/+4
+  // correctly).  sel_compressed_sc's other consumers (o_from_if_to_pd.sel_compressed,
+  // slot2_pc_sc) are replay-gated by sel_nop_saved=1 after a flush, so they are
+  // unaffected; only this link path reads the captured bit in the post-flush window.
   logic is_compressed_for_link;
-  assign is_compressed_for_link = sel_compressed_sc;
+  logic sel_compressed_for_link_sc;
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_sel_compressed_for_link_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(sel_compressed),
+      .o_data(sel_compressed_for_link_sc)
+  );
+  assign is_compressed_for_link = sel_compressed_for_link_sc;
 
   assign instruction_pc = pc_reg;
   assign link_address = instruction_pc + (is_compressed_for_link ?
