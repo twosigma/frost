@@ -268,6 +268,7 @@ def _clear_inputs(dut: Any) -> None:
     _drive_from_ex(dut, {})
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
+    dut.i_served_addr.value = 0
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
     dut.i_frontend_state_flush.value = 0
@@ -278,7 +279,35 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect_target.value = 0
 
 
-async def _setup_test(dut: Any) -> None:
+def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
+    """Model the unit-test fetch provider's served-window tag (i_served_addr).
+
+    if_stage's served-window guard (window_cannot_serve_pc_reg, if_stage.sv:766)
+    squashes the IF output and holds pc_reg whenever the served 64-bit fetch
+    window {word(i_served_addr), word(i_served_addr)+1} does not cover pc_reg's
+    word (delta 0 or -1).  The guard only arms in the cached region
+    (pc_reg[XLEN-1]); the directed tests use cached PCs (BASE_PC=0x80001000), so
+    it is live.  In the real SoC i_served_addr is the registered fetch address
+    (cpu_and_mem.sv:585), which tracks pc_reg for the always-valid 1-cycle
+    provider these tests model.  Mirror that here so the guard stays inert during
+    normal fetch.  pc_reg only changes on a clock edge, so refreshing once per
+    edge keeps i_served_addr aligned with pc_reg for every read in between.
+
+    word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
+    F=W+1 case) to exercise the guard instead of suppressing it.
+    """
+    mask = (1 << XLEN) - 1
+
+    async def _tracker() -> None:
+        while True:
+            dut.i_served_addr.value = (int(dut.pc_reg.value) + 4 * word_offset) & mask
+            await RisingEdge(dut.i_clk)
+            await Timer(1, unit="step")
+
+    cocotb.start_soon(_tracker())
+
+
+async def _setup_test(dut: Any, *, served_word_offset: int = 0) -> None:
     """Start the clock, reset the IF stage, and clear inputs."""
     cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
     _clear_inputs(dut)
@@ -286,6 +315,7 @@ async def _setup_test(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     _drive_pipeline_ctrl(dut, {})
+    _start_served_addr_tracker(dut, word_offset=served_word_offset)
     await _settle()
 
 
@@ -849,7 +879,10 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
     fetch_word_swapped = i_instr_bank_sel_r ^ pc_reg[2] is a 1-bit parity that
     cannot represent F=W+1 (instruction_aligner.sv:141-147,235-240).
     """
-    await _setup_test(dut)
+    # served_word_offset=1 models the served window leading pc_reg by one word
+    # (F=W+1): the case the served-window guard must catch (hold pc_reg, stay
+    # 4-aligned) rather than letting the 1-bit aligner parity advance pc_reg +2.
+    await _setup_test(dut, served_word_offset=1)
     await _redirect_to(
         dut, BASE_PC
     )  # pc_reg -> 0x80001000 (bit1=0, bit2=0); 32-bit insn here
