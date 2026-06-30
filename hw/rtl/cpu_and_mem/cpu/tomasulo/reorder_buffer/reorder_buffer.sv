@@ -1685,8 +1685,21 @@ module reorder_buffer (
   // already blocks the early-recovery race; (c) removing the guard breaks
   // the commit_en ↔ branch_update critical path (19 LUT levels through the
   // CARRY8 branch-target comparison).
+  // !i_flush_en is REQUIRED for serializing correctness, not just a flush guard.
+  // rob_serializer only recognizes a serial head (CSR/FENCE/FENCE.I/WFI/MRET)
+  // while !i_flush_en (rob_serializer.sv SERIAL_IDLE guard).  During an
+  // early-backend-recovery / mispredict-recovery bubble (i_flush_en=1) the
+  // serializer therefore leaves commit_stall=0 for a head FENCE.I, so without
+  // this term commit_en would RETIRE the FENCE.I unserialized -- skipping the
+  // cache sync (L1D writeback-all + L1I invalidate-all) entirely and letting a
+  // post-fence fetch read pre-fence code (the SMC bug).  Gating commit on
+  // !i_flush_en keeps commit_en a subset of the serializer's guard, so a serial
+  // head can never RETIRE during the bubble; it commits (and is serialized)
+  // after the bubble clears.  The bubble is a fixed hold (early-backend /
+  // mispredict recovery), never waiting on the head committing -> no deadlock.
   assign commit_en = head_ready && !head_exception && !commit_stall && !i_commit_hold &&
-                     !i_early_recovery_en && !i_flush_all && !flush_after_head_commit;
+                     !i_early_recovery_en && !i_flush_en && !i_flush_all &&
+                     !flush_after_head_commit;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
@@ -1700,7 +1713,7 @@ module reorder_buffer (
   // without feeding branch_update back into commit_en.
   assign o_head_commit_misprediction_candidate =
       head_ready && !commit_stall && !i_commit_hold && !i_early_recovery_en &&
-      !i_flush_all && !flush_after_head_commit &&
+      !i_flush_en && !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
 
   // ===========================================================================
