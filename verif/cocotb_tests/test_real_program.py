@@ -879,8 +879,14 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                     return (None, "Hello, world!", False, app_name)
                 if app_name == "linux_boot":
                     if os.environ.get("FROST_LINUX_RUN_FULL") == "1":
-                        # Diagnostic: never matches -> run to COCOTB_LINUX_MAX_CYCLES
-                        # capturing all UART, to observe post-banner behavior.
+                        # Diagnostic / CI regression capture: never matches -> run
+                        # the full COCOTB_LINUX_MAX_CYCLES capturing all UART +
+                        # CLINT/retire progress. The CI linux-boot-cocotb job runs
+                        # in this mode and asserts boot health afterwards with
+                        # tests/check_linux_boot_regression.py (the ~22M window is
+                        # silent mem_init after devtmpfs, so there is no deep
+                        # console marker to match on -- progress + a serviced timer
+                        # tick are the real gremlin-regression signals).
                         return ("<<__never_matches__>>", None, True, app_name)
                     # Passes once the kernel reaches its boot banner. (Interim
                     # bring-up criterion; tighten to a userspace/shell marker
