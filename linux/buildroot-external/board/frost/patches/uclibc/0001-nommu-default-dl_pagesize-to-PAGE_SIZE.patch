@@ -1,0 +1,36 @@
+FROST no-MMU: default _dl_pagesize to PAGE_SIZE when the auxv lacks AT_PAGESZ
+
+The kernel binfmt_flat loader (no-MMU / bFLT) does not push an ELF auxiliary
+vector onto the initial process stack, so AT_PAGESZ is absent.  The static-libc
+dynamic-linker support (_dl_aux_init) therefore leaves _dl_pagesize == 0, and
+getpagesize() / sysconf(_SC_PAGESIZE) return 0.
+
+uClibc's malloc then rounds its first heap-extend block up to a multiple of the
+page size:
+
+    block_size = MALLOC_ROUND_UP_TO_PAGE_SIZE(size) = round_up(size, 0) = 0
+
+so the heap mmap() becomes mmap(NULL, 0, ...), which the kernel rejects with
+EINVAL.  The very first malloc() fails, busybox (init or sh) aborts with
+"out of memory", PID 1 exits, and the kernel panics ("Attempted to kill init") --
+the system never reaches a shell.
+
+Fall back to the compile-time PAGE_SIZE (which the per-arch bits/uClibc_page.h
+comments already document as the intended behaviour, "?: PAGE_SIZE") when
+AT_PAGESZ is missing.  This matches the dynamic-loader path in ldso.c and fixes
+no-MMU userspace (verified: busybox reaches an interactive shell on RV32 no-MMU
+under both QEMU and the FROST FPGA).
+
+Signed-off-by: FROST <frost@twosigma.com>
+
+--- a/libc/misc/elf/dl-support.c
++++ b/libc/misc/elf/dl-support.c
+@@ -53,7 +53,7 @@ void internal_function _dl_aux_init (ElfW(auxv_t) *av)
+    _dl_phnum = (size_t) _dl_auxvt[AT_PHNUM].a_un.a_val;
+
+    /* Get the pagesize from the aux vect */
+-   _dl_pagesize = (_dl_auxvt[AT_PAGESZ].a_un.a_val) ? (size_t) _dl_auxvt[AT_PAGESZ].a_un.a_val : 0;
++   _dl_pagesize = (_dl_auxvt[AT_PAGESZ].a_un.a_val) ? (size_t) _dl_auxvt[AT_PAGESZ].a_un.a_val : PAGE_SIZE;
+ }
+
+ #if defined(USE_TLS) && USE_TLS
