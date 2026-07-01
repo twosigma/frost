@@ -65,6 +65,13 @@ sw_ddr.bin
 sw_imem_*.mem
 sw/apps/*/sw.S
 
+# FROST no-MMU Linux: out-of-tree Buildroot build output + download/ccache
+# caches. Regenerated from the linux/buildroot submodule + linux/buildroot-external
+# tree by `make -C sw/apps/linux_boot` (and the CI build-frost-linux job).
+/linux/build/
+/linux/dl/
+/linux/ccache/
+
 # mypy
 .mypy_cache/
 

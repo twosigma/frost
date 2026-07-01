@@ -18,6 +18,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -107,6 +108,49 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
 }
 
 
+def _linux_boot_preflight() -> None:
+    """Fail fast (with actionable guidance) before the long linux_boot self-build.
+
+    linux_boot is the only app that builds a whole Linux system from source via
+    the Buildroot submodule, so check its prerequisites up front rather than
+    dying deep inside a 30-60 min build (or after prompting for a hardware
+    target). Also warn on the first, from-scratch build so the runtime is not a
+    surprise.
+    """
+    buildroot_makefile = PROJECT_ROOT / "linux" / "buildroot" / "Makefile"
+    if not buildroot_makefile.exists():
+        print(
+            "Error: the Buildroot submodule (linux/buildroot) is not initialized.\n"
+            "  Run: git submodule update --init linux/buildroot",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    missing = [tool for tool in ("make", "dtc") if shutil.which(tool) is None]
+    if missing:
+        print(
+            "Error: missing host tools required to build the Linux image: "
+            f"{', '.join(missing)}.\n"
+            "  Install Buildroot's host dependencies (see "
+            "linux/buildroot-external/README.md) or run inside the\n"
+            "  frost-dev Docker image, which ships them.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    kimage = PROJECT_ROOT / "linux" / "build" / "images" / "Image"
+    if not kimage.exists():
+        print(
+            "Note: no cached kernel image found -- linux_boot will build the "
+            "kernel + rootfs from source now.\n"
+            "  The FIRST build compiles a full rv32 cross toolchain and can take "
+            "30-60 min; later loads reuse\n"
+            "  the cached build and only re-pack the DDR image for this board "
+            "(seconds).",
+            file=sys.stderr,
+        )
+
+
 def compile_app_for_board(
     app_name: str,
     app_dir: Path,
@@ -143,6 +187,15 @@ def compile_app_for_board(
     if mem_config:
         env["MEM_CONFIG"] = mem_config
 
+    # linux_boot self-builds the kernel + rootfs from the Buildroot submodule on
+    # a clean checkout, which can take ~30-60 min the first time (a full cross
+    # toolchain build); every other app is a quick cross-compile. `make clean`
+    # for linux_boot only drops the board-dependent pack outputs (the cached
+    # kernel/rootfs survive), so the re-pack after clean is fast either way.
+    is_linux_boot = app_name == "linux_boot"
+    clean_timeout = 300 if is_linux_boot else 30
+    build_timeout = 5400 if is_linux_boot else 120
+
     try:
         # Clean first to force recompilation with new settings
         subprocess.run(
@@ -151,7 +204,7 @@ def compile_app_for_board(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=clean_timeout,
         )
 
         # Build with board-specific settings
@@ -166,7 +219,7 @@ def compile_app_for_board(
             env=env,
             capture_output=False,  # Show output
             text=True,
-            timeout=120,
+            timeout=build_timeout,
         )
 
         if result.returncode != 0:
@@ -376,6 +429,12 @@ def main() -> None:
             f"'{args.software_app}' is not supported by the current official "
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
+
+    # linux_boot builds a full Linux system from source; check its build
+    # prerequisites (and warn about the first-build runtime) before we prompt for
+    # a hardware target or kick off a long compile.
+    if args.software_app == "linux_boot":
+        _linux_boot_preflight()
 
     # Select hardware target (may prompt user if multiple targets)
     # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
