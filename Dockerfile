@@ -151,6 +151,33 @@ ENV RISCV_PREFIX=riscv-none-elf-
 # Fix git "dubious ownership" error when mounting repo as volume
 RUN git config --global --add safe.directory /workspace
 
+# Buildroot host dependencies + QEMU. Used by the FROST no-MMU Linux CI jobs:
+#   * build-frost-linux  - builds the kernel + initramfs + FROST memory images
+#     from the linux/buildroot-external tree (Buildroot compiles its own rv32
+#     uClibc cross toolchain from source, so it needs a full host build env).
+#   * qemu-linux-boot     - boots the same Image + rootfs to a shell under
+#     qemu-system-riscv32 (qemu-system-misc provides the riscv32 target).
+# `load_software.py <board> linux_boot` self-builds via the same path, so these
+# are the single source of truth for the Linux build's host deps. Kept as a late
+# layer so the expensive Verilator/Yosys/SMT source builds above stay cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    patch \
+    cpio \
+    rsync \
+    bc \
+    file \
+    unzip \
+    wget \
+    bzip2 \
+    ccache \
+    libssl-dev \
+    libelf-dev \
+    libncurses-dev \
+    device-tree-compiler \
+    qemu-system-misc \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies (cocotb, pytest, pre-commit, etc.)
 RUN pip install --no-cache-dir --break-system-packages \
     "cocotb==2.0.1" \

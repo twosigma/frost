@@ -44,28 +44,31 @@ linux/buildroot-external/
 
 ## Buildroot pin
 
-The FROST artifacts this tree reproduces were captured from a Buildroot
-**`2026.08-git`** snapshot (commit `67449130`), which provides the defaults this
-defconfig relies on: **gcc 15.2.0**, **binutils 2.45.1**, the internal rv32-nommu
-**uClibc** toolchain, and the **Linux 6.18** host-headers option.
+Buildroot is vendored as a submodule at `linux/buildroot`, pinned to the exact
+commit **`67449130`** (a `2026.08-git` snapshot). That commit provides the
+defaults this defconfig relies on: **gcc 15.2.0**, **binutils 2.45.1**, the
+internal rv32-nommu **uClibc** toolchain, and the **Linux 6.18** host-headers
+option. The pin is the exact commit rather than a release tag so the build is
+reproducible regardless of tag movement.
 
-Add Buildroot as a submodule next to this tree:
+A fresh checkout only needs the submodule initialized:
 
 ```bash
-git submodule add https://github.com/buildroot/buildroot.git linux/buildroot
-git -C linux/buildroot checkout 2026.05        # tag requested for CI
-git add .gitmodules linux/buildroot
-git commit -m "linux: vendor buildroot 2026.05 as a submodule"
+git submodule update --init linux/buildroot
 ```
 
-> **Pin caveat (needs a human decision).** The task specifies the **2026.05**
-> tag, but the local artifacts were actually built from `2026.08-git`
-> (`67449130`). The local Buildroot is a shallow clone with no tags, so 2026.05
-> could not be verified offline. Before trusting 2026.05, confirm it ships
-> `BR2_GCC_VERSION_15_X` (15.2.0), `BR2_BINUTILS_VERSION_2_45_X` (2.45.1) and
-> `BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18`. If it doesn't, pin the exact
-> commit instead:
-> `git -C linux/buildroot checkout 67449130`.
+To bump the pin, checkout the new commit in the submodule and commit the
+updated gitlink:
+
+```bash
+git -C linux/buildroot checkout <new-sha>
+git add linux/buildroot
+git commit -m "linux: bump vendored buildroot to <new-sha>"
+```
+
+> Re-verify a bump ships `BR2_GCC_VERSION_15_X` (15.2.0),
+> `BR2_BINUTILS_VERSION_2_45_X` (2.45.1) and
+> `BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18`, which this defconfig relies on.
 
 ## Build
 
@@ -102,8 +105,19 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 cd tests && make clean && ./test_run_cocotb.py linux_boot
 ```
 
-The `linux_boot` registry entry / harness is **not** part of this external tree
-(it lives with the cocotb tests on the FROST Linux feature branch).
+Or let the app Makefile self-build straight from this tree (it runs the whole
+Buildroot build if `linux/build/images/Image` is absent, then packs for the
+board clock) -- this is what `fpga/load_software.py <board> linux_boot` and the
+CI `build-frost-linux` job drive:
+
+```bash
+make -C sw/apps/linux_boot            # genesys2 clock (133.33 MHz) by default
+make -C sw/apps/linux_boot FPGA_CPU_CLK_FREQ=300000000   # x3 clock
+```
+
+The `linux_boot` cocotb registry entry (`linux_boot` / `linux_boot_128k`) and
+its `build-frost-linux` + `linux-boot-cocotb` + `linux-boot-qemu` CI jobs live
+on `main`.
 
 ## How the kernel config is assembled
 

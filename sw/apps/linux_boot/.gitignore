@@ -1,0 +1,11 @@
+# All linux_boot images are build artifacts, produced by `make` here (the
+# Buildroot self-build + build_fpga_boot.py packer). None are committed.
+sw.mem
+sw.txt
+sw_ddr.mem
+sw_ddr.txt
+frost-nommu-fpga.dts
+frost-nommu-fpga.dtb
+frost_boot_shim.S
+shim.elf
+shim.bin

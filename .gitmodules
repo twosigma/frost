@@ -15,3 +15,6 @@
 [submodule "sw/apps/coremark_pro/coremark-pro"]
 	path = sw/apps/coremark_pro/coremark-pro
 	url = https://github.com/eembc/coremark-pro.git
+[submodule "linux/buildroot"]
+	path = linux/buildroot
+	url = https://github.com/buildroot/buildroot.git
