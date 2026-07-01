@@ -14,7 +14,7 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -sv sdp_dist_ram.sv
-read -sv sq_forwarding_unit.sv
+read -formal -sv sq_forwarding_unit.sv
 read -formal -sv store_queue.sv
 prep -top store_queue
 
