@@ -383,6 +383,9 @@ class ReorderBufferInterface:
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0
         self.dut.i_mepc.value = 0
+        self.dut.i_priv.value = (
+            0b11  # PrivM: MRET/privileged CSR tests run in machine mode.
+        )
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0

@@ -207,10 +207,12 @@ module sq_forwarding_unit #(
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
   logic [1:0] fwd_entry_extract_type[DEPTH];
+`ifndef FORMAL
   fwd_winner_t fwd_leaf[DEPTH];
   fwd_winner_t fwd_pair[4];
   fwd_winner_t fwd_quad[2];
   fwd_winner_t fwd_winner;
+`endif
 
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
   assign fwd_load_age = {1'b0, i_sq_check_rob_tag} - {1'b0, i_rob_head_tag};
@@ -332,6 +334,33 @@ module sq_forwarding_unit #(
   // Block 2: newest conflicting store wins for data/extract selection. The
   // heavy address/age qualification is already parallelized above, so this
   // block only prioritizes 1-bit match results and their precomputed metadata.
+`ifdef FORMAL
+  // Yosys's formal frontend currently mishandles the balanced tree's unpacked
+  // array of packed structs, treating fields such as fwd_leaf[i].can_forward
+  // as implicit wires. Use an equivalent linear selector for formal only; the
+  // synthesized implementation below remains the timing-optimized tree.
+  logic fwd_formal_winner_valid;
+  logic [ReorderBufferTagWidth:0] fwd_formal_winner_age;
+
+  always_comb begin
+    fwd_formal_winner_valid = 1'b0;
+    fwd_formal_winner_age   = '0;
+    fwd_can_fwd             = 1'b0;
+    fwd_match_idx           = '0;
+    fwd_extract_type        = 2'd0;
+
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (fwd_conflict_mask[i] &&
+          (!fwd_formal_winner_valid || (fwd_entry_age[i] >= fwd_formal_winner_age))) begin
+        fwd_formal_winner_valid = 1'b1;
+        fwd_formal_winner_age   = fwd_entry_age[i];
+        fwd_can_fwd             = fwd_can_forward_mask[i];
+        fwd_match_idx           = IdxWidth'(i);
+        fwd_extract_type        = fwd_entry_extract_type[i];
+      end
+    end
+  end
+`else
   // Keep this as a balanced tree: the old serial loop let an SQ-check address
   // bit feed each entry's conflict logic and then walk an 8-entry winner chain
   // before reaching o_sq_forward.can_forward.
@@ -358,6 +387,7 @@ module sq_forwarding_unit #(
     fwd_match_idx    = fwd_winner.idx;
     fwd_extract_type = fwd_winner.extract_type;
   end
+`endif
 
   // Block 3: Registered forwarding outputs.
   // Keep the SQ compare/forwarding result behind a register so the LQ sees it

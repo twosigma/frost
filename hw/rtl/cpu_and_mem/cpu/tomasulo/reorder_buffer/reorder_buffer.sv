@@ -2319,10 +2319,19 @@ module reorder_buffer (
         assert ($past(serial_state) == riscv_pkg::SERIAL_IDLE && $past(head_is_csr));
       end
 
-      // o_mret_start only in IDLE with MRET at head
+      // o_mret_start is asserted when MRET first reaches the ready head and is
+      // sustained in MRET_EXEC so trap_unit can retry after committed SQ drain.
       if ($past(o_mret_start)) begin
         p_mret_start_contract :
-        assert ($past(serial_state) == riscv_pkg::SERIAL_IDLE && $past(head_is_mret));
+        assert (($past(
+            serial_state
+        ) == riscv_pkg::SERIAL_IDLE || $past(
+            serial_state
+        ) == riscv_pkg::SERIAL_MRET_EXEC) && $past(
+            head_is_mret
+        ) && $past(
+            i_sq_committed_empty
+        ));
       end
 
       // o_fence_i_flush is registered (one cycle after commit of FENCE.I)
