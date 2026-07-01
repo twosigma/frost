@@ -374,7 +374,10 @@ jobs:
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          # The in-workspace Buildroot build needs ~10 GB; free the image tar.
+          rm -f /tmp/frost-dev.tar
 
       - name: Cache Buildroot downloads (source tarballs)
         uses: actions/cache@v4
@@ -442,7 +445,9 @@ jobs:
     name: Cocotb Linux Boot (22M, genesys2 shape)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
-    timeout-minutes: 180
+    # Verilator compile of the core plus the bounded 22M-cycle sim; GitHub
+    # runners sim this at roughly 4-8k cycles/s, so leave generous headroom.
+    timeout-minutes: 240
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -456,7 +461,10 @@ jobs:
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          # Long Verilator compile + 22M-cycle sim in this job; free the tar.
+          rm -f /tmp/frost-dev.tar
 
       - name: Download FROST Linux boot images
         uses: actions/download-artifact@v4
@@ -472,9 +480,14 @@ jobs:
 
       - name: Run cocotb linux_boot (22M-cycle gremlin regression)
         run: |
+          # FROST_LINUX_PREBUILT=1: the cocotb runner cleans + re-makes the app
+          # before simulating; this tells the linux_boot Makefile the staged
+          # images are authoritative (no in-job Buildroot rebuild, which would
+          # take ~1h uncached and overwrite the artifact under test).
           docker run --rm \
             -e CACHED_HAS_L2=0 \
             -e FROST_LINUX_RUN_FULL=1 \
+            -e FROST_LINUX_PREBUILT=1 \
             -e COCOTB_NUM_RUNS=1 \
             -e COCOTB_LINUX_MAX_CYCLES=22000000 \
             -e COCOTB_PROGRESS_INTERVAL=500000 \
