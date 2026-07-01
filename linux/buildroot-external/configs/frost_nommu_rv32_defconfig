@@ -51,3 +51,6 @@ BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # --- Post-image: package Image + generated DTB + initramfs into the FROST
 #     FPGA/sim memory images sw.{mem,txt} and sw_ddr.{mem,txt}. ---
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image.sh"
+BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox.config"
+BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_FROST_PATH)/board/frost/device_table.txt"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay"

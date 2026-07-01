@@ -75,3 +75,14 @@ echo "  dtc    = ${FROST_DTC}"
 echo "  out    = ${FROST_OUTDIR}"
 
 python3 "${BOARD_DIR}/build_fpga_boot.py"
+
+# Apply the ret_from_exception M-mode restore-window software crutch to the
+# packed DDR image. Required for the FROST core (cocotb sim + FPGA) until the
+# RTL fix lands; idempotent (located by opcode, no-op if already patched).
+# Harmless/irrelevant for QEMU, which boots Image+rootfs directly and never
+# consumes sw_ddr.mem.
+if [ -f "${BINARIES_DIR}/sw_ddr.mem" ]; then
+    echo "post-image.sh: applying ret_from_exception M-mode-timer patch to sw_ddr"
+    python3 "${BOARD_DIR}/patch_ret_from_exception.py" \
+        "${BINARIES_DIR}/sw_ddr.mem" "${BINARIES_DIR}/sw_ddr.txt"
+fi
