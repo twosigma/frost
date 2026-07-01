@@ -67,11 +67,39 @@ endif
 
 .PHONY: all clean distclean
 
+# --- Prebuilt-image mode (CI) -------------------------------------------------
+# The CI linux-boot-cocotb job downloads the images that build-frost-linux
+# produced and stages them here; the cocotb runner then does `make clean` +
+# `make` on this app (compile_app clean_first=True). Without a kernel build
+# tree in the clone, that clean would delete the staged images and the build
+# would kick off a full in-job Buildroot rebuild that overwrites them.
+# FROST_LINUX_PREBUILT=1 declares the staged images authoritative: `make`
+# verifies they exist and touches nothing; `make clean` keeps them and only
+# removes packer scratch files.
+ifeq ($(FROST_LINUX_PREBUILT),1)
+
+all:
+	@test -f sw.mem -a -f sw_ddr.mem || { \
+	  echo "ERROR: FROST_LINUX_PREBUILT=1 but sw.mem / sw_ddr.mem are not staged here."; \
+	  exit 1; }
+	@echo "linux_boot: FROST_LINUX_PREBUILT=1 -> using staged images as-is"
+
+clean:
+	rm -f shim.elf shim.bin frost_boot_shim.S \
+	      frost-nommu-fpga.dts frost-nommu-fpga.dtb
+
+distclean: clean
+
+else  # --- Normal self-build mode ---------------------------------------------
+
 # sw_ddr.mem's recipe emits all four images at once, so it is the canonical goal.
 all: sw_ddr.mem
 
 # Stage 1: kernel Image + rootfs via Buildroot. Skipped when already built.
-$(KIMAGE) $(INITRD_IMG):
+# Grouped target (&:): one Buildroot invocation produces both files (a plain
+# multi-target rule would run the recipe once per missing file, and in a -j
+# build could even run two Buildroot makes concurrently in the same O= dir).
+$(KIMAGE) $(INITRD_IMG) &:
 	@test -f "$(BR2_SRC)/Makefile" || { \
 	  echo "ERROR: buildroot submodule not initialized."; \
 	  echo "  Run: git submodule update --init linux/buildroot"; \
@@ -101,3 +129,5 @@ clean:
 # Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1 rebuild.
 distclean: clean
 	rm -rf "$(BR2_OUT)"
+
+endif  # FROST_LINUX_PREBUILT
