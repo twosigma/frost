@@ -184,14 +184,30 @@ __attribute__((noreturn, noinline)) static void finish_fail(const char *tag)
     clint_ack_timer();
 
     uart_printf("FAIL %s code=%u iter=%u ticks=%u target=%u cause=%08x\n",
-                tag, g_fail_code, g_current_iter, g_ticks, g_target_tick, g_bad_cause);
+                tag,
+                g_fail_code,
+                g_current_iter,
+                g_ticks,
+                g_target_tick,
+                g_bad_cause);
     uart_printf("pc epc=%08x ra=%08x sp=%08x tp=%08x mscratch=%08x\n",
-                g_last_mepc, g_last_ra, g_last_sp, g_last_tp, g_last_mscratch_in_handler);
+                g_last_mepc,
+                g_last_ra,
+                g_last_sp,
+                g_last_tp,
+                g_last_mscratch_in_handler);
     uart_printf("slot addr=%08x irq_addr=%08x poison=%08x irq_slot=%08x before_ret=%08x\n",
-                g_expected_slot_addr, g_last_slot_addr, g_poison_readback,
-                g_slot_during_irq, g_slot_before_return);
+                g_expected_slot_addr,
+                g_last_slot_addr,
+                g_poison_readback,
+                g_slot_during_irq,
+                g_slot_before_return);
     uart_printf("expected_ra=%08x callee_ra=%08x callee_sp=%08x bad_epc=%08x bad_ra=%08x\n",
-                g_expected_saved_ra, g_callee_ra_saved, g_callee_sp, g_bad_epc, g_bad_ra);
+                g_expected_saved_ra,
+                g_callee_ra_saved,
+                g_callee_sp,
+                g_bad_epc,
+                g_bad_ra);
     uart_printf("<<FAIL>>\n");
 
     for (;;) {
@@ -256,167 +272,164 @@ __attribute__((noinline, used)) void linux_like_irq_c(struct linux_pt_regs *fram
 
 __attribute__((naked, aligned(4))) static void linux_like_irq_entry(void)
 {
-    __asm__ volatile(
-        "csrrw tp, mscratch, tp\n"
-        "bnez tp, 1f\n"
-        "csrr tp, mscratch\n"
-        "1:\n"
-        "addi sp, sp, -144\n"
-        "sw   ra, 4(sp)\n"
-        "sw   gp, 12(sp)\n"
-        "sw   t0, 20(sp)\n"
-        "sw   t1, 24(sp)\n"
-        "sw   t2, 28(sp)\n"
-        "sw   s0, 32(sp)\n"
-        "sw   s1, 36(sp)\n"
-        "sw   a0, 40(sp)\n"
-        "sw   a1, 44(sp)\n"
-        "sw   a2, 48(sp)\n"
-        "sw   a3, 52(sp)\n"
-        "sw   a4, 56(sp)\n"
-        "sw   a5, 60(sp)\n"
-        "sw   a6, 64(sp)\n"
-        "sw   a7, 68(sp)\n"
-        "sw   s2, 72(sp)\n"
-        "sw   s3, 76(sp)\n"
-        "sw   s4, 80(sp)\n"
-        "sw   s5, 84(sp)\n"
-        "sw   s6, 88(sp)\n"
-        "sw   s7, 92(sp)\n"
-        "sw   s8, 96(sp)\n"
-        "sw   s9, 100(sp)\n"
-        "sw   s10, 104(sp)\n"
-        "sw   s11, 108(sp)\n"
-        "sw   t3, 112(sp)\n"
-        "sw   t4, 116(sp)\n"
-        "sw   t5, 120(sp)\n"
-        "sw   t6, 124(sp)\n"
-        "sw   a0, 140(sp)\n"
-        "addi t0, sp, 144\n"
-        "sw   t0, 8(sp)\n"
-        "csrr t0, mepc\n"
-        "sw   t0, 0(sp)\n"
-        "csrr t0, mstatus\n"
-        "sw   t0, 128(sp)\n"
-        "csrr t0, mtval\n"
-        "sw   t0, 132(sp)\n"
-        "csrr t0, mcause\n"
-        "sw   t0, 136(sp)\n"
-        "csrr t0, mscratch\n"
-        "sw   t0, 16(sp)\n"
-        "csrw mscratch, x0\n"
-        "mv   a0, sp\n"
-        "call linux_like_irq_c\n"
-        "lw   a0, 128(sp)\n"
-        "lw   a2, 0(sp)\n"
-        "sc.w x0, a2, 0(sp)\n"
-        "csrw mstatus, a0\n"
-        "csrw mepc, a2\n"
-        "lw   ra, 4(sp)\n"
-        "lw   gp, 12(sp)\n"
-        "lw   tp, 16(sp)\n"
-        "lw   t0, 20(sp)\n"
-        "lw   t1, 24(sp)\n"
-        "lw   t2, 28(sp)\n"
-        "lw   s0, 32(sp)\n"
-        "lw   s1, 36(sp)\n"
-        "lw   a0, 40(sp)\n"
-        "lw   a1, 44(sp)\n"
-        "lw   a2, 48(sp)\n"
-        "lw   a3, 52(sp)\n"
-        "lw   a4, 56(sp)\n"
-        "lw   a5, 60(sp)\n"
-        "lw   a6, 64(sp)\n"
-        "lw   a7, 68(sp)\n"
-        "lw   s2, 72(sp)\n"
-        "lw   s3, 76(sp)\n"
-        "lw   s4, 80(sp)\n"
-        "lw   s5, 84(sp)\n"
-        "lw   s6, 88(sp)\n"
-        "lw   s7, 92(sp)\n"
-        "lw   s8, 96(sp)\n"
-        "lw   s9, 100(sp)\n"
-        "lw   s10, 104(sp)\n"
-        "lw   s11, 108(sp)\n"
-        "lw   t3, 112(sp)\n"
-        "lw   t4, 116(sp)\n"
-        "lw   t5, 120(sp)\n"
-        "lw   t6, 124(sp)\n"
-        "lw   sp, 8(sp)\n"
-        "mret\n");
+    __asm__ volatile("csrrw tp, mscratch, tp\n"
+                     "bnez tp, 1f\n"
+                     "csrr tp, mscratch\n"
+                     "1:\n"
+                     "addi sp, sp, -144\n"
+                     "sw   ra, 4(sp)\n"
+                     "sw   gp, 12(sp)\n"
+                     "sw   t0, 20(sp)\n"
+                     "sw   t1, 24(sp)\n"
+                     "sw   t2, 28(sp)\n"
+                     "sw   s0, 32(sp)\n"
+                     "sw   s1, 36(sp)\n"
+                     "sw   a0, 40(sp)\n"
+                     "sw   a1, 44(sp)\n"
+                     "sw   a2, 48(sp)\n"
+                     "sw   a3, 52(sp)\n"
+                     "sw   a4, 56(sp)\n"
+                     "sw   a5, 60(sp)\n"
+                     "sw   a6, 64(sp)\n"
+                     "sw   a7, 68(sp)\n"
+                     "sw   s2, 72(sp)\n"
+                     "sw   s3, 76(sp)\n"
+                     "sw   s4, 80(sp)\n"
+                     "sw   s5, 84(sp)\n"
+                     "sw   s6, 88(sp)\n"
+                     "sw   s7, 92(sp)\n"
+                     "sw   s8, 96(sp)\n"
+                     "sw   s9, 100(sp)\n"
+                     "sw   s10, 104(sp)\n"
+                     "sw   s11, 108(sp)\n"
+                     "sw   t3, 112(sp)\n"
+                     "sw   t4, 116(sp)\n"
+                     "sw   t5, 120(sp)\n"
+                     "sw   t6, 124(sp)\n"
+                     "sw   a0, 140(sp)\n"
+                     "addi t0, sp, 144\n"
+                     "sw   t0, 8(sp)\n"
+                     "csrr t0, mepc\n"
+                     "sw   t0, 0(sp)\n"
+                     "csrr t0, mstatus\n"
+                     "sw   t0, 128(sp)\n"
+                     "csrr t0, mtval\n"
+                     "sw   t0, 132(sp)\n"
+                     "csrr t0, mcause\n"
+                     "sw   t0, 136(sp)\n"
+                     "csrr t0, mscratch\n"
+                     "sw   t0, 16(sp)\n"
+                     "csrw mscratch, x0\n"
+                     "mv   a0, sp\n"
+                     "call linux_like_irq_c\n"
+                     "lw   a0, 128(sp)\n"
+                     "lw   a2, 0(sp)\n"
+                     "sc.w x0, a2, 0(sp)\n"
+                     "csrw mstatus, a0\n"
+                     "csrw mepc, a2\n"
+                     "lw   ra, 4(sp)\n"
+                     "lw   gp, 12(sp)\n"
+                     "lw   tp, 16(sp)\n"
+                     "lw   t0, 20(sp)\n"
+                     "lw   t1, 24(sp)\n"
+                     "lw   t2, 28(sp)\n"
+                     "lw   s0, 32(sp)\n"
+                     "lw   s1, 36(sp)\n"
+                     "lw   a0, 40(sp)\n"
+                     "lw   a1, 44(sp)\n"
+                     "lw   a2, 48(sp)\n"
+                     "lw   a3, 52(sp)\n"
+                     "lw   a4, 56(sp)\n"
+                     "lw   a5, 60(sp)\n"
+                     "lw   a6, 64(sp)\n"
+                     "lw   a7, 68(sp)\n"
+                     "lw   s2, 72(sp)\n"
+                     "lw   s3, 76(sp)\n"
+                     "lw   s4, 80(sp)\n"
+                     "lw   s5, 84(sp)\n"
+                     "lw   s6, 88(sp)\n"
+                     "lw   s7, 92(sp)\n"
+                     "lw   s8, 96(sp)\n"
+                     "lw   s9, 100(sp)\n"
+                     "lw   s10, 104(sp)\n"
+                     "lw   s11, 108(sp)\n"
+                     "lw   t3, 112(sp)\n"
+                     "lw   t4, 116(sp)\n"
+                     "lw   t5, 120(sp)\n"
+                     "lw   t6, 124(sp)\n"
+                     "lw   sp, 8(sp)\n"
+                     "mret\n");
 }
 
 __attribute__((naked, aligned(4), noinline, used)) void irq_stack_slot_callee(void)
 {
-    __asm__ volatile(
-        ".option push\n"
-        ".option rvc\n"
-        "addi sp, sp, -16\n"
-        "sw   s0, 8(sp)\n"
-        "sw   ra, 12(sp)\n"
-        "addi s0, sp, 16\n"
-        "la   t0, g_callee_sp\n"
-        "sw   sp, 0(t0)\n"
-        "la   t0, g_callee_ra_saved\n"
-        "sw   ra, 0(t0)\n"
-        "li   t4, 200000\n"
-        "1:\n"
-        "la   t0, g_ticks\n"
-        "lw   t1, 0(t0)\n"
-        "la   t0, g_target_tick\n"
-        "lw   t2, 0(t0)\n"
-        "beq  t1, t2, 3f\n"
-        "la   t0, g_fail_seen\n"
-        "lw   t1, 0(t0)\n"
-        "bnez t1, 3f\n"
-        "addi t4, t4, -1\n"
-        "bnez t4, 1b\n"
-        "li   a0, 31\n"
-        "lw   s0, 8(sp)\n"
-        "addi sp, sp, 16\n"
-        "j    stack_slot_timeout\n"
-        "3:\n"
-        "lw   ra, 12(sp)\n"
-        "la   t0, g_slot_before_return\n"
-        "sw   ra, 0(t0)\n"
-        "li   t2, 0x80000000\n"
-        "bltu ra, t2, 2f\n"
-        "lw   s0, 8(sp)\n"
-        "addi sp, sp, 16\n"
-        "ret\n"
-        "2:\n"
-        "mv   a0, ra\n"
-        "lw   s0, 8(sp)\n"
-        "addi sp, sp, 16\n"
-        "j    stack_slot_bad_return\n"
-        ".option pop\n");
+    __asm__ volatile(".option push\n"
+                     ".option rvc\n"
+                     "addi sp, sp, -16\n"
+                     "sw   s0, 8(sp)\n"
+                     "sw   ra, 12(sp)\n"
+                     "addi s0, sp, 16\n"
+                     "la   t0, g_callee_sp\n"
+                     "sw   sp, 0(t0)\n"
+                     "la   t0, g_callee_ra_saved\n"
+                     "sw   ra, 0(t0)\n"
+                     "li   t4, 200000\n"
+                     "1:\n"
+                     "la   t0, g_ticks\n"
+                     "lw   t1, 0(t0)\n"
+                     "la   t0, g_target_tick\n"
+                     "lw   t2, 0(t0)\n"
+                     "beq  t1, t2, 3f\n"
+                     "la   t0, g_fail_seen\n"
+                     "lw   t1, 0(t0)\n"
+                     "bnez t1, 3f\n"
+                     "addi t4, t4, -1\n"
+                     "bnez t4, 1b\n"
+                     "li   a0, 31\n"
+                     "lw   s0, 8(sp)\n"
+                     "addi sp, sp, 16\n"
+                     "j    stack_slot_timeout\n"
+                     "3:\n"
+                     "lw   ra, 12(sp)\n"
+                     "la   t0, g_slot_before_return\n"
+                     "sw   ra, 0(t0)\n"
+                     "li   t2, 0x80000000\n"
+                     "bltu ra, t2, 2f\n"
+                     "lw   s0, 8(sp)\n"
+                     "addi sp, sp, 16\n"
+                     "ret\n"
+                     "2:\n"
+                     "mv   a0, ra\n"
+                     "lw   s0, 8(sp)\n"
+                     "addi sp, sp, 16\n"
+                     "j    stack_slot_bad_return\n"
+                     ".option pop\n");
 }
 
 __attribute__((naked, aligned(4), noinline, used)) uint32_t run_stack_slot_call_window(void)
 {
-    __asm__ volatile(
-        ".option push\n"
-        ".option rvc\n"
-        "addi sp, sp, -16\n"
-        "sw   ra, 0(sp)\n"
-        "addi t0, sp, -4\n"
-        "la   t1, g_expected_slot_addr\n"
-        "sw   t0, 0(t1)\n"
-        "li   t2, 0x00000cc0\n"
-        "sw   t2, 0(t0)\n"
-        "lw   t3, 0(t0)\n"
-        "la   t1, g_poison_readback\n"
-        "sw   t3, 0(t1)\n"
-        "la   t1, 1f\n"
-        "la   t0, g_expected_saved_ra\n"
-        "sw   t1, 0(t0)\n"
-        "call irq_stack_slot_callee\n"
-        "1:\n"
-        "li   a0, 1\n"
-        "lw   ra, 0(sp)\n"
-        "addi sp, sp, 16\n"
-        "ret\n"
-        ".option pop\n");
+    __asm__ volatile(".option push\n"
+                     ".option rvc\n"
+                     "addi sp, sp, -16\n"
+                     "sw   ra, 0(sp)\n"
+                     "addi t0, sp, -4\n"
+                     "la   t1, g_expected_slot_addr\n"
+                     "sw   t0, 0(t1)\n"
+                     "li   t2, 0x00000cc0\n"
+                     "sw   t2, 0(t0)\n"
+                     "lw   t3, 0(t0)\n"
+                     "la   t1, g_poison_readback\n"
+                     "sw   t3, 0(t1)\n"
+                     "la   t1, 1f\n"
+                     "la   t0, g_expected_saved_ra\n"
+                     "sw   t1, 0(t0)\n"
+                     "call irq_stack_slot_callee\n"
+                     "1:\n"
+                     "li   a0, 1\n"
+                     "lw   ra, 0(sp)\n"
+                     "addi sp, sp, 16\n"
+                     "ret\n"
+                     ".option pop\n");
 }
 
 static void prepare_window(uint32_t iter, uint32_t read_slot_in_handler)
@@ -524,7 +537,11 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
     if (g_ticks == TOTAL_ITERATIONS && checksum != 0u) {
         uart_printf("ticks=%u checksum=%08x last_mepc=%08x last_ra=%08x slot=%08x\n",
-                    g_ticks, checksum, g_last_mepc, g_last_ra, g_slot_before_return);
+                    g_ticks,
+                    checksum,
+                    g_last_mepc,
+                    g_last_ra,
+                    g_slot_before_return);
         uart_printf("<<PASS>>\n");
     } else {
         record_failure(60u);
@@ -539,11 +556,10 @@ int main(void)
 {
     uint32_t stack_top = ((uint32_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~0xFu;
 
-    __asm__ volatile(
-        "mv sp, %0\n"
-        "j  main_on_ddr_stack\n"
-        :
-        : "r"(stack_top)
-        : "memory");
+    __asm__ volatile("mv sp, %0\n"
+                     "j  main_on_ddr_stack\n"
+                     :
+                     : "r"(stack_top)
+                     : "memory");
     __builtin_unreachable();
 }

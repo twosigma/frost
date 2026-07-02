@@ -223,94 +223,93 @@ __attribute__((noinline, used)) void linux_like_irq_c(struct linux_pt_regs *fram
 
 __attribute__((naked, aligned(4))) static void linux_like_irq_entry(void)
 {
-    __asm__ volatile(
-        "csrrw tp, mscratch, tp\n"
-        "bnez tp, 1f\n"
-        "csrr tp, mscratch\n"
-        "1:\n"
-        "addi sp, sp, -144\n"
-        "sw   ra, 4(sp)\n"
-        "sw   gp, 12(sp)\n"
-        "sw   t0, 20(sp)\n"
-        "sw   t1, 24(sp)\n"
-        "sw   t2, 28(sp)\n"
-        "sw   s0, 32(sp)\n"
-        "sw   s1, 36(sp)\n"
-        "sw   a0, 40(sp)\n"
-        "sw   a1, 44(sp)\n"
-        "sw   a2, 48(sp)\n"
-        "sw   a3, 52(sp)\n"
-        "sw   a4, 56(sp)\n"
-        "sw   a5, 60(sp)\n"
-        "sw   a6, 64(sp)\n"
-        "sw   a7, 68(sp)\n"
-        "sw   s2, 72(sp)\n"
-        "sw   s3, 76(sp)\n"
-        "sw   s4, 80(sp)\n"
-        "sw   s5, 84(sp)\n"
-        "sw   s6, 88(sp)\n"
-        "sw   s7, 92(sp)\n"
-        "sw   s8, 96(sp)\n"
-        "sw   s9, 100(sp)\n"
-        "sw   s10, 104(sp)\n"
-        "sw   s11, 108(sp)\n"
-        "sw   t3, 112(sp)\n"
-        "sw   t4, 116(sp)\n"
-        "sw   t5, 120(sp)\n"
-        "sw   t6, 124(sp)\n"
-        "sw   a0, 140(sp)\n"
-        "addi t0, sp, 144\n"
-        "sw   t0, 8(sp)\n"
-        "csrr t0, mepc\n"
-        "sw   t0, 0(sp)\n"
-        "csrr t0, mstatus\n"
-        "sw   t0, 128(sp)\n"
-        "csrr t0, mtval\n"
-        "sw   t0, 132(sp)\n"
-        "csrr t0, mcause\n"
-        "sw   t0, 136(sp)\n"
-        "csrr t0, mscratch\n"
-        "sw   t0, 16(sp)\n"
-        "csrw mscratch, x0\n"
-        "mv   a0, sp\n"
-        "call linux_like_irq_c\n"
-        "lw   a0, 128(sp)\n"
-        "lw   a2, 0(sp)\n"
-        "sc.w x0, a2, 0(sp)\n"
-        "csrw mstatus, a0\n"
-        "csrw mepc, a2\n"
-        "lw   ra, 4(sp)\n"
-        "lw   gp, 12(sp)\n"
-        "lw   tp, 16(sp)\n"
-        "lw   t0, 20(sp)\n"
-        "lw   t1, 24(sp)\n"
-        "lw   t2, 28(sp)\n"
-        "lw   s0, 32(sp)\n"
-        "lw   s1, 36(sp)\n"
-        "lw   a0, 40(sp)\n"
-        "lw   a1, 44(sp)\n"
-        "lw   a2, 48(sp)\n"
-        "lw   a3, 52(sp)\n"
-        "lw   a4, 56(sp)\n"
-        "lw   a5, 60(sp)\n"
-        "lw   a6, 64(sp)\n"
-        "lw   a7, 68(sp)\n"
-        "lw   s2, 72(sp)\n"
-        "lw   s3, 76(sp)\n"
-        "lw   s4, 80(sp)\n"
-        "lw   s5, 84(sp)\n"
-        "lw   s6, 88(sp)\n"
-        "lw   s7, 92(sp)\n"
-        "lw   s8, 96(sp)\n"
-        "lw   s9, 100(sp)\n"
-        "lw   s10, 104(sp)\n"
-        "lw   s11, 108(sp)\n"
-        "lw   t3, 112(sp)\n"
-        "lw   t4, 116(sp)\n"
-        "lw   t5, 120(sp)\n"
-        "lw   t6, 124(sp)\n"
-        "lw   sp, 8(sp)\n"
-        "mret\n");
+    __asm__ volatile("csrrw tp, mscratch, tp\n"
+                     "bnez tp, 1f\n"
+                     "csrr tp, mscratch\n"
+                     "1:\n"
+                     "addi sp, sp, -144\n"
+                     "sw   ra, 4(sp)\n"
+                     "sw   gp, 12(sp)\n"
+                     "sw   t0, 20(sp)\n"
+                     "sw   t1, 24(sp)\n"
+                     "sw   t2, 28(sp)\n"
+                     "sw   s0, 32(sp)\n"
+                     "sw   s1, 36(sp)\n"
+                     "sw   a0, 40(sp)\n"
+                     "sw   a1, 44(sp)\n"
+                     "sw   a2, 48(sp)\n"
+                     "sw   a3, 52(sp)\n"
+                     "sw   a4, 56(sp)\n"
+                     "sw   a5, 60(sp)\n"
+                     "sw   a6, 64(sp)\n"
+                     "sw   a7, 68(sp)\n"
+                     "sw   s2, 72(sp)\n"
+                     "sw   s3, 76(sp)\n"
+                     "sw   s4, 80(sp)\n"
+                     "sw   s5, 84(sp)\n"
+                     "sw   s6, 88(sp)\n"
+                     "sw   s7, 92(sp)\n"
+                     "sw   s8, 96(sp)\n"
+                     "sw   s9, 100(sp)\n"
+                     "sw   s10, 104(sp)\n"
+                     "sw   s11, 108(sp)\n"
+                     "sw   t3, 112(sp)\n"
+                     "sw   t4, 116(sp)\n"
+                     "sw   t5, 120(sp)\n"
+                     "sw   t6, 124(sp)\n"
+                     "sw   a0, 140(sp)\n"
+                     "addi t0, sp, 144\n"
+                     "sw   t0, 8(sp)\n"
+                     "csrr t0, mepc\n"
+                     "sw   t0, 0(sp)\n"
+                     "csrr t0, mstatus\n"
+                     "sw   t0, 128(sp)\n"
+                     "csrr t0, mtval\n"
+                     "sw   t0, 132(sp)\n"
+                     "csrr t0, mcause\n"
+                     "sw   t0, 136(sp)\n"
+                     "csrr t0, mscratch\n"
+                     "sw   t0, 16(sp)\n"
+                     "csrw mscratch, x0\n"
+                     "mv   a0, sp\n"
+                     "call linux_like_irq_c\n"
+                     "lw   a0, 128(sp)\n"
+                     "lw   a2, 0(sp)\n"
+                     "sc.w x0, a2, 0(sp)\n"
+                     "csrw mstatus, a0\n"
+                     "csrw mepc, a2\n"
+                     "lw   ra, 4(sp)\n"
+                     "lw   gp, 12(sp)\n"
+                     "lw   tp, 16(sp)\n"
+                     "lw   t0, 20(sp)\n"
+                     "lw   t1, 24(sp)\n"
+                     "lw   t2, 28(sp)\n"
+                     "lw   s0, 32(sp)\n"
+                     "lw   s1, 36(sp)\n"
+                     "lw   a0, 40(sp)\n"
+                     "lw   a1, 44(sp)\n"
+                     "lw   a2, 48(sp)\n"
+                     "lw   a3, 52(sp)\n"
+                     "lw   a4, 56(sp)\n"
+                     "lw   a5, 60(sp)\n"
+                     "lw   a6, 64(sp)\n"
+                     "lw   a7, 68(sp)\n"
+                     "lw   s2, 72(sp)\n"
+                     "lw   s3, 76(sp)\n"
+                     "lw   s4, 80(sp)\n"
+                     "lw   s5, 84(sp)\n"
+                     "lw   s6, 88(sp)\n"
+                     "lw   s7, 92(sp)\n"
+                     "lw   s8, 96(sp)\n"
+                     "lw   s9, 100(sp)\n"
+                     "lw   s10, 104(sp)\n"
+                     "lw   s11, 108(sp)\n"
+                     "lw   t3, 112(sp)\n"
+                     "lw   t4, 116(sp)\n"
+                     "lw   t5, 120(sp)\n"
+                     "lw   t6, 124(sp)\n"
+                     "lw   sp, 8(sp)\n"
+                     "mret\n");
 }
 
 __attribute__((noinline)) static uint32_t idle_once(uint32_t iter)
@@ -322,24 +321,23 @@ __attribute__((noinline)) static uint32_t idle_once(uint32_t iter)
     clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
     enable_interrupts();
 
-    __asm__ volatile(
-        "mv   t2, ra\n"
-        "mv   t3, sp\n"
-        "mv   t4, tp\n"
-        "la   t0, 1f\n"
-        "la   t1, g_expected_mepc\n"
-        "sw   t0, 0(t1)\n"
-        "la   t1, g_expected_ra\n"
-        "sw   t2, 0(t1)\n"
-        "la   t1, g_expected_sp\n"
-        "sw   t3, 0(t1)\n"
-        "la   t1, g_expected_tp\n"
-        "sw   t4, 0(t1)\n"
-        "wfi\n"
-        "1:\n"
-        :
-        :
-        : "t0", "t1", "t2", "t3", "t4", "memory");
+    __asm__ volatile("mv   t2, ra\n"
+                     "mv   t3, sp\n"
+                     "mv   t4, tp\n"
+                     "la   t0, 1f\n"
+                     "la   t1, g_expected_mepc\n"
+                     "sw   t0, 0(t1)\n"
+                     "la   t1, g_expected_ra\n"
+                     "sw   t2, 0(t1)\n"
+                     "la   t1, g_expected_sp\n"
+                     "sw   t3, 0(t1)\n"
+                     "la   t1, g_expected_tp\n"
+                     "sw   t4, 0(t1)\n"
+                     "wfi\n"
+                     "1:\n"
+                     :
+                     :
+                     : "t0", "t1", "t2", "t3", "t4", "memory");
 
     disable_interrupts();
 
@@ -365,27 +363,26 @@ __attribute__((noinline)) static uint32_t idle_then_poison_ra_once(uint32_t iter
     clint_set_timer_cmp(clint_rdmtime() + 300u + (iter & 31u));
     enable_interrupts();
 
-    __asm__ volatile(
-        "mv   t2, ra\n"
-        "mv   t3, sp\n"
-        "mv   t4, tp\n"
-        "la   t0, 1f\n"
-        "la   t1, g_expected_mepc\n"
-        "sw   t0, 0(t1)\n"
-        "la   t1, g_expected_ra\n"
-        "sw   t2, 0(t1)\n"
-        "la   t1, g_expected_sp\n"
-        "sw   t3, 0(t1)\n"
-        "la   t1, g_expected_tp\n"
-        "sw   t4, 0(t1)\n"
-        "wfi\n"
-        "1:\n"
-        "lui  ra, 0x1\n"
-        "addi ra, ra, -832\n"
-        "mv   ra, t2\n"
-        :
-        :
-        : "t0", "t1", "t2", "t3", "t4", "memory");
+    __asm__ volatile("mv   t2, ra\n"
+                     "mv   t3, sp\n"
+                     "mv   t4, tp\n"
+                     "la   t0, 1f\n"
+                     "la   t1, g_expected_mepc\n"
+                     "sw   t0, 0(t1)\n"
+                     "la   t1, g_expected_ra\n"
+                     "sw   t2, 0(t1)\n"
+                     "la   t1, g_expected_sp\n"
+                     "sw   t3, 0(t1)\n"
+                     "la   t1, g_expected_tp\n"
+                     "sw   t4, 0(t1)\n"
+                     "wfi\n"
+                     "1:\n"
+                     "lui  ra, 0x1\n"
+                     "addi ra, ra, -832\n"
+                     "mv   ra, t2\n"
+                     :
+                     :
+                     : "t0", "t1", "t2", "t3", "t4", "memory");
 
     disable_interrupts();
 
@@ -430,12 +427,20 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
     if (!g_fail_seen && g_ticks == IRQ_COUNT && aggregate != 0u) {
         uart_printf("ticks=%u checksum=%08x last_mepc=%08x last_ra=%08x\n",
-                    g_ticks, g_context_checksum, g_last_mepc, g_last_ra);
+                    g_ticks,
+                    g_context_checksum,
+                    g_last_mepc,
+                    g_last_ra);
         uart_printf("<<PASS>>\n");
     } else {
         uart_printf("FAIL code=%u ticks=%u mepc=%08x ra=%08x sp=%08x tp=%08x mscratch=%08x\n",
-                    g_fail_code, g_ticks, g_last_mepc, g_last_ra, g_last_sp,
-                    g_last_tp, g_last_mscratch_in_handler);
+                    g_fail_code,
+                    g_ticks,
+                    g_last_mepc,
+                    g_last_ra,
+                    g_last_sp,
+                    g_last_tp,
+                    g_last_mscratch_in_handler);
         uart_printf("<<FAIL>>\n");
     }
 
@@ -447,11 +452,10 @@ int main(void)
 {
     uint32_t stack_top = ((uint32_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~0xFu;
 
-    __asm__ volatile(
-        "mv sp, %0\n"
-        "j  main_on_ddr_stack\n"
-        :
-        : "r"(stack_top)
-        : "memory");
+    __asm__ volatile("mv sp, %0\n"
+                     "j  main_on_ddr_stack\n"
+                     :
+                     : "r"(stack_top)
+                     : "memory");
     __builtin_unreachable();
 }
