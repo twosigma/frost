@@ -154,6 +154,16 @@ module reorder_buffer (
     output logic [riscv_pkg::XLEN-1:0] o_trap_pc,  // PC of excepting instruction
     // Head decodes as WFI (drives WFI interrupt-resume-PC seed in cpu_ooo)
     output logic o_head_is_wfi,
+    // TIMING precompute of the architectural next-PC of the head / head+1
+    // entry, for cpu_ooo's interrupt_resume_pc capture.  Contract: whenever
+    // o_commit_valid_raw (resp. o_commit_2_valid_raw) is high,
+    // o_head_retired_next_pc (resp. o_head_next_retired_next_pc) equals
+    // retired_next_pc(o_commit_comb) (resp. (o_commit_comb_2)) as computed in
+    // cpu_ooo.  Computed from UNGATED head fields so the RAM read + 32-bit add
+    // run in parallel with (not after) the late commit_en gating; in cycles
+    // without a commit the value is unused (checked in cpu_ooo simulation).
+    output logic [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
+    output logic [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
     // Head entry's CDB value at trap time. For a misaligned load/store the
     // load_queue/SQ path parks the faulting address here (the value slot is
@@ -301,8 +311,23 @@ module reorder_buffer (
     end
   endfunction
 
+  // TIMING helper: read one bit of a per-entry packed FF vector using a
+  // registered ONE-HOT select instead of a binary index.  Given the invariant
+  // onehot == (1 << idx), |(vec & onehot) === vec[idx] bit-for-bit; the win is
+  // physical only: the select bits come pre-decoded out of registers (no
+  // 5-bit high-fanout head_idx net feeding a 32:1 mux tree on the commit
+  // critical path).
+  function automatic logic onehot_read(input logic [ReorderBufferDepth-1:0] vec,
+                                       input logic [ReorderBufferDepth-1:0] onehot);
+    onehot_read = |(vec & onehot);
+  endfunction
+
   // Forward declarations (used in debug assigns before main decl)
-  logic [ReorderBufferTagWidth:0] head_ptr;
+  // TIMING: head_ptr (via head_idx) drives every head RAM read address plus
+  // pointer arithmetic — post-synth fanout was ~650 with only 4 tool-chosen
+  // replicas. Cap the per-replica load so each copy can be placed next to its
+  // RAM/consumer cluster. Pure register replication; semantics unchanged.
+  (* max_fanout = 96 *) logic [ReorderBufferTagWidth:0] head_ptr;
   logic [ReorderBufferTagWidth:0] tail_ptr;
   logic full;
   logic full_for_2;
@@ -344,8 +369,19 @@ module reorder_buffer (
   logic [ReorderBufferTagWidth-1:0] tail_idx;
   // Slot-2 alloc target, wraps within ReorderBufferTagWidth modulus.
   logic [ReorderBufferTagWidth-1:0] tail_idx_2;
-  logic [ReorderBufferDepth-1:0] head_clear_mask;
-  logic [ReorderBufferDepth-1:0] head_next_clear_mask;
+  // Registered ONE-HOT images of head_idx / head_next_idx.  Invariant (by
+  // construction, checked by assertions below):
+  //   head_clear_mask      == ReorderBufferDepth'(1) << head_idx
+  //   head_next_clear_mask == ReorderBufferDepth'(1) << head_next_idx
+  // Both are written ONLY in the Head Pointer Management block, in lockstep
+  // with head_ptr: reset loads {1, 2} while head_ptr loads 0; commit rotates
+  // them by the same 1/2 steps head_ptr advances; flushes touch neither
+  // (flushes only move the tail).  TIMING: besides gating the rob_valid
+  // commit-clear, they now also replace the binary head_idx as the select of
+  // every head-side 32:1 read (packed FF vectors + LVT bank selects), turning
+  // a high-fanout 5-bit select into per-entry registered one-hot bits.
+  (* max_fanout = 16 *) logic [ReorderBufferDepth-1:0] head_clear_mask;
+  (* max_fanout = 16 *) logic [ReorderBufferDepth-1:0] head_next_clear_mask;
 
   // Status signals (full and empty declared above for forward ref)
   logic [ReorderBufferTagWidth:0] count;
@@ -452,7 +488,37 @@ module reorder_buffer (
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
+  // NOTE: deliberately NO synthesis attributes on commit_stall or the
+  // *_early aggregates below.  Three measured rounds on this spine: every
+  // attribute-based constraint made it worse — round-1 (* max_fanout *) on
+  // commit_en/commit_2_fire fragmented the interrupt arc (WNS -1.17);
+  // round-3 (* keep *) on commit_stall + the early aggregates pinned fusion
+  // boundaries in the MIDDLE of the true critical cone (commit_stall is NOT
+  // a late external input — its serializer cone itself reads the head
+  // metadata through the one-hot masks, so mask -> is_csr/store-like ->
+  // FSM stall -> take_trap is one deep register-to-register cone; WNS
+  // -0.938).  Every real structural change (one-hot head reads, ohread LVT
+  // select, meip register, compare-then-mux) helped.  The two-term
+  // factoring below stays as plain RTL only — synthesis is free to refuse
+  // it back into the baseline-style fused tree.
   logic commit_stall;  // Stall commit for serializing instructions
+  // Early/late factoring of the commit gates (pure AND re-association,
+  // bit-identical conjunct sets — see Commit Enable Logic).
+  logic commit_ready_early;
+  logic commit_2_ready_early;
+  logic commit_store_like_early;
+  logic commit_mispredict_early;
+  logic commit_correct_branch_early;
+  logic head_mispredict_candidate_early;
+  logic commit_2_store_like_early;
+  // NOTE: no max_fanout on commit_en.  A (* max_fanout = 96 *) was tried and
+  // measured WORSE overall: the attribute forces the commit_en net to keep its
+  // identity, which blocks opt_design from collapsing the serialization spine
+  // (interrupt_pending -> commit_stall -> commit_en -> store-like ->
+  // sq_committed_empty_for_trap -> trap_taken) into shared LUTs, adding
+  // levels to the late UART/interrupt-pending arc (933 new failing paths,
+  // WNS -1.17).  With the one-hot head reads the head-side arrival is early
+  // enough that the un-split ~655-load net is no longer the limiter.
   logic commit_en;  // Actually commit this cycle
 
   // Widen-commit ("2-wide") gate. Asserted when commit_en is high this
@@ -498,10 +564,12 @@ module reorder_buffer (
   // Count of valid entries
   assign count = tail_ptr - head_ptr;
 
-  // Head entry fields from FF-backed packed vectors / distributed RAM
-  assign head_valid = rob_valid[head_idx];
-  assign head_done = rob_done[head_idx];
-  assign head_exception_raw = rob_exception[head_idx];
+  // Head entry fields from FF-backed packed vectors / distributed RAM.
+  // TIMING: indexed with the registered one-hot head image (see onehot_read);
+  // identical value to rob_*[head_idx] under the head_clear_mask invariant.
+  assign head_valid = onehot_read(rob_valid, head_clear_mask);
+  assign head_done = onehot_read(rob_done, head_clear_mask);
+  assign head_exception_raw = onehot_read(rob_exception, head_clear_mask);
   // U-mode privilege fault: MRET, or a CSR access requiring more privilege than
   // the current mode (csr_addr[9:8] > priv), is an illegal instruction. Folding
   // it into head_exception/head_exc_cause makes every consumer (commit_en,
@@ -514,9 +582,9 @@ module reorder_buffer (
   assign head_exception = head_exception_raw || head_priv_fault;
   assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
-  assign head_branch_taken = rob_branch_taken[head_idx];
-  assign head_mispredicted = rob_mispredicted[head_idx];
-  assign head_early_recovered = rob_early_recovered[head_idx];
+  assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
+  assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
+  assign head_early_recovered = onehot_read(rob_early_recovered, head_clear_mask);
   assign {
     head_dest_rf,
     head_dest_valid,
@@ -554,12 +622,14 @@ module reorder_buffer (
   // RAMs below.  1-bit packed-vector fields share the existing FF storage
   // and are indexed at head_next_idx for free.
   assign head_next_idx = head_idx + 1'b1;
-  assign head_next_valid = rob_valid[head_next_idx];
-  assign head_next_done = rob_done[head_next_idx];
-  assign head_next_exception = rob_exception[head_next_idx];
-  assign head_next_branch_taken = rob_branch_taken[head_next_idx];
-  assign head_next_mispredicted = rob_mispredicted[head_next_idx];
-  assign head_next_early_recovered = rob_early_recovered[head_next_idx];
+  // TIMING: same one-hot substitution as the head fields, using the
+  // registered head_next_clear_mask (== 1 << head_next_idx by construction).
+  assign head_next_valid = onehot_read(rob_valid, head_next_clear_mask);
+  assign head_next_done = onehot_read(rob_done, head_next_clear_mask);
+  assign head_next_exception = onehot_read(rob_exception, head_next_clear_mask);
+  assign head_next_branch_taken = onehot_read(rob_branch_taken, head_next_clear_mask);
+  assign head_next_mispredicted = onehot_read(rob_mispredicted, head_next_clear_mask);
+  assign head_next_early_recovered = onehot_read(rob_early_recovered, head_next_clear_mask);
   assign {
     head_next_dest_rf,
     head_next_dest_valid,
@@ -683,8 +753,15 @@ module reorder_buffer (
   // even when widen-commit is gated off.  commit_2_fire is what the
   // output / retire logic actually acts on — it ANDs the opportunity with
   // the master enable and the cpu_ooo pending-write FIFO back-pressure.
-  assign commit_2_gate = commit_en && head_next_valid && head_next_done_eff &&
-                         head_ok_2wide && head_next_ok_2wide;
+  // TIMING (late-side factoring, see Commit Enable Logic): commit_en && X
+  // == (commit_ready_early && X) && !commit_stall — same conjunct set,
+  // re-associated so the late commit_stall enters one final LUT.
+  assign commit_2_ready_early = commit_ready_early && head_next_valid && head_next_done_eff &&
+                                head_ok_2wide && head_next_ok_2wide;
+  assign commit_2_gate = commit_2_ready_early && !commit_stall;
+  // NOTE: no max_fanout on commit_2_fire — a forced net boundary here sat
+  // mid-spine on the late UART/interrupt-pending -> trap_taken arc (it
+  // appeared as a distinct fo=40 level in the round-1 -1.17 post-opt path).
   logic commit_2_fire;
   assign commit_2_fire = commit_2_gate && EnableWidenCommit && i_widen_commit_ok;
 
@@ -829,7 +906,7 @@ module reorder_buffer (
 
   // 2-write port: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Port 1
   // writes when slot-2 allocates its ROB entry in the same cycle as slot-1.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -839,11 +916,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_pc)
   );
 
   // Widen-commit replica: head+1 read port for pc.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -853,10 +931,11 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.pc, i_alloc_req.pc}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_pc)
   );
 
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (RegAddrWidth),
       .NUM_WRITE_PORTS(2)
@@ -866,11 +945,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_dest_reg)
   );
 
   // Widen-commit replica: head+1 read port for dest_reg.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (RegAddrWidth),
       .NUM_WRITE_PORTS(2)
@@ -880,10 +960,11 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.dest_reg, i_alloc_req.dest_reg}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_dest_reg)
   );
 
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -893,11 +974,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_predicted_target)
   );
 
   // Widen-commit replica: head+1 read port for predicted_target.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -907,10 +989,11 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_predicted_target)
   );
 
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (CheckpointIdWidth),
       .NUM_WRITE_PORTS(2)
@@ -920,11 +1003,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_checkpoint_id)
   );
 
   // Widen-commit replica: head+1 read port for checkpoint_id.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (CheckpointIdWidth),
       .NUM_WRITE_PORTS(2)
@@ -934,10 +1018,11 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_checkpoint_id_data_2, alloc_checkpoint_id_data}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_checkpoint_id)
   );
 
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (HeadMetaWidth),
       .NUM_WRITE_PORTS(2)
@@ -947,12 +1032,13 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_meta_rd_data)
   );
 
   // Widen-commit replica: head+1 read port for head_meta.  This feeds the
   // head_next_* hazard flags consumed by the 2-wide commit gate.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (HeadMetaWidth),
       .NUM_WRITE_PORTS(2)
@@ -962,6 +1048,7 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_head_meta_data_2, alloc_head_meta_data}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_meta_rd_data)
   );
 
@@ -973,7 +1060,7 @@ module reorder_buffer (
 
   // rob_value: 3 write ports (alloc1 + alloc2 + CDB), 2 read ports (head + RAT bypass).
   // Two instances with identical writes, different read addresses.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
       .NUM_WRITE_PORTS(4)
@@ -983,11 +1070,12 @@ module reorder_buffer (
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
       .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address(head_idx),
+      .i_read_onehot(head_clear_mask),
       .o_read_data(head_value)
   );
 
   // Widen-commit replica: head+1 read port for value.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
       .NUM_WRITE_PORTS(4)
@@ -997,6 +1085,7 @@ module reorder_buffer (
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
       .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address(head_next_idx),
+      .i_read_onehot(head_next_clear_mask),
       .o_read_data(head_next_value)
   );
 
@@ -1133,7 +1222,7 @@ module reorder_buffer (
   );
 
   // rob_exc_cause: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
       .NUM_WRITE_PORTS(4)
@@ -1145,11 +1234,12 @@ module reorder_buffer (
         i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
       }),
       .i_read_address(head_idx),
+      .i_read_onehot(head_clear_mask),
       .o_read_data(head_exc_cause_raw)
   );
 
   // Widen-commit replica: head+1 read port for exc_cause.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
       .NUM_WRITE_PORTS(4)
@@ -1161,11 +1251,12 @@ module reorder_buffer (
         i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
       }),
       .i_read_address(head_next_idx),
+      .i_read_onehot(head_next_clear_mask),
       .o_read_data(head_next_exc_cause)
   );
 
   // rob_fp_flags: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
@@ -1177,11 +1268,12 @@ module reorder_buffer (
         i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
       }),
       .i_read_address(head_idx),
+      .i_read_onehot(head_clear_mask),
       .o_read_data(head_fp_flags)
   );
 
   // Widen-commit replica: head+1 read port for fp_flags.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
@@ -1193,6 +1285,7 @@ module reorder_buffer (
         i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
       }),
       .i_read_address(head_next_idx),
+      .i_read_onehot(head_next_clear_mask),
       .o_read_data(head_next_fp_flags)
   );
 
@@ -1201,7 +1294,7 @@ module reorder_buffer (
   // branches/JALR write their resolved target on branch update. Split the
   // field across two single-write memories and select at the head instead of
   // paying the timing cost of a 2-write-port LVT RAM here.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -1211,11 +1304,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_branch_target_jal)
   );
 
   // Widen-commit replica: head+1 read port for branch_target_jal.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -1225,6 +1319,7 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({alloc_branch_target_data_2, alloc_branch_target_data}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_branch_target_jal)
   );
 
@@ -1254,7 +1349,7 @@ module reorder_buffer (
   );
 
   // CSR address RAM (12-bit, written at allocation)
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (12),
       .NUM_WRITE_PORTS(2)
@@ -1264,11 +1359,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_csr_addr)
   );
 
   // Widen-commit replica: head+1 read port for csr_addr.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (12),
       .NUM_WRITE_PORTS(2)
@@ -1278,11 +1374,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_csr_addr)
   );
 
   // CSR op RAM (3-bit funct3, written at allocation)
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (3),
       .NUM_WRITE_PORTS(2)
@@ -1292,11 +1389,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_csr_op)
   );
 
   // Widen-commit replica: head+1 read port for csr_op.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (3),
       .NUM_WRITE_PORTS(2)
@@ -1306,11 +1404,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_csr_op)
   );
 
   // CSR write data RAM (32-bit, written at allocation)
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -1320,11 +1419,12 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
       .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_csr_write_data)
   );
 
   // Widen-commit replica: head+1 read port for csr_write_data.
-  mwp_dist_ram #(
+  mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (XLEN),
       .NUM_WRITE_PORTS(2)
@@ -1334,6 +1434,7 @@ module reorder_buffer (
       .i_write_address({tail_idx_2, tail_idx}),
       .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
       .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_csr_write_data)
   );
 
@@ -1697,24 +1798,42 @@ module reorder_buffer (
   // head can never RETIRE during the bubble; it commits (and is serialized)
   // after the bubble clears.  The bubble is a fixed hold (early-backend /
   // mispredict recovery), never waiting on the head committing -> no deadlock.
-  assign commit_en = head_ready && !head_exception && !commit_stall && !i_commit_hold &&
-                     !i_early_recovery_en && !i_flush_en && !i_flush_all &&
-                     !flush_after_head_commit;
+  // TIMING (late-side factoring): commit_en and every commit_stall-qualified
+  // derivative are written as <kept early aggregate> && !commit_stall.  The
+  // conjunct SETS are identical to the flat originals (pure AND
+  // re-association; AND is associative/commutative, so the value is
+  // bit-identical for every input combination).  All early conjuncts are
+  // register-sourced and settle well before commit_stall's interrupt arc, so
+  // the late arc traverses exactly one LUT per gate — restoring (and slightly
+  // beating) the baseline netlist's shape, where commit_stall entered the
+  // second-to-last commit_en LUT and the derivatives chained behind the
+  // commit_en broadcast.
+  assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
+                              !i_early_recovery_en && !i_flush_en && !i_flush_all &&
+                              !flush_after_head_commit;
+  assign commit_en = commit_ready_early && !commit_stall;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_is_branch && head_mispredicted;
   assign o_commit_valid_raw = commit_en;
-  assign o_commit_store_like_raw = commit_en && (head_is_store || head_is_fp_store || head_is_sc);
-  assign o_commit_misprediction_raw = commit_en && commit_misprediction && !head_early_recovered;
-  assign o_commit_correct_branch_raw = commit_en && head_has_checkpoint &&
+  assign commit_store_like_early =
+      commit_ready_early && (head_is_store || head_is_fp_store || head_is_sc);
+  assign o_commit_store_like_raw = commit_store_like_early && !commit_stall;
+  assign commit_mispredict_early =
+      commit_ready_early && commit_misprediction && !head_early_recovered;
+  assign o_commit_misprediction_raw = commit_mispredict_early && !commit_stall;
+  assign commit_correct_branch_early = commit_ready_early && head_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
+  assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall;
   // Same-cycle head-mispredict indicator without the branch_update collision
   // term. Outer control logic uses this to suppress younger branch resolution
   // without feeding branch_update back into commit_en.
-  assign o_head_commit_misprediction_candidate =
-      head_ready && !commit_stall && !i_commit_hold && !i_early_recovery_en &&
+  // (Same factoring; note the original conjunct set has no !head_exception.)
+  assign head_mispredict_candidate_early =
+      head_ready && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_en && !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
+  assign o_head_commit_misprediction_candidate = head_mispredict_candidate_early && !commit_stall;
 
   // ===========================================================================
   // External Coordination Outputs
@@ -1780,6 +1899,24 @@ module reorder_buffer (
   assign o_head_is_wfi = head_is_wfi;
   assign o_trap_cause = head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
+
+  // TIMING: retired-next-PC precompute (see port comment).  Equivalence with
+  // cpu_ooo's retired_next_pc(o_commit_comb) whenever o_commit_comb.valid:
+  //  - head MRET:  retired_next_pc returns redirect_pc, and the o_commit_comb
+  //    redirect chain puts i_mepc there for MRET (highest priority);
+  //  - head branch: retired_next_pc returns redirect_pc = taken ?
+  //    head_branch_target : head_fallthrough_pc;
+  //  - otherwise:  retired_next_pc returns pc + (is_compressed ? 2 : 4) with
+  //    is_compressed == head_is_compressed (the head_link_is_compressed arm
+  //    only applies to branches, which take the redirect arm above)
+  //    == head_fallthrough_pc.
+  // Slot 2 is never a branch/MRET by the 2-wide gate, and o_commit_comb_2
+  // zeroes is_branch/is_mret, so its next-PC is always the sequential one.
+  assign o_head_retired_next_pc =
+      head_is_mret ? i_mepc :
+      (head_is_branch && head_branch_taken) ? head_branch_target :
+      head_fallthrough_pc;
+  assign o_head_next_retired_next_pc = head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4);
 
   // FENCE.I flush signal - pulse when FENCE.I commits
   always_ff @(posedge i_clk) begin
@@ -1964,7 +2101,14 @@ module reorder_buffer (
   end
 
   assign o_commit_2_valid_raw = commit_2_fire;
-  assign o_commit_2_store_like_raw = commit_2_fire && (head_next_is_store || head_next_is_fp_store);
+  // TIMING (late-side factoring): commit_2_fire && X == (commit_2_ready_early
+  // && EnableWidenCommit && i_widen_commit_ok && X) && !commit_stall — same
+  // conjunct set, one late LUT.  This output feeds sq_committed_empty_for_trap
+  // (the trap arc of the uart spine) and the SQ same-cycle commit guard.
+  assign commit_2_store_like_early =
+      commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
+      (head_next_is_store || head_next_is_fp_store);
+  assign o_commit_2_store_like_raw = commit_2_store_like_early && !commit_stall;
 
   // Registered copy of slot 2 commit so external observers can sample it
   // after the head pointer advances.  Mirrors the o_commit register.
@@ -2125,6 +2269,30 @@ module reorder_buffer (
 `ifndef SYNTHESIS
 `ifndef FORMAL
 
+  // One-hot head-image invariant (load-bearing for TIMING reads): the
+  // registered masks must mirror the binary pointers every cycle, since
+  // onehot_read() and the mwp_dist_ram_ohread LVT selects substitute them for
+  // binary head_idx / head_next_idx indexing.  Only check once reset has been
+  // observed asserted at least once: at sim time 0 the full-chip bench can
+  // present i_rst_n=1 before the reset synchronizer fires, while the mask FFs
+  // still hold their uninitialized all-zero value (which reads identically to
+  // the pre-fix binary indexing of the equally-uninitialized state).
+  logic dbg_mask_seen_reset;
+  initial dbg_mask_seen_reset = 1'b0;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) dbg_mask_seen_reset <= 1'b1;
+    if (i_rst_n && dbg_mask_seen_reset) begin
+      if (head_clear_mask != (ReorderBufferDepth'(1) << head_idx)) begin
+        $error("Reorder Buffer: head_clear_mask (0x%08x) != 1 << head_idx (%0d)", head_clear_mask,
+               head_idx);
+      end
+      if (head_next_clear_mask != (ReorderBufferDepth'(1) << head_next_idx)) begin
+        $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
+               head_next_clear_mask, head_next_idx);
+      end
+    end
+  end
+
   // Retire trace: log every committed instruction (for debugging)
   integer retire_trace_fd;
   initial begin
@@ -2275,6 +2443,12 @@ module reorder_buffer (
 
       // empty iff pointers exactly equal
       p_empty_matches_ptrs : assert (empty == (head_ptr == tail_ptr));
+
+      // Registered one-hot head images track the binary pointers exactly.
+      // The one-hot reads (onehot_read / mwp_dist_ram_ohread) rely on this.
+      p_head_mask_onehot : assert (head_clear_mask == (ReorderBufferDepth'(1) << head_idx));
+      p_head_next_mask_onehot :
+      assert (head_next_clear_mask == (ReorderBufferDepth'(1) << head_next_idx));
 
       // alloc_en implies !full
       p_alloc_not_when_full : assert (!alloc_en || !full);

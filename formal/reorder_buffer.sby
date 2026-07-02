@@ -21,6 +21,7 @@ cover: smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
 read -formal -sv mwp_dist_ram.sv
+read -formal -sv mwp_dist_ram_ohread.sv
 read -formal -sv rob_serializer.sv
 read -formal -sv reorder_buffer.sv
 prep -top reorder_buffer
@@ -29,5 +30,6 @@ prep -top reorder_buffer
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv

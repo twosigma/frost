@@ -884,6 +884,12 @@ module cpu_ooo #(
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
+  // Retired-next-PC precompute from the ROB (TIMING): equals
+  // retired_next_pc(rob_commit_comb) / (rob_commit_comb_2) whenever the
+  // corresponding commit valid is high, but computed from ungated head fields
+  // so the RAM read + adder are off the late commit_en cone.
+  logic [XLEN-1:0] rob_head_retired_next_pc;
+  logic [XLEN-1:0] rob_head_next_retired_next_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
@@ -1097,6 +1103,8 @@ module cpu_ooo #(
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
       .o_head_is_wfi(rob_head_is_wfi),
+      .o_head_retired_next_pc(rob_head_retired_next_pc),
+      .o_head_next_retired_next_pc(rob_head_next_retired_next_pc),
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
@@ -2072,9 +2080,14 @@ module cpu_ooo #(
       // cannot coincide with a trap entry that would.
       interrupt_resume_pc <= csr_mepc;
     end else if (rob_commit_2_valid_raw) begin
-      interrupt_resume_pc <= retired_next_pc(rob_commit_comb_2);
+      // TIMING: identical value to retired_next_pc(rob_commit_comb_2) in every
+      // cycle this arm is taken (checked below in simulation), but the ROB
+      // precomputes it from ungated head+1 fields so the PC RAM read + 32-bit
+      // add do not sit behind the late commit gating.
+      interrupt_resume_pc <= rob_head_next_retired_next_pc;
     end else if (rob_commit_valid_raw) begin
-      interrupt_resume_pc <= retired_next_pc(rob_commit_comb);
+      // TIMING: identical value to retired_next_pc(rob_commit_comb); see above.
+      interrupt_resume_pc <= rob_head_retired_next_pc;
     end else if (rob_head_is_wfi && head_valid) begin
       // Bug#2 (drain-gated WFI mepc): while a WFI stalls at the ROB head, the
       // architectural resume PC is always wfi_pc+4 (WFI never redirects). Seed it
@@ -2088,6 +2101,28 @@ module cpu_ooo #(
       interrupt_resume_pc <= rob_trap_pc + 32'd4;
     end
   end
+
+`ifndef SYNTHESIS
+  // Equivalence check for the ROB retired-next-PC precompute: whenever a
+  // commit fires, the precomputed value must match the original
+  // retired_next_pc() derivation from the (gated) commit payload.
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
+              rob_commit_comb
+          )) begin
+        $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
+               rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
+      end
+      if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
+              rob_commit_comb_2
+          )) begin
+        $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
+               rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
+      end
+    end
+  end
+`endif
 
   // A same-cycle store-like ROB commit is not yet in the SQ committed set.
   // If a trap full-flushes here, the registered commit can be masked before

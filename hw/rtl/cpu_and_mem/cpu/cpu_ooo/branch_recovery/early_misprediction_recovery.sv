@@ -97,8 +97,14 @@ module early_misprediction_recovery #(
   logic early_mispredict_fire;
   logic early_mispredict_pending;
   logic early_mispredict_active;
-  logic early_backend_recovery_pending;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
+  // TIMING: this single FF broadcast into ~1300 failing endpoints post-opt
+  // (flush_en -> RS/LQ/SQ/ROB kill and capture gating).  Cap the fanout so
+  // synthesis replicates the register per consumer region.  Replication only
+  // — D input, resets, and the sacred recovery conditions are untouched.
+  (* max_fanout = 48 *) logic early_backend_recovery_pending;
+  // TIMING: flush-tag broadcast feeding per-entry age compares across the
+  // backend (CDB kill, LQ/RS squash).  Same register-replication treatment.
+  (* max_fanout = 48 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
 
   // Captured data from the mispredicting branch
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;

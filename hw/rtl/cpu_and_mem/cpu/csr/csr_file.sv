@@ -252,12 +252,46 @@ module csr_file #(
   // ==========================================================================
   // Instructions Retired Counter
   // ==========================================================================
+  // TIMING RETIME (+1 cycle, architecturally invisible — analysis below):
+  // the per-cycle retire count arrives late (its !trap_taken suppression sits
+  // at the end of the commit/trap serialization cone) and previously entered
+  // the LSB of a 64-bit carry chain, making instret[63]/D the post-opt WNS
+  // (-0.94 ns at 300 MHz).  Stage the FULLY-GATED count through
+  // instruction_retired_count_q so the late cone terminates at a 2-bit
+  // register; the 64-bit add then runs register-to-register.
+  //
+  // Invariant: instret_counter at cycle T equals the total retire count
+  // through cycle T-2 (one staging cycle) instead of T-1.  Architecturally
+  // invisible because the ONLY observation of instret is a CSR read of
+  // instret/instreth/minstret{,h}, and CSR reads are commit-serialized:
+  //   cycle C:   the youngest instruction OLDER than the CSR read commits
+  //              (commit_en); its count is computed at C+1 from the
+  //              REGISTERED commit bus (commit_actions), staged into
+  //              instruction_retired_count_q at the C+1->C+2 edge, and
+  //              accumulated into instret_counter at the C+2->C+3 edge;
+  //   cycle C+1: the CSR reaches the ROB head; rob_serializer asserts
+  //              commit_stall and requests CSR execution (o_csr_start);
+  //   cycle C+2: earliest csr_done_ack (1-cycle handshake in cpu_ooo) ->
+  //              earliest CSR commit_en;
+  //   cycle C+3: csr_commit_fire (registered commit) performs the actual
+  //              csr_file read -> observes a counter that already includes
+  //              cycle C's commits.
+  // Every stall (head not ready, commit_hold, later csr_done) only adds
+  // margin, and the reading instruction itself is never included — exactly
+  // as in the un-retimed design, whose own count also landed after the read.
+  // The staged count preserves the !trap_taken suppression bit-for-bit (the
+  // gated count is registered as-is: the same instructions are counted, one
+  // cycle later).  Proven in the FORMAL section (p_instret_stage_follows /
+  // p_instret_applies_staged_count).
+  logic [1:0] instruction_retired_count_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      instruction_retired_count_q <= 2'd0;
       instret_counter <= 64'd0;
     end else begin
-      instret_counter <= instret_counter + 64'(i_instruction_retired_count);
+      instruction_retired_count_q <= i_instruction_retired_count;
+      instret_counter <= instret_counter + 64'(instruction_retired_count_q);
     end
   end
 
@@ -559,9 +593,18 @@ module csr_file #(
       // Cycle counter increments every cycle (not in reset).
       p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
 
-      // Instret increments by the retire count (0, 1, or 2 per cycle).
-      p_instret_increments :
-      assert (instret_counter == $past(instret_counter) + 64'($past(i_instruction_retired_count)));
+      // Instret retime invariants (see the Instructions Retired Counter
+      // comment): the staging register follows the input by one cycle, and
+      // the accumulator applies the staged count.  Composed:
+      //   instret_counter(T) == instret_counter(T-1) + retired_count(T-2)
+      // i.e. instret equals the running total of retired instructions delayed
+      // by exactly one staging cycle; the delay is architecturally invisible
+      // because commit-serialized CSR reads sample the counter no earlier
+      // than <last counted commit> + 3 cycles.
+      p_instret_stage_follows :
+      assert (instruction_retired_count_q == $past(i_instruction_retired_count));
+      p_instret_applies_staged_count :
+      assert (instret_counter == $past(instret_counter) + 64'($past(instruction_retired_count_q)));
 
       // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.
@@ -576,6 +619,7 @@ module csr_file #(
       if ($past(i_rst)) begin
         p_reset_cycle : assert (cycle_counter == 64'd0);
         p_reset_instret : assert (instret_counter == 64'd0);
+        p_reset_instret_stage : assert (instruction_retired_count_q == 2'd0);
         p_reset_mie : assert (!mstatus_mie);
         p_reset_mpie : assert (!mstatus_mpie);
         p_reset_fflags : assert (fflags == 5'b0);

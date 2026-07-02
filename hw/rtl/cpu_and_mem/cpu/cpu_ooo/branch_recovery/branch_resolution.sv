@@ -86,15 +86,27 @@ module branch_resolution #(
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
+  // TIMING: compare-then-mux instead of mux-then-compare.  The original form
+  // muxed the 5-bit owner tag by checkpoint_id and THEN compared against
+  // rob_tag (8:1 x 5b mux + 5b compare in series).  Computing the per-
+  // checkpoint live bit first lets all eight in_use+owner-tag compares run in
+  // parallel straight out of the checkpoint registers, leaving only a 1-bit
+  // 8:1 select behind checkpoint_id.  Pure boolean identity — for every
+  // checkpoint_id value the selected bit is exactly the original expression.
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_live_per_id;
   always_comb begin
-    branch_issue_checkpoint_live = 1'b1;
-    if (rs_issue_int.has_checkpoint) begin
+    for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
       // Use the registered checkpoint state here to avoid a feedback loop
       // through execute-time checkpoint free.  The owner-tag check still
       // filters out stale/reused checkpoint IDs.
-      branch_issue_checkpoint_live =
-          checkpoint_in_use[rs_issue_int.checkpoint_id] &&
-          (checkpoint_owner_tag[rs_issue_int.checkpoint_id] == rs_issue_int.rob_tag);
+      checkpoint_live_per_id[i] =
+          checkpoint_in_use[i] && (checkpoint_owner_tag[i] == rs_issue_int.rob_tag);
+    end
+  end
+  always_comb begin
+    branch_issue_checkpoint_live = 1'b1;
+    if (rs_issue_int.has_checkpoint) begin
+      branch_issue_checkpoint_live = checkpoint_live_per_id[rs_issue_int.checkpoint_id];
     end
   end
 

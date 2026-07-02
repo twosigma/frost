@@ -121,9 +121,14 @@ module misprediction_flush_controller #(
   logic dispatch_flush;
   logic full_flush_side_effect_kill;
   logic frontend_state_flush;
-  logic flush_en;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
-  logic flush_all;
+  // TIMING: flush_en / flush_tag / flush_all broadcast into the whole backend
+  // (ROB commit gate, RS/LQ/SQ kills, RAT).  They are shallow functions of
+  // registered recovery state, so cap the fanout and let synthesis replicate
+  // the driver LUTs per consumer region.  Pure fanout splitting — the
+  // priority structure below is untouched.
+  (* max_fanout = 64 *) logic flush_en;
+  (* max_fanout = 64 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
+  (* max_fanout = 64 *) logic flush_all;
   logic commit_recovery_flush_after_head;
   logic checkpoint_restore;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
