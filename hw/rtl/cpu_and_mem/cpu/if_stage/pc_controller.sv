@@ -51,8 +51,8 @@
     |                       v                                                 |
     |  +-----------------------------------------+                            |
     |  |     Final PC Mux (Priority Encoded)     |                            |
-    |  |  reset > trap > stall > branch >        |------------------> o_pc    |
-    |  |  prediction > sequential                |------------------> o_pc_reg|
+    |  |  reset > trap > fence.i > branch >      |------------------> o_pc    |
+    |  |  PD redirect > hold > prediction > seq. |------------------> o_pc_reg|
     |  +-----------------------------------------+                            |
     |                                                                         |
     +-------------------------------------------------------------------------+
@@ -61,11 +61,13 @@
   ==============
     1. Control flow tracking - Detect stale instruction cycles after redirects
     2. PC increment calculation - C-extension aware (+0, +2, or +4) [submodule]
-    3. Mid-32bit correction - Handle landing in middle of 32-bit instruction
+    3. Mid-32bit correction - DISABLED with 64-bit fetch (output tied to 0)
     4. Final PC selection - Priority mux with timing-optimized flat structure
 
-  All branches and jumps (JAL, JALR, conditional branches) are resolved in the EX
-  stage and come through the i_branch_taken/i_branch_target interface.
+  Branch/jump redirects (JAL, JALR, conditional branches) arrive on the
+  i_branch_taken/i_branch_target interface only on misprediction recovery
+  (early or commit-time, synthesized by ex_comb_synthesizer); correctly
+  predicted branches commit without a redirect here.
 */
 module pc_controller #(
     parameter int unsigned XLEN = 32

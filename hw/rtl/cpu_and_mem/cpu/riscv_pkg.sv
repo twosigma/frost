@@ -1083,7 +1083,7 @@ package riscv_pkg;
   localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
 
   // CDB parameters
-  localparam int unsigned NumCdbLanes = 1;  // Single CDB (future expansion)
+  localparam int unsigned NumCdbLanes = 1;  // unused: the CDB is 2-lane today (o_cdb + o_cdb_2)
   localparam int unsigned NumFus = 7;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV
 
   // ---------------------------------------------------------------------------

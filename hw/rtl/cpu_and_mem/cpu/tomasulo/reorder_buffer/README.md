@@ -165,7 +165,9 @@ The exceptions:
 ## Performance counters
 
 The ROB drives several of the wrapper's performance counters
-directly: `head_and_next_done` (widen-commit actually fired) and
+directly: `head_and_next_done` (commit fired while head+1 was also
+done — a widen-commit upper bound; the actual fire count is
+`commit_2_fire_actual`) and
 `head_plus_one_done` (ungated head+1 ready, for the drain-backlog
 bucket) come from here, along with `commit_2_opportunity` /
 `commit_2_fire_actual` — the gap between those two measures how

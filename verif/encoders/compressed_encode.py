@@ -32,7 +32,7 @@ Register Mapping:
 
 Example Usage:
     >>> # Encode C.ADDI x10, 5
-    >>> instr = enc_c_addi(rd=10, imm=5)
+    >>> instr = enc_c_addi(rd=10, nzimm=5)
     >>> hex(instr)
     '0x0515'  # 16-bit compressed instruction
 

@@ -129,8 +129,10 @@ def handle_branch_flush(
         │ Cycle 3: All flags cleared             → Resume normal ops  │
         └─────────────────────────────────────────────────────────────┘
 
-    All branches and jumps (JAL, JALR, conditional branches) are resolved in
-    EX stage and cause a 3-cycle flush.
+    This reference model treats all branches and jumps (JAL, JALR,
+    conditional branches) as resolving at EX with a 3-cycle flush; the
+    actual CPU predicts branches and its flush timing varies, but the
+    monitors' expected-value queues line up with this simplified model.
 
     Args:
         state: Test state to update branch tracking

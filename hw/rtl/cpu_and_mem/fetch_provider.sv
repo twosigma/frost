@@ -18,7 +18,7 @@
  * fetch_provider -- the variable-latency fetch window provider.
  *
  * Serves the high-address side of the core's fetch seam
- * ({instr64, sideband16, bank_sel_r} + valid) from a two-line fetch buffer
+ * ({instr64, sideband24, bank_sel_r} + valid) from a two-line fetch buffer
  * over the L1I line port.  The low instruction BRAM fast path is selected in
  * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
  * drives the low-BRAM address pins.  Each filled line carries per-word

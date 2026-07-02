@@ -73,7 +73,8 @@ class CocotbRunConfig:
     verilator_extra_args: tuple[str, ...] = ()
 
 
-# CPU testbench tests (multiple modules combined)
+# CPU testbench modules (currently unreferenced: no combined "cpu" registry
+# entry consumes this; each module runs via its own cpu_tb registry entry)
 CPU_TEST_MODULES = ",".join(
     [
         "cocotb_tests.test_cpu",
@@ -90,10 +91,10 @@ COREMARK_PRO_TESTS = {
         hdl_toplevel_module="frost",
         app_name=program.app_name,
         description=program.description,
-        # All nine workloads run CRC-verified minimal-preset simulations,
-        # including the three whose OFFICIAL datasets exceed the platform's
-        # memory limits (loops/radix2/zip, hardware_supported=False): the
-        # sim presets are small enough to fit and are validated green.
+        # All nine workloads run CRC-verified minimal-preset simulations.
+        # They are also all hardware-supported: the DDR-backed heap and
+        # calibrated hardware_iterations cover the larger datasets
+        # (loops/radix2/zip included); sim keeps the small verified presets.
     )
     for program in COREMARK_PRO_PROGRAMS
 }

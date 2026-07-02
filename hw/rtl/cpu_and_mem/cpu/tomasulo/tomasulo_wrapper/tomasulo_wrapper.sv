@@ -17,7 +17,7 @@
 /*
  * Tomasulo Integration Wrapper
  *
- * Verification wrapper that instantiates ROB + RAT + six RS instances
+ * Wrapper (instantiated by cpu_ooo) that instantiates ROB + RAT + six RS instances
  * (INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS), LQ, SQ, CDB arbiter,
  * FU shims, and hardwires the internal commit bus, dispatch routing,
  * SQ↔LQ forwarding, and shared CDB/flush signals.
@@ -29,7 +29,7 @@
  *
  * Internal wiring:
  *   ROB.o_commit_comb --> commit_bus --> cpu_ooo same-cycle mispredict detect
- *   ROB.o_commit      --> o_commit   (registered testbench observation)
+ *   ROB.o_commit_comb --> commit_bus --> commit_bus_pipeline --> o_commit
  *   commit_bus_q      --> RAT commit-clear signals
  *   FU adapters --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
  *                                           --> all RS .i_cdb (broadcast for wakeup)
@@ -469,10 +469,11 @@ module tomasulo_wrapper #(
   //
   // commit_bus_q is a one-cycle pipeline register that breaks the critical
   // timing path from ROB head_ready/commit_en through SQ/RAT to LQ.
-  // All internal consumers (RAT, SQ commit, SC logic) use the registered
-  // version.  The valid bit is cleared on full flush for safety — although
-  // overlapping pipelined commits with flush_all only occurs for non-store
-  // instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
+  // Internal consumers (RAT, SQ commit, SC logic) use the registered
+  // version, except the SQ same-cycle flush-race guard, which taps the raw
+  // ROB commit pulses.  The valid bit is cleared on full flush for safety —
+  // although overlapping pipelined commits with flush_all only occurs for
+  // non-store instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
   // Split commit_bus_q into separate valid + data to prevent Vivado from
   // dragging the reset net onto payload register bits.
@@ -2704,7 +2705,6 @@ module tomasulo_wrapper #(
   // Effective address: base (src1) + immediate (declared above near SC pending)
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
-  // MMIO detection: address >= MMIO base
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.
   assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);

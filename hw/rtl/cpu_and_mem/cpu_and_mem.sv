@@ -101,7 +101,8 @@ module cpu_and_mem #(
     input  logic        i_fifo1_empty,
     output logic        o_fifo1_rd_en,
 
-    // External interrupt input (directly triggers MEIP when high)
+    // External interrupt input (registered +1 cycle and ORed with the
+    // ns16550 UART IRQ before driving MEIP)
     input logic i_external_interrupt,
 
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
@@ -135,7 +136,7 @@ module cpu_and_mem #(
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
-  // ((128 KiB total memory)/(4 bytes per word)) = 32k words = 2^15 word address bits
+  // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
 
   // Memory-mapped I/O addresses for peripherals

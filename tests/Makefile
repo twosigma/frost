@@ -31,9 +31,9 @@ WAVES           ?= 0
 # Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
-# Timer speedup for simulation (1000x faster than real-time)
-# This makes FreeRTOS and timer-based tests complete much faster in simulation
-# Default is 1000 for simulation; set to 1 for synthesis
+# Timer speedup for simulation (intended to make FreeRTOS/timer-based tests faster)
+# NOTE: currently NOT plumbed to Verilator (no -G override is passed), so sims
+# run at the RTL parameter default of 1; this variable has no effect
 SIM_TIMER_SPEEDUP ?= 1000
 
 # Compilation arguments - RTL file list (varies by toplevel)

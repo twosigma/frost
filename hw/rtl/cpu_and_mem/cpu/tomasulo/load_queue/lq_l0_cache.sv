@@ -26,9 +26,11 @@
  * Features:
  *   - Combinational lookup (hit in same cycle as address)
  *   - Fill on memory response
- *   - MMIO addresses always miss (>= MMIO_ADDR)
+ *   - MMIO addresses always miss (addr[31:30] == 2'b01 quadrant; DDR at
+ *     0x8000_0000+ is cacheable)
  *   - Flush all valid bits on pipeline flush
- *   - Per-address invalidation port (for future SQ integration)
+ *   - Per-address invalidation port (driven by SQ store-write launch and
+ *     AMO completion)
  */
 
 module lq_l0_cache #(

@@ -49,7 +49,7 @@ Usage Example:
     ...     opcode=0x33                 # ALU register-register
     ... )
     >>> hex(instruction)
-    '0x004181b3'
+    '0x004182b3'
 """
 
 from dataclasses import dataclass

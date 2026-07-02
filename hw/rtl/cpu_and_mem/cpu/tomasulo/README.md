@@ -66,11 +66,12 @@ moves, no functional change): `store_queue/sq_forwarding_unit`,
 `serial_state_e` enum lives in `riscv_pkg` so the ROB and submodule share it).
 Each is documented in its parent module's README.
 
-The CPU top-level (`../cpu_ooo.sv`) instantiates `tomasulo_wrapper`
-plus `dispatch` and the front-end stages, and contains a few large
-inline blocks that straddle the front-end / back-end boundary
-(early misprediction recovery, commit flush controller, memory port
-arbitration, …). See [`../README.md`](../README.md).
+The CPU top-level (`../cpu_ooo/cpu_ooo.sv`) instantiates
+`tomasulo_wrapper` plus `dispatch` and the front-end stages; the logic
+that straddles the front-end / back-end boundary (early misprediction
+recovery, the misprediction flush controller, memory port arbitration,
+…) lives in its glue submodules under `../cpu_ooo/branch_recovery/`
+and `../cpu_ooo/memory_if/`. See [`../README.md`](../README.md).
 
 ## Cross-cutting design notes
 
@@ -97,7 +98,8 @@ Branches and JALRs reserve a RAT checkpoint at dispatch (full INT +
 FP RAT snapshot + RAS top + valid count, 8 slots).
 
 Conditional-branch mispredictions resolve in `branch_jump_unit` and
-trigger a fast two-phase recovery directly from `cpu_ooo.sv`: the
+trigger a fast two-phase recovery in the `early_misprediction_recovery`
+submodule (under `cpu_ooo/branch_recovery/`): the
 front-end redirects and the RAT restores in the same cycle, then the
 OOO back-end's partial flush fires one cycle later. This cuts the
 typical penalty from ~15 cycles to ~2.

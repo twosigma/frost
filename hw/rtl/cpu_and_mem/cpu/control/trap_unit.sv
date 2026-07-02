@@ -25,11 +25,11 @@
  *
  * Responsibilities:
  * =================
- *   - Exception detection from EX stage (ECALL, EBREAK, misaligned access)
+ *   - Exception handling from ROB commit (ECALL, EBREAK, misaligned access)
  *   - Interrupt prioritization and masking
  *   - Trap entry: save state, redirect to mtvec
  *   - Trap exit (MRET): restore state, return to mepc
- *   - WFI: stall until interrupt pending
+ *   - WFI state machine (unused in cpu_ooo; see WFI Behavior below)
  *
  * Trap Priority (highest to lowest):
  * ==================================
@@ -65,6 +65,8 @@
  *   - Stall pipeline until any interrupt is pending
  *   - Resume at next instruction if interrupt not taken
  *   - Take trap if interrupt is both pending and enabled
+ *   - NOTE: unused in cpu_ooo -- i_wfi_start is tied to 0 and o_stall_for_wfi
+ *     is unconnected; WFI stalling is handled by ROB serialization at the head
  *
  * Related Modules:
  *   - csr_file.sv: Provides mstatus/mie/mtvec/mepc, receives trap updates

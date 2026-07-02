@@ -6,7 +6,7 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 
 | Board                  | FPGA                               | CPU Clock  | Cache hierarchy → main memory                         | Features                 |
 |------------------------|------------------------------------|------------|-------------------------------------------------------|--------------------------|
-| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB L1D + 16 KiB L1I → 1 GiB DDR3                 | Entry-level development  |
+| [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                | Entry-level development  |
 | [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 | High-performance target  |
 
 Both boards expose the identical software-visible memory map (256 KiB fast

@@ -271,7 +271,7 @@ module register_alias_table (
   logic [   NumCheckpoints-1:0] checkpoint_valid;
 
   // Checkpoint RAT snapshots — distributed RAM
-  // Combined INT + FP snapshot (384 bits wide, 2-bit address)
+  // Combined INT + FP snapshot (448 bits wide, 3-bit address)
   logic                         ckpt_rat_wr_en;
   logic [CheckpointIdWidth-1:0] ckpt_rat_wr_addr;
   logic [ RatSnapshotWidth-1:0] ckpt_rat_wr_data;

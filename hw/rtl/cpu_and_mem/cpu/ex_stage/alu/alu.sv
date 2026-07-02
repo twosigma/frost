@@ -164,7 +164,7 @@ module alu #(
       // Use pre-computed link address from IF stage (PC+2 for compressed, PC+4 for 32-bit)
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
-      // M-extension multiply operations (1-cycle registered, requires stall)
+      // M-extension multiply operations (4-cycle pipelined multiplier, requires stall until o_valid_output)
       riscv_pkg::MUL: begin
         // Start multiply if not already in progress; use lower 32 bits of result
         multiplier_valid_input = ~multiplier_valid_input_registered;

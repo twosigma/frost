@@ -258,26 +258,30 @@ program / unit tests are launched with `./test_run_cocotb.py <name>`; use
 `./test_run_cocotb.py --list-tests` for the canonical target list (the single
 source of truth is `TEST_REGISTRY` in `tests/test_run_cocotb.py`).
 
-The random-regression and directed CPU tests (`test_cpu`,
-`test_directed_atomics`, `test_directed_traps`, `test_compressed`,
-`test_directed_multicycle`) all run on the `cpu_tb` testbench, which is the
-`tests/Makefile` default (`TOPLEVEL=cpu_tb`, `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`).
-They are not `test_run_cocotb.py` registry targets; run them directly:
+The random-regression and directed CPU tests all run on the `cpu_tb`
+testbench and are `test_run_cocotb.py` registry targets: `directed_traps`
+(pytest-collected, in CI) plus `directed_atomics`, `directed_multicycle`,
+`compressed`, and `cpu_random` (registered CLI-only -- these four predate the
+OOO integration and currently fail on the OOO core until ported to the
+maintained `DUTInterface` helpers; their ISA coverage is meanwhile gated by
+the riscv-tests / arch-compliance / real-program suites). Note that a bare
+`make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
+`COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported
+`cpu_random` module -- prefer the registry targets:
 
-Run the default random instruction test (all cpu_tb modules):
+Run a cpu_tb suite via the registry:
 ```bash
-make
+# Trap handling (ECALL, EBREAK, MRET) -- ported, runs in CI
+./test_run_cocotb.py directed_traps
+# LR.W/SC.W atomic instructions -- NEEDS PORTING, expected to fail
+./test_run_cocotb.py directed_atomics
 ```
 
-Run a single cpu_tb test function by setting cocotb's `COCOTB_TEST_FILTER`
-(a regex; anchor with `$` for an exact match):
+Run a single test function with `--testcase` (sets cocotb's
+`COCOTB_TEST_FILTER` to an exact match):
 ```bash
-# Forced single address (stress memory hazards)
-COCOTB_TEST_FILTER='test_random_riscv_regression_force_one_address$' make
-# LR.W/SC.W atomic instructions
-COCOTB_TEST_FILTER='test_directed_lr_sc$' make
-# Trap handling (ECALL, EBREAK, MRET)
-COCOTB_TEST_FILTER='test_directed_trap_handling$' make
+./test_run_cocotb.py directed_traps --testcase test_directed_trap_handling
+./test_run_cocotb.py directed_atomics --testcase test_directed_lr_sc
 ```
 
 Run integration tests with real programs (registry targets):

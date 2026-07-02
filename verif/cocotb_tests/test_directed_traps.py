@@ -51,10 +51,7 @@ RISC-V Trap Entry Protocol:
     └────────────────────────────────────────────────────────────────┘
 
 Usage:
-    make test TEST=test_directed_trap_handling
-    make test TEST=test_directed_interrupt_trap_mstatus
-    make test TEST=test_directed_mret_interrupt_race
-    make test TEST=test_directed_csrsi_enable_mie
+    cd tests && make clean && ./test_run_cocotb.py directed_traps
 """
 
 import cocotb
@@ -1346,22 +1343,25 @@ async def test_directed_illegal_instruction(dut: Any) -> None:
 # Directed Test for Precise-Interrupt / Commit Race (mepc off-by-one detector)
 # ============================================================================
 #
-# Confirmed-by-RTL bug under test:
-#   When an async machine-timer interrupt is recognized in the SAME cycle an
-#   ordinary instruction commits, precise state is mis-handled.
-#     * commit_en (reorder_buffer.sv) is gated only by the REGISTERED
+# Bug this test was written to catch (since fixed):
+#   When an async machine-timer interrupt was recognized in the SAME cycle an
+#   ordinary instruction committed, precise state was mis-handled.
+#     * commit_en (reorder_buffer.sv) was gated only by the REGISTERED
 #       trap_mret_commit_hold_q (cpu_ooo.sv), which for an async interrupt stays
 #       low (it tracks trap_pending/mret/drain, none of which an async timer IRQ
-#       asserts). So a normal commit can fire in the cycle o_trap_taken asserts.
+#       asserts). So a normal commit could fire in the cycle o_trap_taken asserted.
 #     * interrupt_resume_pc (cpu_ooo.sv), the source of mepc for async
-#       interrupts, is updated from the COMBINATIONAL rob_commit_valid_raw, so a
-#       commit in the trap cycle advances it to that instruction's next-PC.
+#       interrupts, was updated from the COMBINATIONAL rob_commit_valid_raw, so a
+#       commit in the trap cycle advanced it to that instruction's next-PC.
 #     * The registered ROB commit (reorder_buffer.sv o_commit.valid) and the
-#       regfile write (commit_actions.sv) are NOT gated by the coincident flush /
-#       trap, so the racing instruction's architectural write still lands.
-#   Net effect: mepc and the set of architecturally-retired instructions can
+#       regfile write (commit_actions.sv) were NOT gated by the coincident flush /
+#       trap, so the racing instruction's architectural write still landed.
+#   Net effect: mepc and the set of architecturally-retired instructions could
 #   disagree by one -- a precise-state violation (on Linux this surfaced as a
 #   lost callee-saved restore, s2 = 0x19999998).
+#   Fixed by the commit_ready_early gating in reorder_buffer.sv, which blocks
+#   commit_en on the coincident i_flush_en / i_flush_all / i_commit_hold; this
+#   test now asserts zero violations as a regression check.
 #
 # Detector (prefix invariant): at trap entry the architectural regfile must
 # reflect EXACTLY the instructions with PC < mepc -- every such instruction's

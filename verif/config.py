@@ -82,7 +82,9 @@ MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
 
 MMIO_SIZE_BYTES: Final[int] = 0x2C
-"""Size of MMIO peripheral range in bytes (44 bytes: 0x40000000-0x4000002B)."""
+"""Legacy MMIO range size; currently unused. The RTL window is 0x1_C000 bytes
+(see cpu_and_mem.sv MmioSizeBytes) with the ns16550 UART at +0x1000 and the
+CLINT at +0x10000."""
 
 # ============================================================================
 # Register File Configuration
@@ -179,8 +181,14 @@ class DUTSignalPaths:
         dut.device_under_test.regfile_inst.ram
 
     Default Paths:
-        These paths match the Frost CPU's default hierarchy. If your DUT
-        has different module names or hierarchy, create a custom instance:
+        The defaults below are legacy fallbacks from the pre-rename hierarchy
+        and no longer resolve. The regfiles now live under
+        ``ooo_register_files_inst`` and each read_port_ram sits inside a
+        ``gen_single_write``/``gen_multi_write`` scope, e.g.
+        ``device_under_test.ooo_register_files_inst.regfile_inst.``
+        ``gen_read_port[0].gen_multi_write.read_port_ram`` (test_helpers.py
+        navigates this modern path directly). If your DUT has different
+        module names or hierarchy, create a custom instance:
 
         >>> custom_paths = DUTSignalPaths(
         ...     regfile_ram_rs1_path="cpu_core.registers.port_a.data",

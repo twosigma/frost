@@ -26,8 +26,10 @@
  *   5. Allocates a checkpoint for branches/jumps
  *   6. Generates back-pressure (stall) when resources are exhausted
  *
- * The dispatch is combinational: all outputs are derived from the registered
- * from_id_to_ex pipeline register in the same cycle.
+ * The dispatch is mostly combinational: outputs are derived from the
+ * registered from_id_to_ex pipeline register in the same cycle, except the
+ * done-repair bypass valid/tag channels, which are registered and appear one
+ * cycle after the dispatch fire.
  *
  * Stall conditions (any one stalls the front-end):
  *   - ROB full

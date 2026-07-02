@@ -26,7 +26,7 @@
  *   ├── pc_controller               PC management, next-PC selection
  *   │   └── control_flow_tracker        Holdoff signal generation
  *   ├── branch_prediction/          Branch prediction subsystem
- *   │   ├── branch_predictor            32-entry BTB (combinational lookup)
+ *   │   ├── branch_predictor            256-entry BTB (combinational lookup)
  *   │   ├── branch_prediction_controller  Prediction gating and registration
  *   │   └── prediction_metadata_tracker   Stall/spanning metadata handling
  *   └── c_extension/                Compressed instruction subsystem
@@ -66,7 +66,7 @@
  * =========
  *   - RISC-V C extension support (compressed 16-bit instructions)
  *   - Handles 32-bit instructions spanning two memory words (PC[1]=1)
- *   - Branch prediction with 32-entry BTB
+ *   - Branch prediction with 256-entry BTB
  *   - Outputs raw parcel + selection signals for PD stage decompression
  *
  * TIMING OPTIMIZATION:
@@ -1222,9 +1222,8 @@ module if_stage #(
   // Slot-2 IF→PD Packet (2-wide dispatch — Session F)
   // ===========================================================================
   // Slot-2 follows slot-1 sequentially in program order: PC and link address
-  // are simply slot-1's plus the slot-1 / slot-2 sizes.  No BTB lookup is
-  // performed for slot-2 (decision #3, single-port BTB on slot-1 PC) and no
-  // RAS prediction is consumed for slot-2 (decision #1: slot-2 is invalid
+  // are simply slot-1's plus the slot-1 / slot-2 sizes.  No RAS prediction
+  // is consumed for slot-2 (decision #1: slot-2 is invalid
   // when slot-1 is a branch, so slot-1 cannot have pushed/popped RAS in the
   // same cycle).
   //

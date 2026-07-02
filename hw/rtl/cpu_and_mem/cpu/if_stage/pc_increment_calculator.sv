@@ -18,7 +18,7 @@
   PC Increment Calculator
 
   Computes the next sequential PC values using parallel adders for timing optimization.
-  This module pre-computes fetch PC increment results (pc+2, pc+4) in parallel,
+  This module pre-computes fetch PC increment results (pc+2 through pc+8) in parallel,
   then selects the correct result based on instruction type and state.
 
   Key Timing Optimization:
