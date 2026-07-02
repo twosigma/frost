@@ -1004,34 +1004,45 @@ async def run_directed_csrsi_enable_mie_test(
     await FallingEdge(dut_if.clock)
     await dut_if.wait_ready()
     dut_if.instruction = instr_csrsi_mstatus
+    await RisingEdge(dut_if.clock)
+    # Park a NOP so exactly one CSRSI enters the pipe (the harness keeps
+    # presenting dut_if.instruction every fetch; without this the trap handler
+    # would fetch CSRSIs and re-enable MIE in a trap loop).
+    dut_if.instruction = 0x00000013
 
-    # Log cycle-by-cycle what happens
-    cocotb.log.info("=== Cycle-by-cycle monitoring ===")
-    for cycle in range(PIPELINE_DEPTH):
+    # Wait for the trap, event-based. On the OOO core a CSR op is serialized:
+    # drain to the ROB head, csr_done handshake, commit, then the CSR write
+    # lands off the registered commit bus -- roughly 8-11 cycles from fetch,
+    # not the old in-order PIPELINE_DEPTH. Then the (registered) pending
+    # interrupt is taken. Poll with a generous budget instead of guessing.
+    cocotb.log.info("=== Waiting for CSRSI commit + interrupt trap ===")
+    trap_seen_cycle = -1
+    for cycle in range(100):
         await RisingEdge(dut_if.clock)
         try:
             trap_taken = int(dut.device_under_test.trap_unit_inst.o_trap_taken.value)
             mstatus = int(dut.device_under_test.csr_file_inst.mstatus.value)
-            mie = (mstatus >> 3) & 1
-            mpie = (mstatus >> 7) & 1
-            csr_write_en = int(dut.device_under_test.csr_write_enable.value)
-            cocotb.log.info(
-                f"Cycle {cycle}: trap_taken={trap_taken}, csr_write_en={csr_write_en}, "
-                f"mstatus=0x{mstatus:08X}, MIE={mie}, MPIE={mpie}"
-            )
-
-            # If trap was taken, check mstatus
+            csr_fire = int(dut.device_under_test.csr_commit_fire.value)
+            if csr_fire or trap_taken:
+                cocotb.log.info(
+                    f"Cycle {cycle}: trap_taken={trap_taken}, "
+                    f"csr_commit_fire={csr_fire}, mstatus=0x{mstatus:08X}"
+                )
             if trap_taken:
+                trap_seen_cycle = cycle
                 cocotb.log.info(f">>> Trap detected at cycle {cycle}")
-                # The trap is being taken NOW, mstatus update happens next edge
+                break
         except Exception as e:
             cocotb.log.warning(f"Cycle {cycle}: Could not read signals: {e}")
 
-    # Wait one additional cycle for mstatus to be updated after trap_taken.
-    # This is needed because:
-    # 1. interrupt_pending is registered in trap_unit for timing optimization (1 cycle latency)
-    # 2. mstatus update happens on the clock edge after trap_taken is asserted
-    # Total: 2 cycles from MIE enable to mstatus update
+    assert trap_seen_cycle >= 0, (
+        "CSRSI+TRAP BUG: no trap taken within 100 cycles of the CSRSI "
+        "(MIE enable never took effect or pending interrupt not delivered)"
+    )
+
+    # mstatus updates on the edge after trap_taken asserts; give it two edges
+    # so the registered trap state settles before the final check.
+    await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
 
     # Final check

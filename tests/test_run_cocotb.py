@@ -737,14 +737,46 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GSPLIT_RS_DISPATCH=1",),
     ),
     # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
-    # (one instruction fed per ready cycle into the cpu_ooo core). CLI-only
-    # entry so the cpu_tb directed-trap suite is invokable through the mandated
-    # runner; filter to a single function with --testcase. Not auto-collected by
-    # pytest (no app_name; include_in_pytest=False).
+    # (one instruction fed per ready cycle into the cpu_ooo core). Collected by
+    # pytest so the cpu_tb suites cannot rot invisibly again (the harness once
+    # sat broken -- missing i_served_addr -- with nothing in CI noticing);
+    # filter to a single function with --testcase when running by hand.
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
+    ),
+    # The remaining cpu_tb suites below predate the OOO integration and have
+    # rotted: they probe pre-rename hierarchy (regfile_inst / fp_regfile_inst)
+    # and in-order fixed latencies, so they fail on the current core until
+    # ported to the maintained DUTInterface helpers (as test_directed_traps
+    # was). Registered CLI-only so they are visible and invokable instead of
+    # silently orphaned; their ISA coverage is meanwhile gated in CI by the
+    # rv32ua/rv32uc/rv32um riscv-tests, the arch-compliance matrix, and the
+    # ddr_atomic_test/c_ext_test real programs. Flip include_in_pytest after
+    # porting.
+    "directed_atomics": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_atomics",
+        hdl_toplevel_module="cpu_tb",
+        description="Directed LR.W/SC.W atomic tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "directed_multicycle": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_multicycle",
+        hdl_toplevel_module="cpu_tb",
+        description="Directed back-to-back multi-cycle op tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "compressed": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_compressed",
+        hdl_toplevel_module="cpu_tb",
+        description="RISC-V C-extension directed tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "cpu_random": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_cpu",
+        hdl_toplevel_module="cpu_tb",
+        description="Constrained-random instruction regression (cpu_tb; NEEDS PORTING to OOO)",
         include_in_pytest=False,
     ),
 }
