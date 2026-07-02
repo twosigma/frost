@@ -1787,9 +1787,13 @@ module reorder_buffer (
   // The old branch_update collision guard (which delayed commit when a
   // mispredicted branch resolved via CDB in the same cycle as commit) is
   // removed: (a) JAL — the stated motivation — never produces branch_update
-  // (is_jal_issue is excluded); (b) for conditional branches, the
-  // rob_head_commit_misprediction_candidate check in early_mispredict_fire
-  // already blocks the early-recovery race; (c) removing the guard breaks
+  // (is_jal_issue is excluded); (b) a conditional branch cannot resolve and
+  // commit in the same cycle (head_cdb_bypass excludes branches, so its done
+  // bit trails branch_update by one cycle), and an early_mispredict_fire
+  // coinciding with a head-mispredict commit is dropped one cycle later by
+  // the !mispredict_recovery_pending term in early_mispredict_active
+  // (early_misprediction_recovery.sv) — the fire-time candidate gate this
+  // comment used to cite no longer exists; (c) removing the guard breaks
   // the commit_en ↔ branch_update critical path (19 LUT levels through the
   // CARRY8 branch-target comparison).
   // !i_flush_en is REQUIRED for serializing correctness, not just a flush guard.
