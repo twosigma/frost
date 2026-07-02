@@ -381,7 +381,7 @@ package riscv_pkg;
   // Section 3: CSR Definitions
   // ===========================================================================
   // Control and Status Register addresses, bit positions, and cause codes.
-  // Includes Zicsr instruction encodings and M-mode trap support.
+  // Includes Zicsr instruction encodings and M/U-mode trap support.
 
   // CSR instruction funct3 encoding
   typedef enum bit [2:0] {
@@ -475,6 +475,13 @@ package riscv_pkg;
   // mstatus bit positions (RV32)
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
+  // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17 (RV32).
+  localparam int unsigned MstatusMppLo = 11;
+  localparam int unsigned MstatusMprvBit = 17;
+
+  // Privilege modes (RISC-V encoding). FROST implements Machine and User only.
+  localparam logic [1:0] PrivU = 2'b00;
+  localparam logic [1:0] PrivM = 2'b11;
 
   // mie/mip bit positions
   localparam int unsigned MieMsiBit = 3;  // Machine Software Interrupt
@@ -486,6 +493,7 @@ package riscv_pkg;
   localparam bit [31:0] ExcBreakpoint = 32'd3;
   localparam bit [31:0] ExcLoadAddrMisalign = 32'd4;
   localparam bit [31:0] ExcStoreAddrMisalign = 32'd6;
+  localparam bit [31:0] ExcEcallUmode = 32'd8;
   localparam bit [31:0] ExcEcallMmode = 32'd11;
 
   // Interrupt cause codes (mcause values when interrupt bit = 1)
@@ -836,7 +844,7 @@ package riscv_pkg;
   // Section 9: Trap/Exception Handling
   // ===========================================================================
   // Structures for trap control.
-  // Used by trap_unit.sv for M-mode exception/interrupt handling.
+  // Used by trap_unit.sv for M/U-mode exception/interrupt handling.
   // Trap control signals (from trap unit to pipeline)
   typedef struct packed {
     logic            trap_taken;   // Trap is being taken this cycle
@@ -1075,7 +1083,7 @@ package riscv_pkg;
   localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
 
   // CDB parameters
-  localparam int unsigned NumCdbLanes = 1;  // Single CDB (future expansion)
+  localparam int unsigned NumCdbLanes = 1;  // unused: the CDB is 2-lane today (o_cdb + o_cdb_2)
   localparam int unsigned NumFus = 7;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV
 
   // ---------------------------------------------------------------------------

@@ -102,7 +102,7 @@ module divider #(
     remainder_should_be_negative = dividend_is_negative;
   end
 
-  // 2x-folded radix-2 division requires one pipeline stage per 2 bits (32 stages for 32-bit)
+  // 2x-folded radix-2 division requires one pipeline stage per 2 bits (16 stages for 32-bit)
   localparam int unsigned NumPipelineStages = WIDTH / 2;
 
   // Pipeline arrays for each stage - carry values through division process

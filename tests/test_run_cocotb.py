@@ -73,7 +73,8 @@ class CocotbRunConfig:
     verilator_extra_args: tuple[str, ...] = ()
 
 
-# CPU testbench tests (multiple modules combined)
+# CPU testbench modules (currently unreferenced: no combined "cpu" registry
+# entry consumes this; each module runs via its own cpu_tb registry entry)
 CPU_TEST_MODULES = ",".join(
     [
         "cocotb_tests.test_cpu",
@@ -90,10 +91,10 @@ COREMARK_PRO_TESTS = {
         hdl_toplevel_module="frost",
         app_name=program.app_name,
         description=program.description,
-        # All nine workloads run CRC-verified minimal-preset simulations,
-        # including the three whose OFFICIAL datasets exceed the platform's
-        # memory limits (loops/radix2/zip, hardware_supported=False): the
-        # sim presets are small enough to fit and are validated green.
+        # All nine workloads run CRC-verified minimal-preset simulations.
+        # They are also all hardware-supported: the DDR-backed heap and
+        # calibrated hardware_iterations cover the larger datasets
+        # (loops/radix2/zip included); sim keeps the small verified presets.
     )
     for program in COREMARK_PRO_PROGRAMS
 }
@@ -151,6 +152,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_smc_test",
         description="Self-modifying code test (stores + fence.i + execute, full sync chain)",
     ),
+    "smc_fencei_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="smc_fencei_test",
+        description="Hardened SMC/fence.i reproducer (gap sweep, warm/cold L1D, write-miss, tight loop)",
+    ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -162,6 +169,153 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="csr_test",
         description="CSR test",
+    ),
+    "umode_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="umode_test",
+        description="U-mode (User privilege) directed test",
+    ),
+    "csr_rmw_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="csr_rmw_test",
+        description="CSR read-modify-write directed test (csrrw/csrrs/csrrc; kernel trap path)",
+    ),
+    "wfi_mepc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="wfi_mepc_test",
+        description="Timer-interrupt-at-WFI mepc directed test (empty-ROB interrupt resume PC)",
+    ),
+    "wfi_drain_mepc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="wfi_drain_mepc_test",
+        description="Drain-gated WFI mepc directed test (timer IRQ at WFI with a draining DDR store)",
+    ),
+    "drain_trapframe_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="drain_trapframe_test",
+        description="Trap-frame store-visibility under L1D eviction (Bug B relocated to pt_regs s2)",
+        # Genesys2-faithful shape: no L2 (L1 -> DDR direct, where a cold write-back
+        # actually drains) + high DDR latency, so the save-store / eviction race is
+        # not masked. The default (L2 on, latency 30) gives a false PASS.
+        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
+    ),
+    "mret_timer_resume_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mret_timer_resume_test",
+        description="MRET-to-U + pending-timer mepc directed test (stale interrupt resume PC)",
+    ),
+    "mtimer_stress": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mtimer_stress",
+        description="M-mode machine-timer + MRET deadlock stress (phase-swept; flaky-hang repro)",
+    ),
+    "mret_drain_deadlock": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mret_drain_deadlock",
+        description="MRET-vs-draining-cached-store deadlock (one-shot o_mret_start; deterministic hang repro)",
+        # Genesys2 cache shape (L1 -> DDR direct), where the bug manifests on
+        # hardware and where a cold cached-store write-back actually drains in sim
+        # (the L2-enabled shape leaves the cold tier undrained, masking the race).
+        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+    ),
+    "wfi_lost_tick": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="wfi_lost_tick",
+        description="WFI-idle + MIE-toggle + CLINT-rearm lost-timer-tick repro (deferred-eligibility; frozen jiffies)",
+    ),
+    "irq_mie_window": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="irq_mie_window",
+        description="Short-MIE-window lost-interrupt repro (registered interrupt_pending erased by adjacent MIE clear)",
+    ),
+    "ns16550_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ns16550_test",
+        description="ns16550a UART face directed test (Linux glue)",
+    ),
+    "clint_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="clint_test",
+        description="SiFive CLINT alias directed test (Linux glue)",
+    ),
+    "linux_boot": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_boot",
+        description="No-MMU Linux boot (kernel Image in DDR)",
+        include_in_pytest=False,
+    ),
+    # Same boot image, but 128 KiB L1I (the genesys2 HW config the handoff says
+    # wedges at SLUB). Pair with CACHED_HAS_L2=0 to match genesys2. Debug only.
+    "linux_boot_128k": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_boot",
+        description="No-MMU Linux boot with 128 KiB L1I (genesys2 wedge-repro config)",
+        include_in_pytest=False,
+        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
+    ),
+    "linux_irq_ddr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_ddr_test",
+        description="Linux-like machine-timer IRQ path with DDR code/data/stack",
+    ),
+    "linux_irq_active_ddr_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_active_ddr_test",
+        description="Linux-like active-code machine-timer IRQ path with DDR call/return traffic",
+    ),
+    "linux_clksrc_faithful": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_clksrc_faithful",
+        description="Faithful Linux clocksource-switch: enable-MTIE-then-arm, re-arming handler, bare-wfi idle, concurrent DDR",
+    ),
+    "trap_s2l_fwd": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="trap_s2l_fwd",
+        description="handle_exception-pattern trap store->load forwarding repro (sw sp,8(tp); lw ,8(tp))",
+    ),
+    "linux_irq_stack_slot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_stack_slot_test",
+        description="Linux-like timer IRQ over a poisoned DDR callee return-address stack slot",
+    ),
+    "linux_irq_find_next_slot_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="linux_irq_find_next_slot_test",
+        description="Linux _find_next_bit-shaped IRQ over a poisoned DDR return slot",
+    ),
+    "ddr_atomic_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_atomic_test",
+        description="RV32-A atomics to the cached DDR region (LR/SC, AMO)",
+        include_in_pytest=True,
+    ),
+    "pde_return_hazard": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pde_return_hazard",
+        description="pde_subdir_find epilogue return-value hazard reproducer",
+        verilator_extra_args=("-GCACHED_HAS_L2=0",),
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -291,6 +445,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="RAS call/return stress under randomized fetch-latency fuzz",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
+    "fetch_stall_repro": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fetch_stall_repro",
+        description="Directed 32-bit-insn PC+2 mis-step repro (no fuzz; sanity = PASS)",
+    ),
+    "fetch_stall_repro_128k": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fetch_stall_repro",
+        description="Directed PC+2 mis-step repro, cached .ddr_text, 128KiB L1I (genesys2)",
+        verilator_extra_args=("-GL1I_CACHE_BYTES=131072",),
+    ),
     # Tomasulo unit tests
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
@@ -392,6 +559,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="data_mem_request_router",
         description="CPU OOO data-memory request router tests",
     ),
+    "trap_unit": CocotbRunConfig(
+        python_test_module="cocotb_tests.control.test_trap_unit",
+        hdl_toplevel_module="trap_unit",
+        description="Trap unit tests (interrupt/MRET arbitration)",
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -403,6 +575,48 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost_cache_test_harness",
         description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
         verilator_extra_args=("-GHAS_L2=0",),
+    ),
+    # Same functional suite, but with the sim-only fast maintenance path
+    # (SIM_FAST_MAINT=1) enabled: proves invalidate-all / writeback-all stay
+    # functionally identical when the fence.i fast path is active.
+    "frost_cache_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GSIM_FAST_MAINT=1"),
+    ),
+    "frost_cache_l1_only_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=0", "-GSIM_FAST_MAINT=1"),
+    ),
+    # fence.i maintenance cycle-count measurement at the real L1 geometry
+    # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) vs fast, so the
+    # speedup is directly observable in the logs. Not part of the pytest sweep.
+    "fence_speed_slow": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_fence_speed",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="fence.i maintenance cost, FPGA-path FSM (SIM_FAST_MAINT=0)",
+        verilator_extra_args=(
+            "-GHAS_L2=0",
+            "-GL1_CACHE_BYTES=131072",
+            "-GL1I_CACHE_BYTES=16384",
+            "-GSIM_FAST_MAINT=0",
+        ),
+        include_in_pytest=False,
+    ),
+    "fence_speed_fast": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_fence_speed",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="fence.i maintenance cost, fast sim path (SIM_FAST_MAINT=1)",
+        verilator_extra_args=(
+            "-GHAS_L2=0",
+            "-GL1_CACHE_BYTES=131072",
+            "-GL1I_CACHE_BYTES=16384",
+            "-GSIM_FAST_MAINT=1",
+        ),
+        include_in_pytest=False,
     ),
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
@@ -522,6 +736,49 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tomasulo_wrapper",
         description="Tomasulo wrapper tests with CPU production split-RS dispatch",
         verilator_extra_args=("-GSPLIT_RS_DISPATCH=1",),
+    ),
+    # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
+    # (one instruction fed per ready cycle into the cpu_ooo core). Collected by
+    # pytest so the cpu_tb suites cannot rot invisibly again (the harness once
+    # sat broken -- missing i_served_addr -- with nothing in CI noticing);
+    # filter to a single function with --testcase when running by hand.
+    "directed_traps": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_traps",
+        hdl_toplevel_module="cpu_tb",
+        description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
+    ),
+    # The remaining cpu_tb suites below predate the OOO integration and have
+    # rotted: they probe pre-rename hierarchy (regfile_inst / fp_regfile_inst)
+    # and in-order fixed latencies, so they fail on the current core until
+    # ported to the maintained DUTInterface helpers (as test_directed_traps
+    # was). Registered CLI-only so they are visible and invokable instead of
+    # silently orphaned; their ISA coverage is meanwhile gated in CI by the
+    # rv32ua/rv32uc/rv32um riscv-tests, the arch-compliance matrix, and the
+    # ddr_atomic_test/c_ext_test real programs. Flip include_in_pytest after
+    # porting.
+    "directed_atomics": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_atomics",
+        hdl_toplevel_module="cpu_tb",
+        description="Directed LR.W/SC.W atomic tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "directed_multicycle": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_multicycle",
+        hdl_toplevel_module="cpu_tb",
+        description="Directed back-to-back multi-cycle op tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "compressed": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_compressed",
+        hdl_toplevel_module="cpu_tb",
+        description="RISC-V C-extension directed tests (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
+    ),
+    "cpu_random": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_cpu",
+        hdl_toplevel_module="cpu_tb",
+        description="Constrained-random instruction regression (cpu_tb; NEEDS PORTING to OOO)",
+        include_in_pytest=False,
     ),
 }
 

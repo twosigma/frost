@@ -15,18 +15,21 @@
  */
 
 /*
- * Trap Unit - Machine-mode exception and interrupt handling
+ * Trap Unit - exception and interrupt handling
  *
  * This module implements the RISC-V privileged architecture trap mechanism,
  * supporting both synchronous exceptions and asynchronous interrupts.
+ * Traps originate from M-mode or U-mode and are always taken in M-mode (mtvec).
+ * Machine interrupts are taken while running in U-mode regardless of mstatus.MIE,
+ * so the timer can preempt user code.
  *
  * Responsibilities:
  * =================
- *   - Exception detection from EX stage (ECALL, EBREAK, misaligned access)
+ *   - Exception handling from ROB commit (ECALL, EBREAK, misaligned access)
  *   - Interrupt prioritization and masking
  *   - Trap entry: save state, redirect to mtvec
  *   - Trap exit (MRET): restore state, return to mepc
- *   - WFI: stall until interrupt pending
+ *   - WFI state machine (unused in cpu_ooo; see WFI Behavior below)
  *
  * Trap Priority (highest to lowest):
  * ==================================
@@ -62,6 +65,8 @@
  *   - Stall pipeline until any interrupt is pending
  *   - Resume at next instruction if interrupt not taken
  *   - Take trap if interrupt is both pending and enabled
+ *   - NOTE: unused in cpu_ooo -- i_wfi_start is tied to 0 and o_stall_for_wfi
+ *     is unconnected; WFI stalling is handled by ROB serialization at the head
  *
  * Related Modules:
  *   - csr_file.sv: Provides mstatus/mie/mtvec/mepc, receives trap updates
@@ -96,6 +101,10 @@ module trap_unit #(
     // Direct MIE bit input keeps mstatus bit extraction out of this path.
     input logic i_mstatus_mie_direct,
 
+    // Current privilege mode. Machine interrupts are taken whenever running
+    // below M (priv != PrivM) regardless of mstatus.MIE (RISC-V privileged spec).
+    input logic [1:0] i_priv,
+
     // Interrupt pending inputs
     input riscv_pkg::interrupt_t i_interrupts,
 
@@ -104,6 +113,7 @@ module trap_unit #(
     input logic [XLEN-1:0] i_exception_cause,
     input logic [XLEN-1:0] i_exception_tval,
     input logic [XLEN-1:0] i_exception_pc,
+    input logic [XLEN-1:0] i_interrupt_pc,
 
     // MRET trap-return request
     input logic i_mret_start,
@@ -136,18 +146,39 @@ module trap_unit #(
   assign mie_msie = i_mie[riscv_pkg::MieMsiBit];
 
   // Register trap_taken for one cycle to prevent it from re-asserting immediately
-  // after CSR update (breaks combinational loop with mstatus_mie)
+  // after CSR update (breaks combinational loop with mstatus_mie).  Also keep
+  // a one-cycle MRET recovery marker: CSR privilege/MIE state changes on the
+  // raw MRET pulse, while the OOO front/back-end flush is registered one cycle
+  // later.  During that handoff, an old registered interrupt must not trap with
+  // mepc equal to the MRET instruction itself.
   logic trap_taken_prev;
+  logic mret_taken_prev;
   always_ff @(posedge i_clk) begin
-    if (i_rst) trap_taken_prev <= 1'b0;
-    else trap_taken_prev <= o_trap_taken;
+    if (i_rst) begin
+      trap_taken_prev <= 1'b0;
+      mret_taken_prev <= 1'b0;
+    end else begin
+      trap_taken_prev <= o_trap_taken;
+      mret_taken_prev <= o_mret_taken;
+    end
   end
 
-  // Interrupt pending and enabled (gate by !trap_taken_prev to prevent re-entry)
+  logic mret_interrupt_inhibit;
+  assign mret_interrupt_inhibit = i_mret_start || mret_taken_prev;
+
+  // Interrupt pending and enabled (gate by !trap_taken_prev to prevent re-entry).
+  // Global M-interrupt enable: mstatus.MIE while in M, but ALWAYS enabled while
+  // running below M (priv != PrivM) so a machine timer/SW/ext interrupt can
+  // preempt U-mode even with MIE=0 (RISC-V privileged spec).
+  logic m_int_globally_enabled;
+  assign m_int_globally_enabled = mstatus_mie || (i_priv != riscv_pkg::PrivM);
   logic meip_enabled, mtip_enabled, msip_enabled;
-  assign meip_enabled = i_interrupts.meip && mie_meie && mstatus_mie && !trap_taken_prev;
-  assign mtip_enabled = i_interrupts.mtip && mie_mtie && mstatus_mie && !trap_taken_prev;
-  assign msip_enabled = i_interrupts.msip && mie_msie && mstatus_mie && !trap_taken_prev;
+  assign meip_enabled = i_interrupts.meip && mie_meie && m_int_globally_enabled &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
+  assign mtip_enabled = i_interrupts.mtip && mie_mtie && m_int_globally_enabled &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
+  assign msip_enabled = i_interrupts.msip && mie_msie && m_int_globally_enabled &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
 
   // TIMING OPTIMIZATION: Register interrupt_pending to break critical path.
   // The combinational path from msip -> interrupt_pending -> take_trap -> stall -> cache
@@ -156,11 +187,53 @@ module trap_unit #(
   // Note: mtip is already registered in cpu_and_mem.sv for similar timing reasons.
   logic interrupt_pending_comb;
   logic interrupt_pending;
-  assign interrupt_pending_comb = meip_enabled || mtip_enabled || msip_enabled;
+  // Gate with !o_trap_taken so a still-pending interrupt is NOT re-latched on
+  // the cycle its own trap is taken. interrupt_pending is registered, so
+  // otherwise the latched value fires a second, spurious trap entry the next
+  // cycle (re-saving mstatus.MPP=M and corrupting a U-mode trap). NOT a comb
+  // loop: o_trap_taken derives from the REGISTERED interrupt_pending, so the
+  // feedback path passes through a flop.
+  assign interrupt_pending_comb = (meip_enabled || mtip_enabled || msip_enabled) && !o_trap_taken;
+
+  // Source-level qualification: pending AND locally enabled (mie.x) and not in a
+  // trap/MRET recovery window -- but NOT gated by the live global mstatus.MIE.
+  //
+  // Once interrupt_pending has been LATCHED (while fully eligible, MIE=1), a
+  // YOUNGER csr clear of mstatus.MIE (e.g. the kernel idle `csrsi; ...; csrci`)
+  // must not retroactively erase it: the interrupt was eligible at an instruction
+  // boundary the csr-clear is younger than, so per the spec it is taken (the
+  // csr-clear is squashed by the trap). interrupt_pending is registered (1-cycle
+  // late) and interrupt_pending_eligible re-checks the LIVE global enable, so
+  // without a hold a csr-clear's delayed mstatus.MIE side-effect lands in the
+  // sample-to-service gap, drops interrupt_pending_comb, and clears the
+  // already-qualified bit -> the interrupt is LOST. On the no-MMU kernel that
+  // dropped machine-timer tick freezes jiffies and hangs the boot. (Usually the
+  // service is delayed one cycle by a draining store via i_sq_committed_empty,
+  // widening the window.) Hold across a global-MIE drop; still release when the
+  // source itself de-qualifies (mtip/meip/msip drops or mie.x cleared) or the
+  // trap is taken, so masking and acks behave normally.
+  // interrupt_source_live: a REAL, current interrupt source exists -- pending AND
+  // locally enabled (mie.x), gated ONLY by !trap_taken_prev. NOT gated by the live
+  // global mstatus.MIE and NOT by mret_interrupt_inhibit, so a persistent timer is
+  // HELD across both a global-MIE drop AND the MRET-recovery window rather than
+  // erased. It is still never TAKEN there (interrupt_pending_eligible keeps
+  // !mret_interrupt_inhibit + live m_int_globally_enabled), and the 0x80388bba
+  // panic stays guarded by the cpu_ooo interrupt_resume_pc seed on mret_taken (not
+  // by this latch) -- per commit 718f8cc the seed is THE panic fix and the old
+  // trap_unit MRET/interrupt cancel was incidental bring-up timing. A stale sample
+  // whose source has dropped (source_live=0) is still cleared, preserving the
+  // "cancel a stale one-cycle sample before MRET" property.
+  logic interrupt_source_live;
+  assign interrupt_source_live =
+      ((i_interrupts.meip && mie_meie) || (i_interrupts.mtip && mie_mtie) ||
+       (i_interrupts.msip && mie_msie)) && !trap_taken_prev;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) interrupt_pending <= 1'b0;
-    else interrupt_pending <= interrupt_pending_comb;
+    else if (interrupt_pending_comb) interrupt_pending <= 1'b1;  // latch when fully eligible
+    else if (interrupt_pending && interrupt_source_live && !o_trap_taken)
+      interrupt_pending <= 1'b1;  // hold a live source across a global-MIE drop AND MRET inhibit
+    else interrupt_pending <= 1'b0;  // clear stale (no live source) / on take
   end
 
   // Register synchronous exceptions from the ROB head before trap entry.
@@ -176,6 +249,12 @@ module trap_unit #(
     if (i_rst) begin
       exception_pending <= 1'b0;
     end else if (o_trap_taken) begin
+      exception_pending <= 1'b0;
+    end else if (trap_taken_prev) begin
+      // Hold cleared one extra cycle: i_exception_valid (the ROB's trap_pending)
+      // stays high until the trap is acked (~1 cycle after o_trap_taken), so
+      // without this the exception re-arms and the trap is taken a second time
+      // (now in M, corrupting mstatus.MPP / mcause for a U-mode trap).
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
       exception_pending <= 1'b1;
@@ -241,23 +320,53 @@ module trap_unit #(
   end
 
   always_ff @(posedge i_clk) begin
-    interrupt_cause <= interrupt_cause_comb;
+    // Hold the cause while interrupt_pending is held (across a global-MIE drop or
+    // the MRET inhibit); interrupt_cause_comb is built from the gated *_enabled so
+    // it decays to 0 there, which would default interrupt_latched_source_enabled
+    // false and leave the held interrupt ineligible when it can finally trap.
+    if (interrupt_cause_comb != '0) interrupt_cause <= interrupt_cause_comb;
+    else if (interrupt_pending && interrupt_source_live) interrupt_cause <= interrupt_cause;
+    else interrupt_cause <= '0;
   end
+
+  // A registered interrupt request must still be enabled when it reaches the
+  // trap decision. This keeps raw interrupt inputs out of the take_trap cone,
+  // while allowing CSR writes such as Linux's ret_from_exception mstatus
+  // restore to cancel a stale one-cycle interrupt sample before MRET.
+  logic interrupt_latched_source_enabled;
+  always_comb begin
+    unique case (interrupt_cause)
+      riscv_pkg::IntMachineExternal: interrupt_latched_source_enabled = mie_meie;
+      riscv_pkg::IntMachineSoftware: interrupt_latched_source_enabled = mie_msie;
+      riscv_pkg::IntMachineTimer:    interrupt_latched_source_enabled = mie_mtie;
+      default:                       interrupt_latched_source_enabled = 1'b0;
+    endcase
+  end
+
+  logic interrupt_pending_eligible;
+  assign interrupt_pending_eligible = interrupt_pending &&
+      interrupt_latched_source_enabled &&
+      m_int_globally_enabled &&
+      !trap_taken_prev &&
+      !mret_interrupt_inhibit;
 
   // Trap taken: either interrupt or exception, the pipeline not stalled
   // (except for WFI stall, which should be broken by interrupt), and no
   // committed store still draining (see i_sq_committed_empty).
   logic take_trap;
-  assign take_trap = (interrupt_pending || exception_pending) && !i_pipeline_stall &&
+  assign take_trap = (interrupt_pending_eligible || exception_pending) &&
+      !i_pipeline_stall &&
       i_sq_committed_empty;
 
-  // MRET execution (trap has priority: if interrupt/exception fires same cycle, trap wins)
+  // MRET execution.  Synchronous exceptions are structurally impossible with
+  // MRET at the ROB head; pending interrupts are deferred across the MRET
+  // recovery window above so the return redirect stays precise.
   logic take_mret;
   assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
 
   // Hold commit while a trap/MRET waits out the store drain, so the
   // committed set shrinks monotonically and the wait is bounded.
-  assign o_trap_drain_wait = (interrupt_pending || exception_pending || i_mret_start) &&
+  assign o_trap_drain_wait = (interrupt_pending_eligible || exception_pending || i_mret_start) &&
       !i_sq_committed_empty;
 
   // Output trap signals
@@ -272,7 +381,7 @@ module trap_unit #(
       o_trap_target = i_mepc;
     end else if (take_trap) begin
       // Check mtvec mode
-      if (i_mtvec[1:0] == 2'b01 && interrupt_pending) begin
+      if (i_mtvec[1:0] == 2'b01 && interrupt_pending_eligible) begin
         // Vectored mode for interrupts: BASE + 4*cause_code
         // Use pre-computed small offset (6 bits) for faster timing than
         // extracting from full interrupt_cause which synthesis can't optimize
@@ -289,11 +398,13 @@ module trap_unit #(
   // Trap entry information for CSR file
   // Interrupts have priority over synchronous exceptions
   always_comb begin
-    if (interrupt_pending) begin
+    if (interrupt_pending_eligible) begin
       o_trap_cause = interrupt_cause;
       o_trap_value = '0;  // Interrupts have mtval = 0
-      // For interrupts, save PC of next instruction (the one that will be interrupted)
-      o_trap_pc = i_exception_pc;
+      // For interrupts, save the precise architectural resume PC.  The live
+      // ROB head PC can be transient or stale while an async interrupt drains
+      // through the registered commit path.
+      o_trap_pc = i_interrupt_pc;
     end else begin
       o_trap_cause = exception_cause_q;
       o_trap_value = exception_tval_q;
@@ -318,9 +429,9 @@ module trap_unit #(
     assume (!(i_mret_start && i_exception_valid));
     assume (!(i_wfi_start && i_mret_start));
     assume (!(i_wfi_start && i_exception_valid));
-    // Note: MRET + interrupt_pending is NOT assumed away. The RTL handles it
-    // by giving trap priority (!take_trap gate on take_mret), and the
-    // p_trap_mret_mutex assertion proves this without over-constraining.
+    // Note: MRET + interrupt_pending is NOT assumed away. MRET wins that race;
+    // the pending interrupt is re-sampled after the return redirect has had
+    // time to retire the MRET precisely.
   end
 
   always @(posedge i_clk) begin
@@ -329,7 +440,8 @@ module trap_unit #(
       p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
 
       // Trap needs source: trap_taken requires interrupt or exception.
-      p_trap_needs_source : assert (!o_trap_taken || (interrupt_pending || exception_pending));
+      p_trap_needs_source :
+      assert (!o_trap_taken || (interrupt_pending_eligible || exception_pending));
 
       // Trap not during stall: traps only fire when pipeline not stalled.
       p_trap_not_stalled : assert (!o_trap_taken || !i_pipeline_stall);
@@ -343,6 +455,11 @@ module trap_unit #(
 
       // MRET target is mepc: when MRET fires, target must be mepc.
       p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
+
+      // A pending interrupt must not preempt the MRET instruction itself.
+      if (i_mret_start && !exception_pending) begin
+        p_mret_defers_interrupt : assert (!o_trap_taken);
+      end
 
       // WFI stall contract: if stall_for_wfi_comb, wfi must be active.
       p_wfi_stall_needs_active : assert (!stall_for_wfi_comb || wfi_active);
@@ -403,8 +520,8 @@ module trap_unit #(
       cover_wfi_stall : cover (stall_for_wfi_comb);
       cover_wfi_wakeup : cover (f_past_valid && !wfi_active && $past(wfi_active));
       cover_external_interrupt :
-      cover (interrupt_pending && interrupt_cause == riscv_pkg::IntMachineExternal);
-      cover_exception : cover (o_trap_taken && i_exception_valid && !interrupt_pending);
+      cover (interrupt_pending_eligible && interrupt_cause == riscv_pkg::IntMachineExternal);
+      cover_exception : cover (o_trap_taken && i_exception_valid && !interrupt_pending_eligible);
       cover_trap_after_drain : cover (f_past_valid && o_trap_taken && $past(o_trap_drain_wait));
     end
   end

@@ -73,6 +73,29 @@ module sq_forwarding_unit #(
   localparam int unsigned WordAddrWidth = XLEN - 2;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
+  typedef struct packed {
+    logic                           valid;
+    logic [ReorderBufferTagWidth:0] age;
+    logic                           can_forward;
+    logic [IdxWidth-1:0]            idx;
+    logic [1:0]                     extract_type;
+  } fwd_winner_t;
+
+  function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
+                                                      input fwd_winner_t rhs);
+    begin
+      if (!lhs.valid) begin
+        choose_newer_winner = rhs;
+      end else if (!rhs.valid) begin
+        choose_newer_winner = lhs;
+      end else if (rhs.age >= lhs.age) begin
+        choose_newer_winner = rhs;
+      end else begin
+        choose_newer_winner = lhs;
+      end
+    end
+  endfunction
+
   // Forwarding scan result index (drives the SQ data-RAM read address in parent)
   logic [IdxWidth-1:0] fwd_match_idx;
 
@@ -184,6 +207,12 @@ module sq_forwarding_unit #(
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
   logic [1:0] fwd_entry_extract_type[DEPTH];
+`ifndef FORMAL
+  fwd_winner_t fwd_leaf[DEPTH];
+  fwd_winner_t fwd_pair[4];
+  fwd_winner_t fwd_quad[2];
+  fwd_winner_t fwd_winner;
+`endif
 
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
   assign fwd_load_age = {1'b0, i_sq_check_rob_tag} - {1'b0, i_rob_head_tag};
@@ -305,25 +334,60 @@ module sq_forwarding_unit #(
   // Block 2: newest conflicting store wins for data/extract selection. The
   // heavy address/age qualification is already parallelized above, so this
   // block only prioritizes 1-bit match results and their precomputed metadata.
-  always_comb begin
-    logic have_winner;
-    logic [ReorderBufferTagWidth:0] winner_age;
+`ifdef FORMAL
+  // Yosys's formal frontend currently mishandles the balanced tree's unpacked
+  // array of packed structs, treating fields such as fwd_leaf[i].can_forward
+  // as implicit wires. Use an equivalent linear selector for formal only; the
+  // synthesized implementation below remains the timing-optimized tree.
+  logic fwd_formal_winner_valid;
+  logic [ReorderBufferTagWidth:0] fwd_formal_winner_age;
 
-    have_winner      = 1'b0;
-    winner_age       = '0;
-    fwd_can_fwd      = 1'b0;
-    fwd_match_idx    = '0;
-    fwd_extract_type = 2'd0;
+  always_comb begin
+    fwd_formal_winner_valid = 1'b0;
+    fwd_formal_winner_age   = '0;
+    fwd_can_fwd             = 1'b0;
+    fwd_match_idx           = '0;
+    fwd_extract_type        = 2'd0;
+
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (fwd_conflict_mask[i] && (!have_winner || (fwd_entry_age[i] >= winner_age))) begin
-        have_winner      = 1'b1;
-        winner_age       = fwd_entry_age[i];
-        fwd_can_fwd      = fwd_can_forward_mask[i];
-        fwd_match_idx    = IdxWidth'(i);
-        fwd_extract_type = fwd_entry_extract_type[i];
+      if (fwd_conflict_mask[i] &&
+          (!fwd_formal_winner_valid || (fwd_entry_age[i] >= fwd_formal_winner_age))) begin
+        fwd_formal_winner_valid = 1'b1;
+        fwd_formal_winner_age   = fwd_entry_age[i];
+        fwd_can_fwd             = fwd_can_forward_mask[i];
+        fwd_match_idx           = IdxWidth'(i);
+        fwd_extract_type        = fwd_entry_extract_type[i];
       end
     end
   end
+`else
+  // Keep this as a balanced tree: the old serial loop let an SQ-check address
+  // bit feed each entry's conflict logic and then walk an 8-entry winner chain
+  // before reaching o_sq_forward.can_forward.
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      fwd_leaf[i].valid        = fwd_conflict_mask[i];
+      fwd_leaf[i].age          = fwd_entry_age[i];
+      fwd_leaf[i].can_forward  = fwd_can_forward_mask[i];
+      fwd_leaf[i].idx          = IdxWidth'(i);
+      fwd_leaf[i].extract_type = fwd_entry_extract_type[i];
+    end
+
+    fwd_pair[0]      = choose_newer_winner(fwd_leaf[0], fwd_leaf[1]);
+    fwd_pair[1]      = choose_newer_winner(fwd_leaf[2], fwd_leaf[3]);
+    fwd_pair[2]      = choose_newer_winner(fwd_leaf[4], fwd_leaf[5]);
+    fwd_pair[3]      = choose_newer_winner(fwd_leaf[6], fwd_leaf[7]);
+
+    fwd_quad[0]      = choose_newer_winner(fwd_pair[0], fwd_pair[1]);
+    fwd_quad[1]      = choose_newer_winner(fwd_pair[2], fwd_pair[3]);
+
+    fwd_winner       = choose_newer_winner(fwd_quad[0], fwd_quad[1]);
+
+    fwd_can_fwd      = fwd_winner.valid && fwd_winner.can_forward;
+    fwd_match_idx    = fwd_winner.idx;
+    fwd_extract_type = fwd_winner.extract_type;
+  end
+`endif
 
   // Block 3: Registered forwarding outputs.
   // Keep the SQ compare/forwarding result behind a register so the LQ sees it
@@ -336,7 +400,7 @@ module sq_forwarding_unit #(
     end else begin
       o_sq_all_older_addrs_known <= i_sq_check_valid ? fwd_all_older_known : 1'b0;
       o_sq_forward.match         <= i_sq_check_valid ? fwd_found_match : 1'b0;
-      o_sq_forward.can_forward   <= i_sq_check_valid ? (fwd_found_match && fwd_can_fwd) : 1'b0;
+      o_sq_forward.can_forward   <= i_sq_check_valid ? fwd_can_fwd : 1'b0;
     end
 
     case (fwd_extract_type)

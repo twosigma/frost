@@ -17,7 +17,7 @@
 /*
  * Tomasulo Integration Wrapper
  *
- * Verification wrapper that instantiates ROB + RAT + six RS instances
+ * Wrapper (instantiated by cpu_ooo) that instantiates ROB + RAT + six RS instances
  * (INT_RS, MUL_RS, MEM_RS, FP_RS, FMUL_RS, FDIV_RS), LQ, SQ, CDB arbiter,
  * FU shims, and hardwires the internal commit bus, dispatch routing,
  * SQ↔LQ forwarding, and shared CDB/flush signals.
@@ -29,7 +29,7 @@
  *
  * Internal wiring:
  *   ROB.o_commit_comb --> commit_bus --> cpu_ooo same-cycle mispredict detect
- *   ROB.o_commit      --> o_commit   (registered testbench observation)
+ *   ROB.o_commit_comb --> commit_bus --> commit_bus_pipeline --> o_commit
  *   commit_bus_q      --> RAT commit-clear signals
  *   FU adapters --> cdb_arbiter --> cdb_bus --> ROB.i_cdb_write (derived)
  *                                           --> all RS .i_cdb (broadcast for wakeup)
@@ -129,6 +129,11 @@ module tomasulo_wrapper #(
     input  logic                                        i_csr_done,
     output logic                                        o_trap_pending,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_pc,
+    output logic                                        o_head_is_wfi,
+    // Retired-next-PC precompute for cpu_ooo's interrupt_resume_pc (see
+    // reorder_buffer port comment; pure timing restructure).
+    output logic                  [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
+    output logic                  [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t                       o_trap_cause,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_value,
     input  logic                                        i_trap_taken,
@@ -136,7 +141,11 @@ module tomasulo_wrapper #(
     input  logic                                        i_mret_done,
     input  logic                  [riscv_pkg::XLEN-1:0] i_mepc,
     input  logic                                        i_interrupt_pending,
-    input  logic                                        i_trap_misaligned_accesses,
+
+    // Current privilege (PrivM/PrivU), forwarded to the ROB for U-mode
+    // CSR/MRET illegal-instruction checks.
+    input logic [1:0] i_priv,
+    input logic       i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
     // retire path can accept a second commit this cycle.  cpu_ooo ties this
@@ -460,10 +469,11 @@ module tomasulo_wrapper #(
   //
   // commit_bus_q is a one-cycle pipeline register that breaks the critical
   // timing path from ROB head_ready/commit_en through SQ/RAT to LQ.
-  // All internal consumers (RAT, SQ commit, SC logic) use the registered
-  // version.  The valid bit is cleared on full flush for safety — although
-  // overlapping pipelined commits with flush_all only occurs for non-store
-  // instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
+  // Internal consumers (RAT, SQ commit, SC logic) use the registered
+  // version, except the SQ same-cycle flush-race guard, which taps the raw
+  // ROB commit pulses.  The valid bit is cleared on full flush for safety —
+  // although overlapping pipelined commits with flush_all only occurs for
+  // non-store instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
   // Split commit_bus_q into separate valid + data to prevent Vivado from
   // dragging the reset net onto payload register bits.
@@ -632,9 +642,15 @@ module tomasulo_wrapper #(
   // CDB Arbiter: FU completions → single CDB broadcast
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
-  riscv_pkg::cdb_broadcast_t cdb_bus;  // registered — feeds RS/ROB wakeup
+  // registered — feeds RS/ROB wakeup
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus;
+  // same-cycle INT_RS-local copy
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
-  riscv_pkg::cdb_broadcast_t cdb_bus_2;  // registered lane-1 — feeds RS/ROB wakeup
+  // registered lane-1 — feeds RS/ROB wakeup
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2;
+  // same-cycle INT_RS-local copy
+  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
   riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
@@ -689,7 +705,8 @@ module tomasulo_wrapper #(
   // max_fanout forces replication across the RS snoop / ROB-write consumers —
   // the high-fanout report (609 loads) showed this net being one of the top
   // drivers into the flush-recovery cone that failed timing at -0.947 ns.
-  (* max_fanout = 32 *) logic cdb_bus_valid;
+  (* max_fanout = 32 *)logic cdb_bus_valid;
+  (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_int_rs_valid;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_valid <= 1'b0;
@@ -697,7 +714,13 @@ module tomasulo_wrapper #(
   end
 
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus_int_rs_valid <= 1'b0;
+    else cdb_bus_int_rs_valid <= cdb_bus_comb.valid;
+  end
+
+  always_ff @(posedge i_clk) begin
     cdb_bus <= cdb_bus_comb;
+    cdb_bus_int_rs <= cdb_bus_comb;
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
@@ -708,6 +731,16 @@ module tomasulo_wrapper #(
   always_comb begin
     cdb_bus_qualified       = cdb_bus;
     cdb_bus_qualified.valid = cdb_bus_valid;
+  end
+
+  // INT_RS is physically far from the shared CDB register on Genesys2 and
+  // snoops many value bits in parallel.  Give it an equivalent same-cycle CDB
+  // register so placement can keep that high-fanout payload local without
+  // changing wakeup latency.
+  riscv_pkg::cdb_broadcast_t cdb_bus_int_rs_qualified;
+  always_comb begin
+    cdb_bus_int_rs_qualified       = cdb_bus_int_rs;
+    cdb_bus_int_rs_qualified.valid = cdb_bus_int_rs_valid;
   end
 
   // Derive ROB CDB write from CDB broadcast
@@ -722,18 +755,29 @@ module tomasulo_wrapper #(
   end
 
   // ---- 2-wide CDB lane-1: registered mirror of the lane-0 pipeline above.
-  (* max_fanout = 32 *) logic cdb_bus_2_valid;
+  (* max_fanout = 32 *)logic cdb_bus_2_valid;
+  (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_2_int_rs_valid;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_2_valid <= 1'b0;
     else cdb_bus_2_valid <= cdb_bus_2_comb.valid;
   end
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n) cdb_bus_2_int_rs_valid <= 1'b0;
+    else cdb_bus_2_int_rs_valid <= cdb_bus_2_comb.valid;
+  end
+  always_ff @(posedge i_clk) begin
     cdb_bus_2 <= cdb_bus_2_comb;
+    cdb_bus_2_int_rs <= cdb_bus_2_comb;
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
   always_comb begin
     cdb_bus_2_qualified       = cdb_bus_2;
     cdb_bus_2_qualified.valid = cdb_bus_2_valid;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs_qualified;
+  always_comb begin
+    cdb_bus_2_int_rs_qualified       = cdb_bus_2_int_rs;
+    cdb_bus_2_int_rs_qualified.valid = cdb_bus_2_int_rs_valid;
   end
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter_2;
   always_comb begin
@@ -1327,8 +1371,13 @@ module tomasulo_wrapper #(
   logic mem_rs_fu_ready_base;
   logic mem_rs_fu_ready;
 
+  // Do NOT gate SC issue on (sc_pending && next_is_sc). That single-SC
+  // serialization deadlocked Linux: under speculation a YOUNGER SC issues
+  // out-of-order, sets sc_pending, and then this gate blocked the OLDER head SC
+  // from ever issuing -- so it never fired, sc_pending never cleared, and the
+  // core hung at _prb_commit. sc_pending_unit now tracks multiple in-flight SCs
+  // (a table keyed by ROB tag), so several SCs may legitimately be in flight.
   assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
-                                !(sc_pending && mem_rs_next_is_sc) &&
                                 !sc_fu_complete_reg.valid &&
                                 !mem_adapter_result_pending &&
                                 !i_backend_recovery_hold;
@@ -1406,22 +1455,26 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok),
 
       // External coordination
-      .i_sq_empty          (o_sq_empty),
-      .i_sq_committed_empty(sq_committed_empty),
-      .i_fence_i_sync_done (i_fence_i_sync_done),
-      .o_fence_i_sync_req  (o_fence_i_sync_req),
-      .o_csr_start         (o_csr_start),
-      .i_csr_done          (i_csr_done),
-      .o_trap_pending      (o_trap_pending),
-      .o_trap_pc           (o_trap_pc),
-      .o_trap_cause        (o_trap_cause),
-      .o_trap_value        (o_trap_value),
-      .i_trap_taken        (i_trap_taken),
-      .o_mret_start        (o_mret_start),
-      .i_mret_done         (i_mret_done),
-      .i_mepc              (i_mepc),
-      .i_interrupt_pending (i_interrupt_pending),
-      .i_commit_hold       (i_commit_hold),
+      .i_sq_empty                 (o_sq_empty),
+      .i_sq_committed_empty       (sq_committed_empty),
+      .i_fence_i_sync_done        (i_fence_i_sync_done),
+      .o_fence_i_sync_req         (o_fence_i_sync_req),
+      .o_csr_start                (o_csr_start),
+      .i_csr_done                 (i_csr_done),
+      .o_trap_pending             (o_trap_pending),
+      .o_trap_pc                  (o_trap_pc),
+      .o_head_is_wfi              (o_head_is_wfi),
+      .o_head_retired_next_pc     (o_head_retired_next_pc),
+      .o_head_next_retired_next_pc(o_head_next_retired_next_pc),
+      .o_trap_cause               (o_trap_cause),
+      .o_trap_value               (o_trap_value),
+      .i_trap_taken               (i_trap_taken),
+      .o_mret_start               (o_mret_start),
+      .i_mret_done                (i_mret_done),
+      .i_mepc                     (i_mepc),
+      .i_interrupt_pending        (i_interrupt_pending),
+      .i_priv                     (i_priv),
+      .i_commit_hold              (i_commit_hold),
 
       // Flush
       .i_flush_en(i_flush_en),
@@ -1648,8 +1701,8 @@ module tomasulo_wrapper #(
       .o_full_for_2(int_rs_full_for_2_w),
 
       // CDB snoop (from arbiter)
-      .i_cdb(cdb_bus_qualified),
-      .i_cdb_2(cdb_bus_2_qualified),
+      .i_cdb(cdb_bus_int_rs_qualified),
+      .i_cdb_2(cdb_bus_2_int_rs_qualified),
       .i_repair_valid_1(int_done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -2652,7 +2705,6 @@ module tomasulo_wrapper #(
   // Effective address: base (src1) + immediate (declared above near SC pending)
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
-  // MMIO detection: address >= MMIO base
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.
   assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
@@ -2721,12 +2773,12 @@ module tomasulo_wrapper #(
       .i_commit_valid_comb  (commit_store_like_raw),
       .i_commit_rob_tag_comb(head_tag),
 
-      // Slot 2 is always older than any ordinary partial-flush boundary that
-      // can overlap commit_2_fire, and delayed recovery sees it through the
-      // registered commit path.  Keep the raw head+1 ROB metadata cone out of
-      // the SQ valid flops.
-      .i_commit_valid_comb_2  (1'b0),
-      .i_commit_rob_tag_comb_2('0),
+      // Slot 2 has the same raw commit race as slot 1 for full-trap drains:
+      // commit_bus_2_q_valid is still one cycle away from SQ, so a timer IRQ
+      // must not observe committed-empty and full-flush the entry before SQ
+      // sees the registered commit.
+      .i_commit_valid_comb_2  (commit_2_store_like_raw),
+      .i_commit_rob_tag_comb_2(commit_bus_2.tag),
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),

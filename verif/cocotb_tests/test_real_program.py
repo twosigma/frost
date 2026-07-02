@@ -32,7 +32,7 @@ import re
 from collections import Counter
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from typing import Any
 
 CLK_PERIOD_NS = 3
@@ -184,6 +184,23 @@ COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000)
 # sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting on RV32
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
+# pde_return_hazard runs PDE_VIS_ITERATIONS(16) x 5 lookups x 2 variants (one with
+# cache churn) plus the s2l sub-tests; the full pass takes ~1.12M cycles (it used to
+# bail early on the unreachable-"maps" tree bug, masking the real budget).
+PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
+
+# wfi_lost_tick sweeps ITERS(3000) idle/WFI iterations, each taking exactly one
+# deferred timer trap. On the bram axis the whole sweep finishes in ~345k cycles,
+# but on the ddr axis (FROST_COCOTB_MEM_CONFIG=ddr) the .text + g_jiffies live in
+# DDR: a ~70k-cycle cold-boot I-cache fill plus a slightly slower per-tick round
+# trip push the 3000-tick sweep just past the 500k default cap (timeout, not a
+# lost tick -- the tick rate stays flat to the end). Give it room like the other
+# legitimately-long tests rather than shrinking the phase-sweep coverage.
+WFI_LOST_TICK_MAX_CYCLES = 800000
+
+# No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
+LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
+
 # Number of clock cycles to hold reset between runs
 RESET_CYCLES = 10
 
@@ -280,6 +297,215 @@ def _read_bool(signal: Any) -> bool | None:
     return bool(value)
 
 
+async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
+    """Observe a trap/MRET deadlock wedge by sampling ground-truth signals.
+
+    Enabled with FROST_WEDGE_MONITOR=1. Samples the trap/MRET/flush/IRQ/store-
+    drain state every clock and emits an aggregated snapshot every
+    FROST_WEDGE_DUMP_INTERVAL cycles (default 2000). It also raises a one-shot
+    "STALL DETECTED" banner once UART output stops advancing for
+    FROST_WEDGE_STALL_CYCLES cycles (default 20000) and then emits up to
+    FROST_WEDGE_POST_STALL_DUMPS (default 16) full snapshots before it stops
+    logging (the simulation keeps running to the cycle cap).
+
+    Every tap is None-safe: signals that do not resolve are reported once in the
+    "missing_taps" list and counted as 0. This is pure instrumentation -- it
+    drives no signals and changes no behaviour.
+    """
+    dump_interval = int(os.environ.get("FROST_WEDGE_DUMP_INTERVAL", "2000"))
+    stall_cycles = int(os.environ.get("FROST_WEDGE_STALL_CYCLES", "20000"))
+    post_stall_dump_limit = int(os.environ.get("FROST_WEDGE_POST_STALL_DUMPS", "16"))
+
+    def g(path: str) -> Any:
+        return _get_signal(dut, path)
+
+    cpu = "cpu_and_memory_subsystem.cpu_inst"
+    mem = "cpu_and_memory_subsystem"
+
+    # 1-bit signals: aggregated as cycles-high + 0->1 edge counts per interval.
+    bool_sig = {
+        "trap_taken": g(f"{cpu}.trap_taken"),
+        "trap_taken_reg": _first_signal(
+            dut, [f"{cpu}.trap_taken_reg", f"{cpu}.dbg_trap_taken_q"]
+        ),
+        "mret_taken": g(f"{cpu}.mret_taken"),
+        "mret_taken_reg": g(f"{cpu}.mret_taken_reg"),
+        "flush_all": g(f"{cpu}.flush_all"),
+        "flush_en": g(f"{cpu}.flush_en"),
+        "trap_pending": g(f"{cpu}.trap_pending"),
+        "mret_start": g(f"{cpu}.mret_start"),
+        "trap_drain_wait": g(f"{cpu}.trap_drain_wait"),
+        "sq_committed_empty": g(f"{cpu}.sq_committed_empty"),
+        "commit_hold_q": g(f"{cpu}.trap_mret_commit_hold_q"),
+        "mispredict_recovery_pending": g(f"{cpu}.mispredict_recovery_pending"),
+        "interrupt_pending": g(f"{cpu}.interrupt_pending"),
+        "csr_mstatus_mie_direct": g(f"{cpu}.csr_mstatus_mie_direct"),
+        "rob_head_is_wfi": g(f"{cpu}.rob_head_is_wfi"),
+        "head_valid": g(f"{cpu}.head_valid"),
+        "dbg_commit_valid": g(f"{cpu}.dbg_commit_valid"),
+        # CLINT / store-drain taps live in the cpu_and_mem parent scope.
+        "mtip_registered": g(f"{mem}.mtip_registered"),
+        "mtip_comparison": g(f"{mem}.mtip_comparison"),
+        "mtimecmp_write_pulse": g(f"{mem}.mtimecmp_write_pulse"),
+        "cached_write_inflight": g(f"{mem}.data_memory_cached_write_inflight"),
+    }
+    # Load-address taps: prove which address the spin-loop load targets
+    # (decisive for distinguishing a clobbered base register from a lost store).
+    mem_addr_sig = g(f"{cpu}.o_data_mem_addr")
+    mem_rd_en_sig = g(f"{cpu}.o_data_mem_read_enable")
+    mem_cached_rd_en_sig = g(f"{cpu}.o_data_mem_cached_read_enable")
+
+    # Multi-bit signals: sampled at dump time (steady-state snapshot value).
+    val_sig = {
+        "dbg_commit_pc": g(f"{cpu}.dbg_commit_pc"),
+        "head_pc": g(f"{cpu}.u_tomasulo.u_rob.head_pc"),
+        "head_idx": g(f"{cpu}.u_tomasulo.u_rob.head_idx"),
+        "sq_count": g(f"{cpu}.sq_count"),
+        "rob_count": g(f"{cpu}.rob_count"),
+        "csr_priv": g(f"{cpu}.csr_priv"),
+        "csr_mstatus": g(f"{cpu}.csr_mstatus"),
+        "csr_mie": g(f"{cpu}.csr_mie"),
+        "csr_mepc": g(f"{cpu}.csr_mepc"),
+        "resume_pc": _first_signal(
+            dut,
+            [f"{cpu}.dbg_interrupt_resume_pc", f"{cpu}.interrupt_resume_pc"],
+        ),
+        "o_pc": g(f"{cpu}.o_pc"),
+        "mtime": g(f"{mem}.mtime"),
+        "mtimecmp": g(f"{mem}.mtimecmp"),
+    }
+
+    missing = sorted(k for k, v in {**bool_sig, **val_sig}.items() if v is None)
+    cocotb.log.info(
+        f"WEDGE monitor armed: dump_interval={dump_interval} "
+        f"stall_cycles={stall_cycles} post_stall_dumps={post_stall_dump_limit} "
+        f"missing_taps={missing}"
+    )
+
+    bool_keys = list(bool_sig.keys())
+    hi = {k: 0 for k in bool_keys}
+    edges = {k: 0 for k in bool_keys}
+    prev = {k: 0 for k in bool_keys}
+    head_pc_ctr: Counter[int] = Counter()
+    commit_pc_ctr: Counter[int] = Counter()
+    read_addr_ctr: Counter[int] = Counter()
+    commit_count = 0
+    interval_start = 0
+
+    def hx(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else f"0x{v:08x}"
+
+    def hx64(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else f"0x{v:016x}"
+
+    def iv(name: str) -> str:
+        v = _read_int(val_sig.get(name))
+        return "None" if v is None else str(v)
+
+    def topn(ctr: Counter[int], n: int = 5) -> str:
+        if not ctr:
+            return "{}"
+        return "{" + ", ".join(f"0x{pc:08x}:{c}" for pc, c in ctr.most_common(n)) + "}"
+
+    def emit(mc: int, length: int, stalled: bool, uart_len: int) -> None:
+        committed_pending = length - hi["sq_committed_empty"]
+        cocotb.log.info(
+            f"WEDGE mc={mc} ilen={length} stalled={stalled} uart_len={uart_len}\n"
+            f"  COMMIT: valid_cyc={hi['dbg_commit_valid']} commits={commit_count} "
+            f"distinct_pc={len(commit_pc_ctr)} top={topn(commit_pc_ctr)} o_pc={hx('o_pc')}\n"
+            f"  HEAD: head_valid_cyc={hi['head_valid']} distinct_head_pc={len(head_pc_ctr)} "
+            f"top={topn(head_pc_ctr)} head_idx={iv('head_idx')} wfi_cyc={hi['rob_head_is_wfi']} "
+            f"rob_count={iv('rob_count')} sq_count={iv('sq_count')}\n"
+            f"  LOAD: read_addrs={topn(read_addr_ctr)}\n"
+            f"  FLUSH: flush_all_hi={hi['flush_all']} flush_en_hi={hi['flush_en']} "
+            f"trap_taken(hi={hi['trap_taken']},edges={edges['trap_taken']}) "
+            f"trap_taken_reg_hi={hi['trap_taken_reg']} "
+            f"mret_taken(hi={hi['mret_taken']},edges={edges['mret_taken']}) "
+            f"mret_taken_reg_hi={hi['mret_taken_reg']} "
+            f"mispred_recov_hi={hi['mispredict_recovery_pending']}\n"
+            f"  GATE: trap_pending_hi={hi['trap_pending']} mret_start_hi={hi['mret_start']} "
+            f"drain_wait_hi={hi['trap_drain_wait']} commit_hold_hi={hi['commit_hold_q']} "
+            f"sq_committed_pending_cyc={committed_pending} "
+            f"cached_inflight_hi={hi['cached_write_inflight']}\n"
+            f"  IRQ: int_pending_hi={hi['interrupt_pending']} mtip_reg_hi={hi['mtip_registered']} "
+            f"mtip_cmp_hi={hi['mtip_comparison']} mtimecmp_writes={hi['mtimecmp_write_pulse']} "
+            f"mtime={hx64('mtime')} mtimecmp={hx64('mtimecmp')}\n"
+            f"  CSR: priv={iv('csr_priv')} mstatus={hx('csr_mstatus')} mie={hx('csr_mie')} "
+            f"mstatus_mie_hi={hi['csr_mstatus_mie_direct']} mepc={hx('csr_mepc')} "
+            f"resume_pc={hx('resume_pc')}"
+        )
+
+    def reset_interval(mc: int) -> None:
+        nonlocal commit_count, interval_start
+        for k in bool_keys:
+            hi[k] = 0
+            edges[k] = 0
+        head_pc_ctr.clear()
+        commit_pc_ctr.clear()
+        read_addr_ctr.clear()
+        commit_count = 0
+        interval_start = mc
+
+    mc = 0
+    last_uart_len = 0
+    last_uart_change = 0
+    stall_announced = False
+    post_stall_dumps = 0
+
+    while True:
+        await RisingEdge(dut.i_clk)
+        mc += 1
+        for k in bool_keys:
+            raw = _read_int(bool_sig[k])
+            v = 1 if raw else 0
+            hi[k] += v
+            if v and not prev[k]:
+                edges[k] += 1
+            prev[k] = v
+        if prev["head_valid"] and len(head_pc_ctr) < 256:
+            hp = _read_int(val_sig["head_pc"])
+            if hp is not None:
+                head_pc_ctr[hp] += 1
+        if prev["dbg_commit_valid"]:
+            cp = _read_int(val_sig["dbg_commit_pc"])
+            if cp is not None:
+                commit_count += 1
+                if len(commit_pc_ctr) < 256:
+                    commit_pc_ctr[cp] += 1
+        rd = _read_int(mem_rd_en_sig)
+        crd = _read_int(mem_cached_rd_en_sig)
+        if (rd or crd) and len(read_addr_ctr) < 256:
+            ra = _read_int(mem_addr_sig)
+            if ra is not None:
+                read_addr_ctr[ra] += 1
+
+        uart_len = len(uart_monitor.get_output()) if uart_monitor is not None else 0
+        if uart_len != last_uart_len:
+            last_uart_len = uart_len
+            last_uart_change = mc
+        stalled = (mc - last_uart_change) >= stall_cycles
+        if stalled and not stall_announced:
+            cocotb.log.info(
+                f"WEDGE STALL DETECTED at mc={mc}: no UART progress for "
+                f"{stall_cycles} cycles (uart_len={uart_len})"
+            )
+            stall_announced = True
+
+        if mc % dump_interval == 0:
+            emit(mc, mc - interval_start, stalled, uart_len)
+            if stalled:
+                post_stall_dumps += 1
+                if post_stall_dumps >= post_stall_dump_limit:
+                    cocotb.log.info(
+                        "WEDGE monitor: post-stall snapshot budget reached; "
+                        "stopping further logging (sim continues to cap)."
+                    )
+                    return
+            reset_interval(mc)
+
+
 class UartRxDriver:
     """Drive UART RX serial input to the DUT (8N1)."""
 
@@ -298,18 +524,16 @@ class UartRxDriver:
         """Match uart_rx.sv prescaler math to compute cycles per bit.
 
         uart_rx uses CLK_FREQ_HZ/4 (since it runs on clk_div4) and computes:
-        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / (BAUD_RATE * DATA_WIDTH)
-        Then it waits ClockCyclesPerBit * DATA_WIDTH cycles per bit.
+        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / BAUD_RATE.
         """
         clk_freq = _read_u64(getattr(self.dut, "CLK_FREQ_HZ", None))
         if clk_freq is None:
             clk_freq = UART_CLK_FREQ_HZ_DEFAULT
         uart_clk_freq = clk_freq // 4
-        base = uart_clk_freq // (UART_BAUD_RATE * UART_DATA_BITS)
-        bit_cycles = base * UART_DATA_BITS
+        bit_cycles = uart_clk_freq // UART_BAUD_RATE
         cocotb.log.info(
             f"UartRxDriver: clk_freq={clk_freq}, uart_clk_freq={uart_clk_freq}, "
-            f"base={base}, bit_cycles={bit_cycles}"
+            f"bit_cycles={bit_cycles}"
         )
         return max(1, bit_cycles)
 
@@ -318,20 +542,26 @@ class UartRxDriver:
         for _ in range(cycles):
             await RisingEdge(self.dut.i_clk_div4)
 
+    async def _wait_bit_edges(self, cycles: int) -> None:
+        """Wait bit-time cycles using the non-sampling edge for UART transitions."""
+        for _ in range(cycles):
+            await FallingEdge(self.dut.i_clk_div4)
+
     async def send_byte(self, value: int) -> None:
         """Send a single byte over UART RX (LSB first)."""
+        await FallingEdge(self.dut.i_clk_div4)
         # Start bit
         self.dut.i_uart_rx.value = 0
-        await self._wait_cycles(self.bit_cycles)
+        await self._wait_bit_edges(self.bit_cycles)
         # Data bits
         for bit in range(UART_DATA_BITS):
             self.dut.i_uart_rx.value = (value >> bit) & 0x1
-            await self._wait_cycles(self.bit_cycles)
+            await self._wait_bit_edges(self.bit_cycles)
         # Stop bit
         self.dut.i_uart_rx.value = 1
-        await self._wait_cycles(self.bit_cycles)
+        await self._wait_bit_edges(self.bit_cycles)
 
-    async def send(self, data: bytes) -> None:
+    async def send(self, data: bytes, inter_byte_cycles: int = 0) -> None:
         """Send a byte string over UART RX."""
         # Ensure line is idle for multiple bit times before starting
         # This gives the receiver time to sync after any glitches
@@ -339,8 +569,8 @@ class UartRxDriver:
         await self._wait_cycles(self.bit_cycles * 4)
         for byte in data:
             await self.send_byte(byte)
-            # Extra idle time between characters for receiver to process
-            await self._wait_cycles(self.bit_cycles)
+            if inter_byte_cycles > 0:
+                await self._wait_cycles(inter_byte_cycles)
 
 
 async def wait_for_uart_text(
@@ -647,6 +877,21 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                 if app_name == "hello_world":
                     # Just needs to print the first hello message
                     return (None, "Hello, world!", False, app_name)
+                if app_name == "linux_boot":
+                    if os.environ.get("FROST_LINUX_RUN_FULL") == "1":
+                        # Diagnostic / CI regression capture: never matches -> run
+                        # the full COCOTB_LINUX_MAX_CYCLES capturing all UART +
+                        # CLINT/retire progress. The CI linux-boot-cocotb job runs
+                        # in this mode and asserts boot health afterwards with
+                        # tests/check_linux_boot_regression.py (the ~22M window is
+                        # silent mem_init after devtmpfs, so there is no deep
+                        # console marker to match on -- progress + a serviced timer
+                        # tick are the real gremlin-regression signals).
+                        return ("<<__never_matches__>>", None, True, app_name)
+                    # Passes once the kernel reaches its boot banner. (Interim
+                    # bring-up criterion; tighten to a userspace/shell marker
+                    # once no-MMU Linux boots that far.)
+                    return (None, "Linux version", False, app_name)
                 if app_name == "uart_echo":
                     # Interactive test handled separately (UART input injection)
                     return (None, None, False, app_name)
@@ -695,6 +940,20 @@ async def run_until_complete(
         progress_interval = int(
             os.environ.get("COCOTB_COREMARK_PROGRESS_INTERVAL", 500_000)
         )
+    irq_precision_check = os.environ.get("FROST_IRQ_PRECISION_CHECK") == "1"
+    irq_precision_strict = os.environ.get("FROST_IRQ_PRECISION_STRICT") == "1"
+    irq_low_ra_assert = os.environ.get("FROST_IRQ_LOW_RA_ASSERT") == "1"
+    irq_precision_event_limit = int(
+        os.environ.get("FROST_IRQ_PRECISION_EVENT_LIMIT", "64")
+    )
+    irq_precision_events: list[str] = []
+    external_irq_symbol = os.environ.get("FROST_EXTERNAL_IRQ_SYMBOL")
+    external_irq_enabled = bool(external_irq_symbol)
+    external_irq_offset = int(os.environ.get("FROST_EXTERNAL_IRQ_OFFSET", "0"), 0)
+    external_irq_max_pulses = int(os.environ.get("FROST_EXTERNAL_IRQ_MAX_PULSES", "1"))
+    external_irq_hold_cycles = int(
+        os.environ.get("FROST_EXTERNAL_IRQ_HOLD_CYCLES", "1")
+    )
     retire_sig = None
     pc_sig = None
     pc_vld_sig = None
@@ -780,6 +1039,16 @@ async def run_until_complete(
     ras_pop_after_restore_live_sig = None
     commit_valid_live_sig = None
     commit_pc_live_sig = None
+    commit0_dest_valid_sig = None
+    commit0_dest_rf_sig = None
+    commit0_dest_reg_sig = None
+    commit0_value_sig = None
+    commit1_valid_sig = None
+    commit1_pc_sig = None
+    commit1_dest_valid_sig = None
+    commit1_dest_rf_sig = None
+    commit1_dest_reg_sig = None
+    commit1_value_sig = None
     commit_is_return_live_sig = None
     commit_is_call_live_sig = None
     commit_checkpoint_id_live_sig = None
@@ -850,6 +1119,34 @@ async def run_until_complete(
     rob_alloc_is_csr_live_sig = None
     rob_alloc_is_mret_live_sig = None
     id_instruction_live_sig = None
+    trap_taken_live_sig = None
+    trap_taken_reg_dbg_sig = None
+    trap_cause_internal_live_sig = None
+    mret_taken_live_sig = None
+    trap_target_live_sig = None
+    trap_pending_live_sig = None
+    rob_trap_pc_live_sig = None
+    trap_pc_internal_live_sig = None
+    interrupt_resume_pc_live_sig = None
+    csr_commit_fire_live_sig = None
+    csr_mepc_live_sig = None
+    flush_all_live_sig = None
+    port0_int_we_sig = None
+    port0_int_addr_sig = None
+    port0_int_data_sig = None
+    port1_int_we_sig = None
+    port1_int_addr_sig = None
+    port1_int_data_sig = None
+    rob_commit0_reg_valid_sig = None
+    rob_commit0_reg_pc_sig = None
+    rob_commit0_reg_dest_valid_sig = None
+    rob_commit0_reg_dest_rf_sig = None
+    rob_commit0_reg_dest_reg_sig = None
+    rob_commit1_reg_valid_sig = None
+    rob_commit1_reg_pc_sig = None
+    rob_commit1_reg_dest_valid_sig = None
+    rob_commit1_reg_dest_rf_sig = None
+    rob_commit1_reg_dest_reg_sig = None
     coremark_cf_debug_enabled = (
         is_coremark_like and os.environ.get("FROST_COREMARK_CF_DEBUG") == "1"
     )
@@ -888,7 +1185,7 @@ async def run_until_complete(
         control_flow_trace_label = os.environ.get(
             "FROST_CONTROL_FLOW_TRACE_LABEL", f"{app_name or 'program'} trace"
         )
-    if progress_interval:
+    if progress_interval or irq_precision_check or external_irq_enabled:
         retire_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
         )
@@ -1447,6 +1744,36 @@ async def run_until_complete(
         commit_pc_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
+        commit0_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_valid"
+        )
+        commit0_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_rf"
+        )
+        commit0_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_reg"
+        )
+        commit0_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_value"
+        )
+        commit1_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+        )
+        commit1_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+        )
+        commit1_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_valid"
+        )
+        commit1_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_rf"
+        )
+        commit1_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_reg"
+        )
+        commit1_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_value"
+        )
         commit_is_return_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_is_return"
         )
@@ -1523,6 +1850,20 @@ async def run_until_complete(
         trap_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
         )
+        trap_taken_reg_dbg_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_taken_q",
+                "cpu_and_memory_subsystem.cpu_inst.trap_taken_reg",
+            ],
+        )
+        trap_cause_internal_live_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu_inst.trap_cause_internal",
+            ],
+        )
         mret_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.mret_taken"
         )
@@ -1534,6 +1875,16 @@ async def run_until_complete(
         )
         rob_trap_pc_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc"
+        )
+        trap_pc_internal_live_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_pc_internal",
+                "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc",
+            ],
+        )
+        interrupt_resume_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_interrupt_resume_pc"
         )
         rob_trap_cause_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_cause"
@@ -1549,6 +1900,81 @@ async def run_until_complete(
         )
         csr_mepc_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.csr_mepc"
+        )
+        flush_all_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.flush_all"
+        )
+        port0_int_we_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_we",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_we",
+            ],
+        )
+        port0_int_addr_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_addr",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_addr",
+            ],
+        )
+        port0_int_data_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_data",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_data",
+            ],
+        )
+        port1_int_we_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_we",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_we",
+            ],
+        )
+        port1_int_addr_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_addr",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_addr",
+            ],
+        )
+        port1_int_data_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_data",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_data",
+            ],
+        )
+        rob_commit0_reg_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_valid"
+        )
+        rob_commit0_reg_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_pc"
+        )
+        rob_commit0_reg_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_valid"
+        )
+        rob_commit0_reg_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_rf"
+        )
+        rob_commit0_reg_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
+        )
+        rob_commit1_reg_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
+        )
+        rob_commit1_reg_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_pc"
+        )
+        rob_commit1_reg_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
+        )
+        rob_commit1_reg_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
+        )
+        rob_commit1_reg_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
         )
         flush_pipeline_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_pipeline"
@@ -1645,6 +2071,112 @@ async def run_until_complete(
                     (0x353C, 0x35DC),
                 ]
 
+    if irq_precision_check:
+        trap_taken_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
+        )
+        trap_cause_internal_live_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_cause_internal",
+                "cpu_and_memory_subsystem.cpu_inst.trap_cause_internal",
+            ],
+        )
+        rob_trap_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc"
+        )
+        trap_pc_internal_live_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_pc_internal",
+                "cpu_and_memory_subsystem.cpu_inst.rob_trap_pc",
+            ],
+        )
+        interrupt_resume_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_interrupt_resume_pc"
+        )
+        csr_commit_fire_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.csr_commit_fire"
+        )
+        csr_mepc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.csr_mepc"
+        )
+        flush_all_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.flush_all"
+        )
+        port0_int_we_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_we",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_we",
+            ],
+        )
+        port0_int_addr_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_addr",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_addr",
+            ],
+        )
+        port0_int_data_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port0_int_data",
+                "cpu_and_memory_subsystem.cpu_inst.port0_int_data",
+            ],
+        )
+        port1_int_we_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_we",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_we",
+            ],
+        )
+        port1_int_addr_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_addr",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_addr",
+            ],
+        )
+        port1_int_data_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_port1_int_data",
+                "cpu_and_memory_subsystem.cpu_inst.port1_int_data",
+            ],
+        )
+        rob_commit0_reg_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_valid"
+        )
+        rob_commit0_reg_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_pc"
+        )
+        rob_commit0_reg_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_valid"
+        )
+        rob_commit0_reg_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_rf"
+        )
+        rob_commit0_reg_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_reg_dest_reg"
+        )
+        rob_commit1_reg_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_valid"
+        )
+        rob_commit1_reg_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_pc"
+        )
+        rob_commit1_reg_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_valid"
+        )
+        rob_commit1_reg_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_rf"
+        )
+        rob_commit1_reg_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
+        )
+
     retired_pc_hist: Counter[int] = Counter()
     retired_mispredicts = 0
     last_progress_mispredicts = 0
@@ -1675,6 +2207,9 @@ async def run_until_complete(
     last_checkpoint_in_use = None
     last_rat_a0_state = None
     last_x2_commit = None
+    last_x2_commit_pc = None
+    last_x2_raw_commit = None
+    last_x2_raw_commit_pc = None
     last_x5_commit = None
     last_x8_commit = None
     last_x9_commit = None
@@ -1685,6 +2220,37 @@ async def run_until_complete(
     control_flow_trace_enabled = True
     retire_only_trace = os.environ.get("FROST_CONTROL_FLOW_RETIRE_ONLY") == "1"
     ras_transition_trace_active = True
+    irq_precision_callee_range: tuple[int, int] | None = None
+    external_irq_range: tuple[int, int] | None = None
+    external_irq_active = False
+    external_irq_hold_remaining = 0
+    external_irq_pulses = 0
+    external_irq_armed = True
+    if irq_precision_check:
+        irq_callee_symbol = os.environ.get(
+            "FROST_IRQ_CALLEE_SYMBOL", "irq_stack_slot_callee"
+        )
+        irq_symbol_ranges = _load_symbol_ranges([irq_callee_symbol], app_name)
+        irq_precision_callee_range = irq_symbol_ranges.get(irq_callee_symbol)
+        if irq_precision_callee_range is not None:
+            lo, hi = irq_precision_callee_range
+            cocotb.log.info(
+                f"IRQ precision callee window {irq_callee_symbol}: "
+                f"[0x{lo:08x}, 0x{hi:08x})"
+            )
+    if external_irq_enabled and external_irq_symbol is not None:
+        external_symbol_ranges = _load_symbol_ranges([external_irq_symbol], app_name)
+        external_irq_range = external_symbol_ranges.get(external_irq_symbol)
+        if external_irq_range is None:
+            raise AssertionError(
+                f"FROST_EXTERNAL_IRQ_SYMBOL={external_irq_symbol!r} not found"
+            )
+        lo, hi = external_irq_range
+        cocotb.log.info(
+            f"External IRQ injector armed for {external_irq_symbol}: "
+            f"[0x{lo:08x}, 0x{hi:08x}) offset=0x{external_irq_offset:x} "
+            f"max_pulses={external_irq_max_pulses}"
+        )
 
     def in_trace_window(pc: int | None) -> bool:
         if pc is None or control_flow_trace_ranges is None:
@@ -1703,6 +2269,25 @@ async def run_until_complete(
             if lo <= pc < hi:
                 return symbol_name
         return "-"
+
+    def commit_writes_x1_x2_at_pc(
+        valid_sig: Any | None,
+        pc_sig: Any | None,
+        dest_valid_sig: Any | None,
+        dest_rf_sig: Any | None,
+        dest_reg_sig: Any | None,
+        trap_pc: int | None,
+    ) -> bool:
+        if trap_pc is None:
+            return False
+        dest_reg = _read_int(dest_reg_sig)
+        return (
+            bool(_read_bool(valid_sig))
+            and bool(_read_bool(dest_valid_sig))
+            and not bool(_read_bool(dest_rf_sig))
+            and dest_reg in {1, 2}
+            and _read_int(pc_sig) == trap_pc
+        )
 
     def format_coremark_if_mismatch(
         *,
@@ -1744,6 +2329,263 @@ async def run_until_complete(
 
     for cycle in range(max_cycles):
         await RisingEdge(dut.i_clk)
+        if external_irq_enabled and hasattr(dut, "i_external_interrupt"):
+            if external_irq_active:
+                if external_irq_hold_remaining > 0:
+                    external_irq_hold_remaining -= 1
+                if trap_taken_live_sig is not None and bool(
+                    _read_bool(trap_taken_live_sig)
+                ):
+                    external_irq_hold_remaining = 0
+                if external_irq_hold_remaining == 0:
+                    dut.i_external_interrupt.value = 0
+                    external_irq_active = False
+                    external_irq_armed = False
+
+            if (
+                not external_irq_active
+                and external_irq_armed
+                and external_irq_range is not None
+                and external_irq_pulses < external_irq_max_pulses
+            ):
+                retire_valid = bool(_read_bool(retire_sig))
+                retire_pc = _read_int(retire_pc_sig)
+                lo, hi = external_irq_range
+                trigger_pc = lo + external_irq_offset
+                if (
+                    retire_valid
+                    and retire_pc is not None
+                    and trigger_pc <= retire_pc < hi
+                ):
+                    dut.i_external_interrupt.value = 1
+                    external_irq_active = True
+                    external_irq_hold_remaining = max(1, external_irq_hold_cycles)
+                    external_irq_pulses += 1
+                    cocotb.log.info(
+                        f"External IRQ pulse {external_irq_pulses} at "
+                        f"cycle={cycle + 1} retire_pc=0x{retire_pc:08x}"
+                    )
+
+            if (
+                not external_irq_armed
+                and external_irq_range is not None
+                and external_irq_pulses < external_irq_max_pulses
+            ):
+                retire_pc = _read_int(retire_pc_sig)
+                lo, hi = external_irq_range
+                if retire_pc is None or not (lo <= retire_pc < hi):
+                    external_irq_armed = True
+
+        if irq_precision_check:
+            raw_x2_events = []
+            for (
+                valid_sig,
+                pc_sig,
+                dest_valid_sig,
+                dest_rf_sig,
+                dest_reg_sig,
+                value_sig,
+            ) in (
+                (
+                    commit_valid_live_sig,
+                    commit_pc_live_sig,
+                    commit0_dest_valid_sig,
+                    commit0_dest_rf_sig,
+                    commit0_dest_reg_sig,
+                    commit0_value_sig,
+                ),
+                (
+                    commit1_valid_sig,
+                    commit1_pc_sig,
+                    commit1_dest_valid_sig,
+                    commit1_dest_rf_sig,
+                    commit1_dest_reg_sig,
+                    commit1_value_sig,
+                ),
+            ):
+                if (
+                    bool(_read_bool(valid_sig))
+                    and bool(_read_bool(dest_valid_sig))
+                    and not bool(_read_bool(dest_rf_sig))
+                    and _read_int(dest_reg_sig) == 2
+                ):
+                    value = _read_int(value_sig)
+                    pc = _read_int(pc_sig)
+                    last_x2_raw_commit = value
+                    last_x2_raw_commit_pc = pc
+                    raw_x2_events.append(f"0x{(value or 0):08x}@0x{(pc or 0):08x}")
+
+            current_x2_commit = last_x2_commit
+            current_x2_commit_pc = last_x2_commit_pc
+            wb_x2_events = []
+            for port_name, we_sig, addr_sig, data_sig, pc_sig in (
+                (
+                    "p0",
+                    port0_int_we_sig,
+                    port0_int_addr_sig,
+                    port0_int_data_sig,
+                    rob_commit0_reg_pc_sig,
+                ),
+                (
+                    "p1",
+                    port1_int_we_sig,
+                    port1_int_addr_sig,
+                    port1_int_data_sig,
+                    rob_commit1_reg_pc_sig,
+                ),
+            ):
+                if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 2:
+                    value = _read_int(data_sig)
+                    pc = _read_int(pc_sig)
+                    current_x2_commit = value
+                    current_x2_commit_pc = pc
+                    wb_x2_events.append(
+                        f"{port_name}=0x{(value or 0):08x}@0x{(pc or 0):08x}"
+                    )
+
+            trap = bool(_read_bool(trap_taken_live_sig))
+            trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
+            flush_all = bool(_read_bool(flush_all_live_sig))
+            trap_cause = _read_int(trap_cause_internal_live_sig)
+            is_irq = bool((trap_cause or 0) & 0x8000_0000)
+            trap_pc = _read_int(trap_pc_internal_live_sig)
+            rob_trap_pc = _read_int(rob_trap_pc_live_sig)
+            interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
+            c0_valid = bool(_read_bool(commit_valid_live_sig))
+            c1_valid = bool(_read_bool(commit1_valid_sig))
+            c0_pc = _read_int(commit_pc_live_sig)
+            c1_pc = _read_int(commit1_pc_sig)
+            reg0_sensitive = commit_writes_x1_x2_at_pc(
+                rob_commit0_reg_valid_sig,
+                rob_commit0_reg_pc_sig,
+                rob_commit0_reg_dest_valid_sig,
+                rob_commit0_reg_dest_rf_sig,
+                rob_commit0_reg_dest_reg_sig,
+                trap_pc,
+            )
+            reg1_sensitive = commit_writes_x1_x2_at_pc(
+                rob_commit1_reg_valid_sig,
+                rob_commit1_reg_pc_sig,
+                rob_commit1_reg_dest_valid_sig,
+                rob_commit1_reg_dest_rf_sig,
+                rob_commit1_reg_dest_reg_sig,
+                trap_pc,
+            )
+            raw0_sensitive = commit_writes_x1_x2_at_pc(
+                commit_valid_live_sig,
+                commit_pc_live_sig,
+                commit0_dest_valid_sig,
+                commit0_dest_rf_sig,
+                commit0_dest_reg_sig,
+                trap_pc,
+            )
+            raw1_sensitive = commit_writes_x1_x2_at_pc(
+                commit1_valid_sig,
+                commit1_pc_sig,
+                commit1_dest_valid_sig,
+                commit1_dest_rf_sig,
+                commit1_dest_reg_sig,
+                trap_pc,
+            )
+
+            stale_sp_body = False
+            if trap and is_irq and trap_pc is not None and irq_precision_callee_range:
+                callee_lo, callee_hi = irq_precision_callee_range
+                x2_from_callee = (
+                    current_x2_commit_pc is not None
+                    and callee_lo <= current_x2_commit_pc < callee_hi
+                )
+                stale_sp_body = (
+                    callee_lo + 4 <= trap_pc < callee_hi and not x2_from_callee
+                )
+
+            if trap and is_irq:
+                event = (
+                    f"IRQ precision event cycle={cycle + 1} "
+                    f"cause=0x{(trap_cause or 0):08x} trap_pc=0x{(trap_pc or 0):08x} "
+                    f"rob_pc=0x{(rob_trap_pc or 0):08x} "
+                    f"resume_pc=0x{(interrupt_resume_pc or 0):08x} "
+                    f"c0={int(c0_valid)} pc0=0x{(c0_pc or 0):08x} "
+                    f"rd0={_read_int(commit0_dest_reg_sig)} "
+                    f"c1={int(c1_valid)} pc1=0x{(c1_pc or 0):08x} "
+                    f"rd1={_read_int(commit1_dest_reg_sig)} "
+                    f"p0we={int(bool(_read_bool(port0_int_we_sig)))} "
+                    f"p0a={_read_int(port0_int_addr_sig)} "
+                    f"p0d=0x{(_read_int(port0_int_data_sig) or 0):08x} "
+                    f"p0pc=0x{(_read_int(rob_commit0_reg_pc_sig) or 0):08x} "
+                    f"p1we={int(bool(_read_bool(port1_int_we_sig)))} "
+                    f"p1a={_read_int(port1_int_addr_sig)} "
+                    f"p1d=0x{(_read_int(port1_int_data_sig) or 0):08x} "
+                    f"p1pc=0x{(_read_int(rob_commit1_reg_pc_sig) or 0):08x} "
+                    f"csr_fire={int(bool(_read_bool(csr_commit_fire_live_sig)))} "
+                    f"trap_q={int(trap_q)} flush_all={int(flush_all)} "
+                    f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x} "
+                    f"last_x2_arch=0x{(current_x2_commit or 0):08x} "
+                    f"last_x2_arch_pc=0x{(current_x2_commit_pc or 0):08x} "
+                    f"last_x2_raw=0x{(last_x2_raw_commit or 0):08x} "
+                    f"last_x2_raw_pc=0x{(last_x2_raw_commit_pc or 0):08x} "
+                    f"raw_x2_now={','.join(raw_x2_events) or '-'} "
+                    f"wb_x2_now={','.join(wb_x2_events) or '-'}"
+                )
+                if len(irq_precision_events) < irq_precision_event_limit:
+                    irq_precision_events.append(event)
+                    cocotb.log.info(event)
+
+                raw_commit_collision = c0_valid or c1_valid
+                sensitive_pc_write = (
+                    raw0_sensitive or raw1_sensitive or reg0_sensitive or reg1_sensitive
+                )
+                if irq_precision_strict and (
+                    raw_commit_collision or sensitive_pc_write or stale_sp_body
+                ):
+                    raise AssertionError(
+                        "IRQ precision violation: "
+                        f"raw_commit={raw_commit_collision} "
+                        f"x1_x2_same_pc={sensitive_pc_write} "
+                        f"stale_sp_body={stale_sp_body}; {event}"
+                    )
+
+            low_ra_events = []
+            for port_name, we_sig, addr_sig, data_sig in (
+                ("p0", port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig),
+                ("p1", port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig),
+            ):
+                data_value = _read_int(data_sig)
+                if (
+                    bool(_read_bool(we_sig))
+                    and _read_int(addr_sig) == 1
+                    and data_value is not None
+                    and data_value < 0x1000
+                ):
+                    low_ra_events.append(f"{port_name}=0x{data_value:08x}")
+            if irq_low_ra_assert and low_ra_events:
+                raise AssertionError(
+                    "Low RA writeback under IRQ monitor: "
+                    f"cycle={cycle + 1} {' '.join(low_ra_events)} "
+                    f"trap={int(trap)} irq={int(is_irq)} "
+                    f"cause=0x{(trap_cause or 0):08x} "
+                    f"trap_pc=0x{(trap_pc or 0):08x} "
+                    f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
+                )
+
+        for we_sig, addr_sig, data_sig, pc_sig in (
+            (
+                port0_int_we_sig,
+                port0_int_addr_sig,
+                port0_int_data_sig,
+                rob_commit0_reg_pc_sig,
+            ),
+            (
+                port1_int_we_sig,
+                port1_int_addr_sig,
+                port1_int_data_sig,
+                rob_commit1_reg_pc_sig,
+            ),
+        ):
+            if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 2:
+                last_x2_commit = _read_int(data_sig)
+                last_x2_commit_pc = _read_int(pc_sig)
+
         if _read_bool(int_rf_write_enable_sig):
             commit_addr = _read_int(int_rf_write_addr_sig)
             commit_data = _read_int(int_rf_write_data_sig)
@@ -2457,6 +3299,14 @@ async def run_until_complete(
                 f"lq_mem_outstanding={lq_mem_outstanding}"
                 f"{cf_debug_suffix}"
             )
+            cocotb.log.info(
+                f"Run {run_number} CLINT/serial: cycle={cycle + 1} "
+                f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtime')) or 0):016x} "
+                f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtimecmp')) or 0):016x} "
+                f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.mtip_registered'))} "
+                f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_priv'))} "
+                f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_mstatus')) or 0):08x}"
+            )
             last_progress_retired = retired_count
             last_progress_mispredicts = retired_mispredicts
 
@@ -2684,6 +3534,12 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = COREMARK_MAX_CYCLES
     elif app_name == "sprintf_test":
         max_cycles = SPRINTF_TEST_MAX_CYCLES
+    elif app_name == "pde_return_hazard":
+        max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
+    elif app_name == "wfi_lost_tick":
+        max_cycles = WFI_LOST_TICK_MAX_CYCLES
+    elif app_name == "linux_boot":
+        max_cycles = LINUX_BOOT_MAX_CYCLES
     else:
         max_cycles = MAX_CYCLES
 
@@ -2696,6 +3552,11 @@ async def test_real_program(dut: Any) -> None:
     # Start UART monitor (runs throughout both program executions)
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
+
+    # Optional trap/MRET deadlock wedge observer (pure instrumentation).
+    if os.environ.get("FROST_WEDGE_MONITOR") == "1":
+        cocotb.start_soon(wedge_monitor(dut, uart_monitor))
+
     uart_driver = None
     debug_monitor = None
     if app_name == "uart_echo":
@@ -2711,6 +3572,8 @@ async def test_real_program(dut: Any) -> None:
             dut.i_rst_n.value = 0
             if hasattr(dut, "i_uart_rx"):
                 dut.i_uart_rx.value = 1
+            if hasattr(dut, "i_external_interrupt"):
+                dut.i_external_interrupt.value = 0
             for _ in range(RESET_CYCLES):
                 await RisingEdge(dut.i_clk)
             dut.i_rst_n.value = 1
@@ -2720,6 +3583,8 @@ async def test_real_program(dut: Any) -> None:
             dut.i_rst_n.value = 0
             if hasattr(dut, "i_uart_rx"):
                 dut.i_uart_rx.value = 1
+            if hasattr(dut, "i_external_interrupt"):
+                dut.i_external_interrupt.value = 0
             await Timer(2 * CLK_PERIOD_NS, unit="ns")
             await RisingEdge(dut.i_clk)
             dut.i_rst_n.value = 1

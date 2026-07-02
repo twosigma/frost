@@ -40,6 +40,7 @@ from .lq_model import (
 
 CLOCK_PERIOD_NS = 10
 LQ_DEPTH = 8
+AMO_RESCUE_THRESHOLD = 16384
 
 
 async def setup(dut: Any) -> tuple[LQInterface, LQModel]:
@@ -1309,6 +1310,68 @@ async def test_cached_response_after_invalidate_does_not_refill_l0(dut: Any) -> 
     await accept_fu_complete(dut_if)
 
 
+@cocotb.test()
+async def test_cached_response_during_flush_all_does_not_refill_l0(dut: Any) -> None:
+    """A cached-tier response coincident with flush_all must be drained only."""
+    dut_if, model = await setup(dut)
+
+    addr = 0x8000_0300
+    stale_word = 0x0000_0CC0
+    fresh_word = 0xA5A5_5A5A
+
+    dut_if.drive_sq_empty(True)
+
+    # Launch a cached-region load and delay its response until full flush.
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Expected cached load to issue"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    # The response arrives in the same cycle as trap/MRET-style full flush.
+    # It must not complete the killed load and must not refill the persistent L0.
+    dut_if.drive_flush_all()
+    model.flush_all()
+    dut_if.drive_mem_response(stale_word)
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_fill.value), "Full-flush response filled L0"
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.clear_mem_response()
+
+    assert dut_if.empty, "Full flush should clear the LQ"
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=1)).valid
+
+    # A later load to the same word must miss L0 and fetch the fresh value.
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await Timer(1, unit="ns")
+
+    assert not bool(dut.o_l0_hit.value), "Flushed response left a stale L0 hit"
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=4)
+    assert mem_req["en"], "Later load should miss L0 and issue to memory"
+    assert mem_req["addr"] == addr
+    await dut_if.step()
+
+    dut_if.drive_mem_response(fresh_word)
+    model.mem_response(fresh_word)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Later load should complete from memory"
+    assert result.tag == 2
+    assert result.value == fresh_word
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await accept_fu_complete(dut_if)
+
+
 # ============================================================================
 # Test 26: Cache miss fills cache, subsequent hit
 # ============================================================================
@@ -1852,6 +1915,159 @@ async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
     dut_if.drive_sq_committed_empty(True)
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "AMO should issue when at ROB head and sq_committed_empty"
+
+
+# ============================================================================
+# Test 35b: ROB-head AMO rescue from physical older-AMO block
+# ============================================================================
+@cocotb.test()
+async def test_blocked_head_amo_rescues_when_issue_would_idle(dut: Any) -> None:
+    """A physically blocked ROB-head AMO issues when no normal candidate exists."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # Physical order: younger pending AMO, then the true ROB-head AMO.  The
+    # older-AMO prefix is physical-order based, so the head AMO is masked unless
+    # the idle rescue path re-adds it.
+    dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=1, address=0x9000, amo_rs2=0x11)
+    model.addr_update(1, 0x9000, amo_rs2=0x11)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x9004, amo_rs2=0x22)
+    model.addr_update(0, 0x9004, amo_rs2=0x22)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_committed_empty(True)
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=AMO_RESCUE_THRESHOLD + 8)
+    assert mem_req["en"], "Blocked ROB-head AMO should be rescued"
+    assert (
+        mem_req["addr"] == 0x9004
+    ), f"Expected rescued head AMO addr=0x9004, got 0x{mem_req['addr']:x}"
+
+
+# ============================================================================
+# Test 35c: ROB-head AMO rescue stays dormant while normal progress exists
+# ============================================================================
+@cocotb.test()
+async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> None:
+    """A blocked ROB-head AMO does not jump ahead of a normal eligible load."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # Physical order: normal younger load, younger pending AMO, ROB-head AMO.
+    # The head AMO is physically blocked, but the load is a normal candidate, so
+    # the rescue path must stay dormant and preserve speculative load progress.
+    dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
+    model.alloc(2, False, MEM_SIZE_WORD, False)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=2, address=0xA000)
+    model.addr_update(2, 0xA000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_addr_update(rob_tag=1, address=0xA004, amo_rs2=0x11)
+    model.addr_update(1, 0xA004, amo_rs2=0x11)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xA008, amo_rs2=0x22)
+    model.addr_update(0, 0xA008, amo_rs2=0x22)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_committed_empty(True)
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "Normal load candidate should still issue"
+    assert (
+        mem_req["addr"] == 0xA000
+    ), f"Expected normal load addr=0xA000, got 0x{mem_req['addr']:x}"
+
+
+# ============================================================================
+# Test 35d: ROB-head AMO idle rescue must not replace busy SQ-check
+# ============================================================================
+@cocotb.test()
+async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None:
+    """Idle rescue stays off while a younger load is already in SQ-check."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(False)
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+
+    await alloc_and_addr(dut_if, model, rob_tag=2, address=0xB000)
+
+    sq_check = await wait_for_sq_check(dut_if, max_cycles=4)
+    assert sq_check["valid"], "Younger load should occupy SQ-check"
+    assert sq_check["rob_tag"] == 2
+
+    # Physical order after the staged load: younger pending AMO, then the true
+    # ROB-head AMO.  The head AMO is eligible but physically blocked by the
+    # younger AMO.  The idle rescue must not evict the existing SQ-check entry.
+    dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=1, address=0xB004, amo_rs2=0x11)
+    model.addr_update(1, 0xB004, amo_rs2=0x11)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xB008, amo_rs2=0x22)
+    model.addr_update(0, 0xB008, amo_rs2=0x22)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    for _ in range(6):
+        await Timer(1, unit="ns")
+        mem_req = dut_if.read_mem_request()
+        assert not mem_req["en"], "Blocked head AMO must not replace busy SQ-check"
+        sq_check = dut_if.read_sq_check()
+        assert sq_check["valid"], "Original SQ-check entry should remain staged"
+        assert sq_check["rob_tag"] == 2
+        await dut_if.step()
 
 
 # ============================================================================

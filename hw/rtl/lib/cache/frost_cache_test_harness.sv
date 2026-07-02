@@ -36,7 +36,10 @@ module frost_cache_test_harness #(
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     parameter int unsigned MEM_BYTES = 4 * 1024 * 1024,
-    parameter int unsigned MEM_LATENCY = 12
+    parameter int unsigned MEM_LATENCY = 12,
+    // Simulation-only fast cache maintenance for fence.i (see frost_cache). The
+    // cocotb cache registry runs this bench with it both off (default) and on.
+    parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input  logic                    i_clk,
     input  logic                    i_rst,
@@ -76,7 +79,8 @@ module frost_cache_test_harness #(
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
-      .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY)
+      .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
   ) cache_hierarchy (
       .i_clk(i_clk),
       .i_rst(i_rst),

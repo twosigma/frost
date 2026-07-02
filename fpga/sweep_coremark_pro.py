@@ -20,8 +20,19 @@ For every requested app this script runs fpga/load_software/load_software.py
 (clean rebuild with the official registry args + JTAG load) on the selected
 board while holding the board UART open, then applies the strict pass rule to
 the captured output: ``<<PASS>>`` present, no ``ERROR``/``<<FAIL>>``/``<<TRAP>>``,
-and every ``:fails=N`` counter zero. Each workload's ``time(secs)`` is extracted
-for the summary table. Exits 0 only if every app passes.
+and every ``:fails=N`` counter zero. Each workload's ``time(secs)`` and
+``iterations`` are extracted and reduced to iter/s for the summary table.
+Exits 0 only if every app passes.
+
+A full passing -v0 sweep also reports the official CoreMark-PRO score: each
+workload's iter/s is multiplied by its scale factor and divided by its
+reference-platform score, and the mark is 1000 x the geometric mean of the
+nine normalized results (EEMBC Symmetric Multicore Benchmark User Guide 2.1.4
+sec. 4.4 p.12, identical to coremark-pro's util/perl/cert_mark.pl). FROST is
+single-core, so the single-context result is both the SingleCore and MultiCore
+mark. -v1 sweeps print iter/s but no score (verification runs are not
+score-eligible), and -v0 workloads finishing under the ~10s score-rule minimum
+get a warning to recalibrate their registry iteration count.
 
 The target board is chosen with the required ``--board`` flag (``x3`` or
 ``genesys2``); both expose all nine hardware-supported workloads. With no app
@@ -30,6 +41,9 @@ sw/apps/software_registry.py).
 
 The UART device (``--serial``) and JTAG target (``--target``) default per board
 (X3: /dev/ttyUSB2; genesys2: /dev/ttyUSB0); override either with its flag.
+The sweep refuses to start while another process holds the UART open, and
+holds the port in exclusive mode (TIOCEXCL) while running -- a second reader
+(e.g. a forgotten minicom) would silently steal chunks of the capture.
 
 Examples (from the repo root):
 
@@ -45,6 +59,9 @@ Examples (from the repo root):
 
 import argparse
 import collections
+import fcntl
+import glob
+import math
 import os
 import re
 import select
@@ -59,7 +76,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_DEFAULT = SCRIPT_DIR.parent
 
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
-from software_registry import COREMARK_PRO_PROGRAMS  # noqa: E402
+from software_registry import (  # noqa: E402
+    COREMARK_PRO_PROGRAM_BY_APP,
+    COREMARK_PRO_PROGRAMS,
+)
 
 HW_APPS = tuple(p.app_name for p in COREMARK_PRO_PROGRAMS if p.hardware_supported)
 
@@ -96,10 +116,109 @@ DEFAULT_TIMEOUTS = {
 # avoid misreading a prior run's <<PASS>>/time as this run's result.
 LOAD_COMPLETE_SENTINEL = "FROST_LOAD_COMPLETE"
 
+# Official CoreMark-PRO scoring constants: workload -> (scale factor,
+# reference-platform score), from the EEMBC Symmetric Multicore Benchmark User
+# Guide 2.1.4 sec. 4.4 Figure 10 and coremark-pro util/perl/cert_mark.pl (the
+# two agree). A workload's normalized result is iter/s * scale / reference,
+# and the mark is 1000 x the geometric mean of the nine normalized results.
+COREMARK_PRO_REFERENCE = {
+    "cjpeg-rose7-preset": (1.0, 40.3438),
+    "core": (10000.0, 2855.0),
+    "linear_alg-mid-100x100-sp": (1.0, 38.5624),
+    "loops-all-mid-10k-sp": (1.0, 0.87959),
+    "nnet_test": (1.0, 1.45853),
+    "parser-125k": (1.0, 4.81116),
+    "radix2-big-64k": (1.0, 99.6587),
+    "sha-test": (1.0, 48.5201),
+    "zip-test": (1.0, 21.3618),
+}
+
+# Minimum -v0 workload runtime for an official score run; the registry
+# calibrates each workload's iteration count to clear this.
+SCORE_RULE_MIN_SECS = 10.0
+
+# mith prints time(secs) with %8g: usually plain decimal, but accept the
+# exponent form %g falls back to for extreme values.
+MITH_NUMBER = r"([0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)"
+
+
+def parse_workload_perf(serial_buf: str, workload: str) -> dict[str, Any]:
+    """Extract the workload-level iterations/time(secs) pair and derive iter/s.
+
+    Mirrors coremark-pro's util/perl/results_parser.pl (iter/s = iterations /
+    time(secs)). Anchoring on the official workload name keeps -v1 per-item
+    lines out of the match: mith prints the workload-level block first, and
+    only that block has an ``iterations=`` line.
+    """
+    name = re.escape(workload)
+    iters_match = re.search(rf"-- {name}:iterations=([0-9]+)", serial_buf)
+    secs_match = re.search(rf"-- {name}:time\(secs\)=\s*{MITH_NUMBER}", serial_buf)
+    iterations = int(iters_match.group(1)) if iters_match else None
+    secs = float(secs_match.group(1)) if secs_match else None
+    ips = None
+    if iterations and secs and secs > 0:
+        ips = iterations / secs
+    return {"iterations": iterations, "secs": secs, "ips": ips}
+
+
+def coremark_pro_mark(
+    ips_by_workload: dict[str, float],
+) -> tuple[float | None, list[str]]:
+    """Compute the official CoreMark-PRO mark from per-workload iter/s.
+
+    Returns (mark, []) when every official workload has a positive iter/s,
+    else (None, sorted missing workload names) -- the mark is only defined
+    over the full set of nine.
+    """
+    missing = sorted(
+        workload
+        for workload in COREMARK_PRO_REFERENCE
+        if not ips_by_workload.get(workload)
+    )
+    if missing:
+        return None, missing
+    log_sum = 0.0
+    for workload, (scale, reference) in COREMARK_PRO_REFERENCE.items():
+        log_sum += math.log(ips_by_workload[workload] * scale / reference)
+    return 1000.0 * math.exp(log_sum / len(COREMARK_PRO_REFERENCE)), []
+
+
+def serial_holders(path: str) -> list[str]:
+    """Return 'pid: cmdline' for other processes holding the serial device.
+
+    The tty layer delivers each received byte to exactly one reader, so a
+    second attached process (a forgotten minicom, an old capture script)
+    steals random chunks of the UART stream and silently corrupts the
+    sweep's capture. Scans /proc, so it only sees same-user processes.
+    """
+    try:
+        target = os.stat(path).st_rdev
+    except OSError:
+        return []
+    holders = set()
+    for fd_link in glob.glob("/proc/[0-9]*/fd/*"):
+        pid = fd_link.split("/")[2]
+        if pid == str(os.getpid()):
+            continue
+        try:
+            if os.stat(fd_link).st_rdev != target:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\0", b" ").decode().strip()
+        except OSError:
+            continue
+        holders.add(f"pid {pid}: {cmdline or '<unknown>'}")
+    return sorted(holders)
+
 
 def configure_serial(path: str) -> int:
-    """Open the UART raw/non-blocking at 115200 8N1 and flush stale bytes."""
+    """Open the UART raw/non-blocking at 115200 8N1 and flush stale bytes.
+
+    The port is put in exclusive mode (TIOCEXCL) so a terminal opened
+    mid-sweep gets EBUSY instead of silently stealing capture bytes.
+    """
     fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, termios.TIOCEXCL)
     attrs = termios.tcgetattr(fd)
     attrs[0] = 0
     attrs[1] = 0
@@ -154,6 +273,8 @@ def run_one(
     target: str,
 ) -> dict[str, Any]:
     """Load one app on the given board and watch the UART until a marker/timeout."""
+    program = COREMARK_PRO_PROGRAM_BY_APP.get(app)
+    workload = program.workload if program else None
     drain(serial_fd)
     cmd = [
         "./fpga/load_software/load_software.py",
@@ -241,9 +362,13 @@ def run_one(
             if proc.returncode != 0:
                 return {
                     "app": app,
+                    "workload": workload,
                     "mode": mode,
                     "status": "LOAD_FAIL",
                     "elapsed": None,
+                    "iterations": None,
+                    "secs": None,
+                    "ips": None,
                     "serial": serial_buf,
                     "loader_tail": list(loader_tail),
                 }
@@ -283,14 +408,87 @@ def run_one(
     if match:
         workload_time = float(match.group(1))
 
+    perf = (
+        parse_workload_perf(serial_buf, workload)
+        if workload
+        else {"iterations": None, "secs": None, "ips": None}
+    )
+
     return {
         "app": app,
+        "workload": workload,
         "mode": mode,
         "status": status,
         "elapsed": workload_time,
+        **perf,
         "serial": serial_buf,
         "loader_tail": list(loader_tail),
     }
+
+
+def print_score_report(results: list[dict[str, Any]], mode: str) -> None:
+    """Print the per-workload iter/s table and, for a -v0 sweep, the mark."""
+    rows = [r for r in results if r["workload"]]
+    if not rows:
+        return
+
+    print("\nCoreMark-PRO WORKLOAD RESULTS (single context)")
+    print(
+        f"{'Workload Name':<27} {'Status':>9} {'iters':>6} "
+        f"{'time(s)':>10} {'iter/s':>12} {'weighted':>10}"
+    )
+    print(f"{'-' * 27} {'-' * 9} {'-' * 6} {'-' * 10} {'-' * 12} {'-' * 10}")
+    for r in rows:
+        scale_ref = COREMARK_PRO_REFERENCE.get(r["workload"])
+        iters_text = "n/a" if r["iterations"] is None else str(r["iterations"])
+        secs_text = "n/a" if r["secs"] is None else f"{r['secs']:.4f}"
+        ips_text = "n/a" if r["ips"] is None else f"{r['ips']:.6g}"
+        weighted_text = "n/a"
+        if r["ips"] is not None and scale_ref is not None:
+            weighted_text = f"{r['ips'] * scale_ref[0] / scale_ref[1]:.6g}"
+        print(
+            f"{r['workload']:<27} {r['status']:>9} {iters_text:>6} "
+            f"{secs_text:>10} {ips_text:>12} {weighted_text:>10}"
+        )
+    print(
+        "weighted = iter/s x scale / reference-platform score "
+        "(EEMBC guide 2.1.4 sec. 4.4 Fig. 10)"
+    )
+
+    if mode == "-v1":
+        print(
+            "\nCoreMark-PRO score: n/a for -v1 validation sweeps (verification "
+            "runs are not score-eligible); rerun with -v0."
+        )
+        return
+
+    for r in rows:
+        if (
+            r["status"] == "PASS"
+            and r["secs"] is not None
+            and r["secs"] < SCORE_RULE_MIN_SECS
+        ):
+            print(
+                f"warning: {r['workload']} ran {r['secs']:.1f}s, under the "
+                f"~{SCORE_RULE_MIN_SECS:.0f}s score-rule minimum; recalibrate "
+                "its iteration count in sw/apps/software_registry.py"
+            )
+
+    ips_by_workload = {
+        r["workload"]: r["ips"] for r in rows if r["status"] == "PASS" and r["ips"]
+    }
+    score, missing = coremark_pro_mark(ips_by_workload)
+    if score is None:
+        print(
+            "\nCoreMark-PRO score: n/a -- the official mark needs a passing "
+            f"iter/s from all 9 workloads; missing: {', '.join(missing)}"
+        )
+    else:
+        print(f"\nCoreMark-PRO score (single context): {score:.2f}")
+        print(
+            "  1000 x geomean of the 9 weighted results; single core, so "
+            "SingleCore == MultiCore"
+        )
 
 
 def main() -> int:
@@ -307,7 +505,7 @@ def main() -> int:
         const="-v0",
         help=(
             "longer performance/score sweep: runs the registry-calibrated "
-            "iteration counts"
+            "iteration counts and computes the official CoreMark-PRO score"
         ),
     )
     mode_group.add_argument(
@@ -387,6 +585,18 @@ def main() -> int:
     serial = args.serial if args.serial else DEFAULT_SERIALS[args.board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[args.board]
 
+    holders = serial_holders(serial)
+    if holders:
+        print(
+            f"ERROR: {serial} is already open in another process, which would "
+            "steal chunks of the UART capture:",
+            file=sys.stderr,
+        )
+        for holder in holders:
+            print(f"  {holder}", file=sys.stderr)
+        print("Close it (or pass another --serial) and re-run.", file=sys.stderr)
+        return 1
+
     fd = configure_serial(serial)
     results = []
     try:
@@ -408,6 +618,12 @@ def main() -> int:
                 f"{result['status']} time={result['elapsed']}",
                 flush=True,
             )
+            if result["status"] == "PASS" and result["ips"] is None:
+                print(
+                    "warning: PASS but iterations/time(secs) missing from the "
+                    "capture -- UART bytes lost?",
+                    flush=True,
+                )
             if result["status"] == "LOAD_FAIL":
                 print("loader tail:", flush=True)
                 print("\n".join(result["loader_tail"]), flush=True)
@@ -417,7 +633,11 @@ def main() -> int:
     bad = [r for r in results if r["status"] != "PASS"]
     print(f"\nSUMMARY ({args.board})")
     for r in results:
-        print(f"{args.board} {r['app']} {r['mode']} {r['status']} time={r['elapsed']}")
+        line = f"{args.board} {r['app']} {r['mode']} {r['status']} time={r['elapsed']}"
+        if r["ips"] is not None:
+            line += f" iter/s={r['ips']:.6g}"
+        print(line)
+    print_score_report(results, args.mode)
     return 1 if bad else 0
 
 

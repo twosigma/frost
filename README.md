@@ -2,7 +2,7 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and full machine-mode privilege support for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
+An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes for RTOS operation. Achieves 300 MHz on UltraScale+. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
@@ -13,6 +13,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Solid performance** — 3.08 CoreMark/MHz (924 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
+- **Boots no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image; CI builds it from source (`build-frost-linux`) and boots it in both cocotb RTL simulation (`linux-boot-cocotb`) and QEMU (`linux-boot-qemu`).
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
@@ -55,8 +56,8 @@ There are many RISC-V cores. Here's what makes FROST different:
 │                                                                              │
 │   ┌──────────────────────────┐    ┌─────────────────────────────────────┐    │
 │   │ Trap Unit                │    │ Peripherals                         │    │
-│   │ (M-mode, mret, wfi,      │    │ UART, mtime/mtimecmp, FIFO0/1       │    │
-│   │  interrupts, exceptions) │    │                                     │    │
+│   │ (M/U traps, mret, wfi,   │    │ UART (+ ns16550a face), FIFO0/1     │    │
+│   │  interrupts, exceptions) │    │ CLINT timer (mtime/mtimecmp, msip)  │    │
 │   └──────────────────────────┘    └─────────────────────────────────────┘    │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -82,6 +83,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
+| **User Mode**    | U-mode privilege (ecall traps to M-mode)       |
 
 ### Architecture Highlights
 
@@ -95,11 +97,11 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
 - **Branch prediction** with a 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 1024-entry bimodal direction predictor, 8-entry return address stack, and PD-stage computed-target redirects for conditional BTB misses predicted taken
-- **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, write-through)
-- **M-mode trap handling** for RTOS support (interrupts and exceptions)
+- **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, read-fill; stores invalidate matching lines)
+- **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a 16 KiB read-only L1I) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
+- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a read-only L1I — 16 KiB on X3, 128 KiB on Genesys2) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
 - **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (execute-from-DDR code, heap, and large data); the hierarchy shape behind it is opaque to software
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
@@ -172,10 +174,11 @@ You should see "Hello, world!" in the output.
 ### Run the CPU Verification Suite
 
 ```bash
-make -C tests        # constrained-random regression on the cpu_tb testbench
+pytest tests/                              # full regression (riscv-tests, arch compliance, C programs, …)
+./tests/test_run_cocotb.py directed_traps  # directed M-mode trap/interrupt tests (cpu_tb)
 ```
 
-This runs constrained-random instructions through the CPU, verifying each against a software reference model. (The random regression runs on the `cpu_tb` testbench — the `tests/` Makefile default — rather than as a `test_run_cocotb.py` target.)
+The pytest run validates the CPU against the riscv-tests ISA suites, the riscv-arch-test compliance suite, and real C programs. The legacy constrained-random `cpu_tb` regression is registered as the CLI-only `cpu_random` target; it predates the OOO integration and needs porting before it passes on the current core.
 
 ## Directory Structure
 
@@ -203,6 +206,7 @@ frost/
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
+├── linux/                    # Buildroot no-MMU Linux image build (submodule + external tree)
 ├── verif/                    # Verification infrastructure
 │   ├── cocotb_tests/         # Cocotb test cases
 │   ├── models/               # Software reference models
@@ -244,7 +248,7 @@ git submodule update --init
 pytest tests/                              # Run all tests
 pytest tests/ -s                           # With live output
 # Standalone test runner
-make -C tests                              # CPU constrained-random verification (cpu_tb)
+./tests/test_run_cocotb.py directed_traps  # Directed trap/interrupt tests (cpu_tb)
 ./tests/test_run_cocotb.py hello_world     # Hello World program
 ./tests/test_run_cocotb.py isa_test        # ISA compliance
 ./tests/test_run_cocotb.py coremark        # CoreMark benchmark
@@ -256,7 +260,8 @@ make -C tests                              # CPU constrained-random verification
 ./tests/test_run_cocotb.py frost_cache     # Cache-hierarchy unit bench (X3 shape)
 ./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
 
-# With waveform output
+# With waveform output (cpu_tb Makefile flow; note the default constrained-random
+# suite is the CLI-only `cpu_random` target and needs porting to the OOO core)
 WAVES=1 make -C tests
 ```
 
@@ -275,8 +280,7 @@ WAVES=1 make -C tests
 
 Running `pytest tests/` exercises:
 
-- **CPU verification** — constrained-random instruction sequences validated against Python reference models
-- **Directed tests** — atomic operations (LR/SC), trap handling, compressed instructions
+- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv32ua/rv32uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb directed suites and the constrained-random regression are CLI-only pending a port to the OOO core)
 - **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across I, M, A, F, D, C, B, K, Zicond, and Zifencei extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
 - **ISA pipeline tests** — 126 self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) across rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, and B-extension suites, exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
 - **Random instruction torture tests** — 20 randomly generated RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
@@ -317,7 +321,7 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 | Board              | FPGA                 | CPU Clock | Cache hierarchy → main memory               |
 |--------------------|----------------------|-----------|---------------------------------------------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB L1D + 16 KiB L1I → 1 GiB DDR3                 |
+| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                |
 
 Both boards also carry the 256 KiB fast (uncached, 1-cycle) low BRAM region and
 present the identical software-visible memory map: `[0, 256 KiB)` fast BRAM,
@@ -333,15 +337,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 148,337 | 1,029,600 | 14.4% |
-|   LUT as Logic | 138,133 | 1,029,600 | 13.4% |
-|   LUT as Distributed RAM | 9,034 | — | — |
-|   LUT as Shift Register | 1,170 | — | — |
-| CLB Registers | 113,144 | 2,059,200 | 5.5% |
+| CLB LUTs | 149,121 | 1,029,600 | 14.5% |
+|   LUT as Logic | 138,878 | 1,029,600 | 13.5% |
+|   LUT as Distributed RAM | 9,074 | — | — |
+|   LUT as Shift Register | 1,169 | — | — |
+| CLB Registers | 113,334 | 2,059,200 | 5.5% |
 | Block RAM Tile | 240 | 2,112 | 11.4% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 35 | 1,320 | 2.6% |
-| CARRY8 | 4,415 | 128,700 | 3.4% |
+| CARRY8 | 4,436 | 128,700 | 3.5% |
 | F7 Muxes | 208 | 514,800 | 0.0% |
 | F8 Muxes | 49 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |
@@ -352,12 +356,12 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 129,281 | 203,800 | 63.4% |
-|   LUT as Logic | 120,714 | 203,800 | 59.2% |
-|   LUT as Distributed RAM | 7,722 | — | — |
+| Slice LUTs | 130,622 | 203,800 | 64.1% |
+|   LUT as Logic | 122,015 | 203,800 | 59.9% |
+|   LUT as Distributed RAM | 7,762 | — | — |
 |   LUT as Shift Register | 845 | — | — |
-| Slice Registers | 86,734 | 407,600 | 21.3% |
-| Block RAM Tile | 189.5 | 445 | 42.6% |
+| Slice Registers | 87,375 | 407,600 | 21.4% |
+| Block RAM Tile | 219 | 445 | 49.2% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 98 | 101,900 | 0.1% |
 | F8 Muxes | 33 | 50,950 | 0.1% |
@@ -403,7 +407,7 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data) over the cached DDR region, through a shared 2:1 line-port arbiter |
+| **L1I / L1D**   | Split write-back line caches (16 KiB instruction on X3 / 128 KiB on Genesys2, 128 KiB data) over the cached DDR region, through a shared 2:1 line-port arbiter |
 | **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s (UltraScale+ only)        |
 | **Cached region** | `[0x8000_0000, +1 GiB)` — code (execute-from-DDR), heap, and large data, behind L1[/L2]→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |

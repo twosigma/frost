@@ -16,8 +16,8 @@
 
 /*
  * axi_behavioral_memory -- SIMULATION-ONLY main-memory model (stands in for
- * the DDR controller in Phase 1; replaced by the MIG + SmartConnect on
- * hardware). AXI4 slave, single-beat 256-bit transactions (asserts on
+ * the DDR controller in Phase 1; replaced by the board's DDR controller
+ * (MIG DDR3 / DDR4 IP) + SmartConnect on hardware). AXI4 slave, single-beat 256-bit transactions (asserts on
  * anything else), parameterized response latency to mimic DDR access time.
  *
  * The array is dense and parameter-sized (default 64 MiB) while the DECODED

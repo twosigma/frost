@@ -31,9 +31,9 @@ WAVES           ?= 0
 # Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
-# Timer speedup for simulation (1000x faster than real-time)
-# This makes FreeRTOS and timer-based tests complete much faster in simulation
-# Default is 1000 for simulation; set to 1 for synthesis
+# Timer speedup for simulation (intended to make FreeRTOS/timer-based tests faster)
+# NOTE: currently NOT plumbed to Verilator (no -G override is passed), so sims
+# run at the RTL parameter default of 1; this variable has no effect
 SIM_TIMER_SPEEDUP ?= 1000
 
 # Compilation arguments - RTL file list (varies by toplevel)
@@ -144,6 +144,12 @@ else ifeq ($(TOPLEVEL),data_mem_request_router)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),trap_unit)
+# Trap unit interrupt/MRET arbitration unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frontend_validity_tracker)
 # CPU OOO frontend validity/control-flow tracker unit test
@@ -358,8 +364,14 @@ ENABLE_CACHED_TIER ?= 1
 CACHED_HAS_L2 ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
+# Fast cache maintenance (fence.i) for simulation: completes invalidate-all /
+# writeback-all in drastically fewer cycles while preserving the exact
+# functional effect, so the real Linux kernel's fence.i-heavy patching boots
+# tractably. Defaults ON for sim; the FPGA default in the RTL stays 0 and the
+# board builds never set it.
+SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 
 # Include Cocotb simulation makefile rules

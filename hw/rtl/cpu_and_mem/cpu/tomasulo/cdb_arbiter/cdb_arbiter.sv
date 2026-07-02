@@ -17,8 +17,9 @@
 /*
  * CDB Arbiter
  *
- * Priority-based multiplexer that selects one functional unit result per cycle
- * for broadcast on the Common Data Bus (CDB). Ties FU completions back to:
+ * Priority-based multiplexer that selects up to two functional unit results
+ * per cycle (2-wide CDB: primary o_cdb + secondary o_cdb_2) for broadcast on
+ * the Common Data Bus (CDB). Ties FU completions back to:
  *   - ROB (mark done + store value)
  *   - All RS instances (operand wakeup)
  *

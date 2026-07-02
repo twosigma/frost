@@ -32,7 +32,13 @@ module xilinx_frost_subsystem #(
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below, wired to the
     // board's DDR controller subsystem (both boards drive 0).
-    parameter int unsigned USE_BEHAVIORAL_DDR = 1
+    parameter int unsigned USE_BEHAVIORAL_DDR = 1,
+    // L1 instruction-cache size in bytes. genesys2 (L1-only, no L2) bumps this
+    // above the 16 KiB default so the kernel periodic-tick/softirq/scheduler
+    // working set stays resident, addressing the tick-livelock I$ thrash.
+    parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
+    // Optional boot-hang UART classifier. Leave off for interactive testing.
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
@@ -217,7 +223,9 @@ module xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .CACHED_HAS_L2(CACHED_HAS_L2),
-      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR)
+      .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
+      .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),

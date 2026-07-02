@@ -247,7 +247,7 @@ Control and Status Register access for performance counters and machine-mode con
 uint32_t cycles_lo = rdcycle();           // Low 32 bits of cycle counter
 uint32_t cycles_hi = rdcycleh();          // High 32 bits of cycle counter
 uint32_t instret_lo = rdinstret();        // Low 32 bits of instructions retired
-uint32_t time_lo = rdtime();              // Low 32 bits of time (aliased to cycle)
+uint32_t time_lo = rdtime();              // Low 32 bits of time (backed by CLINT mtime)
 
 // Read full 64-bit counters atomically
 uint64_t start = rdcycle64();
@@ -265,7 +265,7 @@ csr_clear(mstatus, MSTATUS_MIE);          // Clear bits in CSR
 
 **Available counters:**
 - `cycle`/`cycleh`: Clock cycles since reset (64-bit)
-- `time`/`timeh`: Wall-clock time (aliased to cycle on Frost)
+- `time`/`timeh`: Wall-clock time (backed by CLINT mtime, which ticks at the core clock on Frost)
 - `instret`/`instreth`: Instructions retired since reset (64-bit)
 
 **M-mode CSRs (for RTOS support):**
@@ -483,7 +483,7 @@ Defined in `common/link.ld`:
 |--------|--------------|---------|----------------------------------------------------|
 | ROM    | `0x00000000` | 96 KiB  | Code and small read-only data (fast BRAM, 1-cycle) |
 | RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack (fast BRAM, 1-cycle)     |
-| MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals                      |
+| MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals (legacy/linker window; the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it) |
 | DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
 
 Within the DDR region, loaded `.ddr_rodata`/`.ddr_data` sections (e.g.
@@ -491,7 +491,7 @@ radix2's ~800 KiB FFT tables, routed there by per-object linker rules or an
 explicit `__attribute__((section(".ddr_rodata")))`) come first, then
 `.ddr_bss`, then the heap to the end of the gigabyte. The low-BRAM stack
 carries a 112 KiB reserve sized from measured per-workload high-water marks
-(parser's recursive XML cleanup is the deepest user at ~75 KiB), enforced by
+(parser's recursive XML cleanup is the deepest user at 112 KiB), enforced by
 a link-time assert against data+bss growth.
 
 Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
@@ -518,6 +518,8 @@ same 256 KiB low-BRAM map.
 | MSIP           | `0x40000020` | Machine software interrupt pending       |
 | UART_RX_STATUS | `0x40000024` | UART RX status (bit 0 = data available)  |
 | UART_TX_STATUS | `0x40000028` | UART TX status (bit 0 = can accept byte) |
+| NS16550        | `0x40001000` | NS16550-compatible UART registers (`0x40001000`-`0x4000101C`) |
+| CLINT alias    | `0x40010000` | SiFive CLINT-compatible alias of MSIP/mtimecmp/mtime (for Linux) |
 
 **Notes:**
 - Simple timing uses Zicntr CSR counters (cycle, instret) via single-instruction reads. See `csr.h` and `timer.h`.
@@ -550,7 +552,7 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-Frost implements **RV32GCB** with full M-mode privilege support. See the [root README](../README.md) for the full ISA extension table and architecture details.
+Frost implements **RV32GCB** with Machine (M) and User (U) privilege modes. See the [root README](../README.md) for the full ISA extension table and architecture details.
 
 ### Test Result Markers
 
@@ -565,8 +567,8 @@ These markers are distinct from individual test output (like `PASS: test_name`) 
 
 **Special cases:**
 - **hello_world**: Open-ended (loops forever); passes when "Hello, world!" is printed
-- **coremark**: Long-running benchmark; passes when "CoreMark" welcome message is printed
-- **freertos_demo**: Runs multiple iterations; passes when "PASS" is printed
+- **linux_boot**: Kernel boot; passes when the "Linux version" boot banner is printed (uses a boot-health checker in full CI runs)
+- **uart_echo**: Interactive; the harness injects UART input and passes when the prompt, echo, and response are observed (no `<<PASS>>` marker)
 
 ### Other Details
 

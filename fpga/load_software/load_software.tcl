@@ -39,10 +39,10 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
 
 # Valid software applications (mirrors load_software.py VALID_APPS)
 set valid_apps [list branch_pred_test c_ext_test call_stress cf_ext_test coremark \
-                     {*}$coremark_pro_apps csr_test ddr_exec_test ddr_heap_test \
+                     {*}$coremark_pro_apps csr_test ddr_atomic_test ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test freertos_demo fpu_assembly_test fpu_test \
-                     hello_world isa_test memory_test \
-                     packet_parser print_clock_speed ras_stress_test ras_test \
+                     hello_world isa_test linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test memory_test \
+                     packet_parser pde_return_hazard print_clock_speed ras_stress_test ras_test \
                      spanning_test sprintf_test strings_test tomasulo_perf \
                      tomasulo_test uart_echo]
 
@@ -165,10 +165,14 @@ set bram_base_address 0x00000000
 set ddr_text_file ${project_root}/sw/apps/${firmware_application_name}/sw_ddr.txt
 
 # DDR image first (when present): assert the image-load CPU reset with a
-# single low-BRAM write, then burst the DDR image through hw_axi_2. The CPU
-# stays in reset until well after the subsequent full BRAM load, and the
-# caches re-invalidate on release, so the fresh DDR contents are never
-# shadowed by stale lines or racing writebacks.
+# low-BRAM write, then burst the DDR image through hw_axi_2 while RE-ARMING
+# that reset periodically (file2ddr pokes bram_axi every poke_interval bursts).
+# The image_load_reset is only a ~4 s one-shot, far shorter than a multi-MB DDR
+# load, so without the periodic re-arm the CPU would leave reset mid-load and
+# free-run against the half-written DDR image (nondeterministic boot hangs).
+# With it the CPU stays in reset until well after the subsequent full BRAM
+# load, and the caches re-invalidate on release, so the fresh DDR contents are
+# never shadowed by stale lines or racing writebacks.
 if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 } {
     set first_word_fd [open $firmware_text_file r]
     gets $first_word_fd first_word
@@ -177,8 +181,8 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
         -type write -address 0x00000000 -len 1 -data $first_word
     run_hw_axi [get_hw_axi_txns rst_assert]
     set ddr_word_count [expr {[file size $ddr_text_file] / 9}]
-    puts "Loading ~${ddr_word_count} words into DDR via ${ddr_axi} (bursts)..."
-    file2ddr $ddr_text_file $ddr_axi
+    puts "Loading ~${ddr_word_count} words into DDR via ${ddr_axi} (bursts, CPU held in reset)..."
+    file2ddr $ddr_text_file $ddr_axi 256 $bram_axi $first_word
 }
 
 # Write software to low BRAM starting at address 0.

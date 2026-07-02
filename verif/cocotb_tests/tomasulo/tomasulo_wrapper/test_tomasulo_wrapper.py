@@ -367,6 +367,43 @@ async def mark_done_via_cdb(dut_if: TomasuloInterface, tag: int, value: int) -> 
     dut_if.clear_cdb_write()
 
 
+async def issue_sw_via_mem_rs(
+    dut_if: TomasuloInterface,
+    tag: int,
+    base_addr: int,
+    store_data: int,
+    imm: int = 0,
+    max_cycles: int = 6,
+) -> dict:
+    """Dispatch an SW to MEM_RS and wait until its issue is captured."""
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=base_addr,
+        src2_ready=True,
+        src2_value=store_data,
+        src3_ready=True,
+        imm=imm,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    for _ in range(max_cycles):
+        await Timer(1, unit="ps")
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        if issue["valid"] and issue["rob_tag"] == tag:
+            await dut_if.step()
+            return dict(issue)
+        await dut_if.step()
+
+    raise TimeoutError("SW did not issue from MEM_RS")
+
+
 async def wait_for_commit_pair(
     dut_if: TomasuloInterface, max_cycles: int = 10
 ) -> tuple[dict, dict, bool]:
@@ -870,6 +907,58 @@ async def test_widen_commit_slot2_clears_rat_through_wrapper(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_int_src1().renamed
     assert not dut_if.read_int_src1_2().renamed
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_slot2_store_raw_commit_blocks_sq_committed_empty(dut: Any) -> None:
+    """A raw slot-2 store commit must immediately hold SQ committed_empty low."""
+    cocotb.log.info("=== Test: Slot-2 Store Raw Commit Blocks SQ committed_empty ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.set_all_fu_ready(True)
+    dut_if.set_commit_hold(True)
+
+    tag_1, tag_2 = await drive_dual_alloc(
+        dut_if,
+        make_int_req(pc=0x4380, rd=11),
+        make_store_req(pc=0x4384),
+    )
+
+    await mark_done_via_cdb(dut_if, tag_1, 0x5151)
+    issue = await issue_sw_via_mem_rs(
+        dut_if,
+        tag=tag_2,
+        base_addr=0x2400,
+        store_data=0xA5A5_5A5A,
+        imm=4,
+    )
+    assert issue["rob_tag"] == tag_2
+    assert not dut_if.sq_empty, "Store should have an SQ entry before commit"
+    assert dut_if.sq_committed_empty, "Uncommitted store should not block traps yet"
+
+    dut_if.set_widen_commit_ok(True)
+    dut_if.set_commit_hold(False)
+
+    await Timer(1, unit="ps")
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    commit_2_valid_raw = dut_if.commit_2_valid_raw
+    commit_2_store_like_raw = dut_if.commit_2_store_like_raw
+
+    await RisingEdge(dut_if.clock)
+    await Timer(1, unit="ps")
+    sq_committed_empty = bool(dut_if.sq_committed_empty)
+    await FallingEdge(dut_if.clock)
+
+    assert commit_1["valid"] and commit_1["tag"] == tag_1
+    assert commit_2["valid"] and commit_2["tag"] == tag_2
+    assert commit_2_valid_raw, "Slot-2 raw commit should be visible"
+    assert commit_2_store_like_raw, "Slot-2 raw commit should be store-like"
+    assert (
+        not sq_committed_empty
+    ), "Slot-2 raw store commit must feed SQ's same-cycle committed_empty guard"
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -4387,16 +4476,13 @@ async def test_sc_pending_does_not_block_older_load(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
-    """Partial flush clears sc_pending even if SC is older than flush tag.
+    """Partial flush preserves sc_pending when SC is older than flush tag.
 
-    speculative_flush_all treats any i_flush_en as a full flush for timing
-    closure, so sc_pending is always cleared on partial flush regardless of
-    age.  This test verifies the conservative (timing-safe) behaviour.
-
-    Scenario: SC (tag 1) issues → sc_pending set. Branch (tag 2) mispredicts →
-    partial flush with flush_tag=2. Conservative flush clears sc_pending.
+    Scenario: SC (tag 1) issues -> sc_pending set. Branch (tag 2) mispredicts
+    -> partial flush with flush_tag=2. The SC is older than the flush boundary,
+    so the table entry must survive.
     """
-    cocotb.log.info("=== Test: Partial Flush Clears SC Pending (Conservative) ===")
+    cocotb.log.info("=== Test: Partial Flush Preserves Older SC Pending ===")
     dut_if, model = await setup_test(dut)
 
     addr = 0x1000
@@ -4518,17 +4604,14 @@ async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
     dut_if.set_fu_ready(RS_MEM, False)
 
     assert int(dut.sc_pending.value), "sc_pending should be set"
-    assert int(dut.sc_pending_unit_inst.sc_pending_rob_tag.value) == tag_sc
 
     # --- Phase 6: Partial flush with tag=branch (younger than SC) ---
-    # speculative_flush_all = i_flush_all || i_flush_en, so any partial flush
-    # conservatively clears sc_pending regardless of age comparison.
     dut_if.drive_flush_en(tag_branch)
     await dut_if.step()
     dut_if.clear_flush_en()
 
-    assert not int(dut.sc_pending.value), (
-        f"sc_pending should be cleared by conservative flush: SC tag={tag_sc}, "
+    assert int(dut.sc_pending.value), (
+        f"sc_pending should survive partial flush: SC tag={tag_sc}, "
         f"flush tag={tag_branch}"
     )
 

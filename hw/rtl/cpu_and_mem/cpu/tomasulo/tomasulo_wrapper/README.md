@@ -17,7 +17,7 @@ verbatim, so the flattened design is unchanged:
 | `commit_bus_pipeline` | `commit_bus/` | The four `always_ff` that register the combinational ROB commit bus into `commit_bus_q` / `commit_bus_2_q` plus the decomposed `commit_q_*` fields. |
 | `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. |
 | `dispatch_rs_router` | `dispatch_routing/` | Combinational decode of the dispatch packet(s) into per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent" signals. |
-| `sc_pending_unit` | `atomics/` | Store-conditional resolution: the SC pending-register FSM (set at MEM_RS SC issue, cleared on fire / flush / age), its rob_tag+addr capture, the fire/success decode, and the `sc_fu_complete` packet. |
+| `sc_pending_unit` | `atomics/` | Store-conditional resolution: a per-ROB-tag table of in-flight SCs (allocated at MEM_RS SC issue, freed on fire / flush), the head-match fire/success decode, and the `sc_fu_complete` packet. |
 
 The per-RS dispatch-valid nets in `dispatch_rs_router` carry `(* max_fanout =
 32 *)`; the attribute is preserved both in the submodule and on the wrapper-side
@@ -48,7 +48,7 @@ while the entry was queued gets a fresh value.
 
 ### SC state machine
 
-The SC pending FSM and its fire/success decode live in
+The SC tracking table and its fire/success decode live in
 `atomics/sc_pending_unit.sv`; the surrounding store-misalign path and MEM-adapter
 mux described below stay in the wrapper.
 
@@ -60,6 +60,20 @@ its ROB entry reaches the head and the SQ is committed-empty. Its
 result is just `~reservation_valid`. On failure, the wrapper sends
 a discard signal to the SQ to drop the SC's entry without writing
 memory.
+
+Several SCs can be in flight at once: a branch-speculated LR/SC retry
+loop issues one SC per speculated iteration, and the MEM_RS may issue
+them out of program order. `sc_pending_unit` therefore tracks every
+in-flight SC in a small table keyed by ROB tag (depth `NumCheckpoints
++ 1`) and fires the entry whose tag matches the ROB head; a flush drops
+only entries younger than the flush boundary, so a surviving older SC
+is never lost. This replaced a single pending register plus a
+`!(sc_pending && mem_rs_next_is_sc)` issue-serialization gate in
+`mem_rs_fu_ready_base`: under speculation a younger SC could take the
+register and the gate would then block the older head SC from issuing
+at all, so it never fired and `sc_pending` never cleared — Linux
+printk's `_prb_commit` cmpxchg on the cached DDR tier deadlocked
+exactly that way. The gate is gone; the table makes concurrent SCs safe.
 
 The `sc_fu_complete` output is registered (`sc_fu_complete_reg`)
 before feeding the MEM adapter. The combinational path from the
@@ -95,6 +109,20 @@ The combinational commit versions are still exposed for the same-cycle
 misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
+
+The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
+are additionally masked combinationally with `!i_flush_all`. The valid flops
+clear on the flush edge, but downstream consumers still observe the previous
+valid value during that same cycle; masking immediately prevents a commit that
+overlaps a trap / MRET / FENCE.I full flush from performing one more
+architectural side effect while the back-end is being squashed.
+
+The wrapper also drives the SQ slot-2 combinational commit guard from the raw
+head+1 store-commit pulse (`i_commit_valid_comb_2 = commit_2_store_like_raw`,
+`i_commit_rob_tag_comb_2 = commit_bus_2.tag`; previously tied to `1'b0`/`'0`).
+Slot 2 has the same raw-commit race as slot 1: `commit_bus_2_q_valid` reaches the
+SQ one cycle late, so without this a full-flush trap (e.g. a machine-timer IRQ)
+could observe `sq_committed_empty` and squash a store the SQ has not yet owned.
 
 ### Dispatch routing
 

@@ -22,7 +22,7 @@
  * them (non-speculative writes). Supports store-to-load forwarding.
  *
  * Features:
- *   - Parameterized depth (8 entries, FF-based)
+ *   - Parameterized depth (8 entries, hybrid FF + LUTRAM; see Storage Strategy)
  *   - CAM-style tag search for address/data update (all entries in parallel)
  *   - In-order commit: head entry writes to memory when committed + ready
  *   - Store-to-load forwarding: combinational scan for LQ disambiguation
@@ -1174,14 +1174,22 @@ module store_queue #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
-      if (i_alloc.valid && (i_flush_all || i_flush_en))
-        $warning("SQ: allocation attempted during flush");
+      // Only PARTIAL flush (i_flush_en) is dangerous: there the alloc block in
+      // the !flush_all else-branch actually LANDS (sets sq_valid, line ~1060).
+      // i_flush_all is intentionally excluded — its priority else-if branches
+      // (lines ~859, ~1027) structurally squash the alloc (sq_valid <= '0), a
+      // documented-safe, formally-proven (p_alloc_slot_free) handshake that the
+      // RS issues un-flush-gated for timing closure (see note ~line 1263). The
+      // old (i_flush_all||i_flush_en) form fired ~1178x/run on the benign
+      // flush_all handshake, burying the genuinely-unsafe flush_en case.
+      if (i_alloc.valid && i_flush_en && !i_flush_all)
+        $warning("SQ: allocation attempted during partial flush");
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
         $warning("SQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("SQ: slot-2 alloc attempted alone when full");
-      if (i_alloc_2.valid && (i_flush_all || i_flush_en))
-        $warning("SQ: slot-2 alloc attempted during flush");
+      if (i_alloc_2.valid && i_flush_en && !i_flush_all)
+        $warning("SQ: slot-2 alloc attempted during partial flush");
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
     end
@@ -1356,7 +1364,8 @@ module store_queue #(
     end
   end
 
-  // Forwarding outputs are registered, so they reflect the previous check.
+  // Forwarding outputs are driven from staged SQ CAM results, so they reflect
+  // the previous check.
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(
             i_rst_n

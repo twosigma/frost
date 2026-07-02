@@ -113,7 +113,7 @@ module uart_rx #(
 
       STATE_DATA_BITS: begin
         // Move to stop bit after all 8 data bits received
-        if (baud_rate_prescaler_counter == 0 && bits_remaining_counter == 0) begin
+        if (baud_rate_prescaler_counter == 0 && bits_remaining_counter == 1) begin
           next_state = STATE_STOP_BIT;
         end
       end

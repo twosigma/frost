@@ -1,0 +1,56 @@
+# FROST RV32 no-MMU M-mode Linux -- Buildroot defconfig
+#
+# Provenance: derived from the upstream buildroot defconfig
+#   configs/qemu_riscv32_nommu_virt_defconfig
+# with the FROST retarget applied (initramfs instead of an ext2/virtio disk,
+# the FROST kernel CONFIG fragment, and a post-image step that packages the
+# Image + DTB + initramfs into the FROST FPGA/sim memory images).
+#
+# Build:
+#   make -C linux/buildroot O=$(pwd)/linux/build \
+#        BR2_EXTERNAL=$(pwd)/linux/buildroot-external frost_nommu_rv32_defconfig
+#   make -C linux/buildroot O=$(pwd)/linux/build
+# Output lands in linux/build/images/ (Image, rootfs.cpio.gz, sw_ddr.{mem,txt}).
+#
+# NOTE: gcc 15.2.0 / binutils 2.45.1 / uClibc and the rv32-nommu internal
+# toolchain are the *defaults* of the pinned Buildroot tree, so they are not
+# restated here -- pin Buildroot (see linux/buildroot-external/README.md) and
+# the toolchain is reproduced automatically.
+
+# --- Architecture: RISC-V 32-bit, no MMU ---
+BR2_riscv=y
+BR2_RISCV_32=y
+# BR2_RISCV_USE_MMU is not set
+
+# --- Host kernel headers must match the target kernel series (Linux 6.18) ---
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18=y
+
+# --- Download integrity: carry the linux-6.18.7 hash in our own patch dir so
+#     BR2_DOWNLOAD_FORCE_CHECK_HASHES can verify the custom kernel tarball ---
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_FROST_PATH)/board/frost/patches"
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+
+# --- Linux kernel: 6.18.7, virt-nommu base config + FROST fragment ---
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18.7"
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_FROST_PATH)/board/frost/linux-nommu-base.config"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FROST_PATH)/board/frost/linux-nommu-frost.config.fragment"
+
+# --- Init system: busybox (nommu bFLT userspace) ---
+BR2_INIT_BUSYBOX=y
+
+# --- Root filesystem: initramfs (cpio.gz). FROST has no block device, so the
+#     rootfs is an initramfs loaded into DDR; the kernel fragment enables
+#     CONFIG_BLK_DEV_INITRD + CONFIG_RD_GZIP to consume it. ---
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y
+# (ext2 / virtio-blk rootfs intentionally omitted -- see the kernel fragment.)
+
+# --- Post-image: package Image + generated DTB + initramfs into the FROST
+#     FPGA/sim memory images sw.{mem,txt} and sw_ddr.{mem,txt}. ---
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image.sh"
+BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox.config"
+BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_FROST_PATH)/board/frost/device_table.txt"
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay"

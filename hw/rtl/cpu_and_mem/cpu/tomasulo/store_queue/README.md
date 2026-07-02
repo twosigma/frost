@@ -101,15 +101,21 @@ Back-pressure is therefore only ever conservatively long, never short.
 ## Widen-commit slot 2
 
 The SQ accepts a parallel slot-2 commit port
-(`i_commit_valid_2`, `i_commit_rob_tag_2`, plus combinational twin
-for the same-cycle partial-flush guard). Slot 2 only ever retires
+(`i_commit_valid_2`, `i_commit_rob_tag_2`, plus a combinational twin
+for the same-cycle flush guard). Slot 2 only ever retires
 plain stores — SC / AMO are forced onto slot 1 by the ROB's
 widen-commit hazard gate — so there's no SC-discard path sharing.
 Forwarding scans both slot 1 and slot 2 commits in the same cycle.
+The wrapper now actually drives the combinational twin
+(`i_commit_valid_comb_2` / `i_commit_rob_tag_comb_2`, previously tied to
+`1'b0`); without it a full-flush trap (e.g. a machine-timer IRQ) could
+observe committed-empty and drop a head+1 store the SQ has not yet seen on
+the registered commit path.
 
 ## Same-cycle commit hazard
 
-When a partial flush and a ROB commit fire on the same cycle, the
+When any same-cycle flush races a registered ROB commit — partial-flush
+misprediction recovery and full-flush trap / MRET / FENCE.I drains alike — the
 registered commit signal is one cycle behind the flush, which means
 the flush could otherwise wipe out a store that's being committed
 right then. The SQ takes a combinational commit guard from the ROB

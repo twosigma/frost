@@ -49,6 +49,9 @@ module cpu_and_mem #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Simulation-only fast cache maintenance for fence.i (see frost_cache).
+    // 0 = FPGA (cycle-accurate maintenance FSM); non-zero = sim fast path.
+    parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model (simulation only; hardware integration
     // replaces it with the DDR controller behind the same AXI port).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
@@ -60,7 +63,10 @@ module cpu_and_mem #(
     // provider over the 1-cycle instruction BRAM (LFSR-gated i_instr_valid +
     // owed-ask tracking).  Exercises the core's fetch-invalid machinery
     // before a real I-cache sits behind it; hardware keeps 0.
-    parameter int unsigned FETCH_VALID_FUZZ = 0
+    parameter int unsigned FETCH_VALID_FUZZ = 0,
+    // On-silicon boot-hang classifier that can take over the console UART.
+    // Keep it default-off for normal interactive software and Linux bring-up.
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -95,7 +101,8 @@ module cpu_and_mem #(
     input  logic        i_fifo1_empty,
     output logic        o_fifo1_rd_en,
 
-    // External interrupt input (directly triggers MEIP when high)
+    // External interrupt input (registered +1 cycle and ORed with the
+    // ns16550 UART IRQ before driving MEIP)
     input logic i_external_interrupt,
 
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
@@ -129,7 +136,7 @@ module cpu_and_mem #(
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
-  // ((128 KiB total memory)/(4 bytes per word)) = 32k words = 2^15 word address bits
+  // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
 
   // Memory-mapped I/O addresses for peripherals
@@ -137,7 +144,7 @@ module cpu_and_mem #(
   // - sw/common/link.ld (MMIO memory region and PROVIDE statements)
   // - cpu module parameters
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  localparam int unsigned MmioSizeBytes = 32'h2C;
+  localparam int unsigned MmioSizeBytes = 32'h1_C000;  // ns16550 @ +0x1000, CLINT @ +0x10000
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
@@ -152,17 +159,46 @@ module cpu_and_mem #(
   // Software interrupt register
   localparam int unsigned MsipMmioAddr = 32'h4000_0020;
 
+  // ns16550a UART face for Linux (word-stride; DTB reg-shift=2, reg-io-width=4).
+  // Aliases the native UART TX/RX. DLAB (LCR[7]) remaps offsets 0/4 to DLL/DLM.
+  localparam int unsigned Ns16550ThrRbr = 32'h4000_1000;  // THR(w)/RBR(r) | DLL when DLAB
+  localparam int unsigned Ns16550IerDlm = 32'h4000_1004;  // IER | DLM when DLAB
+  localparam int unsigned Ns16550IirFcr = 32'h4000_1008;  // IIR(r) / FCR(w)
+  localparam int unsigned Ns16550Lcr = 32'h4000_100C;
+  localparam int unsigned Ns16550Mcr = 32'h4000_1010;
+  localparam int unsigned Ns16550Lsr = 32'h4000_1014;  // read-only line status
+  localparam int unsigned Ns16550Msr = 32'h4000_1018;  // read-only modem status
+  localparam int unsigned Ns16550Scr = 32'h4000_101C;  // scratch
+
+  // SiFive CLINT alias for Linux (compatible "sifive,clint0") @ 0x4001_0000.
+  // These map onto the SAME msip/mtimecmp/mtime registers as the native FROST
+  // timer block; the kernel reaches the timer through the CLINT layout via DTB.
+  localparam int unsigned ClintMsip = 32'h4001_0000;  // hart-0 software interrupt
+  localparam int unsigned ClintMtimecmpLo = 32'h4001_4000;  // mtimecmp[31:0]
+  localparam int unsigned ClintMtimecmpHi = 32'h4001_4004;  // mtimecmp[63:32]
+  localparam int unsigned ClintMtimeLo = 32'h4001_BFF8;  // mtime[31:0]
+  localparam int unsigned ClintMtimeHi = 32'h4001_BFFC;  // mtime[63:32]
+
   // Timer register defaults
   // Default mtimecmp to max value so no timer interrupt fires until software configures it
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
   // CPU interface signals
   logic [31:0] program_counter;
+  logic commit_vld;  // instruction-retire pulse (hang-triage tap)
+  // CPU-side UART write, muxed against the hang-triage byte stream further down.
+  logic cpu_uart_wr_en;
+  logic [7:0] cpu_uart_wr_data;
   logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
+  // Served-window tag for the muxed fetch (drives the if_stage served-window
+  // guard) and the low-BRAM served address (fetch_address delayed one cycle to
+  // match the 1-cycle imem read latency).
+  logic [31:0] instruction_served_addr;
+  logic [31:0] bram_fetch_served_addr_q;
   logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
   logic pipeline_stall;  // front-end pipeline stall (gates fetch publish-valid)
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
@@ -229,15 +265,50 @@ module cpu_and_mem #(
 `endif
 
   // Timer registers (CLINT-style)
-  logic                  [63:0] mtime;  // Machine time counter
-  logic                  [63:0] mtimecmp;  // Machine timer compare register
-  logic                         msip;  // Machine software interrupt pending
+  logic [63:0] mtime;  // Machine time counter
+  logic [63:0] mtimecmp;  // Machine timer compare register
+  logic        msip;  // Machine software interrupt pending
+
+  // ns16550a UART face register file (8-bit). DLAB = ns_lcr[7].
+  logic [7:0] ns_dll, ns_dlm, ns_ier, ns_fcr, ns_lcr, ns_mcr, ns_scr;
+  logic       ns_rx_irq_pending;
+  logic       ns_tx_irq_pending;
+  logic       ns_irq_pending;
+  logic [7:0] ns_iir;
+  assign ns_rx_irq_pending = ns_ier[0] && i_uart_rx_valid;
+  assign ns_tx_irq_pending = ns_ier[1] && i_uart_tx_ready;
+  assign ns_irq_pending = ns_rx_irq_pending || ns_tx_irq_pending;
+  always_comb begin
+    if (ns_rx_irq_pending) ns_iir = 8'hC4;  // FIFO enabled, received data available.
+    else if (ns_tx_irq_pending) ns_iir = 8'hC2;  // FIFO enabled, THR empty.
+    else ns_iir = 8'hC1;  // FIFO enabled, no interrupt pending.
+  end
 
   // Interrupt signals to CPU
-  riscv_pkg::interrupt_t        interrupts;
-  // Clamp unknown external interrupt values to 0 for simulation stability.
-  // This avoids X-propagation into mip when the top-level input is left un-driven.
-  assign interrupts.meip = (i_external_interrupt === 1'b1);
+  riscv_pkg::interrupt_t interrupts;
+  // External/UART interrupt: REGISTER the aggregate to break the dominant
+  // post-opt timing spine (uart TX-FIFO CDC read-pointer -> occupancy CARRY
+  // compare -> i_uart_tx_ready -> ns16550 THRE irq -> meip -> trap_unit /
+  // ROB-serializer WFI-wake -> commit_en -> retire/trap/SQ endpoints; ~1256
+  // failing paths, WNS -1.09 at 300 MHz).  The whole combinational compare
+  // cone now terminates at this flop's D.  Mirrors mtip_registered below.
+  //
+  // DELIBERATE +1-cycle interrupt-delivery latency (user-approved
+  // 2026-07-01): meip/THRE/RX are level conditions and a 1-cycle-delayed
+  // level is architecturally benign; interrupt delivery is not on the
+  // CoreMark-scored path.  Only the interrupt VIEW is registered — the MMIO
+  // store-drain handshake on i_uart_tx_ready is untouched, and the ns_iir
+  // register readback stays combinational (matches how a real 8250's IIR
+  // reflects current conditions when the handler reads it).
+  //
+  // The === clamp keeps unknown external-interrupt values from propagating
+  // into mip when the top-level input is left un-driven in simulation.
+  logic meip_registered;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) meip_registered <= 1'b0;
+    else meip_registered <= (i_external_interrupt === 1'b1) || ns_irq_pending;
+  end
+  assign interrupts.meip = meip_registered;
   assign interrupts.msip = msip;
 
   // Timer interrupt: register the 64-bit comparison result to break critical timing path.
@@ -251,7 +322,20 @@ module cpu_and_mem #(
   end
   assign interrupts.mtip = mtip_registered;
 
-  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine-mode
+  // mtimecmp MMIO write pulse: a kernel/handler timer re-arm. Used by the hang
+  // triage as a "timer tick serviced" event tap.
+  logic mtimecmp_write_pulse;
+  assign mtimecmp_write_pulse = |data_memory_byte_write_enable_registered &&
+      ((data_memory_address_registered == MtimecmpLowMmioAddr) ||
+       (data_memory_address_registered == MtimecmpHighMmioAddr) ||
+       (data_memory_address_registered == ClintMtimecmpLo) ||
+       (data_memory_address_registered == ClintMtimecmpHi));
+  logic [ 5:0] cpu_debug_irq_status;
+  logic [31:0] cpu_debug_commit_pc;
+  logic [31:0] cpu_debug_commit_2_pc;
+  logic [ 1:0] cpu_debug_commit_valid;
+
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine/User-mode
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
@@ -265,6 +349,7 @@ module cpu_and_mem #(
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
+      .i_served_addr(instruction_served_addr),
       .i_instr_valid(instruction_valid),
       .o_fetch_replay_consume(fetch_replay_consume),
       .o_pipeline_stall(pipeline_stall),
@@ -292,11 +377,15 @@ module cpu_and_mem #(
       .o_mmio_uart_rx_ready_pulse(mmio_uart_rx_ready_pulse),
       .i_data_mem_rd_data(data_memory_or_peripheral_read_data),
       .o_rst_done(/*not connected*/),
-      .o_vld   (/*not connected*/),
+      .o_vld   (commit_vld),
       .o_pc_vld(/*not connected*/),
       // Interrupt and timer interface
       .i_interrupts(interrupts),
       .i_mtime(mtime),
+      .o_debug_irq_status(cpu_debug_irq_status),
+      .o_debug_commit_pc(cpu_debug_commit_pc),
+      .o_debug_commit_2_pc(cpu_debug_commit_2_pc),
+      .o_debug_commit_valid(cpu_debug_commit_valid),
       // Branch prediction enabled by default in production
       .i_disable_branch_prediction(1'b0)
   );
@@ -344,6 +433,7 @@ module cpu_and_mem #(
     // still carries valid (preserving the IF first-cycle capture); the real
     // provider's registered stall produces the same 1-cycle lag.
     assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q;
+    assign instruction_served_addr = served_addr_q;
     assign fuzz_accepted = instruction_valid && !pipeline_stall;
     // The BRAM chases the owed ask while unserved and the live PC once
     // serving (the 1-cycle BRAM then keeps the window contract-aligned).
@@ -406,6 +496,7 @@ module cpu_and_mem #(
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic cached_fetch_bank_sel_r;
+    logic [31:0] cached_fetch_served_addr;
     logic cached_fetch_valid;
 
     assign fetch_address = program_counter;
@@ -434,6 +525,8 @@ module cpu_and_mem #(
                                   bram_fetch_sideband;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
                                                          bram_fetch_bank_sel_cpu_r;
+    assign instruction_served_addr = fetch_high_valid_q ? cached_fetch_served_addr :
+                                                          bram_fetch_served_addr_q;
 
     // High-address provider: two-line L1I fetch buffer for cached/DDR code.
     // It no longer drives the low-BRAM address pins; that path stays direct
@@ -449,6 +542,7 @@ module cpu_and_mem #(
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
         .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
+        .o_served_addr(cached_fetch_served_addr),
         .o_instr_valid(cached_fetch_valid),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
@@ -464,6 +558,7 @@ module cpu_and_mem #(
     );
   end else begin : gen_fetch_direct
     assign instruction_valid = 1'b1;
+    assign instruction_served_addr = bram_fetch_served_addr_q;
     assign fetch_address = program_counter;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
@@ -491,7 +586,7 @@ module cpu_and_mem #(
       // Port A: Instruction programming (div4 clock, write only)
       .i_port_a_byte_address(i_instr_mem_addr),
       .i_port_a_write_data(i_instr_mem_wrdata),
-      .i_port_a_write_enable(i_instr_mem_en),
+      .i_port_a_write_enable(i_instr_mem_en && (|i_instr_mem_we)),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only)
       .i_port_b_clk(i_clk),
@@ -508,6 +603,7 @@ module cpu_and_mem #(
   // control net.
   always_ff @(posedge i_clk) begin
     bram_fetch_bank_sel_cpu_r <= fetch_address[2];
+    bram_fetch_served_addr_q  <= fetch_address;
   end
 
 `ifndef SYNTHESIS
@@ -603,7 +699,8 @@ module cpu_and_mem #(
         .HAS_L2(CACHED_HAS_L2),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
-        .L2_CACHE_BYTES(L2_CACHE_BYTES)
+        .L2_CACHE_BYTES(L2_CACHE_BYTES),
+        .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) cache_hierarchy (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -824,19 +921,36 @@ module cpu_and_mem #(
     // Use MA-stage address captured from CPU for MMIO reads
     unique case (mmio_load_addr)
       // UART RX data - returns received byte in lower 8 bits (reading consumes byte)
-      UartRxDataMmioAddr:   mmio_read_data_comb = {24'b0, i_uart_rx_data};
+      UartRxDataMmioAddr: mmio_read_data_comb = {24'b0, i_uart_rx_data};
       // UART RX status - bit 0 indicates data available (non-destructive read)
       UartRxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_rx_valid};
       // UART TX status - bit 0 indicates the TX FIFO can accept at least one byte.
       UartTxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_tx_ready};
-      Fifo0MmioAddr:        mmio_read_data_comb = i_fifo0_rd_data;
-      Fifo1MmioAddr:        mmio_read_data_comb = i_fifo1_rd_data;
-      MtimeLowMmioAddr:     mmio_read_data_comb = mtime[31:0];
-      MtimeHighMmioAddr:    mmio_read_data_comb = mtime[63:32];
-      MtimecmpLowMmioAddr:  mmio_read_data_comb = mtimecmp[31:0];
+      Fifo0MmioAddr: mmio_read_data_comb = i_fifo0_rd_data;
+      Fifo1MmioAddr: mmio_read_data_comb = i_fifo1_rd_data;
+      MtimeLowMmioAddr: mmio_read_data_comb = mtime[31:0];
+      MtimeHighMmioAddr: mmio_read_data_comb = mtime[63:32];
+      MtimecmpLowMmioAddr: mmio_read_data_comb = mtimecmp[31:0];
       MtimecmpHighMmioAddr: mmio_read_data_comb = mtimecmp[63:32];
-      MsipMmioAddr:         mmio_read_data_comb = {31'b0, msip};
-      default:              ;
+      MsipMmioAddr: mmio_read_data_comb = {31'b0, msip};
+      // ns16550a UART face (aliases native UART TX/RX). DLAB selects DLL/DLM.
+      Ns16550ThrRbr: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dll} : {24'b0, i_uart_rx_data};
+      Ns16550IerDlm: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dlm} : {24'b0, ns_ier};
+      Ns16550IirFcr: mmio_read_data_comb = {24'b0, ns_iir};
+      Ns16550Lcr: mmio_read_data_comb = {24'b0, ns_lcr};
+      Ns16550Mcr: mmio_read_data_comb = {24'b0, ns_mcr};
+      // LSR: TEMT|THRE from TX-ready (bits 6,5); DR from RX-valid (bit 0).
+      Ns16550Lsr:
+      mmio_read_data_comb = {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid};
+      Ns16550Msr: mmio_read_data_comb = {24'b0, 8'hB0};  // DCD|DSR|CTS asserted
+      Ns16550Scr: mmio_read_data_comb = {24'b0, ns_scr};
+      // SiFive CLINT alias (same registers as the native timer block).
+      ClintMsip: mmio_read_data_comb = {31'b0, msip};
+      ClintMtimecmpLo: mmio_read_data_comb = mtimecmp[31:0];
+      ClintMtimecmpHi: mmio_read_data_comb = mtimecmp[63:32];
+      ClintMtimeLo: mmio_read_data_comb = mtime[31:0];
+      ClintMtimeHi: mmio_read_data_comb = mtime[63:32];
+      default: ;
     endcase
   end
 
@@ -887,11 +1001,114 @@ module cpu_and_mem #(
     if (mmio_read_data_valid) data_memory_or_peripheral_read_data = mmio_read_data_reg;
   end
 
-  // write to UART
+  // write to UART (native 0x4000_0000 TX, or the ns16550 THR at 0x4000_1000
+  // when DLAB is clear -- both funnel into the same TX byte stream).
   always_ff @(posedge i_clk) begin
-    o_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
-    o_uart_wr_en   <= |data_memory_byte_write_enable_registered &&
-                       data_memory_address_registered == UartMmioAddr;
+    cpu_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
+    cpu_uart_wr_en   <= |data_memory_byte_write_enable_registered &&
+                       ((data_memory_address_registered == UartMmioAddr) ||
+                        (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
+  end
+
+  generate
+    if (ENABLE_HANG_TRIAGE != 0) begin : gen_hang_triage
+      // On-silicon hang triage: classify a silent boot hang over UART. This is
+      // intentionally opt-in because it periodically takes over the console.
+      logic        triage_active;
+      logic        triage_wr_en;
+      logic [ 7:0] triage_wr_data;
+      logic [31:0] triage_mtime_lo;
+      logic [31:0] triage_mtime_hi;
+      logic [31:0] triage_mtimecmp_lo;
+      logic [31:0] triage_mtimecmp_hi;
+      logic [31:0] triage_mtimecmp_delta_lo;
+      logic [31:0] triage_irq_status;
+      always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+          triage_mtime_lo          <= 32'd0;
+          triage_mtime_hi          <= 32'd0;
+          triage_mtimecmp_lo       <= 32'd0;
+          triage_mtimecmp_hi       <= 32'd0;
+          triage_mtimecmp_delta_lo <= 32'd0;
+          triage_irq_status        <= 32'd0;
+        end else begin
+          triage_mtime_lo <= mtime[31:0];
+          triage_mtime_hi <= mtime[63:32];
+          triage_mtimecmp_lo <= mtimecmp[31:0];
+          triage_mtimecmp_hi <= mtimecmp[63:32];
+          triage_mtimecmp_delta_lo <= mtimecmp[31:0] - mtime[31:0];
+          triage_irq_status <= {
+            22'd0,
+            cpu_debug_irq_status[5],
+            cpu_debug_irq_status[4],
+            cpu_debug_irq_status[3:2],
+            cpu_debug_irq_status[1],
+            cpu_debug_irq_status[0],
+            interrupts.meip,
+            interrupts.msip,
+            interrupts.mtip,
+            mtip_comparison
+          };
+        end
+      end
+      hang_triage u_hang_triage (
+          .i_clk              (i_clk),
+          .i_rst              (i_rst),
+          .i_commit           (commit_vld),
+          .i_timer_event      (mtimecmp_write_pulse),
+          .i_cread_req        (data_memory_cached_read_enable),
+          .i_cread_resp       (data_memory_cached_read_valid),
+          .i_cwrite_req       (|data_memory_cached_byte_write_enable),
+          .i_cwrite_done      (data_memory_cached_write_done),
+          .i_pc               (program_counter),
+          .i_commit0_valid    (cpu_debug_commit_valid[0]),
+          .i_commit0_pc       (cpu_debug_commit_pc),
+          .i_commit1_valid    (cpu_debug_commit_valid[1]),
+          .i_commit1_pc       (cpu_debug_commit_2_pc),
+          .i_mtime_lo         (triage_mtime_lo),
+          .i_mtime_hi         (triage_mtime_hi),
+          .i_mtimecmp_lo      (triage_mtimecmp_lo),
+          .i_mtimecmp_hi      (triage_mtimecmp_hi),
+          .i_mtimecmp_delta_lo(triage_mtimecmp_delta_lo),
+          .i_irq_status       (triage_irq_status),
+          .i_uart_busy        (cpu_uart_wr_en),
+          .i_uart_ready       (i_uart_tx_ready),
+          .o_active           (triage_active),
+          .o_wr_en            (triage_wr_en),
+          .o_wr_data          (triage_wr_data)
+      );
+      assign o_uart_wr_en   = triage_active ? triage_wr_en : cpu_uart_wr_en;
+      assign o_uart_wr_data = triage_active ? triage_wr_data : cpu_uart_wr_data;
+    end else begin : gen_no_hang_triage
+      assign o_uart_wr_en   = cpu_uart_wr_en;
+      assign o_uart_wr_data = cpu_uart_wr_data;
+    end
+  endgenerate
+
+  // ns16550a register-file writes. DLAB (LCR[7]) routes offsets 0/4 to the
+  // baud divisor (DLL/DLM); the THR write itself transmits via o_uart_wr_en.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      ns_dll <= 8'h01;
+      ns_dlm <= 8'h00;
+      ns_ier <= 8'h00;
+      ns_fcr <= 8'h00;
+      ns_lcr <= 8'h00;
+      ns_mcr <= 8'h00;
+      ns_scr <= 8'h00;
+    end else if (|data_memory_byte_write_enable_registered) begin
+      unique case (data_memory_address_registered)
+        Ns16550ThrRbr: if (ns_lcr[7]) ns_dll <= data_memory_write_data_registered[7:0];
+        Ns16550IerDlm:
+        if (ns_lcr[7]) ns_dlm <= data_memory_write_data_registered[7:0];
+        else ns_ier <= data_memory_write_data_registered[7:0];
+        Ns16550IirFcr: ns_fcr <= data_memory_write_data_registered[7:0];
+        Ns16550Lcr: ns_lcr <= data_memory_write_data_registered[7:0];
+        Ns16550Mcr: ns_mcr <= data_memory_write_data_registered[7:0];
+        Ns16550Scr: ns_scr <= data_memory_write_data_registered[7:0];
+        default: ;
+      endcase
+    end
   end
 
   // FIFO write logic - write to FIFOs when CPU writes to FIFO MMIO addresses
@@ -902,11 +1119,23 @@ module cpu_and_mem #(
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1MmioAddr;
 
+  // Linux reads received bytes through the ns16550 RBR alias.  That read must
+  // consume the shared UART RX FIFO just like the native FROST RX-data address,
+  // but only when DLAB is clear; with DLAB set, offset 0 is DLL.
+  logic ns16550_rbr_read_pulse;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      ns16550_rbr_read_pulse <= 1'b0;
+    end else begin
+      ns16550_rbr_read_pulse <= mmio_read_pulse && (mmio_load_addr == Ns16550ThrRbr) && !ns_lcr[7];
+    end
+  end
+
   // FIFO/UART consume pulses fire one cycle after the MMIO read request is
   // accepted. The response data itself was already captured above.
-  assign o_fifo0_rd_en = mmio_fifo0_read_pulse;
-  assign o_fifo1_rd_en = mmio_fifo1_read_pulse;
-  assign o_uart_rx_ready = mmio_uart_rx_ready_pulse;
+  assign o_fifo0_rd_en   = mmio_fifo0_read_pulse;
+  assign o_fifo1_rd_en   = mmio_fifo1_read_pulse;
+  assign o_uart_rx_ready = mmio_uart_rx_ready_pulse || ns16550_rbr_read_pulse;
 
   // Timer register updates
   // mtime increments every clock cycle (provides wall-clock time)
@@ -918,9 +1147,11 @@ module cpu_and_mem #(
   // This would cause the non-written half to increment during a write, which is wrong.
   logic writing_mtime_low, writing_mtime_high;
   assign writing_mtime_low = |data_memory_byte_write_enable_registered &&
-                             (data_memory_address_registered == MtimeLowMmioAddr);
+                             ((data_memory_address_registered == MtimeLowMmioAddr) ||
+                              (data_memory_address_registered == ClintMtimeLo));
   assign writing_mtime_high = |data_memory_byte_write_enable_registered &&
-                              (data_memory_address_registered == MtimeHighMmioAddr);
+                              ((data_memory_address_registered == MtimeHighMmioAddr) ||
+                               (data_memory_address_registered == ClintMtimeHi));
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -944,11 +1175,12 @@ module cpu_and_mem #(
       if (|data_memory_byte_write_enable_registered) begin
         unique case (data_memory_address_registered)
           // mtimecmp controls timer interrupt threshold
-          MtimecmpLowMmioAddr:  mtimecmp[31:0] <= data_memory_write_data_registered;
-          MtimecmpHighMmioAddr: mtimecmp[63:32] <= data_memory_write_data_registered;
+          MtimecmpLowMmioAddr, ClintMtimecmpLo: mtimecmp[31:0] <= data_memory_write_data_registered;
+          MtimecmpHighMmioAddr, ClintMtimecmpHi:
+          mtimecmp[63:32] <= data_memory_write_data_registered;
           // msip controls software interrupt (only bit 0 is writable)
-          MsipMmioAddr:         msip <= data_memory_write_data_registered[0];
-          default:              ;
+          MsipMmioAddr, ClintMsip: msip <= data_memory_write_data_registered[0];
+          default: ;
         endcase
       end
     end

@@ -18,6 +18,7 @@
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ VALID_APPS = [
     *COREMARK_PRO_APP_NAMES,
     "csr_test",
     "ddr_exec_test",
+    "ddr_atomic_test",
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
@@ -55,8 +57,13 @@ VALID_APPS = [
     "fpu_test",
     "hello_world",
     "isa_test",
+    "linux_irq_active_ddr_test",
+    "linux_boot",
+    "linux_irq_ddr_test",
+    "linux_irq_stack_slot_test",
     "memory_test",
     "packet_parser",
+    "pde_return_hazard",
     "print_clock_speed",
     "ras_stress_test",
     "ras_test",
@@ -89,10 +96,59 @@ BOARD_CONFIG = {
 # that address range reads back zero. Rejected below until then.
 DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "ddr_exec_test",
+    "ddr_atomic_test",
     "ddr_heap_test",
     "ddr_smc_test",
     "ddr_test",
+    "linux_irq_active_ddr_test",
+    "linux_boot",
+    "linux_irq_ddr_test",
+    "linux_irq_stack_slot_test",
+    "pde_return_hazard",
 }
+
+
+def _linux_boot_preflight() -> None:
+    """Fail fast (with actionable guidance) before the long linux_boot self-build.
+
+    linux_boot is the only app that builds a whole Linux system from source via
+    the Buildroot submodule, so check its prerequisites up front rather than
+    dying deep inside a 30-60 min build (or after prompting for a hardware
+    target). Also warn on the first, from-scratch build so the runtime is not a
+    surprise.
+    """
+    buildroot_makefile = PROJECT_ROOT / "linux" / "buildroot" / "Makefile"
+    if not buildroot_makefile.exists():
+        print(
+            "Error: the Buildroot submodule (linux/buildroot) is not initialized.\n"
+            "  Run: git submodule update --init linux/buildroot",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    missing = [tool for tool in ("make", "dtc") if shutil.which(tool) is None]
+    if missing:
+        print(
+            "Error: missing host tools required to build the Linux image: "
+            f"{', '.join(missing)}.\n"
+            "  Install Buildroot's host dependencies (see "
+            "linux/buildroot-external/README.md) or run inside the\n"
+            "  frost-dev Docker image, which ships them.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    kimage = PROJECT_ROOT / "linux" / "build" / "images" / "Image"
+    if not kimage.exists():
+        print(
+            "Note: no cached kernel image found -- linux_boot will build the "
+            "kernel + rootfs from source now.\n"
+            "  The FIRST build compiles a full rv32 cross toolchain and can take "
+            "30-60 min; later loads reuse\n"
+            "  the cached build and only re-pack the DDR image for this board "
+            "(seconds).",
+            file=sys.stderr,
+        )
 
 
 def compile_app_for_board(
@@ -101,6 +157,7 @@ def compile_app_for_board(
     clock_freq: int,
     coremark_iterations: int,
     make_vars: dict[str, str] | None = None,
+    mem_config: str | None = None,
 ) -> bool:
     """Compile the application with board-specific settings.
 
@@ -110,6 +167,7 @@ def compile_app_for_board(
         clock_freq: CPU clock frequency for this board
         coremark_iterations: Number of iterations for CoreMark
         make_vars: Extra make variable overrides
+        mem_config: If set, exported as MEM_CONFIG to relink the app (e.g. "ddr")
 
     Returns:
         True if compilation succeeded, False otherwise
@@ -123,6 +181,20 @@ def compile_app_for_board(
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
+    # MEM_CONFIG=ddr relinks the app's code into the cached DDR region (the app
+    # Makefiles default to bram); this lets an arbitrary app run from DDR like
+    # the dedicated ddr_* apps. The Makefile's `?=` honors this env override.
+    if mem_config:
+        env["MEM_CONFIG"] = mem_config
+
+    # linux_boot self-builds the kernel + rootfs from the Buildroot submodule on
+    # a clean checkout, which can take ~30-60 min the first time (a full cross
+    # toolchain build); every other app is a quick cross-compile. `make clean`
+    # for linux_boot only drops the board-dependent pack outputs (the cached
+    # kernel/rootfs survive), so the re-pack after clean is fast either way.
+    is_linux_boot = app_name == "linux_boot"
+    clean_timeout = 300 if is_linux_boot else 30
+    build_timeout = 5400 if is_linux_boot else 120
 
     try:
         # Clean first to force recompilation with new settings
@@ -132,7 +204,7 @@ def compile_app_for_board(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=clean_timeout,
         )
 
         # Build with board-specific settings
@@ -147,7 +219,7 @@ def compile_app_for_board(
             env=env,
             capture_output=False,  # Show output
             text=True,
-            timeout=120,
+            timeout=build_timeout,
         )
 
         if result.returncode != 0:
@@ -203,6 +275,15 @@ def main() -> None:
         "--vivado-path",
         default="vivado",
         help="Path to Vivado executable (default: vivado from PATH)",
+    )
+    parser.add_argument(
+        "--ddr",
+        action="store_true",
+        help=(
+            "Build the app to execute from the cached DDR region (passes "
+            "MEM_CONFIG=ddr to the app Makefile), so an otherwise BRAM-resident "
+            "app runs its code from DDR. Requires a board with has_ddr."
+        ),
     )
     coremark_pro_mode = parser.add_mutually_exclusive_group()
     coremark_pro_mode.add_argument(
@@ -349,6 +430,12 @@ def main() -> None:
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
 
+    # linux_boot builds a full Linux system from source; check its build
+    # prerequisites (and warn about the first-build runtime) before we prompt for
+    # a hardware target or kick off a long compile.
+    if args.software_app == "linux_boot":
+        _linux_boot_preflight()
+
     # Select hardware target (may prompt user if multiple targets)
     # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
     selected_target = select_target(
@@ -427,7 +514,12 @@ def main() -> None:
         elif args.coremark_pro_mode == "validation":
             print("  CoreMark-PRO run type: validation (-v1)")
     if not compile_app_for_board(
-        args.software_app, app_dir, clock_freq, coremark_iterations, make_vars
+        args.software_app,
+        app_dir,
+        clock_freq,
+        coremark_iterations,
+        make_vars,
+        mem_config="ddr" if args.ddr else None,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

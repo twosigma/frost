@@ -26,7 +26,7 @@
  *   ├── pc_controller               PC management, next-PC selection
  *   │   └── control_flow_tracker        Holdoff signal generation
  *   ├── branch_prediction/          Branch prediction subsystem
- *   │   ├── branch_predictor            32-entry BTB (combinational lookup)
+ *   │   ├── branch_predictor            256-entry BTB (combinational lookup)
  *   │   ├── branch_prediction_controller  Prediction gating and registration
  *   │   └── prediction_metadata_tracker   Stall/spanning metadata handling
  *   └── c_extension/                Compressed instruction subsystem
@@ -66,7 +66,7 @@
  * =========
  *   - RISC-V C extension support (compressed 16-bit instructions)
  *   - Handles 32-bit instructions spanning two memory words (PC[1]=1)
- *   - Branch prediction with 32-entry BTB
+ *   - Branch prediction with 256-entry BTB
  *   - Outputs raw parcel + selection signals for PD stage decompression
  *
  * TIMING OPTIMIZATION:
@@ -86,6 +86,7 @@ module if_stage #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
+    input logic [XLEN-1:0] i_served_addr,  // Served fetch-window tag (full address)
     // Fetch window valid: the {i_instr, i_instr_sideband, i_instr_bank_sel_r}
     // window corresponds to the fetch address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
@@ -506,6 +507,8 @@ module if_stage #(
 
       .i_pd_redirect(i_pd_redirect),
       .i_pd_redirect_target(i_pd_redirect_target),
+      .i_window_cannot_serve(window_resteer_pc_reg),
+      .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
 
       .i_trap_taken (i_trap_ctrl.trap_taken),
       .i_mret_taken (i_trap_ctrl.mret_taken),
@@ -742,12 +745,54 @@ module if_stage #(
   // stall-held, so a stall covering the bubble cycle let the bubble
   // present-and-dispatch on release alongside the realigned repeat. Fixed
   // by stall-gating pd_redirect_q (see its always_ff above).
-  assign sel_nop = i_pipeline_ctrl.flush || flush_for_c_ext_safe || !fetch_progress ||
+  // Served-window invariant: the fetched 64-bit window covers exactly the two
+  // words {word(i_served_addr), word(i_served_addr)+1}.  pc_reg must lie in that
+  // window or the 1-bit bank-sel parity in instruction_aligner silently selects
+  // the wrong word -> wrong instruction-size sample -> pc_reg advances onto a
+  // mid-instruction byte (the workqueue_init_early epc 0x8038d7fa boot Oops).
+  // A fetch stall (L1I line-fill) can leave the served window >1 word from
+  // pc_reg, which the single parity bit cannot represent.  Detect it from the
+  // full served address; pc_controller squashes (sel_nop below), holds pc_reg,
+  // and resteers fetch onto pc_reg's word until the correct window is served.
+  logic signed [XLEN-1:0] served_word_delta;
+  assign served_word_delta = $signed(
+      {2'b00, i_served_addr[XLEN-1:2]}
+  ) - $signed(
+      {2'b00, pc_reg[XLEN-1:2]}
+  );
+  logic window_cannot_serve_pc_reg;
+  // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
+  // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
+  // tracking is approximate -- firing there only causes spurious squashes.
+  assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
+      (served_word_delta != $signed(
+      0
+  )) && (served_word_delta != -$signed(
+      1
+  )) && !((served_word_delta == $signed(
+      1
+  )) && use_instr_buffer);
+
+  // The existing (pre-served-window-guard) squash conditions.
+  logic sel_nop_existing;
+  assign sel_nop_existing = i_pipeline_ctrl.flush ||
+                   flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+
+  // Resteer fetch onto pc_reg's word + hold pc_reg ONLY at a real consume cycle
+  // (not during an existing holdoff, where pc_reg is already managed and a resteer
+  // would thrash the front end -- the cause of the earlier isa_test/boot regression).
+  // At a holdoff release with the served window still stale (fetch ran ahead during
+  // the redirect bubble), this fires the cycle the wrong-word decode would otherwise
+  // advance pc_reg onto a mid-instruction byte.
+  logic window_resteer_pc_reg;
+  assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing;
+
+  assign sel_nop = sel_nop_existing || window_cannot_serve_pc_reg;
 
   // ===========================================================================
   // Stall State Registers
@@ -951,11 +996,35 @@ module if_stage #(
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
-  // Use the same stall-safe compressed selection metadata that PD consumes.
-  // This keeps link_address aligned with the actual instruction that will be
-  // seen downstream, including prediction/stall replay cases.
+  // link_address (the fall-through PC) must reflect the TRUE size of the slot-1
+  // instruction held across a stall.  The shared sel_compressed_sc is flush-zeroed
+  // by its stall_capture_reg (stall_capture_reg.sv: `if (i_flush) saved <= '0`),
+  // so on a flush-inside-stall a *compressed* branch held at fetch reads
+  // is_compressed_for_link = 0 -> link_address = pc_reg + 4 (one halfword too far).
+  // That stale fall-through link is then consumed as the not-taken redirect target
+  // (early_misprediction_recovery: `... : rs_issue_int.link_addr`), making fetch
+  // skip the branch's successor parcel.  This is the no-MMU-Linux timer-IRQ
+  // "gremlin": the revmap_size load (`lw a5,80(a0)`) right after a not-taken
+  // `c.beqz` is dropped, so the dependent `bgeu a1,a5` reads a stale a5 and takes
+  // the wrong IRQ-dispatch path.  Capture sel_compressed for the link WITHOUT the
+  // flush-zero so the held size matches the actual held instruction (pc_reg+2/+4
+  // correctly).  sel_compressed_sc's other consumers (o_from_if_to_pd.sel_compressed,
+  // slot2_pc_sc) are replay-gated by sel_nop_saved=1 after a flush, so they are
+  // unaffected; only this link path reads the captured bit in the post-flush window.
   logic is_compressed_for_link;
-  assign is_compressed_for_link = sel_compressed_sc;
+  logic sel_compressed_for_link_sc;
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_sel_compressed_for_link_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(1'b0),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(sel_compressed),
+      .o_data(sel_compressed_for_link_sc)
+  );
+  assign is_compressed_for_link = sel_compressed_for_link_sc;
 
   assign instruction_pc = pc_reg;
   assign link_address = instruction_pc + (is_compressed_for_link ?
@@ -1153,9 +1222,8 @@ module if_stage #(
   // Slot-2 IF→PD Packet (2-wide dispatch — Session F)
   // ===========================================================================
   // Slot-2 follows slot-1 sequentially in program order: PC and link address
-  // are simply slot-1's plus the slot-1 / slot-2 sizes.  No BTB lookup is
-  // performed for slot-2 (decision #3, single-port BTB on slot-1 PC) and no
-  // RAS prediction is consumed for slot-2 (decision #1: slot-2 is invalid
+  // are simply slot-1's plus the slot-1 / slot-2 sizes.  No RAS prediction
+  // is consumed for slot-2 (decision #1: slot-2 is invalid
   // when slot-1 is a branch, so slot-1 cannot have pushed/popped RAS in the
   // same cycle).
   //

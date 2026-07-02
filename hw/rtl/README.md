@@ -4,7 +4,7 @@ This directory contains the synthesizable SystemVerilog for FROST. The current
 CPU is an **out-of-order RV32GCB implementation with a 2-wide front-end and
 2-wide commit**: a 2-wide in-order IF/PD/ID front-end, Tomasulo register renaming
 and dynamic scheduling, out-of-order execution across six function units, and
-precise 2-wide in-order commit, with machine-mode traps and separate
+precise 2-wide in-order commit, with M/U-mode traps and separate
 instruction/data memory ports.
 
 The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
@@ -88,7 +88,7 @@ backend notes.
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
-| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | Machine-mode exception/interrupt handling |
+| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M- and U-mode exception/interrupt handling (traps taken in M-mode) |
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model) and `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays) |
 | `peripherals/` | In use | UART TX/RX blocks |
 
@@ -102,7 +102,7 @@ served by the cache hierarchy:
 |--------|---------|------|-------------|
 | ROM | `0x0000_0000` | 96 KiB | Code and read-only data (fast BRAM) |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
-| MMIO | `0x4000_0000` | 44 B | UART, FIFOs, CLINT-style timer, software interrupt |
+| MMIO | `0x4000_0000` | 112 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`) and SiFive CLINT (`0x4001_0000`) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
 The cached tier serves both sides of the core: loads/stores through the
@@ -146,9 +146,21 @@ MMIO registers:
 | `0x4000_0020` | MSIP | Machine software interrupt pending |
 | `0x4000_0024` | UART_RX_STATUS | Bit 0 is data available |
 | `0x4000_0028` | UART_TX_STATUS | Bit 0 is can accept byte |
+| `0x4000_1000`–`101C` | ns16550a UART face | 16550 register file (word stride) aliasing UART_TX/RX for the Linux 8250 driver |
+| `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
+| `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
+| `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 
 The hardware UART console is configured for 115200 baud, 8 data bits, no
 parity, and 1 stop bit (8N1).
+
+For no-MMU Linux, the same UART is also reachable through a standard
+ns16550a register face at `0x4000_1000` (word stride; device-tree
+`reg-shift=2`, `reg-io-width=4`; `earlycon=uart8250,mmio32`), and the timer
+through a SiFive-CLINT-compatible window at `0x4001_0000` (`mtimecmp` at
+`+0x4000`, `mtime` at `+0xBFF8`). Both alias the native registers listed
+above onto the same hardware, so the in-tree Linux 8250 console and CLINT
+timer drivers work without a board-specific driver.
 
 If these addresses change, update `cpu_and_mem.sv`, `cpu_ooo.sv` parameters,
 `sw/common/link.ld`, `sw/lib/include/mmio.h`, and the verification constants in
@@ -161,7 +173,8 @@ From the repo root:
 ```bash
 # Cocotb/Verilator simulation
 ./tests/test_run_cocotb.py hello_world
-./tests/test_run_cocotb.py cpu
+./tests/test_run_cocotb.py tomasulo_test
+./tests/test_run_cocotb.py --list-tests   # show all registered tests
 
 # Open-source RTL synthesis checks
 ./tests/test_run_yosys.py
@@ -180,7 +193,7 @@ sed -n '1,200p' hw/rtl/frost.f
 The CPU build file list is:
 
 ```bash
-sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
+sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f
 ```
 
 ## Parameters
@@ -199,7 +212,7 @@ sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation-only: 1 wraps the low BRAM in a variable-latency fetch model (LFSR fetch-valid gaps) that mirrors the L1I provider's fetch contract; hardware keeps 0 |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
-| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size |
+| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size; `cpu_and_mem.sv` overrides to `32'h1_C000` (covers the ns16550a face + CLINT alias) |
 
 Simulation overrides parameters through Verilator generics (`-G`): the test
 Makefile enables the cached tier with the X3 hierarchy shape by default

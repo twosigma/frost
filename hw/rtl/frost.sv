@@ -54,6 +54,10 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Simulation-only fast cache maintenance for fence.i: 0 = FPGA (cycle-
+    // accurate maintenance FSM, unchanged); non-zero = sim fast path (see
+    // frost_cache). Set to 1 only by the cocotb sim build, never for boards.
+    parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
     parameter int unsigned DDR_MODEL_LATENCY = 30,
@@ -62,7 +66,9 @@ module frost #(
     // them to their DDR controller subsystem).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
-    parameter int unsigned FETCH_VALID_FUZZ = 0
+    parameter int unsigned FETCH_VALID_FUZZ = 0,
+    // Optional on-silicon boot-hang classifier that can emit over UART.
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -193,10 +199,12 @@ module frost #(
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
-      .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ)
+      .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,

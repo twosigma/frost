@@ -110,7 +110,7 @@ FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py hello_world
 FROST_COCOTB_MEM_CONFIG=ddr pytest test_run_cocotb.py -k test_real_program
 ```
 
-Tests in `DDR_TIER_EXCLUDE` self-skip in the `ddr` tier: the `*_fetch_fuzz` fetch fuzzers, and the already-DDR-focused `ddr_*` programs (`ddr_test`, `ddr_exec_test`, `ddr_smc_test`, `ddr_heap_test`) whose fixed-address writes a whole-program relocation would clobber. Unit benches are tier-independent and run only once (in the `bram` job).
+Tests in `DDR_TIER_EXCLUDE` self-skip in the `ddr` tier: the `*_fetch_fuzz` fetch fuzzers, and the already-DDR-focused `ddr_*` programs (`ddr_test`, `ddr_exec_test`, `ddr_smc_test`, `ddr_heap_test`, `ddr_atomic_test`) whose fixed-address writes a whole-program relocation would clobber. Unit benches are tier-independent and run only once (in the `bram` job).
 
 ### `test_arch_compliance.py`
 

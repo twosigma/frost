@@ -46,6 +46,7 @@ module cpu_ooo #(
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
+    input logic [31:0] i_served_addr,  // Served fetch-window tag (served-window guard)
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
@@ -104,6 +105,10 @@ module cpu_ooo #(
     // Interrupts
     input riscv_pkg::interrupt_t i_interrupts,
     input logic [63:0] i_mtime,
+    output logic [5:0] o_debug_irq_status,
+    output logic [XLEN-1:0] o_debug_commit_pc,
+    output logic [XLEN-1:0] o_debug_commit_2_pc,
+    output logic [1:0] o_debug_commit_valid,
     // Debug
     input logic i_disable_branch_prediction
 );
@@ -298,6 +303,39 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_rat_alloc_rob_tag  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_last_a0_alloc_pc  /* verilator public_flat_rd */;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_last_a0_alloc_tag  /* verilator public_flat_rd */;
+  logic dbg_trap_taken_raw  /* verilator public_flat_rd */;
+  logic dbg_trap_taken_q  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_trap_cause_internal  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_trap_pc_internal  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_interrupt_resume_pc  /* verilator public_flat_rd */;
+  logic dbg_port0_int_we  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_port0_int_addr  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_port0_int_data  /* verilator public_flat_rd */;
+  logic dbg_port1_int_we  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_port1_int_addr  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_port1_int_data  /* verilator public_flat_rd */;
+  logic dbg_commit_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_commit_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_commit_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_value  /* verilator public_flat_rd */;
+  logic dbg_commit_2_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_2_pc  /* verilator public_flat_rd */;
+  logic dbg_commit_2_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_commit_2_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_commit_2_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_commit_2_value  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_reg_pc  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_reg_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_rob_commit_reg_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_reg_value  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_valid  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_2_reg_pc  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_dest_valid  /* verilator public_flat_rd */;
+  logic dbg_rob_commit_2_reg_dest_rf  /* verilator public_flat_rd */;
+  logic [riscv_pkg::RegAddrWidth-1:0] dbg_rob_commit_2_reg_dest_reg  /* verilator public_flat_rd */;
+  logic [XLEN-1:0] dbg_rob_commit_2_reg_value  /* verilator public_flat_rd */;
   // verilog_lint: waive-stop line-length
 `endif
 
@@ -407,6 +445,7 @@ module cpu_ooo #(
       .i_instr,
       .i_instr_sideband,
       .i_instr_bank_sel_r,
+      .i_served_addr,
       .i_instr_valid,
       .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
@@ -636,6 +675,11 @@ module cpu_ooo #(
   logic rob_commit_2_store_like_raw;
   logic rob_commit_2_valid;
   assign rob_commit_2_valid = rob_commit_2.valid;
+  logic rob_commit_store_like_raw;
+  logic sq_committed_empty_for_trap;
+  assign rob_commit_store_like_raw =
+      rob_commit_valid_raw &&
+      (rob_commit_comb.is_store || rob_commit_comb.is_fp_store || rob_commit_comb.is_sc);
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
@@ -839,7 +883,20 @@ module cpu_ooo #(
   logic trap_pending;
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
+  logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
+  // Retired-next-PC precompute from the ROB (TIMING): equals
+  // retired_next_pc(rob_commit_comb) / (rob_commit_comb_2) whenever the
+  // corresponding commit valid is high, but computed from ungated head fields
+  // so the RAM read + adder are off the late commit_en cone.
+  logic [XLEN-1:0] rob_head_retired_next_pc;
+  logic [XLEN-1:0] rob_head_next_retired_next_pc;
   riscv_pkg::exc_cause_t rob_trap_cause;
+  riscv_pkg::exc_cause_t rob_trap_cause_remapped;
+  logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
+  // Arbitrated trap cause from trap_unit (interrupt cause with bit 31, or the
+  // remapped synchronous-exception cause) -> csr_file mcause. Declared here so
+  // it is visible above the trap_unit instantiation that drives it.
+  logic [XLEN-1:0] trap_cause_internal;
   logic [XLEN-1:0] rob_trap_value;
   logic rob_trap_taken_ack;
   logic mret_start, mret_done_ack;
@@ -1007,6 +1064,9 @@ module cpu_ooo #(
       .i_alloc_req_2(rob_alloc_req_2),
       .o_alloc_resp_2(rob_alloc_resp_2),
 
+      // Current privilege (PrivM/PrivU) for U-mode CSR/MRET illegal checks
+      .i_priv(csr_priv),
+
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
 
@@ -1042,6 +1102,9 @@ module cpu_ooo #(
       .i_csr_done(csr_done_ack),
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
+      .o_head_is_wfi(rob_head_is_wfi),
+      .o_head_retired_next_pc(rob_head_retired_next_pc),
+      .o_head_next_retired_next_pc(rob_head_next_retired_next_pc),
       .o_trap_cause(rob_trap_cause),
       .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
@@ -1630,6 +1693,42 @@ module cpu_ooo #(
   // The wrapper already provides a registered observation port for commit.
   assign rob_commit_valid = rob_commit.valid;
 
+`ifndef SYNTHESIS
+  assign dbg_trap_taken_raw = trap_taken;
+  assign dbg_trap_taken_q = trap_taken_reg;
+  assign dbg_trap_cause_internal = trap_cause_internal;
+  assign dbg_trap_pc_internal = trap_pc_internal;
+  assign dbg_interrupt_resume_pc = interrupt_resume_pc;
+  assign dbg_port0_int_we = port0_int_we;
+  assign dbg_port0_int_addr = port0_int_addr;
+  assign dbg_port0_int_data = port0_int_data;
+  assign dbg_port1_int_we = port1_int_we;
+  assign dbg_port1_int_addr = port1_int_addr;
+  assign dbg_port1_int_data = port1_int_data;
+  assign dbg_commit_dest_valid = rob_commit_comb.dest_valid;
+  assign dbg_commit_dest_rf = rob_commit_comb.dest_rf;
+  assign dbg_commit_dest_reg = rob_commit_comb.dest_reg;
+  assign dbg_commit_value = rob_commit_comb.value[XLEN-1:0];
+  assign dbg_commit_2_valid = rob_commit_comb_2.valid;
+  assign dbg_commit_2_pc = rob_commit_comb_2.pc;
+  assign dbg_commit_2_dest_valid = rob_commit_comb_2.dest_valid;
+  assign dbg_commit_2_dest_rf = rob_commit_comb_2.dest_rf;
+  assign dbg_commit_2_dest_reg = rob_commit_comb_2.dest_reg;
+  assign dbg_commit_2_value = rob_commit_comb_2.value[XLEN-1:0];
+  assign dbg_rob_commit_reg_valid = rob_commit.valid;
+  assign dbg_rob_commit_reg_pc = rob_commit.pc;
+  assign dbg_rob_commit_reg_dest_valid = rob_commit.dest_valid;
+  assign dbg_rob_commit_reg_dest_rf = rob_commit.dest_rf;
+  assign dbg_rob_commit_reg_dest_reg = rob_commit.dest_reg;
+  assign dbg_rob_commit_reg_value = rob_commit.value[XLEN-1:0];
+  assign dbg_rob_commit_2_reg_valid = rob_commit_2.valid;
+  assign dbg_rob_commit_2_reg_pc = rob_commit_2.pc;
+  assign dbg_rob_commit_2_reg_dest_valid = rob_commit_2.dest_valid;
+  assign dbg_rob_commit_2_reg_dest_rf = rob_commit_2.dest_rf;
+  assign dbg_rob_commit_2_reg_dest_reg = rob_commit_2.dest_reg;
+  assign dbg_rob_commit_2_reg_value = rob_commit_2.value[XLEN-1:0];
+`endif
+
   // DEBUG: verify early recovery redirect_pc matches commit-time redirect_pc
   // (Disabled for performance — re-enable for debugging.)
   // always @(posedge i_clk) begin
@@ -1858,6 +1957,25 @@ module cpu_ooo #(
     endcase
   end
 
+  // ECALL cause is privilege-dependent (U-mode = 8, M-mode = 11). The FU shim
+  // tags every ECALL as ExcEcallMmode (it has no architectural privilege), so
+  // remap at commit using the current privilege. csr_file writes this to mcause
+  // -- the load-bearing path. It is also fed to trap_unit.i_exception_cause for
+  // symmetry, though FROST does not vector mtvec on synchronous-exception causes
+  // (only interrupts vector) and trap_unit's own o_trap_cause is unused. The
+  // csr_trap_value (mtval) mux above intentionally keeps the ORIGINAL cause
+  // (ECALL mtval is 0 either way).
+  //
+  // SAFE against the cause==11 / IntMachineExternal (0x8000_000B) low-bit
+  // collision: rob_trap_cause carries synchronous-exception causes ONLY (ROB
+  // o_trap_cause = head_exc_cause; the ROB's i_interrupt_pending is WFI-wakeup
+  // only, never a cause source), so a value of 11 here is unambiguously an
+  // M-mode ECALL.
+  assign rob_trap_cause_remapped =
+      ((rob_trap_cause == riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]) &&
+       (csr_priv == riscv_pkg::PrivU)) ?
+      riscv_pkg::ExcEcallUmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
+
   csr_file #(
       .XLEN(XLEN)
   ) csr_file_inst (
@@ -1874,8 +1992,11 @@ module cpu_ooo #(
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
-      .i_trap_pc(rob_trap_pc),
-      .i_trap_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
+      .i_trap_pc(trap_pc_internal),
+      // mcause from trap_unit's arbitrated cause: interrupt cause (with the
+      // interrupt bit) for interrupts, or the remapped exception cause (which
+      // carries the U-mode ECALL remap via trap_unit.i_exception_cause below).
+      .i_trap_cause(trap_cause_internal),
       .i_trap_value(csr_trap_value),
       .i_mret_taken(mret_taken),
       .o_mstatus(csr_mstatus),
@@ -1883,6 +2004,7 @@ module cpu_ooo #(
       .o_mtvec(csr_mtvec),
       .o_mepc(csr_mepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .o_priv(csr_priv),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
@@ -1920,7 +2042,93 @@ module cpu_ooo #(
   assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip;
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
-  logic [XLEN-1:0] trap_cause_internal, trap_value_internal;
+  logic [XLEN-1:0] trap_value_internal;
+  logic [XLEN-1:0] interrupt_resume_pc;
+
+  function automatic logic [XLEN-1:0] retired_next_pc(
+      input riscv_pkg::reorder_buffer_commit_t commit);
+    logic [XLEN-1:0] step;
+    begin
+      step = commit.is_compressed ? {{(XLEN - 2) {1'b0}}, 2'b10} : {{(XLEN - 3) {1'b0}}, 3'b100};
+      if (commit.is_branch || commit.is_mret) begin
+        retired_next_pc = commit.redirect_pc;
+      end else begin
+        retired_next_pc = commit.pc + step;
+      end
+    end
+  endfunction
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      interrupt_resume_pc <= '0;
+    end else if (mret_taken) begin
+      // An MRET retires through the trap/MRET full flush, NOT the normal commit
+      // path: the cycle after o_mret_taken, flush_all (from mret_taken_reg)
+      // wipes the ROB head and gates commit_en, so the MRET never appears on
+      // rob_commit_valid_raw and never updates interrupt_resume_pc via the
+      // branches below. Without this seed, interrupt_resume_pc keeps the
+      // architectural next-PC of the instruction *before* the MRET -- which is
+      // the MRET instruction's own PC -- for the entire MRET-to-U window (until
+      // the first post-MRET instruction commits). A machine interrupt taken
+      // after privilege drops below M (eligible once the trap_unit inhibit
+      // lifts, ~2 cycles later, long before that first commit) would then save
+      // mepc = <MRET PC>, an M-mode handler address, which Linux later restores
+      // and MRETs to illegally in U-mode (the ret_from_exception 0x80388bba
+      // panic). Seed the resume PC from the MRET target (mepc, == the MRET
+      // redirect target) now so it is already correct before the inhibit
+      // window closes. csr_mepc is stable here: MRET does not write mepc and
+      // cannot coincide with a trap entry that would.
+      interrupt_resume_pc <= csr_mepc;
+    end else if (rob_commit_2_valid_raw) begin
+      // TIMING: identical value to retired_next_pc(rob_commit_comb_2) in every
+      // cycle this arm is taken (checked below in simulation), but the ROB
+      // precomputes it from ungated head+1 fields so the PC RAM read + 32-bit
+      // add do not sit behind the late commit gating.
+      interrupt_resume_pc <= rob_head_next_retired_next_pc;
+    end else if (rob_commit_valid_raw) begin
+      // TIMING: identical value to retired_next_pc(rob_commit_comb); see above.
+      interrupt_resume_pc <= rob_head_retired_next_pc;
+    end else if (rob_head_is_wfi && head_valid) begin
+      // Bug#2 (drain-gated WFI mepc): while a WFI stalls at the ROB head, the
+      // architectural resume PC is always wfi_pc+4 (WFI never redirects). Seed it
+      // here so that if a machine interrupt is taken at the WFI -- including the
+      // narrow window where a committed store finishes draining and take_trap
+      // fires the same cycle, before the WFI's own commit can advance
+      // interrupt_resume_pc -- mepc is the spec-required wfi_pc+4 rather than the
+      // pre-WFI instruction's next-PC (== wfi_pc). Lowest priority: a real commit
+      // (incl. a dual-commit retiring the WFI and its successor) always wins, and
+      // WFI is never compressed so +4 is exact. Mirrors the mret_taken seed above.
+      interrupt_resume_pc <= rob_trap_pc + 32'd4;
+    end
+  end
+
+`ifndef SYNTHESIS
+  // Equivalence check for the ROB retired-next-PC precompute: whenever a
+  // commit fires, the precomputed value must match the original
+  // retired_next_pc() derivation from the (gated) commit payload.
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
+              rob_commit_comb
+          )) begin
+        $error("cpu_ooo: rob_head_retired_next_pc %08x != retired_next_pc(commit) %08x",
+               rob_head_retired_next_pc, retired_next_pc(rob_commit_comb));
+      end
+      if (rob_commit_2_valid_raw && rob_head_next_retired_next_pc != retired_next_pc(
+              rob_commit_comb_2
+          )) begin
+        $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
+               rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
+      end
+    end
+  end
+`endif
+
+  // A same-cycle store-like ROB commit is not yet in the SQ committed set.
+  // If a trap full-flushes here, the registered commit can be masked before
+  // SQ observes it. Delay trap/MRET one cycle so SQ can own and drain it.
+  assign sq_committed_empty_for_trap =
+      sq_committed_empty && !rob_commit_store_like_raw && !rob_commit_2_store_like_raw;
 
   trap_unit #(
       .XLEN(XLEN)
@@ -1928,19 +2136,23 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
-      .i_sq_committed_empty(sq_committed_empty),
+      .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),
       .i_mepc(csr_mepc),
       .i_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .i_priv(csr_priv),
       .i_interrupts(i_interrupts),
       // Exception from ROB commit
       .i_exception_valid(trap_pending),
-      .i_exception_cause({{(XLEN - $bits(rob_trap_cause)) {1'b0}}, rob_trap_cause}),
+      .i_exception_cause({
+        {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
+      }),
       .i_exception_tval('0),
       .i_exception_pc(rob_trap_pc),
+      .i_interrupt_pc(interrupt_resume_pc),
       .i_mret_start(mret_start),
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       .o_trap_taken(trap_taken),
@@ -1971,6 +2183,15 @@ module cpu_ooo #(
   // commit hold above blocks younger retirement during the delay.
   assign rob_trap_taken_ack = trap_taken_reg;
   assign mret_done_ack = mret_taken_reg;
+
+  // Passive on-silicon debug tap for the top-level hang triage UART. Packed as:
+  // [5]=mret, [4]=trap, [3:2]=priv, [1]=mstatus.MIE, [0]=mie.MTIE.
+  assign o_debug_irq_status = {
+    mret_taken, trap_taken, csr_priv, csr_mstatus_mie_direct, csr_mie[riscv_pkg::MieMtiBit]
+  };
+  assign o_debug_commit_pc = rob_commit.pc;
+  assign o_debug_commit_2_pc = rob_commit_2.pc;
+  assign o_debug_commit_valid = {rob_commit_2.valid, rob_commit.valid};
 
   // ===========================================================================
   // Profiling Counter Aggregation

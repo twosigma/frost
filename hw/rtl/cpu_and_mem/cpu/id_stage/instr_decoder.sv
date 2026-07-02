@@ -15,7 +15,7 @@
  */
 
 /*
-  Instruction decoder for RISC-V RV32IMAFB + Zicsr + Machine-mode privileged.
+  Instruction decoder for RISC-V RV32GCB + Zicsr + M/U-mode privileged.
   B extension = Zba + Zbb + Zbs (full bit manipulation).
   F extension = Single-precision floating-point.
   This combinational module decodes 32-bit RISC-V instructions into control signals

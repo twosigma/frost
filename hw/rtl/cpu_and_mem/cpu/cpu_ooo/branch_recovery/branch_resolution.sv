@@ -86,15 +86,27 @@ module branch_resolution #(
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
+  // TIMING: compare-then-mux instead of mux-then-compare.  The original form
+  // muxed the 5-bit owner tag by checkpoint_id and THEN compared against
+  // rob_tag (8:1 x 5b mux + 5b compare in series).  Computing the per-
+  // checkpoint live bit first lets all eight in_use+owner-tag compares run in
+  // parallel straight out of the checkpoint registers, leaving only a 1-bit
+  // 8:1 select behind checkpoint_id.  Pure boolean identity — for every
+  // checkpoint_id value the selected bit is exactly the original expression.
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_live_per_id;
   always_comb begin
-    branch_issue_checkpoint_live = 1'b1;
-    if (rs_issue_int.has_checkpoint) begin
+    for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
       // Use the registered checkpoint state here to avoid a feedback loop
       // through execute-time checkpoint free.  The owner-tag check still
       // filters out stale/reused checkpoint IDs.
-      branch_issue_checkpoint_live =
-          checkpoint_in_use[rs_issue_int.checkpoint_id] &&
-          (checkpoint_owner_tag[rs_issue_int.checkpoint_id] == rs_issue_int.rob_tag);
+      checkpoint_live_per_id[i] =
+          checkpoint_in_use[i] && (checkpoint_owner_tag[i] == rs_issue_int.rob_tag);
+    end
+  end
+  always_comb begin
+    branch_issue_checkpoint_live = 1'b1;
+    if (rs_issue_int.has_checkpoint) begin
+      branch_issue_checkpoint_live = checkpoint_live_per_id[rs_issue_int.checkpoint_id];
     end
   end
 
@@ -133,10 +145,22 @@ module branch_resolution #(
     // suppress_branch_resolution → is_branch_issue → branch comparison (CARRY8)
     // → branch_update → commit_en created a 16-level combinational chain that
     // was the WNS critical path (-0.739 ns).  Removing it is safe because:
-    //   (a) commit_en already has a direct branch_update collision guard that
-    //       delays commit when the same branch resolves and commits in one cycle;
-    //   (b) resolution writes to entries that will be flushed are harmless;
-    //   (c) early_mispredict_fire still gates on the candidate directly.
+    //   (a) a resolving branch can never BE the committing head: branches have
+    //       no CDB done-bypass (reorder_buffer head_cdb_bypass excludes
+    //       head_is_branch), so a branch's done bit is registered and it can
+    //       only be head_ready the cycle AFTER its branch_update;
+    //   (b) resolution writes to entries that will be flushed are harmless --
+    //       flush-after-head invalidates them next cycle, allocation re-inits
+    //       the branch bits, and the unresolved-branch counter resets on
+    //       flush_pipeline;
+    //   (c) an early_mispredict_fire coinciding with a head-mispredict commit
+    //       is DROPPED one cycle later: early_mispredict_active gates on
+    //       !mispredict_recovery_pending (early_misprediction_recovery.sv),
+    //       which registers the commit-time recovery launch, so the early
+    //       pulse dies before any redirect / RAT restore / rob_early_recovered
+    //       write / backend flush.  (The former fire-time candidate gate was
+    //       removed for timing; o_head_commit_misprediction_candidate is now
+    //       an unconsumed observation output.)
   end
 
   assign suppress_branch_resolution = branch_issue_is_flushed;

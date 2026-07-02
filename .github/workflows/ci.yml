@@ -342,3 +342,215 @@ jobs:
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pre-commit run --all-files
+
+  # ---------------------------------------------------------------------------
+  # FROST no-MMU M-mode Linux: build the image from source, then boot it two
+  # ways off the SAME artifact -- on the FROST RTL in cocotb (the gremlin
+  # regression) and under QEMU (a fast full boot-to-shell reference).
+  # ---------------------------------------------------------------------------
+
+  # Build the kernel + busybox initramfs + FROST memory images from the vendored
+  # Buildroot submodule (linux/buildroot @ pinned SHA) driven by the FROST
+  # BR2_EXTERNAL tree. Runs inside the frost-dev image, which ships Buildroot's
+  # host deps + QEMU, so the host deps are single-sourced in the Dockerfile. The
+  # first build compiles a full rv32 uClibc cross toolchain from source; the dl/
+  # and ccache caches make later runs much faster.
+  build-frost-linux:
+    name: Build FROST Linux Image (Buildroot)
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Recursive so the pinned linux/buildroot submodule is fetched.
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          # The in-workspace Buildroot build needs ~10 GB; free the image tar.
+          rm -f /tmp/frost-dev.tar
+
+      - name: Cache Buildroot downloads (source tarballs)
+        uses: actions/cache@v4
+        with:
+          path: linux/dl
+          # dl/ only changes when a package version (kernel/toolchain) changes.
+          key: br2-dl-${{ hashFiles('linux/buildroot-external/configs/frost_nommu_rv32_defconfig', 'linux/buildroot-external/board/frost/**') }}
+          restore-keys: |
+            br2-dl-
+
+      - name: Cache Buildroot ccache (toolchain + kernel object cache)
+        uses: actions/cache@v4
+        with:
+          path: linux/ccache
+          key: br2-ccache-${{ github.sha }}
+          restore-keys: |
+            br2-ccache-
+
+      - name: Build kernel + initramfs + FROST memory images
+        run: |
+          docker run --rm \
+            -e BR2_DL_DIR=/workspace/linux/dl \
+            -e BR2_CCACHE_DIR=/workspace/linux/ccache \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            bash -c '
+              set -euo pipefail
+              make -C linux/buildroot O=/workspace/linux/build \
+                BR2_EXTERNAL=/workspace/linux/buildroot-external \
+                frost_nommu_rv32_defconfig
+              # Enable ccache for CI only (kept out of the committed defconfig).
+              echo "BR2_CCACHE=y" >> /workspace/linux/build/.config
+              make -C linux/buildroot O=/workspace/linux/build olddefconfig
+              make -C linux/buildroot O=/workspace/linux/build
+              # Stage the memory images where the cocotb linux_boot test resolves
+              # them (sw/apps/linux_boot/{sw,sw_ddr}.mem).
+              mkdir -p sw/apps/linux_boot
+              cp linux/build/images/sw.mem     sw/apps/linux_boot/sw.mem
+              cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+              ls -l linux/build/images/
+            '
+
+      - name: Upload FROST Linux boot images
+        uses: actions/upload-artifact@v4
+        with:
+          name: frost-linux-boot-images
+          path: |
+            linux/build/images/Image
+            linux/build/images/rootfs.cpio.gz
+            linux/build/images/frost-nommu-fpga.dtb
+            linux/build/images/sw.mem
+            linux/build/images/sw_ddr.mem
+          retention-days: 7
+          if-no-files-found: error
+
+  # Boot the freshly built image on the FROST RTL in cocotb, bounded to ~22M
+  # cycles in the genesys2-faithful cache shape (128 KiB L1I, no L2). This is the
+  # "gremlin" regression: that window is silent mem_init after devtmpfs (no deep
+  # console marker), so the run captures the full boot (FROST_LINUX_RUN_FULL) and
+  # check_linux_boot_regression.py then asserts boot health -- banner + devtmpfs,
+  # no panic, the periodic CLINT timer tick serviced (mtimecmp re-armed, the
+  # thing the gremlin hung), and forward progress (retire) all the way to the
+  # cap. CACHED_HAS_L2=0 must be an env/make var (the test's own -GCACHED_HAS_L2=0
+  # is otherwise overridden by the tests/Makefile default).
+  linux-boot-cocotb:
+    name: Cocotb Linux Boot (22M, genesys2 shape)
+    runs-on: ubuntu-24.04
+    needs: [build-docker, build-frost-linux]
+    # Verilator compile of the core plus the bounded 22M-cycle sim; GitHub
+    # runners sim this at roughly 4-8k cycles/s, so leave generous headroom.
+    timeout-minutes: 240
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          # Long Verilator compile + 22M-cycle sim in this job; free the tar.
+          rm -f /tmp/frost-dev.tar
+
+      - name: Download FROST Linux boot images
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-linux-boot-images
+          path: /tmp/frost-linux-images
+
+      - name: Stage boot images for the cocotb linux_boot test
+        run: |
+          mkdir -p sw/apps/linux_boot
+          cp /tmp/frost-linux-images/sw.mem     sw/apps/linux_boot/sw.mem
+          cp /tmp/frost-linux-images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+
+      - name: Run cocotb linux_boot (22M-cycle gremlin regression)
+        run: |
+          # FROST_LINUX_PREBUILT=1: the cocotb runner cleans + re-makes the app
+          # before simulating; this tells the linux_boot Makefile the staged
+          # images are authoritative (no in-job Buildroot rebuild, which would
+          # take ~1h uncached and overwrite the artifact under test).
+          docker run --rm \
+            -e CACHED_HAS_L2=0 \
+            -e FROST_LINUX_RUN_FULL=1 \
+            -e FROST_LINUX_PREBUILT=1 \
+            -e COCOTB_NUM_RUNS=1 \
+            -e COCOTB_LINUX_MAX_CYCLES=22000000 \
+            -e COCOTB_PROGRESS_INTERVAL=500000 \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            bash -c '
+              set -o pipefail
+              cd tests && make clean
+              # RUN_FULL capture always trips the cocotb never-match assertion by
+              # design; the boot-health verdict comes from the checker below.
+              ./test_run_cocotb.py linux_boot_128k 2>&1 \
+                | tee /workspace/linux_boot_cocotb.log || true
+              python3 check_linux_boot_regression.py /workspace/linux_boot_cocotb.log
+            '
+
+      - name: Upload cocotb boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-boot-cocotb-log
+          path: linux_boot_cocotb.log
+          if-no-files-found: ignore
+
+  # Boot the SAME kernel + rootfs to a login prompt under QEMU: a fast (seconds)
+  # full-userspace reference that the RTL boot is bounded well short of. Confirms
+  # the built image itself reaches a shell, independent of the FROST core.
+  linux-boot-qemu:
+    name: QEMU Linux Boot to Shell
+    runs-on: ubuntu-24.04
+    needs: [build-docker, build-frost-linux]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Download FROST Linux boot images
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-linux-boot-images
+          path: /tmp/frost-linux-images
+
+      - name: Boot to a shell under QEMU (assert login prompt)
+        run: |
+          docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
+            bash -c '
+              set -euo pipefail
+              # QEMU sits at the login prompt forever, so time-box it and assert
+              # the marker from the captured log (file redirect, never a pipe --
+              # piping QEMUs stdout to grep deadlocks).
+              timeout -k5 120 qemu-system-riscv32 -M virt -bios none \
+                -kernel /img/Image \
+                -append "earlycon=sbi console=ttyS0 rdinit=/sbin/init" \
+                -initrd /img/rootfs.cpio.gz -nographic -cpu rv32,mmu=off \
+                </dev/null >/tmp/qemu-boot.log 2>&1 || true
+              echo "===== QEMU boot log (tail) ====="
+              tail -n 20 /tmp/qemu-boot.log
+              grep -q "buildroot login:" /tmp/qemu-boot.log
+            '

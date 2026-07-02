@@ -18,10 +18,10 @@
  * Load Queue - Tracks in-flight load instructions
  *
  * Circular buffer of DEPTH entries (8), allocated in program order at
- * dispatch time, freed when the load result is broadcast on the CDB.
+ * dispatch time, freed the cycle the result is captured into cdb_stage.
  *
  * Features:
- *   - Parameterized depth (8 entries, FF-based)
+ *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
  *   - CAM-style tag search for address update (all entries in parallel)
  *   - Oldest-first priority scan for issue selection
  *   - Two-phase FLD support (64-bit double on 32-bit bus)
@@ -169,7 +169,7 @@ module load_queue #(
     input logic                                        i_early_recovery_flush,
 
     // =========================================================================
-    // L0 Cache Invalidation (from SQ, future)
+    // L0 Cache Invalidation (from SQ store-write launch)
     // =========================================================================
     input logic                       i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
@@ -360,8 +360,8 @@ module load_queue #(
   // ===========================================================================
   // lq_data payload is only read at issue_cdb_idx (CDB broadcast).
   // Writes come from two independent sources that can overlap:
-  //   Port 0 (primary): cache hit / store forward / memory response
-  //   Port 1 (AMO):     AMO write completion
+  //   Port 0 (mem resp): memory response (dedicated)
+  //   Port 1 (local):    cache hit / SQ forward / AMO write completion
   // Split into 32-bit lo and hi halves so FLD can write each phase
   // independently without read-modify-write.
 
@@ -525,6 +525,7 @@ module load_queue #(
   // Response acceptance/drain control
   logic flush_all_entries;
   logic issued_entry_flushed;
+  logic full_flush_response_drain;
   logic accept_mem_response;
   logic drop_mem_response_now;
 
@@ -747,8 +748,17 @@ module load_queue #(
   // Issue Selection -> lq_issue_selector.sv (pure boundary move).  issue_cdb_idx
   // still drives the LQ data LUTRAM read below; that RAM stays here.
   // ===========================================================================
-  logic [DEPTH-1:0] mem_issue_stored_mask;
-  logic [DEPTH-1:0] mem_issue_update_mask;
+  logic stored_scan_found;
+  logic [IdxWidth-1:0] stored_scan_idx;
+  logic [IdxWidth-1:0] stored_scan_pos;
+  logic [DEPTH-1:0] stored_scan_onehot;
+  logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
+
+  logic update_scan_found;
+  logic [IdxWidth-1:0] update_scan_idx;
+  logic [IdxWidth-1:0] update_scan_pos;
+  logic [DEPTH-1:0] update_scan_onehot;
+  logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_stored_rob_tag;
@@ -756,6 +766,7 @@ module load_queue #(
   logic [IdxWidth-1:0] head_mem_update_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
   logic [DEPTH*ReorderBufferTagWidth-1:0] lq_rob_tag_flat;
+  logic force_head_amo;
 
   for (genvar g_lq_tag = 0; g_lq_tag < DEPTH; g_lq_tag++) begin : gen_lq_rob_tag_flat
     assign lq_rob_tag_flat[g_lq_tag*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
@@ -778,10 +789,19 @@ module load_queue #(
       .lq_rob_tag_flat(lq_rob_tag_flat),
       .head_idx(head_idx),
       .i_sq_committed_empty(i_sq_committed_empty),
+      .i_force_head_amo(force_head_amo),
       .o_issue_cdb_found(issue_cdb_found),
       .o_issue_cdb_idx(issue_cdb_idx),
-      .o_mem_issue_stored_mask(mem_issue_stored_mask),
-      .o_mem_issue_update_mask(mem_issue_update_mask),
+      .o_stored_scan_found(stored_scan_found),
+      .o_stored_scan_idx(stored_scan_idx),
+      .o_stored_scan_pos(stored_scan_pos),
+      .o_stored_scan_onehot(stored_scan_onehot),
+      .o_stored_scan_rob_tag(stored_scan_rob_tag),
+      .o_update_scan_found(update_scan_found),
+      .o_update_scan_idx(update_scan_idx),
+      .o_update_scan_pos(update_scan_pos),
+      .o_update_scan_onehot(update_scan_onehot),
+      .o_update_scan_rob_tag(update_scan_rob_tag),
       .o_head_mem_stored_found(head_mem_stored_found),
       .o_head_mem_stored_idx(head_mem_stored_idx),
       .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
@@ -789,15 +809,6 @@ module load_queue #(
       .o_head_mem_update_idx(head_mem_update_idx),
       .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
   );
-
-  // scan_idx recomputed locally for the head-load diagnostics below; the
-  // selector computes its own identical copy internally (head-relative idx).
-  logic [IdxWidth-1:0] scan_idx[DEPTH];
-  always_comb begin
-    for (int unsigned j = 0; j < DEPTH; j++) begin
-      scan_idx[j] = IdxWidth'(head_idx + IdxWidth'(j));
-    end
-  end
 
   // ===========================================================================
   // Head-load sub-bucket diagnostics
@@ -913,49 +924,6 @@ module load_queue #(
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
   logic [ReorderBufferTagWidth-1:0] issue_mem_rob_tag;
-
-  logic stored_scan_found;
-  logic [IdxWidth-1:0] stored_scan_idx;
-  logic [IdxWidth-1:0] stored_scan_pos;
-  logic [DEPTH-1:0] stored_scan_onehot;
-  logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
-
-  logic update_scan_found;
-  logic [IdxWidth-1:0] update_scan_idx;
-  logic [IdxWidth-1:0] update_scan_pos;
-  logic [DEPTH-1:0] update_scan_onehot;
-  logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
-
-  always_comb begin
-    stored_scan_found   = 1'b0;
-    stored_scan_idx     = '0;
-    stored_scan_pos     = '0;
-    stored_scan_onehot  = '0;
-    stored_scan_rob_tag = '0;
-    update_scan_found   = 1'b0;
-    update_scan_idx     = '0;
-    update_scan_pos     = '0;
-    update_scan_onehot  = '0;
-    update_scan_rob_tag = '0;
-
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (mem_issue_stored_mask[i] && !stored_scan_found) begin
-        stored_scan_found               = 1'b1;
-        stored_scan_idx                 = scan_idx[i];
-        stored_scan_pos                 = IdxWidth'(i);
-        stored_scan_onehot[scan_idx[i]] = 1'b1;
-        stored_scan_rob_tag             = lq_rob_tag[scan_idx[i]];
-      end
-
-      if (mem_issue_update_mask[i] && !update_scan_found) begin
-        update_scan_found               = 1'b1;
-        update_scan_idx                 = scan_idx[i];
-        update_scan_pos                 = IdxWidth'(i);
-        update_scan_onehot[scan_idx[i]] = 1'b1;
-        update_scan_rob_tag             = lq_rob_tag[scan_idx[i]];
-      end
-    end
-  end
 
   logic [IdxWidth-1:0] stored_issue_idx;
   logic [ReorderBufferTagWidth-1:0] stored_issue_rob_tag;
@@ -1128,21 +1096,83 @@ module load_queue #(
       !sq_commit_interlock &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
+
+  // Break the rare ROB-head AMO deadlock without changing steady-state AMO
+  // order.  The normal selector remains pristine until a head AMO is eligible
+  // for issue and the machine has made no useful LQ/SQ progress for a sustained
+  // window.  Once saturated, force_head_amo lets the head-priority path choose
+  // that AMO for one capture/replace cycle.
+  localparam int unsigned AmoDeadlockThresh = 512;
+  localparam int unsigned AmoDeadlockCntW = $clog2(AmoDeadlockThresh + 1);
+
+  logic head_amo_eligible_waiting;
+  logic sq_check_waiting_older_store;
+  logic head_amo_no_issue_deadlock;
+  logic head_amo_sq_deadlock;
+  logic head_amo_deadlock_wait;
+  logic [AmoDeadlockCntW-1:0] amo_deadlock_cnt_q;
+
+  always_comb begin
+    head_amo_eligible_waiting = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (rob_head_match_q[i] &&
+          lq_valid[i] &&
+          lq_is_amo[i] &&
+          entry_addr_valid_now[i] &&
+          !lq_issued[i] &&
+          !lq_data_valid[i] &&
+          !sq_check_in_flight_mask[i] &&
+          i_sq_committed_empty) begin
+        head_amo_eligible_waiting = 1'b1;
+      end
+    end
+  end
+
+  assign sq_check_waiting_older_store =
+      sq_check_pending && sq_check_phase2 && sq_check_entry_issueable &&
+      !sq_check_misaligned && !sq_commit_interlock && !sq_no_older_store &&
+      (!i_sq_all_older_addrs_known || (i_sq_forward.match && !i_sq_forward.can_forward)) &&
+      !i_mem_bus_busy && !drop_mem_response_pending && !i_flush_all && !i_flush_en;
+
+  assign head_amo_no_issue_deadlock =
+      head_amo_eligible_waiting && !issue_mem_found && !sq_check_pending;
+  assign head_amo_sq_deadlock =
+      head_amo_eligible_waiting && sq_check_waiting_older_store &&
+      (sq_check_rob_tag_q != i_rob_head_tag);
+  assign head_amo_deadlock_wait =
+      !mem_outstanding && (amo_state == AMO_IDLE) &&
+      (head_amo_no_issue_deadlock || head_amo_sq_deadlock);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en || !head_amo_deadlock_wait) begin
+      amo_deadlock_cnt_q <= '0;
+    end else if (amo_deadlock_cnt_q < AmoDeadlockCntW'(AmoDeadlockThresh)) begin
+      amo_deadlock_cnt_q <= amo_deadlock_cnt_q + 1'b1;
+    end
+  end
+
+  assign force_head_amo = (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh));
+
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
   // Data memory has fixed 1-cycle latency in this design. If a partial flush
   // kills the outstanding load, drop that next response explicitly so the slot
-  // can be safely reused before the stale data returns.
+  // can be safely reused before the stale data returns. A full flush clears all
+  // entries at the edge; a same-cycle response is therefore drained here rather
+  // than accepted, so it cannot complete a killed load or refill the persistent
+  // L0 cache from a flushed context.
   assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] &&
       (flush_all_entries || is_younger(
       issued_rob_tag, i_flush_tag, i_rob_head_tag
   ));
+  assign full_flush_response_drain = i_flush_all && i_mem_read_valid && mem_outstanding;
   assign accept_mem_response = i_mem_read_valid && mem_outstanding &&
-                               !drop_mem_response_pending && !issued_entry_flushed &&
-                               lq_valid[issued_idx];
+                               !i_flush_all && !drop_mem_response_pending &&
+                               !issued_entry_flushed && lq_valid[issued_idx];
   assign drop_mem_response_now = i_mem_read_valid &&
-                                 (drop_mem_response_pending || issued_entry_flushed ||
+                                 (full_flush_response_drain ||
+                                  drop_mem_response_pending || issued_entry_flushed ||
                                   (mem_outstanding && !lq_valid[issued_idx]));
 
   // ===========================================================================
@@ -2344,6 +2374,9 @@ module load_queue #(
         $warning("LQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("LQ: slot-2 alloc attempted alone when full");
+      if (i_flush_all && accept_mem_response)
+        $error("LQ: accepted memory response during full flush");
+      if (i_flush_all && cache_fill_valid) $error("LQ: filled L0 cache during full flush");
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
@@ -2536,6 +2569,15 @@ module load_queue #(
   always_comb begin
     if (i_rst_n && cache_hit_fast_path) begin
       p_cache_hit_needs_sq : assert (sq_can_issue && (sq_no_older_store || !i_sq_forward.match));
+    end
+  end
+
+  // Full-flush-cycle responses are drains only. They must not perform any
+  // architectural or persistent-cache side effect.
+  always_comb begin
+    if (i_rst_n && i_flush_all) begin
+      p_no_accept_during_full_flush : assert (!accept_mem_response);
+      p_no_l0_fill_during_full_flush : assert (!cache_fill_valid);
     end
   end
 

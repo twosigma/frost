@@ -15,7 +15,7 @@
  */
 
 /*
-  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine-mode + F extensions.
+  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine/User-mode + F extensions.
 
   This module implements:
 
@@ -31,9 +31,9 @@
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
 
-  Machine-mode CSRs (for trap/interrupt handling):
-    - mstatus (0x300): Machine status (MIE, MPIE bits)
-    - misa (0x301): Machine ISA (read-only, reports RV32IMAFB)
+  Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
+    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
+    - misa (0x301): Machine ISA (read-only, reports RV32GCB + U: 0x4010_112F)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
     - mtvec (0x305): Machine trap vector base address
     - mscratch (0x340): Machine scratch register
@@ -67,7 +67,7 @@ module csr_file #(
     // counter must increment by the retire count.
     input logic [1:0] i_instruction_retired_count,
 
-    // Interrupt pending inputs (directly from peripherals)
+    // Interrupt pending inputs (meip/mtip registered upstream in cpu_and_mem; msip direct)
     input riscv_pkg::interrupt_t i_interrupts,
 
     // mtime input (from memory-mapped timer)
@@ -90,6 +90,11 @@ module csr_file #(
 
     // Direct output of mstatus MIE bit for timing and simpler consumers.
     output logic o_mstatus_mie_direct,
+
+    // Current privilege mode (PrivM/PrivU): consumed by trap_unit (interrupt
+    // enable while in U) and the commit-time ECALL cause select. Changes only
+    // on trap entry and MRET.
+    output logic [1:0] o_priv,
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
@@ -140,8 +145,14 @@ module csr_file #(
   // do not require read/modify/write of the full CSR word.
   logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
-  logic [XLEN-1:0] mstatus;  // Constructed from mie and mpie
-  assign mstatus = {19'b0, 2'b11, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0};
+  logic [     1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
+  logic            mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
+  logic [XLEN-1:0] mstatus;  // Constructed from the fields above
+  assign mstatus = {
+    14'b0, mstatus_mprv, 4'b0, mstatus_mpp, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0
+  };
+  assign o_priv = priv_q;
 
   // mie CSR: store each interrupt enable as separate register
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
@@ -153,6 +164,9 @@ module csr_file #(
   // Next-state signals for mstatus bits (computed combinationally)
   logic next_mstatus_mie;
   logic next_mstatus_mpie;
+  logic [1:0] next_mstatus_mpp;
+  logic next_mstatus_mprv;
+  logic [1:0] next_priv;
   // Next-state signals for mie bits
   logic next_mie_msie;
   logic next_mie_mtie;
@@ -169,10 +183,11 @@ module csr_file #(
   logic [XLEN-1:0] mip;
   assign mip = {20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0};
 
-  // misa is read-only: RV32IMAFB
-  // Bit 0 (A), Bit 1 (B), Bit 5 (F), Bit 8 (I), Bit 12 (M) = 0x0000_1123
+  // misa is read-only: RV32IMAFDC + B + U (= RV32GCB with User mode)
+  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M),
+  // Bit 20 (U) = 0x0010_112F
   // MXL = 1 (32-bit) in bits [31:30]
-  localparam logic [XLEN-1:0] MisaValue = 32'h4000_1123;
+  localparam logic [XLEN-1:0] MisaValue = 32'h4010_112F;
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
@@ -237,12 +252,46 @@ module csr_file #(
   // ==========================================================================
   // Instructions Retired Counter
   // ==========================================================================
+  // TIMING RETIME (+1 cycle, architecturally invisible — analysis below):
+  // the per-cycle retire count arrives late (its !trap_taken suppression sits
+  // at the end of the commit/trap serialization cone) and previously entered
+  // the LSB of a 64-bit carry chain, making instret[63]/D the post-opt WNS
+  // (-0.94 ns at 300 MHz).  Stage the FULLY-GATED count through
+  // instruction_retired_count_q so the late cone terminates at a 2-bit
+  // register; the 64-bit add then runs register-to-register.
+  //
+  // Invariant: instret_counter at cycle T equals the total retire count
+  // through cycle T-2 (one staging cycle) instead of T-1.  Architecturally
+  // invisible because the ONLY observation of instret is a CSR read of
+  // instret/instreth/minstret{,h}, and CSR reads are commit-serialized:
+  //   cycle C:   the youngest instruction OLDER than the CSR read commits
+  //              (commit_en); its count is computed at C+1 from the
+  //              REGISTERED commit bus (commit_actions), staged into
+  //              instruction_retired_count_q at the C+1->C+2 edge, and
+  //              accumulated into instret_counter at the C+2->C+3 edge;
+  //   cycle C+1: the CSR reaches the ROB head; rob_serializer asserts
+  //              commit_stall and requests CSR execution (o_csr_start);
+  //   cycle C+2: earliest csr_done_ack (1-cycle handshake in cpu_ooo) ->
+  //              earliest CSR commit_en;
+  //   cycle C+3: csr_commit_fire (registered commit) performs the actual
+  //              csr_file read -> observes a counter that already includes
+  //              cycle C's commits.
+  // Every stall (head not ready, commit_hold, later csr_done) only adds
+  // margin, and the reading instruction itself is never included — exactly
+  // as in the un-retimed design, whose own count also landed after the read.
+  // The staged count preserves the !trap_taken suppression bit-for-bit (the
+  // gated count is registered as-is: the same instructions are counted, one
+  // cycle later).  Proven in the FORMAL section (p_instret_stage_follows /
+  // p_instret_applies_staged_count).
+  logic [1:0] instruction_retired_count_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
+      instruction_retired_count_q <= 2'd0;
       instret_counter <= 64'd0;
     end else begin
-      instret_counter <= instret_counter + 64'(i_instruction_retired_count);
+      instruction_retired_count_q <= i_instruction_retired_count;
+      instret_counter <= instret_counter + 64'(instruction_retired_count_q);
     end
   end
 
@@ -318,22 +367,35 @@ module csr_file #(
     // Default: keep current values
     next_mstatus_mie = mstatus_mie;
     next_mstatus_mpie = mstatus_mpie;
+    next_mstatus_mpp = mstatus_mpp;
+    next_mstatus_mprv = mstatus_mprv;
+    next_priv = priv_q;
     next_mie_msie = mie_msie;
     next_mie_mtie = mie_mtie;
     next_mie_meie = mie_meie;
 
     if (i_trap_taken) begin
-      // Trap entry: save MIE to MPIE, clear MIE
+      // Trap entry: save MIE->MPIE, clear MIE, save priv->MPP, enter M-mode.
       next_mstatus_mpie = mstatus_mie;
       next_mstatus_mie  = 1'b0;
+      next_mstatus_mpp  = priv_q;
+      next_priv         = riscv_pkg::PrivM;
     end else if (i_mret_taken) begin
-      // MRET: restore MIE from MPIE, set MPIE to 1
+      // MRET: restore MIE<-MPIE, MPIE=1, return to MPP's privilege, set MPP=U,
+      // and clear MPRV if returning below M (per the privileged spec).
       next_mstatus_mie  = mstatus_mpie;
       next_mstatus_mpie = 1'b1;
+      next_priv         = mstatus_mpp;
+      if (mstatus_mpp != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
+      next_mstatus_mpp = riscv_pkg::PrivU;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
-        next_mstatus_mie  = csr_new_value[3];
+        next_mstatus_mie = csr_new_value[3];
         next_mstatus_mpie = csr_new_value[7];
+        // MPP is WARL: FROST implements only M and U, so fold S/reserved -> U.
+        next_mstatus_mpp  = (csr_new_value[12:11] == riscv_pkg::PrivM) ?
+            riscv_pkg::PrivM : riscv_pkg::PrivU;
+        next_mstatus_mprv = csr_new_value[17];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
         next_mie_msie = csr_new_value[3];
         next_mie_mtie = csr_new_value[7];
@@ -348,12 +410,18 @@ module csr_file #(
     if (i_rst) begin
       mstatus_mie <= 1'b0;
       mstatus_mpie <= 1'b0;
+      mstatus_mpp <= riscv_pkg::PrivU;
+      mstatus_mprv <= 1'b0;
+      priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
       mie_meie <= 1'b0;
     end else begin
       mstatus_mie <= next_mstatus_mie;
       mstatus_mpie <= next_mstatus_mpie;
+      mstatus_mpp <= next_mstatus_mpp;
+      mstatus_mprv <= next_mstatus_mprv;
+      priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
       mie_meie <= next_mie_meie;
@@ -525,9 +593,18 @@ module csr_file #(
       // Cycle counter increments every cycle (not in reset).
       p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
 
-      // Instret increments by the retire count (0, 1, or 2 per cycle).
-      p_instret_increments :
-      assert (instret_counter == $past(instret_counter) + 64'($past(i_instruction_retired_count)));
+      // Instret retime invariants (see the Instructions Retired Counter
+      // comment): the staging register follows the input by one cycle, and
+      // the accumulator applies the staged count.  Composed:
+      //   instret_counter(T) == instret_counter(T-1) + retired_count(T-2)
+      // i.e. instret equals the running total of retired instructions delayed
+      // by exactly one staging cycle; the delay is architecturally invisible
+      // because commit-serialized CSR reads sample the counter no earlier
+      // than <last counted commit> + 3 cycles.
+      p_instret_stage_follows :
+      assert (instruction_retired_count_q == $past(i_instruction_retired_count));
+      p_instret_applies_staged_count :
+      assert (instret_counter == $past(instret_counter) + 64'($past(instruction_retired_count_q)));
 
       // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.
@@ -542,6 +619,7 @@ module csr_file #(
       if ($past(i_rst)) begin
         p_reset_cycle : assert (cycle_counter == 64'd0);
         p_reset_instret : assert (instret_counter == 64'd0);
+        p_reset_instret_stage : assert (instruction_retired_count_q == 2'd0);
         p_reset_mie : assert (!mstatus_mie);
         p_reset_mpie : assert (!mstatus_mpie);
         p_reset_fflags : assert (fflags == 5'b0);

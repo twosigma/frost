@@ -9,6 +9,7 @@ $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_2r.sv
+$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Submodules
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
