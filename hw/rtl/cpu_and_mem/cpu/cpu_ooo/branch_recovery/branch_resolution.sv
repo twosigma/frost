@@ -145,10 +145,22 @@ module branch_resolution #(
     // suppress_branch_resolution → is_branch_issue → branch comparison (CARRY8)
     // → branch_update → commit_en created a 16-level combinational chain that
     // was the WNS critical path (-0.739 ns).  Removing it is safe because:
-    //   (a) commit_en already has a direct branch_update collision guard that
-    //       delays commit when the same branch resolves and commits in one cycle;
-    //   (b) resolution writes to entries that will be flushed are harmless;
-    //   (c) early_mispredict_fire still gates on the candidate directly.
+    //   (a) a resolving branch can never BE the committing head: branches have
+    //       no CDB done-bypass (reorder_buffer head_cdb_bypass excludes
+    //       head_is_branch), so a branch's done bit is registered and it can
+    //       only be head_ready the cycle AFTER its branch_update;
+    //   (b) resolution writes to entries that will be flushed are harmless --
+    //       flush-after-head invalidates them next cycle, allocation re-inits
+    //       the branch bits, and the unresolved-branch counter resets on
+    //       flush_pipeline;
+    //   (c) an early_mispredict_fire coinciding with a head-mispredict commit
+    //       is DROPPED one cycle later: early_mispredict_active gates on
+    //       !mispredict_recovery_pending (early_misprediction_recovery.sv),
+    //       which registers the commit-time recovery launch, so the early
+    //       pulse dies before any redirect / RAT restore / rob_early_recovered
+    //       write / backend flush.  (The former fire-time candidate gate was
+    //       removed for timing; o_head_commit_misprediction_candidate is now
+    //       an unconsumed observation output.)
   end
 
   assign suppress_branch_resolution = branch_issue_is_flushed;

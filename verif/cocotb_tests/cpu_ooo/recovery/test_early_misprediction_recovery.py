@@ -275,6 +275,53 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> None:
+    """A fire coinciding with a head-mispredict commit is dropped one cycle later.
+
+    The one-cycle collision the fire-time gates cannot see: a younger branch
+    fires (capture succeeds, i_mispredict_recovery_pending still 0) in the same
+    cycle an older head-mispredict commits.  The commit-time launch registers
+    into mispredict_recovery_pending on the NEXT cycle, and the
+    !i_mispredict_recovery_pending term in early_mispredict_active must drop
+    the early pulse there -- before any redirect / RAT restore /
+    rob_early_recovered write / backend flush.  This is the load-bearing guard
+    that replaced the removed fire-time candidate gate (see the NOTE in
+    branch_resolution.sv); no other test or formal property pins it.
+    """
+    await _setup_test(dut)
+
+    # Cycle N: qualified fire with no recovery pending -- capture succeeds.
+    _drive_mispredict(dut, tag=6, checkpoint_id=1)
+    await _settle_after_edge(dut)
+
+    # Cycle N+1: the coincident commit-time recovery launch is now registered.
+    _clear_inputs(dut)
+    dut.i_mispredict_recovery_pending.value = 1
+    await Timer(1, unit="ns")
+
+    # The pulse is dropped: no active phase, no RAT restore enable.  Only the
+    # benign one-cycle dispatch hold remains (dispatch is being flushed by the
+    # commit-time recovery in this cycle anyway).
+    assert not dut.o_early_mispredict_active.value
+    assert not dut.o_early_recovery_en.value
+    assert dut.o_early_backend_recovery_hold.value
+
+    await _settle_after_edge(dut)
+
+    # Cycle N+2: recovery_pending was a one-cycle pulse; the dropped fire must
+    # leave no residue -- in particular no phantom backend flush.
+    _clear_inputs(dut)
+    await Timer(1, unit="ns")
+
+    assert not dut.o_early_backend_recovery_pending.value
+    _assert_idle(dut)
+
+    await _settle_after_edge(dut)
+
+    _assert_idle(dut)
+
+
+@cocotb.test()
 async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     """A second misprediction cannot start while the backend phase is pending."""
     await _setup_test(dut)
