@@ -67,7 +67,7 @@ module csr_file #(
     // counter must increment by the retire count.
     input logic [1:0] i_instruction_retired_count,
 
-    // Interrupt pending inputs (directly from peripherals)
+    // Interrupt pending inputs (meip/mtip registered upstream in cpu_and_mem; msip direct)
     input riscv_pkg::interrupt_t i_interrupts,
 
     // mtime input (from memory-mapped timer)

@@ -22,7 +22,7 @@
  * them (non-speculative writes). Supports store-to-load forwarding.
  *
  * Features:
- *   - Parameterized depth (8 entries, FF-based)
+ *   - Parameterized depth (8 entries, hybrid FF + LUTRAM; see Storage Strategy)
  *   - CAM-style tag search for address/data update (all entries in parallel)
  *   - In-order commit: head entry writes to memory when committed + ready
  *   - Store-to-load forwarding: combinational scan for LQ disambiguation

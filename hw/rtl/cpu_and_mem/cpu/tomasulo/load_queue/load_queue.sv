@@ -18,10 +18,10 @@
  * Load Queue - Tracks in-flight load instructions
  *
  * Circular buffer of DEPTH entries (8), allocated in program order at
- * dispatch time, freed when the load result is broadcast on the CDB.
+ * dispatch time, freed the cycle the result is captured into cdb_stage.
  *
  * Features:
- *   - Parameterized depth (8 entries, FF-based)
+ *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
  *   - CAM-style tag search for address update (all entries in parallel)
  *   - Oldest-first priority scan for issue selection
  *   - Two-phase FLD support (64-bit double on 32-bit bus)
@@ -169,7 +169,7 @@ module load_queue #(
     input logic                                        i_early_recovery_flush,
 
     // =========================================================================
-    // L0 Cache Invalidation (from SQ, future)
+    // L0 Cache Invalidation (from SQ store-write launch)
     // =========================================================================
     input logic                       i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
@@ -360,8 +360,8 @@ module load_queue #(
   // ===========================================================================
   // lq_data payload is only read at issue_cdb_idx (CDB broadcast).
   // Writes come from two independent sources that can overlap:
-  //   Port 0 (primary): cache hit / store forward / memory response
-  //   Port 1 (AMO):     AMO write completion
+  //   Port 0 (mem resp): memory response (dedicated)
+  //   Port 1 (local):    cache hit / SQ forward / AMO write completion
   // Split into 32-bit lo and hi halves so FLD can write each phase
   // independently without read-modify-write.
 

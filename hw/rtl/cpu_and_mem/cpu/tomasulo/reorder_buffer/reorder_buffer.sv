@@ -39,10 +39,12 @@
  *
  * Storage:
  *   Multi-bit fields use distributed RAM (LUTRAM) to reduce FF usage.
- *   Single-write-port fields (written only at allocation) use sdp_dist_ram.
- *   Multi-write-port fields (allocation + CDB/branch) use mwp_dist_ram
- *   with a Live Value Table. 1-bit packed vectors that need per-entry
- *   flush/reset remain in flip-flops.
+ *   Alloc-written fields use mwp_dist_ram_ohread with 2 write ports
+ *   (slot-1 + slot-2 alloc); fields also written by the CDB use 4 write
+ *   ports (+ 2 CDB lanes) via mwp_dist_ram / mwp_dist_ram_ohread with a
+ *   Live Value Table. The branch-update-written resolved-target field is
+ *   the only remaining sdp_dist_ram. 1-bit packed vectors that need
+ *   per-entry flush/reset remain in flip-flops.
  *
  * External Coordination:
  *   The Reorder Buffer coordinates with several external units via handshake signals:
@@ -120,12 +122,11 @@ module reorder_buffer (
     output logic                              o_commit_2_valid_raw,
     output logic                              o_commit_2_store_like_raw,
 
-    // Back-pressure from the cpu_ooo pending-write FIFO.  Asserted when
-    // there is room for a slot-2 regfile write this cycle; deasserted when
-    // the pending register holds a prior slot-2 write that has not yet
-    // drained AND rob_commit (slot 1) also wants the port this cycle.
-    // Driven from a registered cpu_ooo signal, so the feedback path
-    // closes at a flop (no combinational loop).
+    // Slot-2 accept indication from cpu_ooo.  Asserted when the second
+    // retiring entry can write the regfile this cycle.  With the dedicated
+    // second regfile write port cpu_ooo ties this permanently high (1'b1);
+    // the gate plumbing is kept so the signal path stays symmetric with
+    // the earlier back-pressure approach.
     input logic i_widen_commit_ok,
     input logic i_commit_hold,
 
@@ -282,8 +283,8 @@ module reorder_buffer (
   // consumer sees slot 2 even though the plumbing exists).  The
   // commit_2_opportunity perf counter is still updated so we can keep
   // measuring the upper bound across incremental steps.  Flipped to 1
-  // after all downstream consumers (RAT, SQ, cpu_ooo FIFO, instret) are
-  // in place.
+  // after all downstream consumers (RAT, SQ, cpu_ooo second regfile write
+  // port, instret) were in place.
   localparam bit EnableWidenCommit = 1'b1;
 
   // ===========================================================================
@@ -525,9 +526,10 @@ module reorder_buffer (
   // cycle AND the entry immediately behind head is also retirable AND
   // neither slot hits a hazard that forces 1-wide commit (serial ops,
   // head mispredict, head+1 branch, FENCE.I, exceptions, AMO/LR/SC).
-  // Step 1 uses this only as a perf-counter input — it does NOT yet
-  // change head_ptr advancement, rob_valid clearing, or the commit
-  // output struct.
+  // commit_2_gate is the ungated opportunity signal (perf-counter input);
+  // commit_2_fire (gate && EnableWidenCommit && i_widen_commit_ok) drives
+  // the actual 2-wide retire: head_ptr advances by 2, rob_valid clears at
+  // head+1, and o_commit_comb_2 carries the second entry.
   logic head_ok_2wide;
   logic head_next_ok_2wide;
   logic commit_2_gate;
@@ -748,11 +750,12 @@ module reorder_buffer (
 
   // 2-wide commit gate.  commit_2_gate is the "opportunity" signal — it
   // fires whenever the ROB could theoretically retire two entries this
-  // cycle, independent of the master enable and the FIFO back-pressure.
+  // cycle, independent of the master enable and the slot-2 accept input.
   // This feeds the perf counter so we can keep measuring upper bound
   // even when widen-commit is gated off.  commit_2_fire is what the
   // output / retire logic actually acts on — it ANDs the opportunity with
-  // the master enable and the cpu_ooo pending-write FIFO back-pressure.
+  // the master enable and the cpu_ooo slot-2 accept signal
+  // (i_widen_commit_ok, currently tied high).
   // TIMING (late-side factoring, see Commit Enable Logic): commit_en && X
   // == (commit_ready_early && X) && !commit_stall — same conjunct set,
   // re-associated so the late commit_stall enters one final LUT.
@@ -900,8 +903,8 @@ module reorder_buffer (
   // ===========================================================================
   // Distributed RAM Instances
   // ===========================================================================
-  // Single-write-port fields (written only at allocation, read at head).
-  // These use sdp_dist_ram — one write port, one async read port.
+  // Alloc-written fields (read at head / head+1).  Since 2-wide dispatch
+  // these use mwp_dist_ram_ohread with 2 write ports (slot-1 + slot-2 alloc).
   // ---------------------------------------------------------------------------
 
   // 2-write port: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Port 1
@@ -1053,13 +1056,16 @@ module reorder_buffer (
   );
 
   // ---------------------------------------------------------------------------
-  // Multi-write-port fields (allocation + CDB or branch update).
-  // These use mwp_dist_ram with 3 write ports for 2-wide alloc support.
-  // Port 0 = slot-1 alloc, Port 1 = slot-2 alloc, Port 2 = CDB (highest pri).
+  // Multi-write-port fields (allocation + CDB).
+  // These use mwp_dist_ram (mwp_dist_ram_ohread for head-side reads) with
+  // 4 write ports: Port 0 = slot-1 alloc, Port 1 = slot-2 alloc,
+  // Port 2 = CDB lane 0, Port 3 = CDB lane 1 (highest pri; the arbiter
+  // guarantees the two CDB lanes never collide on an address).
   // ---------------------------------------------------------------------------
 
-  // rob_value: 3 write ports (alloc1 + alloc2 + CDB), 2 read ports (head + RAT bypass).
-  // Two instances with identical writes, different read addresses.
+  // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
+  // Twelve instances with identical writes, different read addresses
+  // (head, head+1, RAT, dispatch bypass x6, fmul-pending x3).
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),
@@ -1221,7 +1227,7 @@ module reorder_buffer (
       .o_read_data(o_fmul_pending_bypass_value_3)
   );
 
-  // rob_exc_cause: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
+  // rob_exc_cause: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head)
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
@@ -1255,7 +1261,7 @@ module reorder_buffer (
       .o_read_data(head_next_exc_cause)
   );
 
-  // rob_fp_flags: 3 write ports (alloc1='0 + alloc2='0 + CDB), 1 read port (head)
+  // rob_fp_flags: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head)
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
@@ -2232,8 +2238,8 @@ module reorder_buffer (
     // because the hazard gate (serial ops, head+1 branches, FENCE.I,
     // exceptions, AMO/LR/SC, head-mispredicting-branches) is already
     // applied.  commit_2_fire_actual additionally folds in the master
-    // enable and the cpu_ooo pending-write FIFO back-pressure term
-    // (i_widen_commit_ok) — this is what the head_ptr increment and
+    // enable and the cpu_ooo slot-2 accept term (i_widen_commit_ok,
+    // currently tied high) — this is what the head_ptr increment and
     // rob_valid clear actually use.
     o_perf_events.commit_2_opportunity = commit_2_gate;
     o_perf_events.commit_2_fire_actual = commit_2_fire;

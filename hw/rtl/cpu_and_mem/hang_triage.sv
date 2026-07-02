@@ -22,7 +22,8 @@
  * periodically so the trajectory is visible:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"
- *   " l=<pc_lo> h=<pc_hi> m=<mtime_lo> n=<mtime_hi> x=<mtimecmp_lo>"
+ *   " l=<pc_lo> h=<pc_hi> r=<commit0_pc> s=<commit1_pc> m=<mtime_lo>"
+ *   " n=<mtime_hi> x=<mtimecmp_lo>"
  *   " y=<mtimecmp_hi> d=<mtimecmp-mtime lo> p=<irq/status>"
  *   "\nH <hist[0]> <hist[1]> ... <hist[63]>\n"
  *

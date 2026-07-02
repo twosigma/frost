@@ -446,8 +446,11 @@ The project uses pytest markers to categorize tests:
 
 Run the full CPU test suite:
 ```bash
-# Full random instruction test (16,000+ instructions)
-pytest tests/test_run_cocotb.py::TestCPU -s
+# Full cocotb test suite
+pytest tests/test_run_cocotb.py -s
+
+# Directed trap/exception tests
+./tests/test_run_cocotb.py directed_traps
 
 # ISA compliance tests
 pytest "tests/test_run_cocotb.py::TestRealPrograms::test_real_program[isa_test]" -s

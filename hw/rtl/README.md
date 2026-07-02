@@ -173,7 +173,8 @@ From the repo root:
 ```bash
 # Cocotb/Verilator simulation
 ./tests/test_run_cocotb.py hello_world
-./tests/test_run_cocotb.py cpu
+./tests/test_run_cocotb.py tomasulo_test
+./tests/test_run_cocotb.py --list-tests   # show all registered tests
 
 # Open-source RTL synthesis checks
 ./tests/test_run_yosys.py
@@ -192,7 +193,7 @@ sed -n '1,200p' hw/rtl/frost.f
 The CPU build file list is:
 
 ```bash
-sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
+sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f
 ```
 
 ## Parameters
@@ -211,7 +212,7 @@ sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo.f
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation-only: 1 wraps the low BRAM in a variable-latency fetch model (LFSR fetch-valid gaps) that mirrors the L1I provider's fetch contract; hardware keeps 0 |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
-| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h1_C000` | MMIO range size (covers the ns16550a face + CLINT alias) |
+| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size; `cpu_and_mem.sv` overrides to `32'h1_C000` (covers the ns16550a face + CLINT alias) |
 
 Simulation overrides parameters through Verilator generics (`-G`): the test
 Makefile enables the cached tier with the X3 hierarchy shape by default

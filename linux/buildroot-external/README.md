@@ -107,7 +107,8 @@ cd tests && make clean && ./test_run_cocotb.py linux_boot
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
 Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock) -- this is what `fpga/load_software.py <board> linux_boot` and the
+board clock) -- this is what `fpga/load_software/load_software.py <board>
+linux_boot` and the
 CI `build-frost-linux` job drive:
 
 ```bash
@@ -117,7 +118,7 @@ make -C sw/apps/linux_boot FPGA_CPU_CLK_FREQ=300000000   # x3 clock
 
 The `linux_boot` cocotb registry entry (`linux_boot` / `linux_boot_128k`) and
 its `build-frost-linux` + `linux-boot-cocotb` + `linux-boot-qemu` CI jobs live
-on `main`.
+on this branch (`nommu_linux`); they reach `main` when the branch merges.
 
 ## How the kernel config is assembled
 

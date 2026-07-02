@@ -55,7 +55,7 @@ To encode an instruction by mnemonic::
     binary = enc_add(rd=1, rs1=2, rs2=3)  # add x1, x2, x3
 
     # Get encoder for 'lw' instruction
-    enc_lw = LOADS["lw"]
+    enc_lw, eval_lw = LOADS["lw"]
     binary = enc_lw(rd=5, rs1=10, imm=16)  # lw x5, 16(x10)
 """
 

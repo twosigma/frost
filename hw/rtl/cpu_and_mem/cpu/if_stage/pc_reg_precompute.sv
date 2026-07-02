@@ -17,7 +17,7 @@
 /*
  * PC Register Pre-computation
  *
- * Computes pc_reg + 0/2/4 in parallel and selects the result for both
+ * Computes pc_reg + 0/2/4/6 in parallel and selects the result for both
  * the "instruction is compressed" and "instruction is 32-bit" cases using
  * ONLY registered select signals.
  *
