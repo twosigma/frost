@@ -285,9 +285,29 @@ module cpu_and_mem #(
 
   // Interrupt signals to CPU
   riscv_pkg::interrupt_t interrupts;
-  // Clamp unknown external interrupt values to 0 for simulation stability.
-  // This avoids X-propagation into mip when the top-level input is left un-driven.
-  assign interrupts.meip = (i_external_interrupt === 1'b1) || ns_irq_pending;
+  // External/UART interrupt: REGISTER the aggregate to break the dominant
+  // post-opt timing spine (uart TX-FIFO CDC read-pointer -> occupancy CARRY
+  // compare -> i_uart_tx_ready -> ns16550 THRE irq -> meip -> trap_unit /
+  // ROB-serializer WFI-wake -> commit_en -> retire/trap/SQ endpoints; ~1256
+  // failing paths, WNS -1.09 at 300 MHz).  The whole combinational compare
+  // cone now terminates at this flop's D.  Mirrors mtip_registered below.
+  //
+  // DELIBERATE +1-cycle interrupt-delivery latency (user-approved
+  // 2026-07-01): meip/THRE/RX are level conditions and a 1-cycle-delayed
+  // level is architecturally benign; interrupt delivery is not on the
+  // CoreMark-scored path.  Only the interrupt VIEW is registered — the MMIO
+  // store-drain handshake on i_uart_tx_ready is untouched, and the ns_iir
+  // register readback stays combinational (matches how a real 8250's IIR
+  // reflects current conditions when the handler reads it).
+  //
+  // The === clamp keeps unknown external-interrupt values from propagating
+  // into mip when the top-level input is left un-driven in simulation.
+  logic meip_registered;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) meip_registered <= 1'b0;
+    else meip_registered <= (i_external_interrupt === 1'b1) || ns_irq_pending;
+  end
+  assign interrupts.meip = meip_registered;
   assign interrupts.msip = msip;
 
   // Timer interrupt: register the 64-bit comparison result to break critical timing path.
