@@ -54,6 +54,7 @@ module cpu_tb
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband;
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
+  logic [31:0] i_served_addr;  // Served fetch-window tag (address fetched last cycle)
   logic [31:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
@@ -62,6 +63,7 @@ module cpu_tb
   // Registered 1-cycle fetch state (mimics block-RAM instruction memory latency)
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
+  logic [31:0] tb_served_addr_q;  // address whose window is presented (o_pc, 1 cycle back)
   localparam logic [31:0] TbNop = 32'h0000_0013;  // addi x0,x0,0
 
   // Ports below are unused by this instruction-feed testbench but must exist as
@@ -119,6 +121,7 @@ module cpu_tb
     // word for the address requested on o_pc this cycle is presented next cycle.
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
+    tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
   end
 
   // 64-bit fetch window {next_word, current_word}. The testbench feeds only
@@ -133,6 +136,10 @@ module cpu_tb
   };
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
+  // Served-window tag: this fixed 1-cycle provider always presents the window
+  // for last cycle's o_pc, so the tag is exactly that registered address (the
+  // if_stage served-window guard sees a window that always covers pc_reg).
+  assign i_served_addr = tb_served_addr_q;
   // Fixed 1-cycle provider: the fetch window is always valid.
   assign i_instr_valid = 1'b1;
 
