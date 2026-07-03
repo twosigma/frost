@@ -19,7 +19,8 @@
 Steps:
 1. Synthesis                          (post_synth.dcp)
 2. Opt                                (post_opt.dcp)
-3. Place                              (post_place.dcp; x3 sweeps placer directives)
+3. Place                              (post_place.dcp; x3 sweeps placer
+                                       directives x 2 overconstraint seeds)
 4. Post-place phys_opt sweep          (post_place_physopt.dcp)
 5. Route (with -tns_cleanup)          (post_route.dcp / final.dcp*)
 6. Post-route phys_opt sweep          (post_route_physopt.dcp / final.dcp*)
@@ -36,7 +37,13 @@ every completed sweep iteration.
 
 For x3, the place, route, and second_route stages run every legal directive in
 parallel, wait for all jobs to finish, then promote only the best-WNS checkpoint
-and reports to the main work directory before continuing.
+and reports to the main work directory before continuing. The place stage
+additionally runs each placer directive at two overconstraint "seeds" (0.500
+and 0.490 ns pre-place setup uncertainty — Vivado's placer has no seed knob,
+so the 10 ps nudge perturbs it into a second independent solution). After
+place_design each job re-applies the full 0.500 ns overconstraint (adds the
+10 ps back), so seeds are compared under an equal handicap and
+post_place_physopt always inherits the full overconstraint.
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -104,6 +111,22 @@ PLACER_DIRECTIVES = [
     "AltSpreadLogic_medium",
     "EarlyBlockPlacement",
     "WLDrivenBlockPlacement",
+]
+
+# x3 placement runs under a pre-place setup-uncertainty overconstraint
+# (applied in build_step.tcl; needed for 300 MHz closure). Vivado's placer has
+# no seed knob, so the x3 placer sweep runs every directive once per value
+# below — shaving 10 ps off the overconstraint perturbs the placer enough to
+# act as a second seed. After place_design, build_step.tcl adds the shaved
+# 10 ps back, so every seed is scored and checkpointed under the identical
+# full 0.5 ns overconstraint and post_place_physopt always runs fully
+# overconstrained regardless of which seed wins. Baseline must match
+# x3_place_baseline_uncertainty in build_step.tcl.
+X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
+X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.010
+X3_PLACE_SETUP_UNCERTAINTIES_NS = [
+    X3_PLACE_BASELINE_UNCERTAINTY_NS,
+    X3_PLACE_BASELINE_UNCERTAINTY_NS - X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS,
 ]
 
 ROUTER_DIRECTIVES = [
@@ -227,6 +250,7 @@ class DirectiveSweepRun:
     """Runtime state for one Vivado directive sweep subprocess."""
 
     directive: str
+    label: str
     work_dir: Path
     stdout_path: Path
     process: subprocess.Popen[bytes] | None = None
@@ -407,20 +431,35 @@ def format_sweep_elapsed(seconds: float | None) -> str:
     return f"{sec:d}s"
 
 
+def directive_sweep_rank_key(run: DirectiveSweepRun) -> tuple[int, float, float]:
+    """Sort key ranking sweep runs best-first: WNS desc, then TNS desc.
+
+    Runs without WNS data (failed/launch-error) sort last; among equal-WNS
+    runs, a missing TNS ranks worst, matching the best-run selection logic.
+    """
+    if run.wns is None:
+        return (1, 0.0, 0.0)
+    return (
+        0,
+        -run.wns,
+        -(run.tns if run.tns is not None else float("-inf")),
+    )
+
+
 def print_x3_directive_sweep_matrix(
     runs: list[DirectiveSweepRun],
     best_run: DirectiveSweepRun | None,
     title: str,
 ) -> None:
-    """Print a compact matrix of x3 directive sweep results."""
+    """Print a compact matrix of x3 directive sweep results, best WNS first."""
     print(f"\n{title}:")
     print(
-        f"{'Sel':<3} {'Directive':<28} {'Status':<10} "
+        f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
         f"{'WNS(ns)':>9} {'TNS(ns)':>11} {'Failing EP':>14} {'Elapsed':>8}"
     )
-    print("-" * 91)
+    print("-" * 93)
 
-    for run in runs:
+    for run in sorted(runs, key=directive_sweep_rank_key):
         if run.launch_error:
             status = "LAUNCH"
         elif run.returncode is None:
@@ -438,7 +477,7 @@ def print_x3_directive_sweep_matrix(
 
         selected = "*" if best_run is run else ""
         print(
-            f"{selected:<3} {run.directive:<28} {status:<10} "
+            f"{selected:<3} {run.label:<30} {status:<10} "
             f"{format_sweep_ns(run.wns):>9} "
             f"{format_sweep_ns(run.tns):>11} "
             f"{failing:>14} "
@@ -471,13 +510,13 @@ def terminate_x3_directive_sweep_runs(
         process = run.process
         if process is None:
             continue
-        print(f"  SIGTERM {run.directive:<28} pid={process.pid}")
+        print(f"  SIGTERM {run.label:<30} pid={process.pid}")
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
         except OSError as e:
-            print(f"  Warning: failed to terminate {run.directive}: {e}")
+            print(f"  Warning: failed to terminate {run.label}: {e}")
 
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
@@ -498,13 +537,13 @@ def terminate_x3_directive_sweep_runs(
             process = run.process
             if process is None:
                 continue
-            print(f"  SIGKILL {run.directive:<28} pid={process.pid}")
+            print(f"  SIGKILL {run.label:<30} pid={process.pid}")
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             except OSError as e:
-                print(f"  Warning: failed to kill {run.directive}: {e}")
+                print(f"  Warning: failed to kill {run.label}: {e}")
 
     for run in runs:
         process = run.process
@@ -527,8 +566,15 @@ def run_x3_step_directive_sweep(
     sweep_kind: str,
     vivado_path: str,
     keep_temps: bool = False,
+    setup_uncertainties_ns: list[float] | None = None,
 ) -> tuple[bool, float | None, str]:
-    """Run every x3 directive in parallel and promote the best-WNS run."""
+    """Run every x3 directive in parallel and promote the best-WNS run.
+
+    When setup_uncertainties_ns is given, each directive is launched once per
+    uncertainty value, exported to the job as FROST_PLACE_SETUP_UNCERTAINTY.
+    Vivado's placer has no seed knob, so these overconstraint variants serve
+    as extra placement "seeds" per directive.
+    """
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
     main_work = script_dir / board_name / "work"
@@ -552,12 +598,35 @@ def run_x3_step_directive_sweep(
     print(f"\n{'='*70}")
     print(f"STEP: {step.upper()} - X3 {sweep_kind} directive sweep{route_note}")
     print(f"{'='*70}\n")
-    print(f"Launching {sweep_kind} directives in parallel:")
+
+    if setup_uncertainties_ns:
+        sweep_jobs = [
+            (directive, uncertainty_ns)
+            for directive in directives
+            for uncertainty_ns in setup_uncertainties_ns
+        ]
+        uncertainty_list = ", ".join(f"{u:.3f}" for u in setup_uncertainties_ns)
+        print(
+            f"Launching {len(sweep_jobs)} parallel jobs: {len(directives)} "
+            f"{sweep_kind} directives x {len(setup_uncertainties_ns)} "
+            f"overconstraint seeds ({uncertainty_list} ns setup uncertainty):"
+        )
+    else:
+        sweep_jobs = [(directive, None) for directive in directives]
+        print(f"Launching {sweep_kind} directives in parallel:")
 
     runs: list[DirectiveSweepRun] = []
     try:
-        for directive in directives:
-            work_dir = script_dir / board_name / f"work_{step}_{directive}"
+        for directive, uncertainty_ns in sweep_jobs:
+            if uncertainty_ns is None:
+                label = directive
+                job_env = None
+            else:
+                label = f"{directive}_u{uncertainty_ns:.3f}"
+                job_env = os.environ.copy()
+                job_env["FROST_PLACE_SETUP_UNCERTAINTY"] = f"{uncertainty_ns:.3f}"
+
+            work_dir = script_dir / board_name / f"work_{step}_{label}"
             if work_dir.exists():
                 shutil.rmtree(work_dir)
             work_dir.mkdir(parents=True, exist_ok=True)
@@ -580,6 +649,7 @@ def run_x3_step_directive_sweep(
 
             run = DirectiveSweepRun(
                 directive=directive,
+                label=label,
                 work_dir=work_dir,
                 stdout_path=stdout_path,
             )
@@ -594,12 +664,13 @@ def run_x3_step_directive_sweep(
                     stdout=stdout_handle,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    env=job_env,
                 )
                 run.process = process
                 run.stdout_handle = stdout_handle
                 run.start_time = time.monotonic()
                 print(
-                    f"  {directive:<28} pid={process.pid:<8} "
+                    f"  {label:<30} pid={process.pid:<8} "
                     f"log={work_dir / 'vivado.log'}"
                 )
             except OSError as e:
@@ -608,7 +679,7 @@ def run_x3_step_directive_sweep(
                 run.returncode = -1
                 run.elapsed_s = 0.0
                 run.launch_error = str(e)
-                print(f"  {directive:<28} launch failed: {e}")
+                print(f"  {label:<30} launch failed: {e}")
 
         pending = {idx for idx, run in enumerate(runs) if run.process is not None}
         while pending:
@@ -648,7 +719,7 @@ def run_x3_step_directive_sweep(
                     result = f"failed with exit code {returncode}"
 
                 print(
-                    f"  Finished {run.directive:<28} {result} "
+                    f"  Finished {run.label:<30} {result} "
                     f"({format_sweep_elapsed(run.elapsed_s)})"
                 )
                 pending.remove(idx)
@@ -691,7 +762,7 @@ def run_x3_step_directive_sweep(
         report_prefix = STEP_REPORT_PREFIX[step]
 
     print(
-        f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.directive} "
+        f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
         f"(WNS={format_sweep_ns(best_run.wns)} ns, "
         f"TNS={format_sweep_ns(best_run.tns)} ns)"
     )
@@ -726,7 +797,7 @@ def run_x3_step_directive_sweep(
         if failed_runs:
             print(f"\nFailed {sweep_kind} work directories were left for debugging:")
             for run in failed_runs:
-                print(f"  {run.directive}: {run.work_dir}")
+                print(f"  {run.label}: {run.work_dir}")
 
     return True, best_run.wns, report_prefix
 
@@ -903,8 +974,9 @@ def main() -> None:
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
-  place                       - Place design (x3 sweeps all placer directives in
-                                parallel and keeps the best-WNS result)
+  place                       - Place design (x3 sweeps all placer directives
+                                x 2 overconstraint seeds in parallel and keeps
+                                the best-WNS result)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps all
@@ -918,9 +990,11 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * On x3, place ignores --place-directive and runs every placer directive in
-    parallel, promotes only the best-WNS post_place checkpoint/reports, then
-    continues to post_place_physopt.
+  * On x3, place ignores --place-directive and runs every placer directive at
+    two overconstraint seeds in parallel (0.500/0.490 ns pre-place setup
+    uncertainty; the 10 ps reduction stands in for a placer seed), promotes
+    only the best-WNS post_place checkpoint/reports, then continues to
+    post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
     including AlternateCLBRouting, in parallel and promotes only the best-WNS
@@ -1136,6 +1210,7 @@ Examples:
                 "placer",
                 args.vivado_path,
                 keep_temps=args.keep_temps,
+                setup_uncertainties_ns=X3_PLACE_SETUP_UNCERTAINTIES_NS,
             )
         elif board_name == "x3" and step in {"route", "second_route"}:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
