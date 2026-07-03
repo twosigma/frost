@@ -76,27 +76,51 @@ module rob_serializer (
 
     case (serial_state)
       riscv_pkg::SERIAL_IDLE: begin
+        // TIMING (late-side re-association): the IDLE commit_stall is exported
+        // WITHOUT the head_ready/!i_commit_hold/!i_early_recovery_en/
+        // !i_flush_en/!i_flush_all gate.  Every reorder_buffer consumer ANDs
+        // commit_stall with commit_ready_early (or an equivalent superset of
+        // the gate conjuncts), so <early> && !commit_stall is bit-identical
+        // with or without the gate — but head_ready carries the same-cycle
+        // CDB head-done bypass, and keeping it out of the stall cone removes
+        // one fused stage from the CDB -> commit -> SQ/trap late arc.  The
+        // perf-counter consumer in reorder_buffer re-applies the dropped
+        // conjuncts explicitly.  The FSM transitions below keep the full
+        // gate, exactly as before.
+        if (head_exception) begin
+          // Exception: wait for trap unit
+          commit_stall = 1'b1;
+        end else if (head_is_wfi) begin
+          // WFI: stalls until an interrupt is pending
+          commit_stall = !i_interrupt_pending;
+        end else if (head_is_csr) begin
+          // CSR: need to execute at commit
+          commit_stall = 1'b1;
+        end else if (head_is_fence || head_is_fence_i) begin
+          // FENCE/FENCE.I: wait for committed SQ entries to drain; FENCE.I
+          // additionally stalls through the cache sync.
+          commit_stall = !(i_sq_committed_empty && !head_is_fence_i);
+        end else if (head_is_mret) begin
+          // MRET: signal trap unit
+          commit_stall = 1'b1;
+        end
+        // AMO/LR and non-serializing instructions: no stall
+
         if (head_ready && !i_commit_hold && !i_early_recovery_en &&
                           !i_flush_en    && !i_flush_all) begin
           // Check for serializing instructions at head
           if (head_exception) begin
             // Exception: wait for trap unit
             serial_state_next = riscv_pkg::SERIAL_TRAP_WAIT;
-            commit_stall = 1'b1;
           end else if (head_is_wfi) begin
-            // WFI: wait for interrupt
-            if (i_interrupt_pending) begin
-              // Interrupt pending, WFI can commit immediately
-              serial_state_next = riscv_pkg::SERIAL_IDLE;
-              commit_stall = 1'b0;
-            end else begin
+            // WFI: wait for interrupt (no state change when one is pending —
+            // the WFI commits immediately)
+            if (!i_interrupt_pending) begin
               serial_state_next = riscv_pkg::SERIAL_WFI_WAIT;
-              commit_stall = 1'b1;
             end
           end else if (head_is_csr) begin
             // CSR: need to execute at commit
             serial_state_next = riscv_pkg::SERIAL_CSR_EXEC;
-            commit_stall = 1'b1;
           end else if (head_is_fence || head_is_fence_i) begin
             // FENCE/FENCE.I: wait for committed SQ entries to drain.
             // FENCE.I additionally syncs the caches before committing (the
@@ -105,20 +129,14 @@ module rob_serializer (
             if (i_sq_committed_empty) begin
               if (head_is_fence_i) begin
                 serial_state_next = riscv_pkg::SERIAL_FENCE_I_SYNC;
-                commit_stall = 1'b1;
-              end else begin
-                // No committed entries pending write, can commit
-                serial_state_next = riscv_pkg::SERIAL_IDLE;
-                commit_stall = 1'b0;
               end
+              // Plain FENCE with drained SQ commits without serializing.
             end else begin
               serial_state_next = riscv_pkg::SERIAL_WAIT_SQ;
-              commit_stall = 1'b1;
             end
           end else if (head_is_mret) begin
             // MRET: signal trap unit
             serial_state_next = riscv_pkg::SERIAL_MRET_EXEC;
-            commit_stall = 1'b1;
           end else if (head_is_amo || head_is_lr) begin
             // AMO/LR: ordering enforced at LQ issue time (waits for ROB head +
             // SQ committed-empty). Once CDB arrives (head_done=1), commit normally.

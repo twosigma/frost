@@ -239,6 +239,7 @@ module pc_controller #(
   // See pc_increment_calculator.sv for detailed implementation.
 
   logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
+  logic seq_next_pc_reg_neq_pc;
 
   pc_increment_calculator #(
       .XLEN(XLEN)
@@ -272,7 +273,8 @@ module pc_controller #(
       // Outputs
       .o_seq_next_pc(seq_next_pc),
       .o_seq_next_pc_plus_2(seq_next_pc_plus_2),
-      .o_seq_next_pc_reg(seq_next_pc_reg)
+      .o_seq_next_pc_reg(seq_next_pc_reg),
+      .o_seq_next_pc_reg_neq_pc(seq_next_pc_reg_neq_pc)
   );
 
   // ===========================================================================
@@ -426,10 +428,12 @@ module pc_controller #(
   // the pc_reg handoff, and fetch redirects to the wrong PC (silent on HW where
   // the assert below is compiled out -> the no-MMU Linux boot hang at pid_max).
   // Use the full compare; conservative-safe (only ever pends MORE, exactly in
-  // the cases the bit1 proxy missed). NOTE: this reintroduces the
-  // seq_next_pc_reg compare on the prediction cone that the bit1 proxy existed
-  // to avoid -- a timing-friendly correct form is a follow-up if WNS regresses.
-  assign pc_reg_next_misses_fetch_pc_for_prediction = (seq_next_pc_reg != o_pc);
+  // the cases the bit1 proxy missed). TIMING: the compare is precomputed
+  // per-candidate inside pc_increment_calculator (compare-then-mux off
+  // registered operands, bit-identical to (seq_next_pc_reg != o_pc)) so the
+  // late sideband-derived advance select only steers a 1-bit mux here instead
+  // of feeding a 32-bit comparator on the pending-valid D path.
+  assign pc_reg_next_misses_fetch_pc_for_prediction = seq_next_pc_reg_neq_pc;
 
   assign prediction_needs_pending =
       i_prediction_used && !i_ras_predicted && !i_slot2_prediction_used &&

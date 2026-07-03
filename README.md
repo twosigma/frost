@@ -356,11 +356,11 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 130,622 | 203,800 | 64.1% |
-|   LUT as Logic | 122,015 | 203,800 | 59.9% |
-|   LUT as Distributed RAM | 7,762 | — | — |
+| Slice LUTs | 129,584 | 203,800 | 63.6% |
+|   LUT as Logic | 120,987 | 203,800 | 59.4% |
+|   LUT as Distributed RAM | 7,752 | — | — |
 |   LUT as Shift Register | 845 | — | — |
-| Slice Registers | 87,375 | 407,600 | 21.4% |
+| Slice Registers | 87,794 | 407,600 | 21.5% |
 | Block RAM Tile | 219 | 445 | 49.2% |
 | DSPs | 36 | 840 | 4.3% |
 | F7 Muxes | 98 | 101,900 | 0.1% |

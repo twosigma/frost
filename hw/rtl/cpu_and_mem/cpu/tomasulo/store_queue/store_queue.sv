@@ -1019,6 +1019,46 @@ module store_queue #(
     end
   end
 
+  // Partial-flush kill predicate, split by input arrival time.
+  //
+  // flush_kill_base[i]: every conjunct that is register-sourced this cycle —
+  // valid/committed flags, the REGISTERED commit-cycle guards (sq_committed
+  // is one NBA behind i_commit_valid), and the age check (i_flush_en /
+  // i_flush_tag / flush_all_uncommitted all come from the flush controller's
+  // registers, i_rob_head_tag from the ROB head pointer). These settle early.
+  //
+  // commit_comb_protect_*[i]: the same-cycle combinational commit guards.
+  // When a ROB commit and the partial flush fire in the SAME cycle, the
+  // registered i_commit_valid still reflects the previous cycle and
+  // sq_committed has not set yet. flush_all_uncommitted bypasses the age
+  // check, so without these terms a store committing in the flush cycle
+  // (e.g. widen-commit slot 2 retiring alongside a delayed-recovery branch
+  // at the head) is invalidated and its memory write silently lost (dropped
+  // UART chars / corrupted cjpeg output bytes in the system runs).
+  //
+  // TIMING: i_commit_valid_comb/_comb_2 are the only late inputs here (they
+  // close out of the ROB head-commit cone). The per-entry tag compares run
+  // against register-sourced tags (i_commit_rob_tag_comb == head_tag,
+  // _comb_2 == head_next tag), so factoring them out lets each late pulse
+  // enter the sq_valid[i] write cone through a single final AND instead of
+  // being fused mid-way into the age-compare tree — same boolean function,
+  // re-associated only.
+  logic [DEPTH-1:0] flush_kill_base;
+  logic [DEPTH-1:0] commit_comb_protect;
+  logic [DEPTH-1:0] commit_comb_protect_2;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      flush_kill_base[i] =
+          sq_valid[i] && !sq_committed[i] &&
+          !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
+          !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
+          (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag));
+      commit_comb_protect[i] = i_commit_valid_comb && (sq_rob_tag[i] == i_commit_rob_tag_comb);
+      commit_comb_protect_2[i] =
+          i_commit_valid_comb_2 && (sq_rob_tag[i] == i_commit_rob_tag_comb_2);
+    end
+  end
+
   // Keep sq_valid separate so full-flush and partial-flush invalidation do not
   // share one next-state cone with the other SQ control fields.
   always_ff @(posedge i_clk) begin
@@ -1031,25 +1071,7 @@ module store_queue #(
       // Committed entries are never flushed (they must complete to memory).
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_committed[i] &&
-              // Guard the registered commit cycle while sq_committed is still
-              // one NBA behind.
-              !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
-              !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
-              // Same-cycle combinational commit guard: when a ROB commit and
-              // the partial flush fire in the SAME cycle, the registered
-              // i_commit_valid still reflects the previous cycle and
-              // sq_committed has not set yet. flush_all_uncommitted bypasses
-              // the age check, so without these terms a store committing in
-              // the flush cycle (e.g. widen-commit slot 2 retiring alongside
-              // a delayed-recovery branch at the head) is invalidated and its
-              // memory write silently lost (dropped UART chars / corrupted
-              // cjpeg output bytes in the system runs).
-              !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
-              !(i_commit_valid_comb_2 && sq_rob_tag[i] == i_commit_rob_tag_comb_2) &&
-              (flush_all_uncommitted || is_younger(
-                  sq_rob_tag[i], i_flush_tag, i_rob_head_tag
-              ))) begin
+          if (flush_kill_base[i] && !commit_comb_protect[i] && !commit_comb_protect_2[i]) begin
             sq_valid[i] <= 1'b0;
           end
         end

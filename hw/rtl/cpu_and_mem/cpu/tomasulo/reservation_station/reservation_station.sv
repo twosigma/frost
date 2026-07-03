@@ -414,6 +414,10 @@ module reservation_station #(
   logic [CheckpointIdWidth-1:0] stage2_checkpoint_id;
   logic stage2_is_call;
   logic stage2_is_return;
+  logic stage2_is_branch_class;
+  logic stage2_is_jal;
+  logic stage2_is_jalr;
+  riscv_pkg::branch_taken_op_e stage2_branch_op;
 
   // CDB bypass flags: set when an issued instruction's source was woken by
   // same-cycle CDB bypass.  The output MUX substitutes stage2_cdb_value for
@@ -525,7 +529,51 @@ module reservation_station #(
 
   localparam int unsigned PayloadWidth =
       32 + XLEN + 3 + XLEN + 1 + XLEN + 1 + 1 + 1 + 2 + 1 + 12 + 5 + XLEN + XLEN +
-      1 + CheckpointIdWidth + 1 + 1;
+      1 + CheckpointIdWidth + 1 + 1 + 1 + 1 + 1 + 3;
+
+  // Dispatch-time branch-class pre-decode. Stored in the payload RAM so the
+  // wide instr_op_e decode happens once at dispatch instead of in the
+  // issue/branch-resolution cycle (see rs_issue_t.is_branch_class).
+  // Module-local decode functions: the riscv_pkg classification helpers are
+  // `ifndef SYNTHESIS (Yosys cannot resolve enum values inside package
+  // functions), so per the package convention the equivalent logic is inlined
+  // here with fully-qualified enum references. Sets mirror
+  // riscv_pkg::is_branch_or_jump_op / is_jal_op / is_jalr_op and the
+  // branch_taken_op_e case formerly inlined in branch_resolution.
+  function automatic logic rs_is_branch_class_op(riscv_pkg::instr_op_e op);
+    case (op)
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
+      riscv_pkg::BLTU, riscv_pkg::BGEU, riscv_pkg::JAL, riscv_pkg::JALR:
+      rs_is_branch_class_op = 1'b1;
+      default: rs_is_branch_class_op = 1'b0;
+    endcase
+  endfunction
+
+  function automatic riscv_pkg::branch_taken_op_e rs_branch_op_of(riscv_pkg::instr_op_e op);
+    case (op)
+      riscv_pkg::BEQ:                  rs_branch_op_of = riscv_pkg::BREQ;
+      riscv_pkg::BNE:                  rs_branch_op_of = riscv_pkg::BRNE;
+      riscv_pkg::BLT:                  rs_branch_op_of = riscv_pkg::BRLT;
+      riscv_pkg::BGE:                  rs_branch_op_of = riscv_pkg::BRGE;
+      riscv_pkg::BLTU:                 rs_branch_op_of = riscv_pkg::BRLTU;
+      riscv_pkg::BGEU:                 rs_branch_op_of = riscv_pkg::BRGEU;
+      riscv_pkg::JAL, riscv_pkg::JALR: rs_branch_op_of = riscv_pkg::JUMP;
+      default:                         rs_branch_op_of = riscv_pkg::NULL;
+    endcase
+  endfunction
+
+  logic dispatch_is_branch_class, dispatch_is_branch_class_2;
+  logic dispatch_is_jal, dispatch_is_jal_2;
+  logic dispatch_is_jalr, dispatch_is_jalr_2;
+  riscv_pkg::branch_taken_op_e dispatch_branch_op, dispatch_branch_op_2;
+  assign dispatch_is_branch_class = rs_is_branch_class_op(dispatch_op);
+  assign dispatch_is_jal = (dispatch_op == riscv_pkg::JAL);
+  assign dispatch_is_jalr = (dispatch_op == riscv_pkg::JALR);
+  assign dispatch_branch_op = rs_branch_op_of(dispatch_op);
+  assign dispatch_is_branch_class_2 = rs_is_branch_class_op(dispatch_op_2);
+  assign dispatch_is_jal_2 = (dispatch_op_2 == riscv_pkg::JAL);
+  assign dispatch_is_jalr_2 = (dispatch_op_2 == riscv_pkg::JALR);
+  assign dispatch_branch_op_2 = rs_branch_op_of(dispatch_op_2);
 
   logic [PayloadWidth-1:0] payload_wr_data;
   logic [PayloadWidth-1:0] payload_wr_data_2;
@@ -550,7 +598,11 @@ module reservation_station #(
     dispatch_has_checkpoint,  //  1  has_checkpoint
     dispatch_checkpoint_id,  //  CheckpointIdWidth  checkpoint_id
     dispatch_is_call,  //  1  is_call
-    dispatch_is_return  //  1  is_return
+    dispatch_is_return,  //  1  is_return
+    dispatch_is_branch_class,  //  1  is_branch_class
+    dispatch_is_jal,  //  1  is_jal
+    dispatch_is_jalr,  //  1  is_jalr
+    3'(dispatch_branch_op)  //  3  branch_op
   };
 
   assign payload_wr_data_2 = {
@@ -572,7 +624,11 @@ module reservation_station #(
     dispatch_has_checkpoint_2,
     dispatch_checkpoint_id_2,
     dispatch_is_call_2,
-    dispatch_is_return_2
+    dispatch_is_return_2,
+    dispatch_is_branch_class_2,
+    dispatch_is_jal_2,
+    dispatch_is_jalr_2,
+    3'(dispatch_branch_op_2)
   };
 
   // 2-write port: slot-1 dispatch (port 0) + slot-2 dispatch (port 1).
@@ -611,12 +667,17 @@ module reservation_station #(
   logic [CheckpointIdWidth-1:0] pl_checkpoint_id;
   logic                         pl_is_call;
   logic                         pl_is_return;
+  logic                         pl_is_branch_class;
+  logic                         pl_is_jal;
+  logic                         pl_is_jalr;
+  logic [                  2:0] pl_branch_op_bits;
 
   assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
           pl_predicted_target, pl_is_fp_mem, pl_mem_needs_lq, pl_mem_needs_sq,
           pl_mem_size_bits, pl_mem_signed,
           pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr,
-          pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return} = payload_rd_data;
+          pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return,
+          pl_is_branch_class, pl_is_jal, pl_is_jalr, pl_branch_op_bits} = payload_rd_data;
 
   // ===========================================================================
   // Combinational Logic
@@ -919,6 +980,10 @@ module reservation_station #(
   assign o_issue.checkpoint_id = stage2_checkpoint_id;
   assign o_issue.is_call = stage2_is_call;
   assign o_issue.is_return = stage2_is_return;
+  assign o_issue.is_branch_class = stage2_is_branch_class;
+  assign o_issue.is_jal = stage2_is_jal;
+  assign o_issue.is_jalr = stage2_is_jalr;
+  assign o_issue.branch_op = stage2_branch_op;
 
   assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
 
@@ -1220,6 +1285,10 @@ module reservation_station #(
       stage2_checkpoint_id <= pl_checkpoint_id;
       stage2_is_call <= pl_is_call;
       stage2_is_return <= pl_is_return;
+      stage2_is_branch_class <= pl_is_branch_class;
+      stage2_is_jal <= pl_is_jal;
+      stage2_is_jalr <= pl_is_jalr;
+      stage2_branch_op <= riscv_pkg::branch_taken_op_e'(pl_branch_op_bits);
     end else if (stage2_accept) begin
       // Consumed by FU, no new entry ready — go empty.
       stage2_valid <= 1'b0;

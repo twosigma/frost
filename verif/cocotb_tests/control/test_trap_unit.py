@@ -91,11 +91,18 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
     # Once the MRET-recovery inhibit lifts, the still-live machine timer -- HELD
-    # across the inhibit rather than force-cleared -- is taken at the first
-    # eligible boundary (U-mode here, where a machine interrupt preempts regardless
-    # of MIE). Holding a live source avoids LOSING a real timer tick; the 0x80388bba
-    # panic stays guarded by cpu_ooo's interrupt_resume_pc seed on mret_taken, not
-    # by this latch (commit 718f8cc).
+    # across the inhibit rather than force-cleared -- becomes eligible at the
+    # first eligible boundary (U-mode here, where a machine interrupt preempts
+    # regardless of MIE). Holding a live source avoids LOSING a real timer
+    # tick; the 0x80388bba panic stays guarded by cpu_ooo's
+    # interrupt_resume_pc seed on mret_taken, not by this latch (718f8cc).
+    # The eligible cycle now ARMS the take (raising o_trap_drain_wait /
+    # commit hold); the trap is taken one cycle later.
+    assert int(dut.o_trap_taken.value) == 0
+    assert int(dut.o_trap_drain_wait.value) == 1
+
+    await RisingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_trap_cause.value) == 0x80000007
 
@@ -116,6 +123,13 @@ async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
     dut.i_pipeline_stall.value = 0
     await Timer(1, unit="ns")
 
+    # First eligible cycle arms the take (and holds commit via
+    # o_trap_drain_wait); the trap is taken the following cycle.
+    assert int(dut.o_trap_taken.value) == 0
+    assert int(dut.o_trap_drain_wait.value) == 1
+
+    await RisingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_mret_taken.value) == 0
     assert int(dut.o_trap_cause.value) == 0x80000007
@@ -156,6 +170,13 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     # m_int_globally_enabled), so the name still holds.
     dut.i_mstatus.value = MSTATUS_MIE
     dut.i_mstatus_mie_direct.value = 1
+    await Timer(1, unit="ns")
+    # The restore cycle re-arms the take; the held tick is taken the cycle
+    # after (still never lost -- the source is held, not erased).
+    assert int(dut.o_trap_taken.value) == 0
+    assert int(dut.o_trap_drain_wait.value) == 1
+
+    await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_trap_cause.value) == 0x80000007

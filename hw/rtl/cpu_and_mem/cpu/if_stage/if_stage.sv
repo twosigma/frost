@@ -217,6 +217,7 @@ module if_stage #(
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
   logic [31:0] effective_instr_2;
+  logic slot2_decomp_illegal;
   logic is_compressed_2;
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
@@ -680,6 +681,7 @@ module if_stage #(
       // slot-1 branch detection, and the doesn't-fit cases.
       .o_raw_parcel_2(raw_parcel_2),
       .o_effective_instr_2(effective_instr_2),
+      .o_slot2_decomp_illegal(slot2_decomp_illegal),
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
@@ -981,6 +983,9 @@ module if_stage #(
   // Raw parcel output: replay saved values only when the saved cycle was a real
   // instruction, otherwise use the live post-stall values.
   assign o_from_if_to_pd.raw_parcel = replay_saved_if_outputs ? raw_parcel_sc : raw_parcel;
+  // Slot-1 keeps PD's local decompressor; the pre-decoded illegal flag is a
+  // slot-2-only mechanism.
+  assign o_from_if_to_pd.decomp_illegal = 1'b0;
 
   // Selection signals
   assign o_from_if_to_pd.sel_nop = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
@@ -1237,6 +1242,7 @@ module if_stage #(
   logic [31:0] effective_instr_2_sc;
   logic        sel_compressed_2_sc;
   logic        sel_nop_2_saved;
+  logic        slot2_decomp_illegal_sc;
 
   // Slot-2's live raw parcel is on the BRAM -> PD decompressor path.  Keep
   // only a saved register here and let the final replay mux below select it;
@@ -1272,6 +1278,18 @@ module if_stage #(
       .i_stall_registered(if_stage_stall_registered),
       .i_data(sel_compressed_2),
       .o_data(sel_compressed_2_sc)
+  );
+
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_slot2_decomp_illegal_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(slot2_decomp_illegal),
+      .o_data(slot2_decomp_illegal_sc)
   );
 
   // Mirror sel_nop_saved: flush forces 1, stall-entry latches the live value.
@@ -1358,6 +1376,8 @@ module if_stage #(
 
   // Slot-2 IF→PD packet assembly.
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
+  assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
+                                            slot2_decomp_illegal;
   assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
   assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
                                             sel_compressed_2;

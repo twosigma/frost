@@ -81,6 +81,12 @@ module reorder_buffer (
     // guarantees tag != i_cdb_write.tag, so the two never collide on a RAM
     // address or a rob_done bit.
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write_2,
+    // Private duplicate copies of i_cdb_write.tag / i_cdb_write_2.tag
+    // (registered in tomasulo_wrapper with equivalent_register_removal="no").
+    // Used ONLY by the head/head+1 CDB-bypass match compares so they do not
+    // ride the shared tag replica that also drives every RAM write address.
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_cdb_match_tag,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_cdb_match_tag_2,
 
     // Direct non-CDB completion for plain stores. Stores do not need wakeup or
     // a CDB value broadcast; the ROB only needs to know the entry is done.
@@ -363,6 +369,40 @@ module reorder_buffer (
   logic [ReorderBufferDepth-1:0] rob_mispredicted;
   logic [ReorderBufferDepth-1:0] rob_early_recovered;
 
+  // TIMING: alloc-time pre-decoded commit-class FF vectors.  The commit
+  // decision spine (head_ready -> commit_stall -> commit_en / store-like)
+  // formerly read its instruction-class conjuncts out of the head-meta
+  // LVT LUTRAM (one-hot bank select + data mux, ~3-4 LUT levels before the
+  // first decision gate).  Storing the decision-relevant class bits as plain
+  // per-entry FF vectors written once at allocation turns each of those
+  // reads into a 2-level onehot_read straight off registers, cutting the
+  // front of every commit-side critical path (ROB->SQ sq_valid guard,
+  // ROB->trap/CSR arcs).  Values are bit-identical to the meta-RAM fields;
+  // the meta RAM keeps carrying the payload copies consumed by the commit
+  // record.  Entries are only read under head_valid, so no reset is needed
+  // (same contract as the data RAMs).
+  logic [ReorderBufferDepth-1:0] rob_f_store_like;  // is_store|is_fp_store|is_sc
+  logic [ReorderBufferDepth-1:0] rob_f_is_branch;
+  logic [ReorderBufferDepth-1:0] rob_f_has_checkpoint;
+  logic [ReorderBufferDepth-1:0] rob_f_is_csr;
+  logic [ReorderBufferDepth-1:0] rob_f_is_fence;
+  logic [ReorderBufferDepth-1:0] rob_f_is_fence_i;
+  logic [ReorderBufferDepth-1:0] rob_f_is_wfi;
+  logic [ReorderBufferDepth-1:0] rob_f_is_mret;
+  logic [ReorderBufferDepth-1:0] rob_f_is_amo;
+  logic [ReorderBufferDepth-1:0] rob_f_is_lr;
+  // !(is_branch|is_csr|is_fence|is_fence_i|is_wfi|is_mret) — the head CDB
+  // bypass exclusion set folded into one bit.
+  logic [ReorderBufferDepth-1:0] rob_f_cdb_bypass_ok;
+  // !(is_csr|is_fence|is_fence_i|is_wfi|is_mret|is_amo|is_lr|is_sc) — the
+  // static (allocation-known) part of the 2-wide commit hazard gates.
+  logic [ReorderBufferDepth-1:0] rob_f_ok_2wide_static;
+  // is_mret | (is_csr && csr_addr[9:8]!=0) — U-mode privilege-fault
+  // pre-decode. Valid because the core implements exactly M and U modes:
+  // csr_addr[9:8] > i_priv is false for i_priv==PrivM(2'b11) and equals
+  // csr_addr[9:8]!=0 for i_priv==PrivU(2'b00) (asserted below).
+  logic [ReorderBufferDepth-1:0] rob_f_needs_m_priv;
+
   // Head and tail pointers (declared above for forward ref)
 
   // Derived pointer values (without wrap bit)
@@ -512,6 +552,43 @@ module reorder_buffer (
   logic commit_correct_branch_early;
   logic head_mispredict_candidate_early;
   logic commit_2_store_like_early;
+
+  // Fast head / head+1 class reads off the alloc-time pre-decoded FF vectors
+  // (registered one-hot selects; identical values to the corresponding
+  // meta-RAM fields, ~2 fewer LUT levels).  These feed the commit DECISION
+  // spine; the meta-RAM reads keep feeding the commit-record payload.
+  logic head_f_store_like;
+  logic head_f_is_branch;
+  logic head_f_has_checkpoint;
+  logic head_f_is_csr;
+  logic head_f_is_fence;
+  logic head_f_is_fence_i;
+  logic head_f_is_wfi;
+  logic head_f_is_mret;
+  logic head_f_is_amo;
+  logic head_f_is_lr;
+  logic head_f_cdb_bypass_ok;
+  logic head_f_ok_2wide_static;
+  logic head_f_needs_m_priv;
+  logic head_next_f_store_like;
+  logic head_next_f_is_branch;
+  logic head_next_f_ok_2wide_static;
+  assign head_f_store_like = onehot_read(rob_f_store_like, head_clear_mask);
+  assign head_f_is_branch = onehot_read(rob_f_is_branch, head_clear_mask);
+  assign head_f_has_checkpoint = onehot_read(rob_f_has_checkpoint, head_clear_mask);
+  assign head_f_is_csr = onehot_read(rob_f_is_csr, head_clear_mask);
+  assign head_f_is_fence = onehot_read(rob_f_is_fence, head_clear_mask);
+  assign head_f_is_fence_i = onehot_read(rob_f_is_fence_i, head_clear_mask);
+  assign head_f_is_wfi = onehot_read(rob_f_is_wfi, head_clear_mask);
+  assign head_f_is_mret = onehot_read(rob_f_is_mret, head_clear_mask);
+  assign head_f_is_amo = onehot_read(rob_f_is_amo, head_clear_mask);
+  assign head_f_is_lr = onehot_read(rob_f_is_lr, head_clear_mask);
+  assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
+  assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
+  assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
+  assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
+  assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
+  assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
   // NOTE: no max_fanout on commit_en.  A (* max_fanout = 96 *) was tried and
   // measured WORSE overall: the attribute forces the commit_en net to keep its
   // identity, which blocks opt_design from collapsing the serialization spine
@@ -579,8 +656,11 @@ module reorder_buffer (
   // treat it as a precise exception, so the faulting op never executes or
   // retires. The faulting op rides the same single-cycle exception path, so the
   // double-trap guard in trap_unit already covers it.
-  assign head_priv_fault = (head_is_mret && (i_priv != riscv_pkg::PrivM)) ||
-                           (head_is_csr && (head_csr_addr[9:8] > i_priv));
+  // TIMING: pre-decoded form of
+  //   (head_is_mret && (i_priv != PrivM)) || (head_is_csr && (csr_addr[9:8] > i_priv))
+  // — bit-identical for the two architecturally-reachable i_priv values
+  // (PrivU=2'b00, PrivM=2'b11; asserted in the simulation checks below).
+  assign head_priv_fault = head_f_needs_m_priv && (i_priv != riscv_pkg::PrivM);
   assign head_exception = head_exception_raw || head_priv_fault;
   assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
@@ -663,15 +743,10 @@ module reorder_buffer (
   // Widen-commit hazard gates.  Head may be a correctly-predicted branch;
   // head+1 may never be a branch (BTB update arbitration).  Both must be
   // plain non-serial instructions for 2-wide to fire.
-  assign head_ok_2wide =
-      !head_is_csr && !head_is_fence && !head_is_fence_i && !head_is_wfi &&
-      !head_is_mret && !head_is_amo && !head_is_lr && !head_is_sc &&
-      !head_exception && !(head_is_branch && head_mispredicted);
-  assign head_next_ok_2wide =
-      !head_next_is_csr && !head_next_is_fence && !head_next_is_fence_i &&
-      !head_next_is_wfi && !head_next_is_mret && !head_next_is_amo &&
-      !head_next_is_lr && !head_next_is_sc &&
-      !head_next_exception && !head_next_is_branch;
+  assign head_ok_2wide = head_f_ok_2wide_static &&
+      !head_exception && !(head_f_is_branch && head_mispredicted);
+  assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
+      !head_next_exception && !head_next_f_is_branch;
 
   // Same-cycle CDB bypass for head / head+1.  rob_done / rob_value /
   // rob_fp_flags update at the clock edge from i_cdb_write; without a bypass
@@ -700,33 +775,35 @@ module reorder_buffer (
 
   // The two CDB lanes carry distinct tags, so at most one lane hits the head
   // (and independently at most one hits head+1). Select that lane's payload.
-  assign head_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_idx);
-  assign head_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx);
-  logic head_cdb_exc_sel;
-  logic [FLEN-1:0] head_cdb_value_sel;
-  riscv_pkg::fp_flags_t head_cdb_fp_flags_sel;
-  assign head_cdb_exc_sel = head_cdb_match ? i_cdb_write.exception : i_cdb_write_2.exception;
-  assign head_cdb_value_sel = head_cdb_match ? i_cdb_write.value : i_cdb_write_2.value;
-  assign head_cdb_fp_flags_sel = head_cdb_match ? i_cdb_write.fp_flags : i_cdb_write_2.fp_flags;
-  assign head_cdb_bypass = (head_cdb_match || head_cdb_match_l2) && !head_cdb_exc_sel &&
-      !head_is_branch && !head_is_csr && !head_is_fence && !head_is_fence_i &&
-      !head_is_wfi && !head_is_mret;
+  // TIMING: matches compare the private duplicate tag copies (identical
+  // values to i_cdb_write.tag / i_cdb_write_2.tag — asserted below).
+  assign head_cdb_match = i_cdb_write.valid && (i_cdb_match_tag == head_idx);
+  assign head_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_match_tag_2 == head_idx);
+  // TIMING: per-lane bypass structure. The former shape computed one shared
+  // head_cdb_bypass select ((match||match2) && !exc_sel && ok, exc_sel a
+  // match-steered mux) that fanned to BOTH the 1-bit control side
+  // (head_done_eff -> head_ready -> commit/mret/trap decisions) and the
+  // 64-bit value/fp-flags muxes; opt_design fused the control bit into the
+  // wide value-mux LUT cone, adding ~3 levels to every commit-side arc.
+  // Splitting per lane gives the value muxes their own selects and keeps the
+  // control OR flat. Bit-identical: the CDB lanes carry distinct tags, so at
+  // most one lane matches the head (resp. head+1).
+  logic head_cdb_bypass_l1;
+  logic head_cdb_bypass_l2;
+  assign head_cdb_bypass_l1 = head_cdb_match && !i_cdb_write.exception && head_f_cdb_bypass_ok;
+  assign head_cdb_bypass_l2 = head_cdb_match_l2 && !i_cdb_write_2.exception && head_f_cdb_bypass_ok;
+  assign head_cdb_bypass = head_cdb_bypass_l1 || head_cdb_bypass_l2;
 
-  assign head_next_cdb_match = i_cdb_write.valid && (i_cdb_write.tag == head_next_idx);
-  assign head_next_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_write_2.tag == head_next_idx);
-  logic head_next_cdb_exc_sel;
-  logic [FLEN-1:0] head_next_cdb_value_sel;
-  riscv_pkg::fp_flags_t head_next_cdb_fp_flags_sel;
-  assign head_next_cdb_exc_sel =
-      head_next_cdb_match ? i_cdb_write.exception : i_cdb_write_2.exception;
-  assign head_next_cdb_value_sel = head_next_cdb_match ? i_cdb_write.value : i_cdb_write_2.value;
-  assign head_next_cdb_fp_flags_sel =
-      head_next_cdb_match ? i_cdb_write.fp_flags : i_cdb_write_2.fp_flags;
+  assign head_next_cdb_match = i_cdb_write.valid && (i_cdb_match_tag == head_next_idx);
+  assign head_next_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_match_tag_2 == head_next_idx);
   // head_next_cdb_bypass is gated further by head_next_ok_2wide at its only
   // consumer (commit_2_gate), so the bypass itself only needs the exception
-  // exclusion to cover the trap path.
-  assign head_next_cdb_bypass = (head_next_cdb_match || head_next_cdb_match_l2) &&
-      !head_next_cdb_exc_sel;
+  // exclusion to cover the trap path. Per-lane structure as for the head.
+  logic head_next_cdb_bypass_l1;
+  logic head_next_cdb_bypass_l2;
+  assign head_next_cdb_bypass_l1 = head_next_cdb_match && !i_cdb_write.exception;
+  assign head_next_cdb_bypass_l2 = head_next_cdb_match_l2 && !i_cdb_write_2.exception;
+  assign head_next_cdb_bypass = head_next_cdb_bypass_l1 || head_next_cdb_bypass_l2;
 
   logic head_done_eff;
   logic head_next_done_eff;
@@ -734,16 +811,22 @@ module reorder_buffer (
   assign head_next_done_eff = head_next_done || head_next_cdb_bypass;
 
   // Value / fp_flags forwarding only applies to the CDB bypass (stores don't
-  // write these fields).
+  // write these fields). Per-lane selects (see the head_cdb_bypass TIMING
+  // note): the wide muxes never see a combined bypass bit, so the control
+  // side cannot be fused into their LUT cone. At most one lane matches, so
+  // the priority order is immaterial.
   logic [FLEN-1:0] head_value_eff;
   riscv_pkg::fp_flags_t head_fp_flags_eff;
   logic [FLEN-1:0] head_next_value_eff;
   riscv_pkg::fp_flags_t head_next_fp_flags_eff;
-  assign head_value_eff = head_cdb_bypass ? head_cdb_value_sel : head_value;
-  assign head_fp_flags_eff = head_cdb_bypass ? head_cdb_fp_flags_sel : head_fp_flags;
-  assign head_next_value_eff = head_next_cdb_bypass ? head_next_cdb_value_sel : head_next_value;
-  assign head_next_fp_flags_eff =
-      head_next_cdb_bypass ? head_next_cdb_fp_flags_sel : head_next_fp_flags;
+  assign head_value_eff = head_cdb_bypass_l1 ? i_cdb_write.value :
+      head_cdb_bypass_l2 ? i_cdb_write_2.value : head_value;
+  assign head_fp_flags_eff = head_cdb_bypass_l1 ? i_cdb_write.fp_flags :
+      head_cdb_bypass_l2 ? i_cdb_write_2.fp_flags : head_fp_flags;
+  assign head_next_value_eff = head_next_cdb_bypass_l1 ? i_cdb_write.value :
+      head_next_cdb_bypass_l2 ? i_cdb_write_2.value : head_next_value;
+  assign head_next_fp_flags_eff = head_next_cdb_bypass_l1 ? i_cdb_write.fp_flags :
+      head_next_cdb_bypass_l2 ? i_cdb_write_2.fp_flags : head_next_fp_flags;
 
   // Head is ready to potentially commit
   assign head_ready = head_valid && head_done_eff;
@@ -899,6 +982,58 @@ module reorder_buffer (
     i_alloc_req_2.has_fp_flags,
     RsTypeWidth'(i_alloc_req_2.rs_type)
   };
+
+  // Alloc-time write of the pre-decoded commit-class FF vectors (see decl).
+  // Written once per entry at allocation, in lockstep with the meta RAM;
+  // no reset / no flush clear needed because every consumer is gated by
+  // head_valid (rob_valid), which does reset and flush-clear.
+  always_ff @(posedge i_clk) begin
+    if (alloc_en_control) begin
+      rob_f_store_like[tail_idx] <= i_alloc_req.is_store || i_alloc_req.is_fp_store ||
+                                    i_alloc_req.is_sc;
+      rob_f_is_branch[tail_idx] <= i_alloc_req.is_branch;
+      rob_f_has_checkpoint[tail_idx] <= alloc_has_checkpoint_data;
+      rob_f_is_csr[tail_idx] <= i_alloc_req.is_csr;
+      rob_f_is_fence[tail_idx] <= i_alloc_req.is_fence;
+      rob_f_is_fence_i[tail_idx] <= i_alloc_req.is_fence_i;
+      rob_f_is_wfi[tail_idx] <= i_alloc_req.is_wfi;
+      rob_f_is_mret[tail_idx] <= i_alloc_req.is_mret;
+      rob_f_is_amo[tail_idx] <= i_alloc_req.is_amo;
+      rob_f_is_lr[tail_idx] <= i_alloc_req.is_lr;
+      rob_f_cdb_bypass_ok[tail_idx] <=
+          !(i_alloc_req.is_branch || i_alloc_req.is_csr || i_alloc_req.is_fence ||
+            i_alloc_req.is_fence_i || i_alloc_req.is_wfi || i_alloc_req.is_mret);
+      rob_f_ok_2wide_static[tail_idx] <=
+          !(i_alloc_req.is_csr || i_alloc_req.is_fence || i_alloc_req.is_fence_i ||
+            i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
+            i_alloc_req.is_lr || i_alloc_req.is_sc);
+      rob_f_needs_m_priv[tail_idx] <=
+          i_alloc_req.is_mret || (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] != 2'b00));
+    end
+    if (alloc_en_2_control) begin
+      rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
+                                      i_alloc_req_2.is_sc;
+      rob_f_is_branch[tail_idx_2] <= i_alloc_req_2.is_branch;
+      rob_f_has_checkpoint[tail_idx_2] <= alloc_has_checkpoint_data_2;
+      rob_f_is_csr[tail_idx_2] <= i_alloc_req_2.is_csr;
+      rob_f_is_fence[tail_idx_2] <= i_alloc_req_2.is_fence;
+      rob_f_is_fence_i[tail_idx_2] <= i_alloc_req_2.is_fence_i;
+      rob_f_is_wfi[tail_idx_2] <= i_alloc_req_2.is_wfi;
+      rob_f_is_mret[tail_idx_2] <= i_alloc_req_2.is_mret;
+      rob_f_is_amo[tail_idx_2] <= i_alloc_req_2.is_amo;
+      rob_f_is_lr[tail_idx_2] <= i_alloc_req_2.is_lr;
+      rob_f_cdb_bypass_ok[tail_idx_2] <=
+          !(i_alloc_req_2.is_branch || i_alloc_req_2.is_csr || i_alloc_req_2.is_fence ||
+            i_alloc_req_2.is_fence_i || i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret);
+      rob_f_ok_2wide_static[tail_idx_2] <=
+          !(i_alloc_req_2.is_csr || i_alloc_req_2.is_fence || i_alloc_req_2.is_fence_i ||
+            i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
+            i_alloc_req_2.is_lr || i_alloc_req_2.is_sc);
+      rob_f_needs_m_priv[tail_idx_2] <=
+          i_alloc_req_2.is_mret ||
+          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] != 2'b00));
+    end
+  end
 
   // ===========================================================================
   // Distributed RAM Instances
@@ -1766,15 +1901,18 @@ module reorder_buffer (
       .i_csr_done          (i_csr_done),
       .i_mret_done         (i_mret_done),
       .i_trap_taken        (i_trap_taken),
+      // TIMING: class inputs come from the alloc-time pre-decoded FF vectors
+      // (bit-identical to the meta-RAM fields) so the commit_stall cone
+      // starts from registers, not the LVT meta read.
       .head_ready          (head_ready),
       .head_exception      (head_exception),
-      .head_is_wfi         (head_is_wfi),
-      .head_is_csr         (head_is_csr),
-      .head_is_fence       (head_is_fence),
-      .head_is_fence_i     (head_is_fence_i),
-      .head_is_mret        (head_is_mret),
-      .head_is_amo         (head_is_amo),
-      .head_is_lr          (head_is_lr),
+      .head_is_wfi         (head_f_is_wfi),
+      .head_is_csr         (head_f_is_csr),
+      .head_is_fence       (head_f_is_fence),
+      .head_is_fence_i     (head_f_is_fence_i),
+      .head_is_mret        (head_f_is_mret),
+      .head_is_amo         (head_f_is_amo),
+      .head_is_lr          (head_f_is_lr),
       .o_serial_state      (serial_state),
       .o_commit_stall      (commit_stall)
   );
@@ -1824,15 +1962,14 @@ module reorder_buffer (
   assign commit_en = commit_ready_early && !commit_stall;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
-  assign commit_misprediction = head_is_branch && head_mispredicted;
+  assign commit_misprediction = head_f_is_branch && head_mispredicted;
   assign o_commit_valid_raw = commit_en;
-  assign commit_store_like_early =
-      commit_ready_early && (head_is_store || head_is_fp_store || head_is_sc);
+  assign commit_store_like_early = commit_ready_early && head_f_store_like;
   assign o_commit_store_like_raw = commit_store_like_early && !commit_stall;
   assign commit_mispredict_early =
       commit_ready_early && commit_misprediction && !head_early_recovered;
   assign o_commit_misprediction_raw = commit_mispredict_early && !commit_stall;
-  assign commit_correct_branch_early = commit_ready_early && head_has_checkpoint &&
+  assign commit_correct_branch_early = commit_ready_early && head_f_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
   assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall;
   // Same-cycle head-mispredict indicator without the branch_update collision
@@ -1853,7 +1990,7 @@ module reorder_buffer (
   assign o_csr_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
                        !i_commit_hold &&
                        !i_early_recovery_en &&
-                       head_is_csr && !head_exception &&
+                       head_f_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
 
   // MRET execution signal - asserted when entering MRET_EXEC and SUSTAINED while
@@ -1883,7 +2020,7 @@ module reorder_buffer (
                         head_ready &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
-                        head_is_mret && !head_exception &&
+                        head_f_is_mret && !head_exception &&
                         i_sq_committed_empty;
 
   // Trap pending signal - asserted when exception at head.
@@ -1906,7 +2043,7 @@ module reorder_buffer (
   // still draining) otherwise flushes the WFI before it commits, leaving
   // interrupt_resume_pc at the pre-WFI instruction's next-PC (== the WFI's own
   // PC) -> mepc=wfi_pc instead of the spec-required wfi_pc+4.
-  assign o_head_is_wfi = head_is_wfi;
+  assign o_head_is_wfi = head_f_is_wfi;
   assign o_trap_cause = head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
 
@@ -1923,8 +2060,8 @@ module reorder_buffer (
   // Slot 2 is never a branch/MRET by the 2-wide gate, and o_commit_comb_2
   // zeroes is_branch/is_mret, so its next-PC is always the sequential one.
   assign o_head_retired_next_pc =
-      head_is_mret ? i_mepc :
-      (head_is_branch && head_branch_taken) ? head_branch_target :
+      head_f_is_mret ? i_mepc :
+      (head_f_is_branch && head_branch_taken) ? head_branch_target :
       head_fallthrough_pc;
   assign o_head_next_retired_next_pc = head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4);
 
@@ -1933,7 +2070,7 @@ module reorder_buffer (
     if (!i_rst_n) begin
       fence_i_committed <= 1'b0;
     end else begin
-      fence_i_committed <= commit_en && head_is_fence_i;
+      fence_i_committed <= commit_en && head_f_is_fence_i;
     end
   end
   assign o_fence_i_flush = fence_i_committed;
@@ -2117,7 +2254,9 @@ module reorder_buffer (
   // (the trap arc of the uart spine) and the SQ same-cycle commit guard.
   assign commit_2_store_like_early =
       commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
-      (head_next_is_store || head_next_is_fp_store);
+      // head_next_f_store_like also covers is_sc, which is excluded by
+      // head_next_ok_2wide inside commit_2_ready_early — bit-identical here.
+      head_next_f_store_like;
   assign o_commit_2_store_like_raw = commit_2_store_like_early && !commit_stall;
 
   // Registered copy of slot 2 commit so external observers can sample it
@@ -2215,7 +2354,13 @@ module reorder_buffer (
       end
     end
 
-    if (head_ready && commit_stall && !i_flush_all) begin
+    // commit_stall's IDLE arm is exported gate-free from rob_serializer (see
+    // the TIMING note there); re-apply the dropped IDLE-only gate conjuncts
+    // here so these counters keep their original values (non-IDLE stall
+    // never carried the gate).
+    if (head_ready && commit_stall && !i_flush_all &&
+        ((serial_state != riscv_pkg::SERIAL_IDLE) ||
+         (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
       o_perf_events.commit_blocked_csr =
           head_is_csr || (serial_state == riscv_pkg::SERIAL_CSR_EXEC);
       o_perf_events.commit_blocked_fence =
@@ -2299,6 +2444,34 @@ module reorder_buffer (
       if (head_next_clear_mask != (ReorderBufferDepth'(1) << head_next_idx)) begin
         $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
                head_next_clear_mask, head_next_idx);
+      end
+      // The head_priv_fault pre-decode (rob_f_needs_m_priv) assumes the core
+      // only ever runs in M or U mode.
+      if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivU})) begin
+        $error("Reorder Buffer: unexpected privilege mode %0b", i_priv);
+      end
+      // The private CDB match-tag duplicates must track the shared tags.
+      if (i_cdb_write.valid && (i_cdb_match_tag != i_cdb_write.tag)) begin
+        $error("Reorder Buffer: i_cdb_match_tag (%0d) != i_cdb_write.tag (%0d)", i_cdb_match_tag,
+               i_cdb_write.tag);
+      end
+      if (i_cdb_write_2.valid && (i_cdb_match_tag_2 != i_cdb_write_2.tag)) begin
+        $error("Reorder Buffer: i_cdb_match_tag_2 (%0d) != i_cdb_write_2.tag (%0d)",
+               i_cdb_match_tag_2, i_cdb_write_2.tag);
+      end
+      // Fast class reads must track the meta-RAM fields bit-for-bit while
+      // the head entry is live.
+      if (head_valid) begin
+        if (head_f_store_like != (head_is_store || head_is_fp_store || head_is_sc))
+          $error("Reorder Buffer: rob_f_store_like mismatch at head");
+        if (head_f_is_branch != head_is_branch)
+          $error("Reorder Buffer: rob_f_is_branch mismatch at head");
+        if (head_f_is_csr != head_is_csr) $error("Reorder Buffer: rob_f_is_csr mismatch at head");
+        if (head_f_is_fence_i != head_is_fence_i)
+          $error("Reorder Buffer: rob_f_is_fence_i mismatch at head");
+        if (head_f_is_wfi != head_is_wfi) $error("Reorder Buffer: rob_f_is_wfi mismatch at head");
+        if (head_f_is_mret != head_is_mret)
+          $error("Reorder Buffer: rob_f_is_mret mismatch at head");
       end
     end
   end
@@ -2422,6 +2595,15 @@ module reorder_buffer (
 
   // CDB write and branch update cannot target the same tag simultaneously
   always_comb begin
+  end
+
+  // The private CDB match-tag duplicates are registered copies of the shared
+  // tags (driven by tomasulo_wrapper from the same arbiter output; checked by
+  // the simulation assertion above). Model that invariant for the standalone
+  // formal top so the solver cannot desynchronize the match compares.
+  always_comb begin
+    assume (i_cdb_match_tag == i_cdb_write.tag);
+    assume (i_cdb_match_tag_2 == i_cdb_write_2.tag);
   end
 
   // alloc_valid not asserted during flush (matches existing simulation assertion)

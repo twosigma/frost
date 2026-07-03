@@ -111,7 +111,10 @@ combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
 The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
-are additionally masked combinationally with `!i_flush_all`. The valid flops
+are additionally masked combinationally with `!i_flush_all_wb_mask` — a
+dedicated, bit-identical flat recompute of the full-flush term
+(`misprediction_flush_controller.o_flush_all_flat`), kept off the shared
+`i_flush_all` priority/broadcast cone for timing. The valid flops
 clear on the flush edge, but downstream consumers still observe the previous
 valid value during that same cycle; masking immediately prevents a commit that
 overlaps a trap / MRET / FENCE.I full flush from performing one more

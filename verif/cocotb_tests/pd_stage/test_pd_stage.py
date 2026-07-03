@@ -60,6 +60,7 @@ IF_TO_PD_FIELDS = [
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("decomp_illegal", 1),
 ]
 
 PD_TO_ID_FIELDS = [

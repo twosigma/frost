@@ -163,8 +163,24 @@ module trap_unit #(
     end
   end
 
+  // TIMING: inhibit off the REGISTERED image of i_mret_start. i_mret_start is
+  // the ROB's o_mret_start (head_ready -> serializer cone, carrying the
+  // same-cycle CDB head-done bypass); feeding it combinationally into
+  // interrupt_pending_eligible put that whole cone in front of take_trap and
+  // every trap-side CSR write. With the registered image, an interrupt that
+  // is eligible in the FIRST i_mret_start cycle may now win take_trap; that
+  // is architecturally clean: take_mret already yields to take_trap, the
+  // interrupt's mepc is the MRET's own PC (i_interrupt_pc has not advanced
+  // past the uncommitted MRET), the trap flush_all resets the serializer out
+  // of SERIAL_MRET_EXEC, and the handler returns to re-execute the MRET.
+  // From the second cycle on the inhibit behaves exactly as before.
+  logic mret_start_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) mret_start_q <= 1'b0;
+    else mret_start_q <= i_mret_start;
+  end
   logic mret_interrupt_inhibit;
-  assign mret_interrupt_inhibit = i_mret_start || mret_taken_prev;
+  assign mret_interrupt_inhibit = mret_start_q || mret_taken_prev;
 
   // Interrupt pending and enabled (gate by !trap_taken_prev to prevent re-entry).
   // Global M-interrupt enable: mstatus.MIE while in M, but ALWAYS enabled while
@@ -350,11 +366,28 @@ module trap_unit #(
       !trap_taken_prev &&
       !mret_interrupt_inhibit;
 
+  // Interrupt arming: an interrupt may only take a trap the cycle AFTER it
+  // first became eligible. The arming cycle raises o_trap_drain_wait (below),
+  // which lands in the registered commit hold — so on the take cycle no new
+  // ROB commit can fire, and any store-like commit from the arming cycle has
+  // already pessimistically cleared the SQ's registered committed-empty
+  // status. This removes the need for the same-cycle raw commit guards
+  // (formerly sq_committed_empty_for_trap in cpu_ooo) on the take_trap cone,
+  // at the cost of one extra cycle of interrupt entry latency.
+  // Exceptions need no arming: an exception at the ROB head already blocks
+  // every commit (commit_ready_early), so no store commit can race the take.
+  logic interrupt_take_armed_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) interrupt_take_armed_q <= 1'b0;
+    else interrupt_take_armed_q <= interrupt_pending_eligible && !o_trap_taken;
+  end
+
   // Trap taken: either interrupt or exception, the pipeline not stalled
   // (except for WFI stall, which should be broken by interrupt), and no
   // committed store still draining (see i_sq_committed_empty).
   logic take_trap;
-  assign take_trap = (interrupt_pending_eligible || exception_pending) &&
+  assign take_trap = ((interrupt_pending_eligible && interrupt_take_armed_q) ||
+                      exception_pending) &&
       !i_pipeline_stall &&
       i_sq_committed_empty;
 
@@ -365,9 +398,18 @@ module trap_unit #(
   assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
 
   // Hold commit while a trap/MRET waits out the store drain, so the
-  // committed set shrinks monotonically and the wait is bounded.
-  assign o_trap_drain_wait = (interrupt_pending_eligible || exception_pending || i_mret_start) &&
-      !i_sq_committed_empty;
+  // committed set shrinks monotonically and the wait is bounded. The
+  // interrupt arming window also holds commit (see interrupt_take_armed_q):
+  // by the take cycle the hold is registered-active, so no commit can race
+  // the full flush. The raw sample (interrupt_pending_comb) is included
+  // because the ROB observes the interrupt one cycle before the registered
+  // eligibility (e.g. releasing a WFI's commit_stall) — without it the
+  // instruction after a WFI could retire in the arming gap and advance the
+  // interrupt resume PC past the architectural boundary (mepc = wfi_pc+8
+  // instead of wfi_pc+4 in the wfi_mepc regression).
+  assign o_trap_drain_wait = ((interrupt_pending_eligible || exception_pending || i_mret_start) &&
+      !i_sq_committed_empty) ||
+      ((interrupt_pending_comb || interrupt_pending_eligible) && !interrupt_take_armed_q);
 
   // Output trap signals
   assign o_trap_taken = take_trap;
@@ -429,9 +471,12 @@ module trap_unit #(
     assume (!(i_mret_start && i_exception_valid));
     assume (!(i_wfi_start && i_mret_start));
     assume (!(i_wfi_start && i_exception_valid));
-    // Note: MRET + interrupt_pending is NOT assumed away. MRET wins that race;
-    // the pending interrupt is re-sampled after the return redirect has had
-    // time to retire the MRET precisely.
+    // Note: MRET + interrupt_pending is NOT assumed away. An interrupt that is
+    // already ARMED (eligible since the previous cycle) may preempt the MRET
+    // in its FIRST i_mret_start cycle (take_mret yields to take_trap and the
+    // MRET re-executes after the handler); from the second cycle on the
+    // registered inhibit (mret_start_q) defers the interrupt until after the
+    // return redirect has retired the MRET precisely.
   end
 
   always @(posedge i_clk) begin
@@ -456,8 +501,12 @@ module trap_unit #(
       // MRET target is mepc: when MRET fires, target must be mepc.
       p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
 
-      // A pending interrupt must not preempt the MRET instruction itself.
-      if (i_mret_start && !exception_pending) begin
+      // A pending interrupt must not preempt an MRET that has been in flight
+      // for a full cycle (the registered inhibit window). The FIRST
+      // i_mret_start cycle is exempt: an already-armed interrupt may win
+      // there — take_mret yields to take_trap and the MRET re-executes after
+      // the handler (see mret_interrupt_inhibit).
+      if (mret_start_q && i_mret_start && !exception_pending) begin
         p_mret_defers_interrupt : assert (!o_trap_taken);
       end
 

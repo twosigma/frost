@@ -67,6 +67,16 @@ module misprediction_flush_controller #(
     output logic o_flush_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_flush_tag,
     output logic o_flush_all,
+    // Flat recompute of o_flush_all for latency-critical consumers (the
+    // commit-writeback valid mask). Bit-identical to o_flush_all: the
+    // priority chain's recovery-pending arms only SUPPRESS the fence_i arm,
+    // and fence_i_flush can never coincide with either recovery-pending bit
+    // (a FENCE.I commit requires commit_en, which is gated off by
+    // early recovery and by mispredict recovery; slot-2/2-wide excludes
+    // serial ops, so the pulses are one-cycle-exclusive by construction —
+    // asserted below). Consuming this 1-LUT OR of three registers avoids
+    // riding the shared o_flush_all priority/broadcast cone.
+    output logic o_flush_all_flat,
     output logic o_commit_recovery_flush_after_head,
     output logic o_flush_after_head,
     output logic o_checkpoint_restore,
@@ -324,18 +334,29 @@ module misprediction_flush_controller #(
   end
 
   // --- Output wiring.
-  assign o_mispredict_commit_q              = mispredict_commit_q;
-  assign o_mispredict_recovery_pending      = mispredict_recovery_pending;
-  assign o_fence_i_target_pc                = fence_i_target_pc;
-  assign o_correct_branch_commit_pending    = correct_branch_commit_pending;
-  assign o_correct_branch_commit_q          = correct_branch_commit_q;
-  assign o_flush_pipeline                   = flush_pipeline;
-  assign o_dispatch_flush                   = dispatch_flush;
-  assign o_full_flush_side_effect_kill      = full_flush_side_effect_kill;
-  assign o_frontend_state_flush             = frontend_state_flush;
-  assign o_flush_en                         = flush_en;
-  assign o_flush_tag                        = flush_tag;
-  assign o_flush_all                        = flush_all;
+  assign o_mispredict_commit_q           = mispredict_commit_q;
+  assign o_mispredict_recovery_pending   = mispredict_recovery_pending;
+  assign o_fence_i_target_pc             = fence_i_target_pc;
+  assign o_correct_branch_commit_pending = correct_branch_commit_pending;
+  assign o_correct_branch_commit_q       = correct_branch_commit_q;
+  assign o_flush_pipeline                = flush_pipeline;
+  assign o_dispatch_flush                = dispatch_flush;
+  assign o_full_flush_side_effect_kill   = full_flush_side_effect_kill;
+  assign o_frontend_state_flush          = frontend_state_flush;
+  assign o_flush_en                      = flush_en;
+  assign o_flush_tag                     = flush_tag;
+  assign o_flush_all                     = flush_all;
+  assign o_flush_all_flat                = trap_taken_reg || mret_taken_reg || fence_i_flush;
+
+`ifndef SYNTHESIS
+  // o_flush_all_flat must be bit-identical to the priority-chain o_flush_all.
+  always_comb begin
+    if (o_flush_all_flat !== flush_all) begin
+      $error("misprediction_flush_controller: o_flush_all_flat (%b) != flush_all (%b)",
+             o_flush_all_flat, flush_all);
+    end
+  end
+`endif
   assign o_commit_recovery_flush_after_head = commit_recovery_flush_after_head;
   assign o_flush_after_head                 = flush_after_head;
   assign o_checkpoint_restore               = checkpoint_restore;

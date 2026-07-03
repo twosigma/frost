@@ -32,6 +32,13 @@ import pytest
 # Path to the formal/ directory relative to the repository root
 FORMAL_DIR = "formal"
 
+# Per-task sby timeout (seconds). Sized as a hang backstop, not a performance
+# gate: the slowest task (reorder_buffer:bmc, depth 20) measures ~11.5 min of
+# wall time on a fast desktop after the ROB's alloc-time pre-decoded
+# commit-class vectors were added, so 40 min leaves ~3.5x headroom for slower
+# CI runners.
+SBY_TASK_TIMEOUT_S = 2400
+
 
 @dataclass(frozen=True)
 class FormalTarget:
@@ -150,13 +157,13 @@ class FormalRunner:
                 capture_output=True,
                 text=True,
                 cwd=self.formal_dir,
-                timeout=300,  # 5 minute timeout
+                timeout=SBY_TASK_TIMEOUT_S,
             )
         else:
             return subprocess.run(
                 cmd,
                 cwd=self.formal_dir,
-                timeout=300,
+                timeout=SBY_TASK_TIMEOUT_S,
                 text=True,
             )
 
@@ -310,7 +317,8 @@ class TestFormalVerification:
 
         except subprocess.TimeoutExpired:
             pytest.fail(
-                f"Formal {task_name} for {target.name} timed out after 5 minutes"
+                f"Formal {task_name} for {target.name} timed out after "
+                f"{SBY_TASK_TIMEOUT_S // 60} minutes"
             )
         except Exception as e:
             pytest.fail(
@@ -455,7 +463,7 @@ This script can also be run via pytest:
                     passed += 1
 
             except subprocess.TimeoutExpired:
-                print(f"\n{test_id} TIMEOUT (5 minutes)")
+                print(f"\n{test_id} TIMEOUT ({SBY_TASK_TIMEOUT_S // 60} minutes)")
                 failed.append(test_id)
             except Exception as e:
                 print(f"\n{test_id} ERROR: {e}")

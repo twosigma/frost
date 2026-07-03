@@ -80,7 +80,10 @@ module pc_increment_calculator #(
     // Outputs for final PC mux in pc_controller
     output logic [XLEN-1:0] o_seq_next_pc,     // Sequential PC for fetch
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
-    output logic [XLEN-1:0] o_seq_next_pc_reg  // Sequential PC for instruction address
+    output logic [XLEN-1:0] o_seq_next_pc_reg,  // Sequential PC for instruction address
+    // 1-bit precomputed (o_seq_next_pc_reg != i_pc) for the pc_controller
+    // prediction-pending arm (see the compare block near the end).
+    output logic o_seq_next_pc_reg_neq_pc
 );
 
   // ===========================================================================
@@ -295,6 +298,49 @@ module pc_increment_calculator #(
       o_seq_next_pc_reg = pc_reg_normal;
     end
   end
+
+  // ===========================================================================
+  // Precomputed (o_seq_next_pc_reg != i_pc) — compare-then-mux form
+  // ===========================================================================
+  // TIMING: pc_controller's prediction-pending arm needs the full
+  // seq_next_pc_reg-vs-fetch-PC miss check (the bit1 proxy caused the no-MMU
+  // Linux boot hang), but comparing the muxed 32-bit value puts the wide NEQ
+  // AFTER the late sideband-derived i_pc_reg_advance_sel. Both compare
+  // operands of every CANDIDATE are register-sourced (i_pc, i_pc_reg, and the
+  // pre-computed increments), so run the five 32-bit compares in parallel off
+  // the registers and let the late selects pick among 1-bit results. Mirrors
+  // the o_seq_next_pc_reg selection above arm-for-arm (including the
+  // pc_reg_advance_mux unique-case default mapping to the +2 candidate), so
+  // the result is bit-identical to (o_seq_next_pc_reg != i_pc).
+  logic neq_hold, neq_mid, neq_plus2, neq_plus4, neq_plus6;
+  logic neq_advance_sel;
+  assign neq_hold  = (i_pc_reg != i_pc);
+  assign neq_mid   = (pc_reg_mid_32bit_correction != i_pc);
+  assign neq_plus2 = (pc_reg_if_compressed != i_pc);
+  assign neq_plus4 = (pc_reg_if_32bit != i_pc);
+  assign neq_plus6 = (pc_reg_plus_6 != i_pc);
+  always_comb begin
+    unique case (i_pc_reg_advance_sel)
+      riscv_pkg::PcAdvancePlus2: neq_advance_sel = neq_plus2;
+      riscv_pkg::PcAdvancePlus4: neq_advance_sel = neq_plus4;
+      riscv_pkg::PcAdvancePlus6: neq_advance_sel = neq_plus6;
+      default:                   neq_advance_sel = neq_plus2;
+    endcase
+  end
+  always_comb begin
+    if (seq_sel_holdoff) o_seq_next_pc_reg_neq_pc = neq_hold;
+    else if (seq_sel_mid_32bit) o_seq_next_pc_reg_neq_pc = neq_mid;
+    else o_seq_next_pc_reg_neq_pc = neq_advance_sel;
+  end
+
+`ifndef SYNTHESIS
+  // The 1-bit precompute must track the wide compare exactly.
+  always_comb begin
+    if (o_seq_next_pc_reg_neq_pc !== (o_seq_next_pc_reg != i_pc)) begin
+      $error("pc_increment_calculator: o_seq_next_pc_reg_neq_pc mismatch");
+    end
+  end
+`endif
 
 endmodule : pc_increment_calculator
 
