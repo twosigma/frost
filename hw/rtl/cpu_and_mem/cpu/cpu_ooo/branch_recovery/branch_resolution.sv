@@ -165,35 +165,26 @@ module branch_resolution #(
 
   assign suppress_branch_resolution = branch_issue_is_flushed;
 
+  // TIMING: the branch class and the branch_taken_op_e select are pre-decoded
+  // at dispatch and registered through the RS payload + stage2 register
+  // (rs_issue_t.is_branch_class/is_jal/is_jalr/branch_op). Consuming the
+  // registered bits here keeps the wide instr_op_e equality trees out of the
+  // stage2_op -> branch_mispredicted -> early-mispredict-capture cycle; the
+  // decode itself is bit-identical (reservation_station's
+  // rs_is_branch_class_op / rs_branch_op_of mirror the former inline forms).
   logic is_branch_issue;
   assign is_branch_issue = rs_issue_int.valid && branch_issue_checkpoint_live &&
-                           !suppress_branch_resolution && (
-      rs_issue_int.op == riscv_pkg::BEQ  || rs_issue_int.op == riscv_pkg::BNE  ||
-      rs_issue_int.op == riscv_pkg::BLT  || rs_issue_int.op == riscv_pkg::BGE  ||
-      rs_issue_int.op == riscv_pkg::BLTU || rs_issue_int.op == riscv_pkg::BGEU ||
-      rs_issue_int.op == riscv_pkg::JAL  || rs_issue_int.op == riscv_pkg::JALR);
+                           !suppress_branch_resolution && rs_issue_int.is_branch_class;
 
   logic is_jal_issue, is_jalr_issue;
-  assign is_jal_issue  = is_branch_issue && (rs_issue_int.op == riscv_pkg::JAL);
-  assign is_jalr_issue = is_branch_issue && (rs_issue_int.op == riscv_pkg::JALR);
+  assign is_jal_issue  = is_branch_issue && rs_issue_int.is_jal;
+  assign is_jalr_issue = is_branch_issue && rs_issue_int.is_jalr;
   logic is_branch_update_issue;
   assign is_branch_update_issue = is_branch_issue && !is_jal_issue;
 
-  // Map instr_op_e → branch_taken_op_e for branch_jump_unit
+  // Pre-decoded instr_op_e → branch_taken_op_e select for branch_jump_unit
   riscv_pkg::branch_taken_op_e branch_op_resolved;
-
-  always_comb begin
-    case (rs_issue_int.op)
-      riscv_pkg::BEQ:                  branch_op_resolved = riscv_pkg::BREQ;
-      riscv_pkg::BNE:                  branch_op_resolved = riscv_pkg::BRNE;
-      riscv_pkg::BLT:                  branch_op_resolved = riscv_pkg::BRLT;
-      riscv_pkg::BGE:                  branch_op_resolved = riscv_pkg::BRGE;
-      riscv_pkg::BLTU:                 branch_op_resolved = riscv_pkg::BRLTU;
-      riscv_pkg::BGEU:                 branch_op_resolved = riscv_pkg::BRGEU;
-      riscv_pkg::JAL, riscv_pkg::JALR: branch_op_resolved = riscv_pkg::JUMP;
-      default:                         branch_op_resolved = riscv_pkg::NULL;
-    endcase
-  end
+  assign branch_op_resolved = rs_issue_int.branch_op;
 
   // Branch/jump condition evaluation and target computation
   logic            branch_taken_resolved;

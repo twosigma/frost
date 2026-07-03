@@ -60,7 +60,53 @@ RS_ISSUE_FIELDS = [
     ("checkpoint_id", CHECKPOINT_ID_WIDTH),
     ("is_call", 1),
     ("is_return", 1),
+    ("is_branch_class", 1),
+    ("is_jal", 1),
+    ("is_jalr", 1),
+    ("branch_op", 3),
 ]
+
+# branch_taken_op_e encodings (riscv_pkg)
+BR_OP = {
+    "BREQ": 0,
+    "BRNE": 1,
+    "BRLT": 2,
+    "BRGE": 3,
+    "BRLTU": 4,
+    "BRGEU": 5,
+    "JUMP": 6,
+    "NULL": 7,
+}
+
+# instr_op_e -> pre-decoded branch class fields, mirroring the dispatch-time
+# decode the RS now carries in rs_issue_t (branch_resolution no longer
+# decodes the raw op).
+_BRANCH_CLASS_BY_OP = {
+    OP_JAL: {
+        "is_branch_class": 1,
+        "is_jal": 1,
+        "is_jalr": 0,
+        "branch_op": BR_OP["JUMP"],
+    },
+    OP_JALR: {
+        "is_branch_class": 1,
+        "is_jal": 0,
+        "is_jalr": 1,
+        "branch_op": BR_OP["JUMP"],
+    },
+    OP_BEQ: {
+        "is_branch_class": 1,
+        "is_jal": 0,
+        "is_jalr": 0,
+        "branch_op": BR_OP["BREQ"],
+    },
+    OP_BNE: {
+        "is_branch_class": 1,
+        "is_jal": 0,
+        "is_jalr": 0,
+        "branch_op": BR_OP["BRNE"],
+    },
+}
 
 BRANCH_UPDATE_FIELDS = [
     ("valid", 1),
@@ -176,6 +222,14 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
         "predicted_target": 0x200,
     }
     issue.update(fields)
+    # Fill in the pre-decoded branch-class fields from op unless the caller
+    # overrode them explicitly (they are what the DUT consumes now).
+    derived = _BRANCH_CLASS_BY_OP.get(
+        int(issue["op"]),
+        {"is_branch_class": 0, "is_jal": 0, "is_jalr": 0, "branch_op": BR_OP["NULL"]},
+    )
+    for key, value in derived.items():
+        issue.setdefault(key, value)
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
 
 

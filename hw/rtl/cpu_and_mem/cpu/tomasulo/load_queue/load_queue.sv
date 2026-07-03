@@ -1032,11 +1032,27 @@ module load_queue #(
       issue_mem_found &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
 
+  // TIMING: the age check "staged entry is younger than the incoming
+  // candidate" is precomputed per entry from registered operands
+  // (sq_check_rob_tag_q, lq_rob_tag[i], i_rob_head_tag) and the late
+  // issue_mem_onehot then just selects one precomputed bit — replacing the
+  // post-encoder subtract/compare pair on the sq_check payload clock-enable
+  // (the WNS-limiting cone). |(mask & onehot) === is_younger(staged,
+  // lq_rob_tag[issue_mem_idx], head) because issue_mem_onehot is one-hot at
+  // issue_mem_idx and issue_mem_rob_tag == lq_rob_tag[issue_mem_idx]; the
+  // onehot='0 (not-found) case is gated by issue_mem_found.
+  logic [DEPTH-1:0] staged_younger_than_entry;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      staged_younger_than_entry[i] = is_younger(sq_check_rob_tag_q, lq_rob_tag[i], i_rob_head_tag);
+    end
+  end
+  logic staged_younger_than_candidate;
+  assign staged_younger_than_candidate = |(staged_younger_than_entry & issue_mem_onehot);
+
   assign sq_check_replace = sq_check_pending && issue_mem_found &&
       !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
-      (!sq_check_entry_valid || is_younger(
-      sq_check_rob_tag_q, issue_mem_rob_tag, i_rob_head_tag
-  ));
+      (!sq_check_entry_valid || staged_younger_than_candidate);
 
   // Always output registered check parameters regardless of valid.  The SQ
   // gates on i_sq_check_valid at its output register (o_sq_forward.match <=

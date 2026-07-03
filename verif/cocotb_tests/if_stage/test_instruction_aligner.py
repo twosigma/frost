@@ -227,7 +227,8 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
     _assert_slot2(
         dut,
         raw=0x3331,
-        effective=0x00003331,
+        # effective now carries the RVC expansion (C.JAL 0x3331 -> JAL x1)
+        effective=0xD0DFF0EF,
         compressed=True,
         sel_nop=False,
     )
@@ -259,7 +260,8 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
     _assert_slot2(
         dut,
         raw=0xCCCC,
-        effective=0x0000CCCC,
+        # effective now carries the RVC expansion (C.SW 0xCCCC -> SW x11,28(x9))
+        effective=0x00B4AE23,
         compressed=True,
         sel_nop=False,
     )
@@ -421,7 +423,8 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
     )
     await _settle()
 
-    _assert_slot2(dut, raw=0xCCCC, effective=0x0000CCCC, compressed=True, sel_nop=False)
+    # effective carries the RVC expansion (C.SW 0xCCCC -> SW x11,28(x9))
+    _assert_slot2(dut, raw=0xCCCC, effective=0x00B4AE23, compressed=True, sel_nop=False)
 
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(),

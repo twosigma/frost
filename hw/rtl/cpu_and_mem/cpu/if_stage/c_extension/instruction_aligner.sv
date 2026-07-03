@@ -75,11 +75,16 @@ module instruction_aligner #(
     // ===========================================================================
     // Slot-2 outputs (2-wide dispatch, Session F)
     // ===========================================================================
-    // Slot-2 raw_parcel: 16-bit parcel for PD slot-2 decompression
+    // Slot-2 raw_parcel: 16-bit parcel (observation/replay; PD consumes the
+    // pre-decompressed o_effective_instr_2 instead)
     output logic [15:0] o_raw_parcel_2,
-    // Slot-2 effective 32-bit instruction (assembled if slot-2 is 32-bit at a
-    // spanning position in the 64-bit fetch).  Don't-care when slot-2 is RVC.
+    // Slot-2 effective 32-bit instruction: the fully-formed instruction for
+    // BOTH cases — the RVC expansion when slot-2 is compressed, or the
+    // native (possibly spanning-assembled) 32-bit word.
     output logic [31:0] o_effective_instr_2,
+    // Slot-2 illegal-RVC flag for the selected candidate (PD masks with
+    // sel_nop; 0 when slot-2 is a native 32-bit instruction).
+    output logic o_slot2_decomp_illegal,
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
     // Slot-2 is invalid this cycle (NOP through PD).  Asserted when slot-1 is
@@ -328,23 +333,87 @@ module instruction_aligner #(
     endcase
   end
 
-  // Slot-2 effective 32-bit instruction.  Only consumed when slot-2 is
-  // 32-bit (PD picks decompressed_instr for the RVC case).  For Slot2AtNextHi
-  // 32-bit, the instruction would span beyond the 64-bit fetch; emit NOP and
-  // leave slot-2 forced invalid below.
+  // Slot-2 effective 32-bit instruction — per-candidate decompress-then-mux.
+  //
+  // TIMING: the former shape muxed the raw parcel by slot2_pos and let PD
+  // decompress it (parcel mux -> RVC expander -> is_compressed mux, all in
+  // series BEHIND the sideband -> slot2_pos cone; the o_from_pd_to_id_2
+  // instruction/rs2 capture was the post-opt WNS group on x3). Instead,
+  // decompress the three FIXED candidate parcels straight off the swap-muxed
+  // fetch words — in parallel with the slot2_pos selection — and pre-mux each
+  // candidate's final 32-bit form (RVC-expanded or native) using its own
+  // FIXED sideband compressed bit. The late slot2_pos then selects among
+  // fully-formed instructions in one level, and PD consumes
+  // o_effective_instr_2 directly for BOTH the RVC and native cases.
+  //
+  // Per-candidate is-compressed uses the sideband bits, which are
+  // bit-identical to the parcel encoding test (imem_make_sideband stores
+  // parcel[1:0] != 2'b11 per halfword, on both the BRAM init and DDR fill
+  // paths) — the same equivalence o_is_compressed_2 already relies on.
+  logic [31:0] slot2_decomp_cur_hi;
+  logic [31:0] slot2_decomp_next_lo;
+  logic [31:0] slot2_decomp_next_hi;
+  logic slot2_raw_illegal_cur_hi;
+  logic slot2_raw_illegal_next_lo;
+  logic slot2_raw_illegal_next_hi;
+
+  rvc_decompressor u_slot2_decomp_cur_hi (
+      .i_instr_compressed(bram_current_word[31:16]),
+      .o_instr_expanded(slot2_decomp_cur_hi),
+      .o_is_compressed(),
+      .o_illegal(slot2_raw_illegal_cur_hi)
+  );
+  rvc_decompressor u_slot2_decomp_next_lo (
+      .i_instr_compressed(bram_next_word[15:0]),
+      .o_instr_expanded(slot2_decomp_next_lo),
+      .o_is_compressed(),
+      .o_illegal(slot2_raw_illegal_next_lo)
+  );
+  rvc_decompressor u_slot2_decomp_next_hi (
+      .i_instr_compressed(bram_next_word[31:16]),
+      .o_instr_expanded(slot2_decomp_next_hi),
+      .o_is_compressed(),
+      .o_illegal(slot2_raw_illegal_next_hi)
+  );
+
+  // Per-candidate final instruction: RVC expansion or the native assembly.
+  // For Slot2AtNextHi 32-bit, the instruction would span beyond the 64-bit
+  // fetch; emit NOP and leave slot-2 forced invalid below.
+  logic [31:0] slot2_final_cur_hi;
+  logic [31:0] slot2_final_next_lo;
+  logic [31:0] slot2_final_next_hi;
+  assign slot2_final_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      slot2_decomp_cur_hi : {bram_next_word[15:0], bram_current_word[31:16]};
+  assign slot2_final_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
+      slot2_decomp_next_lo : bram_next_word;
+  assign slot2_final_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      slot2_decomp_next_hi : riscv_pkg::NOP;
+
   always_comb begin
-    if (o_is_compressed_2) begin
-      // RVC: PD decompresses; the field is don't-care.  Keep raw bits in the
-      // low half so the slot-2 cone is X-free in simulation.
-      o_effective_instr_2 = {16'd0, o_raw_parcel_2};
-    end else begin
-      unique case (slot2_pos)
-        Slot2AtCurrentHi: o_effective_instr_2 = {bram_next_word[15:0], bram_current_word[31:16]};
-        Slot2AtNextLo: o_effective_instr_2 = bram_next_word;
-        // 32-bit at NEXT_HI doesn't fit; slot-2 will be NOP'd.
-        default: o_effective_instr_2 = riscv_pkg::NOP;
-      endcase
-    end
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_effective_instr_2 = slot2_final_cur_hi;
+      Slot2AtNextLo:    o_effective_instr_2 = slot2_final_next_lo;
+      Slot2AtNextHi:    o_effective_instr_2 = slot2_final_next_hi;
+      default:          o_effective_instr_2 = riscv_pkg::NOP;
+    endcase
+  end
+
+  // Slot-2 illegal-RVC flag for the selected candidate (only meaningful when
+  // the parcel is compressed; PD masks it with sel_nop). Replaces PD's local
+  // decompressor-derived illegal, which sat on the same deep serial cone.
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi:
+      o_slot2_decomp_illegal = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] &&
+          slot2_raw_illegal_cur_hi;
+      Slot2AtNextLo:
+      o_slot2_decomp_illegal = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] &&
+          slot2_raw_illegal_next_lo;
+      Slot2AtNextHi:
+      o_slot2_decomp_illegal = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] &&
+          slot2_raw_illegal_next_hi;
+      default: o_slot2_decomp_illegal = 1'b0;
+    endcase
   end
 
   // Slot-1 branch detection (decision #1: terminates the 2-wide bundle).
@@ -465,8 +534,21 @@ module instruction_aligner #(
   // compressed flag against the BTB entry's compressed flag, so the residual
   // halfword sub-gate is dropped too.  Detector retained as documentation;
   // not used in the OR chain.
+  // TIMING: extract the native opcode from the per-position RAW slices, not
+  // from o_effective_instr_2 (which now carries the RVC expansion in the
+  // compressed case). Every consumer gates with !o_is_compressed_2, and for
+  // the 32-bit arms these slices equal the old o_effective_instr_2[6:0]
+  // (CurrentHi -> bram_current_word[22:16], NextLo -> bram_next_word[6:0],
+  // NextHi/invalid -> the old NOP default), so consumer values are unchanged
+  // — and the detectors stay off the decompressor outputs.
   logic [6:0] slot2_native_opcode;
-  assign slot2_native_opcode = o_effective_instr_2[6:0];
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: slot2_native_opcode = bram_current_word[22:16];
+      Slot2AtNextLo:    slot2_native_opcode = bram_next_word[6:0];
+      default:          slot2_native_opcode = riscv_pkg::NOP[6:0];
+    endcase
+  end
   logic slot2_is_native_branch;
   assign slot2_is_native_branch = !o_is_compressed_2 &&
       ((slot2_native_opcode == riscv_pkg::OPC_BRANCH) ||

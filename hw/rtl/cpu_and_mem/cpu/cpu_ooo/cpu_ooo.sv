@@ -861,6 +861,7 @@ module cpu_ooo #(
   logic flush_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   logic flush_all;
+  logic flush_all_flat;  // 1-LUT flat recompute for the commit-writeback mask
   logic commit_recovery_flush_after_head;
   (* max_fanout = 32 *) logic mispredict_recovery_pending;
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
@@ -1118,6 +1119,7 @@ module cpu_ooo #(
       .i_flush_en(flush_en),
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
+      .i_flush_all_wb_mask(flush_all_flat),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
@@ -1797,6 +1799,7 @@ module cpu_ooo #(
       .o_flush_en(flush_en),
       .o_flush_tag(flush_tag),
       .o_flush_all(flush_all),
+      .o_flush_all_flat(flush_all_flat),
       .o_commit_recovery_flush_after_head(commit_recovery_flush_after_head),
       .o_flush_after_head(flush_after_head),
       .o_checkpoint_restore(checkpoint_restore),
@@ -2124,11 +2127,14 @@ module cpu_ooo #(
   end
 `endif
 
-  // A same-cycle store-like ROB commit is not yet in the SQ committed set.
-  // If a trap full-flushes here, the registered commit can be masked before
-  // SQ observes it. Delay trap/MRET one cycle so SQ can own and drain it.
-  assign sq_committed_empty_for_trap =
-      sq_committed_empty && !rob_commit_store_like_raw && !rob_commit_2_store_like_raw;
+  // The former same-cycle raw commit guards (sq_committed_empty_for_trap =
+  // sq_committed_empty && !rob_commit_*_store_like_raw) are no longer needed:
+  // the SQ's registered committed-empty already folds the raw commit pulses
+  // into its D (one-cycle pessimism), and trap_unit's interrupt arming +
+  // exception commit-block guarantee no commit can fire on the take cycle
+  // itself. Dropping them keeps the ROB head-commit cone out of
+  // take_trap -> trap_target/CSR-write timing.
+  assign sq_committed_empty_for_trap = sq_committed_empty;
 
   trap_unit #(
       .XLEN(XLEN)

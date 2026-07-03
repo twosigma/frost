@@ -366,6 +366,8 @@ class ReorderBufferInterface:
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0
         self.dut.i_cdb_write.value = 0
+        self.dut.i_cdb_match_tag.value = 0
+        self.dut.i_cdb_match_tag_2.value = 0
         self.dut.i_store_complete_valid.value = 0
         self.dut.i_store_complete_tag.value = 0
         self.dut.i_branch_update.value = 0
@@ -454,10 +456,14 @@ class ReorderBufferInterface:
     def drive_cdb_write(self, write: CDBWrite) -> None:
         """Drive CDB write signals. Call on falling edge."""
         self.dut.i_cdb_write.value = pack_cdb_write(write)
+        # Mirror the tag onto the private head-match duplicate (in hardware a
+        # register copy of the same arbiter output; asserted equal in the ROB).
+        self.dut.i_cdb_match_tag.value = write.tag
 
     def clear_cdb_write(self) -> None:
         """Clear CDB write."""
         self.dut.i_cdb_write.value = 0
+        self.dut.i_cdb_match_tag.value = 0
 
     def drive_store_complete(self, tag: int) -> None:
         """Drive direct store-complete pulse. Call on falling edge."""

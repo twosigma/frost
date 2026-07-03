@@ -66,6 +66,10 @@ RS_ISSUE_FIELDS = [
     ("checkpoint_id", CHECKPOINT_ID_WIDTH),
     ("is_call", 1),
     ("is_return", 1),
+    ("is_branch_class", 1),
+    ("is_jal", 1),
+    ("is_jalr", 1),
+    ("branch_op", 3),
 ]
 
 

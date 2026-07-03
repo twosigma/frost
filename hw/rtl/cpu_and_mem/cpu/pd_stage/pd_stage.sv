@@ -17,14 +17,18 @@
 /*
   Pre-Decode (PD) Stage - second stage of the in-order front-end.
 
-  This stage performs RVC decompression and instruction selection. The IF stage
-  outputs raw parcel and selection signals; PD performs the actual decompression.
-  This breaks the long combinational path from memory read through decompression
-  to pipeline registers.
+  This stage performs slot-1 RVC decompression and instruction selection. The
+  IF stage outputs the slot-1 raw parcel and selection signals; PD performs
+  slot-1 decompression, breaking the long combinational path from memory read
+  through decompression to pipeline registers. Slot-2 arrives PRE-decompressed:
+  the instruction aligner expands the candidate parcels in parallel with its
+  position select (see instruction_aligner.sv), so PD consumes slot-2's
+  effective_instr and decomp_illegal directly.
 
   Key operations:
-  - RVC decompression (16-bit to 32-bit instruction expansion)
-  - Instruction selection muxing (NOP, compressed, or aligned; spanning is pre-assembled in IF)
+  - Slot-1 RVC decompression (16-bit to 32-bit instruction expansion)
+  - Instruction selection muxing (NOP, compressed, or aligned; spanning is
+    pre-assembled in IF; slot-2 expansion is pre-selected in IF)
   - Early source register extraction for regfile read and dispatch timing
 
   The decompressed/selected instruction is registered and passed to ID stage,
@@ -42,7 +46,9 @@ module pd_stage #(
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
     // Slot-2 instruction (2-wide dispatch).  IF supplies a real second
     // instruction when the bundle has one (sel_nop=1 only when it does not),
-    // and PD decompresses/extracts it the same as slot-1.  The backward-branch
+    // already RVC-decompressed by the aligner (effective_instr carries the
+    // fully-formed instruction; decomp_illegal the selected candidate's
+    // illegal-RVC flag). PD only muxes/extracts. The backward-branch
     // heuristic stays slot-1 only.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
@@ -127,27 +133,21 @@ module pd_stage #(
   // is a backward branch, IF forces slot-2 invalid that cycle (slot-1 taken
   // control flow ends the bundle).
 
-  logic [31:0] decompressed_instr_2;
-  logic        decomp_is_compressed_2;
-  logic        decomp_illegal_2;
-
-  rvc_decompressor decompressor_inst_2 (
-      .i_instr_compressed(i_from_if_to_pd_2.raw_parcel),
-      .o_instr_expanded(decompressed_instr_2),
-      .o_is_compressed(decomp_is_compressed_2),
-      .o_illegal(decomp_illegal_2)
-  );
-
+  // TIMING: slot-2 arrives PRE-decompressed — the aligner expands the three
+  // candidate parcels in parallel with its position select and delivers the
+  // fully-formed instruction in effective_instr (both RVC and native cases),
+  // plus the selected candidate's illegal-RVC flag (decomp_illegal). This
+  // removes the serial position-mux -> RVC expander cone that made the
+  // o_from_pd_to_id_2 instruction capture the post-opt WNS group on x3.
+  // sel_compressed carries the sideband compressed flag, bit-identical to
+  // the parcel-derived o_is_compressed the local decompressor produced.
   logic pd_sel_compressed_2;
-  assign pd_sel_compressed_2 = decomp_is_compressed_2;
+  assign pd_sel_compressed_2 = i_from_if_to_pd_2.sel_compressed;
 
   logic [31:0] final_instruction_2;
   logic [31:0] instruction_non_nop_2;
 
-  always_comb begin
-    if (pd_sel_compressed_2) instruction_non_nop_2 = decompressed_instr_2;
-    else instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
-  end
+  assign instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
 
   always_comb begin
     if (i_from_if_to_pd_2.sel_nop) final_instruction_2 = riscv_pkg::NOP;
@@ -364,8 +364,7 @@ module pd_stage #(
                                                                     pd_sel_compressed_2;
       o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 (!i_from_if_to_pd_2.sel_nop &&
-                                                pd_sel_compressed_2 &&
-                                                decomp_is_compressed_2 && decomp_illegal_2);
+                                                i_from_if_to_pd_2.decomp_illegal);
       o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                     i_from_if_to_pd_2.btb_hit;
       o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :

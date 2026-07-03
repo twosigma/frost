@@ -99,6 +99,7 @@ IF_TO_PD_FIELDS = [
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("decomp_illegal", 1),
 ]
 
 
@@ -408,7 +409,8 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         packet2,
         pc=BASE_PC + 2,
         raw=COMPRESSED_HINT,
-        effective=COMPRESSED_HINT,
+        # Slot-2 effective now carries the RVC expansion (C.JAL 0x2221 -> JAL x1)
+        effective=0x108000EF,
         compressed=True,
     )
     assert packet2["link_address"] == BASE_PC + 4
@@ -795,7 +797,8 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
         _read_if_packet(dut, slot2=True),
         pc=BASE_PC + 2,
         raw=COMPRESSED_HINT,
-        effective=COMPRESSED_HINT,
+        # Slot-2 effective now carries the RVC expansion (C.JAL 0x2221 -> JAL x1)
+        effective=0x108000EF,
         compressed=True,
     )
 

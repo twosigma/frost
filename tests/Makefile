@@ -236,9 +236,11 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),instruction_aligner)
-# IF-stage instruction aligner unit test
+# IF-stage instruction aligner unit test (aligner instantiates the slot-2
+# per-candidate RVC decompressors)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)

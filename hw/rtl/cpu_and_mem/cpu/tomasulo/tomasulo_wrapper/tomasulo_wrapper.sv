@@ -159,6 +159,11 @@ module tomasulo_wrapper #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    // Flat recompute of i_flush_all (bit-identical; see
+    // misprediction_flush_controller.o_flush_all_flat). Consumed only by the
+    // commit-bus pipeline's registered-writeback valid mask so the ARF write
+    // qualify does not ride the shared flush_all priority/broadcast cone.
+    input logic                                        i_flush_all_wb_mask,
     input logic                                        i_flush_after_head_commit,
     input logic                                        i_backend_recovery_hold,
     // A slow-tier (cached-region) store is in flight between the memory
@@ -511,7 +516,7 @@ module tomasulo_wrapper #(
   commit_bus_pipeline commit_bus_pipeline_inst (
       .i_clk                     (i_clk),
       .i_rst_n                   (i_rst_n),
-      .i_flush_all               (i_flush_all),
+      .i_flush_all               (i_flush_all_wb_mask),
       .i_commit_bus              (commit_bus),
       .i_commit_bus_2            (commit_bus_2),
       .o_commit_bus_q            (commit_bus_q),
@@ -752,6 +757,22 @@ module tomasulo_wrapper #(
     cdb_write_from_arbiter.exception = cdb_bus.exception;
     cdb_write_from_arbiter.exc_cause = cdb_bus.exc_cause;
     cdb_write_from_arbiter.fp_flags  = cdb_bus.fp_flags;
+  end
+
+  // Private CDB tag copies for the ROB head-match compares (the same-cycle
+  // commit CDB bypass). The shared cdb_bus.tag replica inside the ROB also
+  // drives every distributed-RAM write address (fo ~230 post-synth), so the
+  // head_cdb_match compare started ~0.2 ns late and headed straight into the
+  // commit -> SQ/trap arc. These duplicates load only the two 5-bit
+  // comparators, keeping the compare source local. Same pattern as
+  // cdb_bus_int_rs; values are identical to cdb_bus.tag / cdb_bus_2.tag.
+  (* equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_rob_match_tag;
+  (* equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_rob_match_tag_2;
+  always_ff @(posedge i_clk) begin
+    cdb_rob_match_tag   <= cdb_bus_comb.tag;
+    cdb_rob_match_tag_2 <= cdb_bus_2_comb.tag;
   end
 
   // ---- 2-wide CDB lane-1: registered mirror of the lane-0 pipeline above.
@@ -1425,6 +1446,8 @@ module tomasulo_wrapper #(
       // CDB (from arbiter)
       .i_cdb_write(cdb_write_from_arbiter),
       .i_cdb_write_2(cdb_write_from_arbiter_2),
+      .i_cdb_match_tag(cdb_rob_match_tag),
+      .i_cdb_match_tag_2(cdb_rob_match_tag_2),
       .i_store_complete_valid(store_issue_fire),
       .i_store_complete_tag(store_complete_tag),
 
@@ -3009,6 +3032,14 @@ module tomasulo_wrapper #(
   // No allocation during flush
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
+  end
+
+  // i_flush_all_wb_mask is a flat recompute of i_flush_all, bit-identical by
+  // construction (misprediction_flush_controller.o_flush_all_flat; asserted
+  // there in simulation). Model the equality for the standalone formal top
+  // so the commit-writeback mask cannot fire independently of flush_all.
+  always_comb begin
+    assume (i_flush_all_wb_mask == i_flush_all);
   end
 
   // No rename during full flush

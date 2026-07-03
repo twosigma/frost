@@ -166,16 +166,19 @@ module lq_issue_selector #(
   end
   assign pending_amo_at = rotate_mask_from_head(pending_amo_phys, head_idx);
 
-  // Prefix-OR: compute "has older pending AMO" for each scan position
+  // Prefix-OR: compute "has older pending AMO" for each scan position.
+  // TIMING: written as a per-position parallel reduction (|pending_amo_at
+  // below position i) instead of the previous serial ripple
+  // (blocked[i] = blocked[i-1] | pending[i-1]), which synthesized as a
+  // DEPTH-1-deep OR chain inside the sq_check capture cone. Same function;
+  // each bit is now an independent <=DEPTH-1-input OR (1-2 LUT levels).
   logic [DEPTH-1:0] blocked_by_amo;
-  /* verilator lint_off ALWCOMBORDER */
   always_comb begin
     blocked_by_amo[0] = 1'b0;
     for (int unsigned i = 1; i < DEPTH; i++) begin
-      blocked_by_amo[i] = blocked_by_amo[i-1] | pending_amo_at[i-1];
+      blocked_by_amo[i] = |(pending_amo_at & DEPTH'((DEPTH'(1) << i) - DEPTH'(1)));
     end
   end
-  /* verilator lint_on ALWCOMBORDER */
 
   // Final Phase B masks: eligible AND not blocked by older AMO.
   logic [DEPTH-1:0] mem_issue_stored_mask;

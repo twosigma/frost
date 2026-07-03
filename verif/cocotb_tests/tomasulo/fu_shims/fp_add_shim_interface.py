@@ -94,6 +94,10 @@ def pack_rs_issue(
     checkpoint_id: int = 0,
     is_call: bool = False,
     is_return: bool = False,
+    is_branch_class: bool = False,
+    is_jal: bool = False,
+    is_jalr: bool = False,
+    branch_op: int = 7,  # riscv_pkg::NULL
 ) -> int:
     """Pack rs_issue_t fields into a bit vector for driving i_rs_issue.
 
@@ -101,6 +105,7 @@ def pack_rs_issue(
     It does NOT contain rs_type, src*_tag, or src*_ready fields.
 
     Field order (LSB to MSB, reverse of struct declaration):
+    branch_op(3) | is_jalr(1) | is_jal(1) | is_branch_class(1) |
     is_return(1) | is_call(1) | checkpoint_id(3) | has_checkpoint(1) |
     link_addr(32) | pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
     mem_size(2) | mem_needs_sq(1) | mem_needs_lq(1) | is_fp_mem(1) |
@@ -112,6 +117,14 @@ def pack_rs_issue(
     bit = 0
 
     # Pack from LSB to MSB (reverse of struct declaration order)
+    val |= (branch_op & 0x7) << bit
+    bit += 3
+    val |= (1 if is_jalr else 0) << bit
+    bit += 1
+    val |= (1 if is_jal else 0) << bit
+    bit += 1
+    val |= (1 if is_branch_class else 0) << bit
+    bit += 1
     val |= (1 if is_return else 0) << bit
     bit += 1
     val |= (1 if is_call else 0) << bit

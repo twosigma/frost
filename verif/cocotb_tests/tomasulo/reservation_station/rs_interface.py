@@ -210,6 +210,15 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit = 0
     result: dict[str, int | bool] = {}
 
+    # Pre-decoded branch class fields (LSB end of the struct)
+    result["branch_op"] = (raw >> bit) & 0x7
+    bit += 3
+    result["is_jalr"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["is_jal"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["is_branch_class"] = bool((raw >> bit) & 1)
+    bit += 1
     result["is_return"] = bool((raw >> bit) & 1)
     bit += 1
     result["is_call"] = bool((raw >> bit) & 1)

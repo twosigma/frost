@@ -634,6 +634,11 @@ package riscv_pkg;
     // at commit to train the EXACT entry the prediction read (carried all the way
     // to commit, unlike bp_dir_taken which is consumed at PD).
     logic [BpDirIdxBits-1:0] bp_dir_idx;
+    // Slot-2 only: illegal-RVC flag for the pre-decompressed effective_instr
+    // (the aligner decompresses slot-2 per candidate position; see
+    // instruction_aligner). 0 for slot-1 bundles — slot-1 keeps PD's local
+    // decompressor.
+    logic decomp_illegal;
   } from_if_to_pd_t;
 
   // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage
@@ -1422,6 +1427,15 @@ package riscv_pkg;
     logic [CheckpointIdWidth-1:0]     checkpoint_id;
     logic                             is_call;
     logic                             is_return;
+    // Pre-decoded branch class, computed at dispatch and carried through the
+    // RS payload + stage2 register. branch_resolution consumes these instead
+    // of re-decoding the wide instr_op_e in the issue cycle (the op-decode
+    // OR-tree + branch_taken_op_e case sat at the head of the 16-level
+    // stage2_op -> branch_mispredicted -> early-mispredict-capture cone).
+    logic                             is_branch_class;   // BEQ..BGEU | JAL | JALR
+    logic                             is_jal;
+    logic                             is_jalr;
+    branch_taken_op_e                 branch_op;
   } rs_issue_t;
 
   // ---------------------------------------------------------------------------
