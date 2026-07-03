@@ -114,13 +114,21 @@ the registered commit path.
 
 ## Same-cycle commit hazard
 
-When any same-cycle flush races a registered ROB commit — partial-flush
+When a flush arrives one cycle after a store's raw commit pulse — partial-flush
 misprediction recovery and full-flush trap / MRET / FENCE.I drains alike — the
-registered commit signal is one cycle behind the flush, which means
-the flush could otherwise wipe out a store that's being committed
-right then. The SQ takes a combinational commit guard from the ROB
-in addition to the registered version, so it can catch in-flight
-commits before they're flushed away.
+SQ sees the REGISTERED commit view in the flush cycle while `sq_committed` is
+still one NBA behind, so the flush could otherwise wipe out a store that just
+committed. The partial-flush kill (`flush_kill_base`) therefore excludes
+entries matching the registered commit ports.
+
+A commit pulse landing IN the flush cycle itself cannot happen: the ROB gates
+`commit_ready_early` — and with it the raw store-commit pulses that drive
+`i_commit_valid_comb/_comb_2` — with `!i_flush_en && !i_flush_all` on the same
+flush nets this kill runs under. The kill therefore takes no combinational
+commit guard (it used to, before the ROB-side gating made the race
+structurally impossible); a simulation assertion and a matching formal assume
+pin that invariant. The combinational commit ports remain in use for the
+committed-empty trap view (see "Widen-commit slot 2" above).
 
 ## SC discard
 

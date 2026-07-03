@@ -51,6 +51,25 @@ module ooo_register_files #(
     input logic [                   4:0] i_port1_fp_addr,
     input logic [riscv_pkg::FpWidth-1:0] i_port1_fp_data,
 
+    // Pre-registered bypass qualifiers for the write-back bypass network.
+    // Each is a single FF computed one cycle early from the ROB's
+    // combinational commit (plus the delayed-CSR writeback on port 0), so the
+    // wide hit-compare fanout starts at a register instead of riding the
+    // commit-valid/flush-mask LUT cone. Semantics vs the write ports above:
+    //   i_bypass_pN_int_we == i_portN_int_we && |i_portN_int_addr
+    //   i_bypass_pN_fp_we  == i_portN_fp_we
+    //   i_bypass_pN_addr   == the active portN write address
+    // in every cycle EXCEPT a full-flush cycle, where the bypass qualifiers
+    // may stay asserted for a commit whose architectural write was masked
+    // off. That phantom hit only mis-selects operand data for a dispatch
+    // that the same full flush squashes, so it is never consumed.
+    input logic       i_bypass_p0_int_we,
+    input logic       i_bypass_p1_int_we,
+    input logic       i_bypass_p0_fp_we,
+    input logic       i_bypass_p1_fp_we,
+    input logic [4:0] i_bypass_p0_addr,
+    input logic [4:0] i_bypass_p1_addr,
+
     // Read source addresses (slot 1 / slot 2, ID-early and dispatch).
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
@@ -90,6 +109,18 @@ module ooo_register_files #(
   logic            port1_fp_we;
   logic [     4:0] port1_fp_addr;
   logic [ FpW-1:0] port1_fp_data;
+  logic            bypass_p0_int_we;
+  logic            bypass_p1_int_we;
+  logic            bypass_p0_fp_we;
+  logic            bypass_p1_fp_we;
+  logic [     4:0] bypass_p0_addr;
+  logic [     4:0] bypass_p1_addr;
+  assign bypass_p0_int_we = i_bypass_p0_int_we;
+  assign bypass_p1_int_we = i_bypass_p1_int_we;
+  assign bypass_p0_fp_we  = i_bypass_p0_fp_we;
+  assign bypass_p1_fp_we  = i_bypass_p1_fp_we;
+  assign bypass_p0_addr   = i_bypass_p0_addr;
+  assign bypass_p1_addr   = i_bypass_p1_addr;
   assign port0_int_we   = i_port0_int_we;
   assign port0_int_addr = i_port0_int_addr;
   assign port0_int_data = i_port0_int_data;
@@ -185,25 +216,29 @@ module ooo_register_files #(
   logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
   logic int_hit_dp_rs2_p1, int_hit_dp_rs2_p0;
 
-  assign int_hit_id_rs1_p1 = port1_int_we && |port1_int_addr &&
-                             (port1_int_addr == from_pd_to_id.source_reg_1_early);
-  assign int_hit_id_rs1_p0 = port0_int_we && |port0_int_addr &&
-                             (port0_int_addr == from_pd_to_id.source_reg_1_early);
+  // Hit terms use the pre-registered bypass qualifiers (see port comment):
+  // bypass_pN_int_we already folds we && |addr into one FF, and
+  // bypass_pN_addr is the registered write address, so each hit is a single
+  // 5-bit compare rooted at registers instead of the commit-valid LUT cone.
+  assign int_hit_id_rs1_p1 = bypass_p1_int_we &&
+                             (bypass_p1_addr == from_pd_to_id.source_reg_1_early);
+  assign int_hit_id_rs1_p0 = bypass_p0_int_we &&
+                             (bypass_p0_addr == from_pd_to_id.source_reg_1_early);
 
-  assign int_hit_id_rs2_p1 = port1_int_we && |port1_int_addr &&
-                             (port1_int_addr == from_pd_to_id.source_reg_2_early);
-  assign int_hit_id_rs2_p0 = port0_int_we && |port0_int_addr &&
-                             (port0_int_addr == from_pd_to_id.source_reg_2_early);
+  assign int_hit_id_rs2_p1 = bypass_p1_int_we &&
+                             (bypass_p1_addr == from_pd_to_id.source_reg_2_early);
+  assign int_hit_id_rs2_p0 = bypass_p0_int_we &&
+                             (bypass_p0_addr == from_pd_to_id.source_reg_2_early);
 
-  assign int_hit_dp_rs1_p1 = port1_int_we && |port1_int_addr &&
-                             (port1_int_addr == from_id_to_ex.instruction.source_reg_1);
-  assign int_hit_dp_rs1_p0 = port0_int_we && |port0_int_addr &&
-                             (port0_int_addr == from_id_to_ex.instruction.source_reg_1);
+  assign int_hit_dp_rs1_p1 = bypass_p1_int_we &&
+                             (bypass_p1_addr == from_id_to_ex.instruction.source_reg_1);
+  assign int_hit_dp_rs1_p0 = bypass_p0_int_we &&
+                             (bypass_p0_addr == from_id_to_ex.instruction.source_reg_1);
 
-  assign int_hit_dp_rs2_p1 = port1_int_we && |port1_int_addr &&
-                             (port1_int_addr == from_id_to_ex.instruction.source_reg_2);
-  assign int_hit_dp_rs2_p0 = port0_int_we && |port0_int_addr &&
-                             (port0_int_addr == from_id_to_ex.instruction.source_reg_2);
+  assign int_hit_dp_rs2_p1 = bypass_p1_int_we &&
+                             (bypass_p1_addr == from_id_to_ex.instruction.source_reg_2);
+  assign int_hit_dp_rs2_p0 = bypass_p0_int_we &&
+                             (bypass_p0_addr == from_id_to_ex.instruction.source_reg_2);
 
   assign int_rf_wb_bypass_id_rs1 = int_hit_id_rs1_p1 || int_hit_id_rs1_p0;
   assign int_rf_wb_bypass_id_rs2 = int_hit_id_rs2_p1 || int_hit_id_rs2_p0;
@@ -235,23 +270,23 @@ module ooo_register_files #(
   logic int_hit_dp_rs1_2_p1, int_hit_dp_rs1_2_p0;
   logic int_hit_dp_rs2_2_p1, int_hit_dp_rs2_2_p0;
 
-  assign int_hit_id_rs1_2_p1 = port1_int_we && |port1_int_addr &&
-                               (port1_int_addr == from_pd_to_id_2.source_reg_1_early);
-  assign int_hit_id_rs1_2_p0 = port0_int_we && |port0_int_addr &&
-                               (port0_int_addr == from_pd_to_id_2.source_reg_1_early);
-  assign int_hit_id_rs2_2_p1 = port1_int_we && |port1_int_addr &&
-                               (port1_int_addr == from_pd_to_id_2.source_reg_2_early);
-  assign int_hit_id_rs2_2_p0 = port0_int_we && |port0_int_addr &&
-                               (port0_int_addr == from_pd_to_id_2.source_reg_2_early);
+  assign int_hit_id_rs1_2_p1 = bypass_p1_int_we &&
+                               (bypass_p1_addr == from_pd_to_id_2.source_reg_1_early);
+  assign int_hit_id_rs1_2_p0 = bypass_p0_int_we &&
+                               (bypass_p0_addr == from_pd_to_id_2.source_reg_1_early);
+  assign int_hit_id_rs2_2_p1 = bypass_p1_int_we &&
+                               (bypass_p1_addr == from_pd_to_id_2.source_reg_2_early);
+  assign int_hit_id_rs2_2_p0 = bypass_p0_int_we &&
+                               (bypass_p0_addr == from_pd_to_id_2.source_reg_2_early);
 
-  assign int_hit_dp_rs1_2_p1 = port1_int_we && |port1_int_addr &&
-                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_1);
-  assign int_hit_dp_rs1_2_p0 = port0_int_we && |port0_int_addr &&
-                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_1);
-  assign int_hit_dp_rs2_2_p1 = port1_int_we && |port1_int_addr &&
-                               (port1_int_addr == from_id_to_ex_2.instruction.source_reg_2);
-  assign int_hit_dp_rs2_2_p0 = port0_int_we && |port0_int_addr &&
-                               (port0_int_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign int_hit_dp_rs1_2_p1 = bypass_p1_int_we &&
+                               (bypass_p1_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign int_hit_dp_rs1_2_p0 = bypass_p0_int_we &&
+                               (bypass_p0_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign int_hit_dp_rs2_2_p1 = bypass_p1_int_we &&
+                               (bypass_p1_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign int_hit_dp_rs2_2_p0 = bypass_p0_int_we &&
+                               (bypass_p0_addr == from_id_to_ex_2.instruction.source_reg_2);
 
   assign int_rf_wb_bypass_id_rs1_2 = int_hit_id_rs1_2_p1 || int_hit_id_rs1_2_p0;
   assign int_rf_wb_bypass_id_rs2_2 = int_hit_id_rs2_2_p1 || int_hit_id_rs2_2_p0;
@@ -349,19 +384,27 @@ module ooo_register_files #(
   logic fp_hit_dp_rs2_p1, fp_hit_dp_rs2_p0;
   logic fp_hit_dp_rs3_p1, fp_hit_dp_rs3_p0;
 
-  assign fp_hit_id_rs1_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.source_reg_1_early);
-  assign fp_hit_id_rs1_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.source_reg_1_early);
-  assign fp_hit_id_rs2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.source_reg_2_early);
-  assign fp_hit_id_rs2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.source_reg_2_early);
-  assign fp_hit_id_rs3_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id.fp_source_reg_3_early);
-  assign fp_hit_id_rs3_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id.fp_source_reg_3_early);
+  assign fp_hit_id_rs1_p1 = bypass_p1_fp_we && (bypass_p1_addr == from_pd_to_id.source_reg_1_early);
+  assign fp_hit_id_rs1_p0 = bypass_p0_fp_we && (bypass_p0_addr == from_pd_to_id.source_reg_1_early);
+  assign fp_hit_id_rs2_p1 = bypass_p1_fp_we && (bypass_p1_addr == from_pd_to_id.source_reg_2_early);
+  assign fp_hit_id_rs2_p0 = bypass_p0_fp_we && (bypass_p0_addr == from_pd_to_id.source_reg_2_early);
+  assign fp_hit_id_rs3_p1 = bypass_p1_fp_we &&
+                            (bypass_p1_addr == from_pd_to_id.fp_source_reg_3_early);
+  assign fp_hit_id_rs3_p0 = bypass_p0_fp_we &&
+                            (bypass_p0_addr == from_pd_to_id.fp_source_reg_3_early);
 
-  assign fp_hit_dp_rs1_p1 = port1_fp_we && (port1_fp_addr==from_id_to_ex.instruction.source_reg_1);
-  assign fp_hit_dp_rs1_p0 = port0_fp_we && (port0_fp_addr==from_id_to_ex.instruction.source_reg_1);
-  assign fp_hit_dp_rs2_p1 = port1_fp_we && (port1_fp_addr==from_id_to_ex.instruction.source_reg_2);
-  assign fp_hit_dp_rs2_p0 = port0_fp_we && (port0_fp_addr==from_id_to_ex.instruction.source_reg_2);
-  assign fp_hit_dp_rs3_p1 = port1_fp_we && (port1_fp_addr == from_id_to_ex.instruction.funct7[6:2]);
-  assign fp_hit_dp_rs3_p0 = port0_fp_we && (port0_fp_addr == from_id_to_ex.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs1_p1 = bypass_p1_fp_we &&
+                            (bypass_p1_addr == from_id_to_ex.instruction.source_reg_1);
+  assign fp_hit_dp_rs1_p0 = bypass_p0_fp_we &&
+                            (bypass_p0_addr == from_id_to_ex.instruction.source_reg_1);
+  assign fp_hit_dp_rs2_p1 = bypass_p1_fp_we &&
+                            (bypass_p1_addr == from_id_to_ex.instruction.source_reg_2);
+  assign fp_hit_dp_rs2_p0 = bypass_p0_fp_we &&
+                            (bypass_p0_addr == from_id_to_ex.instruction.source_reg_2);
+  assign fp_hit_dp_rs3_p1 = bypass_p1_fp_we &&
+                            (bypass_p1_addr == from_id_to_ex.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs3_p0 = bypass_p0_fp_we &&
+                            (bypass_p0_addr == from_id_to_ex.instruction.funct7[6:2]);
 
   assign fp_rf_wb_bypass_id_rs1 = fp_hit_id_rs1_p1 || fp_hit_id_rs1_p0;
   assign fp_rf_wb_bypass_id_rs2 = fp_hit_id_rs2_p1 || fp_hit_id_rs2_p0;
@@ -401,27 +444,31 @@ module ooo_register_files #(
   logic fp_hit_dp_rs2_2_p1, fp_hit_dp_rs2_2_p0;
   logic fp_hit_dp_rs3_2_p1, fp_hit_dp_rs3_2_p0;
 
-  assign fp_hit_id_rs1_2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id_2.source_reg_1_early);
-  assign fp_hit_id_rs1_2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id_2.source_reg_1_early);
-  assign fp_hit_id_rs2_2_p1 = port1_fp_we && (port1_fp_addr == from_pd_to_id_2.source_reg_2_early);
-  assign fp_hit_id_rs2_2_p0 = port0_fp_we && (port0_fp_addr == from_pd_to_id_2.source_reg_2_early);
-  assign fp_hit_id_rs3_2_p1 = port1_fp_we &&
-                              (port1_fp_addr == from_pd_to_id_2.fp_source_reg_3_early);
-  assign fp_hit_id_rs3_2_p0 = port0_fp_we &&
-                              (port0_fp_addr == from_pd_to_id_2.fp_source_reg_3_early);
+  assign fp_hit_id_rs1_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_pd_to_id_2.source_reg_1_early);
+  assign fp_hit_id_rs1_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_pd_to_id_2.source_reg_1_early);
+  assign fp_hit_id_rs2_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_pd_to_id_2.source_reg_2_early);
+  assign fp_hit_id_rs2_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_pd_to_id_2.source_reg_2_early);
+  assign fp_hit_id_rs3_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_pd_to_id_2.fp_source_reg_3_early);
+  assign fp_hit_id_rs3_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_pd_to_id_2.fp_source_reg_3_early);
 
-  assign fp_hit_dp_rs1_2_p1 = port1_fp_we &&
-                              (port1_fp_addr == from_id_to_ex_2.instruction.source_reg_1);
-  assign fp_hit_dp_rs1_2_p0 = port0_fp_we &&
-                              (port0_fp_addr == from_id_to_ex_2.instruction.source_reg_1);
-  assign fp_hit_dp_rs2_2_p1 = port1_fp_we &&
-                              (port1_fp_addr == from_id_to_ex_2.instruction.source_reg_2);
-  assign fp_hit_dp_rs2_2_p0 = port0_fp_we &&
-                              (port0_fp_addr == from_id_to_ex_2.instruction.source_reg_2);
-  assign fp_hit_dp_rs3_2_p1 = port1_fp_we &&
-                              (port1_fp_addr == from_id_to_ex_2.instruction.funct7[6:2]);
-  assign fp_hit_dp_rs3_2_p0 = port0_fp_we &&
-                              (port0_fp_addr == from_id_to_ex_2.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs1_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign fp_hit_dp_rs1_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_id_to_ex_2.instruction.source_reg_1);
+  assign fp_hit_dp_rs2_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign fp_hit_dp_rs2_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_id_to_ex_2.instruction.source_reg_2);
+  assign fp_hit_dp_rs3_2_p1 = bypass_p1_fp_we &&
+                              (bypass_p1_addr == from_id_to_ex_2.instruction.funct7[6:2]);
+  assign fp_hit_dp_rs3_2_p0 = bypass_p0_fp_we &&
+                              (bypass_p0_addr == from_id_to_ex_2.instruction.funct7[6:2]);
 
   assign fp_rf_wb_bypass_id_rs1_2 = fp_hit_id_rs1_2_p1 || fp_hit_id_rs1_2_p0;
   assign fp_rf_wb_bypass_id_rs2_2 = fp_hit_id_rs2_2_p1 || fp_hit_id_rs2_2_p0;

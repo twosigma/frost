@@ -255,7 +255,7 @@ def _drive_ex_slot(
 
 
 def _clear_writes(dut: Any) -> None:
-    """Clear all commit write ports."""
+    """Clear all commit write ports (and their bypass qualifiers)."""
     dut.i_port0_int_we.value = 0
     dut.i_port0_int_addr.value = 0
     dut.i_port0_int_data.value = 0
@@ -268,6 +268,12 @@ def _clear_writes(dut: Any) -> None:
     dut.i_port1_fp_we.value = 0
     dut.i_port1_fp_addr.value = 0
     dut.i_port1_fp_data.value = 0
+    dut.i_bypass_p0_int_we.value = 0
+    dut.i_bypass_p1_int_we.value = 0
+    dut.i_bypass_p0_fp_we.value = 0
+    dut.i_bypass_p1_fp_we.value = 0
+    dut.i_bypass_p0_addr.value = 0
+    dut.i_bypass_p1_addr.value = 0
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -287,11 +293,17 @@ def _drive_int_write(
     data: int,
     enable: bool = True,
 ) -> None:
-    """Drive one integer commit write port."""
+    """Drive one integer commit write port.
+
+    Mirrors cpu_ooo's invariant onto the pre-registered bypass qualifiers:
+    i_bypass_pN_int_we == we && |addr, i_bypass_pN_addr == addr.
+    """
     prefix = f"i_port{port}_int"
     getattr(dut, f"{prefix}_we").value = int(enable)
     getattr(dut, f"{prefix}_addr").value = addr
     getattr(dut, f"{prefix}_data").value = data
+    getattr(dut, f"i_bypass_p{port}_int_we").value = int(enable and addr != 0)
+    getattr(dut, f"i_bypass_p{port}_addr").value = addr
 
 
 def _drive_fp_write(
@@ -302,11 +314,17 @@ def _drive_fp_write(
     data: int,
     enable: bool = True,
 ) -> None:
-    """Drive one FP commit write port."""
+    """Drive one FP commit write port.
+
+    Mirrors cpu_ooo's invariant onto the pre-registered bypass qualifiers:
+    i_bypass_pN_fp_we == we, i_bypass_pN_addr == addr.
+    """
     prefix = f"i_port{port}_fp"
     getattr(dut, f"{prefix}_we").value = int(enable)
     getattr(dut, f"{prefix}_addr").value = addr
     getattr(dut, f"{prefix}_data").value = data
+    getattr(dut, f"i_bypass_p{port}_fp_we").value = int(enable)
+    getattr(dut, f"i_bypass_p{port}_addr").value = addr
 
 
 async def _setup_test(dut: Any) -> None:

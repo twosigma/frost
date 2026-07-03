@@ -1019,33 +1019,26 @@ module store_queue #(
     end
   end
 
-  // Partial-flush kill predicate, split by input arrival time.
+  // Partial-flush kill predicate. Every conjunct is register-sourced this
+  // cycle — valid/committed flags, the REGISTERED commit-cycle guards
+  // (sq_committed is one NBA behind i_commit_valid), and the age check
+  // (i_flush_en / i_flush_tag / flush_all_uncommitted all come from the
+  // flush controller's registers, i_rob_head_tag from the ROB head pointer).
   //
-  // flush_kill_base[i]: every conjunct that is register-sourced this cycle —
-  // valid/committed flags, the REGISTERED commit-cycle guards (sq_committed
-  // is one NBA behind i_commit_valid), and the age check (i_flush_en /
-  // i_flush_tag / flush_all_uncommitted all come from the flush controller's
-  // registers, i_rob_head_tag from the ROB head pointer). These settle early.
-  //
-  // commit_comb_protect_*[i]: the same-cycle combinational commit guards.
-  // When a ROB commit and the partial flush fire in the SAME cycle, the
-  // registered i_commit_valid still reflects the previous cycle and
-  // sq_committed has not set yet. flush_all_uncommitted bypasses the age
-  // check, so without these terms a store committing in the flush cycle
-  // (e.g. widen-commit slot 2 retiring alongside a delayed-recovery branch
-  // at the head) is invalidated and its memory write silently lost (dropped
-  // UART chars / corrupted cjpeg output bytes in the system runs).
-  //
-  // TIMING: i_commit_valid_comb/_comb_2 are the only late inputs here (they
-  // close out of the ROB head-commit cone). The per-entry tag compares run
-  // against register-sourced tags (i_commit_rob_tag_comb == head_tag,
-  // _comb_2 == head_next tag), so factoring them out lets each late pulse
-  // enter the sq_valid[i] write cone through a single final AND instead of
-  // being fused mid-way into the age-compare tree — same boolean function,
-  // re-associated only.
+  // A same-cycle combinational commit guard (i_commit_valid_comb/_comb_2
+  // tag-match "protect" terms) used to sit on this kill for the
+  // commit-overlaps-flush race: without it a store committing in the flush
+  // cycle was invalidated and its memory write silently lost (dropped UART
+  // chars / corrupted cjpeg output bytes in the system runs). That race is
+  // now structurally impossible — the ROB gates commit_ready_early (and
+  // therefore o_commit_store_like_raw / o_commit_2_store_like_raw, the
+  // drivers of i_commit_valid_comb/_comb_2) with !i_flush_en && !i_flush_all
+  // on the same flush nets this kill branch runs under, so the combinational
+  // commit pulses are 0 in every cycle the kill can execute. Dropping the
+  // dead guard keeps the ROB head-commit cone (head_clear_mask onehot read)
+  // out of the sq_valid write path; the assertion below (and the matching
+  // formal assume) pin the invariant.
   logic [DEPTH-1:0] flush_kill_base;
-  logic [DEPTH-1:0] commit_comb_protect;
-  logic [DEPTH-1:0] commit_comb_protect_2;
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       flush_kill_base[i] =
@@ -1053,11 +1046,20 @@ module store_queue #(
           !(i_commit_valid && sq_rob_tag[i] == i_commit_rob_tag) &&
           !(i_commit_valid_2 && sq_rob_tag[i] == i_commit_rob_tag_2) &&
           (flush_all_uncommitted || is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag));
-      commit_comb_protect[i] = i_commit_valid_comb && (sq_rob_tag[i] == i_commit_rob_tag_comb);
-      commit_comb_protect_2[i] =
-          i_commit_valid_comb_2 && (sq_rob_tag[i] == i_commit_rob_tag_comb_2);
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))
+      else
+        $error(
+            "store_queue: combinational commit overlapped a partial flush; the flush-kill no longer guards this race"
+        );
+    end
+  end
+`endif
 
   // Keep sq_valid separate so full-flush and partial-flush invalidation do not
   // share one next-state cone with the other SQ control fields.
@@ -1071,7 +1073,7 @@ module store_queue #(
       // Committed entries are never flushed (they must complete to memory).
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
-          if (flush_kill_base[i] && !commit_comb_protect[i] && !commit_comb_protect_2[i]) begin
+          if (flush_kill_base[i]) begin
             sq_valid[i] <= 1'b0;
           end
         end
@@ -1270,6 +1272,18 @@ module store_queue #(
     if (i_flush_all || i_flush_en) assume (!i_alloc_2.valid);
     if (flush_pullback_pending) assume (!i_alloc.valid);
     if (flush_pullback_pending) assume (!i_alloc_2.valid);
+  end
+
+  // No combinational commit pulse during a flush: the ROB gates
+  // commit_ready_early (source of i_commit_valid_comb/_comb_2) with
+  // !i_flush_en && !i_flush_all, so the flush-kill needs no same-cycle
+  // commit protect. The simulation assertion block checks the same contract
+  // against the real ROB.
+  always_comb begin
+    if (i_flush_en || i_flush_all) begin
+      assume (!i_commit_valid_comb);
+      assume (!i_commit_valid_comb_2);
+    end
   end
 
   // Pure-tail allocation must always land on a free slot (ring position ==

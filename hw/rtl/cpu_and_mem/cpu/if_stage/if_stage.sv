@@ -756,24 +756,34 @@ module if_stage #(
   // pc_reg, which the single parity bit cannot represent.  Detect it from the
   // full served address; pc_controller squashes (sel_nop below), holds pc_reg,
   // and resteers fetch onto pc_reg's word until the correct window is served.
-  logic signed [XLEN-1:0] served_word_delta;
-  assign served_word_delta = $signed(
-      {2'b00, i_served_addr[XLEN-1:2]}
-  ) - $signed(
-      {2'b00, pc_reg[XLEN-1:2]}
-  );
+  // Formulated as three parallel word-address equalities against pc_reg's
+  // word and its early ±1 neighbours instead of a served−pc subtract with
+  // zero/±1 range tests: pc_reg is registered, so pc_word±1 settle while
+  // i_served_addr is still in its source mux, and the late side is then
+  // carry-free XNOR-reduce compares instead of a 30-bit borrow chain.
+  // Equivalent to the old signed-delta form for every pc_reg the cached-
+  // region gate admits: delta==0 ⟺ eq, delta==-1 ⟺ eq_m1 (pc_word==0 is
+  // outside the gate), delta==+1 ⟺ eq_p1 with the explicit no-wrap guard.
+  logic [XLEN-3:0] pc_reg_word;
+  logic [XLEN-3:0] pc_reg_word_p1;
+  logic [XLEN-3:0] pc_reg_word_m1;
+  logic served_eq_pc_word;
+  logic served_eq_pc_word_m1;
+  logic served_eq_pc_word_p1;
+  assign pc_reg_word = pc_reg[XLEN-1:2];
+  assign pc_reg_word_p1 = pc_reg_word + 1'b1;
+  assign pc_reg_word_m1 = pc_reg_word - 1'b1;
+  assign served_eq_pc_word = (i_served_addr[XLEN-1:2] == pc_reg_word);
+  assign served_eq_pc_word_m1 = (i_served_addr[XLEN-1:2] == pc_reg_word_m1);
+  assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) &&
+      !(&pc_reg_word);
   logic window_cannot_serve_pc_reg;
   // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
   // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
   // tracking is approximate -- firing there only causes spurious squashes.
   assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
-      (served_word_delta != $signed(
-      0
-  )) && (served_word_delta != -$signed(
-      1
-  )) && !((served_word_delta == $signed(
-      1
-  )) && use_instr_buffer);
+      !served_eq_pc_word && !served_eq_pc_word_m1 &&
+      !(served_eq_pc_word_p1 && use_instr_buffer);
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;

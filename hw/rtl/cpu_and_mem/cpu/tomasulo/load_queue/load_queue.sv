@@ -464,7 +464,6 @@ module load_queue #(
   logic [DEPTH-1:0] sq_check_in_flight_mask_next;
   logic sq_check_capture;
   logic sq_check_replace;
-  (* keep = "true", max_fanout = 16 *) logic sq_check_mask_update_en;
   logic sq_check_entry_valid;
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
@@ -1028,9 +1027,16 @@ module load_queue #(
   // The SQ-commit/cache interlock is applied after capture via the registered
   // sq_check_* payload.  Keeping it off the capture gate avoids a same-cycle
   // candidate-address RAM read on the SQ-check control/mask update path.
+  // Register/controller-sourced gate terms settle early; factoring them into
+  // one product lets the late issue_mem_found / will_clear legs enter the
+  // capture/replace products through a single final AND each (pure AND
+  // re-association, bit-identical).
+  logic sq_check_gate_early;
+  assign sq_check_gate_early = !drop_mem_response_pending && !i_mem_bus_busy &&
+      !i_flush_all && !i_flush_en;
+
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
-      issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en;
+      issue_mem_found && sq_check_gate_early;
 
   // TIMING: the age check "staged entry is younger than the incoming
   // candidate" is precomputed per entry from registered operands
@@ -1050,8 +1056,7 @@ module load_queue #(
   logic staged_younger_than_candidate;
   assign staged_younger_than_candidate = |(staged_younger_than_entry & issue_mem_onehot);
 
-  assign sq_check_replace = sq_check_pending && issue_mem_found &&
-      !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_all && !i_flush_en &&
+  assign sq_check_replace = sq_check_pending && issue_mem_found && sq_check_gate_early &&
       (!sq_check_entry_valid || staged_younger_than_candidate);
 
   // Always output registered check parameters regardless of valid.  The SQ
@@ -1167,7 +1172,31 @@ module load_queue #(
     end
   end
 
-  assign force_head_amo = (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh));
+  // Registered form of (amo_deadlock_cnt_q >= AmoDeadlockThresh), armed one
+  // count early so it asserts on exactly the same cycle the combinational
+  // compare would.  The counter moves by at most +1 per cycle and shares this
+  // FF's clear terms, so the two forms are cycle-for-cycle identical — the
+  // register only exists to keep the counter compare out of the issue-select
+  // → sq_check capture cone.
+  logic force_head_amo_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en || !head_amo_deadlock_wait) begin
+      force_head_amo_q <= 1'b0;
+    end else begin
+      force_head_amo_q <= (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh - 1));
+    end
+  end
+
+  assign force_head_amo = force_head_amo_q;
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      assert (force_head_amo_q == (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh)))
+      else $error("force_head_amo_q diverged from the counter compare");
+    end
+  end
+`endif
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
@@ -1504,18 +1533,18 @@ module load_queue #(
 
   // Drive load unit inputs from the entry awaiting response (memory path)
   always_comb begin
-    lu_is_byte     = 1'b0;
-    lu_is_half     = 1'b0;
-    lu_is_unsigned = 1'b0;
-    lu_addr        = '0;
+    // Extraction controls come straight from the registered issued_* fields
+    // with no accept_mem_response qualification: every consumer of the
+    // extracted data (LQ data-RAM write, L0 fill, cdb_stage payload capture)
+    // is enable-gated on the accept/fire pulses, so the extraction result is
+    // don't-care whenever no response is being accepted — and the un-gated
+    // form keeps accept_mem_response's flush conjuncts out of the response
+    // data cone.
+    lu_is_byte     = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_BYTE);
+    lu_is_half     = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_HALF);
+    lu_is_unsigned = !issued_sign_ext;
+    lu_addr        = issued_addr;
     lu_raw_data    = i_mem_read_data;
-
-    if (accept_mem_response) begin
-      lu_is_byte     = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_BYTE);
-      lu_is_half     = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_HALF);
-      lu_is_unsigned = !issued_sign_ext;
-      lu_addr        = issued_addr;
-    end
   end
 
   // ===========================================================================
@@ -1525,24 +1554,27 @@ module load_queue #(
   // leaves the LQ. That breaks the issue/data-select cone away from the
   // downstream MEM adapter / CDB wakeup path while preserving ordering.
 
+  // Only .valid carries the found/flush qualification; tag/value are formed
+  // unconditionally so the flush pulse stays out of the payload data cone.
+  // Both consumers qualify them: issue_cdb_fire uses .valid, and the
+  // cdb_stage payload capture is enable-gated (tag/value are don't-care when
+  // no capture happens).
   always_comb begin
     issue_cdb_result = '0;
-    if (issue_cdb_found && !i_flush_en) begin
-      issue_cdb_result.valid = 1'b1;
-      issue_cdb_result.tag   = lq_rob_tag[issue_cdb_idx];
+    issue_cdb_result.valid = issue_cdb_found && !i_flush_en;
+    issue_cdb_result.tag = lq_rob_tag[issue_cdb_idx];
 
-      if (lq_is_fp[issue_cdb_idx]) begin
-        if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
-          // FLD: raw 64-bit data (lo + hi from LUTRAM)
-          issue_cdb_result.value = {lq_data_hi_rd, lq_data_lo_rd};
-        end else begin
-          // FLW: NaN-box 32-bit to 64-bit
-          issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_lo_rd};
-        end
+    if (lq_is_fp[issue_cdb_idx]) begin
+      if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
+        // FLD: raw 64-bit data (lo + hi from LUTRAM)
+        issue_cdb_result.value = {lq_data_hi_rd, lq_data_lo_rd};
       end else begin
-        // INT load: zero-extend XLEN to FLEN
-        issue_cdb_result.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
+        // FLW: NaN-box 32-bit to 64-bit
+        issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_lo_rd};
       end
+    end else begin
+      // INT load: zero-extend XLEN to FLEN
+      issue_cdb_result.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
     end
   end
 
@@ -1591,6 +1623,27 @@ module load_queue #(
   assign misalign_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                                 !resp_bypass_fire && sq_check_misaligned && !i_flush_en;
 
+  // Data-select forms for the cdb_stage payload D-muxes. Whenever the payload
+  // capture enable (issue_cdb_fire || bypass_fire below) is high, the
+  // slot-available / !issue / !flush conjuncts of the full *_fire products
+  // are all implied — a bypass leg can only capture with the slot free, no
+  // Phase-A completion, and no partial flush — so the D-selects reduce to
+  // these flush- and grant-free terms. resp_bypass_data_sel is
+  // resp_bypass_ok minus accept_mem_response's !i_flush_all /
+  // !issued_entry_flushed conjuncts: issued_entry_flushed needs i_flush_en
+  // (impossible under the enable) and the only enable leg reachable during
+  // i_flush_all is the misalign one, whose capture is discarded by
+  // cdb_stage_valid's full-flush reset anyway. Outside a capture the payload
+  // D is don't-care. This keeps the recovery flush tag and the CDB grant
+  // loop (i_result_accepted) out of the payload data cone; every enable and
+  // state transition still uses the fully-gated fires above.
+  logic resp_bypass_data_sel;
+  logic misalign_bypass_data_sel;
+  assign resp_bypass_data_sel = i_mem_read_valid && mem_outstanding &&
+      !drop_mem_response_pending && lq_valid[issued_idx] && !issued_is_amo &&
+      !(issued_is_fp && (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE));
+  assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
+
   // cache_hit_fast_path is already flush-gated at its own assign.
   assign cache_hit_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                                  !resp_bypass_fire && !misalign_bypass_fire &&
@@ -1620,15 +1673,18 @@ module load_queue #(
     end
   end
 
-  assign bypass_idx = resp_bypass_fire ? issued_idx : sq_check_idx;
-  assign bypass_tag = resp_bypass_fire ? issued_rob_tag : sq_check_rob_tag_q;
+  // Payload D-mux selects use the reduced data-select forms (see the comment
+  // above): identical to the fire-based selects whenever a capture actually
+  // happens, don't-care otherwise.
+  assign bypass_idx = resp_bypass_data_sel ? issued_idx : sq_check_idx;
+  assign bypass_tag = resp_bypass_data_sel ? issued_rob_tag : sq_check_rob_tag_q;
   // A misaligned load raises an exception instead of producing a register
   // result, so its CDB value slot is free to carry the faulting address.
   // The ROB forwards this as mtval at trap entry (RISC-V requires mtval =
   // the misaligned virtual address for a load-address-misaligned trap).
   assign bypass_value =
-      misalign_bypass_fire ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
-      resp_bypass_fire ? resp_bypass_value :
+      misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+      resp_bypass_data_sel ? resp_bypass_value :
       cache_hit_bypass_value;
 
   // Entry freeing: once the result is captured into the stage, the queue slot
@@ -1737,32 +1793,40 @@ module load_queue #(
       sq_check_rob_tag_q, i_flush_tag, i_rob_head_tag
   ));
 
-  always_comb begin
-    sq_check_pending_next        = sq_check_pending;
-    sq_check_no_older_store_next = sq_check_no_older_store_q;
-    sq_check_phase2_next         = sq_check_phase2;
-    sq_check_in_flight_mask_next = sq_check_in_flight_mask;
+  // Flattened, per-signal form of the old flushed → capture/replace → clear →
+  // phase2-arm priority chain. The capture/replace branch (U below) carries
+  // !i_flush_en/!i_flush_all inside sq_check_gate_early while sq_check_flushed
+  // requires i_flush_en, so U and the flush branch are structurally disjoint
+  // and each next-state bit reduces to independent AND-OR terms instead of a
+  // serial priority mux behind the kept mask_update_en net. Bit-identical to
+  // the original chain for every input combination.
+  logic sq_check_stage_clears;
+  assign sq_check_stage_clears = sq_check_pending &&
+      (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
+       launch_mem_issue || misalign_bypass_fire);
 
-    if (sq_check_flushed) begin
-      sq_check_pending_next        = 1'b0;
-      sq_check_no_older_store_next = 1'b0;
-      sq_check_phase2_next         = 1'b0;
-      sq_check_in_flight_mask_next = '0;
-    end else if (sq_check_mask_update_en) begin
-      sq_check_pending_next        = 1'b1;
-      sq_check_no_older_store_next = i_sq_empty;
-      sq_check_phase2_next         = i_sq_empty;
-      sq_check_in_flight_mask_next = issue_mem_onehot;
-    end else if (sq_check_pending &&
-                 (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-                  launch_mem_issue || misalign_bypass_fire)) begin
-      // launch_mem_issue keeps the slot held through bus_busy stalls.
-      sq_check_pending_next = 1'b0;
-      sq_check_in_flight_mask_next = '0;
-    end else if (sq_check_pending && !sq_check_phase2 && i_sq_empty && !sq_commit_check_block) begin
-      sq_check_phase2_next = 1'b1;
-    end else if (o_sq_check_valid && !sq_check_phase2) begin
-      sq_check_phase2_next = 1'b1;
+  always_comb begin
+    // U = capture/replace (disjoint from sq_check_flushed, see above).
+    // Clear branch: launch_mem_issue keeps the slot held through bus_busy
+    // stalls.
+    sq_check_pending_next = sq_check_capture || sq_check_replace ||
+        (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
+
+    sq_check_no_older_store_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+        (sq_check_no_older_store_q && !sq_check_flushed &&
+         !(sq_check_capture || sq_check_replace));
+
+    sq_check_phase2_next = ((sq_check_capture || sq_check_replace) && i_sq_empty) ||
+        (!(sq_check_capture || sq_check_replace) && !sq_check_flushed &&
+         (sq_check_phase2 ||
+          (!sq_check_stage_clears &&
+           ((sq_check_pending && i_sq_empty && !sq_commit_check_block) || o_sq_check_valid))));
+
+    for (int i = 0; i < DEPTH; i++) begin
+      sq_check_in_flight_mask_next[i] =
+          ((sq_check_capture || sq_check_replace) && issue_mem_onehot[i]) ||
+          (sq_check_in_flight_mask[i] && !sq_check_flushed && !sq_check_stage_clears &&
+           !(sq_check_capture || sq_check_replace));
     end
   end
 
@@ -2121,7 +2185,6 @@ module load_queue #(
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
-  assign sq_check_mask_update_en = sq_check_capture || sq_check_replace;
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;
@@ -2358,21 +2421,29 @@ module load_queue #(
     end
   end
 
+  // Shared capture enable with issue_cdb_found as the D-mux select. Under
+  // the enable: the slot is free and there is no partial flush (every fire
+  // term requires both), so issue_cdb_fire == issue_cdb_found and the bypass
+  // leg's fire-based selects reduce to the flush/grant-free data selects —
+  // bit-identical capture behavior with the recovery pulses and the CDB
+  // grant loop off the payload D cone.
   always_ff @(posedge i_clk) begin
-    if (issue_cdb_fire) begin
-      cdb_stage_data.tag       <= issue_cdb_result.tag;
-      cdb_stage_data.value     <= issue_cdb_result.value;
-      cdb_stage_data.exception <= issue_cdb_result.exception;
-      cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
-      cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
-    end else if (bypass_fire) begin
-      cdb_stage_data.tag <= bypass_tag;
-      cdb_stage_data.value <= bypass_value;
-      cdb_stage_data.exception <= misalign_bypass_fire;
-      cdb_stage_data.exc_cause <= misalign_bypass_fire ?
-          riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) :
-          riscv_pkg::exc_cause_t'('0);
-      cdb_stage_data.fp_flags <= '0;
+    if (issue_cdb_fire || bypass_fire) begin
+      if (issue_cdb_found) begin
+        cdb_stage_data.tag       <= issue_cdb_result.tag;
+        cdb_stage_data.value     <= issue_cdb_result.value;
+        cdb_stage_data.exception <= issue_cdb_result.exception;
+        cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
+        cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
+      end else begin
+        cdb_stage_data.tag <= bypass_tag;
+        cdb_stage_data.value <= bypass_value;
+        cdb_stage_data.exception <= misalign_bypass_data_sel;
+        cdb_stage_data.exc_cause <= misalign_bypass_data_sel ?
+            riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) :
+            riscv_pkg::exc_cause_t'('0);
+        cdb_stage_data.fp_flags <= '0;
+      end
     end
   end
 

@@ -1718,14 +1718,18 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
 # Same-cycle comb-commit vs flush-after-head-commit
 # ============================================================================
 @cocotb.test()
-async def test_same_cycle_comb_commit_survives_flush_after_head(dut: Any) -> None:
-    """A comb-commit in the flush cycle must survive flush_all_uncommitted.
+async def test_commit_cycle_registered_guard_survives_flush_after_head(dut: Any) -> None:
+    """A store whose registered commit lands in the flush cycle must survive.
 
-    Repro of the cjpeg lost-store corruption: the registered i_commit_valid is
-    still the PREVIOUS cycle's commit when the flush arrives, sq_committed has
-    not yet set, and flush_all_uncommitted bypasses the age check — so without
-    the i_commit_valid_comb guard the just-committed store is invalidated and
-    its memory write is silently lost (a dropped UART char / corrupted JPEG
+    System-real shape of the cjpeg lost-store race: the store's combinational
+    commit fired the cycle BEFORE the flush (the ROB gates comb commits with
+    !i_flush_en && !flush_after_head_commit, so a comb commit can never
+    coincide with the flush cycle — asserted in store_queue and assumed in
+    formal). In the flush cycle the SQ therefore sees the REGISTERED
+    i_commit_valid for that store while sq_committed has not set yet, and
+    flush_all_uncommitted bypasses the age check — without the registered
+    commit guard in flush_kill_base the just-committed store is invalidated
+    and its memory write silently lost (a dropped UART char / corrupted JPEG
     byte in the system runs).
     """
     dut_if, model = await setup(dut)
@@ -1733,25 +1737,21 @@ async def test_same_cycle_comb_commit_survives_flush_after_head(dut: Any) -> Non
 
     await alloc_addr_data(dut_if, model, 6, 0x3000, 0xDD)
 
-    # Same cycle: combinational commit of tag 6 + delayed-recovery flush.
-    dut_if.drive_commit_comb(6)
+    # Same cycle: REGISTERED commit view of tag 6 (its comb commit fired the
+    # previous cycle) + delayed-recovery flush-after-head-commit.
+    dut_if.drive_commit(6)
     dut.i_flush_after_head_commit.value = 1
     dut_if.drive_partial_flush(4)
     await dut_if.step()
     dut_if.clear_partial_flush()
     dut.i_flush_after_head_commit.value = 0
-    dut_if.clear_commit_comb()
-
-    # The registered commit arrives the following cycle as usual.
-    dut_if.drive_commit(6)
-    await dut_if.step()
     dut_if.clear_commit()
 
     assert dut_if.count == 1, (
-        "store committing in the flush cycle was lost to "
-        "flush_all_uncommitted (missing comb-commit guard)"
+        "store with its registered commit in the flush cycle was lost to "
+        "flush_all_uncommitted (missing registered-commit guard)"
     )
     write_req = await wait_for_mem_write(dut_if, max_cycles=8)
     assert (
         write_req.en and write_req.addr == 0x3000
-    ), "same-cycle-committed store never drained after the flush"
+    ), "flush-cycle-committed store never drained after the flush"

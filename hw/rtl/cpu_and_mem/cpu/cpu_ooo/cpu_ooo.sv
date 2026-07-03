@@ -516,6 +516,19 @@ module cpu_ooo #(
   // Driven in the ID section below.
   riscv_pkg::from_ma_to_wb_t            from_ma_to_wb_commit;
 
+  // Pre-registered qualifiers for the regfile write-back bypass network,
+  // driven in the commit-actions section below. Single FFs computed one cycle
+  // early from the ROB's combinational commit (plus the delayed CSR
+  // writeback), flush-cleared like commit_bus_q_valid, so the wide
+  // hit-compare fanout in ooo_register_files roots at registers instead of
+  // the trap/mret/fence.i flush-mask LUT cone.
+  logic                                 bypass_p0_int_we_q;
+  logic                                 bypass_p1_int_we_q;
+  logic                                 bypass_p0_fp_we_q;
+  logic                                 bypass_p1_fp_we_q;
+  logic [                          4:0] bypass_p0_addr_q;
+  logic [                          4:0] bypass_p1_addr_q;
+
   ooo_register_files #(
       .XLEN(XLEN)
   ) ooo_register_files_inst (
@@ -532,6 +545,12 @@ module cpu_ooo #(
       .i_port1_fp_we   (port1_fp_we),
       .i_port1_fp_addr (port1_fp_addr),
       .i_port1_fp_data (port1_fp_data),
+      .i_bypass_p0_int_we(bypass_p0_int_we_q),
+      .i_bypass_p1_int_we(bypass_p1_int_we_q),
+      .i_bypass_p0_fp_we (bypass_p0_fp_we_q),
+      .i_bypass_p1_fp_we (bypass_p1_fp_we_q),
+      .i_bypass_p0_addr  (bypass_p0_addr_q),
+      .i_bypass_p1_addr  (bypass_p1_addr_q),
       .i_from_pd_to_id  (from_pd_to_id),
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_from_id_to_ex  (from_id_to_ex),
@@ -1682,6 +1701,82 @@ module cpu_ooo #(
       .o_pc_vld(o_pc_vld),
       .o_instruction_retired_count(instruction_retired_count)
   );
+
+  // ===========================================================================
+  // Pre-registered regfile-bypass qualifiers (declared up by the regfile
+  // instantiation).  Computed one cycle early from the ROB's combinational
+  // commit buses — the same values commit_bus_pipeline registers into
+  // rob_commit / rob_commit_2 — plus the delayed CSR writeback arm, then
+  // flush-cleared exactly like commit_bus_q_valid.  Each equals its
+  // commit_actions write-enable counterpart (with |dest_reg folded in for the
+  // INT file's x0 exclusion) in every cycle except a full-flush cycle, where
+  // the bypass may keep claiming a commit whose architectural write was
+  // masked off; the dispatch that could consume that phantom hit is squashed
+  // by the same flush, so it is never architecturally visible.
+  // ===========================================================================
+  logic csr_wb_arm;
+  assign csr_wb_arm = csr_commit_fire && rob_commit.dest_valid;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all_flat) begin
+      bypass_p0_int_we_q <= 1'b0;
+      bypass_p1_int_we_q <= 1'b0;
+      bypass_p0_fp_we_q  <= 1'b0;
+      bypass_p1_fp_we_q  <= 1'b0;
+    end else begin
+      bypass_p0_int_we_q <= (csr_wb_arm && |rob_commit.dest_reg) ||
+          (rob_commit_comb.valid && rob_commit_comb.dest_valid &&
+           !rob_commit_comb.exception && !rob_commit_comb.is_csr &&
+           !rob_commit_comb.dest_rf && |rob_commit_comb.dest_reg);
+      bypass_p0_fp_we_q <= rob_commit_comb.valid && rob_commit_comb.dest_valid &&
+          !rob_commit_comb.exception && !rob_commit_comb.is_csr && rob_commit_comb.dest_rf;
+      bypass_p1_int_we_q <= rob_commit_comb_2.valid && rob_commit_comb_2.dest_valid &&
+          !rob_commit_comb_2.dest_rf && |rob_commit_comb_2.dest_reg;
+      bypass_p1_fp_we_q <= rob_commit_comb_2.valid && rob_commit_comb_2.dest_valid &&
+          rob_commit_comb_2.dest_rf;
+    end
+  end
+
+  // Address payloads: no reset (don't-care while the matching we_q is low).
+  // The CSR delayed writeback never overlaps a commit write (asserted in
+  // commit_actions), so the csr arm can take priority on port 0.
+  always_ff @(posedge i_clk) begin
+    bypass_p0_addr_q <= csr_wb_arm ? rob_commit.dest_reg : rob_commit_comb.dest_reg;
+    bypass_p1_addr_q <= rob_commit_comb_2.dest_reg;
+  end
+
+`ifndef SYNTHESIS
+  // The bypass qualifiers must track the architectural write enables
+  // cycle-for-cycle outside reset/full-flush cycles.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !flush_all) begin
+      assert (bypass_p0_int_we_q == (port0_int_we && |port0_int_addr))
+      else $error("bypass_p0_int_we_q mismatch");
+      assert (bypass_p0_fp_we_q == port0_fp_we)
+      else $error("bypass_p0_fp_we_q mismatch");
+      assert (bypass_p1_int_we_q == (port1_int_we && |port1_int_addr))
+      else $error("bypass_p1_int_we_q mismatch");
+      assert (bypass_p1_fp_we_q == port1_fp_we)
+      else $error("bypass_p1_fp_we_q mismatch");
+      if (bypass_p0_int_we_q) begin
+        assert (bypass_p0_addr_q == port0_int_addr)
+        else $error("bypass_p0_addr_q != port0_int_addr");
+      end
+      if (bypass_p0_fp_we_q) begin
+        assert (bypass_p0_addr_q == port0_fp_addr)
+        else $error("bypass_p0_addr_q != port0_fp_addr");
+      end
+      if (bypass_p1_int_we_q) begin
+        assert (bypass_p1_addr_q == port1_int_addr)
+        else $error("bypass_p1_addr_q != port1_int_addr");
+      end
+      if (bypass_p1_fp_we_q) begin
+        assert (bypass_p1_addr_q == port1_fp_addr)
+        else $error("bypass_p1_addr_q != port1_fp_addr");
+      end
+    end
+  end
+`endif
 
   // ===========================================================================
   // Commit-Bus Pipeline Register
