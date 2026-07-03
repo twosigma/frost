@@ -20,7 +20,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Verilator version (cocotb 2.0 requires >= 5.036)
-ARG VERILATOR_VERSION=5.046
+ARG VERILATOR_VERSION=5.050
 
 # Yosys version (Ubuntu 24.04 apt has 0.33, we need 0.64+)
 ARG YOSYS_VERSION=0.64

@@ -22,7 +22,7 @@ on:
 
 env:
   # Tool versions - single source of truth (also in Dockerfile)
-  VERILATOR_VERSION: "5.046"
+  VERILATOR_VERSION: "5.050"
   YOSYS_VERSION: "0.64"
   SBY_VERSION: "0.63"
 
