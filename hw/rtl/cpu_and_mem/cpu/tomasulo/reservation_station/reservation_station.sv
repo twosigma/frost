@@ -423,8 +423,12 @@ module reservation_station #(
   // same-cycle CDB bypass.  The output MUX substitutes stage2_cdb_value for
   // these sources, breaking the timing-critical data path from CDB through
   // the issue-select priority encoder to the stage2 register input.
-  logic [FLEN-1:0] stage2_src1_bypass_mask;
-  logic [FLEN-1:0] stage2_src2_bypass_mask;
+  // Per-bit replicated copies of the issue-time CDB-bypass select. Synthesis
+  // merges the 64 identical flops back into one and the survivor lands on the
+  // stage2 operand mux -> ALU -> CDB cone with fanout >150; max_fanout makes
+  // it re-replicate so the operand-mux selects stay local.
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_bypass_mask;
   logic [FLEN-1:0] stage2_src3_bypass_mask;
   logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
 
@@ -687,6 +691,20 @@ module reservation_station #(
   // Keep occupancy registered so dispatch back-pressure does not depend on a
   // live popcount of all rs_valid bits. Flushes still recompute the exact
   // post-flush count because they may invalidate multiple arbitrary entries.
+  //
+  // LATE-SIDE FACTORING: dispatch_fire/dispatch_fire_2 arrive through the
+  // whole id_valid → dispatch → RS-router cone, long after issue_fire (ready
+  // regs) and count (a FF). Precompute the three possible next counts off
+  // the early side and let the late dispatch pulses only steer a final
+  // select — bit-identical to the flat add chain (small modular adds
+  // re-associated only).
+  logic [CountWidth-1:0] count_after_issue;
+  logic [CountWidth-1:0] count_after_issue_p1;
+  logic [CountWidth-1:0] count_after_issue_p2;
+  assign count_after_issue = count - CountWidth'(issue_fire);
+  assign count_after_issue_p1 = count_after_issue + CountWidth'(1);
+  assign count_after_issue_p2 = count_after_issue + CountWidth'(2);
+
   always_comb begin
     count_next = count;
     if (i_flush_all) begin
@@ -700,11 +718,42 @@ module reservation_station #(
       end
     end else begin
       // Net occupancy delta: +1 per dispatch (0/1/2 of slot-1/slot-2 firing)
-      // and -1 if issue fires.  Encoded as a small signed adjustment.
-      count_next = count
-                 + CountWidth'(dispatch_fire)
-                 + CountWidth'(dispatch_fire_2)
-                 - CountWidth'(issue_fire);
+      // and -1 if issue fires.
+      unique case ({dispatch_fire, dispatch_fire_2})
+        2'b11:   count_next = count_after_issue_p2;
+        2'b10:   count_next = count_after_issue_p1;
+        2'b01:   count_next = count_after_issue_p1;
+        default: count_next = count_after_issue;
+      endcase
+    end
+  end
+
+  // Same trick for the registered full flags (DISPATCH_STATUS_RESERVE == 0
+  // form): the ==DEPTH / >=DEPTH-1 compares are precomputed per possible
+  // dispatch outcome off the early count_after_issue, then selected by the
+  // late dispatch pulses. Flush cycles fall back to the popcount-based
+  // count_next (early inputs; the flush selects come from controller FFs).
+  logic dispatch_full_next;
+  logic dispatch_full_for_2_next;
+  always_comb begin
+    if (i_flush_all || i_flush_en) begin
+      dispatch_full_next       = count_next == CountWidth'(DEPTH);
+      dispatch_full_for_2_next = count_next >= CountWidth'(DEPTH - 1);
+    end else begin
+      unique case ({dispatch_fire, dispatch_fire_2})
+        2'b11: begin
+          dispatch_full_next       = count_after_issue_p2 == CountWidth'(DEPTH);
+          dispatch_full_for_2_next = count_after_issue_p2 >= CountWidth'(DEPTH - 1);
+        end
+        2'b10, 2'b01: begin
+          dispatch_full_next       = count_after_issue_p1 == CountWidth'(DEPTH);
+          dispatch_full_for_2_next = count_after_issue_p1 >= CountWidth'(DEPTH - 1);
+        end
+        default: begin
+          dispatch_full_next       = count_after_issue == CountWidth'(DEPTH);
+          dispatch_full_for_2_next = count_after_issue >= CountWidth'(DEPTH - 1);
+        end
+      endcase
     end
   end
 
@@ -1012,8 +1061,8 @@ module reservation_station #(
     end else begin
       count <= count_next;
       if (DISPATCH_STATUS_RESERVE == 0) begin
-        dispatch_full_q       <= count_next == CountWidth'(DEPTH);
-        dispatch_full_for_2_q <= count_next >= CountWidth'(DEPTH - 1);
+        dispatch_full_q       <= dispatch_full_next;
+        dispatch_full_for_2_q <= dispatch_full_for_2_next;
       end else begin
         dispatch_full_q       <= count >= CountWidth'(DispatchFullThreshold);
         dispatch_full_for_2_q <= count >= CountWidth'(DispatchFullFor2Threshold);

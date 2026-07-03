@@ -114,11 +114,20 @@ module fu_cdb_adapter #(
   // suppressed locally. Full-flush kill is centralized at the CDB arbiter so
   // this one-deep adapter doesn't have to carry that signal through its
   // output/held-result control cone.
+  //
+  // Only .valid carries the partial-flush kill; the payload (value/tag/...)
+  // passes through un-squashed. Every consumer qualifies the payload with
+  // valid (the arbiter never grants or selects an invalid input), so a
+  // killed result's payload is dead data — and keeping the flush-tag age
+  // compare off the wide value mux keeps the branch-recovery tag registers
+  // out of the CDB value cone.
   always_comb begin
-    if (result_pending && !partial_flush_held) begin
-      o_fu_complete = held_result;
-    end else if (!REGISTER_OUTPUT && !result_pending && !partial_flush_input) begin
-      o_fu_complete = i_fu_result;
+    if (result_pending) begin
+      o_fu_complete       = held_result;
+      o_fu_complete.valid = !partial_flush_held;
+    end else if (!REGISTER_OUTPUT) begin
+      o_fu_complete       = i_fu_result;
+      o_fu_complete.valid = i_fu_result.valid && !partial_flush_input;
     end else begin
       o_fu_complete = '0;
     end

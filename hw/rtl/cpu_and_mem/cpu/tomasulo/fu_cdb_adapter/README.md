@@ -19,7 +19,12 @@ granted. The wrapper instantiates one per FU slot.
   the pass-through valid cone hurts timing.
 - **Partial-flush support.** Held results whose tag is younger than
   the partial-flush boundary are dropped, and a same-cycle
-  pass-through of a younger result is suppressed locally. Full-flush
+  pass-through of a younger result is suppressed locally. The kill
+  gates only `o_fu_complete.valid`; the payload (value/tag/exception)
+  passes through un-squashed. Every consumer qualifies the payload
+  with valid — the arbiter never grants or lane-selects an invalid
+  input — so a killed result's payload is dead data, and the
+  flush-tag age compare stays off the wide CDB value muxes. Full-flush
   CDB suppression lives once in the CDB arbiter's `i_kill` input
   rather than replicated in every adapter, so this module's output
   cone doesn't have to carry the broadly-fanned speculative-flush
