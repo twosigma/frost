@@ -1480,6 +1480,21 @@ module load_queue #(
     lu_cache_is_unsigned = !sq_check_sign_ext_q;
   end
 
+  // SQ-forward extraction: i_sq_forward.data carries a memory-image word for
+  // non-DOUBLE loads (the fwd unit shifts sub-word store data to its byte
+  // lanes), so integer byte/half loads extract exactly like an L0 hit.  The
+  // flags/address are shared with u_cache_load_unit — same staged load, and
+  // the forward and cache-hit paths are mutually exclusive by construction.
+  logic [XLEN-1:0] lu_fwd_out;
+  load_unit u_fwd_load_unit (
+      .i_is_load_byte           (lu_cache_is_byte),
+      .i_is_load_halfword       (lu_cache_is_half),
+      .i_is_load_unsigned       (lu_cache_is_unsigned),
+      .i_data_memory_address    (sq_check_addr_q),
+      .i_data_memory_read_data  (i_sq_forward.data[XLEN-1:0]),
+      .o_data_loaded_from_memory(lu_fwd_out)
+  );
+
   // ===========================================================================
   // lq_data LUTRAM Write Logic (combinational)
   // ===========================================================================
@@ -1547,7 +1562,9 @@ module load_queue #(
         lq_data_lo_we[1]   = 1'b1;
         lq_data_hi_we[1]   = 1'b1;
         lq_data_wr_addr[1] = sq_check_idx;
-        lq_data_lo_wd[1]   = i_sq_forward.data[XLEN-1:0];
+        // FP forwards (FLW word image / FLD full 64-bit) take the payload
+        // raw; integer loads extract byte/half + sign from the image word.
+        lq_data_lo_wd[1]   = sq_check_is_fp_q ? i_sq_forward.data[XLEN-1:0] : lu_fwd_out;
         lq_data_hi_wd[1]   = i_sq_forward.data[FLEN-1:XLEN];
       end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
         lq_data_lo_we[1]   = 1'b1;
