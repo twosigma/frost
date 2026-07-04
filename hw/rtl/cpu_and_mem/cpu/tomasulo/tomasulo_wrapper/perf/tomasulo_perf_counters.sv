@@ -82,6 +82,10 @@ module tomasulo_perf_counters (
     input logic i_lq_head_load_bb_amo,
     input logic i_lq_head_load_bb_sq_wait,
     input logic i_lq_head_load_bb_staging,
+    input logic i_lq_head_load_bbs_other_in_staging,
+    input logic i_lq_head_load_bbs_launch_gated,
+    input logic i_lq_head_load_bbs_slow_outstanding,
+    input logic i_lq_head_load_bbs_capture_gap,
 
     // head_wait_int decomposition status.
     input logic i_int_rs_head_in_rs,
@@ -117,52 +121,58 @@ module tomasulo_perf_counters (
   logic lq_head_load_cdb_wait, lq_head_load_post_lq;
   logic lq_head_load_bb_issued, lq_head_load_bb_bus_busy, lq_head_load_bb_amo;
   logic lq_head_load_bb_sq_wait, lq_head_load_bb_staging;
+  logic lq_head_load_bbs_other_in_staging, lq_head_load_bbs_launch_gated;
+  logic lq_head_load_bbs_slow_outstanding, lq_head_load_bbs_capture_gap;
   logic int_rs_head_in_rs, int_rs_head_rs_ready, int_rs_head_in_stage2;
-  assign rob_perf_events            = i_rob_perf_events;
-  assign int_rs_fu_ready            = i_int_rs_fu_ready;
-  assign o_rs_empty                 = i_o_rs_empty;
-  assign mul_rs_fu_ready            = i_mul_rs_fu_ready;
-  assign o_mul_rs_empty             = i_o_mul_rs_empty;
-  assign mem_fu_to_adapter          = i_mem_fu_to_adapter;
-  assign mem_adapter_result_pending = i_mem_adapter_result_pending;
-  assign fp_rs_fu_ready             = i_fp_rs_fu_ready;
-  assign o_fp_rs_empty              = i_o_fp_rs_empty;
-  assign fmul_rs_fu_ready           = i_fmul_rs_fu_ready;
-  assign o_fmul_rs_empty            = i_o_fmul_rs_empty;
-  assign fdiv_rs_fu_ready           = i_fdiv_rs_fu_ready;
-  assign o_fdiv_rs_empty            = i_o_fdiv_rs_empty;
-  assign sq_check_valid             = i_sq_check_valid;
-  assign sq_all_older_addrs_known   = i_sq_all_older_addrs_known;
-  assign sq_committed_empty         = i_sq_committed_empty;
-  assign o_sq_mem_write_en          = i_o_sq_mem_write_en;
-  assign o_lq_mem_read_en           = i_o_lq_mem_read_en;
-  assign o_rob_count                = i_o_rob_count;
-  assign o_lq_count                 = i_o_lq_count;
-  assign o_sq_count                 = i_o_sq_count;
-  assign o_rs_count                 = i_o_rs_count;
-  assign o_mul_rs_count             = i_o_mul_rs_count;
-  assign o_mem_rs_count             = i_o_mem_rs_count;
-  assign o_fp_rs_count              = i_o_fp_rs_count;
-  assign o_fmul_rs_count            = i_o_fmul_rs_count;
-  assign o_fdiv_rs_count            = i_o_fdiv_rs_count;
-  assign lq_l0_hit                  = i_lq_l0_hit;
-  assign lq_l0_fill                 = i_lq_l0_fill;
-  assign lq_mem_outstanding         = i_lq_mem_outstanding;
-  assign lq_head_load_addr_pending  = i_lq_head_load_addr_pending;
-  assign lq_head_load_sq_disambig   = i_lq_head_load_sq_disambig;
-  assign lq_head_load_bus_blocked   = i_lq_head_load_bus_blocked;
-  assign lq_head_load_cdb_wait      = i_lq_head_load_cdb_wait;
-  assign lq_head_load_post_lq       = i_lq_head_load_post_lq;
-  assign lq_head_load_bb_issued     = i_lq_head_load_bb_issued;
-  assign lq_head_load_bb_bus_busy   = i_lq_head_load_bb_bus_busy;
-  assign lq_head_load_bb_amo        = i_lq_head_load_bb_amo;
-  assign lq_head_load_bb_sq_wait    = i_lq_head_load_bb_sq_wait;
-  assign lq_head_load_bb_staging    = i_lq_head_load_bb_staging;
-  assign int_rs_head_in_rs          = i_int_rs_head_in_rs;
-  assign int_rs_head_rs_ready       = i_int_rs_head_rs_ready;
-  assign int_rs_head_in_stage2      = i_int_rs_head_in_stage2;
+  assign rob_perf_events                   = i_rob_perf_events;
+  assign int_rs_fu_ready                   = i_int_rs_fu_ready;
+  assign o_rs_empty                        = i_o_rs_empty;
+  assign mul_rs_fu_ready                   = i_mul_rs_fu_ready;
+  assign o_mul_rs_empty                    = i_o_mul_rs_empty;
+  assign mem_fu_to_adapter                 = i_mem_fu_to_adapter;
+  assign mem_adapter_result_pending        = i_mem_adapter_result_pending;
+  assign fp_rs_fu_ready                    = i_fp_rs_fu_ready;
+  assign o_fp_rs_empty                     = i_o_fp_rs_empty;
+  assign fmul_rs_fu_ready                  = i_fmul_rs_fu_ready;
+  assign o_fmul_rs_empty                   = i_o_fmul_rs_empty;
+  assign fdiv_rs_fu_ready                  = i_fdiv_rs_fu_ready;
+  assign o_fdiv_rs_empty                   = i_o_fdiv_rs_empty;
+  assign sq_check_valid                    = i_sq_check_valid;
+  assign sq_all_older_addrs_known          = i_sq_all_older_addrs_known;
+  assign sq_committed_empty                = i_sq_committed_empty;
+  assign o_sq_mem_write_en                 = i_o_sq_mem_write_en;
+  assign o_lq_mem_read_en                  = i_o_lq_mem_read_en;
+  assign o_rob_count                       = i_o_rob_count;
+  assign o_lq_count                        = i_o_lq_count;
+  assign o_sq_count                        = i_o_sq_count;
+  assign o_rs_count                        = i_o_rs_count;
+  assign o_mul_rs_count                    = i_o_mul_rs_count;
+  assign o_mem_rs_count                    = i_o_mem_rs_count;
+  assign o_fp_rs_count                     = i_o_fp_rs_count;
+  assign o_fmul_rs_count                   = i_o_fmul_rs_count;
+  assign o_fdiv_rs_count                   = i_o_fdiv_rs_count;
+  assign lq_l0_hit                         = i_lq_l0_hit;
+  assign lq_l0_fill                        = i_lq_l0_fill;
+  assign lq_mem_outstanding                = i_lq_mem_outstanding;
+  assign lq_head_load_addr_pending         = i_lq_head_load_addr_pending;
+  assign lq_head_load_sq_disambig          = i_lq_head_load_sq_disambig;
+  assign lq_head_load_bus_blocked          = i_lq_head_load_bus_blocked;
+  assign lq_head_load_cdb_wait             = i_lq_head_load_cdb_wait;
+  assign lq_head_load_post_lq              = i_lq_head_load_post_lq;
+  assign lq_head_load_bb_issued            = i_lq_head_load_bb_issued;
+  assign lq_head_load_bb_bus_busy          = i_lq_head_load_bb_bus_busy;
+  assign lq_head_load_bb_amo               = i_lq_head_load_bb_amo;
+  assign lq_head_load_bb_sq_wait           = i_lq_head_load_bb_sq_wait;
+  assign lq_head_load_bb_staging           = i_lq_head_load_bb_staging;
+  assign lq_head_load_bbs_other_in_staging = i_lq_head_load_bbs_other_in_staging;
+  assign lq_head_load_bbs_launch_gated     = i_lq_head_load_bbs_launch_gated;
+  assign lq_head_load_bbs_slow_outstanding = i_lq_head_load_bbs_slow_outstanding;
+  assign lq_head_load_bbs_capture_gap      = i_lq_head_load_bbs_capture_gap;
+  assign int_rs_head_in_rs                 = i_int_rs_head_in_rs;
+  assign int_rs_head_rs_ready              = i_int_rs_head_rs_ready;
+  assign int_rs_head_in_stage2             = i_int_rs_head_in_stage2;
 
-  localparam int unsigned WrapperPerfCounterCount = 60;
+  localparam int unsigned WrapperPerfCounterCount = 64;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
   localparam int unsigned PerfHeadWaitBranch = 2;
@@ -223,6 +233,11 @@ module tomasulo_perf_counters (
   localparam int unsigned PerfCommit2BlockedNextSerial = 57;
   localparam int unsigned PerfCommit2BlockedNextBranchMispred = 58;
   localparam int unsigned PerfCommit2BlockedNextBranchCorrect = 59;
+  // Staging catch-all sub-decomposition (partitions PerfHeadLoadBbStaging).
+  localparam int unsigned PerfHeadLoadBbsOtherInStaging = 60;
+  localparam int unsigned PerfHeadLoadBbsLaunchGated = 61;
+  localparam int unsigned PerfHeadLoadBbsSlowOutstanding = 62;
+  localparam int unsigned PerfHeadLoadBbsCaptureGap = 63;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
   logic [63:0] perf_snapshot[WrapperPerfCounterCount];
@@ -332,6 +347,26 @@ module tomasulo_perf_counters (
     perf_inc[PerfHeadLoadBbStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
+    };
+    // Sub-decomposition of PerfHeadLoadBbStaging: same head-wait qualifier so
+    // the four terms partition counter 88 exactly.
+    perf_inc[PerfHeadLoadBbsOtherInStaging] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
+       lq_head_load_bbs_other_in_staging)
+    };
+    perf_inc[PerfHeadLoadBbsLaunchGated] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bbs_launch_gated)
+    };
+    perf_inc[PerfHeadLoadBbsSlowOutstanding] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
+       lq_head_load_bbs_slow_outstanding)
+    };
+    perf_inc[PerfHeadLoadBbsCaptureGap] = {
+      {63{1'b0}},
+      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bbs_capture_gap)
     };
     perf_inc[PerfHeadIntOperandWait] = {
       {63{1'b0}}, (rob_perf_events.head_wait_int && int_rs_head_in_rs && !int_rs_head_rs_ready)

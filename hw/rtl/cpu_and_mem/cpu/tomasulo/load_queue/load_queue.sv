@@ -209,11 +209,16 @@ module load_queue #(
     // contributes to exactly one counter.  All five are gated externally by
     // the same `head_wait_mem_load && !mem_outstanding` term the parent
     // counter uses, so the sum across sub-buckets equals `bus_blocked`.
-    output logic o_head_load_bb_issued,    // head has been issued, waiting for response
+    output logic o_head_load_bb_issued,  // head has been issued, waiting for response
     output logic o_head_load_bb_bus_busy,  // i_mem_bus_busy = 1
-    output logic o_head_load_bb_amo,       // older AMO pending (blocked_by_amo prefix OR)
-    output logic o_head_load_bb_sq_wait,   // in sq_check stage but !sq_check_phase2
-    output logic o_head_load_bb_staging    // catch-all (pre-sq_check capture, drop-pending, etc.)
+    output logic o_head_load_bb_amo,  // older AMO pending (blocked_by_amo prefix OR)
+    output logic o_head_load_bb_sq_wait,  // in sq_check stage but !sq_check_phase2
+    output logic o_head_load_bb_staging,  // catch-all (pre-sq_check capture, drop-pending, etc.)
+    // Staging catch-all sub-decomposition (partitions o_head_load_bb_staging):
+    output logic o_head_load_bbs_other_in_staging,  // sq_check busy with a DIFFERENT load
+    output logic o_head_load_bbs_launch_gated,  // head staged, phase2 armed, launch still gated
+    output logic o_head_load_bbs_slow_outstanding,  // staging free; cached-tier load in flight
+    output logic o_head_load_bbs_capture_gap  // staging free; head simply not captured yet
 );
 
   // ===========================================================================
@@ -919,6 +924,28 @@ module load_queue #(
   assign o_head_load_bb_staging  = head_entry_bb_base && !head_entry_issued &&
                                    !i_mem_bus_busy && !any_pending_amo &&
                                    !head_entry_in_sq_wait;
+
+  // Staging sub-decomposition (priority-ordered, mutually exclusive; the four
+  // terms partition o_head_load_bb_staging exactly):
+  //   other_in_staging — the single sq_check staging register is occupied by
+  //                      a DIFFERENT load (the serialization cost of one
+  //                      staging pipe);
+  //   launch_gated     — the head load IS staged with phase2 armed but the
+  //                      launch is still gated (drop-response window,
+  //                      sq_can_issue qualifiers, launch arbitration);
+  //   slow_outstanding — staging is free but a cached-tier load in flight
+  //                      serializes all launches;
+  //   capture_gap      — staging free, no cached load in flight: the head
+  //                      load just hasn't been captured yet (selector /
+  //                      capture-recycle bubble).
+  logic head_bbs_base;
+  assign head_bbs_base = o_head_load_bb_staging;
+  assign o_head_load_bbs_other_in_staging = head_bbs_base && sq_check_pending &&
+                                            (sq_check_idx != head_entry_idx);
+  assign o_head_load_bbs_launch_gated = head_bbs_base && sq_check_pending &&
+                                        (sq_check_idx == head_entry_idx) && sq_check_phase2;
+  assign o_head_load_bbs_slow_outstanding = head_bbs_base && !sq_check_pending && slow_outstanding;
+  assign o_head_load_bbs_capture_gap = head_bbs_base && !sq_check_pending && !slow_outstanding;
 
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
