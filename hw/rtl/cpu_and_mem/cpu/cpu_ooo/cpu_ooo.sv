@@ -437,6 +437,9 @@ module cpu_ooo #(
   // Stage 1: Instruction Fetch (IF) — UNCHANGED
   // ===========================================================================
 
+  // 2-wide width-funnel profiling events (IF→PD boundary → perf counters).
+  riscv_pkg::if_width_events_t if_width_events;
+
   if_stage #(
       .XLEN(XLEN)
   ) if_stage_inst (
@@ -463,7 +466,8 @@ module cpu_ooo #(
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
-      .o_from_if_to_pd_2(from_if_to_pd_2)
+      .o_from_if_to_pd_2(from_if_to_pd_2),
+      .o_width_events(if_width_events)
   );
 
   // ===========================================================================
@@ -526,8 +530,8 @@ module cpu_ooo #(
   logic                                 bypass_p1_int_we_q;
   logic                                 bypass_p0_fp_we_q;
   logic                                 bypass_p1_fp_we_q;
-  logic [                          4:0] bypass_p0_addr_q;
-  logic [                          4:0] bypass_p1_addr_q;
+  logic                      [     4:0] bypass_p0_addr_q;
+  logic                      [     4:0] bypass_p1_addr_q;
 
   ooo_register_files #(
       .XLEN(XLEN)
@@ -2301,6 +2305,8 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_rob_alloc_req(rob_alloc_req),
+      .i_dispatch_fire_2(rob_alloc_req_2.alloc_valid),
+      .i_if_width_events(if_width_events),
       .i_dispatch_status(dispatch_status),
       .i_rob_commit_comb(rob_commit_comb),
       .i_flush_pipeline(flush_pipeline),

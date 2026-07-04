@@ -1534,7 +1534,7 @@ package riscv_pkg;
   // Dispatch status (from dispatch to front-end)
   typedef struct packed {
     logic dispatch_valid;
-    logic stall;                // Stall decode (Reorder Buffer/RS/LQ/SQ full)
+    logic stall;                  // Stall decode (Reorder Buffer/RS/LQ/SQ full)
     logic reorder_buffer_full;
     logic int_rs_full;
     logic mul_rs_full;
@@ -1544,8 +1544,32 @@ package riscv_pkg;
     logic fdiv_rs_full;
     logic lq_full;
     logic sq_full;
-    logic checkpoint_full;      // All checkpoints in use (branch)
+    logic checkpoint_full;        // All checkpoints in use (branch)
+    // 2-wide width-funnel profiling taps (perf counters only).  The block_*
+    // bits fire only when slot-2 ALONE holds the bundle (slot-1 could fire),
+    // decomposing the monolithic-stall cycles attributable to slot-2.
+    logic slot2_present;          // Real slot-2 instruction at the dispatch input
+    logic slot2_fp_serialized;    // Slot-2 FP-compute serialized off (never fires as slot-2)
+    logic slot2_block_s1_branch;  // Slot-2 refused: slot-1 is a branch/jump (bundle terminates)
+    logic slot2_block_rob_full2;  // Slot-2 refused: no ROB room for 2
+    logic slot2_block_rs_full2;   // Slot-2 refused: slot-2's RS room check failed
+    logic slot2_block_lsq_full2;  // Slot-2 refused: LQ/SQ room check for slot-2 failed
+    logic slot2_block_ckpt;       // Slot-2 refused: no checkpoint for a slot-2 branch
   } dispatch_status_t;
+
+  // IF-stage 2-wide delivery events (perf counters only).  deliver1/deliver2
+  // pulse exactly once per accepted IF->PD handoff (stall-qualified inside
+  // if_stage); the kill_* causes are mutually exclusive and meaningful only
+  // on deliver1 && !deliver2 cycles, replaying the stall-captured aligner
+  // classification so they describe the bundle PD actually received.
+  typedef struct packed {
+    logic deliver1;          // IF handed PD a real slot-1 instruction
+    logic deliver2;          // ...and a real slot-2 instruction with it
+    logic kill_slot1_32bit;  // No slot-2: slot-1 is a native 32-bit instruction
+    logic kill_slot1_ctrl;   // No slot-2: slot-1 is compressed control flow
+    logic kill_class;        // No slot-2: slot-2 starts a serialize/FP-compute class op
+    logic kill_transient;    // No slot-2: aligner buffer/BRAM transient state
+  } if_width_events_t;
 
   // ---------------------------------------------------------------------------
   // Instruction Routing Table

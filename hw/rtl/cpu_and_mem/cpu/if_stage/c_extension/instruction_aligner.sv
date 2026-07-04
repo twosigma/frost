@@ -102,7 +102,15 @@ module instruction_aligner #(
     // Slot-1 is a branch (BRANCH/JAL/JALR or compressed equivalent).  Used by
     // pc_controller to terminate the bundle and by upstream consumers (e.g.,
     // c_ext_state) that need to know the bundle terminated early.
-    output logic o_slot1_is_branch
+    output logic o_slot1_is_branch,
+
+    // Slot-2 kill-cause classification (profiling taps only; not on the PC
+    // path).  Mutually exclusive; meaningful only on cycles where slot-1 is
+    // real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
+    output logic o_slot2_kill_slot1_32bit,  // Slot-1 is a native 32-bit instruction
+    output logic o_slot2_kill_slot1_ctrl,   // Slot-1 is compressed control flow
+    output logic o_slot2_kill_class,        // Slot-2 start is a serialize/FP-compute class op
+    output logic o_slot2_kill_transient     // Buffer/BRAM transient state
 );
 
   // ===========================================================================
@@ -705,5 +713,25 @@ module instruction_aligner #(
 
   // Slot-2 sel_compressed: mirror slot-1.
   assign o_sel_compressed_2 = o_is_compressed_2;
+
+  // ===========================================================================
+  // Slot-2 Kill-Cause Classification (profiling taps)
+  // ===========================================================================
+  // Pure taps off existing nets for the width-funnel perf counters; nothing
+  // here feeds the PC or packet paths.  Priority makes the causes mutually
+  // exclusive: native-32b slot-1 > compressed-control slot-1 > slot-2 class
+  // exclusion (Slot2StartValid=0: native CSR/MISC-MEM/AMO/FP-compute) >
+  // buffer/BRAM transient (slot2_bram_unsafe, buffer-at-lo punt).  When
+  // slot-2 is actually valid, all four are 0 by construction.
+  logic slot2_kill_start_invalid;
+  assign slot2_kill_start_invalid =
+      slot2_current_hi_candidate ? !slot2_current_hi_start_valid :
+      slot2_next_lo_candidate    ? !slot2_next_lo_start_valid    : 1'b0;
+
+  assign o_slot2_kill_slot1_32bit = !slot1_allows_slot2_for_pc && !o_is_compressed;
+  assign o_slot2_kill_slot1_ctrl = !slot1_allows_slot2_for_pc && o_is_compressed;
+  assign o_slot2_kill_class = slot1_allows_slot2_for_pc && slot2_kill_start_invalid;
+  assign o_slot2_kill_transient   = slot1_allows_slot2_for_pc && !slot2_kill_start_invalid &&
+                                    !slot2_valid_when_enabled;
 
 endmodule : instruction_aligner
