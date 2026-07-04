@@ -28,22 +28,53 @@ select, and the output register) lives in
 read index `o_fwd_match_idx`; the `sq_data` LUTRAM read at that index stays in
 `store_queue.sv` and feeds the data back for the registered output.
 
-**Ordering.** Stores commit in program order from the SQ head. The
-head fires when it's both committed (by the ROB) and has its address
-and data ready. FSD on the 32-bit bus takes two phases (low word at
-addr, high word at addr+4); the entry has a phase bit and isn't
-freed until both writes complete.
+**Ordering.** Stores drain to memory in program order. The drain is
+driven by a registered drain cursor (`drain_idx_q`) — the first entry
+in ring order that is valid and not yet launched (`!sq_sent`) — which
+fires when that entry is committed (by the ROB) and has its address
+and data ready. The cursor never skips program order: if the oldest
+undrained entry isn't ready, nothing fires. FSD on the 32-bit bus
+takes two phases (low word at addr, high word at addr+4); the entry
+has a phase bit and isn't freed until both writes complete.
 
 ## Registered memory-write outputs
 
 The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`,
 `_byte_en`, `_is_mmio`, `_is_cached`) are driven from registers rather
-than straight off the head-pointer mux. Post-synth the `head_ptr →
-head_ready → BRAM address` combinational path was the dominant
-timing cone; breaking it at the SQ source adds one cycle to the
-drain (3 cycles per store instead of 2) but cuts hundreds of ps of
-setup slack. SQ-full dispatch stalls remain under 0.2% on CoreMark,
-so the extra drain cycle doesn't translate into downstream back-pressure.
+than straight off the drain-cursor mux. Post-synth the `head_ptr →
+drain_ready → BRAM address` combinational path was the dominant
+timing cone; breaking it at the SQ source keeps that cone
+register-bounded and cuts hundreds of ps of setup slack.
+
+## Pipelined drain
+
+Plain fast-tier stores (BRAM, non-MMIO, non-FSD) complete exactly one
+cycle after their bus cycle — the router's `sq_write_done_fast` is the
+write-enable delayed one cycle — so consecutive plain drains overlap:
+a new launch is allowed while the previous write's done is still in
+flight, sustaining one store per cycle through a committed backlog.
+The bookkeeping:
+
+- `sq_sent` is set at **launch** (fire cycle) for completing writes, so
+  the drain cursor moves to the next entry immediately; the done side
+  only frees entries (`sq_valid` clear) and advances the FSD phase.
+- A 2-bit in-flight counter plus a 2-deep in-order metadata FIFO
+  (entry index + completes flag, popped one per done) replace the old
+  single `write_outstanding` bit. Dones arrive in launch order on the
+  single write port, so FIFO slot 0 is always the oldest in-flight
+  write. If a done stalls, the occupancy bound in the launch gate
+  self-throttles the drain instead of overflowing the FIFO.
+- Cached / MMIO / FSD writes stay strictly single-outstanding
+  (`write_inflight_special`): they only launch through the legacy
+  serial gate, and nothing else launches until their done. A
+  multi-cycle cached write therefore back-pressures the drain
+  naturally, exactly as before.
+- `head_ptr` keeps its freed-at-done semantics. Capacity is the ring
+  window (`tail_ptr - head_ptr`), so the head may only pass entries
+  whose writes have fully completed — the drain cursor exists
+  precisely so launches can run ahead of frees without touching the
+  capacity model. Entries stay valid (and visible to load
+  disambiguation) until their done.
 
 The registered `o_mem_write_is_mmio` flag lets `cpu_ooo.sv` gate
 the BRAM byte-write-enable at the SQ source instead of recomputing
@@ -55,8 +86,8 @@ falls in the cached DDR region `[0x8000_0000, 0xC000_0000)`) is
 registered the same way, so the router can steer the store's
 byte-write enables to the cached tier — and mask them off the BRAM —
 without the late address-range test reaching the BRAM write-enable
-cone. Cached drains share the single `write_outstanding` serializer
-with BRAM stores; the head holds until the router pulses
+cone. Cached drains take the serial arm of the launch gate (see
+"Pipelined drain" above) and hold it until the router pulses
 `i_mem_write_done`, so a multi-cycle cached write back-pressures the
 drain naturally instead of needing a separate busy-stretch.
 
@@ -157,6 +188,10 @@ fanning out from one source FF.
 
 Cocotb tests cover allocation including 2-wide cases, address/data update,
 every store size, FSD two-phase, store-to-load forwarding, MMIO bypass,
-partial/full flush, SC discard, and constrained random. Inline formal
-properties cover pointer/count consistency, write prerequisites, the
-committed-survives-flush invariant, and forwarding.
+partial/full flush, SC discard, back-to-back pipelined drains (per-cycle
+bus sampling in `drain_pipelined_writes`), and constrained random. Inline
+formal properties cover pointer/count consistency, write prerequisites
+(asserted on the staged on-bus entry), the in-flight bound and
+specials-fly-alone discipline, the committed-survives-flush invariant, and
+forwarding; a cover property witnesses two writes in flight
+(`cover_pipelined_drain`).
