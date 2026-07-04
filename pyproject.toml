@@ -57,6 +57,9 @@ testpaths = ["tests", "verif/cocotb_tests"]
 pythonpath = ["."]
 markers = [
     "cocotb: marks tests that use cocotb for HDL simulation",
+    "cocotb_real_program: marks cocotb real-program tests",
+    "cocotb_unit: marks cocotb unit-bench tests",
+    "coremark_pro: marks CoreMark-PRO real-program tests",
     "synthesis: marks tests that run synthesis tools",
     "slow: marks tests as slow running",
 ]

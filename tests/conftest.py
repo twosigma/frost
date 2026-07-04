@@ -29,6 +29,13 @@ def pytest_configure(config: Any) -> None:
         "markers", "formal: mark test as a formal verification test"
     )
     config.addinivalue_line("markers", "slow: mark test as slow running")
+    config.addinivalue_line(
+        "markers", "cocotb_real_program: mark cocotb real-program tests"
+    )
+    config.addinivalue_line("markers", "cocotb_unit: mark cocotb unit-bench tests")
+    config.addinivalue_line(
+        "markers", "coremark_pro: mark CoreMark-PRO real-program tests"
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
