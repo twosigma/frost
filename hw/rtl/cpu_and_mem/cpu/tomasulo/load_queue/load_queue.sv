@@ -1189,13 +1189,18 @@ module load_queue #(
 
   assign force_head_amo = force_head_amo_q;
 
+  // Simulation-only cross-check (Yosys' frontend rejects the assert-else
+  // action block, so keep it out of the formal build like the other sim
+  // assertions below).
 `ifndef SYNTHESIS
+`ifndef FORMAL
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       assert (force_head_amo_q == (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh)))
       else $error("force_head_amo_q diverged from the counter compare");
     end
   end
+`endif
 `endif
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&

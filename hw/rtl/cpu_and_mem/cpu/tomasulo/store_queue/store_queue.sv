@@ -1049,7 +1049,11 @@ module store_queue #(
     end
   end
 
+  // Simulation-only cross-check against the real ROB; under formal the same
+  // invariant is an input assume in the FORMAL section below (and Yosys'
+  // frontend rejects the assert-else action block anyway).
 `ifndef SYNTHESIS
+`ifndef FORMAL
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))
@@ -1059,6 +1063,7 @@ module store_queue #(
         );
     end
   end
+`endif
 `endif
 
   // Keep sq_valid separate so full-flush and partial-flush invalidation do not
