@@ -382,10 +382,14 @@ module if_stage #(
   // to fire when slot-1 is compressed, so a valid slot-2 always starts at
   // pc_reg + 2.  Keep that invariant out of the live sideband path; otherwise
   // is_compressed feeds the slot-2 BTB address and then the PC redirect mux.
+  // Slot-2 sits at pc_reg + slot-1's size (RVC-led: +2, 32b-led: +4).  The
+  // size select uses the aligner's fast compressed bit — the same late
+  // BRAM-dependent signal that already steers the pc_reg advance muxes.
   logic [XLEN-1:0] slot2_pc_for_btb;
   logic            slot2_pc_for_btb_is_halfword;
-  assign slot2_pc_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
-  assign slot2_pc_for_btb_is_halfword = !pc_reg[1];
+  assign slot2_pc_for_btb = pc_reg + (is_compressed_fast ? riscv_pkg::PcIncrementCompressed :
+                                      riscv_pkg::PcIncrement32bit);
+  assign slot2_pc_for_btb_is_halfword = is_compressed_fast ? !pc_reg[1] : pc_reg[1];
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -1326,13 +1330,25 @@ module if_stage #(
     end
   end
 
+  // Bundle advance = slot-1 size + slot-2 size: {RVC,RVC}=+4, {RVC,32b} and
+  // {32b,RVC}=+6, {32b,32b}=+8.
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] bundle_advance_sel_live;
+  always_comb begin
+    unique case ({
+      is_compressed_fast, slot2_is_compressed_for_pc_live
+    })
+      2'b11:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus4;
+      2'b10:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
+      2'b01:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
+      default: bundle_advance_sel_live = riscv_pkg::PcAdvancePlus8;
+    endcase
+  end
+
   always_comb begin
     pc_fetch_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
                                                      riscv_pkg::PcAdvancePlus4;
     if (!sel_nop && slot2_valid_for_pc_live) begin
-      pc_fetch_advance_sel_live = slot2_is_compressed_for_pc_live ?
-                                  riscv_pkg::PcAdvancePlus4 :
-                                  riscv_pkg::PcAdvancePlus6;
+      pc_fetch_advance_sel_live = bundle_advance_sel_live;
     end
   end
 
@@ -1340,9 +1356,7 @@ module if_stage #(
     pc_reg_advance_sel_live = riscv_pkg::PcAdvancePlus2;
     if (!sel_nop) begin
       if (slot2_valid_for_pc_live) begin
-        pc_reg_advance_sel_live = slot2_is_compressed_for_pc_live ?
-                                  riscv_pkg::PcAdvancePlus4 :
-                                  riscv_pkg::PcAdvancePlus6;
+        pc_reg_advance_sel_live = bundle_advance_sel_live;
       end else begin
         pc_reg_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
                                                        riscv_pkg::PcAdvancePlus4;

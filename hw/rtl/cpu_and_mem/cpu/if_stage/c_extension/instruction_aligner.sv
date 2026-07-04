@@ -469,8 +469,8 @@ module instruction_aligner #(
 
   // Slot-2 is invalid when:
   //   - slot-1 itself is a NOP/bubble (sel_nop), OR
-  //   - slot-1 is not compressed, OR
-  //   - slot-1 is a compressed control-flow op (bundle terminates), OR
+  //   - slot-1 is a control-flow op (bundle terminates) or a serializing op
+  //     (AllowsSlot2After sideband, both RVC and native 32-bit classes), OR
   //   - slot-2 does not fit in the 64-bit fetch (NEXT_HI 32-bit), OR
   //   - slot-2 needs bram_next_word but the BRAM is in the !buf+swap state
   //     (transient — see Session J gate below), OR
@@ -480,11 +480,11 @@ module instruction_aligner #(
   // bram_current_word and the two halves of bram_next_word.  The CURRENT_HI
   // case (slot-1 RVC at lo of W) reads slot-2 entirely from
   // bram_current_word's high half — no bram_next_word dependency.  The
-  // NEXT_LO case (slot-1 RVC at hi, no buffer; or slot-1 RVC at hi via
-  // buffer) needs bram_next_word to hold word(W+1).  See the Session J gate
-  // comment below for when that's reliable and when it isn't.  RVC+32 and
-  // 32+RVC and 32+32 bundles need PC advances > 4; those are still gated by
-  // the !o_is_compressed / !o_is_compressed_2 arms below pending follow-up.
+  // NEXT_LO cases (slot-1 RVC at hi, buffered or not; slot-1 32b at even)
+  // need bram_next_word to hold word(W+1).  The NEXT_HI case (slot-1 32b at
+  // odd) additionally requires an RVC slot-2 — a 32-bit one would span
+  // beyond the window and stays 1-wide.  See the Session J gate comment
+  // below for when bram_next_word is reliable and when it isn't.
   //
   // Slot-2 BRAM-bandwidth gate (Session J): allow slot-2 firing whenever
   // bram_next_word reliably holds word(pc_reg's word + 1).  CURRENT_HI never
@@ -635,11 +635,18 @@ module instruction_aligner #(
   // size mismatch (BTB compressed but live is 32-bit, or vice versa)
   // suppresses prediction in BPC, retaining the original safety property
   // that drove Session Q's strict guard.
-  // PC-critical slot-2 valid path.  Slot-2 can only dispatch behind a
-  // compressed slot-1, so the only valid positions are CURRENT_HI and NEXT_LO.
-  // The per-halfword sideband predecodes the compressed-and-not-control slot-1
-  // predicate and the slot-2 start-valid predicate.  That keeps the PC advance
-  // path from rebuilding those conditions from several raw sideband bits.
+  // PC-critical slot-2 valid path.  Bundles now form behind BOTH compressed
+  // and native 32-bit non-control, non-serialize slot-1s (the sideband's
+  // AllowsSlot2After covers both), so all four (slot-1 size x position)
+  // shapes are enumerated:
+  //   RVC @ even  -> slot-2 at CURRENT_HI
+  //   32b @ even  -> slot-2 at NEXT_LO   (RVC = +6, 32b = +8)
+  //   RVC @ odd   -> slot-2 at NEXT_LO
+  //   32b @ odd   -> slot-2 at NEXT_HI   (RVC only: a 32-bit slot-2 there
+  //                                       would span beyond the 64-bit fetch)
+  // The per-halfword sideband predecodes the allows-slot-2 predicate, the
+  // slot-1 size, and the slot-2 start-valid predicate.  That keeps the PC
+  // advance path from rebuilding those conditions from several raw bits.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({
@@ -655,40 +662,81 @@ module instruction_aligner #(
     endcase
   end
 
+  // Slot-1 size from the same sideband source as the allows predicate (the
+  // fast o_is_compressed mux carries saved-state arms this PC-critical cone
+  // must not depend on; during replay the saved selects take over anyway).
+  logic slot1_compressed_for_pc;
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   slot1_compressed_for_pc = aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
+      2'b01:   slot1_compressed_for_pc = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
+      2'b10:   slot1_compressed_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
+      2'b11:   slot1_compressed_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
+      default: slot1_compressed_for_pc = 1'b0;
+    endcase
+  end
+
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
+  logic slot2_next_hi_candidate;
+  // RVC slot-1 at even: slot-2 at CURRENT_HI.
   assign slot2_current_hi_candidate = !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
-                                      aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo];
-  assign slot2_next_lo_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc;
+                                      aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
+                                      aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
+  // NEXT_LO from either shape: 32b slot-1 at even (32b-led pair) or RVC
+  // slot-1 at odd (buffered or not).  The 32b-led arm keeps the existing
+  // buffer-at-even punt (o_use_instr_buffer && !pc_reg[1] stays invalid).
+  assign slot2_next_lo_candidate =
+      (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+       aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
+       !aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo]) ||
+      (!o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc && slot1_compressed_for_pc);
+  // 32b slot-1 at odd: slot-2 at NEXT_HI (RVC slot-2 only).
+  assign slot2_next_hi_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc &&
+                                   !slot1_compressed_for_pc;
 
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
+  logic slot2_next_hi_compressed;
   logic slot2_current_hi_start_valid;
   logic slot2_next_lo_start_valid;
+  logic slot2_next_hi_start_valid;
   assign slot2_current_hi_compressed = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
   assign slot2_next_lo_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
+  assign slot2_next_hi_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi];
   assign slot2_current_hi_start_valid = aligned_current_sb[riscv_pkg::ImemSbSlot2StartValidHi];
   assign slot2_next_lo_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign slot2_next_hi_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidHi];
 
   logic slot2_current_hi_invalid;
   logic slot2_next_lo_invalid;
+  logic slot2_next_hi_invalid;
   assign slot2_current_hi_invalid =
       !slot2_current_hi_start_valid || (slot2_bram_unsafe && !slot2_current_hi_compressed);
   assign slot2_next_lo_invalid = slot2_bram_unsafe || !slot2_next_lo_start_valid;
+  assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_start_valid ||
+                                 !slot2_next_hi_compressed;
 
   logic slot2_current_hi_valid_for_pc;
   logic slot2_next_lo_valid_for_pc;
+  logic slot2_next_hi_valid_for_pc;
   assign slot2_current_hi_valid_for_pc = slot2_current_hi_candidate && !slot2_current_hi_invalid;
   assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate && !slot2_next_lo_invalid;
+  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate && !slot2_next_hi_invalid;
 
   logic slot2_valid_when_enabled;
-  assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc || slot2_next_lo_valid_for_pc;
+  assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc ||
+      slot2_next_lo_valid_for_pc || slot2_next_hi_valid_for_pc;
   assign o_slot2_valid_for_pc = slot2_valid_when_enabled;
   // Consumers only inspect the compression bit when slot-2 is valid.  Keep the
   // valid predicate out of this high-fanout select so the sideband "allows
-  // slot-2" bit does not also drive the slot-2-size mux cone.
+  // slot-2" bit does not also drive the slot-2-size mux cone.  The candidates
+  // are mutually exclusive by construction (even/odd, slot-1 size).
   assign o_slot2_is_compressed_for_pc =
-      slot2_current_hi_candidate ? slot2_current_hi_compressed : slot2_next_lo_compressed;
+      slot2_current_hi_candidate ? slot2_current_hi_compressed :
+      slot2_next_hi_candidate    ? slot2_next_hi_compressed    : slot2_next_lo_compressed;
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;
@@ -726,8 +774,12 @@ module instruction_aligner #(
   logic slot2_kill_start_invalid;
   assign slot2_kill_start_invalid =
       slot2_current_hi_candidate ? !slot2_current_hi_start_valid :
-      slot2_next_lo_candidate    ? !slot2_next_lo_start_valid    : 1'b0;
+      slot2_next_lo_candidate    ? !slot2_next_lo_start_valid    :
+      slot2_next_hi_candidate    ? !slot2_next_hi_start_valid    : 1'b0;
 
+  // With 32b-led pairing, !allows for a native slot-1 now means it is a
+  // 32-bit control-flow or serializing instruction (the counter formerly
+  // counted every native 32-bit slot-1).
   assign o_slot2_kill_slot1_32bit = !slot1_allows_slot2_for_pc && !o_is_compressed;
   assign o_slot2_kill_slot1_ctrl = !slot1_allows_slot2_for_pc && o_is_compressed;
   assign o_slot2_kill_class = slot1_allows_slot2_for_pc && slot2_kill_start_invalid;
