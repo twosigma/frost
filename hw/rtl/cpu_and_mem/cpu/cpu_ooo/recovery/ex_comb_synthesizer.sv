@@ -48,6 +48,10 @@ module ex_comb_synthesizer #(
     // Correctly-predicted branch commit path (BTB update only).
     input logic                                      i_correct_branch_commit_pending,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
+    // Slot-2 correct-branch training (lowest priority; the MFC only asserts
+    // pending_2 on cycles where every higher arm is quiet).
+    input logic                                      i_correct_branch_commit_pending_2,
+    input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q_2,
 
     output riscv_pkg::from_ex_comb_t o_from_ex_comb
 );
@@ -77,6 +81,10 @@ module ex_comb_synthesizer #(
   assign mispredict_commit_q            = i_mispredict_commit_q;
   assign correct_branch_commit_pending  = i_correct_branch_commit_pending;
   assign correct_branch_commit_q        = i_correct_branch_commit_q;
+  logic correct_branch_commit_pending_2;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
+  assign correct_branch_commit_pending_2 = i_correct_branch_commit_pending_2;
+  assign correct_branch_commit_q_2       = i_correct_branch_commit_q_2;
 
   riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
@@ -140,6 +148,20 @@ module ex_comb_synthesizer #(
         from_ex_comb_synth.btb_update_target = correct_branch_commit_q.branch_target;
         from_ex_comb_synth.btb_update_taken = correct_branch_commit_q.branch_taken;
         from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q.is_compressed;
+        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
+      end
+
+    end else if (correct_branch_commit_pending_2) begin
+      // Slot-2 correctly-predicted branch retire (held capture, served on
+      // idle cycles only — training drops under sustained contention, the
+      // same lossy contract as the slot-1 correct-branch arm).
+      if (correct_branch_commit_q_2.is_branch && !correct_branch_commit_q_2.is_jal &&
+          !correct_branch_commit_q_2.is_jalr) begin
+        from_ex_comb_synth.btb_update = 1'b1;
+        from_ex_comb_synth.btb_update_pc = correct_branch_commit_q_2.pc;
+        from_ex_comb_synth.btb_update_target = correct_branch_commit_q_2.branch_target;
+        from_ex_comb_synth.btb_update_taken = correct_branch_commit_q_2.branch_taken;
+        from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q_2.is_compressed;
         from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
       end
 
