@@ -1718,7 +1718,9 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
 # Same-cycle comb-commit vs flush-after-head-commit
 # ============================================================================
 @cocotb.test()
-async def test_commit_cycle_registered_guard_survives_flush_after_head(dut: Any) -> None:
+async def test_commit_cycle_registered_guard_survives_flush_after_head(
+    dut: Any,
+) -> None:
     """A store whose registered commit lands in the flush cycle must survive.
 
     System-real shape of the cjpeg lost-store race: the store's combinational

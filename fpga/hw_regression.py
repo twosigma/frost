@@ -232,9 +232,7 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
         def hello_judge(serial_buf: str) -> tuple[bool, str]:
             """Pass when the once-per-second greeting proves boot + timer."""
             greetings = serial_buf.count(HELLO_GREETING)
-            if _default_failure_done(serial_buf) or re.search(
-                r"\bERROR\b", serial_buf
-            ):
+            if _default_failure_done(serial_buf) or re.search(r"\bERROR\b", serial_buf):
                 return False, "failure marker in output"
             if greetings < HELLO_MIN_GREETINGS:
                 return False, (
@@ -245,8 +243,7 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
 
         return UartStage(
             app,
-            success_done=lambda buf: buf.count(HELLO_GREETING)
-            >= HELLO_MIN_GREETINGS,
+            success_done=lambda buf: buf.count(HELLO_GREETING) >= HELLO_MIN_GREETINGS,
             failure_done=_default_failure_done,
             judge=hello_judge,
         )
@@ -480,8 +477,7 @@ def run_uart_stage(
     if not program_started:
         status = "TIMEOUT"
         note = (
-            f"loader never reached {LOAD_COMPLETE_SENTINEL} "
-            f"within {timeout_s:.0f}s"
+            f"loader never reached {LOAD_COMPLETE_SENTINEL} " f"within {timeout_s:.0f}s"
         )
     elif stage.success_done(serial_buf) or stage.failure_done(serial_buf):
         ok, note = stage.judge(serial_buf)
