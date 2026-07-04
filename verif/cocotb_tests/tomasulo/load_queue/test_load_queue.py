@@ -1962,11 +1962,17 @@ async def test_blocked_head_amo_rescues_when_issue_would_idle(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35c: ROB-head AMO rescue stays dormant while normal progress exists
+# Test 35c: AMO write fence orders younger loads behind the head AMO
 # ============================================================================
 @cocotb.test()
 async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> None:
-    """A blocked ROB-head AMO does not jump ahead of a normal eligible load."""
+    """Younger loads are fenced until every older AMO has written memory.
+
+    The AMO write fence (older_amo_write_pending) holds any load younger than
+    an un-written AMO: letting it launch would read the pre-AMO memory value.
+    The fenced load also releases SQ-check staging, so the eligible ROB-head
+    AMO itself is the entry that reaches the memory port first.
+    """
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOSWAP_W
@@ -2009,18 +2015,23 @@ async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> N
     dut_if.drive_sq_committed_empty(True)
 
     mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "Normal load candidate should still issue"
+    assert mem_req["en"], "Head AMO read should issue while younger loads are fenced"
     assert (
-        mem_req["addr"] == 0xA000
-    ), f"Expected normal load addr=0xA000, got 0x{mem_req['addr']:x}"
+        mem_req["addr"] == 0xA008
+    ), f"Expected head AMO addr=0xA008 (younger load fenced), got 0x{mem_req['addr']:x}"
 
 
 # ============================================================================
-# Test 35d: ROB-head AMO idle rescue must not replace busy SQ-check
+# Test 35d: AMO write fence evicts a fenced younger load from SQ-check
 # ============================================================================
 @cocotb.test()
 async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None:
-    """Idle rescue stays off while a younger load is already in SQ-check."""
+    """A staged load fenced by older AMOs releases SQ-check for the head AMO.
+
+    Once older un-written AMOs exist, the staged younger load must not issue
+    (it would read pre-AMO memory).  It releases staging instead, and the
+    eligible ROB-head AMO takes the memory port.
+    """
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOSWAP_W
@@ -2038,8 +2049,9 @@ async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None
     assert sq_check["rob_tag"] == 2
 
     # Physical order after the staged load: younger pending AMO, then the true
-    # ROB-head AMO.  The head AMO is eligible but physically blocked by the
-    # younger AMO.  The idle rescue must not evict the existing SQ-check entry.
+    # ROB-head AMO.  Both AMOs are architecturally older than the staged load
+    # (tags 0 and 1 vs 2), so the AMO write fence must evict the staged load
+    # and the head AMO must reach the memory port.
     dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
     model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
     await dut_if.step()
@@ -2060,14 +2072,13 @@ async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None
     await dut_if.step()
     dut_if.clear_addr_update()
 
-    for _ in range(6):
-        await Timer(1, unit="ns")
-        mem_req = dut_if.read_mem_request()
-        assert not mem_req["en"], "Blocked head AMO must not replace busy SQ-check"
-        sq_check = dut_if.read_sq_check()
-        assert sq_check["valid"], "Original SQ-check entry should remain staged"
-        assert sq_check["rob_tag"] == 2
-        await dut_if.step()
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req[
+        "en"
+    ], "Head AMO read should issue once the fenced load releases staging"
+    assert (
+        mem_req["addr"] == 0xB008
+    ), f"Expected head AMO addr=0xB008 (fenced load evicted), got 0x{mem_req['addr']:x}"
 
 
 # ============================================================================
