@@ -94,11 +94,13 @@ Two bypass paths shave a cycle each off the load critical latency:
   that tag so the entry appears addr-valid the same cycle MEM_RS issues
   (`entry_addr_valid_now`). Removes the flop between RS issue and SQ
   disambiguation.
-- **`cdb_stage` completion bypass.** On a memory response or L0
-  fast-path hit, the LQ writes `cdb_stage` directly from the response /
-  cache data path instead of routing through `lq_data_valid` + a
-  priority encoder. The entry frees and the CDB broadcast arms the
-  same cycle. AMO and FLD stay on the standard path.
+- **`cdb_stage` completion bypass.** On a memory response, L0
+  fast-path hit, or SQ forward, the LQ writes `cdb_stage` directly
+  from the response / cache / forward data path instead of routing
+  through `lq_data_valid` + a priority encoder. The entry frees and
+  the CDB broadcast arms the same cycle. AMOs stay on the standard
+  path, as do two-phase memory FLDs — but a *forwarded* FLD bypasses,
+  since the SQ delivers its full 64-bit payload in a single probe.
 
 ## Back-to-back issue
 
