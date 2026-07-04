@@ -67,7 +67,7 @@ module perf_counter_aggregator (
 );
 
   localparam int unsigned PerfTopCounterCount = 37;
-  localparam int unsigned PerfWrapperCounterCount = 60;
+  localparam int unsigned PerfWrapperCounterCount = 64;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);

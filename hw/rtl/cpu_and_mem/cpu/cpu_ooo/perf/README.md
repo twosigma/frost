@@ -276,6 +276,10 @@ valid+done, so these four partition the hazard-blocked gap:
 | 94 | 57 | `COMMIT_2_BLOCKED_NEXT_SERIAL` | cycle | Head+1 is a serial op (CSR / FENCE / FENCE.I / WFI / MRET / AMO / LR / SC / exception), not a branch. |
 | 95 | 58 | `COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED` | cycle | Head+1 is a branch that will flush. |
 | 96 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch the gate still refused (early-recovered leftovers). Correct branches retire in slot 2 now, so this reads ~0; persistent nonzero means the slot-2 branch-retire path regressed. |
+| 97 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING` and the single sq_check staging register is occupied by a different load (the one-staging-pipe serialization cost). |
+| 98 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING` and the head load is staged with phase 2 armed but the launch is still gated (drop-response window, launch qualifiers). |
+| 99 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but a cached-tier load in flight serializes launches. |
+| 100 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, no cached load in flight: the head load has not been captured yet (selector / capture-recycle bubble). Counters 97-100 partition 88. |
 
 ## Using the counters from software
 
