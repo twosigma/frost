@@ -168,6 +168,10 @@ module register_alias_table (
     // =========================================================================
     input logic                                    i_checkpoint_free,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
+    // Second free port: slot-2 correctly-predicted-branch retire releases its
+    // checkpoint in the same cycle slot-1 may be releasing another.
+    input logic                                    i_checkpoint_free_2,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id_2,
 
     // Bulk free mask for flushed younger branches (always applies, not gated)
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
@@ -723,6 +727,7 @@ module register_alias_table (
       checkpoint_valid_next = checkpoint_valid_next & ~i_checkpoint_flush_free_mask;
       // Individual free (committed branch)
       if (i_checkpoint_free) checkpoint_valid_next[i_checkpoint_free_id] = 1'b0;
+      if (i_checkpoint_free_2) checkpoint_valid_next[i_checkpoint_free_id_2] = 1'b0;
       // Save wins over all clears (new branch allocation)
       if (i_checkpoint_save) checkpoint_valid_next[i_checkpoint_id] = 1'b1;
     end

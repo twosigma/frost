@@ -1291,8 +1291,9 @@ package riscv_pkg;
     logic head_plus_one_done;
     // Fires when the full 2-wide commit gate would fire: commit_en high,
     // head+1 valid+done, and both head and head+1 pass the hazard
-    // exclusions (serial ops, branches on head+1, FENCE.I, exceptions,
-    // AMO/LR/SC, and head-mispredicting-branches). Tighter upper bound on
+    // exclusions (serial ops, mispredicting/early-recovered branches on
+    // head+1, FENCE.I, exceptions, AMO/LR/SC, and
+    // head-mispredicting-branches). Tighter upper bound on
     // the actual widen-commit fire rate than head_and_next_done.
     logic commit_2_opportunity;
     // Actual widen-commit fire rate: opportunity ANDed with the master
@@ -1312,10 +1313,12 @@ package riscv_pkg;
     //                     fence_i / WFI / MRET / AMO / LR / SC /
     //                     exception) — not a branch.
     //   NextBranchMispred : head+1 is a branch that will flush.
-    //   NextBranchCorrect : head+1 is a correctly-predicted branch (taken
-    //                       or not-taken). This is the most promising
-    //                       attack candidate — no flush is needed, just
-    //                       BTB/RAS update from slot-2.
+    //   NextBranchCorrect : head+1 is a correctly-predicted branch that the
+    //                       gate still refused (early-recovered leftovers).
+    //                       Correct branches now retire in slot 2 (second
+    //                       checkpoint-free port + held BTB/bimodal training
+    //                       captures), so this reads ~0; a persistent nonzero
+    //                       value means the slot-2 branch path regressed.
     logic commit_2_blocked_head_serial;
     logic commit_2_blocked_next_serial;
     logic commit_2_blocked_next_branch_mispred;

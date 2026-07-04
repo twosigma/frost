@@ -275,7 +275,7 @@ valid+done, so these four partition the hazard-blocked gap:
 | 93 | 56 | `COMMIT_2_BLOCKED_HEAD_SERIAL` | cycle | Head itself is a serial op or a mispredicting branch (fails the head 2-wide check). |
 | 94 | 57 | `COMMIT_2_BLOCKED_NEXT_SERIAL` | cycle | Head+1 is a serial op (CSR / FENCE / FENCE.I / WFI / MRET / AMO / LR / SC / exception), not a branch. |
 | 95 | 58 | `COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED` | cycle | Head+1 is a branch that will flush. |
-| 96 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch — no flush needed, only a BTB/RAS update from slot 2. |
+| 96 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch the gate still refused (early-recovered leftovers). Correct branches retire in slot 2 now, so this reads ~0; persistent nonzero means the slot-2 branch-retire path regressed. |
 
 ## Using the counters from software
 

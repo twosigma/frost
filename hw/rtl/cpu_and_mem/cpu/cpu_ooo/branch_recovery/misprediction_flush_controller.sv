@@ -39,6 +39,9 @@ module misprediction_flush_controller #(
     input logic i_rob_commit_misprediction_raw,
     input logic i_rob_commit_correct_branch_raw,
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit_comb,
+    // Slot-2 mirror: correctly-predicted branch retiring at head+1.
+    input logic i_rob_commit_correct_branch_2_raw,
+    input riscv_pkg::reorder_buffer_commit_t i_rob_commit_comb_2,
     input logic i_early_mispredict_active,
     input logic i_early_backend_recovery_pending,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
@@ -84,7 +87,15 @@ module misprediction_flush_controller #(
     output logic o_checkpoint_restore_reclaim_all,
     output logic [riscv_pkg::NumCheckpoints-1:0] o_checkpoint_flush_free_mask,
     output logic o_checkpoint_free,
-    output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id
+    output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id,
+    // Slot-2 correct-branch side effects: a second, direct checkpoint-free
+    // channel (never contends with the recovery arms of the primary mux)
+    // and a held BTB-training capture served when the primary channel is
+    // idle (training is lossy by design; the free pulse is not).
+    output logic o_correct_branch_commit_pending_2,
+    output riscv_pkg::correct_branch_commit_capture_t o_correct_branch_commit_q_2,
+    output logic o_checkpoint_free_2,
+    output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id_2
 );
 
   // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
@@ -105,23 +116,27 @@ module misprediction_flush_controller #(
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_younger_than_flush;
   logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
-  assign rob_commit_misprediction_raw   = i_rob_commit_misprediction_raw;
-  assign rob_commit_correct_branch_raw  = i_rob_commit_correct_branch_raw;
-  assign rob_commit_comb                = i_rob_commit_comb;
-  assign early_mispredict_active        = i_early_mispredict_active;
-  assign early_backend_recovery_pending = i_early_backend_recovery_pending;
-  assign head_tag                       = i_head_tag;
-  assign early_mispredict_tag           = i_early_mispredict_tag;
-  assign early_backend_flush_tag        = i_early_backend_flush_tag;
-  assign early_mispredict_checkpoint_id = i_early_mispredict_checkpoint_id;
-  assign trap_taken_reg                 = i_trap_taken_reg;
-  assign mret_taken_reg                 = i_mret_taken_reg;
-  assign flush_for_trap                 = i_flush_for_trap;
-  assign flush_for_mret                 = i_flush_for_mret;
-  assign fence_i_flush                  = i_fence_i_flush;
-  assign checkpoint_in_use              = i_checkpoint_in_use;
-  assign checkpoint_younger_than_flush  = i_checkpoint_younger_than_flush;
-  assign checkpoint_owner_tag           = i_checkpoint_owner_tag;
+  assign rob_commit_misprediction_raw  = i_rob_commit_misprediction_raw;
+  assign rob_commit_correct_branch_raw = i_rob_commit_correct_branch_raw;
+  assign rob_commit_comb               = i_rob_commit_comb;
+  logic rob_commit_correct_branch_2_raw;
+  riscv_pkg::reorder_buffer_commit_t rob_commit_comb_2;
+  assign rob_commit_correct_branch_2_raw = i_rob_commit_correct_branch_2_raw;
+  assign rob_commit_comb_2               = i_rob_commit_comb_2;
+  assign early_mispredict_active         = i_early_mispredict_active;
+  assign early_backend_recovery_pending  = i_early_backend_recovery_pending;
+  assign head_tag                        = i_head_tag;
+  assign early_mispredict_tag            = i_early_mispredict_tag;
+  assign early_backend_flush_tag         = i_early_backend_flush_tag;
+  assign early_mispredict_checkpoint_id  = i_early_mispredict_checkpoint_id;
+  assign trap_taken_reg                  = i_trap_taken_reg;
+  assign mret_taken_reg                  = i_mret_taken_reg;
+  assign flush_for_trap                  = i_flush_for_trap;
+  assign flush_for_mret                  = i_flush_for_mret;
+  assign fence_i_flush                   = i_fence_i_flush;
+  assign checkpoint_in_use               = i_checkpoint_in_use;
+  assign checkpoint_younger_than_flush   = i_checkpoint_younger_than_flush;
+  assign checkpoint_owner_tag            = i_checkpoint_owner_tag;
 
   // Outputs produced below (also read internally); wired to o_* at the end.
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
@@ -217,6 +232,57 @@ module misprediction_flush_controller #(
       correct_branch_commit_q.is_compressed <= rob_commit_comb.is_compressed;
     end
   end
+
+  // --- Slot-2 correct-branch capture ---
+  // pending_2 is HELD until the BTB-training channel is idle (all higher
+  // synthesizer arms quiet), superseded by a newer slot-2 capture, or
+  // flushed.  The checkpoint free must NOT wait: it pulses on the first
+  // held cycle, and the ownership CAM qualification (in_use && owner match)
+  // self-limits it to exactly one pulse — cpu_ooo clears in_use on the free,
+  // so a reallocated id can never be freed again by a stale hold.
+  logic correct_branch_commit_pending_2;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
+  wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
+  logic correct_branch_2_served;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all) correct_branch_commit_pending_2 <= 1'b0;
+    else if (commit_is_correct_branch_2) correct_branch_commit_pending_2 <= 1'b1;
+    else if (correct_branch_2_served) correct_branch_commit_pending_2 <= 1'b0;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (commit_is_correct_branch_2) begin
+      correct_branch_commit_q_2.tag           <= rob_commit_comb_2.tag;
+      correct_branch_commit_q_2.checkpoint_id <= rob_commit_comb_2.checkpoint_id;
+      correct_branch_commit_q_2.pc            <= rob_commit_comb_2.pc;
+      correct_branch_commit_q_2.branch_target <= rob_commit_comb_2.branch_target;
+      correct_branch_commit_q_2.branch_taken  <= rob_commit_comb_2.branch_taken;
+      correct_branch_commit_q_2.is_branch     <= rob_commit_comb_2.is_branch;
+      correct_branch_commit_q_2.is_jal        <= rob_commit_comb_2.is_jal;
+      correct_branch_commit_q_2.is_jalr       <= rob_commit_comb_2.is_jalr;
+      correct_branch_commit_q_2.is_compressed <= rob_commit_comb_2.is_compressed;
+    end
+  end
+
+  // Served when every higher-priority synthesizer arm is quiet this cycle.
+  assign correct_branch_2_served = correct_branch_commit_pending_2 &&
+      !early_mispredict_active && !mispredict_recovery_pending &&
+      !correct_branch_commit_pending;
+
+  // One-shot slot-2 checkpoint free (see ownership self-limit note above).
+  logic correct_branch_commit_checkpoint_live_2;
+  always_comb begin
+    correct_branch_commit_checkpoint_live_2 = 1'b0;
+    if (correct_branch_commit_pending_2) begin
+      correct_branch_commit_checkpoint_live_2 =
+          checkpoint_in_use[correct_branch_commit_q_2.checkpoint_id] &&
+          (checkpoint_owner_tag[correct_branch_commit_q_2.checkpoint_id] ==
+           correct_branch_commit_q_2.tag);
+    end
+  end
+  assign o_checkpoint_free_2    = !flush_all && correct_branch_commit_checkpoint_live_2;
+  assign o_checkpoint_free_id_2 = correct_branch_commit_q_2.checkpoint_id;
 
   // Flush pipeline on the redirecting early-recovery phase, registered
   // misprediction recovery, trap, MRET, or FENCE.I. The delayed backend
@@ -334,19 +400,21 @@ module misprediction_flush_controller #(
   end
 
   // --- Output wiring.
-  assign o_mispredict_commit_q           = mispredict_commit_q;
-  assign o_mispredict_recovery_pending   = mispredict_recovery_pending;
-  assign o_fence_i_target_pc             = fence_i_target_pc;
-  assign o_correct_branch_commit_pending = correct_branch_commit_pending;
-  assign o_correct_branch_commit_q       = correct_branch_commit_q;
-  assign o_flush_pipeline                = flush_pipeline;
-  assign o_dispatch_flush                = dispatch_flush;
-  assign o_full_flush_side_effect_kill   = full_flush_side_effect_kill;
-  assign o_frontend_state_flush          = frontend_state_flush;
-  assign o_flush_en                      = flush_en;
-  assign o_flush_tag                     = flush_tag;
-  assign o_flush_all                     = flush_all;
-  assign o_flush_all_flat                = trap_taken_reg || mret_taken_reg || fence_i_flush;
+  assign o_mispredict_commit_q             = mispredict_commit_q;
+  assign o_mispredict_recovery_pending     = mispredict_recovery_pending;
+  assign o_fence_i_target_pc               = fence_i_target_pc;
+  assign o_correct_branch_commit_pending   = correct_branch_commit_pending;
+  assign o_correct_branch_commit_pending_2 = correct_branch_2_served;
+  assign o_correct_branch_commit_q_2       = correct_branch_commit_q_2;
+  assign o_correct_branch_commit_q         = correct_branch_commit_q;
+  assign o_flush_pipeline                  = flush_pipeline;
+  assign o_dispatch_flush                  = dispatch_flush;
+  assign o_full_flush_side_effect_kill     = full_flush_side_effect_kill;
+  assign o_frontend_state_flush            = frontend_state_flush;
+  assign o_flush_en                        = flush_en;
+  assign o_flush_tag                       = flush_tag;
+  assign o_flush_all                       = flush_all;
+  assign o_flush_all_flat                  = trap_taken_reg || mret_taken_reg || fence_i_flush;
 
 `ifndef SYNTHESIS
   // o_flush_all_flat must be bit-identical to the priority-chain o_flush_all.

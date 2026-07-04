@@ -482,11 +482,17 @@ async def test_widen_commit_ok_blocks_slot2_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_branch_checkpoint_metadata_and_no_widen_commit(dut: Any) -> None:
-    """A slot-2 branch keeps checkpoint metadata and never retires as commit_2."""
-    cocotb.log.info("=== Test: Slot-2 Branch Checkpoint Metadata ===")
+    """Slot-2 correct branch widen-commits; mispredicted still blocks.
+
+    A correctly-predicted branch at head+1 retires as commit_2 with real
+    branch/checkpoint metadata; a mispredicted branch at head+1 must still
+    block widen commit and retire 1-wide at the head.
+    """
+    cocotb.log.info("=== Test: Slot-2 Branch Widen Commit / Metadata ===")
 
     dut_if, _ = await setup_test(dut)
 
+    # --- Phase 1: correctly-predicted branch at head+1 dual-commits ---
     req_1 = make_simple_alloc_request(pc=0x1000, rd=5)
     req_2 = make_branch_request(
         pc=0x1004,
@@ -508,27 +514,49 @@ async def test_slot2_branch_checkpoint_metadata_and_no_widen_commit(dut: Any) ->
     commit_1 = dut_if.read_commit()
     commit_2 = dut_if.read_commit_2()
     assert commit_1["valid"] and commit_1["tag"] == tag_1
-    assert not commit_2["valid"], "Branch in head+1 must block widen commit"
+    assert commit_2["valid"], "Correct branch at head+1 should widen commit"
+    assert commit_2["tag"] == tag_2
+    assert commit_2["is_branch"]
+    assert commit_2["has_checkpoint"]
+    assert commit_2["checkpoint_id"] == 6
+    assert commit_2["branch_taken"]
+    assert commit_2["branch_target"] == 0x2400
+    assert not commit_2["misprediction"]
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.empty, "Both slots should have retired together"
+
+    # --- Phase 2: MISPREDICTED branch at head+1 still blocks widen commit ---
+    req_3 = make_simple_alloc_request(pc=0x2000, rd=6)
+    req_4 = make_branch_request(
+        pc=0x2004,
+        predicted_taken=True,
+        predicted_target=0x3400,
+    )
+    dut_if.drive_checkpoint(3)
+    (_, tag_3, _), (_, tag_4, _) = await drive_dual_alloc(dut_if, req_3, req_4)
+    dut_if.clear_checkpoint()
+
+    update = BranchUpdate(tag=tag_4, taken=False, target=0x3400, mispredicted=True)
+    dut_if.drive_branch_update(update)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+
+    dut_if.drive_cdb_write(CDBWrite(tag=tag_3, value=0x5678))
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"] and commit_1["tag"] == tag_3
+    assert not commit_2[
+        "valid"
+    ], "Mispredicted branch at head+1 must block widen commit"
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
     assert dut_if.count == 1
-    assert dut_if.head_tag == tag_2
-
-    await RisingEdge(dut_if.clock)
-    commit = dut_if.read_commit()
-    assert commit["valid"], "Slot-2 branch should commit once it reaches head"
-    assert commit["tag"] == tag_2
-    assert commit["is_branch"]
-    assert commit["has_checkpoint"]
-    assert commit["checkpoint_id"] == 6
-    assert commit["predicted_taken"]
-    assert commit["branch_taken"]
-    assert commit["branch_target"] == 0x2400
-    assert not commit["misprediction"]
-    await FallingEdge(dut_if.clock)
-
-    assert dut_if.empty
+    assert dut_if.head_tag == tag_4
 
     cocotb.log.info("=== Test Passed ===")
 

@@ -783,10 +783,13 @@ module cpu_ooo #(
   // ===========================================================================
   // Train the decoupled bimodal at commit for CONDITIONAL branches only.
   // rob_commit_comb.is_branch is true for branches AND jumps (is_branch_or_jump),
-  // so exclude JAL/JALR.  Branches commit only at the head (slot-1, never slot-2),
-  // so one update port suffices.  The training index is the branch's predict-time
-  // bimodal index, recovered from branch_dir_idx_table at the committing tag, so
-  // training updates the exact entry the prediction read.
+  // so exclude JAL/JALR.  Correctly-predicted branches may also retire at
+  // head+1 (slot 2): their training shares the single update port through a
+  // one-deep held register drained on slot-1-idle cycles (lossy under
+  // sustained contention, like the BTB correct-branch channel).  The training
+  // index is the branch's predict-time bimodal index, recovered from
+  // branch_dir_idx_table at the committing tag, so training updates the
+  // exact entry the prediction read.
   logic                               dir_update_valid_comb;
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
   logic                               dir_update_taken_comb;
@@ -794,6 +797,33 @@ module cpu_ooo #(
                                  !rob_commit_comb.is_jal && !rob_commit_comb.is_jalr;
   assign dir_update_idx_comb = branch_dir_idx_table[rob_commit_comb.tag];
   assign dir_update_taken_comb = rob_commit_comb.branch_taken;
+
+  // Slot-2 training: pass through directly on slot-1-idle cycles, else hold
+  // one deep (a newer slot-2 commit overwrites; the held update drains on
+  // the next slot-1-idle cycle).
+  logic                               dir_update_valid_2_comb;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_2_comb;
+  logic                               dir_update_held_valid;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_held_idx;
+  logic                               dir_update_held_taken;
+  logic                               dir_slot2_pass;
+  assign dir_update_valid_2_comb = rob_commit_comb_2.valid && rob_commit_comb_2.is_branch &&
+                                   !rob_commit_comb_2.is_jal && !rob_commit_comb_2.is_jalr;
+  assign dir_update_idx_2_comb = branch_dir_idx_table[rob_commit_comb_2.tag];
+  assign dir_slot2_pass = dir_update_valid_2_comb && !dir_update_valid_comb &&
+                          !dir_update_held_valid;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      dir_update_held_valid <= 1'b0;
+    end else if (dir_update_valid_2_comb && !dir_slot2_pass) begin
+      dir_update_held_valid <= 1'b1;
+      dir_update_held_idx   <= dir_update_idx_2_comb;
+      dir_update_held_taken <= rob_commit_comb_2.branch_taken;
+    end else if (dir_update_held_valid && !dir_update_valid_comb) begin
+      dir_update_held_valid <= 1'b0;
+    end
+  end
 
   // Register the predictor update before it enters IF.  This removes the
   // ROB-head/serializer path from the distributed-RAM read-modify-write timing
@@ -807,9 +837,13 @@ module cpu_ooo #(
       dir_update_idx   <= '0;
       dir_update_taken <= 1'b0;
     end else begin
-      dir_update_valid <= dir_update_valid_comb;
-      dir_update_idx   <= dir_update_idx_comb;
-      dir_update_taken <= dir_update_taken_comb;
+      dir_update_valid <= dir_update_valid_comb || dir_slot2_pass ||
+                          (dir_update_held_valid && !dir_update_valid_comb);
+      dir_update_idx   <= dir_update_valid_comb ? dir_update_idx_comb :
+                          (dir_slot2_pass ? dir_update_idx_2_comb : dir_update_held_idx);
+      dir_update_taken <= dir_update_valid_comb ? dir_update_taken_comb :
+                          (dir_slot2_pass ? rob_commit_comb_2.branch_taken :
+                           dir_update_held_taken);
     end
   end
 
@@ -878,6 +912,11 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
   logic rob_commit_misprediction_raw;
   logic rob_commit_correct_branch_raw;
+  logic rob_commit_correct_branch_2_raw;
+  logic correct_branch_commit_pending_2;
+  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
+  logic checkpoint_free_2;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_free_id_2;
   logic rob_head_commit_misprediction_candidate;
 
   // Flush
@@ -997,6 +1036,7 @@ module cpu_ooo #(
       checkpoint_in_use_next = checkpoint_in_use;
       checkpoint_in_use_next = checkpoint_in_use_next & ~checkpoint_flush_free_mask;
       if (checkpoint_free) checkpoint_in_use_next[checkpoint_free_id] = 1'b0;
+      if (checkpoint_free_2) checkpoint_in_use_next[checkpoint_free_id_2] = 1'b0;
       // Save wins over all clears
       if (rob_checkpoint_valid) checkpoint_in_use_next[rob_checkpoint_id] = 1'b1;
     end
@@ -1108,6 +1148,7 @@ module cpu_ooo #(
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
       .o_commit_correct_branch_raw(rob_commit_correct_branch_raw),
+      .o_commit_correct_branch_2_raw(rob_commit_correct_branch_2_raw),
       .o_head_commit_misprediction_candidate(rob_head_commit_misprediction_candidate),
 
       // Widen-commit slot 2 observation plus the downstream-ready gate.
@@ -1261,6 +1302,8 @@ module cpu_ooo #(
       // RAT checkpoint free
       .i_checkpoint_free(checkpoint_free),
       .i_checkpoint_free_id(checkpoint_free_id),
+      .i_checkpoint_free_2(checkpoint_free_2),
+      .i_checkpoint_free_id_2(checkpoint_free_id_2),
 
       // RAT checkpoint availability
       .o_checkpoint_available(checkpoint_available),
@@ -1873,6 +1916,8 @@ module cpu_ooo #(
       .i_rob_commit_misprediction_raw(rob_commit_misprediction_raw),
       .i_rob_commit_correct_branch_raw(rob_commit_correct_branch_raw),
       .i_rob_commit_comb(rob_commit_comb),
+      .i_rob_commit_correct_branch_2_raw(rob_commit_correct_branch_2_raw),
+      .i_rob_commit_comb_2(rob_commit_comb_2),
       .i_early_mispredict_active(early_mispredict_active),
       .i_early_backend_recovery_pending(early_backend_recovery_pending),
       .i_head_tag(head_tag),
@@ -1892,6 +1937,10 @@ module cpu_ooo #(
       .o_fence_i_target_pc(fence_i_target_pc),
       .o_correct_branch_commit_pending(correct_branch_commit_pending),
       .o_correct_branch_commit_q(correct_branch_commit_q),
+      .o_correct_branch_commit_pending_2(correct_branch_commit_pending_2),
+      .o_correct_branch_commit_q_2(correct_branch_commit_q_2),
+      .o_checkpoint_free_2(checkpoint_free_2),
+      .o_checkpoint_free_id_2(checkpoint_free_id_2),
       .o_flush_pipeline(flush_pipeline),
       .o_dispatch_flush(dispatch_flush),
       .o_full_flush_side_effect_kill(full_flush_side_effect_kill),
@@ -1931,6 +1980,8 @@ module cpu_ooo #(
       .i_mispredict_commit_q(mispredict_commit_q),
       .i_correct_branch_commit_pending(correct_branch_commit_pending),
       .i_correct_branch_commit_q(correct_branch_commit_q),
+      .i_correct_branch_commit_pending_2(correct_branch_commit_pending_2),
+      .i_correct_branch_commit_q_2(correct_branch_commit_q_2),
       .o_from_ex_comb(from_ex_comb_synth)
   );
 

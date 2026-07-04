@@ -96,11 +96,16 @@ FENCE / FENCE.I, WFI, MRET, AMO / LR / SC, exceptions, and any
 mispredicting head or head+1 branch. That leaves the common case —
 two ordinary-completion entries retiring back-to-back.
 
-Slot 2 is a stripped-down sibling of slot 1. It carries only the
-regfile retire, store-commit, and RAT clear payload; it never drives
-mispredict / checkpoint / redirect paths because the hazard gate
-guarantees those conditions can't happen on head+1 when slot 2
-fires. A `_next` replica of each head RAM (head-meta, pc, dest, value,
+Slot 2 is a stripped-down sibling of slot 1. It carries the regfile
+retire, store-commit, and RAT clear payload, and — since the gate
+admits correctly-predicted branches at head+1 — real branch and
+checkpoint metadata plus a second correct-branch strobe
+(`o_commit_correct_branch_2_raw`) for the slot-2 checkpoint-free /
+BTB-training capture. It still never drives mispredict / redirect
+paths: the hazard gate guarantees a mispredicting (or early-recovered)
+branch can't retire on head+1, so slot 2's `misprediction` stays
+hardwired 0 and its `redirect_pc` only ever carries the architectural
+next-PC of a correctly-predicted branch. A `_next` replica of each head RAM (head-meta, pc, dest, value,
 predicted-target, checkpoint-id, branch-target, exc-cause, fp-flags,
 csr-*) gives slot 2 its own read port at `head_idx + 1`.
 
