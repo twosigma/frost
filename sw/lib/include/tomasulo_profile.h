@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 97U
+#define TOMASULO_PROFILE_COUNTER_COUNT 101U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -125,6 +125,11 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 94,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 95,
     TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 96,
+    /* Staging catch-all sub-decomposition (partitions HEAD_LOAD_BB_STAGING). */
+    TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 97,
+    TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 98,
+    TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 99,
+    TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 100,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -787,6 +792,22 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "Head load bus-blocked: staging/misc",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_STAGING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: other load in sq_check",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: head staged, launch gated",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: cached load outstanding",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING),
+        cycles);
+    tomasulo_profile_print_metric(
+        "  staging: capture gap",
+        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP),
         cycles);
     tomasulo_profile_print_metric(
         "Head INT: operand wait (in RS, src not ready)",

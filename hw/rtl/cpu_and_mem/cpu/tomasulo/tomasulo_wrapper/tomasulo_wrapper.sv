@@ -1103,6 +1103,10 @@ module tomasulo_wrapper #(
   logic lq_head_load_bb_amo;
   logic lq_head_load_bb_sq_wait;
   logic lq_head_load_bb_staging;
+  logic lq_head_load_bbs_other_in_staging;
+  logic lq_head_load_bbs_launch_gated;
+  logic lq_head_load_bbs_slow_outstanding;
+  logic lq_head_load_bbs_capture_gap;
 
   function automatic logic is_mem_access_misaligned(input riscv_pkg::mem_size_e size,
                                                     input logic [riscv_pkg::XLEN-1:0] addr);
@@ -2693,11 +2697,15 @@ module tomasulo_wrapper #(
       .o_head_load_post_lq     (lq_head_load_post_lq),
 
       // bus_blocked sub-bucket decomposition
-      .o_head_load_bb_issued  (lq_head_load_bb_issued),
-      .o_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
-      .o_head_load_bb_amo     (lq_head_load_bb_amo),
-      .o_head_load_bb_sq_wait (lq_head_load_bb_sq_wait),
-      .o_head_load_bb_staging (lq_head_load_bb_staging)
+      .o_head_load_bb_issued           (lq_head_load_bb_issued),
+      .o_head_load_bb_bus_busy         (lq_head_load_bb_bus_busy),
+      .o_head_load_bb_amo              (lq_head_load_bb_amo),
+      .o_head_load_bb_sq_wait          (lq_head_load_bb_sq_wait),
+      .o_head_load_bb_staging          (lq_head_load_bb_staging),
+      .o_head_load_bbs_other_in_staging(lq_head_load_bbs_other_in_staging),
+      .o_head_load_bbs_launch_gated    (lq_head_load_bbs_launch_gated),
+      .o_head_load_bbs_slow_outstanding(lq_head_load_bbs_slow_outstanding),
+      .o_head_load_bbs_capture_gap     (lq_head_load_bbs_capture_gap)
   );
 
   // ===========================================================================
@@ -3073,6 +3081,10 @@ module tomasulo_wrapper #(
       .i_lq_head_load_bb_amo(lq_head_load_bb_amo),
       .i_lq_head_load_bb_sq_wait(lq_head_load_bb_sq_wait),
       .i_lq_head_load_bb_staging(lq_head_load_bb_staging),
+      .i_lq_head_load_bbs_other_in_staging(lq_head_load_bbs_other_in_staging),
+      .i_lq_head_load_bbs_launch_gated(lq_head_load_bbs_launch_gated),
+      .i_lq_head_load_bbs_slow_outstanding(lq_head_load_bbs_slow_outstanding),
+      .i_lq_head_load_bbs_capture_gap(lq_head_load_bbs_capture_gap),
       .i_int_rs_head_in_rs(int_rs_head_in_rs),
       .i_int_rs_head_rs_ready(int_rs_head_rs_ready),
       .i_int_rs_head_in_stage2(int_rs_head_in_stage2),
