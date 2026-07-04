@@ -792,6 +792,7 @@ module load_queue #(
       .rob_head_match_q(rob_head_match_q),
       .lq_rob_tag_flat(lq_rob_tag_flat),
       .head_idx(head_idx),
+      .i_rob_head_tag(i_rob_head_tag),
       .i_sq_committed_empty(i_sq_committed_empty),
       .i_force_head_amo(force_head_amo),
       .o_issue_cdb_found(issue_cdb_found),
@@ -1042,9 +1043,14 @@ module load_queue #(
   assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
+  // older_amo_write_pending releases the staged entry instead of letting it
+  // camp: a load fenced behind an un-written older AMO would otherwise hold
+  // staging until the 512-cycle AMO deadlock breaker fires.  Released entries
+  // stay valid/un-issued and re-enter the scan after the AMO completes; the
+  // oldest-first scan then always prefers the AMO itself once it is eligible.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
   // TIMING: MMIO check folded into the Phase B eligibility masks so these
   // no longer need an indexed lq_is_mmio[issue_mem_idx] lookup.  The is_younger
@@ -1132,16 +1138,47 @@ module load_queue #(
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic sq_no_older_store;
   logic sq_commit_interlock;
-  assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
+  assign sq_no_older_store   = sq_check_no_older_store_q || i_sq_empty;
   assign sq_commit_interlock = sq_commit_check_block && sq_check_phase2;
+
+  // AMO write fence: AMOs live in the LQ, not the SQ, so SQ disambiguation
+  // cannot see their pending memory writes.  A younger load that launches,
+  // forwards, or L0-hits while an older AMO has not yet written memory reads
+  // the pre-AMO value.  Hold the staged load until every older AMO entry has
+  // completed its write (lq_data_valid covers read+write for AMOs — it is set
+  // only on i_amo_mem_write_done).  Same-tag (the staged AMO itself) is not
+  // "older", so an AMO never fences itself.
+  logic older_amo_write_pending;
+  logic [ReorderBufferTagWidth:0] staged_load_head_age;
+  assign staged_load_head_age = {1'b0, sq_check_rob_tag_q} - {1'b0, i_rob_head_tag};
+  always_comb begin
+    older_amo_write_pending = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i] &&
+          (({1'b0, lq_rob_tag[i]} - {1'b0, i_rob_head_tag}) < staged_load_head_age)) begin
+        older_amo_write_pending = 1'b1;
+      end
+    end
+  end
+
+  // A staged head AMO with the committed queue empty cannot have older SQ
+  // stores at all (committed == older-than-head; everything uncommitted is
+  // younger), so it need not wait for younger stores' addresses to resolve.
+  logic sq_head_amo_clear;
+  assign sq_head_amo_clear = sq_check_is_amo_q &&
+      (sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty;
+
   assign sq_can_issue = sq_check_phase2 && sq_check_entry_issueable &&
       !sq_check_misaligned &&
       !sq_commit_interlock &&
-      (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
+      !older_amo_write_pending &&
+      (sq_no_older_store || sq_head_amo_clear ||
+       (i_sq_all_older_addrs_known && !i_sq_forward.match));
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
       !sq_check_misaligned &&
       !sq_commit_interlock &&
+      !older_amo_write_pending &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
 
@@ -1178,8 +1215,10 @@ module load_queue #(
 
   assign sq_check_waiting_older_store =
       sq_check_pending && sq_check_phase2 && sq_check_entry_issueable &&
-      !sq_check_misaligned && !sq_commit_interlock && !sq_no_older_store &&
-      (!i_sq_all_older_addrs_known || (i_sq_forward.match && !i_sq_forward.can_forward)) &&
+      !sq_check_misaligned && !sq_commit_interlock &&
+      ((!sq_no_older_store &&
+        (!i_sq_all_older_addrs_known || (i_sq_forward.match && !i_sq_forward.can_forward))) ||
+       older_amo_write_pending) &&
       !i_mem_bus_busy && !drop_mem_response_pending && !i_flush_all && !i_flush_en;
 
   assign head_amo_no_issue_deadlock =
@@ -1835,7 +1874,7 @@ module load_queue #(
   logic sq_check_stage_clears;
   assign sq_check_stage_clears = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
   always_comb begin
     // U = capture/replace (disjoint from sq_check_flushed, see above).

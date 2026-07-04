@@ -48,11 +48,18 @@ module sq_forwarding_unit #(
     input logic i_commit_valid_2,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_2,
 
+    // SQ ring head (oldest undrained entry).  Ring-slot distance from this
+    // index is the program-order ranking key for the newest-conflict winner:
+    // ROB-tag age wraps for committed-but-undrained entries (their tags may
+    // already be reused), but slot order is allocation order and never lies.
+    input logic [$clog2(DEPTH)-1:0] i_sq_head_idx,
+
     // SQ entry-array state (bare names match the verbatim body)
     input logic [DEPTH-1:0] sq_valid,
     input logic [DEPTH-1:0] sq_addr_valid,
     input logic [DEPTH-1:0] sq_data_valid,
     input logic [DEPTH-1:0] sq_is_mmio,
+    input logic [DEPTH-1:0] sq_is_sc,
     input logic [DEPTH-1:0] sq_committed,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
@@ -74,11 +81,15 @@ module sq_forwarding_unit #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
   typedef struct packed {
-    logic                           valid;
-    logic [ReorderBufferTagWidth:0] age;
-    logic                           can_forward;
-    logic [IdxWidth-1:0]            idx;
-    logic [1:0]                     extract_type;
+    logic                valid;
+    // Ring-slot distance from i_sq_head_idx, NOT ROB-tag age: committed
+    // entries can outlive their ROB tag (reused next lap), which makes
+    // tag-based age rank them as youngest when they are in fact the oldest.
+    // Slot order is allocation (= program) order and is wrap-proof.
+    logic [IdxWidth-1:0] age;
+    logic                can_forward;
+    logic [IdxWidth-1:0] idx;
+    logic [1:0]          extract_type;
   } fwd_winner_t;
 
   function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
@@ -206,6 +217,7 @@ module sq_forwarding_unit #(
   logic [DEPTH-1:0] fwd_can_forward_mask;
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
+  logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
   logic [1:0] fwd_entry_extract_type[DEPTH];
 `ifndef FORMAL
   fwd_winner_t fwd_leaf[DEPTH];
@@ -260,6 +272,9 @@ module sq_forwarding_unit #(
       sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
       sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, i_rob_head_tag};
+      // Program-order rank for winner selection: ring distance from the SQ
+      // head.  DEPTH is a power of two, so the subtraction wraps naturally.
+      fwd_entry_slot_age[i] = IdxWidth'(i) - i_sq_head_idx;
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
@@ -301,8 +316,10 @@ module sq_forwarding_unit #(
           if (base_match || double_hi_match || load_double_hi) begin
             fwd_conflict_mask[i] = 1'b1;
 
-            // Forwarding: only non-MMIO stores with valid data
-            if (sq_data_valid[i] && !sq_is_mmio[i]) begin
+            // Forwarding: only non-MMIO, non-SC stores with valid data.  A
+            // store-conditional may fail at drain time and write nothing, so
+            // its data must never reach a younger load early.
+            if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i]) begin
               // Case 1: exact address, same size, WORD or DOUBLE
               if (base_match && full_addr_eq(
                       entry_address, sq_check_addr_for_entry
@@ -331,8 +348,10 @@ module sq_forwarding_unit #(
   assign fwd_all_older_known = ~(|fwd_addr_unknown_mask);
   assign fwd_found_match     = |fwd_conflict_mask;
 
-  // Block 2: newest conflicting store wins for data/extract selection. The
-  // heavy address/age qualification is already parallelized above, so this
+  // Block 2: newest conflicting store wins for data/extract selection, ranked
+  // by SQ ring-slot distance from i_sq_head_idx (allocation = program order;
+  // ROB-tag age is wrap-ambiguous once committed entries outlive their tag).
+  // The heavy address/age qualification is already parallelized above, so this
   // block only prioritizes 1-bit match results and their precomputed metadata.
 `ifdef FORMAL
   // Yosys's formal frontend currently mishandles the balanced tree's unpacked
@@ -340,7 +359,7 @@ module sq_forwarding_unit #(
   // as implicit wires. Use an equivalent linear selector for formal only; the
   // synthesized implementation below remains the timing-optimized tree.
   logic fwd_formal_winner_valid;
-  logic [ReorderBufferTagWidth:0] fwd_formal_winner_age;
+  logic [IdxWidth-1:0] fwd_formal_winner_age;
 
   always_comb begin
     fwd_formal_winner_valid = 1'b0;
@@ -351,9 +370,9 @@ module sq_forwarding_unit #(
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (fwd_conflict_mask[i] &&
-          (!fwd_formal_winner_valid || (fwd_entry_age[i] >= fwd_formal_winner_age))) begin
+          (!fwd_formal_winner_valid || (fwd_entry_slot_age[i] >= fwd_formal_winner_age))) begin
         fwd_formal_winner_valid = 1'b1;
-        fwd_formal_winner_age   = fwd_entry_age[i];
+        fwd_formal_winner_age   = fwd_entry_slot_age[i];
         fwd_can_fwd             = fwd_can_forward_mask[i];
         fwd_match_idx           = IdxWidth'(i);
         fwd_extract_type        = fwd_entry_extract_type[i];
@@ -367,7 +386,7 @@ module sq_forwarding_unit #(
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       fwd_leaf[i].valid        = fwd_conflict_mask[i];
-      fwd_leaf[i].age          = fwd_entry_age[i];
+      fwd_leaf[i].age          = fwd_entry_slot_age[i];
       fwd_leaf[i].can_forward  = fwd_can_forward_mask[i];
       fwd_leaf[i].idx          = IdxWidth'(i);
       fwd_leaf[i].extract_type = fwd_entry_extract_type[i];
@@ -403,11 +422,16 @@ module sq_forwarding_unit #(
       o_sq_forward.can_forward   <= i_sq_check_valid ? fwd_can_fwd : 1'b0;
     end
 
-    case (fwd_extract_type)
-      2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
-      2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
-      default: o_sq_forward.data <= sq_data_fwd_rd;
-    endcase
+    // Data is qualified by the same-edge match/can_forward above; the
+    // i_sq_check_valid gate just keeps the register from tracking the RAM
+    // while no probe is in flight.
+    if (i_sq_check_valid) begin
+      case (fwd_extract_type)
+        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
+        2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
+        default: o_sq_forward.data <= sq_data_fwd_rd;
+      endcase
+    end
   end
 
   assign o_fwd_match_idx = fwd_match_idx;

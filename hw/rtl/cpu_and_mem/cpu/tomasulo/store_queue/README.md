@@ -28,6 +28,23 @@ select, and the output register) lives in
 read index `o_fwd_match_idx`; the `sq_data` LUTRAM read at that index stays in
 `store_queue.sv` and feeds the data back for the registered output.
 
+Two ordering subtleties in the scan:
+
+- *Older-than-load qualification* uses ROB-tag age (`tag − head`, valid
+  across the live 32-entry window) with a committed override — a committed
+  store is older than any executing load by construction.
+- *Newest-match winner selection* ranks conflicting entries by **SQ
+  ring-slot distance from `head_idx`**, not by ROB-tag age. Committed
+  entries can sit undrained after their ROB tag has been reused by a
+  younger lap, which makes tag-based age rank them as youngest when they
+  are in fact the oldest — the load would then forward a stale value.
+  Slot order is allocation order (= program order) and never wraps.
+
+`can_forward` is refused for MMIO stores and for store-conditionals: an SC
+may fail at drain time and write nothing, so its data must never reach a
+younger load early. The load then waits for the SC to drain and reads
+memory.
+
 **Ordering.** Stores drain to memory in program order. The drain is
 driven by a registered drain cursor (`drain_idx_q`) — the first entry
 in ring order that is valid and not yet launched (`!sq_sent`) — which
