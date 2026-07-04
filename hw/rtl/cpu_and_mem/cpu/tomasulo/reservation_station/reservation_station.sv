@@ -719,7 +719,9 @@ module reservation_station #(
     end else begin
       // Net occupancy delta: +1 per dispatch (0/1/2 of slot-1/slot-2 firing)
       // and -1 if issue fires.
-      unique case ({dispatch_fire, dispatch_fire_2})
+      unique case ({
+        dispatch_fire, dispatch_fire_2
+      })
         2'b11:   count_next = count_after_issue_p2;
         2'b10:   count_next = count_after_issue_p1;
         2'b01:   count_next = count_after_issue_p1;
@@ -740,7 +742,9 @@ module reservation_station #(
       dispatch_full_next       = count_next == CountWidth'(DEPTH);
       dispatch_full_for_2_next = count_next >= CountWidth'(DEPTH - 1);
     end else begin
-      unique case ({dispatch_fire, dispatch_fire_2})
+      unique case ({
+        dispatch_fire, dispatch_fire_2
+      })
         2'b11: begin
           dispatch_full_next       = count_after_issue_p2 == CountWidth'(DEPTH);
           dispatch_full_for_2_next = count_after_issue_p2 >= CountWidth'(DEPTH - 1);
