@@ -124,15 +124,21 @@ module cpu_tb
     tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
   end
 
-  // 64-bit fetch window {next_word, current_word}. The testbench feeds only
-  // 32-bit, 4-byte-aligned instructions (no compressed, no halfword spanning),
-  // so the "next word" half is never consumed (spanning only fires at pc[1]);
-  // drive a NOP there.
-  assign i_instr = {TbNop, tb_cur_word};
+  // 64-bit fetch window {next_word, current_word}. The testbench feeds
+  // exactly one instruction per cycle, so the "next word" half must never be
+  // consumed. With 32b-led bundle formation, a plain NOP there would form a
+  // 2-wide bundle behind any pairable 32-bit slot-1 and advance the PC by +8,
+  // desynchronizing this bench's one-instruction-per-step model. Drive a
+  // SYSTEM encoding instead: its Slot2StartValid sideband bit is 0, so the
+  // aligner class-kills slot-2 and the PC steps +4 as this bench expects.
+  // The word itself can never execute — the bench serves every architectural
+  // PC's instruction through tb_cur_word.
+  localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
+  assign i_instr = {TbSlot2Blocker, tb_cur_word};
   // Per-word predecode sideband, computed by the same pure function the RTL
   // fetch path uses (riscv_pkg::imem_make_sideband; no lookahead).
   assign i_instr_sideband = {
-    riscv_pkg::imem_make_sideband(TbNop), riscv_pkg::imem_make_sideband(tb_cur_word)
+    riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
   };
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;

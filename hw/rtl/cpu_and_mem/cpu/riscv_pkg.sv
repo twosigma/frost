@@ -158,6 +158,16 @@ package riscv_pkg;
     end
   endfunction
 
+  // Native control flow: BRANCH, JAL, JALR.  A control-flow slot-1
+  // terminates its bundle (mirrors the compressed-control exclusion).
+  function automatic logic imem_native_control(input logic [6:0] opcode);
+    begin
+      imem_native_control = (opcode == 7'b1100011) ||  // OPC_BRANCH
+      (opcode == 7'b1101111) ||  // OPC_JAL
+      (opcode == 7'b1100111);  // OPC_JALR
+    end
+  endfunction
+
   // Native instructions that use an FP compute unit: OP-FP + the four FMAs.
   function automatic logic imem_native_fp_compute(input logic [6:0] opcode);
     begin
@@ -181,8 +191,21 @@ package riscv_pkg;
       sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
       sb[ImemSbNativeFpComputeLo] = imem_native_fp_compute(word[6:0]);
       sb[ImemSbNativeFpComputeHi] = imem_native_fp_compute(word[22:16]);
-      sb[ImemSbAllowsSlot2AfterLo] = sb[ImemSbIsCompressedLo] && !sb[ImemSbCompressedControlLo];
-      sb[ImemSbAllowsSlot2AfterHi] = sb[ImemSbIsCompressedHi] && !sb[ImemSbCompressedControlHi];
+      // A slot-1 allows a slot-2 after it when it is not control flow (the
+      // bundle would straddle a redirect) and not a serializing class (a
+      // slot-2 source renamed to a slot-1 CSR's ROB tag would never wake —
+      // CSRs execute at commit and never broadcast on the CDB).  Native
+      // 32-bit slot-1s pair since the aligner's 32b-led shapes (NEXT_LO /
+      // NEXT_HI slot-2) landed; FP-compute slot-1s pair normally (their
+      // results broadcast on the CDB like any FU).
+      sb[ImemSbAllowsSlot2AfterLo] =
+          (sb[ImemSbIsCompressedLo] && !sb[ImemSbCompressedControlLo]) ||
+          (!sb[ImemSbIsCompressedLo] && !imem_native_control(word[6:0]) &&
+          !sb[ImemSbNativeSerializeLo]);
+      sb[ImemSbAllowsSlot2AfterHi] =
+          (sb[ImemSbIsCompressedHi] && !sb[ImemSbCompressedControlHi]) ||
+          (!sb[ImemSbIsCompressedHi] && !imem_native_control(word[22:16]) &&
+          !sb[ImemSbNativeSerializeHi]);
       sb[ImemSbSlot2StartValidLo] =
           sb[ImemSbIsCompressedLo] ||
           !(sb[ImemSbNativeSerializeLo] || sb[ImemSbNativeFpComputeLo]);
@@ -559,6 +582,7 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
+  localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
 
   // Magic number constants for RISC-V 32-bit operations
   // Used in ALU for special case handling (e.g., division overflow)
