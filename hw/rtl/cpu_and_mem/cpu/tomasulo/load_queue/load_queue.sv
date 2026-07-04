@@ -1737,7 +1737,23 @@ module load_queue #(
                                  !resp_bypass_fire && !misalign_bypass_fire &&
                                  cache_hit_fast_path;
 
-  assign bypass_fire = resp_bypass_fire || misalign_bypass_fire || cache_hit_bypass_fire;
+  // SQ-forward completion bypass: forwarded loads previously took the
+  // standard data_valid -> Phase-A selector -> cdb_stage path (+2 cycles vs
+  // the bypassed L0/response completions).  Capture the forward result into
+  // cdb_stage the cycle sq_do_forward fires instead.  sq_do_forward and
+  // cache_hit_fast_path are mutually exclusive (forward requires
+  // !sq_no_older_store, the cache hit requires it), and forwarded FLDs are
+  // eligible — the SQ delivers the full 64-bit payload in one probe, unlike
+  // the two-phase FLD memory path.  !i_flush_en keeps a same-cycle partial
+  // flush of the staged load off the CDB (falls back to the standard path,
+  // where the flush cleans the entry).
+  logic fwd_bypass_fire;
+  assign fwd_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
+                           !resp_bypass_fire && !misalign_bypass_fire &&
+                           sq_do_forward && !i_flush_en;
+
+  assign bypass_fire = resp_bypass_fire || misalign_bypass_fire || cache_hit_bypass_fire ||
+                       fwd_bypass_fire;
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
   // signals (lu_data_out / lu_cache_out / raw word) instead of the LUTRAM.
@@ -1761,6 +1777,21 @@ module load_queue #(
     end
   end
 
+  // Forward-bypass payload: mirrors the forward write-port formatting.
+  logic [FLEN-1:0] fwd_bypass_value;
+  always_comb begin
+    if (!sq_check_is_fp_q) begin
+      // INT: fwd-path load_unit already did byte/half extract + extension
+      fwd_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_fwd_out};
+    end else if (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) begin
+      // FLD from FSD: full 64-bit payload straight from the SQ
+      fwd_bypass_value = i_sq_forward.data;
+    end else begin
+      // FLW: NaN-box the forwarded memory-image word
+      fwd_bypass_value = {32'hFFFF_FFFF, i_sq_forward.data[XLEN-1:0]};
+    end
+  end
+
   // Payload D-mux selects use the reduced data-select forms (see the comment
   // above): identical to the fire-based selects whenever a capture actually
   // happens, don't-care otherwise.
@@ -1770,9 +1801,12 @@ module load_queue #(
   // result, so its CDB value slot is free to carry the faulting address.
   // The ROB forwards this as mtval at trap entry (RISC-V requires mtval =
   // the misaligned virtual address for a load-address-misaligned trap).
+  // sq_do_forward is fully qualified at its own assign and disjoint from
+  // cache_hit_fast_path, so it distinguishes the two sq_check-sourced arms.
   assign bypass_value =
       misalign_bypass_data_sel ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
       resp_bypass_data_sel ? resp_bypass_value :
+      sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
   // Entry freeing: once the result is captured into the stage, the queue slot
@@ -2104,9 +2138,14 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Store forwarding: write data directly, skip memory
       // -----------------------------------------------------------------
-      if (sq_do_forward) begin
+      // Skip the data_valid step when the completion bypass captured the
+      // forward directly into cdb_stage — the entry is already freed via
+      // free_entry_en (mirrors the cache-hit bypass above).
+      if (sq_do_forward && !fwd_bypass_fire) begin
         lq_data_valid[sq_check_idx] <= 1'b1;
-        lq_forwarded[sq_check_idx]  <= 1'b1;
+      end
+      if (sq_do_forward) begin
+        lq_forwarded[sq_check_idx] <= 1'b1;
       end
 
       // -----------------------------------------------------------------
