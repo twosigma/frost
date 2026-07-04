@@ -2,7 +2,7 @@
 
 A purely combinational fixed-priority arbiter that picks up to two
 functional unit completions per cycle for broadcast on the Common
-Data Bus. Seven inputs, a primary lane plus a secondary lane, no
+Data Bus. Eight inputs, a primary lane plus a secondary lane, no
 internal state.
 
 Lane 0 picks the highest-priority valid completion. Lane 1 repeats the same
@@ -12,8 +12,12 @@ that dominates CoreMark while keeping FP/divide valid cones out of the fastest
 grant paths:
 
 ```
-MUL  >  MEM  >  ALU  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
+MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
+
+`ALU` and `ALU2` are the two single-cycle integer pipes fed by the
+dual-issue INT reservation station; either can win either lane, so a
+pure-ALU instruction stream can broadcast two results per cycle.
 
 FUs not selected by either lane are held in their per-FU `fu_cdb_adapter` and
 re-presented the next cycle. The deeply-pipelined units (MUL, DIV, FDIV) have

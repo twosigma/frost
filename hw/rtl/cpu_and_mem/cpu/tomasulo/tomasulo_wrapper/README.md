@@ -162,10 +162,12 @@ gate only on adapter-pending / result-valid, not on
 
 One ROB, one RAT, six RS instances at the depths in
 [`../README.md`](../README.md), one LQ (with the L0 cache inside),
-one SQ, one 2-lane CDB arbiter, seven CDB adapters (one per FU slot), and
-five FU shims (`int_alu_shim`, `int_muldiv_shim`, `fp_add_shim`,
-`fp_mul_shim`, `fp_div_shim` — `int_muldiv_shim` drives two adapter
-slots). Only the ALU adapter keeps the default `ALLOW_GRANT_REFILL=1`
+one SQ, one 2-lane CDB arbiter, eight CDB adapters (one per FU slot), and
+six FU shims (`int_alu_shim` x2 — the dual-issue INT station feeds two
+single-cycle integer pipes, branches steered to pipe 0 — plus
+`int_muldiv_shim`, `fp_add_shim`, `fp_mul_shim`, `fp_div_shim`;
+`int_muldiv_shim` drives two adapter slots). Only the two ALU adapters
+keep the default `ALLOW_GRANT_REFILL=1`
 (back-to-back single-cycle ALU results); every other adapter (MUL,
 DIV, MEM, FP_ADD, FP_MUL, FP_DIV) sets `ALLOW_GRANT_REFILL=0` so CDB
 arbitration does not feed back into the FIFO/issue cones (and, for

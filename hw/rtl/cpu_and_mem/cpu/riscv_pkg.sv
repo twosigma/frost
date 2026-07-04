@@ -1089,7 +1089,7 @@ package riscv_pkg;
 
   // CDB parameters
   localparam int unsigned NumCdbLanes = 1;  // unused: the CDB is 2-lane today (o_cdb + o_cdb_2)
-  localparam int unsigned NumFus = 7;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV
+  localparam int unsigned NumFus = 8;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV, ALU2
 
   // ---------------------------------------------------------------------------
   // Functional Unit Enumeration and RS Assignment
@@ -1099,13 +1099,14 @@ package riscv_pkg;
 
   // Functional unit identifier (for RS routing and CDB arbitration)
   typedef enum logic [2:0] {
-    FU_ALU    = 3'd0,  // Integer ALU (ADD, SUB, AND, OR, XOR, SLT, branches)
+    FU_ALU    = 3'd0,  // Integer ALU pipe 0 (ADD, SUB, AND, OR, XOR, SLT, branches)
     FU_MUL    = 3'd1,  // Integer multiplier
     FU_DIV    = 3'd2,  // Integer divider
     FU_MEM    = 3'd3,  // Load/store unit (both INT and FP)
     FU_FP_ADD = 3'd4,  // FP adder (add/sub/cmp/cvt/classify/sgnj)
     FU_FP_MUL = 3'd5,  // FP multiplier (mul/FMA)
-    FU_FP_DIV = 3'd6   // FP divider/sqrt (long latency)
+    FU_FP_DIV = 3'd6,  // FP divider/sqrt (long latency)
+    FU_ALU2   = 3'd7   // Integer ALU pipe 1 (plain ALU ops only; branches stay on pipe 0)
   } fu_type_e;
 
   // Reservation station type (for dispatch routing)

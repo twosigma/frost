@@ -27,11 +27,12 @@
  * ahead of the CoreMark-critical grants:
  *   1. MUL   (1) — integer multiply
  *   2. MEM   (3) — load/SC results
- *   3. ALU   (0) — common integer path
- *   4. DIV   (2) — integer divide
- *   5. FP_DIV (6)
- *   6. FP_MUL (5)
- *   7. FP_ADD (4)
+ *   3. ALU   (0) — common integer path, pipe 0 (incl. branches)
+ *   4. ALU2  (7) — common integer path, pipe 1
+ *   5. DIV   (2) — integer divide
+ *   6. FP_DIV (6)
+ *   7. FP_MUL (5)
+ *   8. FP_ADD (4)
  *
  * Purely combinational — no output register. Matches how i_cdb currently
  * feeds RS/ROB on the same cycle edge.
@@ -51,6 +52,7 @@ module cdb_arbiter (
     input riscv_pkg::fu_complete_t i_fu_complete_4,  // FP_ADD
     input riscv_pkg::fu_complete_t i_fu_complete_5,  // FP_MUL
     input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
+    input riscv_pkg::fu_complete_t i_fu_complete_7,  // ALU2 (integer pipe 1)
 
     // Suppress CDB broadcast/grants during speculative full-flush recovery.
     input logic i_kill,
@@ -81,7 +83,7 @@ module cdb_arbiter (
   logic                    [riscv_pkg::NumFus-1:0] valid_vec;
 
   // Fixed-priority encoder, lane 0 (primary).
-  // Priority: MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD
+  // Priority: MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
   logic                                            found;
   logic                    [                  2:0] winner_idx;
   riscv_pkg::fu_complete_t                         winner_data;
@@ -103,6 +105,7 @@ module cdb_arbiter (
     valid_vec[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid;
     valid_vec[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid;
     valid_vec[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid;
+    valid_vec[riscv_pkg::FU_ALU2]   = i_fu_complete_7.valid;
   end
 
   always_comb begin
@@ -126,6 +129,11 @@ module cdb_arbiter (
       winner_idx                = riscv_pkg::FU_ALU;
       winner_data               = i_fu_complete_0;
       g0_raw[riscv_pkg::FU_ALU] = 1'b1;
+    end else if (i_fu_complete_7.valid) begin
+      found                      = 1'b1;
+      winner_idx                 = riscv_pkg::FU_ALU2;
+      winner_data                = i_fu_complete_7;
+      g0_raw[riscv_pkg::FU_ALU2] = 1'b1;
     end else if (i_fu_complete_2.valid) begin
       found                     = 1'b1;
       winner_idx                = riscv_pkg::FU_DIV;
@@ -158,6 +166,7 @@ module cdb_arbiter (
     avail1[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid && !g0_raw[riscv_pkg::FU_FP_ADD];
     avail1[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid && !g0_raw[riscv_pkg::FU_FP_MUL];
     avail1[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid && !g0_raw[riscv_pkg::FU_FP_DIV];
+    avail1[riscv_pkg::FU_ALU2]   = i_fu_complete_7.valid && !g0_raw[riscv_pkg::FU_ALU2];
   end
 
   // Lane-1 priority encoder (same priority order as lane 0, over avail1).
@@ -182,6 +191,11 @@ module cdb_arbiter (
       winner2_idx               = riscv_pkg::FU_ALU;
       winner2_data              = i_fu_complete_0;
       g1_raw[riscv_pkg::FU_ALU] = 1'b1;
+    end else if (avail1[riscv_pkg::FU_ALU2]) begin
+      found2                     = 1'b1;
+      winner2_idx                = riscv_pkg::FU_ALU2;
+      winner2_data               = i_fu_complete_7;
+      g1_raw[riscv_pkg::FU_ALU2] = 1'b1;
     end else if (avail1[riscv_pkg::FU_DIV]) begin
       found2                    = 1'b1;
       winner2_idx               = riscv_pkg::FU_DIV;
@@ -299,6 +313,8 @@ module cdb_arbiter (
       p_grant_only_valid_fp_mul : assert (valid_vec[riscv_pkg::FU_FP_MUL]);
     if (o_grant[riscv_pkg::FU_FP_DIV])
       p_grant_only_valid_fp_div : assert (valid_vec[riscv_pkg::FU_FP_DIV]);
+    if (o_grant[riscv_pkg::FU_ALU2])
+      p_grant_only_valid_alu2 : assert (valid_vec[riscv_pkg::FU_ALU2]);
   end
 
   // No valid FU -> no CDB output and no grants
@@ -317,6 +333,7 @@ module cdb_arbiter (
     if (o_grant[riscv_pkg::FU_FP_ADD]) p_cdb_tag_fp_add : assert (o_cdb.tag == winner_data.tag);
     if (o_grant[riscv_pkg::FU_FP_MUL]) p_cdb_tag_fp_mul : assert (o_cdb.tag == winner_data.tag);
     if (o_grant[riscv_pkg::FU_FP_DIV]) p_cdb_tag_fp_div : assert (o_cdb.tag == winner_data.tag);
+    if (o_grant[riscv_pkg::FU_ALU2]) p_cdb_tag_alu2 : assert (o_cdb.tag == winner_data.tag);
   end
 
   // CDB value matches granted FU
@@ -331,6 +348,7 @@ module cdb_arbiter (
       p_cdb_value_fp_mul : assert (o_cdb.value == winner_data.value);
     if (o_grant[riscv_pkg::FU_FP_DIV])
       p_cdb_value_fp_div : assert (o_cdb.value == winner_data.value);
+    if (o_grant[riscv_pkg::FU_ALU2]) p_cdb_value_alu2 : assert (o_cdb.value == winner_data.value);
   end
 
   // CDB exception fields match granted FU
@@ -377,6 +395,12 @@ module cdb_arbiter (
         o_cdb.exception == winner_data.exception &&
         o_cdb.exc_cause == winner_data.exc_cause &&
         o_cdb.fp_flags  == winner_data.fp_flags);
+    if (o_grant[riscv_pkg::FU_ALU2])
+      p_cdb_exc_alu2 :
+      assert (
+        o_cdb.exception == winner_data.exception &&
+        o_cdb.exc_cause == winner_data.exc_cause &&
+        o_cdb.fp_flags  == winner_data.fp_flags);
   end
 
   // CDB fu_type matches the granted FU index (unrolled for unique Yosys labels).
@@ -396,6 +420,7 @@ module cdb_arbiter (
       p_cdb_fu_type_fp_mul : assert (fu_on_a_lane(riscv_pkg::FU_FP_MUL));
     if (o_grant[riscv_pkg::FU_FP_DIV])
       p_cdb_fu_type_fp_div : assert (fu_on_a_lane(riscv_pkg::FU_FP_DIV));
+    if (o_grant[riscv_pkg::FU_ALU2]) p_cdb_fu_type_alu2 : assert (fu_on_a_lane(riscv_pkg::FU_ALU2));
   end
 
   // Lane-1 broadcast is consistent: when valid it carries its selected
@@ -437,12 +462,23 @@ module cdb_arbiter (
     end
   end
 
+  // ALU2 wins when valid and MUL/MEM/ALU are not valid
+  always_comb begin
+    if (valid_vec[riscv_pkg::FU_ALU2] &&
+        !valid_vec[riscv_pkg::FU_MUL] &&
+        !valid_vec[riscv_pkg::FU_MEM] &&
+        !valid_vec[riscv_pkg::FU_ALU]) begin
+      p_priority_alu2_over_lower : assert (o_grant_raw[riscv_pkg::FU_ALU2]);
+    end
+  end
+
   // DIV wins when valid and CoreMark-priority FUs are not valid
   always_comb begin
     if (valid_vec[riscv_pkg::FU_DIV] &&
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM] &&
-        !valid_vec[riscv_pkg::FU_ALU]) begin
+        !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_ALU2]) begin
       p_priority_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_DIV]);
     end
   end
@@ -453,6 +489,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_ALU2] &&
         !valid_vec[riscv_pkg::FU_DIV]) begin
       p_priority_fp_div_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_DIV]);
     end
@@ -464,6 +501,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_ALU2] &&
         !valid_vec[riscv_pkg::FU_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_DIV]) begin
       p_priority_fp_mul_over_lower : assert (o_grant_raw[riscv_pkg::FU_FP_MUL]);
@@ -476,6 +514,7 @@ module cdb_arbiter (
         !valid_vec[riscv_pkg::FU_MUL] &&
         !valid_vec[riscv_pkg::FU_MEM] &&
         !valid_vec[riscv_pkg::FU_ALU] &&
+        !valid_vec[riscv_pkg::FU_ALU2] &&
         !valid_vec[riscv_pkg::FU_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_DIV] &&
         !valid_vec[riscv_pkg::FU_FP_MUL]) begin
@@ -491,7 +530,7 @@ module cdb_arbiter (
       // Exactly one FU valid and granted
       cover_single_fu : cover (o_cdb.valid && $onehot(o_grant));
 
-      // All 7 FUs valid simultaneously
+      // All 8 FUs valid simultaneously
       cover_all_valid : cover (&valid_vec);
 
       // At least 2 FUs valid, lower priority loses
@@ -508,6 +547,9 @@ module cdb_arbiter (
       cover_grant_fp_add : cover (o_grant[riscv_pkg::FU_FP_ADD]);
       cover_grant_fp_mul : cover (o_grant[riscv_pkg::FU_FP_MUL]);
       cover_grant_fp_div : cover (o_grant[riscv_pkg::FU_FP_DIV]);
+      cover_grant_alu2 : cover (o_grant[riscv_pkg::FU_ALU2]);
+      // Both integer pipes complete together (dual-ALU steady state)
+      cover_dual_alu : cover (o_grant[riscv_pkg::FU_ALU] && o_grant[riscv_pkg::FU_ALU2]);
     end
   end
 

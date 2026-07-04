@@ -36,11 +36,21 @@ FU_MEM = 3
 FU_FP_ADD = 4
 FU_FP_MUL = 5
 FU_FP_DIV = 6
+FU_ALU2 = 7
 
-NUM_FUS = 7
+NUM_FUS = 8
 
 # Priority order: highest priority first (CoreMark-relevant traffic first)
-PRIORITY_ORDER = [FU_MUL, FU_MEM, FU_ALU, FU_DIV, FU_FP_DIV, FU_FP_MUL, FU_FP_ADD]
+PRIORITY_ORDER = [
+    FU_MUL,
+    FU_MEM,
+    FU_ALU,
+    FU_ALU2,
+    FU_DIV,
+    FU_FP_DIV,
+    FU_FP_MUL,
+    FU_FP_ADD,
+]
 
 
 @dataclass
