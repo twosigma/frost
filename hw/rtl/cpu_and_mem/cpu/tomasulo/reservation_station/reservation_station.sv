@@ -58,7 +58,15 @@ module reservation_station #(
     // skips branch-class entries (branches stay on port 0, which owns the
     // single branch_resolution path), a second payload-RAM copy, and a full
     // second stage2 bank feeding o_issue_2 / i_fu_ready_2.
-    parameter bit DUAL_ISSUE = 1'b0
+    parameter bit DUAL_ISSUE = 1'b0,
+    // Symmetric lane-1 wakeup: include i_cdb_2 in the combinational
+    // same-cycle issue-bypass cone (readiness + issue-time value
+    // substitution), so lane-1 results wake dependents in the same cycle,
+    // like lane 0.  Fallback knob for timing: with two ALU pipes, dual
+    // completions are common and the old +1-cycle lane-1 tax bites harder,
+    // so this defaults ON; disable per-instance if the wakeup cone becomes
+    // the WNS limiter again.
+    parameter bit LANE1_ISSUE_BYPASS = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -103,7 +111,8 @@ module reservation_station #(
 
     // Second CDB lane (2-wide CDB). Wakeup/value-capture only via the
     // REGISTERED snoop + dispatch-capture paths below — intentionally NOT wired
-    // into the combinational entry_ready/stage2 bypass cone, so a lane-1 result
+    // into the combinational entry_ready/stage2 bypass cone (see
+    // LANE1_ISSUE_BYPASS, which now closes that gap by default), so a lane-1 result
     // wakes its consumers one cycle later than lane 0 (the recorded
     // low-Fmax-risk design) and the timing-critical issue cone is untouched.
     input riscv_pkg::cdb_broadcast_t i_cdb_2,
@@ -438,9 +447,13 @@ module reservation_station #(
   // stage2 operand mux -> ALU -> CDB cone with fanout >150; max_fanout makes
   // it re-replicate so the operand-mux selects stay local.
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask_l1;
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_bypass_mask;
+  logic [FLEN-1:0] stage2_src2_bypass_mask_l1;
   logic [FLEN-1:0] stage2_src3_bypass_mask;
-  logic [FLEN-1:0] stage2_cdb_value;  // CDB value captured at issue time
+  logic [FLEN-1:0] stage2_src3_bypass_mask_l1;
+  logic [FLEN-1:0] stage2_cdb_value;  // lane-0 CDB value captured at issue time
+  logic [FLEN-1:0] stage2_cdb_value_l1;  // lane-1 CDB value captured at issue time
 
   // Stage 2 control signals
   logic stage2_should_flush;  // Stage2 holds instruction younger than flush boundary
@@ -852,6 +865,12 @@ module reservation_station #(
   logic [DEPTH-1:0] src1_cdb_bypass;
   logic [DEPTH-1:0] src2_cdb_bypass;
   logic [DEPTH-1:0] src3_cdb_bypass;
+  // Lane-1 (i_cdb_2) same-cycle bypass masks (LANE1_ISSUE_BYPASS).  A tag
+  // broadcasts on exactly one lane per cycle, so the lane-0 and lane-1
+  // masks are mutually exclusive per source.
+  logic [DEPTH-1:0] src1_cdb_bypass_l1;
+  logic [DEPTH-1:0] src2_cdb_bypass_l1;
+  logic [DEPTH-1:0] src3_cdb_bypass_l1;
   // 3-bit selector encodes 0=none, 1..6=repair channel index.
   logic [2:0] src1_repair_sel[DEPTH];
   logic [2:0] src2_repair_sel[DEPTH];
@@ -861,6 +880,10 @@ module reservation_station #(
     for (int i = 0; i < DEPTH; i++) begin
       src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
       src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src1_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src1_ready[i] &&
+          rs_src1_tag[i] == i_cdb_2.tag;
+      src2_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src2_ready[i] &&
+          rs_src2_tag[i] == i_cdb_2.tag;
       src1_repair_sel[i] = 3'd0;
       src2_repair_sel[i] = 3'd0;
       if (ISSUE_REPAIR_BYPASS && !rs_src1_ready[i]) begin
@@ -895,6 +918,8 @@ module reservation_station #(
       end
       if (HAS_SRC3) begin
         src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+        src3_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src3_ready[i] &&
+            rs_src3_tag[i] == i_cdb_2.tag;
         src3_repair_sel[i] = 3'd0;
         if (ISSUE_REPAIR_BYPASS && !rs_src3_ready[i]) begin
           if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
@@ -913,6 +938,7 @@ module reservation_station #(
         end
       end else begin
         src3_cdb_bypass[i] = 1'b0;
+        src3_cdb_bypass_l1[i] = 1'b0;
         src3_repair_sel[i] = 3'd0;
       end
     end
@@ -922,14 +948,17 @@ module reservation_station #(
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
       entry_ready[i] = rs_valid[i] &&
-          (rs_src1_ready[i] || src1_cdb_bypass[i] || (src1_repair_sel[i] != 3'd0))
+          (rs_src1_ready[i] || src1_cdb_bypass[i] || src1_cdb_bypass_l1[i] ||
+           (src1_repair_sel[i] != 3'd0))
       // Even when an instruction uses an immediate, issue still
       // requires src2 to be ready if the opcode actually has a
       // second source (for example stores: base+imm address and
       // rs2 store data). Dispatch marks truly-unused src2
       // operands ready, so a plain src2_ready check is correct.
-      && (rs_src2_ready[i] || src2_cdb_bypass[i] || (src2_repair_sel[i] != 3'd0)) &&
-          (rs_src3_ready[i] || src3_cdb_bypass[i] || (src3_repair_sel[i] != 3'd0));
+      && (rs_src2_ready[i] || src2_cdb_bypass[i] || src2_cdb_bypass_l1[i] ||
+          (src2_repair_sel[i] != 3'd0)) &&
+          (rs_src3_ready[i] || src3_cdb_bypass[i] || src3_cdb_bypass_l1[i] ||
+           (src3_repair_sel[i] != 3'd0));
     end
   end
 
@@ -1032,12 +1061,17 @@ module reservation_station #(
   // time. Replicate the bypass control per bit so one scalar flag does not
   // drive the full FLEN-wide operand mux into the FU/CDB path.
   assign o_issue.src1_value =
-      (stage2_src1_value & ~stage2_src1_bypass_mask) | (stage2_cdb_value & stage2_src1_bypass_mask);
+      (stage2_src1_value & ~stage2_src1_bypass_mask & ~stage2_src1_bypass_mask_l1) |
+      (stage2_cdb_value & stage2_src1_bypass_mask) |
+      (stage2_cdb_value_l1 & stage2_src1_bypass_mask_l1);
   assign o_issue.src2_value =
-      (stage2_src2_value & ~stage2_src2_bypass_mask) | (stage2_cdb_value & stage2_src2_bypass_mask);
+      (stage2_src2_value & ~stage2_src2_bypass_mask & ~stage2_src2_bypass_mask_l1) |
+      (stage2_cdb_value & stage2_src2_bypass_mask) |
+      (stage2_cdb_value_l1 & stage2_src2_bypass_mask_l1);
   assign o_issue.src3_value = HAS_SRC3 ?
-      ((stage2_src3_value & ~stage2_src3_bypass_mask) |
-       (stage2_cdb_value & stage2_src3_bypass_mask)) : '0;
+      ((stage2_src3_value & ~stage2_src3_bypass_mask & ~stage2_src3_bypass_mask_l1) |
+       (stage2_cdb_value & stage2_src3_bypass_mask) |
+       (stage2_cdb_value_l1 & stage2_src3_bypass_mask_l1)) : '0;
   assign o_issue.imm = stage2_imm;
   assign o_issue.use_imm = stage2_use_imm;
   assign o_issue.rm = stage2_rm;
@@ -1147,9 +1181,13 @@ module reservation_station #(
       logic [FLEN-1:0] stage2b_src2_value;
       logic [FLEN-1:0] stage2b_src3_value;
       logic [FLEN-1:0] stage2b_src1_bypass_mask;
+      logic [FLEN-1:0] stage2b_src1_bypass_mask_l1;
       logic [FLEN-1:0] stage2b_src2_bypass_mask;
+      logic [FLEN-1:0] stage2b_src2_bypass_mask_l1;
       logic [FLEN-1:0] stage2b_src3_bypass_mask;
+      logic [FLEN-1:0] stage2b_src3_bypass_mask_l1;
       logic [FLEN-1:0] stage2b_cdb_value;
+      logic [FLEN-1:0] stage2b_cdb_value_l1;
       logic [XLEN-1:0] stage2b_imm;
       logic stage2b_use_imm;
       logic stage2b_writes_cdb_hint;
@@ -1211,6 +1249,8 @@ module reservation_station #(
           ) : rs_src2_value[issue_idx_2]));
           stage2b_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx_2]}};
           stage2b_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx_2]}};
+          stage2b_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx_2]}};
+          stage2b_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx_2]}};
           if (HAS_SRC3) begin
             stage2b_src3_value <= rs_src3_dispatch_cdb0[issue_idx_2] ?
                 rs_dispatch_cdb0_value[issue_idx_2] :
@@ -1219,8 +1259,10 @@ module reservation_station #(
                 src3_repair_sel[issue_idx_2]
             ) : rs_src3_value[issue_idx_2]));
             stage2b_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx_2]}};
+            stage2b_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx_2]}};
           end
           stage2b_cdb_value <= i_cdb.value;
+          stage2b_cdb_value_l1 <= i_cdb_2.value;
           stage2b_imm <= pl2_imm;
           stage2b_use_imm <= rs_use_imm[issue_idx_2];
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
@@ -1256,13 +1298,18 @@ module reservation_station #(
       assign o_issue_2.valid = stage2b_valid && i_fu_ready_2;
       assign o_issue_2.rob_tag = stage2b_rob_tag;
       assign o_issue_2.op = stage2b_op;
-      assign o_issue_2.src1_value = (stage2b_src1_value & ~stage2b_src1_bypass_mask) |
-          (stage2b_cdb_value & stage2b_src1_bypass_mask);
-      assign o_issue_2.src2_value = (stage2b_src2_value & ~stage2b_src2_bypass_mask) |
-          (stage2b_cdb_value & stage2b_src2_bypass_mask);
+      assign o_issue_2.src1_value =
+          (stage2b_src1_value & ~stage2b_src1_bypass_mask & ~stage2b_src1_bypass_mask_l1) |
+          (stage2b_cdb_value & stage2b_src1_bypass_mask) |
+          (stage2b_cdb_value_l1 & stage2b_src1_bypass_mask_l1);
+      assign o_issue_2.src2_value =
+          (stage2b_src2_value & ~stage2b_src2_bypass_mask & ~stage2b_src2_bypass_mask_l1) |
+          (stage2b_cdb_value & stage2b_src2_bypass_mask) |
+          (stage2b_cdb_value_l1 & stage2b_src2_bypass_mask_l1);
       assign o_issue_2.src3_value = HAS_SRC3 ?
-          ((stage2b_src3_value & ~stage2b_src3_bypass_mask) |
-           (stage2b_cdb_value & stage2b_src3_bypass_mask)) : '0;
+          ((stage2b_src3_value & ~stage2b_src3_bypass_mask & ~stage2b_src3_bypass_mask_l1) |
+           (stage2b_cdb_value & stage2b_src3_bypass_mask) |
+           (stage2b_cdb_value_l1 & stage2b_src3_bypass_mask_l1)) : '0;
       assign o_issue_2.imm = stage2b_imm;
       assign o_issue_2.use_imm = stage2b_use_imm;
       assign o_issue_2.rm = stage2b_rm;
@@ -1592,6 +1639,8 @@ module reservation_station #(
       ) : rs_src2_value[issue_idx]));
       stage2_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx]}};
       stage2_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx]}};
+      stage2_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx]}};
+      stage2_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx]}};
       if (HAS_SRC3) begin
         stage2_src3_value <= rs_src3_dispatch_cdb0[issue_idx] ?
             rs_dispatch_cdb0_value[issue_idx] :
@@ -1600,8 +1649,10 @@ module reservation_station #(
             src3_repair_sel[issue_idx]
         ) : rs_src3_value[issue_idx]));
         stage2_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx]}};
+        stage2_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx]}};
       end
       stage2_cdb_value <= i_cdb.value;
+      stage2_cdb_value_l1 <= i_cdb_2.value;
       stage2_imm <= pl_imm;
       stage2_use_imm <= rs_use_imm[issue_idx];
       stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;

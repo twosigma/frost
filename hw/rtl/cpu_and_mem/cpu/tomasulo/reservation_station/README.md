@@ -25,11 +25,14 @@ double-issue one entry. The other five stations elaborate with the default
 
 The wakeup mechanism is a two-lane Tomasulo CDB snoop: each entry compares its
 source tags against both broadcast tags every cycle, and a match captures the
-value and marks the source ready. Lane 0 also feeds the combinational
-same-cycle issue bypass, so a resident entry can issue in the same cycle its
-last operand arrives. Lane 1 intentionally stays out of that issue cone; it
-wakes resident entries through the registered snoop one cycle later, while still
-being available to the dispatch-capture path for newly inserted entries.
+value and marks the source ready. Both lanes feed the combinational
+same-cycle issue bypass (`LANE1_ISSUE_BYPASS`, default on), so a resident
+entry can issue in the same cycle its last operand arrives on either lane,
+with per-source per-lane bypass masks selecting the captured lane value at
+issue time. Lane 1 originally stayed out of the issue cone as an Fmax trade;
+with two ALU pipes making dual completions common, the +1-cycle lane-1
+wakeup tax outweighed it, and the parameter remains as a per-instance
+fallback knob if the wakeup cone becomes the timing limiter again.
 
 Alongside the CDB lanes there is a six-channel done-repair snoop
 (`i_repair_valid_1..6` / `i_repair_tag_1..6` / `i_repair_value_1..6`):
