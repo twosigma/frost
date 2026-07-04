@@ -72,6 +72,15 @@ blocking (Phase B), and the explicit ROB-head priority result — lives in
 `load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
 which stays in `load_queue.sv`.
 
+Older-AMO blocking is decided by ROB-tag age relative to the ROB head, not
+by ring position: the sparse queue reuses reclaimed holes after flushes, so
+physical position is not allocation order, and a position-based prefix-OR
+could let a younger load slip past a pending AMO and read the pre-AMO
+memory value. A head AMO is admitted to the head-priority scans whenever
+the SQ committed queue is empty — at ROB head everything else in the LQ is
+younger (and fenced), so preemption is always safe; the 512-cycle deadlock
+breaker remains only as a backstop.
+
 ## Issue and completion bypasses
 
 Two bypass paths shave a cycle each off the load critical latency:
@@ -116,6 +125,17 @@ when SC reaches the ROB head. AMO uses a separate memory write port
 on the LQ for the write half of the read-modify-write — the AMO
 fires from the ROB head with the SQ committed-empty so nothing else
 can interleave.
+
+AMO writes are invisible to SQ disambiguation (AMOs never allocate SQ
+entries), so the LQ enforces their ordering itself: the AMO write fence
+(`older_amo_write_pending`) holds any staged load younger than an AMO that
+has not yet completed its memory write (`lq_data_valid` for an AMO covers
+read + write). The fence blocks launch, SQ forwarding, and the L0 fast
+path, and a fenced staged load releases SQ-check staging instead of
+camping so the head AMO reaches the memory port immediately. A staged head
+AMO itself issues without waiting for younger stores' addresses
+(`sq_head_amo_clear`) — with the committed queue empty no older SQ store
+can exist.
 
 ## Storage strategy
 

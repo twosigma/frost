@@ -42,6 +42,7 @@ module lq_issue_selector #(
     input logic [DEPTH-1:0] rob_head_match_q,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
     input logic i_sq_committed_empty,
     input logic i_force_head_amo,
 
@@ -67,6 +68,12 @@ module lq_issue_selector #(
 
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
+
+  // Head AMOs are admitted to the head-priority scans on i_sq_committed_empty
+  // alone; the deadlock-breaker override is subsumed but the port is kept so
+  // the breaker plumbing in load_queue stays intact as a backstop.
+  logic unused_force_head_amo;
+  assign unused_force_head_amo = i_force_head_amo;
 
   // issue_cdb_* are declared in the parent before this block; the body assigns
   // them, so declare them locally here and export.
@@ -154,31 +161,38 @@ module lq_issue_selector #(
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
   assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
 
-  // AMO blocking: identify scan positions with pending (unresolved) AMOs.
-  // A pending older AMO must block younger memory ops until its write
-  // phase completes and the slot becomes data-valid.
+  // AMO blocking: a pending (unresolved) older AMO must block younger memory
+  // ops until its write phase completes and the slot becomes data-valid.
+  // "Older" is decided by ROB-tag age relative to the ROB head, NOT by ring
+  // position: the sparse queue reuses reclaimed holes after flushes, so
+  // physical position is not allocation order and a position-based prefix-OR
+  // can let a younger load slip past a pending AMO (it then reads the
+  // pre-AMO memory value).  Tag age over the live ROB window is exact.
   logic [DEPTH-1:0] pending_amo_phys;
-  logic [DEPTH-1:0] pending_amo_at;
+  logic [riscv_pkg::ReorderBufferTagWidth:0] entry_head_age[DEPTH];
+  logic [riscv_pkg::ReorderBufferTagWidth:0] oldest_pending_amo_age;
   always_comb begin
+    oldest_pending_amo_age = '1;  // no pending AMO -> nothing blocks
     for (int unsigned i = 0; i < DEPTH; i++) begin
+      entry_head_age[i] = {1'b0, lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth]} -
+          {1'b0, i_rob_head_tag};
       pending_amo_phys[i] = lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i];
+      if (pending_amo_phys[i] && (entry_head_age[i] < oldest_pending_amo_age)) begin
+        oldest_pending_amo_age = entry_head_age[i];
+      end
     end
   end
-  assign pending_amo_at = rotate_mask_from_head(pending_amo_phys, head_idx);
 
-  // Prefix-OR: compute "has older pending AMO" for each scan position.
-  // TIMING: written as a per-position parallel reduction (|pending_amo_at
-  // below position i) instead of the previous serial ripple
-  // (blocked[i] = blocked[i-1] | pending[i-1]), which synthesized as a
-  // DEPTH-1-deep OR chain inside the sq_check capture cone. Same function;
-  // each bit is now an independent <=DEPTH-1-input OR (1-2 LUT levels).
+  // Physical-index mask (matches lq_valid indexing), then rotate into scan
+  // order alongside the eligibility masks.
+  logic [DEPTH-1:0] blocked_by_amo_phys;
   logic [DEPTH-1:0] blocked_by_amo;
   always_comb begin
-    blocked_by_amo[0] = 1'b0;
-    for (int unsigned i = 1; i < DEPTH; i++) begin
-      blocked_by_amo[i] = |(pending_amo_at & DEPTH'((DEPTH'(1) << i) - DEPTH'(1)));
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      blocked_by_amo_phys[i] = lq_valid[i] && (entry_head_age[i] > oldest_pending_amo_age);
     end
   end
+  assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys, head_idx);
 
   // Final Phase B masks: eligible AND not blocked by older AMO.
   logic [DEPTH-1:0] mem_issue_stored_mask;
@@ -252,6 +266,11 @@ module lq_issue_selector #(
     head_mem_update_idx     = '0;
     head_mem_update_rob_tag = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
+      // A head AMO is admitted whenever the SQ committed queue is empty: at
+      // ROB head every other LQ entry is younger (and fenced by
+      // blocked_by_amo), so there is no speculative load progress to
+      // preserve and preemption is always safe.  i_force_head_amo remains as
+      // the deadlock-breaker override for the same condition.
       if (!head_mem_stored_found &&
           lq_valid[i] &&
           rob_head_match_q[i] &&
@@ -261,7 +280,7 @@ module lq_issue_selector #(
           !in_flight_mask[i] &&
           !lq_is_mmio[i] &&
           !lq_is_lr[i] &&
-          (!lq_is_amo[i] || (i_force_head_amo && i_sq_committed_empty))) begin
+          (!lq_is_amo[i] || i_sq_committed_empty)) begin
         head_mem_stored_found   = 1'b1;
         head_mem_stored_idx     = IdxWidth'(i);
         head_mem_stored_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
@@ -275,7 +294,7 @@ module lq_issue_selector #(
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
           !lq_is_lr[i] &&
-          (!lq_is_amo[i] || (i_force_head_amo && i_sq_committed_empty))) begin
+          (!lq_is_amo[i] || i_sq_committed_empty)) begin
         head_mem_update_found   = 1'b1;
         head_mem_update_idx     = IdxWidth'(i);
         head_mem_update_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];

@@ -2594,7 +2594,8 @@ module tomasulo_wrapper #(
   // ===========================================================================
   load_queue #(
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
