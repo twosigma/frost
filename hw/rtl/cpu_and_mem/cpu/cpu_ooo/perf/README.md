@@ -121,10 +121,10 @@ Sources: `if_stage.sv` `o_width_events` / `instruction_aligner.sv`
 |-----|------|------|-----------------|
 | 23 | `IF_DELIVER1` | event | Accepted IF→PD handoff carrying a real slot-1 instruction (one per handoff, stall-qualified). |
 | 24 | `IF_DELIVER2` | event | That handoff also carried a real slot-2 instruction (subset of 23). |
-| 25 | `IF_S2KILL_S1_32BIT` | event | 1-wide handoff: slot-1 is a native 32-bit instruction. |
+| 25 | `IF_S2KILL_S1_32BIT` | event | 1-wide handoff: slot-1 is a native 32-bit instruction that terminates its bundle (control flow or serializing class). Since 32b-led bundle formation landed, plain 32-bit slot-1s pair and no longer land here. |
 | 26 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot-1 is compressed control flow (bundle terminates at slot 1). |
 | 27 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate starts an op class excluded from slot 2 (native CSR / MISC-MEM / AMO / FP-compute). |
-| 28 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: aligner buffer / BRAM transient state. |
+| 28 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: aligner buffer / BRAM transient state, plus the 64-bit-window limit (a 32-bit slot-2 for a 32b-led pair starting at a halfword-aligned word, i.e. 32b@odd + 32b, does not fit the fetch window). |
 | 29 | `DISPATCH_FIRE_2` | event | Slot-2 dispatch fired (`rob_alloc_req_2.alloc_valid`) — one per instruction dispatched through slot 2. |
 | 30 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input. |
 | 31 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | Slot-2 instruction present but targets an FP-compute RS (FP / FMUL / FDIV); these never dispatch in slot 2. |

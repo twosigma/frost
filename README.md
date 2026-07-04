@@ -87,7 +87,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode; 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8) — the only structural 1-wide case left is a misaligned 32b+32b pair spanning beyond the fetch window
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
 - **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots

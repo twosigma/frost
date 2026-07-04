@@ -35,6 +35,9 @@ OPC_FMSUB = 0b1000111
 OPC_FNMSUB = 0b1001011
 OPC_FNMADD = 0b1001111
 OPC_OP_FP = 0b1010011
+OPC_BRANCH = 0b1100011
+OPC_JAL = 0b1101111
+OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 12
 
 
@@ -82,6 +85,11 @@ def native_fp_compute(opcode: int) -> bool:
     return opcode in {OPC_OP_FP, OPC_FMADD, OPC_FMSUB, OPC_FNMSUB, OPC_FNMADD}
 
 
+def native_control(opcode: int) -> bool:
+    """Return whether a native instruction opcode is control flow."""
+    return opcode in {OPC_BRANCH, OPC_JAL, OPC_JALR}
+
+
 def make_sideband(word: int) -> int:
     """Return predecode sideband bits for one instruction-memory word."""
     sideband = 0
@@ -106,9 +114,19 @@ def make_sideband(word: int) -> int:
         sideband |= 1 << 6
     if native_fp_compute(opcode_hi):
         sideband |= 1 << 7
-    if (sideband & (1 << 0)) and not (sideband & (1 << 2)):
+    # AllowsSlot2After: compressed non-control, or native non-control
+    # non-serialize (mirrors riscv_pkg::imem_make_sideband).
+    if ((sideband & (1 << 0)) and not (sideband & (1 << 2))) or (
+        not (sideband & (1 << 0))
+        and not native_control(opcode_lo)
+        and not (sideband & (1 << 4))
+    ):
         sideband |= 1 << 8
-    if (sideband & (1 << 1)) and not (sideband & (1 << 3)):
+    if ((sideband & (1 << 1)) and not (sideband & (1 << 3))) or (
+        not (sideband & (1 << 1))
+        and not native_control(opcode_hi)
+        and not (sideband & (1 << 5))
+    ):
         sideband |= 1 << 9
     if (sideband & (1 << 0)) or not (sideband & ((1 << 4) | (1 << 6))):
         sideband |= 1 << 10

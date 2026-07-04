@@ -47,17 +47,19 @@ module pc_reg_precompute #(
     // Pre-computed results for both is_compressed outcomes
     output logic [XLEN-1:0] o_pc_reg_if_compressed,
     output logic [XLEN-1:0] o_pc_reg_if_32bit,
-    // 2-wide dispatch addition.  Slot-2 only fires behind a compressed
-    // slot-1, so bundle advances are RVC+RVC (+4) or RVC+32b (+6).
+    // 2-wide dispatch addition.  Bundle advances are RVC+RVC (+4),
+    // RVC+32b / 32b+RVC (+6), and 32b+32b (+8).
     // The +4 case reuses pc_reg_if_32bit.
     // The hold path also applies — bundles cannot advance pc_reg through a
     // prediction-from-buffer holdoff.
-    output logic [XLEN-1:0] o_pc_reg_plus_6
+    output logic [XLEN-1:0] o_pc_reg_plus_6,
+    output logic [XLEN-1:0] o_pc_reg_plus_8
 );
 
   localparam int unsigned PcRegWordBits = XLEN - 2;
   localparam logic [PcRegWordBits-1:0] PcRegWordInc1 = {{(PcRegWordBits - 1) {1'b0}}, 1'b1};
   localparam logic [PcRegWordBits-1:0] PcRegWordInc2 = {{(PcRegWordBits - 2) {1'b0}}, 2'b10};
+
 
   logic [PcRegWordBits-1:0] pc_reg_word;
   logic [PcRegWordBits-1:0] pc_reg_word_plus_1;
@@ -70,6 +72,7 @@ module pc_reg_precompute #(
 
   logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
   logic [XLEN-1:0] pc_reg_plus_6;
+  logic [XLEN-1:0] pc_reg_plus_8;
   assign pc_reg_plus_0 = i_pc_reg;
   // Use word-index adders so pc_reg[1] only drives final muxes, not the full
   // high-bit carry chain.
@@ -80,6 +83,7 @@ module pc_reg_precompute #(
   assign pc_reg_plus_6 = {
     pc_reg_halfword ? pc_reg_word_plus_2 : pc_reg_word_plus_1, ~pc_reg_halfword, i_pc_reg[0]
   };
+  assign pc_reg_plus_8 = {pc_reg_word_plus_2, pc_reg_halfword, i_pc_reg[0]};
 
   // Hold pc_reg at +0 for spanning wait, holdoff cycles
   logic pc_reg_hold;
@@ -98,7 +102,10 @@ module pc_reg_precompute #(
   //   hold (+0) when pc_reg_hold || spanning_eligible, else default (+4).
   assign o_pc_reg_if_32bit = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_4;
 
-  // 2-wide bundle advance.  Hold collapses to +0 just like the 1-wide outputs.
+  // 2-wide bundle advances.  Hold collapses to +0 just like the 1-wide
+  // outputs.  +8 is the 32b+32b bundle (only reachable from word-aligned
+  // slot-1, but built with the general halfword form for symmetry).
   assign o_pc_reg_plus_6   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_6;
+  assign o_pc_reg_plus_8   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_8;
 
 endmodule : pc_reg_precompute
