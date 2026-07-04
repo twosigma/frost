@@ -58,11 +58,22 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Run Cocotb tests with Verilator (excludes arch compliance, which has its own matrix job)
+  # Run BRAM-tier Cocotb tests with Verilator. Split into independent shards so
+  # the full BRAM sweep does not sit behind one GitHub job timeout.
   test-verilator:
-    name: Cocotb Tests (Verilator)
+    name: Cocotb ${{ matrix.shard }} (Verilator / bram)
     runs-on: ubuntu-24.04
     needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: Real Programs (non-CoreMark-PRO)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+          - shard: Unit Tests
+            pytest_mark: "cocotb and cocotb_unit"
+          - shard: Real Programs (CoreMark-PRO)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,13 +89,10 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run Cocotb tests with Verilator
+      - name: Run Cocotb ${{ matrix.shard }} with Verilator
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/ -m cocotb -v \
-              --ignore=tests/test_arch_compliance.py \
-              --ignore=tests/test_riscv_tests.py \
-              --ignore=tests/test_riscv_torture.py
+            pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -v
 
   # Cocotb real programs in the DDR memory tier: the same programs as the bram
   # job above, but linked whole-program into the cached DDR region (exercises the

@@ -98,6 +98,8 @@ Options:
 pytest test_run_cocotb.py                          # Run all cocotb tests with Verilator
 pytest test_run_cocotb.py -k hello_world           # Run a specific test
 pytest test_run_cocotb.py -k unit                  # Run Tomasulo unit tests
+pytest test_run_cocotb.py -m "cocotb_real_program and not coremark_pro"
+pytest test_run_cocotb.py -m "cocotb_real_program and coremark_pro"
 pytest test_run_cocotb.py -s                       # Show live output
 ```
 
@@ -352,7 +354,7 @@ All tests are run automatically in CI (`.github/workflows/ci.yml`). Tests gracef
 
 The riscv-tests, riscv-torture, and Cocotb real-program suites each run in BOTH a `bram` tier (whole program in low BRAM) AND a `ddr` tier (whole program in the cached DDR region) as separate jobs. Arch compliance uses the same memory tiers for most extensions, with F/D DDR disabled in CI because those permutations time out on GitHub-hosted runners:
 
-- **Cocotb**: one `bram` job (`Cocotb Tests (Verilator)`, also covers the tier-independent unit benches) and one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
+- **Cocotb**: a `bram` matrix split into non-CoreMark-PRO real programs, unit benches, and CoreMark-PRO real programs, plus one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
 - **Arch compliance**: an extension x memory tier (`[bram, ddr]`) matrix with `fail-fast: false`. Zifencei is excluded from the `bram` tier (DDR-tier-only), and F/D are excluded from the `ddr` tier to keep CI runtime bounded. Kept separate from the main Cocotb job to avoid blocking it with long-running FP tests.
 - **riscv-tests**: a suite x memory tier matrix (ISA tests) plus a benchmark x memory tier matrix (benchmarks).
 - **riscv-torture**: a memory tier (`[bram, ddr]`) matrix.
@@ -363,6 +365,9 @@ The `icache` arch config (code in DDR, data + signature in BRAM) is a local diag
 
 ```python
 @pytest.mark.cocotb       # RTL simulation tests
+@pytest.mark.cocotb_real_program  # Cocotb real-program tests
+@pytest.mark.cocotb_unit  # Cocotb unit-bench tests
+@pytest.mark.coremark_pro # CoreMark-PRO real-program tests
 @pytest.mark.synthesis    # Synthesis tests
 @pytest.mark.formal       # Formal verification tests
 @pytest.mark.slow         # Long-running tests

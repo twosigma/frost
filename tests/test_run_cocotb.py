@@ -788,11 +788,25 @@ REAL_PROGRAM_TESTS = [
     for name, config in TEST_REGISTRY.items()
     if config.app_name is not None and config.include_in_pytest
 ]
+REAL_PROGRAM_TEST_PARAMS = [
+    pytest.param(
+        name,
+        id=name,
+        marks=[
+            pytest.mark.cocotb_real_program,
+            *([pytest.mark.coremark_pro] if name in COREMARK_PRO_TESTS else []),
+        ],
+    )
+    for name in REAL_PROGRAM_TESTS
+]
 
 UNIT_TESTS = [
     name
     for name, config in TEST_REGISTRY.items()
     if config.app_name is None and config.include_in_pytest
+]
+UNIT_TEST_PARAMS = [
+    pytest.param(name, id=name, marks=pytest.mark.cocotb_unit) for name in UNIT_TESTS
 ]
 
 # Real-program tests that do NOT run in the ddr memory tier
@@ -1203,7 +1217,7 @@ class TestRealPrograms:
     """
 
     @pytest.mark.slow
-    @pytest.mark.parametrize("test_name", REAL_PROGRAM_TESTS)
+    @pytest.mark.parametrize("test_name", REAL_PROGRAM_TEST_PARAMS)
     def test_real_program(self, test_name: str, capsys: Any) -> None:
         """Run a real program test through cocotb.
 
@@ -1223,7 +1237,7 @@ class TestUnitTests:
     """Tomasulo unit tests (individual OOO components)."""
 
     @pytest.mark.slow
-    @pytest.mark.parametrize("test_name", UNIT_TESTS)
+    @pytest.mark.parametrize("test_name", UNIT_TEST_PARAMS)
     def test_unit(self, test_name: str, capsys: Any) -> None:
         """Run a Tomasulo unit test through cocotb."""
         run_test(test_name, capsys)
