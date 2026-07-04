@@ -320,23 +320,29 @@ module sq_forwarding_unit #(
             // store-conditional may fail at drain time and write nothing, so
             // its data must never reach a younger load early.
             if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i]) begin
-              // Case 1: exact address, same size, WORD or DOUBLE
+              // Case 1: FLD from FSD, exact address (full 64-bit payload)
               if (base_match && full_addr_eq(
                       entry_address, sq_check_addr_for_entry
-                  ) && (entry_size == riscv_pkg::mem_size_e'(i_sq_check_size)) &&
-                      (i_sq_check_size >= riscv_pkg::MEM_SIZE_WORD)) begin
+                  ) && (entry_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
+                      (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd0;  // EXACT
-                // Case 2: FLW at FSD base address → forward low word
+                fwd_entry_extract_type[i] = 2'd0;  // EXACT (64-bit)
+                // Case 2: byte/half/word load whose bytes the store fully
+                // covers in its base word.  store_byte_mask places sub-word
+                // store data at its memory byte lanes (a DOUBLE store's base
+                // word is fully written, mask 1111), so covered loads read
+                // the memory-image word Block 3 reconstructs.  The LQ applies
+                // the load's own byte/half extraction and sign extension.
               end else if (base_match &&
-                  (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD) &&
-                  (entry_size == riscv_pkg::MEM_SIZE_DOUBLE)) begin
+                  (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE) &&
+                  ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd1;  // LO_WORD
-                // Case 3: FLW at FSD addr+4 → forward high word
-              end else if (double_hi_match && (i_sq_check_size == riscv_pkg::MEM_SIZE_WORD)) begin
+                fwd_entry_extract_type[i] = 2'd1;  // LO_WORD image
+                // Case 3: byte/half/word load inside the fully-written high
+                // word of a DOUBLE store (addr+4)
+              end else if (double_hi_match && (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE)) begin
                 fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd2;  // HI_WORD
+                fwd_entry_extract_type[i] = 2'd2;  // HI_WORD image
               end
             end
           end
@@ -427,12 +433,23 @@ module sq_forwarding_unit #(
     // while no probe is in flight.
     if (i_sq_check_valid) begin
       case (fwd_extract_type)
-        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[31:0]};
+        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, fwd_image_lo};
         2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
         default: o_sq_forward.data <= sq_data_fwd_rd;
       endcase
     end
   end
+
+  // Memory-image reconstruction for the base-word arm: store data is held
+  // low-aligned in the SQ data RAM, so a sub-word store's bytes must be
+  // shifted to their memory byte lanes before the LQ extracts the load's
+  // bytes.  Word/double winners have offset 0 (aligned), so the shift is an
+  // identity for the legacy word cases.  The high word of a DOUBLE store
+  // (extract 2) is always lane-aligned.
+  logic [1:0] fwd_winner_store_off;
+  logic [XLEN-1:0] fwd_image_lo;
+  assign fwd_winner_store_off = sq_address_flat[fwd_match_idx*XLEN+:2];
+  assign fwd_image_lo = sq_data_fwd_rd[XLEN-1:0] << {fwd_winner_store_off, 3'b000};
 
   assign o_fwd_match_idx = fwd_match_idx;
 

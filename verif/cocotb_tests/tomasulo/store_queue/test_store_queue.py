@@ -695,11 +695,15 @@ async def test_forward_match_no_data(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 15: Forwarding - size mismatch (SW → LB) → match, can't forward
+# Test 15: Forwarding - covered sub-word load (SW → LB) forwards image word
 # ============================================================================
 @cocotb.test()
 async def test_forward_size_mismatch(dut: Any) -> None:
-    """SW at addr, LB check at same word → match, can_forward=false."""
+    """SW at addr, LB check at same word → forwards the memory-image word.
+
+    A word store covers any byte/half load in its word; the SQ delivers the
+    image word and the LQ extracts the load's bytes (byte 1 here = 0xAA).
+    """
     dut_if, model = await setup(dut)
 
     await alloc_addr_data(dut_if, model, rob_tag=3, address=0x2000, data=0xAAAA)
@@ -710,7 +714,46 @@ async def test_forward_size_mismatch(dut: Any) -> None:
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "Should match (same word address)"
-    assert not fwd.can_forward, "Can't forward different size/addr"
+    assert fwd.can_forward, "Word store covers a byte load in the same word"
+    assert fwd.data == 0xAAAA, f"Expected image word 0xAAAA, got 0x{fwd.data:x}"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Test 15a: Forwarding - sub-word store covering / not covering the load
+# ============================================================================
+@cocotb.test()
+async def test_forward_subword_store_cover(dut: Any) -> None:
+    """SH@2 forwards to LB@3 (image-shifted); SB@0 cannot serve LH@0."""
+    dut_if, model = await setup(dut)
+
+    # SH 0xBEEF at 0x3002 → memory image word 0xBEEF0000
+    await alloc_addr_data(
+        dut_if, model, rob_tag=2, address=0x3002, data=0xBEEF, size=MEM_SIZE_HALF
+    )
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=0x3003, rob_tag=5, size=MEM_SIZE_BYTE)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "LB@3 overlaps SH@2"
+    assert fwd.can_forward, "Half store covers the byte load"
+    assert fwd.data == 0xBEEF_0000, f"Expected image 0xBEEF0000, got 0x{fwd.data:x}"
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+    # SB 0x55 at 0x3100 does NOT cover LH@0x3100 (needs bytes 0 and 1)
+    await alloc_addr_data(
+        dut_if, model, rob_tag=6, address=0x3100, data=0x55, size=MEM_SIZE_BYTE
+    )
+
+    dut_if.drive_sq_check(addr=0x3100, rob_tag=9, size=MEM_SIZE_HALF)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "LH@0 overlaps SB@0"
+    assert not fwd.can_forward, "Byte store cannot cover a halfword load"
     dut_if.clear_sq_check()
 
 
@@ -1293,11 +1336,11 @@ async def test_forward_flw_at_fsd_plus4(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 32: LB at FSD base → match but can_forward=False (sub-word stalls)
+# Test 32: LB at FSD base → forwards the low-word image
 # ============================================================================
 @cocotb.test()
 async def test_forward_lb_at_fsd_base(dut: Any) -> None:
-    """LB at FSD base address → match but sub-word cannot forward."""
+    """LB at FSD base address → forwards the fully-written low word."""
     dut_if, model = await setup(dut)
 
     fp64_data = 0xDEADBEEF_CAFEBABE
@@ -1317,7 +1360,8 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LB at FSD base should match"
-    assert not fwd.can_forward, "Sub-word load from DOUBLE can't forward"
+    assert fwd.can_forward, "FSD base word is fully written — byte load forwards"
+    assert fwd.data == 0xCAFEBABE, f"Expected low-word image, got 0x{fwd.data:x}"
     dut_if.clear_sq_check()
 
 
@@ -1557,10 +1601,10 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
 
 @cocotb.test()
 async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
-    """FSD at addr, LH at same addr → match=1, can_forward=0.
+    """FSD at addr, LH at base and at the high word → both forward.
 
-    Store is DOUBLE (FSD), load is HALF (LH). Sub-word loads from a 64-bit
-    FP store cannot be forwarded (no partial forwarding from FP64).
+    Store is DOUBLE (FSD): both of its words are fully written, so sub-word
+    loads anywhere inside it forward the corresponding word image.
     """
     dut_if, model = await setup(dut)
 
@@ -1576,13 +1620,25 @@ async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
     )
 
     dut_if.drive_rob_head_tag(0)
-    # LH at FSD base: sub-word load from DOUBLE store
+    # LH at FSD base: forwards the low-word image
     dut_if.drive_sq_check(addr=0x7000, rob_tag=5, size=MEM_SIZE_HALF)
     await dut_if.step()  # Wait for registered SQ forwarding output
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LH at FSD base should match"
-    assert not fwd.can_forward, "Sub-word load from DOUBLE store cannot forward"
+    assert fwd.can_forward, "FSD low word is fully written — half load forwards"
+    assert fwd.data == 0xCAFEBABE, f"Expected low-word image, got 0x{fwd.data:x}"
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+    # LH at FSD addr+6: forwards the high-word image
+    dut_if.drive_sq_check(addr=0x7006, rob_tag=5, size=MEM_SIZE_HALF)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match, "LH in FSD high word should match"
+    assert fwd.can_forward, "FSD high word is fully written — half load forwards"
+    assert fwd.data == 0xDEADBEEF, f"Expected high-word image, got 0x{fwd.data:x}"
     dut_if.clear_sq_check()
 
 
