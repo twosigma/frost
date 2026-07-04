@@ -707,6 +707,19 @@ module dispatch (
     o_status.sq_full = dispatch_valid && need_sq && i_sq_full;
     o_status.checkpoint_full = dispatch_valid && need_checkpoint && !i_checkpoint_available;
 
+    // 2-wide width-funnel profiling taps (perf counters only).  The block_*
+    // bits are qualified by slot2_only_block, so they decompose exactly the
+    // cycles where slot-2 ALONE holds the bundle (slot-1 could have fired);
+    // slot-1's own resource stalls stay in the breakdown bits above.
+    o_status.slot2_present = i_valid_2 && !i_flush;
+    o_status.slot2_fp_serialized = i_valid_2 && !i_flush && slot2_fp_compute_serialized;
+    o_status.slot2_block_s1_branch = slot2_only_block && is_branch_flag;
+    o_status.slot2_block_rob_full2 = slot2_only_block && i_rob_full_for_2;
+    o_status.slot2_block_rs_full2 = slot2_only_block && rs_full_for_slot2;
+    o_status.slot2_block_lsq_full2 = slot2_only_block && ((need_lq_2 && lq_full_for_slot2) ||
+                                                          (need_sq_2 && sq_full_for_slot2));
+    o_status.slot2_block_ckpt = slot2_only_block && need_checkpoint_2 && !i_checkpoint_available;
+
     // Stall semantics (per design doc Session D, "simpler stall"):
     //   o_stall = !(slot1_can_fire && (!slot2_valid || slot2_can_fire))
     // If slot-2 is invalid, this reduces to !slot1_can_fire — identical to
@@ -774,6 +787,10 @@ module dispatch (
       !(need_checkpoint_2 && !i_checkpoint_available);
   assign slot2_can_fire = slot1_can_fire && dispatch_valid_2 && slot2_resources_ok;
   assign slot2_bundle_ok = !dispatch_valid_2 || slot2_resources_ok;
+  // Width-funnel profiling: cycles where a valid slot-2 ALONE holds the
+  // bundle (slot-1 could have fired).  Decomposed per cause into o_status.
+  logic slot2_only_block;
+  assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
   // Whole bundle fires together — either both fire or neither.  When
   // slot-2 isn't valid, the OR collapses to 1 and the bundle gate matches
   // slot-1's standalone gate.

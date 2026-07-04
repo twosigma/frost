@@ -123,7 +123,11 @@ module if_stage #(
     // Slot-2 IF→PD packet (2-wide dispatch, Session F).  When slot-2 is invalid
     // this cycle (slot-1 is a NOP/branch, slot-2 doesn't fit, etc.), sel_nop is
     // asserted and PD/ID propagate it as a NOP so dispatch sees i_valid_2='0.
-    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2
+    output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
+    // 2-wide width-funnel profiling events at the IF→PD boundary (perf
+    // counters only; see if_width_events_t).  Pulses once per accepted
+    // handoff; kill causes are replay-exact via the stall-capture path.
+    output riscv_pkg::if_width_events_t o_width_events
 );
 
   // ===========================================================================
@@ -643,6 +647,12 @@ module if_stage #(
   // ===========================================================================
   // Instruction Aligner
   // ===========================================================================
+  // Live slot-2 kill-cause taps from the aligner (width-funnel profiling).
+  logic slot2_kill_slot1_32bit_live;
+  logic slot2_kill_slot1_ctrl_live;
+  logic slot2_kill_class_live;
+  logic slot2_kill_transient_live;
+
   instruction_aligner #(
       .XLEN(XLEN)
   ) instruction_aligner_inst (
@@ -687,7 +697,13 @@ module if_stage #(
       .o_sel_compressed_2(sel_compressed_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
-      .o_slot1_is_branch(slot1_is_branch)
+      .o_slot1_is_branch(slot1_is_branch),
+
+      // Slot-2 kill-cause profiling taps (width-funnel perf counters).
+      .o_slot2_kill_slot1_32bit(slot2_kill_slot1_32bit_live),
+      .o_slot2_kill_slot1_ctrl(slot2_kill_slot1_ctrl_live),
+      .o_slot2_kill_class(slot2_kill_class_live),
+      .o_slot2_kill_transient(slot2_kill_transient_live)
   );
 
   // RAS prediction stale cycle: only when prediction came from RAS (not BTB-only).
@@ -775,8 +791,7 @@ module if_stage #(
   assign pc_reg_word_m1 = pc_reg_word - 1'b1;
   assign served_eq_pc_word = (i_served_addr[XLEN-1:2] == pc_reg_word);
   assign served_eq_pc_word_m1 = (i_served_addr[XLEN-1:2] == pc_reg_word_m1);
-  assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) &&
-      !(&pc_reg_word);
+  assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) && !(&pc_reg_word);
   logic window_cannot_serve_pc_reg;
   // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
   // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
@@ -1480,5 +1495,54 @@ module if_stage #(
   // carried, so a slot-2-fetched branch trains the entry it predicted.
   assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
+
+  // ===========================================================================
+  // 2-Wide Width-Funnel Profiling Events (IF→PD boundary)
+  // ===========================================================================
+  // deliver1/deliver2 pulse exactly once per accepted handoff: PD's input
+  // registers only advance on !stall cycles, so gating on !if_stage_stall
+  // counts each delivered bundle once (stall-held cycles do not recount; the
+  // stall-release replay cycle is the accepted delivery).  The kill causes
+  // ride the same stall-capture/replay muxing as the slot-2 packet, so they
+  // always classify the bundle PD actually received.  Profiling only — these
+  // feed perf_counter_aggregator, nothing functional.
+  logic [3:0] slot2_kill_causes_live;
+  logic [3:0] slot2_kill_causes_sc;
+  logic [3:0] slot2_kill_causes_effective;
+  assign slot2_kill_causes_live = {
+    slot2_kill_transient_live,
+    slot2_kill_class_live,
+    slot2_kill_slot1_ctrl_live,
+    slot2_kill_slot1_32bit_live
+  };
+
+  stall_capture_reg #(
+      .WIDTH(4)
+  ) u_slot2_kill_causes_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(slot2_kill_causes_live),
+      .o_data(slot2_kill_causes_sc)
+  );
+
+  assign slot2_kill_causes_effective = replay_saved_if_outputs ? slot2_kill_causes_sc :
+                                                                 slot2_kill_causes_live;
+
+  logic width_deliver1;
+  logic width_deliver2;
+  logic width_slot2_killed;
+  assign width_deliver1 = !if_stage_stall && !o_from_if_to_pd.sel_nop;
+  assign width_deliver2 = width_deliver1 && !o_from_if_to_pd_2.sel_nop;
+  assign width_slot2_killed = width_deliver1 && o_from_if_to_pd_2.sel_nop;
+
+  assign o_width_events.deliver1 = width_deliver1;
+  assign o_width_events.deliver2 = width_deliver2;
+  assign o_width_events.kill_slot1_32bit = width_slot2_killed && slot2_kill_causes_effective[0];
+  assign o_width_events.kill_slot1_ctrl = width_slot2_killed && slot2_kill_causes_effective[1];
+  assign o_width_events.kill_class = width_slot2_killed && slot2_kill_causes_effective[2];
+  assign o_width_events.kill_transient = width_slot2_killed && slot2_kill_causes_effective[3];
 
 endmodule : if_stage

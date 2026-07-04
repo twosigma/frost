@@ -32,8 +32,8 @@ EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 RS_TYPE_WIDTH = 3
 
-PERF_TOP_COUNTER_COUNT = 23
-PERF_COUNTER_COUNT = 83
+PERF_TOP_COUNTER_COUNT = 37
+PERF_COUNTER_COUNT = 97
 PERF_WRAPPER_BASE = PERF_TOP_COUNTER_COUNT
 
 PERF_DISPATCH_FIRE = 0
@@ -59,6 +59,20 @@ PERF_PREDICTION_DISABLED = 19
 PERF_PREDICTION_FENCE_BRANCH = 20
 PERF_PREDICTION_FENCE_JAL = 21
 PERF_PREDICTION_FENCE_INDIRECT = 22
+PERF_IF_DELIVER1 = 23
+PERF_IF_DELIVER2 = 24
+PERF_IF_S2KILL_S1_32BIT = 25
+PERF_IF_S2KILL_S1_CTRL = 26
+PERF_IF_S2KILL_S2_CLASS = 27
+PERF_IF_S2KILL_TRANSIENT = 28
+PERF_DISPATCH_FIRE_2 = 29
+PERF_DISPATCH_SLOT2_PRESENT = 30
+PERF_DISPATCH_SLOT2_FP_SERIALIZED = 31
+PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH = 32
+PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2 = 33
+PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 34
+PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 35
+PERF_DISPATCH_SLOT2_BLOCK_CKPT = 36
 
 ALLOC_REQ_FIELDS = [
     ("alloc_valid", 1),
@@ -147,6 +161,22 @@ DISPATCH_STATUS_FIELDS = [
     ("lq_full", 1),
     ("sq_full", 1),
     ("checkpoint_full", 1),
+    ("slot2_present", 1),
+    ("slot2_fp_serialized", 1),
+    ("slot2_block_s1_branch", 1),
+    ("slot2_block_rob_full2", 1),
+    ("slot2_block_rs_full2", 1),
+    ("slot2_block_lsq_full2", 1),
+    ("slot2_block_ckpt", 1),
+]
+
+IF_WIDTH_EVENTS_FIELDS = [
+    ("deliver1", 1),
+    ("deliver2", 1),
+    ("kill_slot1_32bit", 1),
+    ("kill_slot1_ctrl", 1),
+    ("kill_class", 1),
+    ("kill_transient", 1),
 ]
 
 QUIESCENT_DISPATCH_STATUS: dict[str, int | bool] = {"dispatch_valid": True}
@@ -201,11 +231,18 @@ def _drive_dispatch_status(dut: Any, fields: Mapping[str, int | bool]) -> None:
     dut.i_dispatch_status.value = _pack_dispatch_status(packet)
 
 
+def _drive_if_width_events(dut: Any, fields: Mapping[str, int | bool]) -> None:
+    """Drive the IF width-funnel events struct."""
+    dut.i_if_width_events.value = _pack_struct(IF_WIDTH_EVENTS_FIELDS, fields)
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to a quiescent no-increment state."""
     _drive_alloc_req(dut, {})
     _drive_dispatch_status(dut, QUIESCENT_DISPATCH_STATUS)
     _drive_commit(dut, QUIESCENT_COMMIT)
+    _drive_if_width_events(dut, {})
+    dut.i_dispatch_fire_2.value = 0
     dut.i_flush_pipeline.value = 0
     dut.i_post_flush_holdoff_q.value = 0
     dut.i_csr_in_flight.value = 0
@@ -496,3 +533,85 @@ async def test_wrapper_counter_select_and_data_path(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert int(dut.o_perf_counter_data_q.value) == 0
+
+
+@cocotb.test()
+async def test_if_width_funnel_counters(dut: Any) -> None:
+    """IF delivery-width events and slot-2 kill causes accumulate per cycle."""
+    await _setup_test(dut)
+
+    for _ in range(2):
+        _drive_if_width_events(dut, {"deliver1": True, "kill_slot1_32bit": True})
+        await _advance_cycle(dut)
+
+    _drive_if_width_events(dut, {"deliver1": True, "deliver2": True})
+    await _advance_cycle(dut)
+
+    _drive_if_width_events(dut, {"deliver1": True, "kill_class": True})
+    await _advance_cycle(dut)
+
+    _drive_if_width_events(dut, {"deliver1": True, "kill_transient": True})
+    await _advance_cycle(dut)
+
+    _drive_if_width_events(dut, {"deliver1": True, "kill_slot1_ctrl": True})
+    await _advance_cycle(dut)
+
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    assert await _read_counter(dut, PERF_IF_DELIVER1) == 6
+    assert await _read_counter(dut, PERF_IF_DELIVER2) == 1
+    assert await _read_counter(dut, PERF_IF_S2KILL_S1_32BIT) == 2
+    assert await _read_counter(dut, PERF_IF_S2KILL_S1_CTRL) == 1
+    assert await _read_counter(dut, PERF_IF_S2KILL_S2_CLASS) == 1
+    assert await _read_counter(dut, PERF_IF_S2KILL_TRANSIENT) == 1
+
+
+@cocotb.test()
+async def test_dispatch_width_funnel_counters(dut: Any) -> None:
+    """Dispatch fire-2 and the slot-2 present/blocked taps accumulate."""
+    await _setup_test(dut)
+
+    for _ in range(3):
+        _drive_alloc_req(dut, {"alloc_valid": True})
+        dut.i_dispatch_fire_2.value = 1
+        _drive_dispatch_status(dut, {"slot2_present": True})
+        await _advance_cycle(dut)
+
+    dut.i_dispatch_fire_2.value = 0
+    _drive_alloc_req(dut, {"alloc_valid": True})
+    _drive_dispatch_status(
+        dut,
+        {
+            "slot2_present": True,
+            "slot2_block_rs_full2": True,
+        },
+    )
+    await _advance_cycle(dut)
+
+    _drive_alloc_req(dut, {})
+    _drive_dispatch_status(
+        dut,
+        {
+            "slot2_present": True,
+            "slot2_fp_serialized": True,
+            "slot2_block_rob_full2": True,
+            "slot2_block_lsq_full2": True,
+            "slot2_block_ckpt": True,
+            "slot2_block_s1_branch": True,
+        },
+    )
+    await _advance_cycle(dut)
+
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    assert await _read_counter(dut, PERF_DISPATCH_FIRE) == 4
+    assert await _read_counter(dut, PERF_DISPATCH_FIRE_2) == 3
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_PRESENT) == 5
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_FP_SERIALIZED) == 1
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH) == 1
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2) == 1
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2) == 1
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2) == 1
+    assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_CKPT) == 1
