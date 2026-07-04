@@ -53,7 +53,12 @@ module reservation_station #(
     // lets timing-sensitive RS instances publish conservative registered full
     // flags from the previous occupancy instead of exact flags from count_next,
     // keeping current-cycle dispatch valid off the exported-status flop D path.
-    parameter int unsigned DISPATCH_STATUS_RESERVE = 0
+    parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
+    // Second issue port (INT_RS only): a second lowest-ready select that
+    // skips branch-class entries (branches stay on port 0, which owns the
+    // single branch_resolution path), a second payload-RAM copy, and a full
+    // second stage2 bank feeding o_issue_2 / i_fu_ready_2.
+    parameter bit DUAL_ISSUE = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -132,6 +137,11 @@ module reservation_station #(
     output riscv_pkg::rs_issue_t o_issue,
     input  logic                 i_fu_ready,
     output logic                 o_issue_writes_cdb_hint,
+
+    // Second issue port (DUAL_ISSUE only; tied off otherwise).
+    output riscv_pkg::rs_issue_t o_issue_2,
+    input  logic                 i_fu_ready_2,
+    output logic                 o_issue_writes_cdb_hint_2,
 
     // =========================================================================
     // Current Issue Payload Peek (combinational, independent of i_fu_ready)
@@ -454,6 +464,10 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
   logic [DEPTH-1:0] rs_writes_cdb_hint;
+  // Branch-class pre-decode in FFs (also stored in the payload RAM): the
+  // DUAL_ISSUE port-1 select must skip branch-class entries BEFORE the
+  // payload read, so the class bit needs a parallel-scan copy.
+  logic [DEPTH-1:0] rs_is_branch_class;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
@@ -516,6 +530,15 @@ module reservation_station #(
   logic [$clog2(DEPTH)-1:0] issue_idx;
   logic any_ready;
   logic issue_fire;
+  // Second issue port (DUAL_ISSUE). Declared unconditionally so the shared
+  // count/valid bookkeeping can reference them; driven inside the generate
+  // block below and tied off when DUAL_ISSUE is disabled.
+  logic [DEPTH-1:0] entry_ready_2;
+  logic [$clog2(DEPTH)-1:0] issue_idx_2;
+  logic any_ready_2;
+  logic issue_fire_2;
+  logic stage2b_valid;
+  logic stage2b_head_query_match;
 
   // Dispatch condition
   (* max_fanout = 32 *) logic dispatch_fire;
@@ -701,7 +724,7 @@ module reservation_station #(
   logic [CountWidth-1:0] count_after_issue;
   logic [CountWidth-1:0] count_after_issue_p1;
   logic [CountWidth-1:0] count_after_issue_p2;
-  assign count_after_issue = count - CountWidth'(issue_fire);
+  assign count_after_issue = count - CountWidth'(issue_fire) - CountWidth'(issue_fire_2);
   assign count_after_issue_p1 = count_after_issue + CountWidth'(1);
   assign count_after_issue_p2 = count_after_issue + CountWidth'(2);
 
@@ -933,7 +956,8 @@ module reservation_station #(
   end
   assign o_head_query_in_rs = |head_query_match;
   assign o_head_query_rs_ready = |(head_query_match & entry_ready);
-  assign o_head_query_in_stage2 = stage2_valid && (stage2_rob_tag == i_head_query_tag);
+  assign o_head_query_in_stage2 = (stage2_valid && (stage2_rob_tag == i_head_query_tag)) ||
+      stage2b_head_query_match;
 
   // --- Stage 2 control ---
   // Flush squash: stage2 holds an instruction younger than the flush boundary.
@@ -1040,6 +1064,263 @@ module reservation_station #(
 
   assign o_issue_writes_cdb_hint = stage2_writes_cdb_hint;
 
+  // ===========================================================================
+  // Second Issue Port (DUAL_ISSUE) — select, payload copy, stage2b, o_issue_2
+  // ===========================================================================
+  generate
+    if (DUAL_ISSUE) begin : gen_issue2
+      // Port-1 candidates: ready entries that are not branch-class (branches
+      // own port 0 and the single branch_resolution / ROB branch-update
+      // path) and not the entry port 0 is selecting this cycle.  Excluding
+      // issue_idx even when port 0 does not fire is conservative but makes
+      // double-issue of one entry structurally impossible.
+      always_comb begin
+        for (int i = 0; i < DEPTH; i++) begin
+          entry_ready_2[i] = entry_ready[i] && !rs_is_branch_class[i] &&
+              ($clog2(DEPTH)'(i) != issue_idx);
+        end
+      end
+
+      always_comb begin
+        issue_idx_2 = '0;
+        any_ready_2 = 1'b0;
+        for (int i = 0; i < DEPTH; i++) begin
+          if (entry_ready_2[i] && !any_ready_2) begin
+            issue_idx_2 = $clog2(DEPTH)'(i);
+            any_ready_2 = 1'b1;
+          end
+        end
+      end
+
+      // Second payload-RAM copy: identical writes, read at issue_idx_2
+      // (LUTRAM replication, the same pattern as the duplicated SQ data
+      // RAMs).
+      logic [PayloadWidth-1:0] payload_rd_data_b;
+      mwp_dist_ram #(
+          .ADDR_WIDTH     ($clog2(DEPTH)),
+          .DATA_WIDTH     (PayloadWidth),
+          .NUM_WRITE_PORTS(2)
+      ) u_payload_ram_2 (
+          .i_clk,
+          .i_write_enable ({dispatch_fire_2, dispatch_fire}),
+          .i_write_address({alloc_idx_2, free_idx}),
+          .i_read_address (issue_idx_2),
+          .i_write_data   ({payload_wr_data_2, payload_wr_data}),
+          .o_read_data    (payload_rd_data_b)
+      );
+
+      logic [                 31:0] pl2_op_bits;
+      logic [             XLEN-1:0] pl2_imm;
+      logic [                  2:0] pl2_rm;
+      logic [             XLEN-1:0] pl2_branch_target;
+      logic                         pl2_predicted_taken;
+      logic [             XLEN-1:0] pl2_predicted_target;
+      logic                         pl2_is_fp_mem;
+      logic                         pl2_mem_needs_lq;
+      logic                         pl2_mem_needs_sq;
+      logic [                  1:0] pl2_mem_size_bits;
+      logic                         pl2_mem_signed;
+      logic [                 11:0] pl2_csr_addr;
+      logic [                  4:0] pl2_csr_imm;
+      logic [             XLEN-1:0] pl2_pc;
+      logic [             XLEN-1:0] pl2_link_addr;
+      logic                         pl2_has_checkpoint;
+      logic [CheckpointIdWidth-1:0] pl2_checkpoint_id;
+      logic                         pl2_is_call;
+      logic                         pl2_is_return;
+      logic                         pl2_is_branch_class;
+      logic                         pl2_is_jal;
+      logic                         pl2_is_jalr;
+      logic [                  2:0] pl2_branch_op_bits;
+
+      assign {pl2_op_bits, pl2_imm, pl2_rm, pl2_branch_target, pl2_predicted_taken,
+              pl2_predicted_target, pl2_is_fp_mem, pl2_mem_needs_lq, pl2_mem_needs_sq,
+              pl2_mem_size_bits, pl2_mem_signed,
+              pl2_csr_addr, pl2_csr_imm, pl2_pc, pl2_link_addr,
+              pl2_has_checkpoint, pl2_checkpoint_id, pl2_is_call, pl2_is_return,
+              pl2_is_branch_class, pl2_is_jal, pl2_is_jalr, pl2_branch_op_bits} = payload_rd_data_b;
+
+      // stage2b pipeline register bank (mirror of stage2_*).
+      logic [ReorderBufferTagWidth-1:0] stage2b_rob_tag;
+      riscv_pkg::instr_op_e stage2b_op;
+      logic [FLEN-1:0] stage2b_src1_value;
+      logic [FLEN-1:0] stage2b_src2_value;
+      logic [FLEN-1:0] stage2b_src3_value;
+      logic [FLEN-1:0] stage2b_src1_bypass_mask;
+      logic [FLEN-1:0] stage2b_src2_bypass_mask;
+      logic [FLEN-1:0] stage2b_src3_bypass_mask;
+      logic [FLEN-1:0] stage2b_cdb_value;
+      logic [XLEN-1:0] stage2b_imm;
+      logic stage2b_use_imm;
+      logic stage2b_writes_cdb_hint;
+      logic [2:0] stage2b_rm;
+      logic [XLEN-1:0] stage2b_branch_target;
+      logic stage2b_predicted_taken;
+      logic [XLEN-1:0] stage2b_predicted_target;
+      logic stage2b_is_fp_mem;
+      logic stage2b_mem_needs_lq;
+      logic stage2b_mem_needs_sq;
+      riscv_pkg::mem_size_e stage2b_mem_size;
+      logic stage2b_mem_signed;
+      logic [11:0] stage2b_csr_addr;
+      logic [4:0] stage2b_csr_imm;
+      logic [XLEN-1:0] stage2b_pc;
+      logic [XLEN-1:0] stage2b_link_addr;
+      logic stage2b_has_checkpoint;
+      logic [CheckpointIdWidth-1:0] stage2b_checkpoint_id;
+      logic stage2b_is_call;
+      logic stage2b_is_return;
+      logic stage2b_is_branch_class;
+      logic stage2b_is_jal;
+      logic stage2b_is_jalr;
+      riscv_pkg::branch_taken_op_e stage2b_branch_op;
+
+      logic stage2b_should_flush;
+      logic stage2b_accept;
+      logic can_issue_to_stage2b;
+
+      assign stage2b_should_flush = stage2b_valid &&
+          (i_flush_all || (i_flush_en && should_flush_entry(
+          stage2b_rob_tag, i_flush_tag, i_rob_head_tag
+      )));
+      assign stage2b_accept = stage2b_valid && i_fu_ready_2 && !stage2b_should_flush;
+      assign can_issue_to_stage2b = !stage2b_valid || stage2b_accept;
+      assign issue_fire_2 = any_ready_2 && i_fu_ready_2 && can_issue_to_stage2b &&
+          !i_flush_all && !i_flush_en;
+
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n) begin
+          stage2b_valid <= 1'b0;
+        end else if (stage2b_should_flush) begin
+          stage2b_valid <= 1'b0;
+        end else if (issue_fire_2) begin
+          stage2b_valid <= 1'b1;
+          stage2b_rob_tag <= rs_rob_tag[issue_idx_2];
+          stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
+          stage2b_src1_value <= rs_src1_dispatch_cdb0[issue_idx_2] ?
+              rs_dispatch_cdb0_value[issue_idx_2] :
+              (rs_src1_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
+               ((src1_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
+              src1_repair_sel[issue_idx_2]
+          ) : rs_src1_value[issue_idx_2]));
+          stage2b_src2_value <= rs_src2_dispatch_cdb0[issue_idx_2] ?
+              rs_dispatch_cdb0_value[issue_idx_2] :
+              (rs_src2_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
+               ((src2_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
+              src2_repair_sel[issue_idx_2]
+          ) : rs_src2_value[issue_idx_2]));
+          stage2b_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx_2]}};
+          stage2b_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx_2]}};
+          if (HAS_SRC3) begin
+            stage2b_src3_value <= rs_src3_dispatch_cdb0[issue_idx_2] ?
+                rs_dispatch_cdb0_value[issue_idx_2] :
+                (rs_src3_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
+                 ((src3_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
+                src3_repair_sel[issue_idx_2]
+            ) : rs_src3_value[issue_idx_2]));
+            stage2b_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx_2]}};
+          end
+          stage2b_cdb_value <= i_cdb.value;
+          stage2b_imm <= pl2_imm;
+          stage2b_use_imm <= rs_use_imm[issue_idx_2];
+          stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
+              rs_writes_cdb_hint[issue_idx_2] : 1'b0;
+          stage2b_rm <= pl2_rm;
+          stage2b_branch_target <= pl2_branch_target;
+          stage2b_predicted_taken <= pl2_predicted_taken;
+          stage2b_predicted_target <= pl2_predicted_target;
+          stage2b_is_fp_mem <= pl2_is_fp_mem;
+          stage2b_mem_needs_lq <= pl2_mem_needs_lq;
+          stage2b_mem_needs_sq <= pl2_mem_needs_sq;
+          stage2b_mem_size <= riscv_pkg::mem_size_e'(pl2_mem_size_bits);
+          stage2b_mem_signed <= pl2_mem_signed;
+          stage2b_csr_addr <= pl2_csr_addr;
+          stage2b_csr_imm <= pl2_csr_imm;
+          stage2b_pc <= pl2_pc;
+          stage2b_link_addr <= pl2_link_addr;
+          stage2b_has_checkpoint <= pl2_has_checkpoint;
+          stage2b_checkpoint_id <= pl2_checkpoint_id;
+          stage2b_is_call <= pl2_is_call;
+          stage2b_is_return <= pl2_is_return;
+          stage2b_is_branch_class <= pl2_is_branch_class;
+          stage2b_is_jal <= pl2_is_jal;
+          stage2b_is_jalr <= pl2_is_jalr;
+          stage2b_branch_op <= riscv_pkg::branch_taken_op_e'(pl2_branch_op_bits);
+        end else if (stage2b_accept) begin
+          stage2b_valid <= 1'b0;
+        end
+      end
+
+      // o_issue_2 assembly (mirror of o_issue; same phantom-issue-on-flush
+      // rationale — a flushed tag's CDB result is discarded by ROB/RS).
+      assign o_issue_2.valid = stage2b_valid && i_fu_ready_2;
+      assign o_issue_2.rob_tag = stage2b_rob_tag;
+      assign o_issue_2.op = stage2b_op;
+      assign o_issue_2.src1_value = (stage2b_src1_value & ~stage2b_src1_bypass_mask) |
+          (stage2b_cdb_value & stage2b_src1_bypass_mask);
+      assign o_issue_2.src2_value = (stage2b_src2_value & ~stage2b_src2_bypass_mask) |
+          (stage2b_cdb_value & stage2b_src2_bypass_mask);
+      assign o_issue_2.src3_value = HAS_SRC3 ?
+          ((stage2b_src3_value & ~stage2b_src3_bypass_mask) |
+           (stage2b_cdb_value & stage2b_src3_bypass_mask)) : '0;
+      assign o_issue_2.imm = stage2b_imm;
+      assign o_issue_2.use_imm = stage2b_use_imm;
+      assign o_issue_2.rm = stage2b_rm;
+      assign o_issue_2.branch_target = stage2b_branch_target;
+      assign o_issue_2.predicted_taken = stage2b_predicted_taken;
+      assign o_issue_2.predicted_target = stage2b_predicted_target;
+      assign o_issue_2.is_fp_mem = stage2b_is_fp_mem;
+      assign o_issue_2.mem_needs_lq = stage2b_mem_needs_lq;
+      assign o_issue_2.mem_needs_sq = stage2b_mem_needs_sq;
+      assign o_issue_2.mem_size = stage2b_mem_size;
+      assign o_issue_2.mem_signed = stage2b_mem_signed;
+      assign o_issue_2.csr_addr = stage2b_csr_addr;
+      assign o_issue_2.csr_imm = stage2b_csr_imm;
+      assign o_issue_2.pc = stage2b_pc;
+      assign o_issue_2.link_addr = stage2b_link_addr;
+      assign o_issue_2.has_checkpoint = stage2b_has_checkpoint;
+      assign o_issue_2.checkpoint_id = stage2b_checkpoint_id;
+      assign o_issue_2.is_call = stage2b_is_call;
+      assign o_issue_2.is_return = stage2b_is_return;
+      assign o_issue_2.is_branch_class = stage2b_is_branch_class;
+      assign o_issue_2.is_jal = stage2b_is_jal;
+      assign o_issue_2.is_jalr = stage2b_is_jalr;
+      assign o_issue_2.branch_op = stage2b_branch_op;
+      assign o_issue_writes_cdb_hint_2 = stage2b_writes_cdb_hint;
+      assign stage2b_head_query_match = stage2b_valid && (stage2b_rob_tag == i_head_query_tag);
+
+      // No sideband is_sc mirror: SC issues via MEM_RS, never a DUAL_ISSUE
+      // (INT) reservation station.
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+      // Port-1 discipline: never a branch-class entry, never port 0's entry.
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && issue_fire_2) begin
+          assert (rs_valid[issue_idx_2] && entry_ready[issue_idx_2])
+          else $error("issue2 fired a non-ready entry");
+          assert (!rs_is_branch_class[issue_idx_2])
+          else $error("issue2 fired a branch-class entry");
+          assert (!(issue_fire && (issue_idx == issue_idx_2)))
+          else $error("both issue ports fired the same entry");
+        end
+      end
+`endif
+`endif
+    end else begin : gen_no_issue2
+      assign entry_ready_2 = '0;
+      assign issue_idx_2 = '0;
+      assign any_ready_2 = 1'b0;
+      assign issue_fire_2 = 1'b0;
+      assign stage2b_valid = 1'b0;
+      assign stage2b_head_query_match = 1'b0;
+      assign o_issue_2 = '0;
+      assign o_issue_writes_cdb_hint_2 = 1'b0;
+      logic unused_fu_ready_2;
+      assign unused_fu_ready_2 = i_fu_ready_2;
+    end
+  endgenerate
+
   // --- Status outputs ---
   assign o_full = dispatch_full_q;
   assign o_full_for_2 = dispatch_full_for_2_q;
@@ -1086,6 +1367,7 @@ module reservation_station #(
         end
       end else begin
         if (issue_fire) rs_valid[issue_idx] <= 1'b0;
+        if (issue_fire_2) rs_valid[issue_idx_2] <= 1'b0;
 
         if (dispatch_fire) begin
           rs_valid[free_idx] <= 1'b1;
@@ -1175,6 +1457,7 @@ module reservation_station #(
     // Dispatch: capture tags and values at free index
     if (data_write_1_en) begin
       rs_rob_tag[free_idx] <= dispatch_rob_tag;
+      rs_is_branch_class[free_idx] <= dispatch_is_branch_class;
       rs_dispatch_cdb0_value[free_idx] <= i_cdb.value;
       rs_dispatch_cdb1_value[free_idx] <= i_cdb_2.value;
 
@@ -1210,6 +1493,7 @@ module reservation_station #(
     // before reaching the RS.
     if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2] <= dispatch_rob_tag_2;
+      rs_is_branch_class[alloc_idx_2] <= dispatch_is_branch_class_2;
       rs_dispatch_cdb0_value[alloc_idx_2] <= i_cdb.value;
       rs_dispatch_cdb1_value[alloc_idx_2] <= i_cdb_2.value;
 

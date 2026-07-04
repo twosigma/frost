@@ -14,6 +14,15 @@ with average occupancy ~4 at depth 8, so the queue was doubled
 without changing any other RS structure. Everything else
 (entry array, wakeup network, priority encoder) scales by parameter.
 
+INT_RS is additionally built with `DUAL_ISSUE=1`: a second issue port
+(`o_issue_2` / `i_fu_ready_2`) with its own lowest-ready select, payload-RAM
+copy, and stage2 pipeline register, feeding the second single-cycle ALU pipe.
+The port-1 select skips branch-class entries — branches issue only through
+port 0, which owns the single `branch_resolution` / ROB branch-update path —
+and always excludes the entry port 0 is selecting, so the two ports can never
+double-issue one entry. The other five stations elaborate with the default
+`DUAL_ISSUE=0` and are structurally unchanged.
+
 The wakeup mechanism is a two-lane Tomasulo CDB snoop: each entry compares its
 source tags against both broadcast tags every cycle, and a match captures the
 value and marks the source ready. Lane 0 also feeds the combinational
@@ -47,7 +56,8 @@ because they need parallel CAM-style access for CDB tag comparison
 across all entries. The read-once payload (operation, immediate,
 rounding mode, branch target, prediction metadata, CSR address, …)
 is written once at dispatch and read once at issue, so it lives in
-distributed RAM with dispatch write ports and a single issue read port.
+distributed RAM with dispatch write ports and one issue read port per
+issue port (`DUAL_ISSUE` adds a second LUTRAM copy read at `issue_idx_2`).
 This saves a substantial number of flip-flops compared to keeping
 the whole entry in registers.
 

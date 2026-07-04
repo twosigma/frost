@@ -41,7 +41,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 │     │                          │  (16) (4)  (8)  (6)  (4)   (2)           │  │
 │     │                          └──────────────┬───────────────────────────┘  │
 │     │                                         ▼                              │
-│     │                          FU shims (ALU, MUL/DIV, FPU)                  │
+│     │                          FU shims (ALU x2, MUL/DIV, FPU)               │
 │     │                          LQ + L0 cache, SQ                             │
 │     │                                         │                              │
 │     │                                         ▼                              │
@@ -92,8 +92,8 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
 - **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles
-- **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS
-- **2-lane CDB result broadcast** — grants the top two FU completions per cycle with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
+- **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS; the INT station is dual-issue, feeding two single-cycle ALU pipes (branches steer to pipe 0, which owns branch resolution)
+- **2-lane CDB result broadcast** — grants the top two FU completions per cycle with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
 - **Branch prediction** with a 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 1024-entry bimodal direction predictor, 8-entry return address stack, and PD-stage computed-target redirects for conditional BTB misses predicted taken

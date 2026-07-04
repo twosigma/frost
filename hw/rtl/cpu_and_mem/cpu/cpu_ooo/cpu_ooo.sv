@@ -1078,6 +1078,7 @@ module cpu_ooo #(
       .i_fu_complete_4('0),
       .i_fu_complete_5('0),
       .i_fu_complete_6('0),
+      .i_fu_complete_7('0),
 
       // ROB allocation
       .i_alloc_req(rob_alloc_req),
