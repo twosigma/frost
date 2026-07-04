@@ -17,12 +17,24 @@
 // =============================================================================
 // sq_early_addr_pipeline
 // =============================================================================
-// Extracted verbatim from tomasulo_wrapper.sv (pure RTL boundary move, zero
-// functional change).  Pipelines the store effective-address computation:
-// registers the dispatch base+imm for one cycle, then runs the 32-bit adder off
-// the dispatch critical path (breaks the RAT -> ROB bypass -> dispatch -> adder
-// -> SQ path).  Dual-ported (slot-1 / slot-2): each slot has its own register
-// set, adders, CDB repair snoop, and update packet to the store queue.
+// Pipelines the store effective-address computation: registers the dispatch
+// base+imm for one cycle, then runs the 32-bit adder off the dispatch
+// critical path (breaks the RAT -> ROB bypass -> dispatch -> adder -> SQ
+// path).  Dual-ported (slot-1 / slot-2): each slot has its own register set,
+// adders, repair snoop, and update packet to the store queue.
+//
+// PERSISTENT REPAIR: a store whose base register is not ready at dispatch
+// becomes a repair candidate that WAITS for its base tag to complete — on
+// the six dispatch-scoped done-repair channels (the dispatch+1 already-done
+// case) or on either live CDB lane (any later completion).  A matched
+// candidate emits its SQ update combinationally when the slot's port is
+// free, otherwise latches the repaired base and drains on the next free
+// cycle.  Candidates are evicted by a newer un-ready store on the same
+// slot (that store falls back to the MEM_RS address path, as all missed
+// stores did before persistence), killed when MEM_RS issues their store
+// (the issue delivers the address anyway, and the kill closes the
+// ROB-tag-reuse window: a store cannot drain, and its tag cannot be
+// reused, before MEM_RS issue delivers its data), and cleared on flush.
 // =============================================================================
 module sq_early_addr_pipeline (
     input logic i_clk,
@@ -31,6 +43,22 @@ module sq_early_addr_pipeline (
     // Flush controls
     input logic i_flush_all,
     input logic i_flush_en,
+
+    // Live CDB lanes (registered wrapper copies).  A HELD repair candidate's
+    // base tag can complete any number of cycles after dispatch; the
+    // dispatch-scoped done-repair channels below only pulse for
+    // just-dispatched tags, so persistence needs the real completion buses.
+    input riscv_pkg::cdb_broadcast_t i_cdb,
+    input riscv_pkg::cdb_broadcast_t i_cdb_2,
+
+    // MEM_RS issue tap: kills a candidate whose store is being issued (its
+    // address arrives via i_addr_update, making the candidate redundant) —
+    // and, critically, closes the ROB-tag-reuse window: a store cannot
+    // drain (and its tag cannot be reused) before MEM_RS issue delivers its
+    // data, so clearing here guarantees a stale candidate can never fire an
+    // old address into a new same-tag store's entry.
+    input logic i_mem_rs_issue_valid,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_mem_rs_issue_rob_tag,
 
     // CDB repair snoop (done-repair valids, broadcast tags, broadcast values)
     input logic i_done_repair_valid_1,
@@ -149,6 +177,15 @@ module sq_early_addr_pipeline (
     end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_6) begin
       sq_early_addr_repair_match = 1'b1;
       sq_early_addr_repair_base  = bypass_value_6[riscv_pkg::XLEN-1:0];
+    end else if (i_cdb.valid && sq_early_addr_repair_src1_tag_q == i_cdb.tag) begin
+      // Live-lane snoop: the held candidate's base completing on the CDB,
+      // any number of cycles after dispatch (the channels above only cover
+      // the dispatch+1 already-done case).
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = i_cdb.value[riscv_pkg::XLEN-1:0];
+    end else if (i_cdb_2.valid && sq_early_addr_repair_src1_tag_q == i_cdb_2.tag) begin
+      sq_early_addr_repair_match = 1'b1;
+      sq_early_addr_repair_base  = i_cdb_2.value[riscv_pkg::XLEN-1:0];
     end
   end
 
@@ -185,6 +222,12 @@ module sq_early_addr_pipeline (
     end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_6) begin
       sq_early_addr_repair_match_2 = 1'b1;
       sq_early_addr_repair_base_2  = bypass_value_6[riscv_pkg::XLEN-1:0];
+    end else if (i_cdb.valid && sq_early_addr_repair_src1_tag_2_q == i_cdb.tag) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = i_cdb.value[riscv_pkg::XLEN-1:0];
+    end else if (i_cdb_2.valid && sq_early_addr_repair_src1_tag_2_q == i_cdb_2.tag) begin
+      sq_early_addr_repair_match_2 = 1'b1;
+      sq_early_addr_repair_base_2  = i_cdb_2.value[riscv_pkg::XLEN-1:0];
     end
   end
 
@@ -203,35 +246,103 @@ module sq_early_addr_pipeline (
                                    ((sq_alloc_req.valid && !o_sq_full) ?
                                     !o_sq_full_for_2 : !o_sq_full);
 
+  // Persistent-repair state (Session: early-addr coverage).  A repair
+  // candidate now WAITS until its base tag completes (dispatch channels or
+  // live CDB lanes), is evicted by a newer un-ready store on the same slot,
+  // is killed by MEM_RS issuing its store, or is flushed.  A matched
+  // candidate whose SQ update port is taken by a fresh (ready-base) update
+  // latches its repaired base and drains on the next free-port cycle.
+  logic sq_early_addr_repair_ready_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_hold_q;
+  logic sq_early_addr_repair_ready_2_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_hold_2_q;
+
+  logic slot1_new_ready_store, slot1_new_unready_store;
+  logic slot2_new_ready_store, slot2_new_unready_store;
+  assign slot1_new_ready_store   = sq_alloc_req.valid && !o_sq_full && mem_rs_dispatch.src1_ready;
+  assign slot1_new_unready_store = sq_alloc_req.valid && !o_sq_full && !mem_rs_dispatch.src1_ready;
+  assign slot2_new_ready_store   = slot2_sq_alloc_accepted && mem_rs_dispatch_2.src1_ready;
+  assign slot2_new_unready_store = slot2_sq_alloc_accepted && !mem_rs_dispatch_2.src1_ready;
+
+  // Fresh updates own the SQ port on their (single) emission cycle.
+  logic slot1_port_taken_by_fresh, slot2_port_taken_by_fresh;
+  assign slot1_port_taken_by_fresh = sq_early_addr_valid_q;
+  assign slot2_port_taken_by_fresh = sq_early_addr_valid_2_q;
+
+  logic slot1_mem_rs_issue_kill, slot2_mem_rs_issue_kill;
+  assign slot1_mem_rs_issue_kill = i_mem_rs_issue_valid &&
+                                   (i_mem_rs_issue_rob_tag == sq_early_addr_repair_rob_tag_q);
+  assign slot2_mem_rs_issue_kill = i_mem_rs_issue_valid &&
+                                   (i_mem_rs_issue_rob_tag == sq_early_addr_repair_rob_tag_2_q);
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all || i_flush_en) begin
       sq_early_addr_valid_q <= 1'b0;
       sq_early_addr_repair_valid_q <= 1'b0;
+      sq_early_addr_repair_ready_q <= 1'b0;
       sq_early_addr_valid_2_q <= 1'b0;
       sq_early_addr_repair_valid_2_q <= 1'b0;
+      sq_early_addr_repair_ready_2_q <= 1'b0;
     end else begin
-      sq_early_addr_valid_q <= sq_alloc_req.valid && !o_sq_full && mem_rs_dispatch.src1_ready;
+      sq_early_addr_valid_q <= slot1_new_ready_store;
       sq_early_addr_rob_tag_q <= mem_rs_dispatch.rob_tag;
       sq_early_addr_base_q <= mem_rs_dispatch.src1_value[riscv_pkg::XLEN-1:0];
       sq_early_addr_imm_q <= mem_rs_dispatch.imm;
 
-      sq_early_addr_repair_valid_q <= sq_alloc_req.valid &&
-                                      !o_sq_full &&
-                                      !mem_rs_dispatch.src1_ready;
-      sq_early_addr_repair_rob_tag_q <= mem_rs_dispatch.rob_tag;
-      sq_early_addr_repair_src1_tag_q <= mem_rs_dispatch.src1_tag;
-      sq_early_addr_repair_imm_q <= mem_rs_dispatch.imm;
+      // Slot-1 waiting/ready state machine.  Eviction (a newer un-ready
+      // store on this slot) wins over everything: the old candidate either
+      // emitted combinationally this cycle or falls back to the MEM_RS
+      // address path.  The MEM_RS-issue kill must beat a same-cycle match:
+      // the issue is already delivering this store's address.
+      if (slot1_new_unready_store) begin
+        sq_early_addr_repair_valid_q <= 1'b1;
+        sq_early_addr_repair_ready_q <= 1'b0;
+        sq_early_addr_repair_rob_tag_q <= mem_rs_dispatch.rob_tag;
+        sq_early_addr_repair_src1_tag_q <= mem_rs_dispatch.src1_tag;
+        sq_early_addr_repair_imm_q <= mem_rs_dispatch.imm;
+      end else if (slot1_mem_rs_issue_kill) begin
+        sq_early_addr_repair_valid_q <= 1'b0;
+        sq_early_addr_repair_ready_q <= 1'b0;
+      end else begin
+        if (sq_early_addr_repair_fire) begin
+          sq_early_addr_repair_valid_q <= 1'b0;
+          if (slot1_port_taken_by_fresh) begin
+            sq_early_addr_repair_ready_q <= 1'b1;
+            sq_early_addr_repair_base_hold_q <= sq_early_addr_repair_base;
+          end
+        end
+        if (sq_early_addr_repair_ready_q && !slot1_port_taken_by_fresh) begin
+          sq_early_addr_repair_ready_q <= 1'b0;
+        end
+      end
 
-      // Slot-2 (Session L)
-      sq_early_addr_valid_2_q <= slot2_sq_alloc_accepted && mem_rs_dispatch_2.src1_ready;
+      // Slot-2 (Session L) — same structure.
+      sq_early_addr_valid_2_q <= slot2_new_ready_store;
       sq_early_addr_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
       sq_early_addr_base_2_q <= mem_rs_dispatch_2.src1_value[riscv_pkg::XLEN-1:0];
       sq_early_addr_imm_2_q <= mem_rs_dispatch_2.imm;
 
-      sq_early_addr_repair_valid_2_q <= slot2_sq_alloc_accepted && !mem_rs_dispatch_2.src1_ready;
-      sq_early_addr_repair_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
-      sq_early_addr_repair_src1_tag_2_q <= mem_rs_dispatch_2.src1_tag;
-      sq_early_addr_repair_imm_2_q <= mem_rs_dispatch_2.imm;
+      if (slot2_new_unready_store) begin
+        sq_early_addr_repair_valid_2_q <= 1'b1;
+        sq_early_addr_repair_ready_2_q <= 1'b0;
+        sq_early_addr_repair_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
+        sq_early_addr_repair_src1_tag_2_q <= mem_rs_dispatch_2.src1_tag;
+        sq_early_addr_repair_imm_2_q <= mem_rs_dispatch_2.imm;
+      end else if (slot2_mem_rs_issue_kill) begin
+        sq_early_addr_repair_valid_2_q <= 1'b0;
+        sq_early_addr_repair_ready_2_q <= 1'b0;
+      end else begin
+        if (sq_early_addr_repair_fire_2) begin
+          sq_early_addr_repair_valid_2_q <= 1'b0;
+          if (slot2_port_taken_by_fresh) begin
+            sq_early_addr_repair_ready_2_q <= 1'b1;
+            sq_early_addr_repair_base_hold_2_q <= sq_early_addr_repair_base_2;
+          end
+        end
+        if (sq_early_addr_repair_ready_2_q && !slot2_port_taken_by_fresh) begin
+          sq_early_addr_repair_ready_2_q <= 1'b0;
+        end
+      end
     end
   end
 
@@ -248,39 +359,63 @@ module sq_early_addr_pipeline (
   assign sq_early_repair_effective_addr_2 = sq_early_addr_repair_base_2 +
                                             sq_early_addr_repair_imm_2_q;
 
+  // Held-candidate adders: run on the latched repaired base (registered), so
+  // the drain path stays off the CDB/bypass comb cone.
+  logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr;
+  logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr_2;
+  assign sq_early_hold_effective_addr = sq_early_addr_repair_base_hold_q +
+                                        sq_early_addr_repair_imm_q;
+  assign sq_early_hold_effective_addr_2 = sq_early_addr_repair_base_hold_2_q +
+                                          sq_early_addr_repair_imm_2_q;
+
+  // Port arbitration: a fresh (ready-base) update is single-cycle perishable
+  // and always wins; a just-matched candidate emits combinationally only on
+  // a free cycle (otherwise it latches into the hold registers); a held
+  // candidate drains on the next free cycle.  ready and waiting are
+  // exclusive states, so the last two arms never contend.
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   always_comb begin
     sq_early_addr_update = '0;
-    if (sq_early_addr_repair_fire) begin
+    if (sq_early_addr_valid_q) begin
       sq_early_addr_update.valid   = 1'b1;
-      sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
-      sq_early_addr_update.address = sq_early_repair_effective_addr;
+      sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
+      sq_early_addr_update.address = sq_early_effective_addr;
       // MMIO = the 01 address quadrant [0x4000_0000, 0x8000_0000). The cached
       // (DDR) region is the 10 quadrant and must NOT be flagged -- the old
       // ">= MmioBase" shortcut predates the cached tier.
-      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr[31:30] == 2'b01);
-    end else begin
-      sq_early_addr_update.valid   = sq_early_addr_valid_q;
-      sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
-      sq_early_addr_update.address = sq_early_effective_addr;
       sq_early_addr_update.is_mmio = (sq_early_effective_addr[31:30] == 2'b01);
+    end else if (sq_early_addr_repair_ready_q) begin
+      sq_early_addr_update.valid   = 1'b1;
+      sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
+      sq_early_addr_update.address = sq_early_hold_effective_addr;
+      sq_early_addr_update.is_mmio = (sq_early_hold_effective_addr[31:30] == 2'b01);
+    end else if (sq_early_addr_repair_fire) begin
+      sq_early_addr_update.valid   = 1'b1;
+      sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
+      sq_early_addr_update.address = sq_early_repair_effective_addr;
+      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr[31:30] == 2'b01);
     end
   end
 
-  // Slot-2 packet (Session L)
+  // Slot-2 packet (Session L) — same arbitration.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   always_comb begin
     sq_early_addr_update_2 = '0;
-    if (sq_early_addr_repair_fire_2) begin
+    if (sq_early_addr_valid_2_q) begin
+      sq_early_addr_update_2.valid   = 1'b1;
+      sq_early_addr_update_2.rob_tag = sq_early_addr_rob_tag_2_q;
+      sq_early_addr_update_2.address = sq_early_effective_addr_2;
+      sq_early_addr_update_2.is_mmio = (sq_early_effective_addr_2[31:30] == 2'b01);
+    end else if (sq_early_addr_repair_ready_2_q) begin
+      sq_early_addr_update_2.valid   = 1'b1;
+      sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
+      sq_early_addr_update_2.address = sq_early_hold_effective_addr_2;
+      sq_early_addr_update_2.is_mmio = (sq_early_hold_effective_addr_2[31:30] == 2'b01);
+    end else if (sq_early_addr_repair_fire_2) begin
       sq_early_addr_update_2.valid   = 1'b1;
       sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
       sq_early_addr_update_2.address = sq_early_repair_effective_addr_2;
       sq_early_addr_update_2.is_mmio = (sq_early_repair_effective_addr_2[31:30] == 2'b01);
-    end else begin
-      sq_early_addr_update_2.valid   = sq_early_addr_valid_2_q;
-      sq_early_addr_update_2.rob_tag = sq_early_addr_rob_tag_2_q;
-      sq_early_addr_update_2.address = sq_early_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = (sq_early_effective_addr_2[31:30] == 2'b01);
     end
   end
 

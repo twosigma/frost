@@ -3847,14 +3847,14 @@ async def test_lr_sc_success_flow(dut: Any) -> None:
         if sq_write["en"]:
             sq_write_captured = True
             break
-        if bool(dut.u_sq.write_outstanding.value):
+        if int(dut.u_sq.write_inflight_cnt.value) != 0:
             sq_write_captured = True
             break
         await dut_if.step()
     assert sq_write_captured, "SQ should write SC data"
 
-    # Ensure write_outstanding is set, then drive done
-    if not bool(dut.u_sq.write_outstanding.value):
+    # Ensure a write is in flight (write_inflight_cnt != 0), then drive done
+    if not (int(dut.u_sq.write_inflight_cnt.value) != 0):
         await dut_if.step()
     dut_if.drive_sq_mem_write_done()
     await dut_if.step()
@@ -4007,7 +4007,7 @@ async def test_lr_sc_failure_flow(dut: Any) -> None:
         await dut_if.step()
     assert sq_write["en"], "SQ should write SW data"
 
-    # Step to let write_outstanding get set, THEN drive done.
+    # Step to let the in-flight counter register the write, THEN drive done.
     await dut_if.step()
     dut_if.drive_sq_mem_write_done()
     await dut_if.step()
@@ -4830,7 +4830,7 @@ async def test_mmio_store_integration(dut: Any) -> None:
         if sq_write["en"]:
             sq_write_captured = True
             break
-        if bool(dut.u_sq.write_outstanding.value):
+        if int(dut.u_sq.write_inflight_cnt.value) != 0:
             sq_write_captured = True
             break
         await dut_if.step()
@@ -4843,8 +4843,8 @@ async def test_mmio_store_integration(dut: Any) -> None:
             sq_write["addr"] == mmio_addr
         ), f"SQ write addr={sq_write['addr']:#x}, expected {mmio_addr:#x}"
 
-    # Ensure write_outstanding is set, then drive done
-    if not bool(dut.u_sq.write_outstanding.value):
+    # Ensure a write is in flight (write_inflight_cnt != 0), then drive done
+    if not (int(dut.u_sq.write_inflight_cnt.value) != 0):
         await dut_if.step()
     dut_if.drive_sq_mem_write_done()
     await dut_if.step()

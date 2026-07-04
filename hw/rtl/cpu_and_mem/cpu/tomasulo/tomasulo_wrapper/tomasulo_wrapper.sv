@@ -2694,6 +2694,12 @@ module tomasulo_wrapper #(
       .i_rst_n                 (i_rst_n),
       .i_flush_all             (i_flush_all),
       .i_flush_en              (i_flush_en),
+      // Live CDB lanes (registered) for the persistent-repair snoop, and the
+      // MEM_RS issue tap that retires candidates whose store is issuing.
+      .i_cdb                   (cdb_bus),
+      .i_cdb_2                 (cdb_bus_2),
+      .i_mem_rs_issue_valid    (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq),
+      .i_mem_rs_issue_rob_tag  (o_mem_rs_issue.rob_tag),
       .i_done_repair_valid_1   (done_repair_valid_1),
       .i_done_repair_valid_2   (done_repair_valid_2),
       .i_done_repair_valid_3   (done_repair_valid_3),
