@@ -13,10 +13,16 @@ Two things: forwarding and ordering.
 **Forwarding.** A younger load may need data from an older store
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
 load address, the SQ scans all entries combinationally for a
-matching older store. If one is found and the sizes are compatible,
-the SQ forwards the data to the LQ — no memory access. If
-the sizes don't match, or some older store address isn't known yet,
-the SQ tells the LQ to wait. The scan is combinational but the
+matching older store. A load forwards when the newest conflicting
+store fully covers its bytes: FLD from an exact-address FSD (full
+64-bit payload), or any byte/half/word load whose byte mask is a
+subset of the store's byte mask within one word (either word of a
+DOUBLE store counts as fully written). For covered loads the SQ
+delivers a *memory-image word* — sub-word store data shifted to its
+memory byte lanes — and the LQ applies the load's own byte/half
+extraction and sign extension. If the newest conflicting store does
+not cover the load's bytes, or some older store address isn't known
+yet, the SQ tells the LQ to wait. The scan is combinational but the
 result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`)
 is registered, so the LQ sees it one cycle after raising
 `i_sq_check_valid`; this breaks the MEM_RS → SQ scan → LQ → BRAM path.

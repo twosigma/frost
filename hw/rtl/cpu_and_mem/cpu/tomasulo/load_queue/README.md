@@ -11,8 +11,11 @@ for 2-wide bundles, and free when their result is broadcast on the CDB.
 The hard part of an OOO load queue is figuring out *when* a load may
 issue. The LQ uses conservative disambiguation: a load can't issue
 to memory until every older store address is known. If a matching
-older store turns up, the LQ pulls the data from the SQ via
-store-to-load forwarding and skips memory entirely. Otherwise it
+older store turns up that covers the load's bytes, the LQ pulls the
+data from the SQ via store-to-load forwarding and skips memory
+entirely — the SQ supplies a memory-image word and a local
+`load_unit` instance applies byte/half extraction and sign extension
+for integer loads, mirroring the L0 hit path. Otherwise it
 checks the L0 cache; on a hit, the result is available the same
 cycle, and on a miss it issues to main memory. Main memory is not
 uniform: low-BRAM loads return in one cycle, while loads to the
