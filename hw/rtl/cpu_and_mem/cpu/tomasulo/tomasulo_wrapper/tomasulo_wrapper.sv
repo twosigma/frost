@@ -112,6 +112,7 @@ module tomasulo_wrapper #(
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
     output logic                              o_commit_correct_branch_raw,
+    output logic                              o_commit_correct_branch_2_raw,
     output logic                              o_head_commit_misprediction_candidate,
 
     // Widen-commit slot 2 observation (head+1).  Non-null only when the
@@ -317,6 +318,8 @@ module tomasulo_wrapper #(
     // =========================================================================
     input logic                                    i_checkpoint_free,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
+    input logic                                    i_checkpoint_free_2,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id_2,
 
     // =========================================================================
     // RAT Checkpoint Availability
@@ -1482,6 +1485,7 @@ module tomasulo_wrapper #(
       .o_commit_store_like_raw              (commit_store_like_raw),
       .o_commit_misprediction_raw           (o_commit_misprediction_raw),
       .o_commit_correct_branch_raw          (o_commit_correct_branch_raw),
+      .o_commit_correct_branch_2_raw        (o_commit_correct_branch_2_raw),
       .o_head_commit_misprediction_candidate(o_head_commit_misprediction_candidate),
 
       // Widen-commit slot 2 — tapped into a parallel commit_bus_2 / _q
@@ -1665,6 +1669,8 @@ module tomasulo_wrapper #(
       // Checkpoint free
       .i_checkpoint_free   (i_checkpoint_free),
       .i_checkpoint_free_id(i_checkpoint_free_id),
+      .i_checkpoint_free_2   (i_checkpoint_free_2),
+      .i_checkpoint_free_id_2(i_checkpoint_free_id_2),
 
       // ROB entry valid (stale rename detection)
       .i_rob_entry_valid(rob_entry_valid),
@@ -3145,6 +3151,7 @@ module tomasulo_wrapper #(
     end else begin
       if (i_checkpoint_save) f_cp_valid[i_checkpoint_id] <= 1'b1;
       if (i_checkpoint_free) f_cp_valid[i_checkpoint_free_id] <= 1'b0;
+      if (i_checkpoint_free_2) f_cp_valid[i_checkpoint_free_id_2] <= 1'b0;
     end
   end
 

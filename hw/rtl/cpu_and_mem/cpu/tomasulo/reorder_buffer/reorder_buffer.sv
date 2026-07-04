@@ -115,6 +115,10 @@ module reorder_buffer (
     output logic                              o_commit_store_like_raw,
     output logic                              o_commit_misprediction_raw,
     output logic                              o_commit_correct_branch_raw,
+    // Slot-2 mirror: a correctly-predicted checkpointed branch retiring at
+    // head+1 this cycle (drives the second checkpoint-free / BTB-training
+    // capture path).
+    output logic                              o_commit_correct_branch_2_raw,
     output logic                              o_head_commit_misprediction_candidate,
 
     // Widen-commit slot 2 (head+1).  When the 2-wide gate fires, these
@@ -502,6 +506,7 @@ module reorder_buffer (
   logic [XLEN-1:0] head_next_predicted_target;
   logic head_next_mispredicted;
   logic head_next_early_recovered;
+  logic head_next_f_has_checkpoint;
   logic head_next_is_call;
   logic head_next_is_return;
   logic head_next_is_jal;
@@ -550,6 +555,7 @@ module reorder_buffer (
   logic commit_store_like_early;
   logic commit_mispredict_early;
   logic commit_correct_branch_early;
+  logic commit_correct_branch_2_early;
   logic head_mispredict_candidate_early;
   logic commit_2_store_like_early;
 
@@ -576,6 +582,7 @@ module reorder_buffer (
   assign head_f_store_like = onehot_read(rob_f_store_like, head_clear_mask);
   assign head_f_is_branch = onehot_read(rob_f_is_branch, head_clear_mask);
   assign head_f_has_checkpoint = onehot_read(rob_f_has_checkpoint, head_clear_mask);
+  assign head_next_f_has_checkpoint = onehot_read(rob_f_has_checkpoint, head_next_clear_mask);
   assign head_f_is_csr = onehot_read(rob_f_is_csr, head_clear_mask);
   assign head_f_is_fence = onehot_read(rob_f_is_fence, head_clear_mask);
   assign head_f_is_fence_i = onehot_read(rob_f_is_fence_i, head_clear_mask);
@@ -745,8 +752,13 @@ module reorder_buffer (
   // plain non-serial instructions for 2-wide to fire.
   assign head_ok_2wide = head_f_ok_2wide_static &&
       !head_exception && !(head_f_is_branch && head_mispredicted);
+  // head+1 MAY be a correctly-predicted branch: the second checkpoint-free
+  // RAT port and the slot-2 correct-branch training capture handle its
+  // retire side effects.  Mispredicted (or early-recovered) branches still
+  // retire 1-wide at the head so the single recovery path is preserved.
   assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
-      !head_next_exception && !head_next_f_is_branch;
+      !head_next_exception &&
+      !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered));
 
   // Same-cycle CDB bypass for head / head+1.  rob_done / rob_value /
   // rob_fp_flags update at the clock edge from i_cdb_write; without a bypass
@@ -1972,6 +1984,15 @@ module reorder_buffer (
   assign commit_correct_branch_early = commit_ready_early && head_f_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
   assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall;
+  // Slot-2 correct-branch strobe: qualified on the full widen-commit fire
+  // (same late-side factoring as commit_2_store_like_early below).  The
+  // mispredicted/early-recovered exclusions are already inside
+  // head_next_ok_2wide (hence commit_2_ready_early); kept explicit here for
+  // symmetry with the slot-1 strobe.
+  assign commit_correct_branch_2_early =
+      commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
+      head_next_f_has_checkpoint && !head_next_mispredicted && !head_next_early_recovered;
+  assign o_commit_correct_branch_2_raw = commit_correct_branch_2_early && !commit_stall;
   // Same-cycle head-mispredict indicator without the branch_update collision
   // term. Outer control logic uses this to suppress younger branch resolution
   // without feeding branch_update back into commit_en.
@@ -2057,13 +2078,19 @@ module reorder_buffer (
   //    is_compressed == head_is_compressed (the head_link_is_compressed arm
   //    only applies to branches, which take the redirect arm above)
   //    == head_fallthrough_pc.
-  // Slot 2 is never a branch/MRET by the 2-wide gate, and o_commit_comb_2
-  // zeroes is_branch/is_mret, so its next-PC is always the sequential one.
+  // Slot 2 may retire a correctly-predicted branch (never MRET — serial
+  // class); its next-PC arm below mirrors the head's taken-branch handling.
   assign o_head_retired_next_pc =
       head_f_is_mret ? i_mepc :
       (head_f_is_branch && head_branch_taken) ? head_branch_target :
       head_fallthrough_pc;
-  assign o_head_next_retired_next_pc = head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4);
+  // A correctly-predicted TAKEN branch may now retire at head+1; the
+  // architectural next-PC (interrupt resume point after a dual commit) must
+  // then be the branch target, mirroring the head slot above.  MRET cannot
+  // sit at head+1 (serial class), so no mepc arm is needed.
+  assign o_head_next_retired_next_pc =
+      (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
+      head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4);
 
   // FENCE.I flush signal - pulse when FENCE.I commits
   always_ff @(posedge i_clk) begin
@@ -2204,46 +2231,54 @@ module reorder_buffer (
     o_commit_comb_2 = '0;
 
     if (commit_2_fire) begin
-      o_commit_comb_2.valid           = 1'b1;
-      o_commit_comb_2.tag             = head_next_idx;
-      o_commit_comb_2.dest_rf         = head_next_dest_rf;
-      o_commit_comb_2.dest_reg        = head_next_dest_reg;
-      o_commit_comb_2.dest_valid      = head_next_dest_valid;
-      o_commit_comb_2.value           = head_next_value_eff;
-      o_commit_comb_2.is_store        = head_next_is_store;
-      o_commit_comb_2.is_fp_store     = head_next_is_fp_store;
-      o_commit_comb_2.exception       = 1'b0;  // gate excludes exceptions
-      o_commit_comb_2.pc              = head_next_pc;
-      o_commit_comb_2.exc_cause       = '0;
-      o_commit_comb_2.fp_flags        = head_next_fp_flags_eff;
-      o_commit_comb_2.has_fp_flags    = head_next_has_fp_flags;
-      // Slot 2 is never a branch, never mispredicts, never has a checkpoint,
-      // never redirects PC.  early_recovered carried for RAT consistency.
-      o_commit_comb_2.misprediction   = 1'b0;
+      o_commit_comb_2.valid = 1'b1;
+      o_commit_comb_2.tag = head_next_idx;
+      o_commit_comb_2.dest_rf = head_next_dest_rf;
+      o_commit_comb_2.dest_reg = head_next_dest_reg;
+      o_commit_comb_2.dest_valid = head_next_dest_valid;
+      o_commit_comb_2.value = head_next_value_eff;
+      o_commit_comb_2.is_store = head_next_is_store;
+      o_commit_comb_2.is_fp_store = head_next_is_fp_store;
+      o_commit_comb_2.exception = 1'b0;  // gate excludes exceptions
+      o_commit_comb_2.pc = head_next_pc;
+      o_commit_comb_2.exc_cause = '0;
+      o_commit_comb_2.fp_flags = head_next_fp_flags_eff;
+      o_commit_comb_2.has_fp_flags = head_next_has_fp_flags;
+      // Slot 2 may retire a CORRECTLY-PREDICTED branch (mispredicted /
+      // early-recovered branches are excluded by head_next_ok_2wide, so
+      // misprediction stays hardwired 0 and no redirect is ever needed).
+      // Branch/checkpoint fields carry real values for the slot-2
+      // correct-branch training capture and checkpoint release.
+      o_commit_comb_2.misprediction = 1'b0;
       o_commit_comb_2.early_recovered = head_next_early_recovered;
-      o_commit_comb_2.has_checkpoint  = 1'b0;
-      o_commit_comb_2.checkpoint_id   = '0;
-      o_commit_comb_2.redirect_pc     = '0;
+      o_commit_comb_2.has_checkpoint = head_next_f_has_checkpoint;
+      o_commit_comb_2.checkpoint_id = head_next_checkpoint_id;
+      // For branches, redirect_pc carries the architectural next-PC (target
+      // if taken, fall-through otherwise) — the retired_next_pc() contract.
+      // MRET can never sit at head+1, so no mepc arm is needed.
+      o_commit_comb_2.redirect_pc     = head_next_f_is_branch ?
+          (head_next_branch_taken ? head_next_branch_target :
+           head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4)) : '0;
       o_commit_comb_2.predicted_taken = 1'b0;
-      o_commit_comb_2.branch_taken    = 1'b0;
-      o_commit_comb_2.branch_target   = '0;
-      o_commit_comb_2.is_branch       = 1'b0;
-      o_commit_comb_2.is_call         = 1'b0;
-      o_commit_comb_2.is_return       = 1'b0;
-      o_commit_comb_2.is_jal          = 1'b0;
-      o_commit_comb_2.is_jalr         = 1'b0;
-      o_commit_comb_2.csr_addr        = '0;
-      o_commit_comb_2.csr_op          = '0;
-      o_commit_comb_2.csr_write_data  = '0;
-      o_commit_comb_2.is_csr          = 1'b0;
-      o_commit_comb_2.is_fence        = 1'b0;
-      o_commit_comb_2.is_fence_i      = 1'b0;
-      o_commit_comb_2.is_wfi          = 1'b0;
-      o_commit_comb_2.is_mret         = 1'b0;
-      o_commit_comb_2.is_amo          = 1'b0;
-      o_commit_comb_2.is_lr           = 1'b0;
-      o_commit_comb_2.is_sc           = 1'b0;
-      o_commit_comb_2.is_compressed   = head_next_is_compressed;
+      o_commit_comb_2.branch_taken = head_next_branch_taken;
+      o_commit_comb_2.branch_target = head_next_branch_target;
+      o_commit_comb_2.is_branch = head_next_f_is_branch;
+      o_commit_comb_2.is_call = head_next_is_call;
+      o_commit_comb_2.is_return = head_next_is_return;
+      o_commit_comb_2.is_jal = head_next_is_jal;
+      o_commit_comb_2.is_jalr = head_next_is_jalr;
+      o_commit_comb_2.csr_addr = '0;
+      o_commit_comb_2.csr_op = '0;
+      o_commit_comb_2.csr_write_data = '0;
+      o_commit_comb_2.is_csr = 1'b0;
+      o_commit_comb_2.is_fence = 1'b0;
+      o_commit_comb_2.is_fence_i = 1'b0;
+      o_commit_comb_2.is_wfi = 1'b0;
+      o_commit_comb_2.is_mret = 1'b0;
+      o_commit_comb_2.is_amo = 1'b0;
+      o_commit_comb_2.is_lr = 1'b0;
+      o_commit_comb_2.is_sc = 1'b0;
+      o_commit_comb_2.is_compressed = head_next_is_compressed;
     end
   end
 
@@ -2407,7 +2442,7 @@ module reorder_buffer (
         head_next_is_branch && head_next_mispredicted;
     o_perf_events.commit_2_blocked_next_branch_correct =
         commit_en && head_next_valid_done && head_ok_2wide &&
-        head_next_is_branch && !head_next_mispredicted;
+        head_next_is_branch && !head_next_mispredicted && !head_next_ok_2wide;
   end
 
   // ===========================================================================
