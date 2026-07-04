@@ -432,7 +432,9 @@ module store_queue #(
       .i_write_enable (sq_data_we),
       .i_write_address(sq_data_wr_idx),
       .i_write_data   (i_data_update.data),
-      .i_read_address (head_idx),
+      // Drain-side read: addressed by the drain cursor (the entry the next
+      // memory write will launch from), not the freed-at-done head.
+      .i_read_address (drain_idx_q),
       .o_read_data    (sq_data_head_rd)
   );
 
@@ -456,18 +458,33 @@ module store_queue #(
   logic                  slot2_alloc_en;
   logic [  IdxWidth-1:0] slot2_alloc_idx;
 
-  // Memory write tracking
-  logic                  write_outstanding;  // One outstanding write at a time
+  // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO, non-FSD)
+  // are pipelined: up to two writes may be in flight (one on the bus, one
+  // awaiting its 1-cycle done), tracked by write_inflight_cnt plus a 2-deep
+  // in-order metadata FIFO (entry index + completes flag, popped one per
+  // done).  Cached / MMIO / FSD writes stay strictly single-outstanding
+  // (write_inflight_special): the cached adapter is single-request and FSD
+  // needs its per-entry two-phase bookkeeping.
+  logic [           1:0] write_inflight_cnt;
+  logic                  write_inflight_special;
+  logic [  IdxWidth-1:0] write_fifo_idx0;
+  logic [  IdxWidth-1:0] write_fifo_idx1;
+  logic                  write_fifo_completes0;
+  logic                  write_fifo_completes1;
+  // FIFO-head aliases: every done-side consumer reads slot 0 (dones arrive
+  // in launch order on the single write port).
   logic [  IdxWidth-1:0] write_entry_idx;
   logic                  write_completes_entry;
+  assign write_entry_idx       = write_fifo_idx0;
+  assign write_completes_entry = write_fifo_completes0;
 
-  // Head entry readiness
-  logic                  head_ready;  // Head entry committed + addr_valid + data_valid
+  // Drain-cursor entry readiness (committed + addr_valid + data_valid)
+  logic                drain_ready;
 
   // Head/tail search targets for the sparse valid-bit queue.
-  logic [  PtrWidth-1:0] head_advance_target;
-  logic [  PtrWidth-1:0] alloc_target;
-  logic                  flush_all_uncommitted;
+  logic [PtrWidth-1:0] head_advance_target;
+  logic [PtrWidth-1:0] alloc_target;
+  logic                flush_all_uncommitted;
 
   // ===========================================================================
   // Count, Full, Empty
@@ -478,7 +495,7 @@ module store_queue #(
   // capacity until the head skip-advance walks over them. Window-based full
   // is conservative in exactly those cases and exact otherwise. The popcount
   // is kept for o_count/empty/visibility consumers.
-  logic [  PtrWidth-1:0] window_occupancy;
+  logic [PtrWidth-1:0] window_occupancy;
   assign window_occupancy = tail_ptr - head_ptr;
 
   always_comb begin
@@ -607,22 +624,77 @@ module store_queue #(
   );
 
   // ===========================================================================
+  // Drain Cursor (oldest undrained entry; pipelined store drain)
+  // ===========================================================================
+  // head_ptr must keep its freed-at-done semantics — the ring window
+  // (tail - head) is the capacity model, so the head may only pass entries
+  // whose writes have fully completed.  The drain side therefore tracks its
+  // own cursor: the first entry in ring order from head_ptr that is
+  // valid && !sent, with the entry launching THIS cycle folded in
+  // combinationally so back-to-back fires select consecutive entries.  The
+  // cursor is registered (drain_idx_q), keeping the drain data/flag reads
+  // register-addressed exactly like the old head_idx.  Program order is
+  // preserved by construction: the cursor is the OLDEST undrained entry,
+  // and nothing fires while that entry is not drain-ready.
+  logic [   DEPTH-1:0] drain_mask_next;
+  logic [   DEPTH-1:0] drain_mask_rotated;
+  logic [IdxWidth-1:0] drain_first_offset;
+  logic                drain_first_found;
+  logic [IdxWidth-1:0] drain_idx_q;
+
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      drain_mask_next[i] = sq_valid[i] && !sq_sent[i] &&
+          !(mem_write_fire_next && mem_write_completes_next && (drain_idx_q == IdxWidth'(i)));
+    end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      drain_mask_rotated[i] = drain_mask_next[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
+    end
+  end
+
+  always_comb begin
+    drain_first_offset = '0;
+    drain_first_found  = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (drain_mask_rotated[i] && !drain_first_found) begin
+        drain_first_offset = IdxWidth'(i);
+        drain_first_found  = 1'b1;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      drain_idx_q <= '0;
+    end else begin
+      drain_idx_q <= drain_first_found ?
+          IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH) :
+          head_idx;
+    end
+  end
+
+  // ===========================================================================
   // Memory Write Logic (combinational)
   // ===========================================================================
-  // Head entry writes to memory when committed, addr_valid, data_valid.
-  // One outstanding write at a time. FSD uses two phases.
+  // The drain-cursor entry writes to memory when committed, addr_valid,
+  // data_valid. FSD uses two phases.
   //
   // TIMING: The write interface is registered to break the head_ptr →
-  // head_ready → o_mem_write_en combinational cone that was the critical
-  // path (-1.059 ns WNS).  head_ready feeds the combinational next-state
+  // drain_ready → o_mem_write_en combinational cone that was the critical
+  // path (-1.059 ns WNS).  drain_ready feeds the combinational next-state
   // of a pipeline register; the actual o_mem_write_en output is a flop.
-  // This adds one cycle to each committed-store drain (2 → 3 cycles per
-  // store) but the SQ's write_outstanding already serialises drains, and
-  // SQ-full dispatch stalls are < 0.2% in CoreMark.
+  //
+  // DRAIN PIPELINING: plain fast-tier stores (BRAM, non-MMIO, non-FSD)
+  // complete exactly one cycle after their bus cycle (the router's
+  // sq_write_done_fast is the write-enable delayed one cycle), so
+  // consecutive plain drains overlap: a new launch is allowed while the
+  // previous write's done is still in flight, bounded to two in-flight by
+  // the metadata FIFO.  Cached / MMIO / FSD writes keep the strict
+  // one-at-a-time gate (write_inflight_cnt == 0 && !o_mem_write_en).
 
-  assign head_ready = sq_valid[head_idx] && sq_committed[head_idx] &&
-                      sq_addr_valid[head_idx] && sq_data_valid[head_idx] &&
-                      !sq_sent[head_idx];
+  assign drain_ready = sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
+                       sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
+                       !sq_sent[drain_idx_q];
 
   logic                       mem_write_fire_next;
   logic [riscv_pkg::XLEN-1:0] mem_write_addr_next;
@@ -630,39 +702,44 @@ module store_queue #(
   logic [                3:0] mem_write_byte_en_next;
   logic                       mem_write_is_mmio_next;
   logic                       mem_write_is_cached_next;
+  logic                       mem_write_completes_next;
+  logic                       mem_write_plain_fast_next;
 
   always_comb begin
-    mem_write_fire_next    = 1'b0;
-    mem_write_addr_next    = '0;
-    mem_write_data_next    = '0;
-    mem_write_byte_en_next = '0;
-    mem_write_is_mmio_next = 1'b0;
-    mem_write_is_cached_next = 1'b0;
-
-    if (head_ready && !write_outstanding && !o_mem_write_en) begin
-      mem_write_fire_next = 1'b1;
-
-      // FSD phase 1: write upper word at addr+4
-      if (sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE && sq_fp64_phase[head_idx]) begin
-        mem_write_addr_next = sq_address[head_idx] + 32'd4;
-      end else begin
-        mem_write_addr_next = sq_address[head_idx];
-      end
-
-      mem_write_data_next = gen_write_data(
-          sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[head_idx]), sq_fp64_phase[head_idx]);
-      mem_write_byte_en_next =
-          gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[head_idx]));
-      mem_write_is_mmio_next = sq_is_mmio[head_idx];
-      // cached-tier decode of the actual write address. Registered below into
-      // o_mem_write_is_cached (parallel to is_mmio), so the comparator stays in
-      // the addr->register cone and never reaches the BRAM WEA pin.
-      mem_write_is_cached_next =
-          (mem_write_addr_next >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
-          (mem_write_addr_next <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
-                                   CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
+    // FSD phase 1: write upper word at addr+4
+    if (sq_size[drain_idx_q] == riscv_pkg::MEM_SIZE_DOUBLE && sq_fp64_phase[drain_idx_q]) begin
+      mem_write_addr_next = sq_address[drain_idx_q] + 32'd4;
+    end else begin
+      mem_write_addr_next = sq_address[drain_idx_q];
     end
+
+    mem_write_data_next = gen_write_data(
+        sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[drain_idx_q]), sq_fp64_phase[drain_idx_q]);
+    mem_write_byte_en_next =
+        gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
+    mem_write_is_mmio_next = sq_is_mmio[drain_idx_q];
+    // cached-tier decode of the actual write address. Registered below into
+    // o_mem_write_is_cached (parallel to is_mmio), so the comparator stays in
+    // the addr->register cone and never reaches the BRAM WEA pin.
+    mem_write_is_cached_next =
+        (mem_write_addr_next >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
+        (mem_write_addr_next <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
+                                 CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
   end
+
+  assign mem_write_completes_next = !(sq_size[drain_idx_q] == riscv_pkg::MEM_SIZE_DOUBLE &&
+                                      !sq_fp64_phase[drain_idx_q]);
+  assign mem_write_plain_fast_next = (sq_size[drain_idx_q] != riscv_pkg::MEM_SIZE_DOUBLE) &&
+                                     !mem_write_is_mmio_next && !mem_write_is_cached_next;
+
+  // Launch gate: legacy serial arm for any write type, plus the pipelined
+  // arm for plain fast-tier stores.  The occupancy bound counts the write
+  // currently on the bus (o_mem_write_en) against the 2-deep FIFO, so a
+  // stalled done self-throttles the drain instead of overflowing it.
+  assign mem_write_fire_next = drain_ready &&
+      (((write_inflight_cnt == 2'd0) && !o_mem_write_en) ||
+       (mem_write_plain_fast_next && !write_inflight_special &&
+        (({1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en}) < 3'd2)));
 
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
@@ -683,9 +760,8 @@ module store_queue #(
     o_mem_write_is_cached <= mem_write_is_cached_next;
 
     if (mem_write_fire_next) begin
-      mem_write_entry_idx_stg <= head_idx;
-      mem_write_completes_stg <= !(sq_size[head_idx] == riscv_pkg::MEM_SIZE_DOUBLE &&
-                                   !sq_fp64_phase[head_idx]);
+      mem_write_entry_idx_stg <= drain_idx_q;
+      mem_write_completes_stg <= mem_write_completes_next;
     end
   end
 
@@ -849,22 +925,24 @@ module store_queue #(
   // -------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      sq_addr_valid     <= '0;
-      sq_data_valid     <= '0;
-      sq_committed      <= '0;
-      sq_sent           <= '0;
-      write_outstanding <= 1'b0;
+      head_ptr               <= '0;
+      tail_ptr               <= '0;
+      sq_addr_valid          <= '0;
+      sq_data_valid          <= '0;
+      sq_committed           <= '0;
+      sq_sent                <= '0;
+      write_inflight_cnt     <= '0;
+      write_inflight_special <= 1'b0;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
-      head_ptr          <= '0;
-      tail_ptr          <= '0;
-      sq_addr_valid     <= '0;
-      sq_data_valid     <= '0;
-      sq_committed      <= '0;
-      sq_sent           <= '0;
-      write_outstanding <= 1'b0;
+      head_ptr               <= '0;
+      tail_ptr               <= '0;
+      sq_addr_valid          <= '0;
+      sq_data_valid          <= '0;
+      sq_committed           <= '0;
+      sq_sent                <= '0;
+      write_inflight_cnt     <= '0;
+      write_inflight_special <= 1'b0;
     end else begin
 
       // -----------------------------------------------------------------
@@ -976,26 +1054,27 @@ module store_queue #(
       end
 
       // -----------------------------------------------------------------
-      // Memory Write Initiation (from registered write interface)
+      // Memory Write Initiation / Completion (in-flight counter)
       // -----------------------------------------------------------------
-      // o_mem_write_en is now a registered output; use the staging
-      // registers captured alongside it for entry_idx and completes_entry.
-      if (o_mem_write_en) begin
-        write_outstanding <= 1'b1;
-      end
+      // The counter tracks writes between their bus cycle (o_mem_write_en)
+      // and their done pulse; the metadata FIFO below carries entry index
+      // and completes flag per in-flight write.  sq_sent is set at LAUNCH
+      // (fire cycle) for completing writes so the drain cursor can move on
+      // immediately; the done side only frees entries / advances FSD phase.
+      write_inflight_cnt <= write_inflight_cnt
+          + (o_mem_write_en ? 2'd1 : 2'd0)
+          - ((i_mem_write_done && (write_inflight_cnt != 2'd0)) ? 2'd1 : 2'd0);
 
-      // -----------------------------------------------------------------
-      // Memory Write Completion
-      // -----------------------------------------------------------------
-      if (i_mem_write_done && write_outstanding) begin
-        if (!write_completes_entry) begin
-          // FSD phase 0 complete: advance to phase 1, allow next write
-          write_outstanding <= 1'b0;
-        end else begin
-          // Single-phase complete or FSD phase 1 complete: free entry
-          sq_sent[write_entry_idx] <= 1'b1;
-          write_outstanding <= 1'b0;
+      if (mem_write_fire_next) begin
+        // A special (cached / MMIO / FSD) write flies alone: it only
+        // launches through the serial arm, and its in-flight window blocks
+        // all further launches until its done.
+        write_inflight_special <= !mem_write_plain_fast_next;
+        if (mem_write_completes_next) begin
+          sq_sent[drain_idx_q] <= 1'b1;
         end
+      end else if (i_mem_write_done && (write_inflight_cnt == 2'd1) && !o_mem_write_en) begin
+        write_inflight_special <= 1'b0;
       end
 
       // -----------------------------------------------------------------
@@ -1013,9 +1092,33 @@ module store_queue #(
 
     end  // !flush_all
 
-    if (o_mem_write_en) begin
-      write_entry_idx <= mem_write_entry_idx_stg;
-      write_completes_entry <= mem_write_completes_stg;
+    // In-flight metadata FIFO: push at the bus cycle, pop at done.  Dones
+    // arrive in launch order (single in-order write port), so slot 0 is
+    // always the oldest in-flight write.  Depth 2 matches the launch-gate
+    // occupancy bound.  Not flushed: entries are consumed strictly per
+    // done, and the counter (which IS flushed) gates every consumer.
+    if (o_mem_write_en && i_mem_write_done && (write_inflight_cnt != 2'd0)) begin
+      // Simultaneous push + pop.
+      if (write_inflight_cnt == 2'd1) begin
+        write_fifo_idx0       <= mem_write_entry_idx_stg;
+        write_fifo_completes0 <= mem_write_completes_stg;
+      end else begin
+        write_fifo_idx0       <= write_fifo_idx1;
+        write_fifo_completes0 <= write_fifo_completes1;
+        write_fifo_idx1       <= mem_write_entry_idx_stg;
+        write_fifo_completes1 <= mem_write_completes_stg;
+      end
+    end else if (o_mem_write_en) begin
+      if (write_inflight_cnt == 2'd0) begin
+        write_fifo_idx0       <= mem_write_entry_idx_stg;
+        write_fifo_completes0 <= mem_write_completes_stg;
+      end else begin
+        write_fifo_idx1       <= mem_write_entry_idx_stg;
+        write_fifo_completes1 <= mem_write_completes_stg;
+      end
+    end else if (i_mem_write_done && (write_inflight_cnt != 2'd0)) begin
+      write_fifo_idx0       <= write_fifo_idx1;
+      write_fifo_completes0 <= write_fifo_completes1;
     end
   end
 
@@ -1104,8 +1207,9 @@ module store_queue #(
         end
       end
 
-      // Single-phase completion or FSD phase 1 completion frees the head entry.
-      if (i_mem_write_done && write_outstanding && write_completes_entry) begin
+      // Single-phase completion or FSD phase 1 completion frees the oldest
+      // in-flight entry (metadata FIFO head).
+      if (i_mem_write_done && (write_inflight_cnt != 2'd0) && write_completes_entry) begin
         sq_valid[write_entry_idx] <= 1'b0;
       end
     end
@@ -1187,7 +1291,7 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Memory Write Completion: FSD phase advance (data only)
     // -----------------------------------------------------------------
-    if (i_mem_write_done && write_outstanding) begin
+    if (i_mem_write_done && (write_inflight_cnt != 2'd0)) begin
       if (!write_completes_entry) begin
         sq_fp64_phase[write_entry_idx] <= 1'b1;
       end
@@ -1323,9 +1427,9 @@ module store_queue #(
     if (full) assume (!i_alloc.valid);
   end
 
-  // Memory write done only when outstanding
+  // Memory write done only when at least one write is in flight
   always_comb begin
-    assume (!i_mem_write_done || write_outstanding);
+    assume (!i_mem_write_done || (write_inflight_cnt != 2'd0));
   end
 
   // Commit MAY overlap with flush due to commit bus pipelining.  This is
@@ -1388,20 +1492,27 @@ module store_queue #(
     end
   end
 
-  // Memory write only from head when committed + addr_valid + data_valid
+  // Memory write only for an entry that is committed + addr_valid +
+  // data_valid + still valid.  The on-bus write's entry index is the staging
+  // register captured at its fire cycle (entries stay valid until done, so
+  // these hold under drain pipelining).
   always_comb begin
     if (i_rst_n && o_mem_write_en) begin
-      p_write_needs_committed : assert (sq_committed[head_idx]);
-      p_write_needs_addr : assert (sq_addr_valid[head_idx]);
-      p_write_needs_data : assert (sq_data_valid[head_idx]);
-      p_write_from_valid : assert (sq_valid[head_idx]);
+      p_write_needs_committed : assert (sq_committed[mem_write_entry_idx_stg]);
+      p_write_needs_addr : assert (sq_addr_valid[mem_write_entry_idx_stg]);
+      p_write_needs_data : assert (sq_data_valid[mem_write_entry_idx_stg]);
+      p_write_from_valid : assert (sq_valid[mem_write_entry_idx_stg]);
     end
   end
 
-  // No memory write when already outstanding
+  // In-flight discipline: never more than the 2-deep metadata FIFO can
+  // hold, and a special (cached / MMIO / FSD) write flies alone.
   always_comb begin
-    if (i_rst_n && write_outstanding) begin
-      p_no_double_write : assert (!o_mem_write_en);
+    if (i_rst_n) begin
+      p_inflight_bound : assert (write_inflight_cnt <= 2'd2);
+      p_special_alone :
+      assert (!write_inflight_special ||
+                                (({1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en}) <= 3'd1));
     end
   end
 
@@ -1491,7 +1602,7 @@ module store_queue #(
       cover_data_update : cover (i_data_update.valid);
       cover_commit : cover (i_commit_valid);
       cover_mem_write : cover (o_mem_write_en);
-      cover_mem_done : cover (i_mem_write_done && write_outstanding);
+      cover_mem_done : cover (i_mem_write_done && (write_inflight_cnt != 2'd0));
       cover_forward_match : cover (o_sq_forward.match);
       cover_forward_data : cover (o_sq_forward.can_forward);
       cover_full : cover (full);
@@ -1501,7 +1612,9 @@ module store_queue #(
       cover_committed_survives : cover (i_flush_en && |(sq_valid & sq_committed));
 
       // FSD two-phase memory write
-      cover_fsd_phase1 : cover (o_mem_write_en && sq_fp64_phase[head_idx]);
+      cover_fsd_phase1 : cover (o_mem_write_en && sq_fp64_phase[mem_write_entry_idx_stg]);
+      // Pipelined drain: two plain fast-tier writes in flight at once.
+      cover_pipelined_drain : cover (o_mem_write_en && (write_inflight_cnt != 2'd0));
 
       // Cache invalidation on write completion
       cover_cache_invalidate : cover (o_cache_invalidate_valid);

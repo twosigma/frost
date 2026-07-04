@@ -143,6 +143,45 @@ async def wait_for_mem_write(dut_if: SQInterface, max_cycles: int = 4) -> MemWri
     return write_req
 
 
+async def drain_pipelined_writes(
+    dut_if: SQInterface, model: SQModel, count: int
+) -> list[MemWriteReq]:
+    """Collect `count` drain writes with per-cycle bus sampling.
+
+    Acks each done one cycle after its bus cycle (the fast-tier router
+    contract). The pipelined drain can put a new write on the bus every
+    cycle, so this samples the write interface per cycle instead of
+    round-tripping one write at a time (which would miss back-to-back
+    launches).
+    """
+    writes: list[MemWriteReq] = []
+    dones_pending = 0
+    for _ in range(6 * count + 8):
+        await Timer(1, unit="ns")
+        if dones_pending > 0:
+            dut_if.drive_mem_write_done()
+            model.mem_write_done()
+            model.advance_head()
+            dones_pending -= 1
+        else:
+            dut_if.clear_mem_write_done()
+        write_req = dut_if.read_mem_write()
+        if write_req.en:
+            writes.append(write_req)
+            model.mem_write_initiate()
+            dones_pending += 1
+        await dut_if.step()
+        if len(writes) == count and dones_pending == 0:
+            break
+    dut_if.clear_mem_write_done()
+    # Extra cycle for head pointer advancement (head_advance_target is
+    # computed from registered sq_valid, so the head advances one cycle
+    # after the last entry is freed).
+    await dut_if.step()
+    await dut_if.step()
+    return writes
+
+
 # ============================================================================
 # Test 1: Reset state
 # ============================================================================
@@ -280,13 +319,14 @@ async def test_slot1_slot2_dual_alloc_early_addr_and_widen_commit(dut: Any) -> N
     dut_if.clear_commit()
     dut_if.clear_commit_2()
 
-    first = await complete_mem_write(dut_if, model)
-    assert first.addr == 0x2040
-    assert first.data == 0xAAAA_0004
-
-    second = await complete_mem_write(dut_if, model)
-    assert second.addr == 0x2044
-    assert second.data == 0xBBBB_0005
+    # The pipelined drain launches both writes back-to-back; collect them
+    # with per-cycle sampling.
+    writes = await drain_pipelined_writes(dut_if, model, 2)
+    assert len(writes) == 2, f"Expected 2 drain writes, got {len(writes)}"
+    assert writes[0].addr == 0x2040
+    assert writes[0].data == 0xAAAA_0004
+    assert writes[1].addr == 0x2044
+    assert writes[1].data == 0xBBBB_0005
 
     assert dut_if.empty, "SQ should be empty after both widened stores drain"
 
@@ -863,26 +903,17 @@ async def test_in_order_write(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_commit()
 
-    # Write should happen from head (tag 0 first)
+    # Writes must leave in program order (tag 0, 1, 2).  The pipelined drain
+    # launches them back-to-back, so collect with per-cycle sampling.
+    writes = await drain_pipelined_writes(dut_if, model, 3)
+    assert len(writes) == 3, f"Expected 3 drain writes, got {len(writes)}"
     for i, (addr, data) in enumerate(zip(addrs, datas)):
-        write_req = await wait_for_mem_write(dut_if)
-        assert write_req.en, f"Write {i} should be active"
         assert (
-            write_req.addr == addr
-        ), f"Write {i}: expected addr 0x{addr:x}, got 0x{write_req.addr:x}"
+            writes[i].addr == addr
+        ), f"Write {i}: expected addr 0x{addr:x}, got 0x{writes[i].addr:x}"
         assert (
-            write_req.data == data
-        ), f"Write {i}: expected data 0x{data:x}, got 0x{write_req.data:x}"
-
-        model.mem_write_initiate()
-        await dut_if.step()
-        dut_if.drive_mem_write_done()
-        model.mem_write_done()
-        model.advance_head()
-        await dut_if.step()
-        dut_if.clear_mem_write_done()
-        # Extra cycle for head pointer advancement
-        await dut_if.step()
+            writes[i].data == data
+        ), f"Write {i}: expected data 0x{data:x}, got 0x{writes[i].data:x}"
 
     assert dut_if.empty, "SQ should be empty after all writes"
 
