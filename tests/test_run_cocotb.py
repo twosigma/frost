@@ -731,6 +731,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="parcel_consume_ras",
         description="IF-stage parcel consume-side RAS tests (stage-2 integration)",
     ),
+    "if_stage_stage2": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_if_stage_stage2",
+        hdl_toplevel_module="if_stage_stage2",
+        description="IF-stage stage-2 integrated front end smoke test",
+    ),
     "if_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_if_stage",
         hdl_toplevel_module="if_stage",

@@ -286,6 +286,24 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_ras.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),if_stage_stage2)
+# IF-stage stage-2 integrated front end (rewire artifact; see
+# hw/rtl/cpu_and_mem/cpu/if_stage/PARCEL_QUEUE_DESIGN.md section 9.1)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_queue.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_fill_engine.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_engine.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_ras.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage_stage2.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),if_stage)
 # IF-stage top-level integration test
 COMPILE_ARGS := \
