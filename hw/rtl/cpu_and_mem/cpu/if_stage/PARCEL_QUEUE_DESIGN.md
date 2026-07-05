@@ -816,7 +816,17 @@ coherent commit, the §8 tripwires green before the next:
    here and the stack's `i_stall_registered` is tied off. Its `ras_*` outputs
    feed the consume engine's slot-1 packet; the return redirect drives the fill
    engine's `i_redirect_*` (partial flush + resteer to `ras_target`).
-2. **`if_stage` rewire** — instantiate fill engine + queue + consume engine +
+2. **`if_stage` rewire** — the integrated front end is **built + smoke-tested**
+   as `if_stage_stage2.sv` (a NEW module, so the committed units stay the safe
+   fallback): fill engine + queue + consume engine + consume RAS + BTB +
+   direction predictor, with the §2.5 redirect matrix and the fill-side
+   prediction gates. A cocotb smoke test drives the provider seam and confirms
+   the fill→queue→consume dataflow delivers contiguous PCs and that a backend
+   branch redirect resteers. **Remaining: the ATOMIC SWAP** — `cpu_ooo`
+   instantiates `if_stage_stage2` in place of `if_stage`, the `fetch_provider`
+   seam changes (phase 3) land, and the §3 machinery is deleted; gated by
+   coremark. Original design (superseded wording):
+   instantiate fill engine + queue + consume engine +
    consume RAS;
    route the fill engine's two lookup ports to the (restructured, §2.1)
    `branch_prediction_controller` `i_pc`/`i_pc_2`; the consume packets to
