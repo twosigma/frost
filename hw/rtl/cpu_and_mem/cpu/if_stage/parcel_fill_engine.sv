@@ -16,10 +16,12 @@
 
 /*
  * parcel_fill_engine -- the stage-2 front end's serve-side instruction walk
- * (PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2).  Landing step B2: the
- * 2-wide, self-aligned relocation of today's ask-side machinery.  Enqueues up
+ * (PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2 / 2.6).  Landing steps
+ * B1/B2/B3a: the 2-wide, self-aligned relocation of today's ask-side machinery,
+ * with a 32-bit slot-1 allowed to lead an in-window bundle (B3a).  Enqueues up
  * to two pq_entry_t per served window (slot-1 + a contiguous slot-2) into the
- * parcel_queue; the misaligned 32+32 straddle carry is deferred to B3.
+ * parcel_queue; the misaligned 32+32 straddle carry (B3b) is deferred to the
+ * integration phase.
  *
  * ASK CHAIN (derived from RTL, design 2.1.1):
  *   - `ask_q` is the leading ask presented last cycle (today's `o_pc` role);
@@ -35,12 +37,15 @@
  *     result looked up at `ask_q` (ask time) rides `bind_q` one cycle and, when
  *     that branch is served, redirects the next ask to the target (zero bubble).
  *
- * SLOT-2 (design 2.1.2): behind a compressed slot-1, a contiguous slot-2 at
- * `served_addr + 2` is decoded from the same window (positions CURRENT_HI when
- * served_addr[1]=0, NEXT_LO when =1) and enqueued as `e1` iff
- * `e0.allows_slot2_after && e1.slot2_start_ok && !e0.predicted_taken`.  Its
- * BTB/DIR lookup is WALK-time (at `served_addr + 2`, combinational this cycle)
- * and binds e1 the same cycle.  A taken slot-2 is a REGISTERED redirect (kept
+ * SLOT-2 (design 2.1.2 / 2.6): a contiguous slot-2 at `served_addr +
+ * size(slot-1)` is decoded from the same window (positions CURRENT_HI /
+ * NEXT_LO / NEXT_HI by byte offset 2/4/6) and enqueued as `e1` iff
+ * `e0.allows_slot2_after && e1.slot2_start_ok && !e0.predicted_taken`.  B3a
+ * lets a 32-bit slot-1 lead a bundle (gate `s1_can_lead`); a NEXT_HI 32-bit
+ * slot-2 straddles a third word and is suppressed (the straddle carry, B3b, is
+ * deferred to integration).  Its BTB/DIR lookup is WALK-time (at `served_addr +
+ * size(slot-1)`, combinational this cycle) and binds e1 the same cycle.  A
+ * taken slot-2 is a REGISTERED redirect (kept
  * off the ask path): the sequential `served_addr + bundle` ask still goes out
  * this cycle, e0+e1 enqueue, and a one-shot `slot2_redir_pending` fires next
  * cycle -- ask <- slot-2 target, `o_core_redirect` pulse, NO flush, the
@@ -157,14 +162,18 @@ module parcel_fill_engine #(
   // Slot-1 decode (the served instruction at ask_q)
   // ===========================================================================
   logic s1_is_compressed;
-  logic s1_allows_slot2_after;
-  logic s1_slot2_start_ok;
+  logic s1_allows_after_sb;  // sideband AllowsSlot2After (compressed slot-1 only)
+  logic s1_slot2_start_ok;  // sideband Slot2StartValid
+  logic s1_can_lead;  // B3 §2.6: this entry may lead a 2-wide bundle
   assign s1_is_compressed = served_hw ? sb_lo[riscv_pkg::ImemSbIsCompressedHi]
                                       : sb_lo[riscv_pkg::ImemSbIsCompressedLo];
-  assign s1_allows_slot2_after = served_hw ? sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterHi]
-                                           : sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+  assign s1_allows_after_sb = served_hw ? sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterHi]
+                                        : sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterLo];
   assign s1_slot2_start_ok = served_hw ? sb_lo[riscv_pkg::ImemSbSlot2StartValidHi]
                                        : sb_lo[riscv_pkg::ImemSbSlot2StartValidLo];
+  // A compressed slot-1 leads iff not a compressed control op (AllowsSlot2After);
+  // a 32-bit slot-1 leads iff not serialize/FP (Slot2StartValid).
+  assign s1_can_lead = s1_is_compressed ? s1_allows_after_sb : s1_slot2_start_ok;
 
   logic [15:0] s1_parcel;
   logic [31:0] s1_bytes;
@@ -180,30 +189,74 @@ module parcel_fill_engine #(
                                     : riscv_pkg::PcIncrement32bit;
 
   // ===========================================================================
-  // Slot-2 decode (contiguous instruction at served_addr + 2)
+  // Slot-2 decode (contiguous instruction at served_addr + size(slot-1))
   // ===========================================================================
-  // Position: served_addr[1]=0 -> CURRENT_HI (low[31:16], sb_lo hi bits);
-  //           served_addr[1]=1 -> NEXT_LO    (high[15:0], sb_hi lo bits).
+  // The slot-2 byte offset in the window = served offset (0/2) + slot-1 size,
+  // giving three positions (design §2.6): CURRENT_HI (2), NEXT_LO (4),
+  // NEXT_HI (6).  A NEXT_HI 32-bit slot-2 straddles into word W+2 and is
+  // suppressed (B3a); the straddle carry (B3b) is deferred to integration.
   logic [XLEN-1:0] s2_pc;
-  assign s2_pc = served_addr + 32'd2;
+  assign s2_pc = served_addr + s1_size;
 
-  logic s2_is_compressed;
-  logic s2_allows_slot2_after;
-  logic s2_start_ok;
-  assign s2_is_compressed = served_hw ? sb_hi[riscv_pkg::ImemSbIsCompressedLo]
-                                      : sb_lo[riscv_pkg::ImemSbIsCompressedHi];
-  assign s2_allows_slot2_after = served_hw ? sb_hi[riscv_pkg::ImemSbAllowsSlot2AfterLo]
-                                           : sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterHi];
-  assign s2_start_ok = served_hw ? sb_hi[riscv_pkg::ImemSbSlot2StartValidLo]
-                                 : sb_lo[riscv_pkg::ImemSbSlot2StartValidHi];
+  logic [2:0] served_off, s2_off;
+  assign served_off = served_hw ? 3'd2 : 3'd0;
+  assign s2_off = served_off + (s1_is_compressed ? 3'd2 : 3'd4);  // 2, 4, or 6
 
-  logic [15:0] s2_parcel;
-  logic [31:0] s2_bytes;
-  assign s2_parcel = served_hw ? high_word[15:0] : low_word[31:16];
+  localparam logic [1:0] Slot2CurHi = 2'd0, Slot2NextLo = 2'd1, Slot2NextHi = 2'd2;
+  logic [1:0] s2_pos;
   always_comb begin
-    if (s2_is_compressed) s2_bytes = {16'h0000, s2_parcel};
-    else if (served_hw) s2_bytes = high_word;  // NEXT_LO 32-bit
-    else s2_bytes = {high_word[15:0], low_word[31:16]};  // CURRENT_HI 32-bit span
+    unique case (s2_off)
+      3'd2:    s2_pos = Slot2CurHi;
+      3'd4:    s2_pos = Slot2NextLo;
+      default: s2_pos = Slot2NextHi;  // 3'd6
+    endcase
+  end
+
+  logic        s2_is_compressed;
+  logic        s2_allows_after_sb;
+  logic        s2_start_ok;
+  logic [15:0] s2_parcel;
+  always_comb begin
+    unique case (s2_pos)
+      Slot2CurHi: begin
+        s2_is_compressed   = sb_lo[riscv_pkg::ImemSbIsCompressedHi];
+        s2_allows_after_sb = sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+        s2_start_ok        = sb_lo[riscv_pkg::ImemSbSlot2StartValidHi];
+        s2_parcel          = low_word[31:16];
+      end
+      Slot2NextLo: begin
+        s2_is_compressed   = sb_hi[riscv_pkg::ImemSbIsCompressedLo];
+        s2_allows_after_sb = sb_hi[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+        s2_start_ok        = sb_hi[riscv_pkg::ImemSbSlot2StartValidLo];
+        s2_parcel          = high_word[15:0];
+      end
+      default: begin  // Slot2NextHi
+        s2_is_compressed   = sb_hi[riscv_pkg::ImemSbIsCompressedHi];
+        s2_allows_after_sb = sb_hi[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+        s2_start_ok        = sb_hi[riscv_pkg::ImemSbSlot2StartValidHi];
+        s2_parcel          = high_word[31:16];
+      end
+    endcase
+  end
+
+  logic s2_can_lead;
+  assign s2_can_lead = s2_is_compressed ? s2_allows_after_sb : s2_start_ok;
+
+  // NEXT_HI 32-bit slot-2 reaches a third word -> suppress pairing (B3a).
+  logic s2_straddle;
+  assign s2_straddle = (s2_pos == Slot2NextHi) && !s2_is_compressed;
+
+  logic [31:0] s2_bytes;
+  always_comb begin
+    if (s2_is_compressed) begin
+      s2_bytes = {16'h0000, s2_parcel};
+    end else begin
+      unique case (s2_pos)
+        Slot2CurHi:  s2_bytes = {high_word[15:0], low_word[31:16]};  // span lo->hi
+        Slot2NextLo: s2_bytes = high_word;
+        default:     s2_bytes = 32'h0000_0000;  // NEXT_HI 32b straddles (suppressed)
+      endcase
+    end
   end
 
   logic [XLEN-1:0] s2_size;
@@ -233,7 +286,7 @@ module parcel_fill_engine #(
   // Bundle formation (design 2.1.2)
   // ===========================================================================
   logic slot2_present;
-  assign slot2_present = accept && s1_allows_slot2_after && s2_start_ok && !slot1_taken;
+  assign slot2_present = accept && s1_can_lead && s2_start_ok && !slot1_taken && !s2_straddle;
 
   // Slot-2 taken branch: walk-time result -> registered redirect next cycle.
   logic slot2_taken;
@@ -248,7 +301,7 @@ module parcel_fill_engine #(
     e0.pc                 = served_addr[XLEN-1:1];
     e0.instr_bytes        = riscv_pkg::instr_t'(s1_bytes);
     e0.is_compressed      = s1_is_compressed;
-    e0.allows_slot2_after = s1_allows_slot2_after;
+    e0.allows_slot2_after = s1_can_lead;
     e0.slot2_start_ok     = s1_slot2_start_ok;
     e0.btb_hit            = bind_match ? bind_btb_hit_q : 1'b0;
     e0.predicted_taken    = bind_match ? bind_btb_taken_q : 1'b0;
@@ -263,7 +316,7 @@ module parcel_fill_engine #(
     e1.pc                 = s2_pc[XLEN-1:1];
     e1.instr_bytes        = riscv_pkg::instr_t'(s2_bytes);
     e1.is_compressed      = s2_is_compressed;
-    e1.allows_slot2_after = s2_allows_slot2_after;
+    e1.allows_slot2_after = s2_can_lead;
     e1.slot2_start_ok     = s2_start_ok;
     e1.btb_hit            = i_btb_hit_2;
     e1.predicted_taken    = i_btb_taken_2;
@@ -289,7 +342,7 @@ module parcel_fill_engine #(
       // Advance past the served bundle.  On a taken slot-2 this is the
       // wrong-path sequential ask, issued anyway and killed by next cycle's
       // registered slot-2 redirect (§2.1.2).
-      ask_d = slot2_present ? (served_addr + 32'd2 + s2_size) : (served_addr + s1_size);
+      ask_d = slot2_present ? (s2_pc + s2_size) : (served_addr + s1_size);
     else ask_d = ask_q;  // hold the ask (freeze / backpressure / stale window)
   end
 
@@ -344,7 +397,9 @@ module parcel_fill_engine #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && o_enq_valid[1]) begin
       p_slot2_implies_slot1 : assert (o_enq_valid[0]);
-      p_slot2_contiguous : assert (e1.pc == (served_addr[XLEN-1:1] + {{(XLEN - 2) {1'b0}}, 1'b1}));
+      // Downstream invariant: slot-2 PC = slot-1 PC + size(slot-1) (in [31:1]
+      // units, a compressed slot-1 advances the word-pc by 1, a 32-bit by 2).
+      p_slot2_contiguous : assert (e1.pc == (e0.pc + (s1_is_compressed ? 31'd1 : 31'd2)));
     end
     if (!i_rst && slot2_redir_fire) begin
       p_fire_bubbles : assert (o_enq_valid == 2'b00);

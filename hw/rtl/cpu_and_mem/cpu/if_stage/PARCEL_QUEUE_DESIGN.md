@@ -463,23 +463,52 @@ and epoch filtering makes every in-flight return harmless — which is exactly
 the property today's holdoff bookkeeping approximates with per-case timing
 arguments.
 
-### 2.6 Straddle carry (B3 feature — not in the initial land)
+### 2.6 Slot-2 behind a 32-bit slot-1 (B3)
 
-A misaligned 32b+32b pair (slot-1 spanning at offset 2, slot-2 at offset 6
-reaching into word W+2) needs **three words of reach in one cycle**. The
-64-bit window alone cannot provide it — this, not queue adjacency, was the
-FCA's actual contribution (its `want_idx[2] = W+2` reach), as the panel
-established (§10, finding 5). The stage-2 mechanism is a **straddle carry
-register**: one halfword + its predecode bits, carried across the fill walk's
-window advance in the self-aligned frame (it is always "the trailing halfword
-of the previous window", so no tags and no parity ambiguity), killed by any
-epoch bump. With the carry, when `fill_pc` points at the carried halfword the
-ask skips to the following word, and the walk forms
-`carry + window` assemblies — sustaining 2 entries/cycle through misaligned
-32+32 stretches and enabling slot-2 formation across window boundaries. This
-is where stage 1's forfeited width upside is actually collected; without it,
-B1/B2 remain at exact HEAD-parity width (HEAD cannot pair these shapes
-either).
+B2 pairs only behind a **compressed** slot-1 (HEAD-parity). B3 reclaims the
+width HEAD forfeited by letting a **32-bit slot-1** lead a bundle. It splits by
+whether slot-2 fits the 64-bit window.
+
+**B3a — in-window (self-alignment preserved; landed as the fill-engine unit
+step).** Slot-2 sits at `served_addr + size(slot-1)` ∈ byte offset {2, 4, 6}
+of the window. HEAD's aligner already computes these three positions
+(`Slot2AtCurrentHi/NextLo/NextHi`, `instruction_aligner.sv:290-399`) but gates
+NEXT_LO/NEXT_HI off — the width HEAD forfeited to the prediction race, now
+structurally closed by the queue's per-entry binding. B3a enables them:
+
+| slot-2 offset | position | parcel | 32-bit assembly | fits window? |
+|---|---|---|---|---|
+| 2 (RVC slot-1 @word-lo) | CURRENT_HI | `low[31:16]` | `{high[15:0], low[31:16]}` | yes |
+| 4 (RVC@hw or 32b@word-lo) | NEXT_LO | `high[15:0]` | `high[31:0]` | yes |
+| 6 (32b spanning slot-1 @hw) | NEXT_HI | `high[31:16]` | reaches word W+2 | RVC only |
+
+The slot-1 gate generalizes: `allows_slot2_after = is_compressed ?
+(!compressed_control) : (!serialize && !fp)` — the 32-bit arm equals the
+`Slot2StartValid` predicate, so serialize/FP ops still cannot lead (matching the
+ROB head-only gate). Not-taken branches may lead (`!predicted_taken` suppresses
+the taken case; a mispredicted lead flushes the whole queue). The slot-2 lookup
+address becomes `served_addr + size(slot-1)` (was fixed `+2`). A **NEXT_HI
+32-bit slot-2 straddles** word W+2 and is suppressed (pairing declines, the op
+replays as the next slot-1) — that shape is B3b. Every enabled slot-2 is fully
+in the window, so self-alignment is untouched; B3a captures the bulk of the
+reclaimed width (32b+RVC at any alignment, word-aligned 32b+32b).
+
+**B3b — the straddle carry (NEXT_HI 32-bit; deferred to the integration
+phase).** The one residual shape — 32-bit slot-1 spanning at offset 2 with a
+32-bit slot-2 at offset 6 reaching word W+2 — needs three words of reach, which
+the FCA supplied via `want_idx[2] = W+2` (§10, finding 5). The mechanism is a
+**straddle carry register**: the trailing halfword (offset 6) + its predecode +
+the slot-2 port's lookup at that pc, carried across the window advance. When the
+walk is at the carried halfword the ask skips to the following word and the cycle
+forms `{window_low[15:0], carry}` as slot-1 with its carried binding — a
+controlled, fixed, single-halfword misalignment (always "the trailing halfword
+of the previous window", so no tags/parity), killed by any redirect pulse. This
+is the **one place stage 2 re-introduces a misalignment**, so — per the FCA
+lesson that only CRC-checked compute (coremark) catches this width class's
+races — B3b lands in the INTEGRATION phase behind the adjacent-dup + coremark-CRC
+tripwires, NOT in the standalone unit. Without B3b, B1/B2/B3a still exceed HEAD
+width (which pairs nothing behind a 32-bit slot-1); B3b only adds the misaligned
+32+32 stretch.
 
 ## 3. What gets deleted / restructured
 

@@ -12,13 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden-model tests for the stage-2 parcel fill engine (B2, 2-wide).
+"""Golden-model tests for the stage-2 parcel fill engine (B1/B2/B3a).
 
-PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2.  The engine walks the
+PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2 / 2.6.  The engine walks the
 instruction stream, enqueuing up to two ``pq_entry_t`` per served window: a
 slot-1 at ``served_addr`` (ask-time prediction binding) and a contiguous
-slot-2 at ``served_addr + 2`` (walk-time binding) when the bundle conditions
-hold.
+slot-2 at ``served_addr + size(slot-1)`` (walk-time binding) when the bundle
+conditions hold. B3a lets a 32-bit slot-1 lead an in-window bundle; the
+NEXT_HI 32-bit straddle is suppressed (the carry, B3b, is deferred).
 
 The testbench co-simulates a one-cycle-latency provider over a synthetic
 instruction memory, a dual-ported BTB/DIR (slot-1 + slot-2 lookups), and a
@@ -243,39 +244,54 @@ class FillRef:
         else:
             low = high = sb_lo = sb_hi = 0
 
+        span = ((high & 0xFFFF) << 16) | ((low >> 16) & 0xFFFF)
+
         # ---- Slot-1 at served_addr (word-lo when sa_hw=0, word-hi when =1). ----
         if sa_hw:
             s1_is_c = _bit(sb_lo, _SB_IS_COMPRESSED_HI)
             s1_allows = _bit(sb_lo, _SB_ALLOWS_SLOT2_HI)
             s1_start = _bit(sb_lo, _SB_SLOT2_START_HI)
-            s1_span = ((high & 0xFFFF) << 16) | ((low >> 16) & 0xFFFF)
-            s1_bytes = ((low >> 16) & 0xFFFF) if s1_is_c else s1_span
+            s1_bytes = ((low >> 16) & 0xFFFF) if s1_is_c else span
         else:
             s1_is_c = _bit(sb_lo, _SB_IS_COMPRESSED_LO)
             s1_allows = _bit(sb_lo, _SB_ALLOWS_SLOT2_LO)
             s1_start = _bit(sb_lo, _SB_SLOT2_START_LO)
             s1_bytes = (low & 0xFFFF) if s1_is_c else low
         s1_size = 2 if s1_is_c else 4
+        # Compressed slot-1 leads iff AllowsSlot2After; 32-bit iff Slot2StartValid.
+        s1_can_lead = s1_allows if s1_is_c else s1_start
 
-        # ---- Slot-2 at served_addr+2: CURRENT_HI (sa_hw=0) or NEXT_LO (=1). ----
-        if sa_hw:  # NEXT_LO -- lo parcel of the high word, sb_hi lo bits
+        # ---- Slot-2 at served + size(slot-1): CURRENT_HI(2)/NEXT_LO(4)/NEXT_HI(6). ----
+        s2_off = (2 if sa_hw else 0) + s1_size
+        s2_straddle = False
+        if s2_off == 2:  # CURRENT_HI -- hi parcel of the low word
+            s2_is_c = _bit(sb_lo, _SB_IS_COMPRESSED_HI)
+            s2_allows = _bit(sb_lo, _SB_ALLOWS_SLOT2_HI)
+            s2_start = _bit(sb_lo, _SB_SLOT2_START_HI)
+            s2_bytes = ((low >> 16) & 0xFFFF) if s2_is_c else span
+        elif s2_off == 4:  # NEXT_LO -- lo parcel of the high word
             s2_is_c = _bit(sb_hi, _SB_IS_COMPRESSED_LO)
             s2_allows = _bit(sb_hi, _SB_ALLOWS_SLOT2_LO)
             s2_start = _bit(sb_hi, _SB_SLOT2_START_LO)
             s2_bytes = (high & 0xFFFF) if s2_is_c else high
-        else:  # CURRENT_HI -- hi parcel of the low word, sb_lo hi bits
-            s2_is_c = _bit(sb_lo, _SB_IS_COMPRESSED_HI)
-            s2_allows = _bit(sb_lo, _SB_ALLOWS_SLOT2_HI)
-            s2_start = _bit(sb_lo, _SB_SLOT2_START_HI)
-            s2_span = ((high & 0xFFFF) << 16) | ((low >> 16) & 0xFFFF)
-            s2_bytes = ((low >> 16) & 0xFFFF) if s2_is_c else s2_span
+        else:  # NEXT_HI (6) -- hi parcel of the high word; 32-bit straddles
+            s2_is_c = _bit(sb_hi, _SB_IS_COMPRESSED_HI)
+            s2_allows = _bit(sb_hi, _SB_ALLOWS_SLOT2_HI)
+            s2_start = _bit(sb_hi, _SB_SLOT2_START_HI)
+            s2_bytes = ((high >> 16) & 0xFFFF) if s2_is_c else 0
+            s2_straddle = not s2_is_c
         s2_size = 2 if s2_is_c else 4
-        s2_pc = sa + 2
+        s2_can_lead = s2_allows if s2_is_c else s2_start
+        s2_pc = sa + s1_size
 
         bind_match = self.bind_valid and (self.bind_pc == (sa >> 1))
         slot1_taken = accept and bind_match and bool(self.bind_taken)
         slot2_present = (
-            accept and bool(s1_allows) and bool(s2_start) and not slot1_taken
+            accept
+            and bool(s1_can_lead)
+            and bool(s2_start)
+            and not slot1_taken
+            and not s2_straddle
         )
         slot2_taken = slot2_present and bool(lr2["taken"])
 
@@ -288,7 +304,7 @@ class FillRef:
         elif slot1_taken:
             ask_d = self.bind_target << 1
         elif accept:
-            ask_d = (sa + 2 + s2_size) if slot2_present else (sa + s1_size)
+            ask_d = (s2_pc + s2_size) if slot2_present else (sa + s1_size)
         else:
             ask_d = sa
 
@@ -296,7 +312,7 @@ class FillRef:
             "pc": sa >> 1,
             "instr_bytes": s1_bytes,
             "is_compressed": s1_is_c,
-            "allows_slot2_after": s1_allows,
+            "allows_slot2_after": s1_can_lead,
             "slot2_start_ok": s1_start,
             "btb_hit": self.bind_hit if bind_match else 0,
             "predicted_taken": self.bind_taken if bind_match else 0,
@@ -308,7 +324,7 @@ class FillRef:
             "pc": s2_pc >> 1,
             "instr_bytes": s2_bytes,
             "is_compressed": s2_is_c,
-            "allows_slot2_after": s2_allows,
+            "allows_slot2_after": s2_can_lead,
             "slot2_start_ok": s2_start,
             "btb_hit": lr2["hit"],
             "predicted_taken": lr2["taken"],
@@ -327,6 +343,7 @@ class FillRef:
             "flush_partial": redirect_valid and redir_partial,
             "core_redirect": redirect_valid or slot2_redir_fire,
             "s2_target": lr2["target"] >> 1,
+            "s2_pc": s2_pc,
         }
 
     def clock(
@@ -454,11 +471,8 @@ class Harness:
         dut.i_queue_backpressure.value = 1 if backpressure else 0
         await _settle()
 
-        # ---- Slot-2 lookup (o_lookup_pc_2 = served_addr + 2, off the register). ----
+        # ---- Slot-2 lookup (o_lookup_pc_2 = served_addr + size(slot-1)). ----
         dut_lookup2 = int(dut.o_lookup_pc_2.value)
-        assert dut_lookup2 == (
-            (ref.ask_q + 2) >> 1
-        ), f"{ctx}: o_lookup_pc_2={dut_lookup2:#x} != {(ref.ask_q + 2) >> 1:#x}"
         lr2 = self.btb.lookup(dut_lookup2 << 1)
         dut.i_btb_hit_2.value = lr2["hit"]
         dut.i_btb_taken_2.value = lr2["taken"]
@@ -468,6 +482,9 @@ class Harness:
         await _settle()
 
         exp = ref.combinational(win, redir, backpressure, lr2)
+        assert dut_lookup2 == (
+            exp["s2_pc"] >> 1
+        ), f"{ctx}: o_lookup_pc_2={dut_lookup2:#x} != ref s2_pc {exp['s2_pc'] >> 1:#x}"
 
         # ---- Slot-1 lookup (o_lookup_pc = ask_d). ----
         dut_lookup = int(dut.o_lookup_pc.value)
@@ -561,17 +578,17 @@ async def test_walk_compressed_bundles(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_walk_native_single(dut: Any) -> None:
-    """A run of 32-bit instructions cannot pair (allows_slot2_after=0)."""
+async def test_walk_native_bundles(dut: Any) -> None:
+    """B3a: a run of word-aligned 32-bit instructions now walks two-wide."""
     await _reset(dut)
     imem, served = build_stream([(False, N_NOP)] * 6)
     h = Harness(dut, imem, Btb())
-    for _ in range(6):
-        exp = await h.step()
-        assert not exp["slot2_present"]  # 32-bit slot-1 never leads a bundle
-    pcs = [e["pc"] << 1 for e in h.enqueued]
+    await h.drain_to(6)
+    pcs = [e["pc"] << 1 for e in h.enqueued[:6]]
     assert pcs == [s["pc"] for s in served], pcs
-    assert all(e["instr_bytes"] == N_NOP for e in h.enqueued)
+    assert all(e["instr_bytes"] == N_NOP for e in h.enqueued[:6])
+    assert all(e["is_compressed"] == 0 for e in h.enqueued[:6])
+    assert h.cycle <= 4, f"expected 32-bit bundling, took {h.cycle} cycles"
 
 
 @cocotb.test()
@@ -678,6 +695,82 @@ async def test_no_pair_after_taken_slot1(dut: Any) -> None:
     assert exp["accept"] and not exp["slot2_present"]  # slot-1 taken suppresses slot-2
     assert exp["e0"]["predicted_taken"] == 1
     assert exp["ask_d"] == 0x60
+
+
+# ---------------------------------------------------------------------------
+# B3a: 32-bit slot-1 leads a bundle (design 2.6)
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_bundle_native_pair(dut: Any) -> None:
+    """B3a: a 32-bit slot-1 pairs with a 32-bit slot-2 at NEXT_LO (offset 4)."""
+    await _reset(dut)
+    imem, _ = build_stream([(False, 0x12345637), (False, 0xABCDE6B7)])  # LUI, LUI
+    h = Harness(dut, imem, Btb())
+    exp = await h.step()
+    assert exp["accept"] and exp["slot2_present"]
+    assert exp["e0"]["pc"] == 0 and exp["e0"]["instr_bytes"] == 0x12345637
+    assert exp["e0"]["allows_slot2_after"] == 1  # 32-bit non-serialize/fp can lead
+    assert (exp["e1"]["pc"] << 1) == 4 and exp["e1"]["instr_bytes"] == 0xABCDE6B7
+    assert exp["e1"]["is_compressed"] == 0
+    assert exp["ask_d"] == 8  # advanced past both 32-bit ops
+
+
+@cocotb.test()
+async def test_bundle_native_then_rvc(dut: Any) -> None:
+    """B3a: a 32-bit slot-1 pairs with a compressed slot-2 at NEXT_LO."""
+    await _reset(dut)
+    imem, _ = build_stream([(False, 0x12345637), (True, C_NOP)])
+    h = Harness(dut, imem, Btb())
+    exp = await h.step()
+    assert exp["slot2_present"]
+    assert (exp["e1"]["pc"] << 1) == 4 and exp["e1"]["is_compressed"] == 1
+    assert exp["e1"]["instr_bytes"] == C_NOP
+    assert exp["ask_d"] == 6  # 0 + 4 + 2
+
+
+@cocotb.test()
+async def test_bundle_next_hi_rvc(dut: Any) -> None:
+    """Pair a halfword-spanning 32-bit slot-1 with a compressed NEXT_HI slot-2.
+
+    The B3a NEXT_HI position (offset 6) is in-window when slot-2 is compressed.
+    """
+    await _reset(dut)
+    # 32-bit LUI @0x82 (spans 0x82..0x86), compressed slot-2 @0x86.
+    imem, _ = build_stream([(False, 0x12345637), (True, C_NOP)], base=0x82)
+    imem0, _ = build_stream([(True, C_NOP)], base=0)
+    imem.words.update(imem0.words)
+    h = Harness(dut, imem, Btb())
+    await h.step()  # cold walk from 0
+    await h.step(redir={"target": 0x82 >> 1, "partial": False})
+    exp = await h.step()  # serve 0x82: slot-1 32b spanning, slot-2 RVC @NEXT_HI
+    assert exp["slot2_present"]
+    assert (exp["e0"]["pc"] << 1) == 0x82 and exp["e0"]["instr_bytes"] == 0x12345637
+    assert (exp["e1"]["pc"] << 1) == 0x86 and exp["e1"]["is_compressed"] == 1
+    assert exp["e1"]["instr_bytes"] == C_NOP
+    assert exp["ask_d"] == 0x88  # 0x82 + 4 + 2
+
+
+@cocotb.test()
+async def test_straddle_suppressed(dut: Any) -> None:
+    """Suppress a NEXT_HI 32-bit slot-2 that reaches a third word.
+
+    The straddling slot-2 is not paired; it replays as the next slot-1 (the
+    straddle carry, B3b, is deferred to integration).
+    """
+    await _reset(dut)
+    # 32-bit LUI @0x82 (spans 0x82..0x86), 32-bit slot-2 @0x86 straddles 0x88+.
+    imem, _ = build_stream([(False, 0x12345637), (False, 0xABCDE6B7)], base=0x82)
+    imem0, _ = build_stream([(True, C_NOP)], base=0)
+    imem.words.update(imem0.words)
+    h = Harness(dut, imem, Btb())
+    await h.step()
+    await h.step(redir={"target": 0x82 >> 1, "partial": False})
+    exp = await h.step()  # serve 0x82: slot-2 @0x86 is 32-bit -> straddle -> suppress
+    assert exp["accept"] and not exp["slot2_present"]
+    assert (exp["e0"]["pc"] << 1) == 0x82
+    assert exp["ask_d"] == 0x86  # advance past slot-1 only
+    exp2 = await h.step()  # 0x86 replays as the next slot-1 (self-aligned)
+    assert (exp2["e0"]["pc"] << 1) == 0x86 and exp2["e0"]["instr_bytes"] == 0xABCDE6B7
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +962,8 @@ async def test_randomized_soak(dut: Any) -> None:
         C_NOP | (C_NOP << 16),
         C_LI | (C_NOP << 16),
         N_NOP,
+        0x12345637,  # LUI (32-bit, can lead a B3a bundle)
+        0xABCDE6B7,  # LUI (32-bit)
         N_ECALL,
         C_J | (C_NOP << 16),
         C_NOP | (C_J << 16),
