@@ -257,6 +257,54 @@ epoch bump would spuriously drop it). The consequences:
   epoch. fence.i stays safe: it flushes + pulses + invalidates the provider
   buffer, and the re-fetched bytes carry their own (address-correct) metadata.
 
+### 2.1.2 Slot-2 formation (2-wide, derived from RTL — B2)
+
+The fill engine enqueues a second entry (`e1`) per served window when a
+contiguous slot-2 exists, sustaining 2 instr/cycle. Slot-2 fires only behind a
+**compressed** slot-1 (so slot-2 starts at `served_addr + 2`), giving exactly
+two self-aligned positions — the buffer / fetch-swap cases of today's aligner
+(`instruction_aligner.sv:301-314`) collapse away:
+
+| `served_addr[1]` | position | parcel | 32-bit assembly | sideband source |
+|---|---|---|---|---|
+| 0 (slot-1 at word-lo) | CURRENT_HI | `low[31:16]` | `{high[15:0], low[31:16]}` (spans lo→hi) | `sb_lo` hi-halfword bits |
+| 1 (slot-1 at word-hi) | NEXT_LO | `high[15:0]` | `high[31:0]` | `sb_hi` lo-halfword bits |
+
+(`low`/`high` = the two window words; `sb_lo`/`sb_hi` their sidebands — the
+high-word bits sunk as `_unused_b2` in B1.) NEXT_HI (slot-2 32-bit needing a
+third word) is unreachable — it only arises behind a 32-bit slot-1, which never
+carries a slot-2 — so **B2 needs no straddle**; every slot-2 fits the 64-bit
+window (matches the aligner's CURRENT_HI/NEXT_LO-only candidates,
+`instruction_aligner.sv:650-677`).
+
+**Pairing** (fill-side, mirrors the consume former §2.3 so bundles match HEAD):
+enqueue `e1` iff `e0.allows_slot2_after && e1.slot2_start_ok &&
+!e0.predicted_taken`. Both sideband predicates already fold in HEAD's gates —
+`allows_slot2_after = is_compressed && !compressed_control` (slot-1 compressed,
+not a compressed branch) and `slot2_start_ok = is_compressed || !(serialize ||
+fp)` (the CSR/FENCE/AMO/FP-compute slot-2 gates of
+`instruction_aligner.sv:573-588`, folded into the predecode). HEAD's residual
+branch/store gates were already dropped (aligner Sessions L/Q/R). The bundle
+advance is `served_addr + 2 + size(slot-2)`.
+
+**Slot-2 binding is walk-time** (combinational, this cycle): the slot-2 BTB/DIR
+lookup is at `served_addr + 2` (today's `slot2_pc_for_btb = pc_reg + 2`,
+`if_stage.sv:383`), off the registered served address, and binds `e1` the same
+cycle it enqueues — no forward register (contrast slot-1's ask-time binding,
+§2.1.1). Its pc-tag holds trivially; the asymmetry with slot-1 is why the
+binding bus is 2-wide.
+
+**Slot-2 taken is a registered redirect (the one bubble).** The slot-2 BTB
+result is kept OFF the ask path (timing): when slot-2 is a taken branch the
+engine still issues the sequential `served_addr + bundle` ask this cycle,
+enqueues `e0`+`e1` (`e1` marked predicted_taken → target), and registers a
+one-shot `slot2_redir_pending`. Next cycle it fires: ask ← slot-2 target,
+`o_core_redirect` pulse (§7.1), **no queue flush** (`e0`/`e1` are valid,
+in-order), and the in-flight wrong-path sequential window is rejected (accept
+gated) — the one-cycle fill gap of §2.1/§2.5, absorbed by queue backlog. This
+reproduces HEAD's `o_slot2_redirect_q` NOP (`pc_controller.sv:218-233`) exactly
+while keeping the slot-2 BTB read off the ask critical path.
+
 ### 2.2 Parcel queue
 
 An 8-entry circular FIFO of **instruction entries** (not raw halfwords — see
