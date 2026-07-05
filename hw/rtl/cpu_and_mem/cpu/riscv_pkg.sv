@@ -665,6 +665,25 @@ package riscv_pkg;
     logic decomp_illegal;
   } from_if_to_pd_t;
 
+  // Parcel-queue instruction entry (stage 2 front end; see
+  // if_stage/PARCEL_QUEUE_DESIGN.md section 2.2).  One entry per walked
+  // instruction, written by the fill engine with the prediction metadata
+  // bound at enqueue; the consume-side bundle former and packet formation
+  // read entries in FIFO order.  Immutable once enqueued.
+  typedef struct packed {
+    logic [XLEN-1:1] pc;  // exact instruction PC (bit 0 always 0)
+    instr_t instr_bytes;  // RVC: parcel in [15:0], [31:16] don't-care;
+                          // native: full 32b, spanning pre-assembled at fill
+    logic is_compressed;  // sideband predecode (authoritative)
+    logic allows_slot2_after;  // sideband: entry may lead a 2-wide bundle
+    logic slot2_start_ok;  // sideband: entry may occupy slot 2
+    logic btb_hit;  // fill-time BTB lookup (epoch-matched binding)
+    logic predicted_taken;  // taken => the NEXT entry is the target
+    logic [XLEN-1:1] predicted_target;
+    logic dir_taken;  // decoupled bimodal direction (Lever A input)
+    logic [BpDirIdxBits-1:0] dir_idx;  // predict-time index, carried to commit
+  } pq_entry_t;
+
   // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage
   typedef struct packed {
     logic [XLEN-1:0] program_counter;

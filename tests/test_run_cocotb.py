@@ -711,6 +711,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="c_ext_state",
         description="IF-stage C-extension state controller tests",
     ),
+    "parcel_queue": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_parcel_queue",
+        hdl_toplevel_module="parcel_queue",
+        description="IF-stage parcel queue tests (stage-2 scaffolding)",
+    ),
     "if_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_if_stage",
         hdl_toplevel_module="if_stage",

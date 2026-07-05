@@ -254,6 +254,13 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),parcel_queue)
+# IF-stage parcel queue unit test (stage-2 front end scaffolding; see
+# hw/rtl/cpu_and_mem/cpu/if_stage/PARCEL_QUEUE_DESIGN.md)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_queue.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),if_stage)
 # IF-stage top-level integration test
 COMPILE_ARGS := \
