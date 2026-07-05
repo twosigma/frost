@@ -150,7 +150,8 @@ New in the fill engine:
   outstanding ask per epoch. If a future provider pipelines multiple
   outstanding asks, the epoch must widen to cover
   max-outstanding + 1 — recorded as an assertion, not an assumption.
-- **Prediction binding (epoch-tagged, first-class invariant)**: the ask-time
+- **Prediction binding (pc-tagged, first-class invariant; see §2.1.1 — this
+  supersedes the "epoch-tagged" wording below)**: the ask-time
   BTB/DIR lookup results ride an explicit **2-wide, epoch-tagged binding bus**
   aligned with the ask→serve latency — slot-1's ask-time result and slot-2's
   walk-time result each carry the epoch of the ask they belong to. At
@@ -171,6 +172,90 @@ New in the fill engine:
   fill fills in steady state, full mainly occurs during back-end stalls —
   where holding fetch is free. (Timing watch item: occupancy arithmetic sits
   on the ask-hold path; see §8.)
+
+### 2.1.1 Ask-chain timing (derived from RTL — read before B-phase RTL)
+
+This section pins the exact cycle relationship the fill-engine walk must
+reproduce, derived from today's `if_stage` RTL (not from recollection). It
+resolves the one question the stage-1/spec work left open: **does the
+next-ask advance use the walked instruction's size sampled at ask time or at
+serve time?**
+
+**Today's dual-PC walk (confirmed in RTL):**
+
+- `o_pc` is the *leading* fetch/ask address; `o_pc_reg` is the *decode*
+  address and lags `o_pc` by exactly one cycle
+  (`pc_increment_calculator.sv:295-296`; registers at `pc_controller.sv:787-791`).
+- The BTB/DIR **slot-1 lookup is at the leading ask address**:
+  `branch_prediction_controller_inst.i_pc(pc)` and `assign o_pc = pc`
+  (`if_stage.sv:403, 557, 981`) — this is the "as today, `bpc.i_pc = o_pc`"
+  the fill engine (§2.1) reproduces. The lookup result both steers the *next*
+  `o_pc` combinationally (taken ⇒ zero-bubble redirect, `pc_controller.sv:702`
+  `i_prediction_used_for_pc`) and is **registered one cycle forward**
+  (`sel_prediction_r` / `i_predicted_target_r`) to align with the instruction
+  when it reaches `o_pc_reg`. That timing-aligned register is exactly what the
+  binding pipe replaces.
+- The BTB **slot-2 lookup is at walk time**:
+  `slot2_pc_for_btb = pc_reg + PcIncrementCompressed` (`if_stage.sv:383`) —
+  the decode address plus slot-1's size (slot-1 is always compressed when
+  slot-2 fires, hence `+2`). This is the `fill_pc + size(slot-1)` of §2.1.
+- The **increment (size) is a serve-time quantity.** `o_is_compressed` /
+  `is_compressed_fast` / the slot-2 metadata are all decoded from the
+  *just-arrived* window and describe the instruction at `o_pc_reg`
+  (`instruction_aligner.sv:146-152, 194-212`, gated by the
+  `bank_sel_r ^ pc_reg[2]` word-parity). Both advance selects
+  (`pc_fetch_advance_sel`, `pc_reg_advance_sel`, `if_stage.sv:1304-1326`) pick
+  the increment `K` from that serve-time size, and `next_o_pc = o_pc + K`,
+  `next_o_pc_reg = o_pc_reg + K` (same `K`). The ask's *own* bytes have not
+  returned when the ask is presented, so its size cannot drive its own
+  advance; the leading pointer advances by the *served* instruction's size.
+
+**Answer to the open question:** the sequential next-ask advance uses the
+walked instruction's size **at serve/walk time** (from the arriving window),
+never at ask time. The only ask-time input to the next-ask mux is the BTB
+taken/target, which overrides the sequential arm and needs no size.
+
+**Mapping to the self-aligned fill engine** (single walker `fill_pc`; the
+provider's `o_served_addr` replaces the recomputed `o_pc_reg`, so the
+`bank_sel ^ pc_reg[2]` parity — and the whole F-vs-W disambiguation — is gone):
+
+| Quantity | Today | Fill engine |
+|---|---|---|
+| ask / slot-1 lookup addr | `o_pc` (leading, registered) | `fill_pc` (`o_ask_pc`, `o_lookup_pc`) |
+| decode / enqueue addr | `o_pc_reg` (recomputed, parity-reconciled) | `i_served_addr` (provider-supplied, self-aligned) |
+| sequential advance | `o_pc + size(instr@o_pc_reg)` (serve time) | `served_addr + size(served)` (serve time) |
+| taken redirect | ask-time BTB @ `o_pc` ⇒ next `o_pc` | ask-time BTB @ `fill_pc` ⇒ next `fill_pc` |
+| slot-1 prediction align | `sel_prediction_r` reg (1 cy) | binding pipe `bind_q` (1 cy), pc-tagged |
+| slot-2 prediction align | combinational @ walk | combinational @ walk (no carry) |
+
+The ask→serve latency is one cycle: the slot-1 lookup at `fill_pc` (cycle N)
+is registered into `bind_q` and bound to the entry when that address is served
+(cycle N+1). Throughput is one instruction/cycle via provider pipelining; the
+`window → sideband → size → next-ask` cone is the same depth as today's
+`BRAM → aligner → o_pc` cone (§2.2/§8 — the timing win is deleting the
+pending-prediction *control* cones, not this data cone).
+
+**Binding is pc-tagged, not epoch-counted (supersedes the epoch-counter
+realization in §2.1/§2.5).** The binding closure — "a redirect between lookup
+and enqueue must not leak a killed path's prediction onto the first
+post-redirect entry" — is realized by **tagging each binding stage with the
+lookup address and binding iff `bind_q.pc == entry.pc`** (else zeroed
+not-taken metadata). Because BTB/DIR metadata is a pure function of the lookup
+address, an address match binds correct metadata unconditionally; this is
+equivalent-or-stronger than an epoch match (a redirect *to the same address* —
+tight self-loop — keeps the correct prediction and its zero bubble, where an
+epoch bump would spuriously drop it). The consequences:
+
+- The free-running epoch **counter is deleted.** The §2.5 matrix's "epoch++"
+  columns are read as "the pc-tag no longer matches in-flight state," which the
+  resteer produces for free (a resteer changes the address being enqueued).
+- **Window acceptance is address-tag-checked** (§7.1): a window is
+  accepted/enqueued only when `i_served_addr` matches the outstanding ask —
+  the address-level counterpart that drops stale wrong-path windows.
+- The **`i_core_redirect` pulse still exists** (§7.1) for the provider seam
+  and, later, the straddle-carry kill (§2.6) — but no longer for a binding
+  epoch. fence.i stays safe: it flushes + pulses + invalidates the provider
+  buffer, and the re-fetched bytes carry their own (address-correct) metadata.
 
 ### 2.2 Parcel queue
 
@@ -309,7 +394,10 @@ post-enqueue.
 
 One rule for everything: **flush per the table, resteer `fill_pc`, bump the
 epoch — and the epoch bump kills ALL in-flight fill state (owed ask,
-binding-bus stages, straddle carry).** Priority (same as today's next-PC mux):
+binding-bus stages, straddle carry).** (Per §2.1.1 the epoch is realized as
+per-stage **pc-tags**, not a counter: a resteer changes the enqueued address,
+so in-flight state stops matching for free; "epoch++" below reads as "in-flight
+pc-tags no longer match.") Priority (same as today's next-PC mux):
 reset > trap/MRET > FENCE.I > backend branch > PD redirect > RAS (consume) >
 slot-2 BTB (fill) > slot-1 BTB (fill) > sequential.
 

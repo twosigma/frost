@@ -716,6 +716,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="parcel_queue",
         description="IF-stage parcel queue tests (stage-2 scaffolding)",
     ),
+    "parcel_fill_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_parcel_fill_engine",
+        hdl_toplevel_module="parcel_fill_engine",
+        description="IF-stage parcel fill engine tests (stage-2 landing B1)",
+    ),
     "if_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_if_stage",
         hdl_toplevel_module="if_stage",
