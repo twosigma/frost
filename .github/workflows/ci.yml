@@ -353,7 +353,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # FROST no-MMU M-mode Linux: build the image from source, then boot it two
-  # ways off the SAME artifact -- on the FROST RTL in cocotb (the gremlin
+  # ways off the SAME artifact -- on the FROST RTL in cocotb (the timer-IRQ-hang
   # regression) and under QEMU (a fast full boot-to-shell reference).
   # ---------------------------------------------------------------------------
 
@@ -442,11 +442,11 @@ jobs:
 
   # Boot the freshly built image on the FROST RTL in cocotb, bounded to ~22M
   # cycles in the genesys2-faithful cache shape (128 KiB L1I, no L2). This is the
-  # "gremlin" regression: that window is silent mem_init after devtmpfs (no deep
+  # timer-IRQ-hang regression: that window is silent mem_init after devtmpfs (no deep
   # console marker), so the run captures the full boot (FROST_LINUX_RUN_FULL) and
   # check_linux_boot_regression.py then asserts boot health -- banner + devtmpfs,
   # no panic, the periodic CLINT timer tick serviced (mtimecmp re-armed, the
-  # thing the gremlin hung), and forward progress (retire) all the way to the
+  # thing the historical hang froze), and forward progress (retire) all the way to the
   # cap. CACHED_HAS_L2=0 must be an env/make var (the test's own -GCACHED_HAS_L2=0
   # is otherwise overridden by the tests/Makefile default).
   linux-boot-cocotb:
@@ -486,7 +486,7 @@ jobs:
           cp /tmp/frost-linux-images/sw.mem     sw/apps/linux_boot/sw.mem
           cp /tmp/frost-linux-images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 
-      - name: Run cocotb linux_boot (22M-cycle gremlin regression)
+      - name: Run cocotb linux_boot (22M-cycle timer-IRQ-hang regression)
         run: |
           # FROST_LINUX_PREBUILT=1: the cocotb runner cleans + re-makes the app
           # before simulating; this tells the linux_boot Makefile the staged

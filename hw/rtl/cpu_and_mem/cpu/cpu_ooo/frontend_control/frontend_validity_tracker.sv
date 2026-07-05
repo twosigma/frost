@@ -135,7 +135,7 @@ module frontend_validity_tracker (
   assign id_valid = id_valid_base && (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop);
 
   // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
-  // also be valid this cycle — bundle constraint, decision #2 monolithic
+  // also be valid this cycle — bundle constraint, monolithic bundle
   // stall).  The is_not_nop check gates id_valid_2 to '1 whenever IF supplied
   // a real second instruction; it stays '0 only when the bundle has no valid
   // slot-2 this cycle (the slot-2 path then carries a NOP).

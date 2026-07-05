@@ -206,7 +206,7 @@ module dispatch (
     output logic [    riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_id,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_checkpoint_branch_tag,
     // Slot-2-branch flag: when slot-2 is the branch the snapshot must
-    // overlay slot-1's same-cycle rename (Session F gap fix #6).
+    // overlay slot-1's same-cycle rename.
     output logic                                        o_checkpoint_save_for_slot2,
 
     // RAS state to save with checkpoint
@@ -720,7 +720,7 @@ module dispatch (
                                                           (need_sq_2 && sq_full_for_slot2));
     o_status.slot2_block_ckpt = slot2_only_block && need_checkpoint_2 && !i_checkpoint_available;
 
-    // Stall semantics (per design doc Session D, "simpler stall"):
+    // Stall semantics ("simpler stall"):
     //   o_stall = !(slot1_can_fire && (!slot2_valid || slot2_can_fire))
     // If slot-2 is invalid, this reduces to !slot1_can_fire — identical to
     // the 1-wide baseline.  When slot-2 IS valid but cannot fire, we stall
@@ -767,14 +767,14 @@ module dispatch (
       !(need_sq && i_sq_full) &&
       !(need_checkpoint && !i_checkpoint_available);
   assign slot1_can_fire = dispatch_common_ready && !rs_full;
-  // Slot-2 is bundle-terminated by a slot-1 branch (decision #1).  Slot-2
+  // Slot-2 is bundle-terminated by a slot-1 branch.  Slot-2
   // alloc requires slot-1 alloc to also fire, so slot1_can_fire is part of
   // the gate.  Resource room counts are "for 2" when both slots target the
   // same structure, plain "full" when they don't (rs_full_for_slot2 etc.
   // already encode this).
   //
-  // Session M: the conservative `slot2_source_done_pending` gate (Session G
-  // placeholder for decision #5) is removed.  Slot-2 now has its own
+  // The conservative `slot2_source_done_pending` placeholder gate is
+  // removed.  Slot-2 now has its own
   // done-repair coverage via dispatch's bypass channels 4/5/6 → wrapper →
   // RS i_repair_valid_4/5/6.  An already-done slot-2 source is repaired the
   // cycle after dispatch, just like slot-1.
@@ -1034,7 +1034,7 @@ module dispatch (
   // The RAT itself was sampled before slot-1's rename took effect, so without
   // this override slot-2 would race against an unrenamed (stale) source.
   //
-  // Per design doc decision #6, RAT proper does not see this case; it is
+  // The RAT proper does not see this case; it is
   // resolved entirely inside dispatch, feeding the per-RS slot-2 builders.
 
   // Slot-1 dest match conditions, factored once.  has_dest=1 implies dest
@@ -1479,9 +1479,9 @@ module dispatch (
     rs_dispatch_base_2.pc               = i_from_id_to_ex_2.program_counter;
     rs_dispatch_base_2.link_addr        = i_from_id_to_ex_2.link_address;
 
-    // Slot-2 only ever needs a checkpoint when slot-2 is the branch.  Per
-    // decision #1 slot-1 is non-branch in that case, so the single
-    // checkpoint pool entry is available.
+    // Slot-2 only ever needs a checkpoint when slot-2 is the branch.  A
+    // bundle never holds two branches, so slot-1 is non-branch in that case
+    // and the single checkpoint pool entry is available.
     rs_dispatch_base_2.has_checkpoint   = need_checkpoint_2;
     rs_dispatch_base_2.checkpoint_id    = i_checkpoint_alloc_id;
     rs_dispatch_base_2.is_call          = is_call_flag_2;
@@ -1583,13 +1583,14 @@ module dispatch (
   // Checkpoint Management
   // ===========================================================================
   // The checkpoint pool is single-port (one save per cycle).  Per design
-  // decision #1 a 2-wide bundle never has both slots be branches, so the
+  // the one-branch-per-bundle rule a 2-wide bundle never has both slots
+  // be branches, so the
   // pool is sufficient.  When slot-2 is the branch (slot-1 was non-branch),
   // the snapshot's branch_tag points at slot-2's ROB tag and RAS metadata
   // comes from slot-2's IF-time capture.  The slot2_overlay flag drives the
   // RAT snapshot to fold slot-1's same-cycle rename into the saved image so
   // recovery from a slot-2 misprediction reinstates slot-1's allocation
-  // (Session F gap fix #6).
+  // (see the RAT's same-cycle rename overlay).
 
   logic checkpoint_save_slot1;
   logic checkpoint_save_slot2;
@@ -1597,7 +1598,7 @@ module dispatch (
   assign checkpoint_save_slot2 = bundle_fire_ok && dispatch_valid_2 && need_checkpoint_2;
 
   always_comb begin
-    // Single save signal; either slot-1 OR slot-2 (never both per decision #1).
+    // Single save signal; either slot-1 OR slot-2 (never both; one branch per bundle).
     o_checkpoint_save = checkpoint_save_slot1 || checkpoint_save_slot2;
     o_checkpoint_save_for_slot2 = checkpoint_save_slot2;
     o_checkpoint_id = i_checkpoint_alloc_id;

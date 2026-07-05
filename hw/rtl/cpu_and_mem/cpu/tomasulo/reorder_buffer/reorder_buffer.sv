@@ -250,7 +250,7 @@ module reorder_buffer (
     // =========================================================================
     // Dispatch Bypass Read Ports (async value read for renamed-but-done sources)
     // =========================================================================
-    // Channels 1-3: slot-1 sources.  Channels 4-6: slot-2 sources (Session M).
+    // Channels 1-3: slot-1 sources.  Channels 4-6: slot-2 sources.
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_2,
@@ -930,7 +930,7 @@ module reorder_buffer (
   assign alloc_branch_target_data   = i_alloc_req.is_jal ? i_alloc_req.branch_target : '0;
   assign alloc_branch_target_data_2 = i_alloc_req_2.is_jal ? i_alloc_req_2.branch_target : '0;
 
-  // Per design decision #1, only one slot in a bundle can be a branch, so
+  // Only one slot in a bundle can be a branch, so
   // i_checkpoint_valid (single-port) applies to whichever slot is the branch.
   // alloc_has_checkpoint_data fires only for that slot; the other gets '0.
   logic [CheckpointIdWidth-1:0] alloc_checkpoint_id_data;
@@ -1295,7 +1295,7 @@ module reorder_buffer (
       .o_read_data(o_bypass_value_3)
   );
 
-  // Slot-2 done-repair bypass read ports (Session M).
+  // Slot-2 done-repair bypass read ports.
   mwp_dist_ram #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FLEN),

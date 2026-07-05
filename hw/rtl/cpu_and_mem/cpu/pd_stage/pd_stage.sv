@@ -163,14 +163,14 @@ module pd_stage #(
   assign fp_source_reg_3_2 = final_instruction_2[31:27];
 
   // ===========================================================================
-  // Lever A: Predicted-Taken Redirect on BTB Miss
+  // Predicted-Taken Redirect on BTB Miss
   // (generalized from the former backward-branch static heuristic)
   // ===========================================================================
   // Detect conditional branches (ANY offset sign) that the BTB missed and that
   // the decoupled direction predictor calls TAKEN, and redirect IF to the
   // computed PC+imm target. This saves ~4-5 cycles vs waiting for EX-stage
   // misprediction recovery. Formerly this fired only for backward offsets using
-  // a static "backward => taken" rule; lever A drives it from the trained
+  // a static "backward => taken" rule; this drives it from the trained
   // direction predictor (carried as bp_dir_taken), so forward taken branches
   // that thrash the 256-entry BTB also redirect here instead of mispredicting.
   //
@@ -219,7 +219,7 @@ module pd_stage #(
   assign pd_backward_target = pd_compressed_branch ? pd_backward_target_compressed :
                               pd_backward_target_native;
 
-  // Lever A: fire the PD redirect for any conditional branch (native B-type or
+  // Fire the PD redirect for any conditional branch (native B-type or
   // compressed C.BEQZ/C.BNEZ) that the front-end did NOT already redirect and
   // that the decoupled bimodal (carried from IF as bp_dir_taken) predicts TAKEN.
   // pd_backward_target (= PC + imm_b, above) is already computed for both offset
@@ -333,7 +333,7 @@ module pd_stage #(
       o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
-      // Lever A: carry the predict-time bimodal index through to commit.
+      // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id.bp_dir_idx <= i_from_if_to_pd.bp_dir_idx;
     end
     // When stalled, hold current values (implicit - no else clause)
@@ -344,7 +344,8 @@ module pd_stage #(
   // ===========================================================================
   // Mirror of the slot-1 register above, driven from i_from_if_to_pd_2 and
   // pd_sel_compressed_2 / final_instruction_2 / source_reg_*_2.  Stall and
-  // flush gating apply to both slots uniformly (decision #2).  pd_redirect_r
+  // flush gating apply to both slots uniformly (bundles advance
+  // monolithically).  pd_redirect_r
   // squashes both slots: when the slot-1 backward-branch heuristic fires, the
   // wrong-path instruction in PD this cycle covers slot-2 too.
 
@@ -386,7 +387,7 @@ module pd_stage #(
       o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
-      // Lever A: carry the predict-time bimodal index through to commit.
+      // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
     end
   end

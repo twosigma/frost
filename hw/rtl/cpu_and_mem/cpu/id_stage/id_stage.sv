@@ -50,9 +50,9 @@ module id_stage #(
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
     // Slot-2 does NOT receive the backward-branch heuristic override (slot-1
-    // only by design — see pd_stage.sv).  Slot-2's BTB/RAS metadata from PD is
-    // always 0 because IF performs a single-port BTB lookup on slot-1's PC
-    // (decision #3); the slot-2 EX-stage path will recover from any
+    // only by design — see pd_stage.sv).  Slot-2 carries its own BTB metadata
+    // (dual-port BTB lookup) but has no RAS metadata (slot-1 control flow
+    // terminates the bundle); the slot-2 EX-stage path recovers from any
     // mispredictions naturally.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
@@ -820,7 +820,7 @@ module id_stage #(
       o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
       o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
-      // Lever A: carry the predict-time bimodal index through to commit.
+      // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex.bp_dir_idx <= i_from_pd_to_id.bp_dir_idx;
       o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
       // Pre-computed expected rs1 values for branch/RAS verification.
@@ -1510,7 +1510,7 @@ module id_stage #(
       o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
-      // Lever A: carry the predict-time bimodal index through to commit.
+      // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex_2.bp_dir_idx <= i_from_pd_to_id_2.bp_dir_idx;
       o_from_id_to_ex_2.ras_predicted_target_nonzero <= |i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_expected_rs1 <= ras_expected_rs1_precomputed_2;
