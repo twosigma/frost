@@ -56,6 +56,12 @@ module parcel_consume_engine #(
     input logic i_stall,  // front-end stall: freeze the head (deq_count = 0)
     input logic i_flush,  // flush: present NOP bubbles this cycle
 
+    // ---- Slot-1 RAS metadata (from parcel_consume_ras, design 2.4) ----
+    input logic                             i_slot1_ras_predicted,
+    input logic [                 XLEN-1:0] i_slot1_ras_predicted_target,
+    input logic [riscv_pkg::RasPtrBits-1:0] i_slot1_ras_checkpoint_tos,
+    input logic [  riscv_pkg::RasPtrBits:0] i_slot1_ras_checkpoint_valid_count,
+
     // ---- IF->PD packets ----
     output riscv_pkg::from_if_to_pd_t o_slot1,
     output riscv_pkg::from_if_to_pd_t o_slot2,
@@ -123,8 +129,12 @@ module parcel_consume_engine #(
       o_slot1.btb_predicted_target = {i_entry0.predicted_target, 1'b0};
       o_slot1.bp_dir_taken = i_entry0.dir_taken;
       o_slot1.bp_dir_idx = i_entry0.dir_idx;
+      // RAS metadata from the consume-side RAS (design 2.4).
+      o_slot1.ras_predicted = i_slot1_ras_predicted;
+      o_slot1.ras_predicted_target = i_slot1_ras_predicted_target;
+      o_slot1.ras_checkpoint_tos = i_slot1_ras_checkpoint_tos;
+      o_slot1.ras_checkpoint_valid_count = i_slot1_ras_checkpoint_valid_count;
     end
-    // ras_* deferred to the consume-side RAS phase (design 2.4).
   end
 
   always_comb begin
@@ -150,6 +160,10 @@ module parcel_consume_engine #(
       o_slot2.bp_dir_taken = 1'b0;
       o_slot2.bp_dir_idx = i_entry1.dir_idx;
       o_slot2.decomp_illegal = i_entry1.is_compressed && slot2_decomp_illegal_raw;
+      // Slot-2 has no return prediction; its checkpoints mirror slot-1's
+      // (matching HEAD) so recovery sees the pre-bundle RAS state.
+      o_slot2.ras_checkpoint_tos = i_slot1_ras_checkpoint_tos;
+      o_slot2.ras_checkpoint_valid_count = i_slot1_ras_checkpoint_valid_count;
     end
   end
 

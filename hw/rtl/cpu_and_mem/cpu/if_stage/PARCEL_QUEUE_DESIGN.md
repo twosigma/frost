@@ -806,12 +806,18 @@ decompressor).
 The actual **swap** (§9 B1) is itself large and sub-phases as follows — each a
 coherent commit, the §8 tripwires green before the next:
 
-1. **Consume-side RAS (§2.4)** — deferred from the consume unit. Instantiate
-   `ras_detector` + `return_address_stack` at the consume engine; drive the
-   `ras_*` packet fields and the return redirect (partial flush + resteer),
-   edge-triggered on **dequeue-fire** (`!stall && !sel_nop && !flush`). Unit-
-   testable against the existing RAS suites.
-2. **`if_stage` rewire** — instantiate fill engine + queue + consume engine;
+1. **Consume-side RAS (§2.4)** — **DONE** (`parcel_consume_ras.sv`, unit-tested).
+   Wraps the unchanged `ras_detector` + `return_address_stack`, driven by the
+   head entry, with all side effects edge-triggered on **dequeue-fire**
+   (`slot1_present && !stall`): the packet `ras_*` fields are level (re-present
+   under stall), while push / pop / return-redirect fire exactly once on retire
+   (the panel's finding-3 no-refire-under-stall). The `return_address_stack`
+   pushes on `!stall_registered` by its own design, so the call input is gated
+   here and the stack's `i_stall_registered` is tied off. Its `ras_*` outputs
+   feed the consume engine's slot-1 packet; the return redirect drives the fill
+   engine's `i_redirect_*` (partial flush + resteer to `ras_target`).
+2. **`if_stage` rewire** — instantiate fill engine + queue + consume engine +
+   consume RAS;
    route the fill engine's two lookup ports to the (restructured, §2.1)
    `branch_prediction_controller` `i_pc`/`i_pc_2`; the consume packets to
    `o_from_if_to_pd`/`_2`; the §2.5 redirect matrix (backend / PD / trap /

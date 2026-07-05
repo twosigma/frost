@@ -135,8 +135,11 @@ def make_entry(
     }
 
 
+ZERO_RAS = {"predicted": 0, "target": 0, "tos": 0, "valid_count": 0}
+
+
 def _packet_from_entry(
-    e: dict[str, int], valid: bool, *, is_slot2: bool
+    e: dict[str, int], valid: bool, ras: dict[str, int], *, is_slot2: bool
 ) -> dict[str, int | None]:
     """Build the reference packet for one slot (None fields are not checked)."""
     pkt: dict[str, int | None] = {name: 0 for name, _ in _PKT_DECL}
@@ -155,6 +158,10 @@ def _packet_from_entry(
     pkt["btb_predicted_taken"] = e["predicted_taken"]
     pkt["btb_predicted_target"] = e["predicted_target"] << 1
     pkt["bp_dir_idx"] = e["dir_idx"]
+    # Slot-2 mirrors slot-1's RAS checkpoints; slot-1 also carries the
+    # prediction (design 2.3/2.4).
+    pkt["ras_checkpoint_tos"] = ras["tos"]
+    pkt["ras_checkpoint_valid_count"] = ras["valid_count"]
     if is_slot2:
         pkt["bp_dir_taken"] = 0  # slot-2 direction hint held 0 (matches HEAD)
         if e["is_compressed"]:
@@ -170,6 +177,8 @@ def _packet_from_entry(
     else:
         pkt["bp_dir_taken"] = e["dir_taken"]
         pkt["effective_instr"] = e["instr_bytes"] & 0xFFFFFFFF
+        pkt["ras_predicted"] = ras["predicted"]
+        pkt["ras_predicted_target"] = ras["target"]
     return pkt
 
 
@@ -177,6 +186,7 @@ def golden_consume(
     valid: int,
     e0: dict[str, int],
     e1: dict[str, int],
+    ras: dict[str, int],
     *,
     stall: bool,
     flush: bool,
@@ -192,8 +202,8 @@ def golden_consume(
     slot2_valid = slot1_valid and slot2_pair
     deq = 0 if stall else (2 if slot2_valid else (1 if slot1_valid else 0))
     return {
-        "slot1": _packet_from_entry(e0, slot1_valid, is_slot2=False),
-        "slot2": _packet_from_entry(e1, slot2_valid, is_slot2=True),
+        "slot1": _packet_from_entry(e0, slot1_valid, ras, is_slot2=False),
+        "slot2": _packet_from_entry(e1, slot2_valid, ras, is_slot2=True),
         "deq": deq,
     }
 
@@ -209,19 +219,25 @@ async def drive_and_check(
     e0: dict[str, int],
     e1: dict[str, int],
     *,
+    ras: dict[str, int] | None = None,
     stall: bool = False,
     flush: bool = False,
     ctx: str = "",
 ) -> None:
     """Drive one input configuration and check every output field."""
+    ras = ZERO_RAS if ras is None else ras
     dut.i_entry_valid.value = valid
     dut.i_entry0.value = _pack_entry(**e0)
     dut.i_entry1.value = _pack_entry(**e1)
     dut.i_stall.value = 1 if stall else 0
     dut.i_flush.value = 1 if flush else 0
+    dut.i_slot1_ras_predicted.value = ras["predicted"]
+    dut.i_slot1_ras_predicted_target.value = ras["target"]
+    dut.i_slot1_ras_checkpoint_tos.value = ras["tos"]
+    dut.i_slot1_ras_checkpoint_valid_count.value = ras["valid_count"]
     await _settle()
 
-    exp = golden_consume(valid, e0, e1, stall=stall, flush=flush)
+    exp = golden_consume(valid, e0, e1, ras, stall=stall, flush=flush)
     assert (
         int(dut.o_deq_count.value) == exp["deq"]
     ), f"{ctx}: deq_count={int(dut.o_deq_count.value)} want {exp['deq']}"
@@ -339,6 +355,15 @@ async def test_metadata_passthrough(dut: Any) -> None:
     )
     # e0 predicted_taken suppresses pairing, so only slot-1 metadata is checked.
     await drive_and_check(dut, 0b11, e0, e1, ctx="metadata")
+
+
+@cocotb.test()
+async def test_ras_passthrough(dut: Any) -> None:
+    """RAS metadata flows into slot-1 and the checkpoints mirror to slot-2."""
+    e0 = make_entry(0xC0 >> 1, N_LUI)
+    e1 = make_entry(0xC4 >> 1, N_LUI2)
+    ras = {"predicted": 1, "target": 0x1234, "tos": 5, "valid_count": 6}
+    await drive_and_check(dut, 0b11, e0, e1, ras=ras, ctx="ras")
 
 
 # ---------------------------------------------------------------------------

@@ -276,6 +276,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_engine.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),parcel_consume_ras)
+# IF-stage parcel consume-side RAS unit test (stage-2 front end, integration
+# phase; see hw/rtl/cpu_and_mem/cpu/if_stage/PARCEL_QUEUE_DESIGN.md section 2.4)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_ras.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),if_stage)
 # IF-stage top-level integration test
 COMPILE_ARGS := \
