@@ -115,7 +115,8 @@ The fill engine is today's ask-side machinery relocated and stripped of every
   alignment-by-construction.
 - The provider handshake: `i_instr_valid` low freezes the walk and holds the
   ask (today's `!fetch_progress` hold arms); redirects still land during the
-  freeze. See §7 for the provider retarget contract.
+  freeze. The seam itself changes (explicit redirect pulse, queue-full
+  backpressure, tag-checked acceptance) — see §7.1.
 - **Prediction gating**: the useful residue of `prediction_common`
   (`branch_prediction_controller.sv:360-377`). The serve-frame terms
   (`!use_instr_buffer`, `!spanning_*`) die with their machinery; the holdoff
@@ -164,10 +165,12 @@ New in the fill engine:
   no-flush slot-2 row. After a taken prediction the next enqueued entry IS
   the target instruction with `pc = target` written at fill; once enqueued,
   the binding is immutable.
-- **Queue-full**: fill holds the ask (same mechanism as the `!i_instr_valid`
-  freeze). Given consume drains ≥ as fast as fill fills in steady state, full
-  mainly occurs during back-end stalls — where holding fetch is free. (Timing
-  watch item: occupancy arithmetic sits on the ask-hold path; see §8.)
+- **Queue-full**: fill holds the ask via the seam's backpressure input
+  (§7.1), asserting with ≥4-entry headroom for the in-flight window and the
+  provider's registered-backpressure lag. Given consume drains ≥ as fast as
+  fill fills in steady state, full mainly occurs during back-end stalls —
+  where holding fetch is free. (Timing watch item: occupancy arithmetic sits
+  on the ask-hold path; see §8.)
 
 ### 2.2 Parcel queue
 
@@ -456,27 +459,82 @@ Against the 12 invariants extracted from the consumer audit:
    flushing redirect is worth an empty-queue combinational arm whose depth
    matches today's always-on cone (§2.2). The alternative (accept +1 cycle on
    every mispredict recovery) fails the B2 "IPC parity" gate by construction.
+7. **Provider seam — explicit redirect pulse (decided, §7.1)**: replace the
+   acceptance-history retarget inference with `i_core_redirect`, re-point the
+   seam's stall input at queue-full, delete `o_fetch_replay_consume`,
+   tag-check window acceptance at fill. The inference alternative was audited
+   and rejected: the `accepted_prev_q` shadow makes a consume-side redirect
+   invisible, and in the L1I-miss case the provider commits a full wrong-path
+   line fill before it can be corrected.
 
 ## 7. Interface & residual audits (work items before RTL)
 
-- **Provider retarget contract** (upgraded by the panel from "audit" to
-  "design item"): the provider's owed-ask retarget classifier infers redirects
-  from acceptance history and `o_fetch_replay_consume`
-  (`fetch_provider.sv:122`: `retarget_now = !accepted_prev_q &&
-  !i_fetch_replay_consume && (i_pc != pc_prev_q)`; mirrored in
-  `cpu_and_mem.sv:469-483`). Two consequences:
-  1. `o_fetch_replay_consume` cannot be silently deleted — it is a live input.
-     Plan: establish the invariant "`o_pc` moves during an unserved cycle
-     ONLY on a redirect the provider must chase", then tie the port to 0 and
-     simplify `retarget_now`, verifying against all providers (low BRAM,
-     cached/DDR tier, fuzz).
-  2. Consume-side redirects (RAS, PD) can now move `o_pc` on cycles the
-     classifier currently never sees movement (e.g. the cycle after an
-     accepted serve, or mid-L1I-miss while the consume side drains backlog).
-     Either prove the acceptance-history classification still resolves every
-     such case to a chase, or route an explicit `core_redirect` pulse to the
-     provider. Fuzz tests must inject RAS/PD redirects during multi-cycle
-     fetch gaps.
+- **Provider seam contract — RESOLVED (audited 2026-07-05, see §7.1)**: the
+  inference-based retarget classifier is replaced by an explicit redirect
+  pulse, the seam's stall input is re-pointed from the decode stall to
+  queue-full backpressure, and `o_fetch_replay_consume` is deleted. Details
+  and the failure derivation in §7.1.
+### 7.1 The provider seam, stage-2 contract (audit result)
+
+Today's contract (`fetch_provider.sv:31-42, 102-149`; fuzz mirror
+`cpu_and_mem.sv:414-485`): the provider owns a 1-deep owed-ask register and
+**infers** retargets from acceptance history —
+`retarget_now = !accepted_prev_q && !i_fetch_replay_consume &&
+(i_pc != pc_prev_q)` (`fetch_provider.sv:122`), resting on the invariant "the
+core holds `o_pc` on every un-accepted cycle except backend redirects and the
+registered stall-replay advance". Stage 2 breaks both legs:
+
+1. **The `accepted_prev_q` shadow.** A consume-side redirect (RAS
+   dequeue-fire, PD) can move `o_pc` on the cycle immediately after an
+   accepted serve. `retarget_now` is suppressed that cycle
+   (`accepted_prev_q = 1`), and on the next cycle the movement is invisible
+   (`i_pc == pc_prev_q` already). The owed ask stays stale. If the stale
+   window is resident the core can reject it by tag and the ask self-heals in
+   one cycle (`ask_q <= i_pc` on the next valid cycle,
+   `fetch_provider.sv:137,145`) — but if the stale ask **misses**, the miss
+   engine (`fetch_provider.sv:250-267`, registered-ask-driven) launches a
+   multi-cycle wrong-path DDR line fill and does not chase the redirect
+   target until that fill completes and its window is presented and rejected.
+   A return into an L1I-miss situation would eat the full wrong-line round
+   trip. Inference cannot be patched around this; the movement information
+   exists only in the core.
+2. **Stall semantics invert.** The provider withholds publish-valid during
+   the decode stall (`fetch_provider.sv:64-69, 209-210`) because the decode
+   is the window consumer. In stage 2 the consumer is the fill engine, which
+   must keep accepting windows during a backend stall — that is the queue's
+   whole purpose. The decode stall must not reach the provider at all.
+
+**The stage-2 seam** (changes to `fetch_provider`, its fuzz reference model,
+and the seam wiring; the always-valid low-BRAM path is untouched):
+
+- `i_core_redirect` (new): a pulse asserted by the core on EVERY `o_pc`
+  resteer (backend branch / trap / MRET / FENCE.I / PD / RAS / slot-2 fill
+  redirect — the §2.5 epoch-bump set plus slot-1-taken steering is not needed
+  since slot-1 hits steer on accepted flow). Provider:
+  `retarget_now = i_core_redirect` (the `pc != pc_prev` compare is demoted to
+  an SVA that redirect pulses and movement agree). No inference remains.
+- `i_fetch_backpressure` (replaces `i_pipeline_stall` at the seam): driven by
+  queue-full, not the decode stall. Provider semantics unchanged (withhold
+  publish-valid, park the owed window); only the meaning of the input moves.
+  The registered lag (`pipeline_stall_q`, `fetch_provider.sv:200,218`)
+  carries over, so **queue-full must assert with headroom**: ≥ 4 free entry
+  slots (one in-flight window = up to 2 entries, plus one lag cycle's
+  window).
+- `o_fetch_replay_consume`: deleted (port and both consumers,
+  `fetch_provider.sv:122`, `cpu_and_mem.sv:472`). The replay class does not
+  exist — under a decode stall the queue simply stops dequeuing and the fill
+  keeps running until backpressure.
+- **Tag-checked acceptance in the fill engine** (promoted from assertion to
+  functional gate): a window is accepted/enqueued only when `i_served_addr`'s
+  word matches the fill walk's expected ask; a valid-but-mismatched window is
+  treated as an unserved cycle. This makes the one-cycle stale-valid
+  presentations around retargets harmless by construction and is the epoch
+  filter's address-level counterpart.
+- Fuzz coverage: inject RAS/PD redirect pulses during multi-cycle fetch gaps
+  and in the accepted-shadow cycle; a directed test drives a consume redirect
+  while the provider is mid-wrong-line fill and checks the fill is chased
+  immediately on completion (no second wrong-line fill).
+
 - Sideband coverage: `IsCompressed`/`Slot2StartValid`/`AllowsSlot2After` are
   computed from word bytes in `riscv_pkg` (provider-independent) — confirm
   every provider path routes them; fallback derivations exist at fill.
@@ -595,8 +653,12 @@ verifier defaulting to refutation. Confirmed findings and their disposition:
    lacks. Fixed: straddle carry (§2.6); B2 re-scoped to HEAD-parity.
 6. **MEDIUM: provider retarget classifier actively consumes
    `o_fetch_replay_consume` and infers redirects from acceptance history** —
-   consume-side redirects violate its assumptions. Promoted to a §7 design
-   item with an explicit invariant and a `core_redirect`-pulse alternative.
+   consume-side redirects violate its assumptions. Post-review audit
+   (2026-07-05) confirmed and strengthened this: the `accepted_prev_q` shadow
+   plus the registered-ask miss engine means an unchased redirect can commit
+   a wrong-path DDR line fill. RESOLVED as design decision §6.7 / contract
+   §7.1 (explicit `i_core_redirect`, queue-full backpressure,
+   `o_fetch_replay_consume` deleted, tag-checked acceptance).
 7. Also folded: epoch sizing derived from the single-outstanding provider
    protocol (§2.1); 2-wide binding-bus alignment for slot-1 ask-time vs
    slot-2 walk-time lookups (§2.1); `branch_prediction_controller`
