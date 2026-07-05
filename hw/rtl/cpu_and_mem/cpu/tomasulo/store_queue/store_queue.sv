@@ -67,7 +67,7 @@ module store_queue #(
     // Allocation (from Dispatch, parallel with MEM_RS dispatch)
     // =========================================================================
     input  riscv_pkg::sq_alloc_req_t i_alloc,
-    // Slot-2 allocation port for 2-wide dispatch (Session C plumbing).  Slot-2
+    // Slot-2 allocation port for 2-wide dispatch.  Slot-2
     // valid does NOT require slot-1 valid: dispatch derives each from its own
     // slot's mem_needs_sq, so it is legal for only slot-2 to be a store.  When
     // both fire, slot-1 is older than slot-2 in program order and must be
@@ -89,7 +89,7 @@ module store_queue #(
     // =========================================================================
     // Early Address Update (from pipelined dispatch-time address computation)
     // =========================================================================
-    // Session L: dual-ported.  Slot-1 and slot-2 each have their own
+    // Dual-ported.  Slot-1 and slot-2 each have their own
     // pipelined-early-addr stage in tomasulo_wrapper, so two distinct
     // rob_tags can update sq_addr_valid + sq_address in the same cycle.
     // The CAM scans below run independently — each finds at most one
@@ -998,7 +998,7 @@ module store_queue #(
         end
       end
 
-      // Session L: slot-2 early addr update (control).  rob_tags across the
+      // Slot-2 early addr update (control).  rob_tags across the
       // two updates are always distinct (different ROB entries) so this
       // independent loop cannot collide with the slot-1 loop above.
       if (i_early_addr_update_2.valid) begin
@@ -1266,7 +1266,7 @@ module store_queue #(
       end
     end
 
-    // Session L: slot-2 early addr update (data).  Distinct-rob_tag invariant
+    // Slot-2 early addr update (data).  Distinct-rob_tag invariant
     // again guarantees no collision with the slot-1 loop above.
     if (i_early_addr_update_2.valid) begin
       for (int i = 0; i < DEPTH; i++) begin

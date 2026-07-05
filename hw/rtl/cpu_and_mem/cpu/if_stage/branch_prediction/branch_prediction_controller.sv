@@ -63,7 +63,7 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 PC for slot-2 BTB lookup (Session Q).  Equals pc_reg + slot-1
+    // Slot-2 PC for slot-2 BTB lookup.  Equals pc_reg + slot-1
     // size when slot-2 is valid this cycle; the lookup is gated by
     // i_slot2_valid so the slot-2 prediction only fires when the slot-2
     // instruction is actually being processed in IF.
@@ -135,7 +135,7 @@ module branch_prediction_controller (
     // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
-    // Slot-2 prediction outputs (Session Q).  Combinational: feeds
+    // Slot-2 prediction outputs.  Combinational: feeds
     // pc_controller's slot-2 redirect path AND the slot-2 IF→PD metadata.
     // A taken slot-2 prediction redirects pc[N+2] to o_slot2_predicted_target
     // and triggers a 1-cycle bubble at cycle N+2 (the BRAM was already
@@ -152,11 +152,11 @@ module branch_prediction_controller (
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,  // TOS checkpoint for recovery
     output logic [riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count,  // Valid count checkpoint
 
-    // Lever A: decoupled bimodal direction (NOT gated by btb_hit), registered to
+    // Decoupled bimodal direction (NOT gated by btb_hit), registered to
     // align with the prediction metadata carried to PD.  PD redirects on a BTB
     // miss when this predicts taken (any offset sign).
     output logic o_dir_predicted_taken,
-    // Lever A: predict-time bimodal index to carry with each fetched branch
+    // Predict-time bimodal index to carry with each fetched branch
     // (slot-1 registered to align with the prediction metadata; slot-2
     // combinational off its own lookup PC) and hand back at commit for training.
     output logic [riscv_pkg::BpDirIdxBits-1:0] o_dir_idx,
@@ -176,7 +176,7 @@ module branch_prediction_controller (
   logic            btb_compressed;
   logic            btb_requires_pc_reg_handoff;
 
-  // Slot-2 BTB outputs (Session Q).
+  // Slot-2 BTB outputs.
   logic            btb_hit_2;
   logic            btb_predicted_taken_2;
   logic [XLEN-1:0] btb_predicted_target_2;
@@ -220,11 +220,11 @@ module branch_prediction_controller (
   );
 
   // ===========================================================================
-  // Direction Predictor (decoupled bimodal) — lever A's BTB-miss direction
+  // Direction Predictor (decoupled bimodal) — the BTB-miss direction
   // ===========================================================================
   // Supplies a taken/not-taken direction independent of the BTB, so a conditional
   // branch that MISSES the BTB still has a trained direction for the PD-stage
-  // computed-target redirect (lever A).  The BTB still supplies the target and
+  // computed-target redirect.  The BTB still supplies the target and
   // the direction for branches that HIT it.  Trained at commit on conditional
   // branches only, indexed by the committing branch PC.
   logic dir_taken;
@@ -249,7 +249,7 @@ module branch_prediction_controller (
       .i_update_taken(i_dir_update_taken)
   );
 
-  // Lever A: registered decoupled bimodal direction, snapshot in the SAME
+  // Registered decoupled bimodal direction, snapshot in the SAME
   // ~i_stall stage as the registered prediction metadata (o_predicted_target_r /
   // prediction_used_r) so the bit carried to PD aligns with that instruction.
   // This is dir_taken (decoupled), NOT dir_predicted_taken (gated by btb_hit,
@@ -257,7 +257,7 @@ module branch_prediction_controller (
   logic dir_taken_snapshot_r;
   assign o_dir_predicted_taken = dir_taken_snapshot_r;
 
-  // Lever A: carry the predict-time bimodal index.  Slot-1 is registered in the
+  // Carry the predict-time bimodal index.  Slot-1 is registered in the
   // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
   // reaching from_if_to_pd); slot-2's prediction is combinational, so its index
   // is combinational off i_pc_2.
@@ -266,7 +266,7 @@ module branch_prediction_controller (
   assign o_dir_idx_2 = i_pc_2[riscv_pkg::BpDirIdxBits:1];
 
   // BTB-hit direction comes from the BTB's own 2-bit counter (btb_predicted_taken).
-  // The decoupled bimodal (dir_taken) is used ONLY for lever A's BTB-miss redirect
+  // The decoupled bimodal (dir_taken) is used ONLY for the PD BTB-miss redirect
   // (carried to PD as o_dir_predicted_taken); it never overrides a BTB hit.
   logic dir_predicted_taken;
   logic dir_predicted_taken_2;
@@ -555,7 +555,7 @@ module branch_prediction_controller (
       // This is used for misprediction detection in EX stage - must match
       // the target we actually redirected PC to.
       o_predicted_target_r <= o_predicted_target;
-      // Lever A: snapshot the decoupled bimodal direction AND its predict-time
+      // Snapshot the decoupled bimodal direction AND its predict-time
       // index in the SAME stage so both carried values align with the instruction.
       dir_taken_snapshot_r <= dir_taken;
       pred_idx_snapshot_r  <= dir_pred_idx;
@@ -620,7 +620,7 @@ module branch_prediction_controller (
   end
 
   // ===========================================================================
-  // Slot-2 Prediction Gating (Session Q)
+  // Slot-2 Prediction Gating
   // ===========================================================================
   // Slot-2 prediction reuses prediction_common (same per-cycle blockers as
   // slot-1 — reset/trap/mret/holdoff/spanning/buffer/disabled) and adds:
@@ -628,15 +628,16 @@ module branch_prediction_controller (
   //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
   //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict when the
   //     BTB entry's compressed flag matches the live slot-2 instruction's
-  //     compressed flag.  This relaxes Session Q's stricter
+  //     compressed flag.  This relaxes the earlier stricter
   //     "btb_compressed_2 must be 1" check (which only allowed compressed
-  //     slot-2 at a halfword PC) — Session R allows native (32-bit) slot-2
+  //     slot-2 at a halfword PC) — native (32-bit) slot-2 is now allowed
   //     at a halfword PC too, provided the BTB entry was trained for the
   //     same size.  A size mismatch means the BTB was trained at this PC
   //     for a different alignment and the predicted target would mispredict
   //     anyway, so we suppress prediction in that case.
   //
-  // Slot-2 has no RAS lookup (decision #1 keeps slot-2 invalid when slot-1
+  // Slot-2 has no RAS lookup (the one-branch-per-bundle rule keeps slot-2
+  // invalid when slot-1
   // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
   // prediction_used is purely BTB-driven.
   logic slot2_prediction_common;

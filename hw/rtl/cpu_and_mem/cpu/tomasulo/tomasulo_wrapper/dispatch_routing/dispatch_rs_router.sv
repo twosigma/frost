@@ -75,7 +75,7 @@ module dispatch_rs_router #(
   (* max_fanout = 32 *) logic fmul_rs_dispatch_valid;
   (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid;
 
-  // Slot-2 per-RS dispatch valid signals (2-wide dispatch, Session C plumbing).
+  // Slot-2 per-RS dispatch valid signals (2-wide dispatch plumbing).
   // The dispatch unit drives only one of the slot-2 inputs (the one for slot-2's
   // rs_type); the rest are inactive.
   (* max_fanout = 32 *) logic int_rs_dispatch_valid_2;

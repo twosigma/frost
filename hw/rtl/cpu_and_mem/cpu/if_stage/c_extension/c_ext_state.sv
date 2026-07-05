@@ -69,7 +69,7 @@ module c_ext_state #(
     input logic i_fetch_progress,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
 
-    // 2-wide bundle metadata (Session F): slot-2 valid this cycle.  When set
+    // 2-wide bundle metadata: slot-2 valid this cycle.  When set
     // and slot-1 is RVC at lo, slot-2 has already consumed the upper half so
     // we must NOT arm the "previously compressed at lo" buffer state.
     input logic i_slot2_valid,

@@ -79,7 +79,7 @@ module branch_predictor #(
     // Predicted op must still execute in IF/PD/ID
     output logic            o_btb_requires_pc_reg_handoff,
 
-    // Slot-2 prediction interface (Session Q — dual-port BTB lookup).  The
+    // Slot-2 prediction interface (dual-port BTB lookup).  The
     // slot-2 lookup shares the same single-write update port and reads from
     // a replicated set of LUTRAM read ports indexed by slot-2's PC.  Used by
     // 2-wide dispatch to gate or redirect on slot-2 branches; falls back to
@@ -307,7 +307,7 @@ module branch_predictor #(
   assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
   assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
 
-  // Combinational slot-2 lookup (Session Q).
+  // Combinational slot-2 lookup.
   wire lookup_valid_2 = btb_valid[lookup_index_2];
   wire [TagBits-1:0] lookup_tag_stored_2 = btb_tag_lookup_2;
   wire [XLEN-1:0] lookup_target_2 = btb_target_lookup_2;

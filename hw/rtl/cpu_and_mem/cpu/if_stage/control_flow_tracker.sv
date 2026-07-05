@@ -60,7 +60,7 @@ module control_flow_tracker #(
     input logic            i_pd_redirect,             // PD backward-branch heuristic redirect
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic            i_prediction_used,         // BTB prediction used this cycle
-    // Slot-2 BTB prediction (Session Q): treated like a 1-cycle-late
+    // Slot-2 BTB prediction: treated like a 1-cycle-late
     // redirect (analogous to pd_redirect) — BRAM was fetching the
     // sequential next-bundle, so cycle N+2 needs to be NOP'd.  Folds into
     // control_flow_change so the standard control_flow_holdoff machinery

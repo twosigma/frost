@@ -129,7 +129,7 @@ module sq_early_addr_pipeline (
   // ===========================================================================
   // Breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8 adder → SQ
   // critical path by deferring the 32-bit addition by one cycle.
-  // Session L: dual-ported.  Slot-1 and slot-2 each have their own
+  // Dual-ported.  Slot-1 and slot-2 each have their own
   // {valid, rob_tag, base, imm, repair_*}_q register set, their own adders, and
   // their own update packet to the SQ; SQ accepts both updates per cycle on
   // distinct rob_tags so there is no NBA collision.  Removes the slot-2 STORE
@@ -143,7 +143,7 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_src1_tag_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_q;
 
-  // Slot-2 mirror (Session L)
+  // Slot-2 mirror
   logic sq_early_addr_valid_2_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_2_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_2_q;
@@ -193,7 +193,7 @@ module sq_early_addr_pipeline (
                                      sq_early_addr_repair_match &&
                                      !i_flush_all && !i_flush_en;
 
-  // Slot-2 repair match — snoops the same 3 CDB channels (Session L).  Both
+  // Slot-2 repair match — snoops the same 3 CDB channels.  Both
   // slots can independently match on the same broadcast tag in the rare case
   // where both stores rename to the same source tag (e.g. both stores read the
   // same arch reg with no intervening write); each computes its own address
@@ -316,7 +316,7 @@ module sq_early_addr_pipeline (
         end
       end
 
-      // Slot-2 (Session L) — same structure.
+      // Slot-2 — same structure.
       sq_early_addr_valid_2_q <= slot2_new_ready_store;
       sq_early_addr_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
       sq_early_addr_base_2_q <= mem_rs_dispatch_2.src1_value[riscv_pkg::XLEN-1:0];
@@ -352,7 +352,7 @@ module sq_early_addr_pipeline (
   assign sq_early_effective_addr = sq_early_addr_base_q + sq_early_addr_imm_q;
   assign sq_early_repair_effective_addr = sq_early_addr_repair_base + sq_early_addr_repair_imm_q;
 
-  // Slot-2 adder (Session L)
+  // Slot-2 adder
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr_2;
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
   assign sq_early_effective_addr_2 = sq_early_addr_base_2_q + sq_early_addr_imm_2_q;
@@ -397,7 +397,7 @@ module sq_early_addr_pipeline (
     end
   end
 
-  // Slot-2 packet (Session L) — same arbitration.
+  // Slot-2 packet — same arbitration.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   always_comb begin
     sq_early_addr_update_2 = '0;
