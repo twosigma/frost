@@ -120,7 +120,7 @@ module reservation_station #(
     // Registered ROB-done repair wakeups from dispatch. These carry operands
     // whose CDB broadcast happened before the consumer was dispatched.
     // Channels 1-3: slot-1 source tags.  Channels 4-6: slot-2 source tags
-    // (Session M — drops the slot2_source_done_pending placeholder).
+    // (replaced the slot2_source_done_pending placeholder gate).
     input logic                                        i_repair_valid_1,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_1,
     input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_1,

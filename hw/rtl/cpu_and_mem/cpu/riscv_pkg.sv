@@ -649,12 +649,12 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
     logic [RasPtrBits-1:0] ras_checkpoint_tos;  // TOS at prediction time (for recovery)
     logic [RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count at prediction (for recovery)
-    // Lever A: decoupled bimodal branch-direction prediction (NOT gated by
+    // Decoupled bimodal branch-direction prediction (NOT gated by
     // btb_hit) carried to PD.  PD uses it to redirect on a BTB MISS when the
     // direction predicts taken, for ANY offset sign.  Consumed only in PD
     // (slot-1); not carried past PD.
     logic bp_dir_taken;
-    // Lever A: predict-time bimodal index this op carried from fetch, handed back
+    // Predict-time bimodal index this op carried from fetch, handed back
     // at commit to train the EXACT entry the prediction read (carried all the way
     // to commit, unlike bp_dir_taken which is consumed at PD).
     logic [BpDirIdxBits-1:0] bp_dir_idx;
@@ -689,7 +689,7 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
-    // Lever A: predict-time bimodal index carried to commit for training.
+    // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
   } from_pd_to_id_t;
 
@@ -777,7 +777,7 @@ package riscv_pkg;
     logic [XLEN-1:0] ras_predicted_target;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
-    // Lever A: predict-time bimodal index carried to commit for training.
+    // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // TIMING OPTIMIZATION: Pre-computed RAS instruction type detection.
     // These flags move comparisons out of the EX stage critical path.

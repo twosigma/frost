@@ -34,7 +34,7 @@
  *   - RAS state capture in checkpoints
  *   - Full flush (exception) clears all rename state
  *
- * Slot-2 alloc contract (per 2-wide dispatch design doc, Session B):
+ * Slot-2 alloc contract:
  *   - i_alloc_valid_2 implies i_alloc_valid (slot 2 only fires when slot 1
  *     also fires).  Enforced by assertion.
  *   - Intra-bundle RAW (slot-2 source reads slot-1 dest) is handled in the
@@ -148,7 +148,7 @@ module register_alias_table (
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
-    // 2-wide dispatch (Session F): when slot-2 is the branch and slot-1 is a
+    // 2-wide dispatch: when slot-2 is the branch and slot-1 is a
     // non-branch with a valid destination, the snapshot must reflect the post-
     // slot-1-rename state so recovery from a slot-2 misprediction restores
     // slot-1's mapping.  Drive this when checkpoint_save fires for slot-2.
@@ -772,9 +772,9 @@ module register_alias_table (
 
   // Note: slot-2 RAT alloc CAN fire without slot-1 RAT alloc when slot-1 is
   // a no-destination instruction (e.g., a store) and slot-2 has a destination.
-  // The original Session B assertion required slot-2 → slot-1 RAT alloc, but
-  // that assumed slot-1 always has a destination, which isn't true once slot-2
-  // actually fires (Session F).  The ROB-side contract (slot-2 ROB → slot-1
+  // The original assertion required slot-2 → slot-1 RAT alloc, but that
+  // assumed slot-1 always has a destination, which isn't true once slot-2
+  // actually fires.  The ROB-side contract (slot-2 ROB → slot-1
   // ROB) is enforced separately in the ROB.
 
   // No slot-2 rename during flush_all

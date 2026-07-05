@@ -886,7 +886,7 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                         # tests/check_linux_boot_regression.py (the ~22M window is
                         # silent mem_init after devtmpfs, so there is no deep
                         # console marker to match on -- progress + a serviced timer
-                        # tick are the real gremlin-regression signals).
+                        # tick are the real timer-IRQ-hang regression signals).
                         return ("<<__never_matches__>>", None, True, app_name)
                     # Passes once the kernel reaches its boot banner. (Interim
                     # bring-up criterion; tighten to a userspace/shell marker

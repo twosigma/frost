@@ -96,9 +96,10 @@ module pc_controller #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
-    // Raw window-cannot-serve (UNGATED by sel_nop) -- the exact gremlin DROP condition.
-    // Narrows the immediate-predecessor carve-out to fire ONLY when the load would
-    // actually be dropped (wcs=1), not at the ~50k benign wcs=0 dual-issue sites.
+    // Raw window-cannot-serve (UNGATED by sel_nop) -- the exact predecessor-drop
+    // condition (see the pending-prediction load-drop fix below).  Narrows the
+    // immediate-predecessor carve-out to fire ONLY when the load would actually
+    // be dropped (wcs=1), not at the ~50k benign wcs=0 dual-issue sites.
     input logic i_window_cannot_serve_raw,
 
     // Trap control
@@ -138,7 +139,7 @@ module pc_controller #(
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     input logic i_sel_nop,
 
-    // Slot-2 BTB prediction redirect (Session Q dual-port BTB).  Behaves
+    // Slot-2 BTB prediction redirect (dual-port BTB).  Behaves
     // analogously to pd_redirect: the slot-2 lookup happens at cycle N+1
     // when the slot-2 instruction is in IF, but BRAM at cycle N+1 was
     // already fetching the sequential next bundle, so cycle N+2 must be
@@ -216,7 +217,7 @@ module pc_controller #(
   );
 
   // ===========================================================================
-  // Slot-2 Redirect Bubble Register (Session Q)
+  // Slot-2 Redirect Bubble Register
   // ===========================================================================
   // After a slot-2 BTB-prediction redirect at cycle N+1, BRAM at cycle N+2
   // returns the wrong-path sequential bundle.  o_slot2_redirect_q asserts
@@ -319,7 +320,7 @@ module pc_controller #(
   // harmless (higher-priority mux entries override it), but suppressing it is
   // cleaner and strictly safer.
   logic sel_prediction_r;
-  // Session Q: also suppress slot-1's registered pc_reg-handoff during the
+  // Also suppress slot-1's registered pc_reg-handoff during the
   // slot-2 redirect bubble.  Otherwise, when both slot-1 (on the
   // wrong-path next-bundle PC) and slot-2 BTB hit in the same cycle,
   // slot-1's sel_prediction_r at cycle N+2 would steer pc_reg to slot-1's
@@ -390,7 +391,7 @@ module pc_controller #(
   // eventually re-tags non-control-flow PCs as predicted-taken. Keep the
   // pending path restricted to the original "pc_reg would advance past o_pc"
   // case and leave ordinary registered handoffs alone.
-  // Session Q: do not arm pending_prediction when slot-2 BTB redirects in
+  // Do not arm pending_prediction when slot-2 BTB redirects in
   // the same cycle.  Slot-2 owns next_pc/next_pc_reg this cycle; the
   // slot-1 BTB hit (on the now-wrong-path next-bundle PC) is moot, and
   // letting its halfword target latch a pending_prediction state would
@@ -482,7 +483,8 @@ module pc_controller #(
   assign stale_pending_prediction = pending_prediction_effective &&
                                     !use_pending_prediction_for_pc_reg &&
                                     (pc_reg_hw > pending_prediction_pc_hw);
-  // GREMLIN fix (Option 1b): immediate-predecessor carve-out.  When a pending BTB
+  // Pending-prediction load-drop fix (the no-MMU-Linux timer-IRQ boot hang):
+  // immediate-predecessor carve-out.  When a pending BTB
   // prediction is in flight for a branch that is the COMPRESSED parcel immediately
   // after pc_reg (pending_prediction_pc == o_pc_reg + 2) and pc_reg has NOT yet
   // reached it (!use_pending, !stale), the parcel currently at pc_reg is a
@@ -506,7 +508,7 @@ module pc_controller #(
   // ~16.6M, masked by -Wno-UNOPTFLAT).  o_pc_reg + PcIncrementCompressed is exactly the
   // value seq_next_pc_reg held while the parcel was squashed (pc_reg_advance_sel_live
   // DEFAULTS to +2 when sel_nop=1, if_stage.sv ~1297), so behaviour is preserved for
-  // the compressed immediate-predecessor (the observed gremlin) while the cycle is
+  // the compressed immediate-predecessor (the observed drop case) while the cycle is
   // broken.  A 32-bit predecessor is intentionally NOT covered: it cannot be
   // identified sel_nop-free here (the served instruction-size signals are unreliable
   // under the coincident served-window guard) and the prior form did not cover it
@@ -520,7 +522,7 @@ module pc_controller #(
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
       !stale_pending_prediction &&
       (pending_prediction_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
-  // NARROW to the true gremlin: the load is only DROPPED when the served window cannot
+  // NARROW to the true drop condition: the load is only DROPPED when the served window cannot
   // deliver it (raw wcs=1).  But the load can only EMIT on the wcs=0 cycle (one after the
   // resteer), so a plain "&& wcs" would drop pim exactly then and re-NOP the load.  Instead
   // LATCH the engagement once wcs=1 is seen during the episode, and hold it until the
@@ -694,7 +696,7 @@ module pc_controller #(
     // and below the redirects (backend events and already-delivered bundles
     // must still steer fetch).
     else if (!i_fetch_progress) next_pc = o_pc;
-    // Slot-2 BTB prediction (Session Q): higher priority than slot-1 BTB
+    // Slot-2 BTB prediction: higher priority than slot-1 BTB
     // because slot-2 is older in program order than the next bundle's
     // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
     // slot-1 BTB hit at pc[N+1] = sequential next bundle's slot-1 PC).
@@ -755,7 +757,7 @@ module pc_controller #(
     // No fetch progress: hold the instruction address (nothing is being
     // delivered).  Same placement rationale as the next_pc hold arm above.
     else if (!i_fetch_progress) next_pc_reg = o_pc_reg;
-    // Slot-2 BTB prediction (Session Q): pc_reg jumps to the slot-2 target
+    // Slot-2 BTB prediction: pc_reg jumps to the slot-2 target
     // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
     // after the redirect is NOP'd via the standard control_flow_holdoff
     // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
@@ -766,11 +768,12 @@ module pc_controller #(
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
     else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
-    // GREMLIN fix (Option 1b): suppress the land-on-branch JUMP in the immediate-
-    // predecessor carve-out so pc_reg advances SEQUENTIALLY (seq_next_pc_reg, which
-    // equals pending_prediction_pc here) and the intervening older parcel emits first
-    // instead of being skipped.  pending_prediction_valid stays live -> the target
-    // handoff (below) still fires when pc_reg actually reaches the branch.
+    // Pending-prediction load-drop fix: suppress the land-on-branch JUMP in the
+    // immediate-predecessor carve-out so pc_reg advances SEQUENTIALLY
+    // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
+    // intervening older parcel emits first instead of being skipped.
+    // pending_prediction_valid stays live -> the target handoff (below)
+    // still fires when pc_reg actually reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
       next_pc_reg = pending_prediction_pc;

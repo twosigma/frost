@@ -1398,7 +1398,7 @@ module load_queue #(
     end
   end
 
-  // Session P fix: gate stage_mem_issue on !i_flush_all too.  See comment on
+  // Gate stage_mem_issue on !i_flush_all too.  See comment on
   // launch_mem_issue below for the full rationale.
   assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
@@ -1420,7 +1420,7 @@ module load_queue #(
   // already holds the staged candidate stably across bus_busy stalls
   // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
   // so the mem_issue_pending second-deep stage is redundant.
-  // Session P fix: also gate on !i_flush_all.  During commit-time mispredict
+  // Also gate on !i_flush_all.  During commit-time mispredict
   // recovery the wrapper drives speculative_flush_en=0 but speculative_flush_all=1
   // (commit_recovery_flush_after_head path).  Without the !i_flush_all guard,
   // a speculative wrong-path MMIO load that happens to be at ROB head when the

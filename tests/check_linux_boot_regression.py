@@ -24,21 +24,22 @@ the next console line is millions of cycles further on -- so there is no deep
 boot marker to match on. Instead this checker asserts the signals that actually
 separate a healthy boot from the regressions the job guards:
 
-  * the "gremlin": a timer-IRQ hang that froze the boot at the periodic CLINT
-    tick (retire count stops advancing; mtimecmp stops being re-armed), and
+  * the timer-IRQ boot hang: a regression that froze the boot at the periodic
+    CLINT tick (retire count stops advancing; mtimecmp stops being re-armed),
+    and
   * fence.i / instruction-fetch breakage that derails a long real-code boot.
 
 Health criteria (all must hold):
   1. the kernel banner printed (the core booted Linux at all),
   2. early init was reached (``devtmpfs: initialized``),
   3. no kernel panic,
-  4. the run reached at least ``--min-cycle`` (past the historical gremlin tick
+  4. the run reached at least ``--min-cycle`` (past the historical hang point
      at ~cycle 20.96M),
   5. the core was still retiring instructions in the final progress window
      (``delta_retired`` >= ``--min-end-delta`` -- i.e. it did not hang), and
   6. the periodic CLINT timer tick was serviced: mtimecmp was re-armed to at
-     least ``--min-timer-arms`` distinct non-disabled values (the gremlin hung
-     here, freezing the tick).
+     least ``--min-timer-arms`` distinct non-disabled values (the historical
+     hang froze the tick here).
 
 Usage: ``check_linux_boot_regression.py <cocotb-boot-log>``
 """
@@ -67,7 +68,7 @@ def main() -> int:
         type=int,
         default=21_000_000,
         help="require the run reached at least this sim cycle (default: 21e6, "
-        "past the historical gremlin tick at ~20.96e6)",
+        "past the historical timer-IRQ hang point at ~20.96e6)",
     )
     ap.add_argument(
         "--min-end-delta",
@@ -129,7 +130,7 @@ def main() -> int:
     if len(armed) < args.min_timer_arms:
         failures.append(
             f"periodic timer tick not serviced: {len(armed)} distinct armed "
-            f"mtimecmp value(s) < {args.min_timer_arms} (gremlin timer-IRQ hang?)"
+            f"mtimecmp value(s) < {args.min_timer_arms} (timer-IRQ boot hang?)"
         )
 
     if failures:

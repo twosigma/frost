@@ -171,7 +171,7 @@ class RATInterface:
         self.dut.i_alloc_dest_reg.value = 0
         self.dut.i_alloc_rob_tag.value = 0
 
-        # Rename write - slot 2 (held inactive in Session B unit tests)
+        # Rename write - slot 2 (held inactive in these unit tests)
         self.dut.i_alloc_valid_2.value = 0
         self.dut.i_alloc_dest_rf_2.value = 0
         self.dut.i_alloc_dest_reg_2.value = 0
@@ -195,7 +195,7 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
-        # Slot-2-branch checkpoint flag (Session F): drives the snapshot
+        # Slot-2-branch checkpoint flag: drives the snapshot
         # overlay of slot-1's same-cycle rename.  Defensive init.
         self.dut.i_checkpoint_save_for_slot2.value = 0
 

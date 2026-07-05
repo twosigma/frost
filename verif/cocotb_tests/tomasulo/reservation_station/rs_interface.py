@@ -319,7 +319,7 @@ class RSInterface:
             self._clear_dispatch_flat()
         else:
             self.dut.i_dispatch.value = 0
-        # Slot-2 dispatch (2-wide dispatch plumbing, Session C).  Verilator
+        # Slot-2 dispatch (2-wide dispatch plumbing).  Verilator
         # zero-initializes top-module inputs by default so tests would pass
         # without this, but the explicit init avoids any future X-propagation
         # surprises if the dispatch widening lands here.

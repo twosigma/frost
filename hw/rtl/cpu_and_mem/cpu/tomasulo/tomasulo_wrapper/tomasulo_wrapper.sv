@@ -299,7 +299,7 @@ module tomasulo_wrapper #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
-    // Slot-2-branch checkpoint flag (Session F gap fix #6): RAT overlays
+    // Slot-2-branch checkpoint flag: RAT overlays
     // slot-1's same-cycle rename onto the snapshot when this asserts.
     input logic                                        i_checkpoint_save_for_slot2,
 
@@ -901,7 +901,7 @@ module tomasulo_wrapper #(
   logic [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] fdiv_rs_count_raw;
 
   // Per-RS full_for_2 outputs.  Plumbed through to consumers so dispatch
-  // (Session D) can independently gate slot-2.  FP-family RS instances buffer
+  // can independently gate slot-2.  FP-family RS instances buffer
   // dispatch through a 1-deep pending stage, so their effective full_for_2
   // also accounts for the pending slot.
   logic int_rs_full_for_2_w;
@@ -951,7 +951,7 @@ module tomasulo_wrapper #(
   assign o_fmul_rs_full = fmul_rs_full_w;
   assign o_fdiv_rs_full = fdiv_rs_full_w;
 
-  // Per-RS full_for_2 output ports (Session C plumbing).  For FP family RSes
+  // Per-RS full_for_2 output ports.  For FP family RSes
   // the pending-buffer occupies an extra "virtual" slot, so dispatch must
   // treat the FP RS as full_for_2 whenever pending is occupied (the bypass
   // path for slot-2 has no buffer of its own).  The non-FP RSes simply
@@ -2853,8 +2853,8 @@ module tomasulo_wrapper #(
       .o_dispatch_full(o_sq_full),
       .o_dispatch_full_for_2(o_sq_full_for_2),
 
-      // Early address update (pipelined dispatch-time base+imm).  Session L:
-      // dual-ported — slot-1 and slot-2 each emit their own packet.  CAM-by-
+      // Early address update (pipelined dispatch-time base+imm).
+      // Dual-ported — slot-1 and slot-2 each emit their own packet.  CAM-by-
       // rob_tag in SQ targets distinct entries (different rob_tags), so no NBA
       // collision across the two updates.
       .i_early_addr_update  (sq_early_addr_update),

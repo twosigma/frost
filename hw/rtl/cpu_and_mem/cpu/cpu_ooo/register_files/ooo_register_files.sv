@@ -153,7 +153,7 @@ module ooo_register_files #(
   // has tag T.
   localparam int unsigned IntRfWrPorts = 2;
   // 8 INT read ports: slot-1 ID rs1/rs2, slot-1 dispatch rs1/rs2, slot-2 ID
-  // rs1/rs2, slot-2 dispatch rs1/rs2.  Session G wires slot-2 dispatch reads
+  // rs1/rs2, slot-2 dispatch rs1/rs2.  Slot-2 dispatch reads are wired
   // through to the RAT's i_int_regfile_data*_2 inputs.
   logic                  [           8*XLEN-1:0] int_rf_read_data;
   logic                  [     IntRfWrPorts-1:0] int_rf_write_enable;
@@ -316,8 +316,8 @@ module ooo_register_files #(
   // reference reasons (INT port0_fp_data uses it for sizing).
   localparam int unsigned FpRfWrPorts = 2;
   // 12 FP read ports: slot-1 ID rs1/rs2/rs3, slot-1 dispatch rs1/rs2/rs3,
-  // slot-2 ID rs1/rs2/rs3, slot-2 dispatch rs1/rs2/rs3.  Session G wires
-  // slot-2 dispatch reads through to the RAT's i_fp_regfile_data*_2.
+  // slot-2 ID rs1/rs2/rs3, slot-2 dispatch rs1/rs2/rs3.  Slot-2 dispatch
+  // reads are wired through to the RAT's i_fp_regfile_data*_2.
   logic                     [         12*FpW-1:0] fp_rf_read_data;
   logic                     [    FpRfWrPorts-1:0] fp_rf_write_enable;
   logic                     [  FpRfWrPorts*5-1:0] fp_rf_write_addr;
