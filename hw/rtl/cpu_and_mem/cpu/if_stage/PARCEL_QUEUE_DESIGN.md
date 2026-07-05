@@ -790,6 +790,46 @@ branch):
 Each B-step is one coherent commit with the §8 tripwires green before the
 next.
 
+### 9.1 Integration phasing (as built)
+
+Phase A is **complete** as standalone, golden-model-tested units (none yet
+instantiated in `if_stage`): `parcel_queue.sv`, `parcel_fill_engine.sv` (the
+self-aligned walk, 2-wide + the B3a 32-bit-lead positions), and
+`parcel_consume_engine.sv` (bundle former + packet formation:
+`pq_entry_t` → `from_if_to_pd_t`/`_2`, queue-empty/flush → NOP, stall-gated
+dequeue, the single slot-2 `rvc_decompressor`). The consume engine's field
+mapping was cross-checked against the live `if_stage` packet assembly
+(program_counter/link_address/raw_parcel/effective_instr/sel_*/btb_*/bp_dir_*;
+slot-2 `bp_dir_taken` held 0 as today, `decomp_illegal` from the consume
+decompressor).
+
+The actual **swap** (§9 B1) is itself large and sub-phases as follows — each a
+coherent commit, the §8 tripwires green before the next:
+
+1. **Consume-side RAS (§2.4)** — deferred from the consume unit. Instantiate
+   `ras_detector` + `return_address_stack` at the consume engine; drive the
+   `ras_*` packet fields and the return redirect (partial flush + resteer),
+   edge-triggered on **dequeue-fire** (`!stall && !sel_nop && !flush`). Unit-
+   testable against the existing RAS suites.
+2. **`if_stage` rewire** — instantiate fill engine + queue + consume engine;
+   route the fill engine's two lookup ports to the (restructured, §2.1)
+   `branch_prediction_controller` `i_pc`/`i_pc_2`; the consume packets to
+   `o_from_if_to_pd`/`_2`; the §2.5 redirect matrix (backend / PD / trap /
+   FENCE.I / RAS) to the fill engine's `i_redirect_*`; delete the §3 machinery
+   (`instruction_aligner`, `c_ext_state`, `prediction_metadata_tracker`,
+   `pc_reg_precompute`, `control_flow_tracker`, the `_sc` bank, the
+   pending-prediction block, the served-window guard). Start **1-wide** (slot-2
+   pairing disabled at the consume former) per §9 B1.
+3. **Provider seam (§7.1)** — `i_core_redirect` pulse on every resteer,
+   `i_fetch_backpressure` ← queue-full, delete `o_fetch_replay_consume`
+   (provider + fuzz mirror + `cpu_and_mem` wiring); tag-checked acceptance is
+   already in the fill engine.
+4. **Validation + width** — the full ladder with the FCA tripwires
+   (adjacent-dup commit scan → the `8028b5ac` double must VANISH; coremark CRC;
+   packet-vs-objdump checker). Enable 2-wide (§9 B2), then B3a positions, then
+   land **B3b** the straddle carry (§2.6) here behind the coremark gate, then
+   B4 timing.
+
 ## 10. v1 panel review record
 
 Five adversarial lenses; every HIGH finding independently re-derived by a

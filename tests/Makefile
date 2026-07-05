@@ -268,6 +268,14 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_fill_engine.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),parcel_consume_engine)
+# IF-stage parcel consume engine unit test (stage-2 front end, integration
+# phase; see hw/rtl/cpu_and_mem/cpu/if_stage/PARCEL_QUEUE_DESIGN.md section 2.3)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_engine.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),if_stage)
 # IF-stage top-level integration test
 COMPILE_ARGS := \
