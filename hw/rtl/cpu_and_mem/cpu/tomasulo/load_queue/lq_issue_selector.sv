@@ -266,11 +266,27 @@ module lq_issue_selector #(
     head_mem_update_idx     = '0;
     head_mem_update_rob_tag = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      // A head AMO is admitted whenever the SQ committed queue is empty: at
-      // ROB head every other LQ entry is younger (and fenced by
-      // blocked_by_amo), so there is no speculative load progress to
-      // preserve and preemption is always safe.  i_force_head_amo remains as
-      // the deadlock-breaker override for the same condition.
+      // The ROB-head load gets head-priority for the single sq_check staging
+      // slot for EVERY load class, INCLUDING MMIO and LR.  The sparse LQ scans
+      // in ring order from head_idx (= head_ptr, not the ROB-head entry's
+      // physical slot), so without this an eligible ROB-head MMIO/LR load can
+      // lose the slot to a ring-earlier younger load; if that younger load is
+      // fenced behind an un-drainable (uncommitted, non-forwardable) older
+      // store it camps there forever and starves the head (the call_stress
+      // UART poll-load wedge).  Admitting the head is always safe and live:
+      // the head is the oldest architectural load (age 0), so it can only be
+      // fenced by COMMITTED — hence draining — older stores, never by the
+      // younger wrong-path stores that create the hog.  sq_check_replace then
+      // evicts the younger staged entry, and the downstream
+      // sq_check_entry_issueable / sq_can_issue gates (MMIO & LR issue only at
+      // the ROB head, asserted by p_mmio_only_at_head) keep store->load
+      // ordering correct.  A head AMO stays gated on i_sq_committed_empty (its
+      // RMW write lives in the LQ, invisible to SQ disambiguation, so it must
+      // see an empty committed queue); i_force_head_amo remains the AMO
+      // deadlock-breaker backstop.  head_mem_update already admitted MMIO — it
+      // only excluded LR — so this also removes that stored-vs-update
+      // asymmetry (a head MMIO load kept priority only on the exact cycle its
+      // address arrived, then lost it once it sat with lq_addr_valid=1).
       if (!head_mem_stored_found &&
           lq_valid[i] &&
           rob_head_match_q[i] &&
@@ -278,8 +294,6 @@ module lq_issue_selector #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          !lq_is_mmio[i] &&
-          !lq_is_lr[i] &&
           (!lq_is_amo[i] || i_sq_committed_empty)) begin
         head_mem_stored_found   = 1'b1;
         head_mem_stored_idx     = IdxWidth'(i);
@@ -293,7 +307,6 @@ module lq_issue_selector #(
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          !lq_is_lr[i] &&
           (!lq_is_amo[i] || i_sq_committed_empty)) begin
         head_mem_update_found   = 1'b1;
         head_mem_update_idx     = IdxWidth'(i);
