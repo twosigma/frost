@@ -106,20 +106,24 @@ module fetch_provider #(
   logic retarget_now;
   assign retarget_now = i_core_redirect;
 
-  // The ask presented this cycle; its window is due (and its validity is
-  // decided) for the next cycle.
+  // The ask whose window is formed this cycle (due, and its validity decided,
+  // next cycle).
   logic [31:0] fetch_addr;
-  // TIMING: neither the retarget 32-bit compare nor the pipeline stall lives in
-  // this combinational mux; both would otherwise stack with the presence
-  // compares into the fill path.  The low BRAM address pins are not driven from
-  // this mux: cpu_and_mem keeps that path direct from o_pc.  The stall gates
-  // only publish-valid (below): while stalled o_instr_valid is held low, so
-  // this mux holds ask_q and the owed window persists for the stalled decode
-  // instead of advancing to the leading PC.  On a retarget cycle this address
-  // is the stale old ask for one extra cycle; the window it yields is squashed
-  // by the core's control-flow holdoff, which the redirect that caused the
-  // retarget has already armed and which extends through no-progress cycles.
-  assign fetch_addr = (o_instr_valid || i_core_redirect) ? i_pc : ask_q;
+  // TIMING (x3 closure): form the window for the REGISTERED ask (ask_q), not the
+  // live leading i_pc.  Driving the presence compares / word extraction from the
+  // combinational i_pc stacked the fill's ENTIRE ask-formation cone (BRAM
+  // sideband -> 2-wide bundle decode -> ask_d -> o_pc) into window_ready_q /
+  // ddr_instr_q -- the x3 WNS cluster (-3.7ns).  ask_q sources those from a
+  // register, cutting the cone at the seam.  Correctness is unchanged: the
+  // publish-valid tag-check below (served_addr_q == ask_q) already gates
+  // consumption on the served window's address matching the owed ask, so a
+  // registered ask just resolves that match one fetch cycle later (queue-hidden
+  // on the high/DDR path).  It costs nothing on CoreMark (BRAM-resident, so this
+  // high-address provider is idle) and nothing on a consume-bound workload
+  // (~0.48 IPC) where fetch out-supplies decode even at the reduced serve rate.
+  // The low BRAM address pins are NOT driven from this mux -- cpu_and_mem keeps
+  // that path direct from o_pc; closing the low-fetch loop is a separate step.
+  assign fetch_addr = ask_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) ask_q <= '0;
