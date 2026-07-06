@@ -28,18 +28,17 @@
  * next line can never collide, and a window spanning a line boundary always
  * has both halves resident before valid asserts.
  *
- * FETCH CONTRACT (established with the core in if_stage):
- *   The provider owns the 1-deep OWED-ASK register.  Each served cycle
- *   latches the live PC as the next owed ask; while unserved the ask holds,
- *   retargeting only when the PC moves between two unserved cycles AND the
- *   movement was not a stall-replay consumption (the registered
- *   i_fetch_replay_consume classifies that) -- every other unserved-cycle
- *   movement is a backend redirect, because the core holds the PC otherwise.
- *   The window data and the address it was fetched for are registered
- *   together.  A window publishes valid only when that served-address tag still
- *   matches the owed ask (with the same registered-stall lag as the simulation
- *   fuzz wrapper in cpu_and_mem), so redirected stale data can sit on the
- *   payload wires without being accepted as the new ask's instruction.
+ * FETCH CONTRACT (stage-2 seam, design 7.1):
+ *   The provider owns the 1-deep OWED-ASK register.  Each served cycle latches
+ *   the live PC as the next owed ask; while unserved the ask holds, retargeting
+ *   exactly when the core pulses i_core_redirect (every o_pc resteer off
+ *   accepted flow -- backend / trap / MRET / FENCE.I / PD / RAS / slot-2 fill
+ *   redirect).  The window data and the address it was fetched for are
+ *   registered together.  A window publishes valid only when that served-address
+ *   tag still matches the owed ask (with the same registered-backpressure lag as
+ *   the simulation fuzz wrapper in cpu_and_mem), so redirected stale data can sit
+ *   on the payload wires without being accepted; the fill engine's own
+ *   tag-checked acceptance is the address-level counterpart.
  *
  * MISS ENGINE: single-outstanding line-port master.  Wanted line = the
  * window's first absent line, else the following line (prefetch) -- one rule
@@ -54,19 +53,17 @@ module fetch_provider #(
     input logic i_clk,
     input logic i_rst,
 
-    // Core fetch seam.  i_fetch_replay_consume is REGISTERED by the core
-    // (the consume happened LAST cycle): it only classifies the PC movement
-    // observed this cycle as flow rather than redirect -- the owed ask
-    // itself needs no update because o_pc stays frozen at it through any
-    // stall the replay bundle survives.
+    // Core fetch seam (stage-2, design 7.1).  The core asserts i_core_redirect
+    // on every o_pc resteer that moves the ask off accepted flow (backend /
+    // trap / MRET / FENCE.I / PD / RAS / slot-2 fill redirect); the provider
+    // retargets the owed ask on it, replacing the old movement-inference.
     input logic [31:0] i_pc,
-    input logic i_fetch_replay_consume,
-    // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall).  While high the
-    // decode cannot consume a window: publish-valid is withheld and the owed
-    // ask is held, so a window the stalled decode cannot accept is never
-    // presented (nor drifted to the leading PC).  Feeds publish-valid and the
-    // owed-ask bookkeeping only -- never the imem/fill address path.
-    input logic i_pipeline_stall,
+    input logic i_core_redirect,
+    // Fetch backpressure (stage-2: parcel-queue-full, NOT the decode stall).
+    // While high the fill engine cannot accept a window, so publish-valid is
+    // withheld and the owed ask is held.  Feeds publish-valid and the owed-ask
+    // bookkeeping only -- never the imem/fill address path.
+    input logic i_fetch_backpressure,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
@@ -103,23 +100,11 @@ module fetch_provider #(
   // Owed-ask tracking
   // ===========================================================================
   logic [31:0] ask_q;  // the address whose window is owed/presented
-  logic [31:0] pc_prev_q;
-  logic accepted_prev_q;
 
-  // ACCEPTED, not merely served: a window presented (o_instr_valid high) on a
-  // cycle the front end was stalled was NOT consumed.  Keying the owed-ask
-  // bookkeeping off "accepted" (valid AND not stalled) keeps a redirect that
-  // lands the cycle after a stall-presented window from being misread as flow
-  // -- see retarget_now.
-  logic accepted_now;
-  assign accepted_now = o_instr_valid && !i_pipeline_stall;
-
-  // Retarget: the PC moved between two un-accepted cycles -- a backend redirect
-  // (the core's hold arms keep the PC still on every other un-accepted cycle,
-  // and a replay consumption's advance is classified out by the registered
-  // i_fetch_replay_consume).
+  // Retarget on the explicit core redirect pulse (design 7.1).  The old
+  // movement inference (accepted_prev / pc_prev / replay_consume) is gone.
   logic retarget_now;
-  assign retarget_now = !accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
+  assign retarget_now = i_core_redirect;
 
   // The ask presented this cycle; its window is due (and its validity is
   // decided) for the next cycle.
@@ -134,18 +119,11 @@ module fetch_provider #(
   // is the stale old ask for one extra cycle; the window it yields is squashed
   // by the core's control-flow holdoff, which the redirect that caused the
   // retarget has already armed and which extends through no-progress cycles.
-  assign fetch_addr = o_instr_valid ? i_pc : ask_q;
+  assign fetch_addr = (o_instr_valid || i_core_redirect) ? i_pc : ask_q;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      ask_q           <= '0;
-      pc_prev_q       <= '0;
-      accepted_prev_q <= 1'b0;
-    end else begin
-      ask_q           <= (o_instr_valid || retarget_now) ? i_pc : ask_q;
-      pc_prev_q       <= i_pc;
-      accepted_prev_q <= accepted_now;
-    end
+    if (i_rst) ask_q <= '0;
+    else ask_q <= (o_instr_valid || retarget_now) ? i_pc : ask_q;
   end
 
   // ===========================================================================
@@ -197,25 +175,23 @@ module fetch_provider #(
   logic bank_sel_q;
   logic [31:0] served_addr_q;
   logic window_ready_q;
-  logic pipeline_stall_q;
+  logic fetch_backpressure_q;
 
-  // Withhold publish-valid while the front end is stalled (above): the owed
-  // window stays parked (fetch_addr holds ask_q) and is published only when
-  // the decode can accept it, so a miss that completes mid-stall delivers the
-  // owed window on release rather than flashing it for one unconsumable cycle
-  // and then drifting to the leading PC.  The registered stall preserves the
-  // IF stage's first-cycle stall capture; the replay path holds fetch_progress
-  // for the rest of the stall.
+  // Withhold publish-valid while the fill engine is backpressured (queue full):
+  // the owed window stays parked (fetch_addr holds ask_q) and is published only
+  // when the queue can accept it, so a miss that completes mid-backpressure
+  // delivers the owed window on release rather than flashing it for one
+  // unconsumable cycle and then drifting to the leading PC.
   assign o_instr_valid = served_addr_q[31] && window_ready_q && (served_addr_q == ask_q) &&
-      !pipeline_stall_q;
+      !fetch_backpressure_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
-      window_ready_q   <= 1'b0;
-      pipeline_stall_q <= 1'b0;
+      window_ready_q       <= 1'b0;
+      fetch_backpressure_q <= 1'b0;
     end else begin
-      window_ready_q   <= window_ready;
-      pipeline_stall_q <= i_pipeline_stall;
+      window_ready_q       <= window_ready;
+      fetch_backpressure_q <= i_fetch_backpressure;
     end
     served_addr_q <= fetch_addr;
     bank_sel_q    <= fetch_addr[2];

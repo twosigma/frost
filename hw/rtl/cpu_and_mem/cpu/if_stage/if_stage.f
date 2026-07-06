@@ -21,3 +21,11 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 
 # IF stage top-level - instantiates and connects submodules
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
+
+# Stage-2 parcel-queue front end (PARCEL_QUEUE_DESIGN.md): fill engine + queue
+# + consume engine + consume-side RAS, integrated in if_stage_stage2.
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_queue.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_fill_engine.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_engine.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/parcel_consume_ras.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage_stage2.sv

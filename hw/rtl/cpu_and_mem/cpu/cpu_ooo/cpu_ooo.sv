@@ -49,13 +49,12 @@ module cpu_ooo #(
     input logic [31:0] i_served_addr,  // Served fetch-window tag (served-window guard)
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
-    // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
-    // provider counts it as a served cycle for its owed-ask tracking.
-    output logic o_fetch_replay_consume,
-    // Front-end pipeline stall (pipeline_ctrl.stall): the fetch provider
-    // withholds publish-valid and holds its owed ask while this is high so a
-    // window the stalled decode cannot consume is never presented.
-    output logic o_pipeline_stall,
+    // Stage-2 fetch seam (design 7.1): the front end pulses o_core_redirect on
+    // every o_pc resteer off accepted flow (the provider retargets its owed
+    // ask on it), and asserts o_fetch_backpressure when the parcel queue is
+    // full (the provider withholds publish-valid and holds the owed ask).
+    output logic o_core_redirect,
+    output logic o_fetch_backpressure,
     // FENCE.I support: the cache-sync handshake (request held while the ROB
     // serializer stalls the fence at the head; done is a level while the
     // request is high) and the committed-fence flush pulse that drops the
@@ -364,7 +363,6 @@ module cpu_ooo #(
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
   assign dbg_csr_in_flight = csr_in_flight;
   assign dbg_pipeline_stall = pipeline_ctrl.stall;
-  assign o_pipeline_stall = pipeline_ctrl.stall;
   assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
   assign dbg_dispatch_stall = dispatch_stall;
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
@@ -438,9 +436,13 @@ module cpu_ooo #(
   // ===========================================================================
 
   // 2-wide width-funnel profiling events (IF→PD boundary → perf counters).
+  // if_stage_stage2 (the parcel-queue front end) does not emit the funnel events
+  // yet; tie off so the perf counters read 0 until the funnel is re-instrumented
+  // for the parcel queue.
   riscv_pkg::if_width_events_t if_width_events;
+  assign if_width_events = '0;
 
-  if_stage #(
+  if_stage_stage2 #(
       .XLEN(XLEN)
   ) if_stage_inst (
       .i_clk,
@@ -450,7 +452,6 @@ module cpu_ooo #(
       .i_instr_bank_sel_r,
       .i_served_addr,
       .i_instr_valid,
-      .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
@@ -465,9 +466,10 @@ module cpu_ooo #(
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
       .o_pc,
+      .o_core_redirect,
+      .o_fetch_backpressure,
       .o_from_if_to_pd(from_if_to_pd),
-      .o_from_if_to_pd_2(from_if_to_pd_2),
-      .o_width_events(if_width_events)
+      .o_from_if_to_pd_2(from_if_to_pd_2)
   );
 
   // ===========================================================================
@@ -647,7 +649,13 @@ module cpu_ooo #(
       .i_from_pd_to_id(from_pd_to_id),
       .i_from_id_to_ex(from_id_to_ex),
       .i_from_id_to_ex_2(from_id_to_ex_2),
-      .i_post_flush_holdoff_q(post_flush_holdoff_q),
+      // Post-flush holdoff is obsolete with the parcel-queue front end: it
+      // squashed HEAD's 1-cycle stale BRAM read after a flush, but the fill
+      // engine's tag-checked window acceptance never enqueues a stale window,
+      // so the first post-flush delivery is always the real redirect target.
+      // Feeding the live holdoff here would wrongly squash that target (the
+      // queue delivers it one cycle earlier than HEAD's exposed BRAM latency).
+      .i_post_flush_holdoff_q(2'b0),
       .i_dispatch_flush(dispatch_flush),
       .i_csr_in_flight(csr_in_flight),
       .i_id_stall_q(id_stall_q),

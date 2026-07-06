@@ -171,9 +171,6 @@ module parcel_fill_engine #(
                                         : sb_lo[riscv_pkg::ImemSbAllowsSlot2AfterLo];
   assign s1_slot2_start_ok = served_hw ? sb_lo[riscv_pkg::ImemSbSlot2StartValidHi]
                                        : sb_lo[riscv_pkg::ImemSbSlot2StartValidLo];
-  // A compressed slot-1 leads iff not a compressed control op (AllowsSlot2After);
-  // a 32-bit slot-1 leads iff not serialize/FP (Slot2StartValid).
-  assign s1_can_lead = s1_is_compressed ? s1_allows_after_sb : s1_slot2_start_ok;
 
   logic [15:0] s1_parcel;
   logic [31:0] s1_bytes;
@@ -183,6 +180,24 @@ module parcel_fill_engine #(
     else if (!served_hw) s1_bytes = low_word;
     else s1_bytes = {high_word[15:0], low_word[31:16]};  // spanning at halfword
   end
+
+  // A 32-bit branch/JAL/JALR in slot-1 terminates the bundle.  Dispatch rejects
+  // a slot-2 whenever slot-1 is is_branch_or_jump (decision #1); the fill must
+  // match, or the unfireable branch+slot-2 bundle wedges dispatch forever (it
+  // stalls waiting for a re-present that never resolves).  The predecode
+  // sideband only flags COMPRESSED control flow (folded into AllowsSlot2After) --
+  // native control flow has no sideband bit, so decode the opcode here.
+  logic s1_is_native_control;
+  assign s1_is_native_control =
+      !s1_is_compressed && ((s1_bytes[6:0] == riscv_pkg::OPC_BRANCH) ||
+                            (s1_bytes[6:0] == riscv_pkg::OPC_JAL) ||
+                            (s1_bytes[6:0] == riscv_pkg::OPC_JALR));
+
+  // A compressed slot-1 leads iff not a compressed control op (AllowsSlot2After);
+  // a 32-bit slot-1 leads iff not serialize/FP (Slot2StartValid) and not a
+  // native branch/jump.
+  assign s1_can_lead = (s1_is_compressed ? s1_allows_after_sb : s1_slot2_start_ok) &&
+                       !s1_is_native_control;
 
   logic [XLEN-1:0] s1_size;
   assign s1_size = s1_is_compressed ? riscv_pkg::PcIncrementCompressed
@@ -239,9 +254,6 @@ module parcel_fill_engine #(
     endcase
   end
 
-  logic s2_can_lead;
-  assign s2_can_lead = s2_is_compressed ? s2_allows_after_sb : s2_start_ok;
-
   // NEXT_HI 32-bit slot-2 reaches a third word -> suppress pairing (B3a).
   logic s2_straddle;
   assign s2_straddle = (s2_pos == Slot2NextHi) && !s2_is_compressed;
@@ -263,6 +275,22 @@ module parcel_fill_engine #(
   assign s2_size = s2_is_compressed ? riscv_pkg::PcIncrementCompressed
                                     : riscv_pkg::PcIncrement32bit;
 
+  // Whether this slot-2 entry may itself LEAD a bundle once it later becomes a
+  // queue head (carried as e1.allows_slot2_after).  Same rule as s1_can_lead: a
+  // 32-bit branch/JAL/JALR must NOT lead (dispatch rejects a slot-2 after any
+  // is_branch_or_jump).  The sideband only flags compressed control flow, so
+  // decode the native opcode here too -- omitting this lets a branch enqueued in
+  // slot-2 wrongly advertise allows_slot2_after and wedge dispatch when the
+  // consume pairs a younger entry behind it.
+  logic s2_is_native_control;
+  assign s2_is_native_control =
+      !s2_is_compressed && ((s2_bytes[6:0] == riscv_pkg::OPC_BRANCH) ||
+                            (s2_bytes[6:0] == riscv_pkg::OPC_JAL) ||
+                            (s2_bytes[6:0] == riscv_pkg::OPC_JALR));
+  logic s2_can_lead;
+  assign s2_can_lead = (s2_is_compressed ? s2_allows_after_sb : s2_start_ok) &&
+                       !s2_is_native_control;
+
   // ===========================================================================
   // Window acceptance (tag-checked) + slot-1 pc-tagged binding
   // ===========================================================================
@@ -271,8 +299,18 @@ module parcel_fill_engine #(
 
   logic served_tag_ok;
   logic accept;
+  // Only a FULL redirect (flush) gates acceptance.  A PARTIAL (RAS-return)
+  // redirect must NOT gate the enqueue: o_ras_redirect_valid is computed on the
+  // consume side from dequeue-fire, which -- on an FWFT return into an empty
+  // queue -- rides this cycle's incoming enqueue.  Gating accept on it closes a
+  // combinational loop (accept -> o_enq_valid -> queue FWFT head -> consume
+  // dequeue_fire -> ras redirect -> accept) that oscillates and fails Verilator
+  // convergence.  The queue's partial flush already discards any same-cycle
+  // wrong-path enqueue (flush dominates the write), so the gate is redundant.
+  logic full_redirect;
+  assign full_redirect = i_redirect_valid && !i_redirect_partial;
   assign served_tag_ok = (i_win_served_addr[XLEN-1:1] == ask_q[XLEN-1:1]);
-  assign accept = i_win_valid && served_tag_ok && !i_redirect_valid &&
+  assign accept = i_win_valid && served_tag_ok && !full_redirect &&
                   !i_queue_backpressure && !slot2_redir_fire;
 
   logic bind_match;

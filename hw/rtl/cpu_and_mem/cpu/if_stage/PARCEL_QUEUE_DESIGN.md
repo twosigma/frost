@@ -482,12 +482,23 @@ structurally closed by the queue's per-entry binding. B3a enables them:
 | 4 (RVC@hw or 32b@word-lo) | NEXT_LO | `high[15:0]` | `high[31:0]` | yes |
 | 6 (32b spanning slot-1 @hw) | NEXT_HI | `high[31:16]` | reaches word W+2 | RVC only |
 
-The slot-1 gate generalizes: `allows_slot2_after = is_compressed ?
-(!compressed_control) : (!serialize && !fp)` — the 32-bit arm equals the
-`Slot2StartValid` predicate, so serialize/FP ops still cannot lead (matching the
-ROB head-only gate). Not-taken branches may lead (`!predicted_taken` suppresses
-the taken case; a mispredicted lead flushes the whole queue). The slot-2 lookup
-address becomes `served_addr + size(slot-1)` (was fixed `+2`). A **NEXT_HI
+The slot-1 gate is `allows_slot2_after = (is_compressed ? !compressed_control :
+Slot2StartValid) && !native_branch_or_jump`. **Correction (integration):** the
+`Slot2StartValid` predicate only excludes serialize/FP ops — it does NOT exclude
+a 32-bit branch/JAL/JALR, but dispatch rejects a slot-2 after **any**
+`is_branch_or_jump` (decision #1, `dispatch.sv:769`), taken *or not*. An earlier
+draft here claimed "not-taken branches may lead"; that is wrong — a branch+slot-2
+bundle is structurally unfireable and re-presents forever, wedging dispatch (seen
+as `bundle_ok=0, is_branch1=1, rob_count=0` on hello_world's `beq` and coremark's
+`core_init_matrix`). So the 32-bit arm additionally decodes the native opcode and
+`BRANCH/JAL/JALR` cannot lead (compressed control flow is already excluded by
+`!compressed_control`). This gate applies to **both** bundle entries —
+`e0.allows_slot2_after` (`s1_can_lead`) *and* `e1.allows_slot2_after`
+(`s2_can_lead`) — because a branch enqueued in either fill slot can later become
+a queue head; the consume pairs on the head entry's `allows_slot2_after`
+(`parcel_consume_engine.sv:80`). `!predicted_taken` still suppresses the
+predicted-taken case at the consume. The slot-2 lookup address becomes
+`served_addr + size(slot-1)` (was fixed `+2`). A **NEXT_HI
 32-bit slot-2 straddles** word W+2 and is suppressed (pairing declines, the op
 replays as the next slot-1) — that shape is B3b. Every enabled slot-2 is fully
 in the window, so self-alignment is untouched; B3a captures the bulk of the

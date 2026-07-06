@@ -70,8 +70,8 @@ def _line_at(line_addr: int) -> int:
 
 def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = 0
-    dut.i_fetch_replay_consume.value = 0
-    dut.i_pipeline_stall.value = 0
+    dut.i_core_redirect.value = 0
+    dut.i_fetch_backpressure.value = 0
     dut.i_line_req_ready.value = 0
     dut.i_line_resp_valid.value = 0
     dut.i_line_resp_rdata.value = 0
@@ -105,6 +105,18 @@ async def _line_slave(dut: Any, latency: int, log: list[int]) -> None:
             dut.i_line_resp_rdata.value = _line_at(addr)
             await FallingEdge(dut.i_clk)
             dut.i_line_resp_valid.value = 0
+
+
+async def _jump(dut: Any, pc: int) -> None:
+    """Present a redirect ask (design 7.1): set i_pc, pulse i_core_redirect.
+
+    A sequential walk advance is captured via o_instr_valid (accepted flow); a
+    jump off flow (initial ask, redirect) needs the explicit pulse.
+    """
+    dut.i_pc.value = pc
+    dut.i_core_redirect.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_core_redirect.value = 0
 
 
 async def _wait_valid(dut: Any) -> None:
@@ -181,8 +193,7 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
 
-    await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    await _jump(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
     # The straddle rule requires word DDR_BASE+4 too (same line here), and
     # the prefetch should already be chasing the next line.
@@ -214,17 +225,17 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=20, log=reqs))
 
-    await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE  # miss; fill takes 20+ cycles
+    await _jump(dut, DDR_BASE)  # miss; fill takes 20+ cycles
     for _ in range(5):
         await FallingEdge(dut.i_clk)
     for _ in range(3):
         await FallingEdge(dut.i_clk)
         assert int(dut.o_instr_valid.value) == 0
 
-    # Redirect while unserved: the core moves the PC once (then holds).
+    # Redirect while unserved: the core moves the PC and pulses i_core_redirect
+    # (design 7.1), which retargets the owed ask.
     target = DDR_BASE + 0x1000
-    dut.i_pc.value = target
+    await _jump(dut, target)
     await _wait_window(dut, target)
     assert DDR_BASE in reqs and target in reqs
 
@@ -236,8 +247,7 @@ async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
 
-    await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    await _jump(dut, DDR_BASE)
     # Let the fill launch, then invalidate mid-flight.
     for _ in range(4):
         await FallingEdge(dut.i_clk)

@@ -199,8 +199,8 @@ module cpu_and_mem #(
   // match the 1-cycle imem read latency).
   logic [31:0] instruction_served_addr;
   logic [31:0] bram_fetch_served_addr_q;
-  logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
-  logic pipeline_stall;  // front-end pipeline stall (gates fetch publish-valid)
+  logic core_redirect;  // stage-2 fetch resteer pulse (design 7.1)
+  logic fetch_backpressure;  // stage-2 parcel-queue-full (holds the owed ask)
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
   logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
   logic fence_i_flush;  // committed fence.i pipeline-flush pulse (provider invalidate)
@@ -351,8 +351,8 @@ module cpu_and_mem #(
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_served_addr(instruction_served_addr),
       .i_instr_valid(instruction_valid),
-      .o_fetch_replay_consume(fetch_replay_consume),
-      .o_pipeline_stall(pipeline_stall),
+      .o_core_redirect(core_redirect),
+      .o_fetch_backpressure(fetch_backpressure),
       .o_fence_i_sync_req(fence_i_sync_req),
       .i_fence_i_sync_done(fence_i_sync_done),
       .o_fence_i_flush(fence_i_flush),
@@ -413,31 +413,24 @@ module cpu_and_mem #(
   // machinery end to end and is the reference model for the L1I front end.
   if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
     logic [31:0] fuzz_ask_q;  // owed fetch address
-    logic [31:0] pc_prev_q;  // detects o_pc movement
     logic [31:0] served_addr_q;  // address the BRAM output corresponds to
-    logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
-    logic        pipeline_stall_q;  // registered stall (mirror real-provider lag)
+    logic        fetch_backpressure_q;  // registered backpressure (provider lag)
 
     logic        lfsr_feedback;
     logic        fuzz_window_ready;
     logic        fuzz_ok;
-    logic        fuzz_accepted;  // valid AND not stalled (decode consumed it)
     assign lfsr_feedback = lfsr_q[15] ^ lfsr_q[13] ^ lfsr_q[12] ^ lfsr_q[10];
     assign fuzz_window_ready = (served_addr_q == fuzz_ask_q);
     assign fuzz_ok = (gap_cnt_q == '0) && (lfsr_q[1:0] != 2'b00);
 
-    // Mirror the real fetch_provider contract: withhold publish-valid while the
-    // decode is stalled.  Gate on the REGISTERED stall so the first stall cycle
-    // still carries valid (preserving the IF first-cycle capture); the real
-    // provider's registered stall produces the same 1-cycle lag.
-    assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q;
+    // Stage-2 seam (design 7.1): withhold publish-valid while backpressured
+    // (queue full, registered for the same 1-cycle lag as the real provider),
+    // and retarget the owed ask on the explicit core redirect pulse.
+    assign instruction_valid = fuzz_ok && fuzz_window_ready && !fetch_backpressure_q;
     assign instruction_served_addr = served_addr_q;
-    assign fuzz_accepted = instruction_valid && !pipeline_stall;
-    // The BRAM chases the owed ask while unserved and the live PC once
-    // serving (the 1-cycle BRAM then keeps the window contract-aligned).
-    assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
+    assign fetch_address = (instruction_valid || core_redirect) ? program_counter : fuzz_ask_q;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
@@ -451,36 +444,19 @@ module cpu_and_mem #(
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fuzz_ask_q       <= '0;
-        pc_prev_q        <= '0;
-        served_addr_q    <= '0;
-        served_prev_q    <= 1'b0;
-        lfsr_q           <= 16'hACE1;
-        gap_cnt_q        <= '0;
-        pipeline_stall_q <= 1'b0;
+        fuzz_ask_q           <= '0;
+        served_addr_q        <= '0;
+        lfsr_q               <= 16'hACE1;
+        gap_cnt_q            <= '0;
+        fetch_backpressure_q <= 1'b0;
       end else begin
-        pc_prev_q        <= program_counter;
-        served_addr_q    <= fetch_address;
-        served_prev_q    <= fuzz_accepted;
-        pipeline_stall_q <= pipeline_stall;
-        lfsr_q           <= {lfsr_q[14:0], lfsr_feedback};
+        served_addr_q        <= fetch_address;
+        fetch_backpressure_q <= fetch_backpressure;
+        lfsr_q               <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
-        if (instruction_valid) begin
-          // Served: the current presentation becomes the owed ask.
-          fuzz_ask_q <= program_counter;
-        end else if (!served_prev_q && !fetch_replay_consume &&
-                     (program_counter != pc_prev_q)) begin
-          // o_pc moved between two invalid cycles and it was not the
-          // (registered) stall-replay consumption advance: that is a
-          // backend redirect (the core holds o_pc on invalid cycles
-          // otherwise); abandon the old ask and chase the target.
-          // Movement at a valid->invalid boundary is normal flow whose ask
-          // was already latched on the valid cycle. A replay consumption
-          // needs no ask update at all: o_pc sat frozen at the owed ask
-          // through the stall, so the held ask is already correct.
-          fuzz_ask_q <= program_counter;
-        end
+        // Served or redirected: capture the presented PC as the owed ask.
+        fuzz_ask_q <= (instruction_valid || core_redirect) ? program_counter : fuzz_ask_q;
       end
     end
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
@@ -537,8 +513,8 @@ module cpu_and_mem #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_pc(program_counter),
-        .i_fetch_replay_consume(fetch_replay_consume),
-        .i_pipeline_stall(pipeline_stall),
+        .i_core_redirect(core_redirect),
+        .i_fetch_backpressure(fetch_backpressure),
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
         .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
