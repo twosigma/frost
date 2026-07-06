@@ -2315,3 +2315,71 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     # (not fast-path from cache)
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "LW after AMO should miss L0 cache and issue to memory"
+
+
+# ============================================================================
+# Test: ROB-head MMIO load preempts a younger fenced staging-slot hog
+# ============================================================================
+@cocotb.test()
+async def test_head_mmio_preempts_younger_fenced_hog(dut: Any) -> None:
+    """ROB-head MMIO load issues despite younger loads monopolizing the slot.
+
+    call_stress UART poll-load liveness wedge in miniature. Three loads, ring
+    order = physical slot order (head_ptr=0):
+      slot 0 hog   (age 4): staged first, then fenced behind a non-forwardable
+                            older store (match=1, can_forward=0) -> camps forever.
+      slot 1 block (age 8): younger than hog, so it is the first *eligible*
+                            stored-scan pick once hog is in-flight, but being
+                            younger than the staged hog it cannot replace it
+                            (sq_check_replace needs an OLDER candidate) -> the
+                            scan parks here and never advances to the head.
+      slot 2 head  (age 0): the ROB-head MMIO poll load, ring-AFTER block.
+    Pre-fix, head_mem_stored excludes MMIO, so the head is never the issue
+    candidate and starves. Post-fix, head_mem_stored selects the head regardless
+    of ring order and sq_check_replace evicts the hog (age 4 > head age 0), so
+    the head issues. This test needs the SECOND younger load (block): with a
+    single younger load the scan would skip the in-flight hog and reach the head
+    on its own (a false pass -- the non-sensitive trap).
+    """
+    dut_if, model = await setup(dut)
+
+    head_tag = 2  # oldest (ROB head): the MMIO poll load, age 0
+    hog_tag = 6  # age 4: staged first, fenced, camps
+    block_tag = 10  # age 8: younger than hog, parks the ring-order scan
+    mmio_addr = 0x4000_0000  # UART region -> is_mmio
+
+    # Allocation order == physical slot order (ring order from head_ptr=0):
+    # hog -> slot 0, block -> slot 1, head -> slot 2.
+    await alloc_and_addr(dut_if, model, rob_tag=hog_tag, address=0x5000)
+    await alloc_and_addr(dut_if, model, rob_tag=block_tag, address=0x6000)
+    await alloc_and_addr(
+        dut_if, model, rob_tag=head_tag, address=mmio_addr, is_mmio=True
+    )
+
+    # The MMIO load is the ROB head. i_sq_empty stays 0 (reset default) so a
+    # match/no-forward response genuinely fences the staged hog.
+    dut_if.drive_rob_head_tag(head_tag)
+
+    head_issued = False
+    for _ in range(80):
+        # Fence whichever entry holds the staging slot iff it is the hog; the
+        # head MMIO load -- being oldest -- has no older store and issues.
+        sq_check = dut_if.read_sq_check()
+        dut_if.drive_sq_all_older_known(True)
+        if sq_check["valid"] and sq_check["rob_tag"] == hog_tag:
+            dut_if.drive_sq_forward(match=True, can_forward=False)
+        else:
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+
+        await Timer(1, unit="ns")
+        mem_req = dut_if.read_mem_request()
+        if mem_req["en"] and mem_req["addr"] == mmio_addr:
+            head_issued = True
+            break
+        await dut_if.step()
+
+    assert head_issued, (
+        "ROB-head MMIO load never issued: it was starved behind younger loads "
+        "monopolizing the sq_check staging slot / stored-scan candidate "
+        "(head-priority MMIO preemption missing from head_mem_stored)"
+    )

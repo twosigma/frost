@@ -84,6 +84,19 @@ the SQ committed queue is empty — at ROB head everything else in the LQ is
 younger (and fenced), so preemption is always safe; the 512-cycle deadlock
 breaker remains only as a backstop.
 
+The ROB-head priority scan admits **every** head load class, including MMIO
+and LR (only AMO stays gated on the committed queue being empty). The scan
+starts at the ring head `head_idx` (`= head_ptr`), not the ROB-head entry's
+physical slot, so without head-priority an eligible ROB-head MMIO/LR load can
+lose the single `sq_check` staging slot to a ring-earlier younger load; if
+that younger load is fenced behind an un-drainable (uncommitted,
+non-forwardable) older store it camps there indefinitely and starves the head
+(the `call_stress` UART poll-load wedge). Admitting the head is safe and live:
+the head is the oldest architectural load, so it can only be fenced by
+committed — hence draining — older stores, never by the younger wrong-path
+stores that create the hog; `sq_check_replace` evicts the younger staged entry
+and the MMIO/LR-only-at-head issue gates keep store→load ordering correct.
+
 ## Issue and completion bypasses
 
 Two bypass paths shave a cycle each off the load critical latency:
