@@ -171,16 +171,30 @@ module lq_issue_selector #(
   logic [DEPTH-1:0] pending_amo_phys;
   logic [riscv_pkg::ReorderBufferTagWidth:0] entry_head_age[DEPTH];
   logic [riscv_pkg::ReorderBufferTagWidth:0] oldest_pending_amo_age;
+  // TIMING (x3 WNS cone): compute the oldest-pending-AMO age as a balanced
+  // pairwise-min TREE (log2(DEPTH) = 3 deep for DEPTH=8) instead of the serial
+  // min the for-loop synthesized into (~DEPTH compare-select stages).  This min
+  // reduction sits on the head_ptr -> issue-select -> sq_check_capture path that
+  // is the post-opt x3 WNS limiter (-5.581ns; the AMO-age ripple is a dominant
+  // contributor).  A min is order-independent, so the tree is BIT-IDENTICAL to
+  // the ripple.  Heap layout: leaves at [DEPTH-1 .. 2*DEPTH-2], internal nodes
+  // [0 .. DEPTH-2], root = [0].
+  localparam int unsigned AmoAgeW = ReorderBufferTagWidth + 1;
+  logic [AmoAgeW-1:0] amo_age_tree[2*DEPTH-1];
   always_comb begin
-    oldest_pending_amo_age = '1;  // no pending AMO -> nothing blocks
     for (int unsigned i = 0; i < DEPTH; i++) begin
       entry_head_age[i] = {1'b0, lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth]} -
           {1'b0, i_rob_head_tag};
       pending_amo_phys[i] = lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i];
-      if (pending_amo_phys[i] && (entry_head_age[i] < oldest_pending_amo_age)) begin
-        oldest_pending_amo_age = entry_head_age[i];
-      end
+      // Masked leaf: a non-pending-AMO entry contributes the max age ('1) so it
+      // never wins the min (matches the old "no pending AMO -> '1" default).
+      amo_age_tree[DEPTH-1+i] = pending_amo_phys[i] ? entry_head_age[i] : '1;
     end
+    for (int i = int'(DEPTH) - 2; i >= 0; i--) begin
+      amo_age_tree[i] = (amo_age_tree[2*i+1] <= amo_age_tree[2*i+2]) ?
+                        amo_age_tree[2*i+1] : amo_age_tree[2*i+2];
+    end
+    oldest_pending_amo_age = amo_age_tree[0];
   end
 
   // Physical-index mask (matches lq_valid indexing), then rotate into scan
