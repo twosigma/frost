@@ -75,7 +75,11 @@ module cpu_tb
   logic o_mmio_fifo1_read_pulse;
   logic o_mmio_uart_rx_ready_pulse;
   logic o_pipeline_stall;
-  logic o_fetch_replay_consume;
+  // Front end swapped to the parcel-queue if_stage_stage2: the old
+  // o_fetch_replay_consume seam is gone; the provider seam is now the
+  // o_core_redirect pulse + o_fetch_backpressure (queue-full).
+  logic o_core_redirect;
+  logic o_fetch_backpressure;
   // FENCE.I cache-sync handshake (no I-cache here; completed immediately below)
   logic o_fence_i_sync_req;
   logic i_fence_i_sync_done;
