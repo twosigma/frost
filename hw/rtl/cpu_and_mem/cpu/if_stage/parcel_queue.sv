@@ -33,9 +33,9 @@
  * entries are still written to the array; the head pointer simply advances
  * past whatever the consumer took, so the bypass adds no control state.
  *
- * FLUSH SEMANTICS (both dominate same-cycle enqueue -- suppressed writes,
- * atomic pointer update -- so no wrong-path phantom entry can survive;
- * review record finding 4):
+ * FLUSH SEMANTICS (both dominate same-cycle enqueue -- the atomic pointer
+ * update alone empties the window, so no wrong-path phantom entry can survive
+ * even though the mem_q content write is unconditional; review record finding 4):
  *   - full (backend branch / trap / MRET / FENCE.I / PD redirect):
  *     head = tail = 0, count = 0.
  *   - partial (RAS consume redirect, a dequeue-fire pulse: the head return
@@ -127,13 +127,18 @@ module parcel_queue #(
   assign tail_p1 = tail_q + PtrBits'(1);
 
   always_ff @(posedge i_clk) begin
-    // Flush dominates enqueue: no write lands on a flush cycle, so the
-    // pointer reset below cannot leave a freshly written wrong-path entry
-    // reachable.
-    if (!flush_any) begin
-      if (i_enq_valid[0]) mem_q[tail_q] <= i_enq_entry0;
-      if (i_enq_valid[1]) mem_q[tail_p1] <= i_enq_entry1;
-    end
+    // x3 TIMING: the mem_q write is intentionally NOT gated by flush.
+    // Reachability of a written slot is guaranteed solely by the atomic count
+    // reset below (count_q<='0 on any flush): a slot becomes readable only after
+    // tail advances past it -- which happens on the same real enqueue that wrote
+    // it with correct data -- and every flush empties the window, so a
+    // speculative wrong-path write at the old tail is always either overwritten
+    // before it is counted or left outside [head, tail).  The write DATA
+    // (i_enq_entry*) is stall-independent, so dropping the !flush_any gate takes
+    // frontend_stall (which reaches flush via the RAS partial-redirect) off all
+    // ~1975 mem_q write-enable pins -- the -0.977ns endpoint bulk.
+    if (i_enq_valid[0]) mem_q[tail_q] <= i_enq_entry0;
+    if (i_enq_valid[1]) mem_q[tail_p1] <= i_enq_entry1;
   end
 
   always_ff @(posedge i_clk) begin

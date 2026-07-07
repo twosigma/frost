@@ -404,10 +404,14 @@ emit exactly as today.
 
 - **Full flush** (backend branch / trap / MRET / FENCE.I / PD redirect):
   head and tail pointers reset atomically and ALL valid bits clear. **Flush
-  dominates enqueue**: an enqueue coincident with a full flush is suppressed
-  entirely — no entry written, no tail movement — so no phantom pre-redirect
-  entries can survive into the empty queue (§10, finding 4). Unit test: flush
-  on the same cycle a 2-wide bundle enqueues; assert empty.
+  dominates enqueue**: an enqueue coincident with a full flush moves no pointer
+  — `count_q`/`tail_q` reset regardless — so no phantom pre-redirect entries can
+  survive into the empty queue (§10, finding 4). (x3 timing: the `mem_q` content
+  write is now *unconditional* — not gated by `!flush_any` — because a slot
+  written on a flush cycle lands outside the reset `[head, tail)` window and is
+  overwritten before it can ever be counted; reachability is identical and the
+  gate came off the frontend-stall-fed `mem_q` write-enable bank.) Unit test:
+  flush on the same cycle a 2-wide bundle enqueues; assert empty.
 - **Partial flush** (RAS consume redirect): `tail ← head + 1` — the return
   entry at the head survives (it is being emitted this cycle); all younger
   entries die. Fires only as a dequeue-fire pulse (§2.4), so it cannot repeat
