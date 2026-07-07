@@ -305,6 +305,62 @@ gated) — the one-cycle fill gap of §2.1/§2.5, absorbed by queue backlog. Thi
 reproduces HEAD's `o_slot2_redirect_q` NOP (`pc_controller.sv:218-233`) exactly
 while keeping the slot-2 BTB read off the ask critical path.
 
+### 2.1.3 Sequential-march fetch (x3 timing closure — derived from RTL)
+
+**The defect this closes.** §2.1.1's walk drove the imem fetch *address* from the
+decoded next-instruction address (`ask_d`), closing a same-cycle combinational
+loop: BRAM sideband → 2-wide bundle decode → `ask_d` → `o_pc` → `fetch_address`
+→ BRAM address. On x3 (300 MHz) this loop is the post-opt **WNS at −3.059 ns**
+(18 logic levels); the 2-wide slot-2 chain is the added depth over main's 1-wide
+loop (main closes x3). Registering `o_ask_pc` breaks the loop but throttles a
+*variable-length* fetch to serve-every-other-cycle — the next address needs the
+current instruction's decoded size, which a registered address lacks in time
+(measured **+26.7 % CoreMark**, front-end bubble 7.6 %→50.9 %). The only
+perf-free break is to stop deriving the fetch address from the decode.
+
+**The mechanism.** Decouple the fetch address from the decode pointer with an
+elastic word buffer between them:
+
+- **`fetch_ptr_q`** — a registered word-address counter that free-marches +8 B
+  (two words) per cycle, redirect-loadable, gated only by buffer space. Drives
+  `o_ask_pc`. A pure register with no dependency on the decoded window → the
+  imem loop is cut, and on the always-valid low BRAM it pipelines two
+  words/cycle (no decode throttle).
+- **Elastic word FIFO** (8 words + per-word sideband) — arriving windows push
+  two words at the tail; the decoder peeks the two-word self-aligned view
+  {word(decode_ptr), word(decode_ptr)+1} at the head. Acceptance stays
+  address-tag-checked (§7.1): a window is pushed only when its served word
+  matches the FIFO tail address (`push_addr_q`, which trails `fetch_ptr` by the
+  in-flight window). Prefetch runahead is `push_addr` leading `decode_ptr` (the
+  buffer fill), not out-of-order requests.
+- **`decode_ptr_q`** — the registered instruction pointer. The unchanged §2.1.2
+  2-wide decoder runs off the FIFO view, advancing `decode_ptr` by the bundle
+  size and popping `word(decode_ptr_d) − word(decode_ptr)` words. It fires every
+  cycle the view is present, gated by queue backpressure.
+
+**Binding simplifies** (§2.1.1): `decode_ptr` is registered and the decode is
+same-cycle, so `o_lookup_pc = decode_ptr` and the BTB/DIR result bind directly
+to the enqueued entry — the lookup address *is* the entry pc, so the pc-tag
+holds trivially and the `bind_q` carry register is deleted. (This also lifts the
+slot-1 BTB read off its own −2.741 ns cone.)
+
+**Taken branches** cost a fetch bubble now (the trade for closing the loop): a
+predicted-taken slot-1 branch is resolved at decode — flush the fetch buffer and
+reload both pointers to the target — since the sequentially-prefetched
+fall-through past it is wrong. The enqueued bundle up to the branch is valid, so
+only the buffer flushes, not the queue. This is how main/the aligner already
+behave; measured front-end bubble is 30.8 % (vs 7.6 %), **+9.3 % CoreMark** —
+far below the registered-ask throttle, and the loop is gone.
+
+**Provider seam (§7.1).** `fetch_provider` cannot serve-capture the
+free-marching `o_ask_pc`: during a miss the request pointer runs far ahead, and
+capturing it on serve would skip the words the decoder still needs (deadlocks
+DDR-code fetch — `ddr_exec_test`). Instead the provider marches its **own** owed
+ask sequentially (+8 B per serve) and reloads `i_pc` only on the redirect pulse;
+both counters start from the same redirect target and stay in lockstep, so the
+provider serves strictly in order. The low BRAM path is stateless, so it takes
+the free-marching address directly.
+
 ### 2.2 Parcel queue
 
 An 8-entry circular FIFO of **instruction entries** (not raw halfwords — see

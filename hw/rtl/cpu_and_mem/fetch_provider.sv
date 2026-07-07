@@ -127,7 +127,19 @@ module fetch_provider #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) ask_q <= '0;
-    else ask_q <= (o_instr_valid || retarget_now) ? i_pc : ask_q;
+    // SEQUENTIAL-MARCH seam (design 2.1.3): the fill drives o_ask_pc from a
+    // free-marching request pointer (up to two words/cycle on BRAM) that can run
+    // far ahead of the window the provider is still serving.  Capturing that live
+    // i_pc on serve would make the provider SKIP the intervening words the fill
+    // still needs and deadlock DDR-code fetch.  So the provider marches its OWN
+    // owed ask sequentially (+8 B = one two-word window per serve) and reloads
+    // i_pc only on the explicit redirect pulse.  Both the fill's request pointer
+    // and this owed ask start from the same redirect target, so they stay in
+    // lockstep and the provider serves strictly in order.  (The served_addr_q ==
+    // ask_q tag-check below self-throttles this to one window every other cycle;
+    // the fill's queue hides that on the high/DDR path.)
+    else if (retarget_now) ask_q <= i_pc;
+    else if (o_instr_valid) ask_q <= ask_q + 32'd8;
   end
 
   // ===========================================================================

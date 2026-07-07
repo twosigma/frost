@@ -425,12 +425,15 @@ module cpu_and_mem #(
     assign fuzz_window_ready = (served_addr_q == fuzz_ask_q);
     assign fuzz_ok = (gap_cnt_q == '0) && (lfsr_q[1:0] != 2'b00);
 
-    // Stage-2 seam (design 7.1): withhold publish-valid while backpressured
-    // (queue full, registered for the same 1-cycle lag as the real provider),
-    // and retarget the owed ask on the explicit core redirect pulse.
+    // Stage-2 seam (design 2.1.3 / 7.1): withhold publish-valid while
+    // backpressured (queue full, registered for the same 1-cycle lag as the real
+    // provider).  Under the sequential-march fill the request pointer (o_pc)
+    // free-marches ahead of the served window, so this reference provider -- like
+    // fetch_provider -- must march its OWN owed ask sequentially and reload o_pc
+    // only on the redirect pulse; serve-capturing the runahead would skip words.
     assign instruction_valid = fuzz_ok && fuzz_window_ready && !fetch_backpressure_q;
     assign instruction_served_addr = served_addr_q;
-    assign fetch_address = (instruction_valid || core_redirect) ? program_counter : fuzz_ask_q;
+    assign fetch_address = core_redirect ? program_counter : fuzz_ask_q;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
@@ -455,8 +458,10 @@ module cpu_and_mem #(
         lfsr_q               <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
-        // Served or redirected: capture the presented PC as the owed ask.
-        fuzz_ask_q <= (instruction_valid || core_redirect) ? program_counter : fuzz_ask_q;
+        // Redirect: reload the presented target; else march the owed ask +8 B
+        // (one two-word window) per serve, in lockstep with the fill's march.
+        fuzz_ask_q <= core_redirect ? program_counter :
+                      (instruction_valid ? fuzz_ask_q + 32'd8 : fuzz_ask_q);
       end
     end
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider

@@ -16,54 +16,61 @@
 
 /*
  * parcel_fill_engine -- the stage-2 front end's serve-side instruction walk
- * (PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2 / 2.6).  Landing steps
- * B1/B2/B3a: the 2-wide, self-aligned relocation of today's ask-side machinery,
- * with a 32-bit slot-1 allowed to lead an in-window bundle (B3a).  Enqueues up
- * to two pq_entry_t per served window (slot-1 + a contiguous slot-2) into the
- * parcel_queue; the misaligned 32+32 straddle carry (B3b) is deferred to the
- * integration phase.
+ * (PARCEL_QUEUE_DESIGN.md sections 2.1 / 2.1.1 / 2.1.2 / 2.1.3 / 2.6).
  *
- * ASK CHAIN (derived from RTL, design 2.1.1):
- *   - `ask_q` is the leading ask presented last cycle (today's `o_pc` role);
- *     `o_ask_pc` / `o_lookup_pc` present this cycle's ask combinationally.
- *   - The provider serves the ask presented last cycle one cycle later, tagged
- *     with `i_win_served_addr` (today's `o_pc_reg` role, but supplied by the
- *     provider so the frame is SELF-ALIGNED: the served window's low word is
- *     word(served_addr) by construction -- no bank_sel/pc_reg[2] parity, and
- *     the F-vs-W disambiguation ceases to exist).
- *   - SEQUENTIAL advance uses the served bundle's size, decoded from the
- *     arriving window's sideband (SERVE time).
- *   - A predicted-TAKEN slot-1 branch is the only ask-time redirect: the BTB
- *     result looked up at `ask_q` (ask time) rides `bind_q` one cycle and, when
- *     that branch is served, redirects the next ask to the target (zero bubble).
+ * SEQUENTIAL-MARCH FETCH (x3 timing closure, design 2.1.3).  The original walk
+ * tied the imem fetch ADDRESS to the decoded next-instruction address, closing a
+ * same-cycle combinational loop (BRAM sideband -> 2-wide bundle decode -> next
+ * address -> BRAM address) that was the x3 WNS (-3.059 ns).  Registering that ask
+ * breaks the loop but serve-every-other-cycle throttles a variable-length fetch
+ * (the next address needs the current instruction's size, which a registered
+ * address lacks in time) -> +26.7% CoreMark.  This module instead DECOUPLES the
+ * two:
  *
- * SLOT-2 (design 2.1.2 / 2.6): a contiguous slot-2 at `served_addr +
- * size(slot-1)` is decoded from the same window (positions CURRENT_HI /
- * NEXT_LO / NEXT_HI by byte offset 2/4/6) and enqueued as `e1` iff
- * `e0.allows_slot2_after && e1.slot2_start_ok && !e0.predicted_taken`.  B3a
- * lets a 32-bit slot-1 lead a bundle (gate `s1_can_lead`); a NEXT_HI 32-bit
- * slot-2 straddles a third word and is suppressed (the straddle carry, B3b, is
- * deferred to integration).  Its BTB/DIR lookup is WALK-time (at `served_addr +
- * size(slot-1)`, combinational this cycle) and binds e1 the same cycle.  A
- * taken slot-2 is a REGISTERED redirect (kept
- * off the ask path): the sequential `served_addr + bundle` ask still goes out
- * this cycle, e0+e1 enqueue, and a one-shot `slot2_redir_pending` fires next
- * cycle -- ask <- slot-2 target, `o_core_redirect` pulse, NO flush, the
- * in-flight wrong-path window rejected (one-cycle bubble, absorbed by the
- * queue; reproduces HEAD's o_slot2_redirect_q NOP).
+ *   - FETCH side: `fetch_ptr_q` is a REGISTERED word-address counter that free-
+ *     marches +8 B (two words) per cycle, redirect-loadable, gated only by buffer
+ *     space.  It drives `o_ask_pc`.  Being a pure register with no dependency on
+ *     the decoded window, it breaks the imem loop and, on the always-valid BRAM,
+ *     pipelines two words/cycle (no serve-every-other-cycle throttle on the
+ *     DECODER).  The provider (fetch_provider, design 2.1.3) marches its own owed
+ *     ask in lockstep rather than serve-capturing this pointer, so the runahead
+ *     never makes it skip a word.
+ *   - An elastic word FIFO buffers arriving windows (two words each).  It
+ *     decouples the fetch (push_addr, running ahead) from the instruction-
+ *     granular decode (decode_ptr, trailing) -- this runahead IS the prefetch.
+ *   - DECODE side: `decode_ptr_q` is the REGISTERED instruction pointer.  The
+ *     2-wide bundle decoder (unchanged) reads the two-word self-aligned view at
+ *     `decode_ptr` from the FIFO front and advances `decode_ptr` by the bundle
+ *     size, gated by queue backpressure.  It fires EVERY cycle the view is
+ *     present -- the buffer hides the fetch/decode rate mismatch.
  *
- * BINDING (pc-tagged, design 2.1.1): `bind_q` carries the ask-time slot-1
- * lookup {pc, btb/dir result} forward one cycle.  At enqueue e0 binds that
- * result IFF `bind_q.pc == e0.pc`; else zeroed not-taken metadata.
+ * The provider seam, parcel_queue, and consume engine are unchanged.  The window
+ * acceptance is still address-tag-checked (design 7.1): a window is pushed only
+ * when its served word matches the buffer's outstanding-fetch address.
  *
- * WINDOW ACCEPTANCE (tag-checked, design 7.1): a window is enqueued only when
- * valid, its served word matches the outstanding ask, no redirect (external or
- * slot-2) is landing this cycle, and the queue is not backpressuring.
+ * BINDING (pc-tagged, design 2.1.1): with `decode_ptr` registered, the slot-1
+ * BTB/DIR lookup at `o_lookup_pc = decode_ptr` and the enqueue of that
+ * instruction are the SAME cycle, so the prediction binds directly (the
+ * lookup address IS the enqueued entry's pc -- the pc-tag holds trivially, no
+ * carry register).  Slot-2 binds from its walk-time lookup at `decode_ptr +
+ * size(slot-1)`.
  *
- * REDIRECT (design 2.5): `i_redirect_valid` resteers the ask, pulses
- * `o_core_redirect`, and flushes the queue -- full (backend / trap / MRET /
- * FENCE.I / PD) or partial (`i_redirect_partial`, the RAS dequeue-fire).  It
- * dominates the same-cycle enqueue and the slot-2 redirect.
+ * SLOT-2 (design 2.1.2 / 2.6): a contiguous slot-2 at `decode_ptr + size(slot-1)`
+ * is decoded from the same two-word view and enqueued as `e1` iff
+ * `e0.allows_slot2_after && e1.slot2_start_ok && !e0.predicted_taken`.  A NEXT_HI
+ * 32-bit slot-2 straddles a third word and is suppressed (B3a).
+ *
+ * REDIRECT (design 2.5): a predicted-TAKEN branch (slot-1 immediate, slot-2
+ * one-shot registered) and an external `i_redirect_valid` both resteer the walk.
+ * A taken branch flushes only the FETCH BUFFER (the sequentially-prefetched
+ * fall-through past the branch is wrong; the enqueued bundle up to the branch is
+ * valid) and reloads both pointers to the target -- a fetch bubble absorbed by
+ * the queue.  An external redirect additionally flushes the queue -- full
+ * (backend / trap / MRET / FENCE.I / PD) or partial (`i_redirect_partial`, the
+ * RAS dequeue-fire).  It dominates the taken-branch resteer and the enqueue.
+ * The queue flushes fire this cycle (with the consume-side flush); the provider
+ * retarget pulse `o_core_redirect` is delayed one cycle so it lands when the
+ * registered `fetch_ptr` presents the target.
  */
 module parcel_fill_engine #(
     parameter int unsigned XLEN = 32
@@ -86,7 +93,7 @@ module parcel_fill_engine #(
     input logic [63:0] i_win_instr,  // {word(sa)+1, word(sa)}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_win_sideband,
 
-    // ---- Slot-1 BTB / DIR lookup (ask-time, at the leading ask address) ----
+    // ---- Slot-1 BTB / DIR lookup (decode-time, at the decode pointer) ----
     output logic [                   XLEN-1:1] o_lookup_pc,
     input  logic                               i_btb_hit,
     input  logic                               i_btb_taken,
@@ -94,7 +101,7 @@ module parcel_fill_engine #(
     input  logic                               i_dir_taken,
     input  logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_idx,
 
-    // ---- Slot-2 BTB / DIR lookup (walk-time, at served_addr + 2) ----
+    // ---- Slot-2 BTB / DIR lookup (walk-time, at decode_ptr + size(slot-1)) ----
     output logic [                   XLEN-1:1] o_lookup_pc_2,
     input  logic                               i_btb_hit_2,
     input  logic                               i_btb_taken_2,
@@ -120,46 +127,74 @@ module parcel_fill_engine #(
   localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
 
   // ===========================================================================
-  // Ask register + slot-1 binding pipe
+  // Elastic fetch word FIFO
   // ===========================================================================
-  // ask_q  : the ask presented last cycle == the served word expected now.
-  // bind_q : the slot-1 lookup done last cycle at ask_q, held for pc-tagged
-  //          binding when that address is served this cycle.
-  logic [                   XLEN-1:0] ask_q;
-  logic                               bind_valid_q;
-  logic [                   XLEN-1:1] bind_pc_q;
-  logic                               bind_btb_hit_q;
-  logic                               bind_btb_taken_q;
-  logic [                   XLEN-1:1] bind_btb_target_q;
-  logic                               bind_dir_taken_q;
-  logic [riscv_pkg::BpDirIdxBits-1:0] bind_dir_idx_q;
+  // Holds 32-bit words (+ per-word predecode sideband) in fetch order, from the
+  // word containing decode_ptr up to the marching fetch pointer.  The decoder
+  // peeks the two-word view {word(decode_ptr), word(decode_ptr)+1} at the FIFO
+  // front; arriving windows push two words at the back.  Decouples the
+  // (registered, marching) fetch address from the (registered, instruction-
+  // granular) decode pointer.
+  localparam int unsigned BufWords = 8;  // power of two
+  localparam int unsigned BufIdxW = $clog2(BufWords);  // 3
+  localparam int unsigned BufCntW = $clog2(BufWords + 1);
 
-  // Registered slot-2-taken redirect (one-shot; kept off the ask path).
-  logic                               slot2_redir_pending_q;
-  logic [                   XLEN-1:1] slot2_redir_target_q;
+  logic [       31:0] fifo_word[BufWords];
+  logic [SbWidth-1:0] fifo_sb  [BufWords];
+  logic [BufIdxW-1:0] rd_ptr_q, wr_ptr_q;
+  logic [BufCntW-1:0] count_q;
 
   // ===========================================================================
-  // Window words + sidebands (self-aligned: low word is word(ask_q)).
+  // Fetch request pointer (word-granular free march) + push tag
   // ===========================================================================
-  logic [                   XLEN-1:0] served_addr;
-  logic                               served_hw;  // halfword within the low word (bit 1)
-  assign served_addr = ask_q;
-  assign served_hw   = ask_q[1];
+  // fetch_ptr_q : the word address requested this cycle (o_ask_pc).  It free-
+  //               marches +8 B (two words) per cycle, gated only by buffer room,
+  //               so on the always-valid BRAM it pipelines two words/cycle.  The
+  //               provider tolerates the runahead because it marches its OWN owed
+  //               ask in lockstep (fetch_provider, design 2.1.3) rather than
+  //               serve-capturing this pointer -- so it never skips a word.
+  // push_addr_q : the word address of the next word-pair expected/pushed (the
+  //               FIFO tail).  A window is pushed only when its served word
+  //               matches push_addr_q (in-order, tag-checked acceptance);
+  //               push_addr trails fetch_ptr by the in-flight window.
+  logic [   XLEN-1:0] fetch_ptr_q;
+  logic [   XLEN-1:0] push_addr_q;
 
+  // ===========================================================================
+  // Decode pointer (instruction address) + registered redirect pulse
+  // ===========================================================================
+  logic [   XLEN-1:0] decode_ptr_q;
+  logic               o_core_redirect_q;
+
+  // Registered slot-2-taken redirect (one-shot; kept off the fast decode path).
+  logic               slot2_redir_pending_q;
+  logic [   XLEN-1:1] slot2_redir_target_q;
+
+  // ===========================================================================
+  // Decode view: the two-word self-aligned window at decode_ptr (FIFO front)
+  // ===========================================================================
   logic [31:0] low_word, high_word;
-  assign low_word  = i_win_instr[31:0];
-  assign high_word = i_win_instr[63:32];
-
   logic [SbWidth-1:0] sb_lo, sb_hi;
-  assign sb_lo = i_win_sideband[SbWidth-1:0];
-  assign sb_hi = i_win_sideband[2*SbWidth-1:SbWidth];
+  assign low_word  = fifo_word[rd_ptr_q];
+  assign high_word = fifo_word[rd_ptr_q+BufIdxW'(1)];
+  assign sb_lo     = fifo_sb[rd_ptr_q];
+  assign sb_hi     = fifo_sb[rd_ptr_q+BufIdxW'(1)];
+
+  logic [XLEN-1:0] served_addr;
+  logic            served_hw;  // halfword within the low word (bit 1)
+  assign served_addr = decode_ptr_q;
+  assign served_hw   = decode_ptr_q[1];
+
+  // view_valid: both view words present (need >=2 buffered words to decode).
+  logic view_valid;
+  assign view_valid = (count_q >= BufCntW'(2));
 
   // served_addr / s2_pc bit 0 are always 0 (2-byte alignment); sink them so
   // lint stays clean (every other bit is consumed by slot-1/slot-2 decode).
-  wire  _unused = &{1'b0, i_win_served_addr[0], s2_pc[0]};
+  wire  _unused = &{1'b0, i_win_served_addr[0], s2_pc[0], decode_ptr_q[0]};
 
   // ===========================================================================
-  // Slot-1 decode (the served instruction at ask_q)
+  // Slot-1 decode (the instruction at decode_ptr)
   // ===========================================================================
   logic s1_is_compressed;
   logic s1_allows_after_sb;  // sideband AllowsSlot2After (compressed slot-1 only)
@@ -183,19 +218,15 @@ module parcel_fill_engine #(
 
   // A 32-bit branch/JAL/JALR in slot-1 terminates the bundle.  Dispatch rejects
   // a slot-2 whenever slot-1 is is_branch_or_jump (decision #1); the fill must
-  // match, or the unfireable branch+slot-2 bundle wedges dispatch forever (it
-  // stalls waiting for a re-present that never resolves).  The predecode
-  // sideband only flags COMPRESSED control flow (folded into AllowsSlot2After) --
-  // native control flow has no sideband bit, so decode the opcode here.
+  // match, or the unfireable branch+slot-2 bundle wedges dispatch forever.  The
+  // predecode sideband only flags COMPRESSED control flow (folded into
+  // AllowsSlot2After) -- native control flow has no sideband bit, decode here.
   logic s1_is_native_control;
   assign s1_is_native_control =
       !s1_is_compressed && ((s1_bytes[6:0] == riscv_pkg::OPC_BRANCH) ||
                             (s1_bytes[6:0] == riscv_pkg::OPC_JAL) ||
                             (s1_bytes[6:0] == riscv_pkg::OPC_JALR));
 
-  // A compressed slot-1 leads iff not a compressed control op (AllowsSlot2After);
-  // a 32-bit slot-1 leads iff not serialize/FP (Slot2StartValid) and not a
-  // native branch/jump.
   assign s1_can_lead = (s1_is_compressed ? s1_allows_after_sb : s1_slot2_start_ok) &&
                        !s1_is_native_control;
 
@@ -204,12 +235,8 @@ module parcel_fill_engine #(
                                     : riscv_pkg::PcIncrement32bit;
 
   // ===========================================================================
-  // Slot-2 decode (contiguous instruction at served_addr + size(slot-1))
+  // Slot-2 decode (contiguous instruction at decode_ptr + size(slot-1))
   // ===========================================================================
-  // The slot-2 byte offset in the window = served offset (0/2) + slot-1 size,
-  // giving three positions (design §2.6): CURRENT_HI (2), NEXT_LO (4),
-  // NEXT_HI (6).  A NEXT_HI 32-bit slot-2 straddles into word W+2 and is
-  // suppressed (B3a); the straddle carry (B3b) is deferred to integration.
   logic [XLEN-1:0] s2_pc;
   assign s2_pc = served_addr + s1_size;
 
@@ -275,13 +302,6 @@ module parcel_fill_engine #(
   assign s2_size = s2_is_compressed ? riscv_pkg::PcIncrementCompressed
                                     : riscv_pkg::PcIncrement32bit;
 
-  // Whether this slot-2 entry may itself LEAD a bundle once it later becomes a
-  // queue head (carried as e1.allows_slot2_after).  Same rule as s1_can_lead: a
-  // 32-bit branch/JAL/JALR must NOT lead (dispatch rejects a slot-2 after any
-  // is_branch_or_jump).  The sideband only flags compressed control flow, so
-  // decode the native opcode here too -- omitting this lets a branch enqueued in
-  // slot-2 wrongly advertise allows_slot2_after and wedge dispatch when the
-  // consume pairs a younger entry behind it.
   logic s2_is_native_control;
   assign s2_is_native_control =
       !s2_is_compressed && ((s2_bytes[6:0] == riscv_pkg::OPC_BRANCH) ||
@@ -292,46 +312,48 @@ module parcel_fill_engine #(
                        !s2_is_native_control;
 
   // ===========================================================================
-  // Window acceptance (tag-checked) + slot-1 pc-tagged binding
+  // Redirect + decode-fire arbitration
   // ===========================================================================
+  // Only a FULL redirect (flush) gates the decode.  A PARTIAL (RAS-return)
+  // redirect must NOT gate the enqueue: o_ras_redirect_valid is computed on the
+  // consume side from dequeue-fire, which -- on an FWFT return into an empty
+  // queue -- rides this cycle's incoming enqueue.  Gating on it closes a
+  // combinational loop; the queue's partial flush already discards any
+  // same-cycle wrong-path enqueue.
+  logic full_redirect;
+  assign full_redirect = i_redirect_valid && !i_redirect_partial;
+
   logic slot2_redir_fire;
   assign slot2_redir_fire = slot2_redir_pending_q;
 
-  logic served_tag_ok;
-  logic accept;
-  // Only a FULL redirect (flush) gates acceptance.  A PARTIAL (RAS-return)
-  // redirect must NOT gate the enqueue: o_ras_redirect_valid is computed on the
-  // consume side from dequeue-fire, which -- on an FWFT return into an empty
-  // queue -- rides this cycle's incoming enqueue.  Gating accept on it closes a
-  // combinational loop (accept -> o_enq_valid -> queue FWFT head -> consume
-  // dequeue_fire -> ras redirect -> accept) that oscillates and fails Verilator
-  // convergence.  The queue's partial flush already discards any same-cycle
-  // wrong-path enqueue (flush dominates the write), so the gate is redundant.
-  logic full_redirect;
-  assign full_redirect = i_redirect_valid && !i_redirect_partial;
-  assign served_tag_ok = (i_win_served_addr[XLEN-1:1] == ask_q[XLEN-1:1]);
-  assign accept = i_win_valid && served_tag_ok && !full_redirect &&
-                  !i_queue_backpressure && !slot2_redir_fire;
+  // Decode fires (produces a bundle) when the two-word view is present, the
+  // queue can accept, and no FULL redirect / slot-2 redirect is landing this
+  // cycle.  Gate on full_redirect, NOT raw i_redirect_valid: the RAS partial
+  // redirect is computed on the consume side from this cycle's dequeue-fire,
+  // which rides this cycle's enqueue (o_enq_valid <- decode_fire); gating
+  // decode_fire on it closes an oscillating combinational loop.  full_redirect
+  // masks the partial term to a constant, breaking the loop -- and the queue's
+  // partial flush already discards any same-cycle wrong-path enqueue.
+  logic decode_fire;
+  assign decode_fire = view_valid && !i_queue_backpressure && !full_redirect && !slot2_redir_fire;
 
-  logic bind_match;
-  assign bind_match = bind_valid_q && (bind_pc_q == ask_q[XLEN-1:1]);
-
-  // Slot-1 taken branch: ask-time (registered) redirect, zero bubble.
+  // Slot-1 predicted-taken branch (decode-time; the bind is direct at decode_ptr).
   logic slot1_taken;
-  assign slot1_taken = accept && bind_match && bind_btb_taken_q;
+  assign slot1_taken = decode_fire && i_btb_taken;
 
   // ===========================================================================
   // Bundle formation (design 2.1.2)
   // ===========================================================================
   logic slot2_present;
-  assign slot2_present = accept && s1_can_lead && s2_start_ok && !slot1_taken && !s2_straddle;
+  assign slot2_present = decode_fire && s1_can_lead && s2_start_ok && !slot1_taken && !s2_straddle;
 
-  // Slot-2 taken branch: walk-time result -> registered redirect next cycle.
+  // Slot-2 predicted-taken branch: walk-time result -> registered redirect.
   logic slot2_taken;
   assign slot2_taken = slot2_present && i_btb_taken_2;
 
   // ===========================================================================
-  // Enqueue entries
+  // Enqueue entries.  Predictions bind directly (o_lookup_pc == decode_ptr ==
+  // e0.pc, so the pc-tag holds trivially; no carry register).
   // ===========================================================================
   riscv_pkg::pq_entry_t e0, e1;
   always_comb begin
@@ -341,14 +363,13 @@ module parcel_fill_engine #(
     e0.is_compressed      = s1_is_compressed;
     e0.allows_slot2_after = s1_can_lead;
     e0.slot2_start_ok     = s1_slot2_start_ok;
-    e0.btb_hit            = bind_match ? bind_btb_hit_q : 1'b0;
-    e0.predicted_taken    = bind_match ? bind_btb_taken_q : 1'b0;
-    e0.predicted_target   = bind_match ? bind_btb_target_q : '0;
-    e0.dir_taken          = bind_match ? bind_dir_taken_q : 1'b0;
-    e0.dir_idx            = bind_match ? bind_dir_idx_q : '0;
+    e0.btb_hit            = i_btb_hit;
+    e0.predicted_taken    = i_btb_taken;
+    e0.predicted_target   = i_btb_target;
+    e0.dir_taken          = i_dir_taken;
+    e0.dir_idx            = i_dir_idx;
   end
 
-  // Slot-2 binding is walk-time (this cycle's lookup at s2_pc), bound directly.
   always_comb begin
     e1                    = '0;
     e1.pc                 = s2_pc[XLEN-1:1];
@@ -363,84 +384,157 @@ module parcel_fill_engine #(
     e1.dir_idx            = i_dir_idx_2;
   end
 
-  assign o_enq_valid  = {slot2_present, accept};  // slot2_present implies accept
-  assign o_enq_entry0 = e0;
-  assign o_enq_entry1 = e1;
+  assign o_enq_valid   = {slot2_present, decode_fire};  // slot2_present implies decode_fire
+  assign o_enq_entry0  = e0;
+  assign o_enq_entry1  = e1;
+
+  assign o_lookup_pc   = decode_ptr_q[XLEN-1:1];  // slot-1 lookup at the decode ptr
+  assign o_lookup_pc_2 = s2_pc[XLEN-1:1];  // slot-2 walk-time lookup
 
   // ===========================================================================
-  // Next ask (design 2.5 priority): external redirect > slot-2 fire >
-  // slot-1 taken > accept (bundle / single sequential) > hold.
+  // Decode advance (bytes) + word-consume count
   // ===========================================================================
-  logic [XLEN-1:0] ask_d;
+  // The next decode address: external redirect > slot-2 fire > slot-1 taken >
+  // sequential advance past the served bundle > hold.
+  logic [XLEN-1:0] decode_ptr_d;
+  logic            decode_reload;  // decode_ptr jumps (redirect / taken branch)
+  logic [XLEN-1:1] decode_reload_tgt;
   always_comb begin
-    if (i_redirect_valid) ask_d = {i_redirect_target, 1'b0};
-    else if (slot2_redir_fire) ask_d = {slot2_redir_target_q, 1'b0};
-    else if (slot1_taken) ask_d = {bind_btb_target_q, 1'b0};
-    else if (accept)
-      // Advance past the served bundle.  On a taken slot-2 this is the
-      // wrong-path sequential ask, issued anyway and killed by next cycle's
-      // registered slot-2 redirect (§2.1.2).
-      ask_d = slot2_present ? (s2_pc + s2_size) : (served_addr + s1_size);
-    else ask_d = ask_q;  // hold the ask (freeze / backpressure / stale window)
+    decode_reload     = 1'b1;
+    decode_reload_tgt = i_redirect_target;
+    if (i_redirect_valid) decode_reload_tgt = i_redirect_target;
+    else if (slot2_redir_fire) decode_reload_tgt = slot2_redir_target_q;
+    else if (slot1_taken) decode_reload_tgt = i_btb_target;
+    else decode_reload = 1'b0;
   end
 
-  assign o_ask_pc        = ask_d[XLEN-1:1];
-  assign o_lookup_pc     = ask_d[XLEN-1:1];  // slot-1 ask-time lookup
-  assign o_lookup_pc_2   = s2_pc[XLEN-1:1];  // slot-2 walk-time lookup
+  logic [XLEN-1:0] seq_advance;
+  assign seq_advance = slot2_present ? (s2_pc + s2_size) : (served_addr + s1_size);
+
+  always_comb begin
+    if (decode_reload) decode_ptr_d = {decode_reload_tgt, 1'b0};
+    else if (decode_fire) decode_ptr_d = seq_advance;
+    else decode_ptr_d = decode_ptr_q;  // hold (backpressure / empty buffer)
+  end
+
+  // Words consumed from the FIFO front this cycle (word(decode_ptr_d) -
+  // word(decode_ptr_q)) when advancing sequentially; the whole buffer is flushed
+  // on a reload so no incremental pop then.
+  logic [BufIdxW:0] pop_words;
+  always_comb begin
+    if (decode_reload) pop_words = '0;  // buffer flushed on reload
+    else if (decode_fire)
+      pop_words = (BufIdxW + 1)'(decode_ptr_d[XLEN-1:2] - decode_ptr_q[XLEN-1:2]);
+    else pop_words = '0;
+  end
+
+  // ===========================================================================
+  // Fetch march + window push (tag-checked, in-order)
+  // ===========================================================================
+  // A window arriving this cycle is pushed iff it is valid, matches the expected
+  // next fetch word (push_addr_q), there is buffer room, and no reload is
+  // flushing the buffer this cycle.
+  logic buffer_flush;
+  assign buffer_flush = i_redirect_valid || slot2_redir_fire || slot1_taken;
+
+  // A window is accepted when it is valid, matches the expected next fetch word
+  // (push_addr_q), there is buffer room, and no reload is flushing the buffer.
+  logic push_en;
+  assign push_en = i_win_valid && !buffer_flush &&
+                   (i_win_served_addr[XLEN-1:2] == push_addr_q[XLEN-1:2]) &&
+                   (count_q <= BufCntW'(BufWords - 2));
+
+  // Free-march the request pointer while the buffer has room for the result --
+  // reserve four word slots (this cycle's push + the in-flight window pair).
+  logic fetch_advance;
+  assign fetch_advance = !buffer_flush && (count_q <= BufCntW'(BufWords - 4));
+
+  logic [31:0] push_w0, push_w1;
+  logic [SbWidth-1:0] push_sb0, push_sb1;
+  assign push_w0  = i_win_instr[31:0];
+  assign push_w1  = i_win_instr[63:32];
+  assign push_sb0 = i_win_sideband[SbWidth-1:0];
+  assign push_sb1 = i_win_sideband[2*SbWidth-1:SbWidth];
 
   // ===========================================================================
   // Queue flush + provider retarget pulse
   // ===========================================================================
-  // The slot-2 redirect is a resteer with NO flush (e0/e1 are valid, in-order).
+  // Queue flushes fire this cycle, aligned with the consume-side flush.  A
+  // taken-branch resteer flushes only the fetch buffer (its enqueued bundle is
+  // valid), NOT the queue.  The provider retarget PULSE is delayed one cycle so
+  // it lands when fetch_ptr_q presents the redirect / taken target.
   assign o_flush_full    = i_redirect_valid && !i_redirect_partial;
   assign o_flush_partial = i_redirect_valid && i_redirect_partial;
-  assign o_core_redirect = i_redirect_valid || slot2_redir_fire;
+  assign o_core_redirect = o_core_redirect_q;
+
+  assign o_ask_pc = fetch_ptr_q[XLEN-1:1];
 
   // ===========================================================================
   // State update
   // ===========================================================================
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      ask_q                 <= '0;  // reset vector 0 (core overrides via a redirect)
-      bind_valid_q          <= 1'b0;
+      decode_ptr_q          <= '0;  // reset vector 0 (core overrides via a redirect)
+      fetch_ptr_q           <= '0;
+      push_addr_q           <= '0;
+      rd_ptr_q              <= '0;
+      wr_ptr_q              <= '0;
+      count_q               <= '0;
+      o_core_redirect_q     <= 1'b0;
       slot2_redir_pending_q <= 1'b0;
     end else begin
-      ask_q                 <= ask_d;
-      // Capture this cycle's slot-1 ask-time lookup for next-cycle binding.
-      bind_valid_q          <= 1'b1;
-      bind_pc_q             <= ask_d[XLEN-1:1];
-      bind_btb_hit_q        <= i_btb_hit;
-      bind_btb_taken_q      <= i_btb_taken;
-      bind_btb_target_q     <= i_btb_target;
-      bind_dir_taken_q      <= i_dir_taken;
-      bind_dir_idx_q        <= i_dir_idx;
-      // Arm the one-shot slot-2 redirect for next cycle.  An external redirect
-      // dominates and clears it; slot2_taken is false on a fire cycle (accept
-      // gated), so the pending bit self-clears after firing.
+      // ---- Decode pointer ----
+      decode_ptr_q <= decode_ptr_d;
+
+      // ---- Fetch request pointer + FIFO ----
+      if (buffer_flush) begin
+        // Flush the fetch buffer and restart the request march at the resteer
+        // target's word.  decode_reload_tgt is the same target the decode pointer
+        // takes; the fetch/push pointers word-align it (the halfword offset lives
+        // in decode_ptr, surfaced as served_hw at the view).
+        fetch_ptr_q <= {decode_reload_tgt[XLEN-1:2], 2'b00};
+        push_addr_q <= {decode_reload_tgt[XLEN-1:2], 2'b00};
+        rd_ptr_q    <= '0;
+        wr_ptr_q    <= '0;
+        count_q     <= '0;
+      end else begin
+        if (fetch_advance) fetch_ptr_q <= fetch_ptr_q + XLEN'(8);
+        if (push_en) begin
+          fifo_word[wr_ptr_q]             <= push_w0;
+          fifo_word[wr_ptr_q+BufIdxW'(1)] <= push_w1;
+          fifo_sb[wr_ptr_q]               <= push_sb0;
+          fifo_sb[wr_ptr_q+BufIdxW'(1)]   <= push_sb1;
+          wr_ptr_q                        <= wr_ptr_q + BufIdxW'(2);
+          push_addr_q                     <= push_addr_q + XLEN'(8);
+        end
+        rd_ptr_q <= rd_ptr_q + BufIdxW'(pop_words);
+        count_q  <= count_q + (push_en ? BufCntW'(2) : BufCntW'(0)) - BufCntW'(pop_words);
+      end
+
+      // ---- Provider retarget pulse (delayed one cycle to align with fetch_ptr) ----
+      o_core_redirect_q <= buffer_flush;
+
+      // ---- Slot-2 one-shot redirect ----
       slot2_redir_pending_q <= !i_redirect_valid && slot2_taken;
       if (slot2_taken) slot2_redir_target_q <= i_btb_target_2;
     end
   end
 
 `ifndef SYNTHESIS
-  // The slot-1 pc-tag makes a bound prediction's address provably e0's address.
-  always_ff @(posedge i_clk) begin
-    if (!i_rst && o_enq_valid[0] && e0.predicted_taken) begin
-      p_bound_taken_pc_matches :
-      assert (bind_pc_q == e0.pc)
-      else $error("parcel_fill_engine: taken binding pc-tag mismatch");
-    end
-  end
   // Slot-2 is contiguous with slot-1, and a fire cycle enqueues nothing.
   always_ff @(posedge i_clk) begin
     if (!i_rst && o_enq_valid[1]) begin
       p_slot2_implies_slot1 : assert (o_enq_valid[0]);
-      // Downstream invariant: slot-2 PC = slot-1 PC + size(slot-1) (in [31:1]
-      // units, a compressed slot-1 advances the word-pc by 1, a 32-bit by 2).
       p_slot2_contiguous : assert (e1.pc == (e0.pc + (s1_is_compressed ? 31'd1 : 31'd2)));
     end
-    if (!i_rst && slot2_redir_fire) begin
-      p_fire_bubbles : assert (o_enq_valid == 2'b00);
+    // FIFO never overflows or underflows.
+    if (!i_rst) begin
+      p_count_bound : assert (count_q <= BufCntW'(BufWords));
+      p_pop_has_data : assert (pop_words <= count_q);
+    end
+    // FIFO front word always corresponds to word(decode_ptr).
+    if (!i_rst && view_valid && !buffer_flush) begin
+      p_front_aligned : assert (pop_words <= (BufIdxW + 1)'(2));
     end
   end
 `endif
