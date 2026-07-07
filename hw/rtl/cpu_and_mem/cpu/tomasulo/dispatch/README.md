@@ -60,6 +60,21 @@ slots need the same resource. The status output reports independent per-cause
 stall flags (any combination may assert in one cycle) so `cpu_ooo.sv` can
 increment per-cause performance counters without re-deriving the conditions.
 
+For x3 timing, `o_stall` (which drives the front-end hold `frontend_stall` and
+the replay handshake) is computed from the **resource-only** availability
+(`bundle_resource_ok`) — the same resource checks but **without** the live
+`i_valid`/`id_valid` qualifier — so it settles from the registered resource-full
+flags and registered-bundle-derived needs instead of the late
+`replay → id_valid → o_stall` chain (the post-opt WNS limiter). Dropping the
+validity qualifier can only assert *extra* stalls (a presented bundle that needs
+a full resource while `id_valid=0`); each merely holds the front-end, which is
+always safe — the consume engine freezes and re-presents the head, and
+`replay_after_dispatch_stall_q` registers this same `o_stall` so the replay pulse
+stays consistent with `id_stall_q` (no bundle dropped or duplicated). The actual
+fire/dispatch gate (`slot1_can_fire`, `dispatch_fire`, RS writes) keeps the
+`dispatch_valid` qualifier, and `o_status.stall` keeps the real id_valid-qualified
+value so the dispatch-backpressure perf counter is unchanged.
+
 ## RS routing
 
 Most instructions route to one of six reservation stations based on opcode; the
