@@ -780,6 +780,8 @@ module load_queue #(
   lq_issue_selector #(
       .DEPTH(DEPTH)
   ) lq_issue_selector_inst (
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
       .lq_valid(lq_valid),
       .lq_addr_valid(lq_addr_valid),
       .lq_is_mmio(lq_is_mmio),
