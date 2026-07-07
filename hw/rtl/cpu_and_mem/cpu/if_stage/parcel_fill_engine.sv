@@ -424,7 +424,13 @@ module parcel_fill_engine #(
   always_comb begin
     if (decode_reload) pop_words = '0;  // buffer flushed on reload
     else if (decode_fire)
-      pop_words = (BufIdxW + 1)'(decode_ptr_d[XLEN-1:2] - decode_ptr_q[XLEN-1:2]);
+      // x3 TIMING: read seq_advance (== decode_ptr_d in this exact branch, the
+      // decode_reload=0 && decode_fire case at the decode_ptr_d mux) instead of
+      // decode_ptr_d, so the late decode_reload / i_redirect_target reload mux
+      // (frontend_stall-fed) leaves the pop_words -> count_q/rd_ptr subtraction
+      // cone.  Bit-identical: this branch is reached only when decode_ptr_d ==
+      // seq_advance, so the subtracted value is literally the same every cycle.
+      pop_words = (BufIdxW + 1)'(seq_advance[XLEN-1:2] - decode_ptr_q[XLEN-1:2]);
     else pop_words = '0;
   end
 
@@ -438,9 +444,13 @@ module parcel_fill_engine #(
   assign buffer_flush = i_redirect_valid || slot2_redir_fire || slot1_taken;
 
   // A window is accepted when it is valid, matches the expected next fetch word
-  // (push_addr_q), there is buffer room, and no reload is flushing the buffer.
+  // (push_addr_q), and there is buffer room.  x3 TIMING: the "no reload is
+  // flushing" condition is NOT gated here -- push_en is consumed only inside the
+  // else (buffer_flush=0) branch of the state update below, so a !buffer_flush
+  // term (frontend_stall-fed via i_redirect_valid) would be a don't-care.
+  // State-identical; keeps frontend_stall off the count_q +2 input.
   logic push_en;
-  assign push_en = i_win_valid && !buffer_flush &&
+  assign push_en = i_win_valid &&
                    (i_win_served_addr[XLEN-1:2] == push_addr_q[XLEN-1:2]) &&
                    (count_q <= BufCntW'(BufWords - 2));
 
