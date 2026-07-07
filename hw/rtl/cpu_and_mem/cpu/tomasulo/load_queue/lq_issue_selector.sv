@@ -17,19 +17,27 @@
 // =============================================================================
 // lq_issue_selector
 // =============================================================================
-// Extracted verbatim from load_queue.sv (pure RTL boundary move, zero functional
-// change, except for the optional registered deadlock break input).  Parallel
-// issue selection: Phase A (oldest CDB-ready entry), Phase B
-// (memory-issue eligibility masks with MMIO/LR/AMO head gating + older-AMO
-// blocking), and the explicit ROB-head priority result.  Replaces the old serial
-// 16-level scan with per-entry masks + tree encoders.  issue_cdb_idx is exported
-// to drive the LQ data LUTRAM read; the RAM stays in load_queue.  Entry-array and
-// control inputs keep the parent's names so the bodies are byte-identical;
-// rotate_mask_from_head is duplicated (pure combinational).
+// Extracted from load_queue.sv (RTL boundary move).  Parallel issue selection:
+// Phase A (oldest CDB-ready entry), Phase B (memory-issue eligibility masks with
+// MMIO/LR/AMO head gating + older-AMO blocking), and the explicit ROB-head
+// priority result.  Replaces the old serial 16-level scan with per-entry masks +
+// tree encoders.  issue_cdb_idx is exported to drive the LQ data LUTRAM read; the
+// RAM stays in load_queue.  Entry-array and control inputs keep the parent's
+// names so the bodies are byte-identical.
+//
+// Almost entirely combinational; the ONLY state is blocked_by_amo_phys_q, a
+// timing FF that makes the older-AMO block mask 1-cycle-stale to lift the AMO
+// min-tree off the x3 WNS capture-enable cone (see blocked_by_amo).  A stale
+// block is correctness-safe via load_queue's live older_amo_write_pending
+// backstop.  i_force_head_amo remains the optional registered deadlock breaker.
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
 ) (
+    // Clock/reset for the registered older-AMO block mask (see blocked_by_amo
+    // below).  The rest of the module is combinational.
+    input logic i_clk,
+    input logic i_rst_n,
     input logic [DEPTH-1:0] lq_valid,
     input logic [DEPTH-1:0] lq_addr_valid,
     input logic [DEPTH-1:0] lq_is_mmio,
@@ -200,13 +208,44 @@ module lq_issue_selector #(
   // Physical-index mask (matches lq_valid indexing), then rotate into scan
   // order alongside the eligibility masks.
   logic [DEPTH-1:0] blocked_by_amo_phys;
+  logic [DEPTH-1:0] blocked_by_amo_phys_q;
   logic [DEPTH-1:0] blocked_by_amo;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       blocked_by_amo_phys[i] = lq_valid[i] && (entry_head_age[i] > oldest_pending_amo_age);
     end
   end
-  assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys, head_idx);
+  // TIMING (x3 WNS cone, -2.227 ns): register the older-AMO block mask so the
+  // deep lq_rob_tag -> entry_head_age -> pairwise-min TREE -> compare chain no
+  // longer sits on the issue-select -> sq_check_payload_en (capture clock-
+  // enable) path -- the post-opt x3 WNS limiter.  Everything upstream of this
+  // FF (entry_head_age subtract, the amo_age min tree, the block compare) now
+  // forms a clean register-to-register cone; the CE cone downstream sources a
+  // register instead of the tree.
+  //
+  // A 1-cycle-stale block mask is SAFE in both staleness directions:
+  //   * stale-HIGH (an older AMO just completed but the bit still reads
+  //     blocked): only DELAYS the younger load one cycle -- pure perf.
+  //   * stale-LOW (a load momentarily reads un-blocked): caught live in
+  //     load_queue by older_amo_write_pending, which gates BOTH sq_can_issue and
+  //     sq_do_forward AND releases the staged entry via sq_check_will_clear so
+  //     the oldest-first scan re-selects (a released load re-enters the scan).
+  // Moreover the block is monotonic-unblock over a continuously-valid entry's
+  // life: a newly-allocated AMO is younger (higher ROB tag), never older, than
+  // an existing entry, and the age compare is invariant to ROB-head advance, so
+  // a live+addr-valid entry's block bit only ever transitions 1->0 -- there is
+  // no harmful stale-LOW for such an entry.  The only stale-LOW corner is a
+  // freshly addr-valid entry, and lq_addr_valid gates it out of eligibility for
+  // >=1 cycle while the register catches up (with older_amo_write_pending as the
+  // hard backstop regardless).
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      blocked_by_amo_phys_q <= '0;
+    end else begin
+      blocked_by_amo_phys_q <= blocked_by_amo_phys;
+    end
+  end
+  assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys_q, head_idx);
 
   // Final Phase B masks: eligible AND not blocked by older AMO.
   logic [DEPTH-1:0] mem_issue_stored_mask;
