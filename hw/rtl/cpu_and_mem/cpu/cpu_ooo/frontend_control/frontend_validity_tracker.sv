@@ -73,9 +73,15 @@ module frontend_validity_tracker (
   logic                            id_stall_q;
   logic                            replay_after_dispatch_stall_q;
   logic                            flush_pipeline;
-  assign pipeline_ctrl                 = i_pipeline_ctrl;
-  assign from_if_to_pd                 = i_from_if_to_pd;
-  assign from_pd_to_id                 = i_from_pd_to_id;
+  assign pipeline_ctrl = i_pipeline_ctrl;
+  assign from_if_to_pd = i_from_if_to_pd;
+  assign from_pd_to_id = i_from_pd_to_id;
+  // x3 TIMING: pd_stage passes the instruction un-NOP'd with a registered
+  // inject_nop bubble marker; mask the opcode to the NOP opcode (OP_IMM) for
+  // bubble slots so the control-flow detection below stays bit-identical to the
+  // old in-register NOP injection.
+  wire [6:0] pd_effective_opcode =
+      from_pd_to_id.inject_nop ? riscv_pkg::OPC_OP_IMM : from_pd_to_id.instruction[6:0];
   assign from_id_to_ex                 = i_from_id_to_ex;
   assign from_id_to_ex_2               = i_from_id_to_ex_2;
   assign post_flush_holdoff_q          = i_post_flush_holdoff_q;
@@ -217,11 +223,10 @@ module frontend_validity_tracker (
   assign if_has_control_flow = if_stage_has_control_flow(from_if_to_pd);
   assign if_has_indirect_control_flow = if_stage_has_indirect_control_flow(from_if_to_pd);
   assign pd_has_control_flow = if_valid_q &&
-                               ((from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH) ||
-                                (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL) ||
-                                (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR));
-  assign pd_has_indirect_control_flow = if_valid_q &&
-                                        (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JALR);
+                               ((pd_effective_opcode == riscv_pkg::OPC_BRANCH) ||
+                                (pd_effective_opcode == riscv_pkg::OPC_JAL) ||
+                                (pd_effective_opcode == riscv_pkg::OPC_JALR));
+  assign pd_has_indirect_control_flow = if_valid_q && (pd_effective_opcode == riscv_pkg::OPC_JALR);
   assign id_has_control_flow = pd_valid_q && (
       from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
       from_id_to_ex.instruction_operation == riscv_pkg::BNE ||
@@ -279,9 +284,9 @@ module frontend_validity_tracker (
                                                 !(from_pd_to_id.btb_predicted_taken ||
                                                   from_pd_to_id.ras_predicted);
   assign pd_unpredicted_branch = pd_unpredicted_control_flow &&
-                                 (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_BRANCH);
+                                 (pd_effective_opcode == riscv_pkg::OPC_BRANCH);
   assign pd_unpredicted_jal = pd_unpredicted_control_flow &&
-                              (from_pd_to_id.instruction[6:0] == riscv_pkg::OPC_JAL);
+                              (pd_effective_opcode == riscv_pkg::OPC_JAL);
   assign id_unpredicted_control_flow = id_has_control_flow &&
                                        !(from_id_to_ex.btb_predicted_taken ||
                                          from_id_to_ex.ras_predicted);

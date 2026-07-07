@@ -66,6 +66,7 @@ IF_TO_PD_FIELDS = [
 PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
     ("instruction", 32),
+    ("inject_nop", 1),
     ("link_address", XLEN),
     ("is_compressed", 1),
     ("source_reg_1_early", 5),
@@ -242,8 +243,13 @@ async def _setup_test(dut: Any) -> None:
 
 
 def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
-    """Assert that a PD output packet contains an idle instruction slot."""
-    assert packet["instruction"] == NOP_INSTR
+    """Assert that a PD output packet contains an idle instruction slot.
+
+    An idle slot is marked by inject_nop=1 (slot-1's x3 timing path: the decoded
+    instruction is passed through un-NOP'd and the consumer applies the NOP) or,
+    for slot-2 which keeps in-register NOP injection, by instruction==NOP.
+    """
+    assert packet["inject_nop"] == 1 or packet["instruction"] == NOP_INSTR
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
@@ -380,7 +386,9 @@ async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
 
     packet = _read_pd_packet(dut)
     assert packet["program_counter"] == BASE_PC
-    assert packet["instruction"] == NOP_INSTR
+    assert (
+        packet["inject_nop"] == 1
+    )  # slot-1 marks a bubble via inject_nop (instruction passes through un-NOP'd)
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
@@ -428,7 +436,9 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
     await _advance_cycle(dut)
 
     packet = _read_pd_packet(dut)
-    assert packet["instruction"] == NOP_INSTR
+    assert (
+        packet["inject_nop"] == 1
+    )  # slot-1 marks a bubble via inject_nop (instruction passes through un-NOP'd)
     assert packet["illegal_instruction"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
