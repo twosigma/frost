@@ -726,12 +726,21 @@ module dispatch (
     // the 1-wide baseline.  When slot-2 IS valid but cannot fire, we stall
     // both slots so the front-end re-presents the bundle next cycle (no
     // skid buffer).
-    if (!dispatch_valid) begin
-      o_stall = 1'b0;
-    end else begin
-      o_stall = !bundle_fire_ok;
-    end
-    o_status.stall = o_stall;
+    // TIMING (x3 post-opt WNS cone): o_stall gates the front-end HOLD
+    // (frontend_stall) and the replay handshake.  Drive it from the
+    // resource-only availability (bundle_resource_ok) so it settles from the
+    // REGISTERED resource-full flags + registered-bundle-derived needs, instead
+    // of the late replay -> id_valid -> dispatch_valid -> o_stall chain (the x3
+    // WNS limiter).  Dropping the id_valid qualifier can only assert EXTRA
+    // stalls (a presented bundle needs a full resource while id_valid=0: empty
+    // queue / NOP-at-head / handshake edges); each merely HOLDS the front-end,
+    // which is always safe -- the consume engine freezes and re-presents the
+    // head, and replay_after_dispatch_stall_q registers this SAME o_stall so the
+    // replay pulse stays consistent with id_stall_q (no bundle dropped/duped).
+    // stall_for_trap_check is unused in the parcel-queue front end (sunk).
+    o_stall = !i_flush && !bundle_resource_ok;
+    // Perf counter keeps the REAL id_valid-qualified dispatch backpressure.
+    o_status.stall = dispatch_valid && !bundle_fire_ok;
   end
 
   // Dispatch fires when valid and not stalled.  Split per-RS dispatch outputs
@@ -796,6 +805,29 @@ module dispatch (
   // slot-1's standalone gate.
   assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
   assign dispatch_fire = bundle_fire_ok;
+
+  // Resource-only bundle availability: the SAME resource checks as
+  // bundle_fire_ok but with the live dispatch_valid / id_valid removed, so
+  // o_stall (front-end hold + replay) settles from registered inputs rather than
+  // the late id_valid chain (see the o_stall comment for the safety argument).
+  // slot-2 presence uses the bundle-inherent is_not_nop (minus fp-serialize)
+  // instead of the late i_valid_2, mirroring dispatch_valid_2's non-validity
+  // terms.  slot1_can_fire / dispatch_fire above keep the dispatch_valid gate,
+  // so actual dispatch/RS-write behavior is unchanged.
+  logic slot1_resources_ok;
+  logic slot2_present_for_stall;
+  logic slot2_bundle_ok_resource;
+  logic bundle_resource_ok;
+  assign slot1_resources_ok =
+      !i_hold &&
+      !i_rob_full &&
+      !(need_lq && i_lq_full) &&
+      !(need_sq && i_sq_full) &&
+      !(need_checkpoint && !i_checkpoint_available) &&
+      !rs_full;
+  assign slot2_present_for_stall = i_from_id_to_ex_2.is_not_nop && !slot2_fp_compute_serialized;
+  assign slot2_bundle_ok_resource = !slot2_present_for_stall || slot2_resources_ok;
+  assign bundle_resource_ok = slot1_resources_ok && slot2_bundle_ok_resource;
   assign int_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
       slot2_bundle_ok;
