@@ -84,6 +84,16 @@ the SQ committed queue is empty — at ROB head everything else in the LQ is
 younger (and fenced), so preemption is always safe; the 512-cycle deadlock
 breaker remains only as a backstop.
 
+For x3 timing the older-AMO block mask (`blocked_by_amo`) is **registered**
+(`blocked_by_amo_phys_q`) so the `lq_rob_tag → age → min-tree → compare` chain
+leaves the issue-select → `sq_check` capture-enable cone (the post-opt x3 WNS
+limiter). The 1-cycle-stale mask is safe both ways: stale-high only delays a
+younger load one cycle, and stale-low is caught live by `older_amo_write_pending`
+(below), which blocks issue/forward and releases the staged entry so the scan
+re-selects. Over a continuously-valid, addr-valid entry the block is monotonic
+(a newly allocated AMO is younger, never older), so no harmful stale-low arises
+for an already-selectable entry.
+
 The ROB-head priority scan admits **every** head load class, including MMIO
 and LR (only AMO stays gated on the committed queue being empty). The scan
 starts at the ring head `head_idx` (`= head_ptr`), not the ROB-head entry's
