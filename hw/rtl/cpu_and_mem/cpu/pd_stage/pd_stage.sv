@@ -271,6 +271,7 @@ module pd_stage #(
     if (i_pipeline_ctrl.reset) begin
       // On reset, insert NOP into pipeline
       o_from_pd_to_id.instruction         <= riscv_pkg::NOP;
+      o_from_pd_to_id.inject_nop          <= 1'b1;
       o_from_pd_to_id.is_compressed       <= 1'b0;
       o_from_pd_to_id.illegal_instruction <= 1'b0;
       // Branch prediction metadata
@@ -284,8 +285,16 @@ module pd_stage #(
       // insert NOP; otherwise pass values from decompression.
       //
       // pd_redirect_r is a registered signal (no timing concern in this mux).
-      o_from_pd_to_id.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                      riscv_pkg::NOP : final_instruction;
+      // x3 TIMING: pass the decoded instruction through un-NOP'd; the bubble
+      // (flush / registered pd_redirect / sel_nop) is carried in the registered
+      // inject_nop bit and applied by the consumers (id_stage decode +
+      // frontend_validity_tracker).  This takes the deep frontend-stall-fed
+      // sel_nop select off the 32-bit instruction D-mux -- final_instruction
+      // still feeds the shallow 5-bit source-reg extraction below, where the
+      // sel_nop mux is not on the critical path.
+      o_from_pd_to_id.instruction <= instruction_non_nop;
+      o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
+                                    i_from_if_to_pd.sel_nop;
       o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                         i_from_if_to_pd.sel_nop) ? 1'b0 :
                                                                  pd_sel_compressed;
@@ -352,6 +361,9 @@ module pd_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       o_from_pd_to_id_2.instruction         <= riscv_pkg::NOP;
+      // Slot-2 keeps its in-register NOP injection (below); inject_nop is the
+      // slot-1-only x3 timing mechanism, so it is held 0 for slot-2.
+      o_from_pd_to_id_2.inject_nop          <= 1'b0;
       o_from_pd_to_id_2.is_compressed       <= 1'b0;
       o_from_pd_to_id_2.illegal_instruction <= 1'b0;
       o_from_pd_to_id_2.btb_hit             <= 1'b0;
@@ -360,6 +372,7 @@ module pd_stage #(
     end else if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                         riscv_pkg::NOP : final_instruction_2;
+      o_from_pd_to_id_2.inject_nop <= 1'b0;  // slot-2 keeps in-register NOP (see reset)
       o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                           i_from_if_to_pd_2.sel_nop) ? 1'b0 :
                                                                     pd_sel_compressed_2;

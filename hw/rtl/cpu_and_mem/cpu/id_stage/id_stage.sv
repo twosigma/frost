@@ -115,7 +115,11 @@ module id_stage #(
   logic [XLEN-1:0] btb_expected_rs1_precomputed;
   logic btb_correct_non_jalr_precomputed;
 
-  assign instruction = i_from_pd_to_id.instruction;
+  // x3 TIMING: pd_stage now passes the decoded instruction through un-NOP'd and
+  // carries the bubble in inject_nop; apply the NOP here (registered inputs, one
+  // LUT) so the front-end-stall-fed NOP select is off the pd_stage 32-bit
+  // instruction register D.
+  assign instruction = i_from_pd_to_id.inject_nop ? riscv_pkg::NOP : i_from_pd_to_id.instruction;
   assign link_address_precomputed =
       i_from_pd_to_id.program_counter +
       (i_from_pd_to_id.is_compressed ? riscv_pkg::PcIncrementCompressed :

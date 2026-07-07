@@ -688,6 +688,13 @@ package riscv_pkg;
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     instr_t instruction;
+    // x3 TIMING: bubble marker.  When set, the consumers (id_stage,
+    // frontend_validity_tracker) treat `instruction` as a NOP.  Carrying the
+    // flush/pd_redirect/sel_nop NOP-injection here -- instead of muxing NOP into
+    // the 32-bit instruction register D in pd_stage -- keeps the deep
+    // frontend-stall-fed sel_nop select off the o_from_pd_to_id.instruction
+    // datapath (the -1.060ns o_from_pd_to_id[funct7] WNS endpoint).
+    logic inject_nop;
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.

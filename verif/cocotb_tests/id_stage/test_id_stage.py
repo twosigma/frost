@@ -77,6 +77,7 @@ PIPELINE_CTRL_FIELDS = [
 PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
     ("instruction", 32),
+    ("inject_nop", 1),
     ("link_address", XLEN),
     ("is_compressed", 1),
     ("source_reg_1_early", 5),
