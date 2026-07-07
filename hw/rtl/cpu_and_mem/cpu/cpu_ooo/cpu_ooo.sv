@@ -803,7 +803,15 @@ module cpu_ooo #(
   logic                               dir_update_taken_comb;
   assign dir_update_valid_comb = rob_commit_comb.valid && rob_commit_comb.is_branch &&
                                  !rob_commit_comb.is_jal && !rob_commit_comb.is_jalr;
-  assign dir_update_idx_comb = branch_dir_idx_table[rob_commit_comb.tag];
+  // x3 TIMING: address branch_dir_idx_table with the ungated registered head
+  // tag rather than rob_commit_comb.tag (= commit_en ? head_idx : '0).  When the
+  // read value matters (dir_update_valid_comb=1) commit_en=1 so tag==head_idx==
+  // head_tag; when commit_en=0 dir_update_idx is a don't-care because
+  // direction_predictor writes both BIM RAMs only under i_update_valid.  This
+  // lifts the whole commit-enable spine off the LUTRAM read address.  Slot-2
+  // reads head_tag+1 == commit_2's head_next_idx by the same argument.
+  wire [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag_p1 = head_tag + 1'b1;
+  assign dir_update_idx_comb   = branch_dir_idx_table[head_tag];
   assign dir_update_taken_comb = rob_commit_comb.branch_taken;
 
   // Slot-2 training: pass through directly on slot-1-idle cycles, else hold
@@ -817,7 +825,7 @@ module cpu_ooo #(
   logic                               dir_slot2_pass;
   assign dir_update_valid_2_comb = rob_commit_comb_2.valid && rob_commit_comb_2.is_branch &&
                                    !rob_commit_comb_2.is_jal && !rob_commit_comb_2.is_jalr;
-  assign dir_update_idx_2_comb = branch_dir_idx_table[rob_commit_comb_2.tag];
+  assign dir_update_idx_2_comb = branch_dir_idx_table[head_tag_p1];
   assign dir_slot2_pass = dir_update_valid_2_comb && !dir_update_valid_comb &&
                           !dir_update_held_valid;
 
@@ -833,12 +841,21 @@ module cpu_ooo #(
     end
   end
 
+  // x3 TIMING: precompute the non-slot-1 fallback so the 10-bit update-index
+  // register mux collapses to a single 2:1 gated by dir_update_valid_comb (one
+  // qualifier LUT off commit_en), dropping the dir_slot2_pass priority level
+  // from the index datapath.  Bit-identical: dir_slot2_pass=1 => held_valid=0 =>
+  // fallback=idx2; else fallback=held_idx; the only differing case
+  // (held_valid=0 && valid2=0) has dir_update_valid=0 => don't-care.
+  wire [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_fallback =
+      dir_update_held_valid ? dir_update_held_idx : dir_update_idx_2_comb;
+
   // Register the predictor update before it enters IF.  This removes the
   // ROB-head/serializer path from the distributed-RAM read-modify-write timing
   // arc; training is still in commit order, just one cycle later.
-  logic                               dir_update_valid;
+  logic dir_update_valid;
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx;
-  logic                               dir_update_taken;
+  logic dir_update_taken;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       dir_update_valid <= 1'b0;
@@ -847,8 +864,7 @@ module cpu_ooo #(
     end else begin
       dir_update_valid <= dir_update_valid_comb || dir_slot2_pass ||
                           (dir_update_held_valid && !dir_update_valid_comb);
-      dir_update_idx   <= dir_update_valid_comb ? dir_update_idx_comb :
-                          (dir_slot2_pass ? dir_update_idx_2_comb : dir_update_held_idx);
+      dir_update_idx <= dir_update_valid_comb ? dir_update_idx_comb : dir_update_idx_fallback;
       dir_update_taken <= dir_update_valid_comb ? dir_update_taken_comb :
                           (dir_slot2_pass ? rob_commit_comb_2.branch_taken :
                            dir_update_held_taken);
