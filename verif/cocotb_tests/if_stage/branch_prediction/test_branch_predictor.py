@@ -34,6 +34,8 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_pc.value = 0
     dut.i_pc_2.value = 0
+    dut.i_pc_2_alt.value = 0
+    dut.i_pc_2_use_alt.value = 0
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
     dut.i_update_target.value = 0

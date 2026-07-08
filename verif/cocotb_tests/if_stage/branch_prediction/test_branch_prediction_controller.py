@@ -30,6 +30,7 @@ RETURN_PC = 0x80000500
 TARGET_A = 0x80001000
 TARGET_HALFWORD = 0x80002002
 TARGET_SLOT2 = 0x80003000
+TARGET_SLOT2_ALT = 0x80003400
 TARGET_SLOT2_HALFWORD = 0x80004000
 TARGET_BTB_RETURN = 0x80005000
 TARGET_RAS_RETURN = 0x80006000
@@ -78,6 +79,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pd_redirect.value = 0
     dut.i_pc.value = 0
     dut.i_pc_2.value = 0
+    dut.i_pc_2_alt.value = 0
+    dut.i_slot2_pc_use_alt.value = 0
     dut.i_slot2_valid.value = 0
     dut.i_slot2_pc_is_halfword.value = 0
     dut.i_slot2_is_compressed.value = 0
@@ -397,7 +400,6 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     assert dut.o_slot2_btb_hit.value
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
-    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
 
     dut.i_stall.value = 1
     await _settle()
@@ -426,3 +428,29 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
 
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
+
+
+@cocotb.test()
+async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> None:
+    """The slot-2 BTB can select the pc_reg+4 candidate after parallel lookup."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+    await _btb_update(dut, pc=SLOT2_PC + 4, target=TARGET_SLOT2_ALT)
+
+    dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC + 4
+    dut.i_slot2_pc_use_alt.value = 0
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert int(dut.i_slot2_pc_use_alt.value) == 0
+    assert dut.o_slot2_btb_hit.value
+    assert dut.o_slot2_prediction_used.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+
+    dut.i_slot2_pc_use_alt.value = 1
+    await _settle()
+
+    assert dut.o_slot2_btb_hit.value
+    assert dut.o_slot2_prediction_used.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2_ALT
