@@ -378,18 +378,18 @@ module if_stage #(
     end
   end
 
-  // Slot-2 PC for BTB lookup (Session Q).  The aligner only allows slot-2
-  // to fire when slot-1 is compressed, so a valid slot-2 always starts at
-  // pc_reg + 2.  Keep that invariant out of the live sideband path; otherwise
-  // is_compressed feeds the slot-2 BTB address and then the PC redirect mux.
-  // Slot-2 sits at pc_reg + slot-1's size (RVC-led: +2, 32b-led: +4).  The
-  // size select uses the aligner's fast compressed bit — the same late
-  // BRAM-dependent signal that already steers the pc_reg advance muxes.
-  logic [XLEN-1:0] slot2_pc_for_btb;
+  // Slot-2 PC candidates for BTB lookup (Session Q).  Slot-2 sits at
+  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  Both
+  // candidate BTB lookups run in parallel; the late sideband-derived slot-1
+  // size selects between lookup results instead of driving a LUTRAM address.
+  logic [XLEN-1:0] slot2_pc_plus2_for_btb;
+  logic [XLEN-1:0] slot2_pc_plus4_for_btb;
+  logic            slot2_pc_use_plus4_for_btb;
   logic            slot2_pc_for_btb_is_halfword;
-  assign slot2_pc_for_btb = pc_reg + (is_compressed_fast ? riscv_pkg::PcIncrementCompressed :
-                                      riscv_pkg::PcIncrement32bit);
-  assign slot2_pc_for_btb_is_halfword = is_compressed_fast ? !pc_reg[1] : pc_reg[1];
+  assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
+  assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
+  assign slot2_pc_use_plus4_for_btb = !is_compressed_fast;
+  assign slot2_pc_for_btb_is_halfword = slot2_pc_use_plus4_for_btb ? pc_reg[1] : !pc_reg[1];
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -411,7 +411,9 @@ module if_stage #(
       .i_pc(pc),
 
       // Slot-2 PC for BTB lookup (Session Q dual-port)
-      .i_pc_2(slot2_pc_for_btb),
+      .i_pc_2(slot2_pc_plus2_for_btb),
+      .i_pc_2_alt(slot2_pc_plus4_for_btb),
+      .i_slot2_pc_use_alt(slot2_pc_use_plus4_for_btb),
       .i_slot2_valid(slot2_prediction_valid),
       .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
       // Session R: live is_compressed_2 lets BPC's halfword-PC predicate

@@ -548,6 +548,7 @@ module reservation_station #(
   // block below and tied off when DUAL_ISSUE is disabled.
   logic [DEPTH-1:0] entry_ready_2;
   logic [$clog2(DEPTH)-1:0] issue_idx_2;
+  logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
   logic issue_fire_2;
   logic stage2b_valid;
@@ -1117,10 +1118,12 @@ module reservation_station #(
 
       always_comb begin
         issue_idx_2 = '0;
+        issue_sel_2 = '0;
         any_ready_2 = 1'b0;
         for (int i = 0; i < DEPTH; i++) begin
           if (entry_ready_2[i] && !any_ready_2) begin
             issue_idx_2 = $clog2(DEPTH)'(i);
+            issue_sel_2[i] = 1'b1;
             any_ready_2 = 1'b1;
           end
         end
@@ -1213,9 +1216,75 @@ module reservation_station #(
       logic stage2b_is_jalr;
       riscv_pkg::branch_taken_op_e stage2b_branch_op;
 
+      logic [ReorderBufferTagWidth-1:0] issue2_rob_tag_selected;
+      logic [FLEN-1:0] issue2_src1_value_selected;
+      logic [FLEN-1:0] issue2_src2_value_selected;
+      logic [FLEN-1:0] issue2_src3_value_selected;
+      logic issue2_src1_cdb_bypass_selected;
+      logic issue2_src2_cdb_bypass_selected;
+      logic issue2_src3_cdb_bypass_selected;
+      logic issue2_src1_cdb_bypass_l1_selected;
+      logic issue2_src2_cdb_bypass_l1_selected;
+      logic issue2_src3_cdb_bypass_l1_selected;
+      logic issue2_use_imm_selected;
+      logic issue2_writes_cdb_hint_selected;
+
       logic stage2b_should_flush;
       logic stage2b_accept;
       logic can_issue_to_stage2b;
+
+      always_comb begin
+        issue2_rob_tag_selected = '0;
+        issue2_src1_value_selected = '0;
+        issue2_src2_value_selected = '0;
+        issue2_src3_value_selected = '0;
+        issue2_src1_cdb_bypass_selected = 1'b0;
+        issue2_src2_cdb_bypass_selected = 1'b0;
+        issue2_src3_cdb_bypass_selected = 1'b0;
+        issue2_src1_cdb_bypass_l1_selected = 1'b0;
+        issue2_src2_cdb_bypass_l1_selected = 1'b0;
+        issue2_src3_cdb_bypass_l1_selected = 1'b0;
+        issue2_use_imm_selected = 1'b0;
+        issue2_writes_cdb_hint_selected = 1'b0;
+
+        for (int i = 0; i < DEPTH; i++) begin
+          issue2_rob_tag_selected |= rs_rob_tag[i] & {ReorderBufferTagWidth{issue_sel_2[i]}};
+          issue2_src1_value_selected |=
+              (rs_src1_dispatch_cdb0[i] ?
+                   rs_dispatch_cdb0_value[i] :
+                   (rs_src1_dispatch_cdb1[i] ?
+                        rs_dispatch_cdb1_value[i] :
+                        ((src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+              src1_repair_sel[i]
+          ) : rs_src1_value[i]))) & {FLEN{issue_sel_2[i]}};
+          issue2_src2_value_selected |=
+              (rs_src2_dispatch_cdb0[i] ?
+                   rs_dispatch_cdb0_value[i] :
+                   (rs_src2_dispatch_cdb1[i] ?
+                        rs_dispatch_cdb1_value[i] :
+                        ((src2_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+              src2_repair_sel[i]
+          ) : rs_src2_value[i]))) & {FLEN{issue_sel_2[i]}};
+          issue2_src1_cdb_bypass_selected |= src1_cdb_bypass[i] & issue_sel_2[i];
+          issue2_src2_cdb_bypass_selected |= src2_cdb_bypass[i] & issue_sel_2[i];
+          issue2_src1_cdb_bypass_l1_selected |= src1_cdb_bypass_l1[i] & issue_sel_2[i];
+          issue2_src2_cdb_bypass_l1_selected |= src2_cdb_bypass_l1[i] & issue_sel_2[i];
+          issue2_use_imm_selected |= rs_use_imm[i] & issue_sel_2[i];
+          issue2_writes_cdb_hint_selected |= rs_writes_cdb_hint[i] & issue_sel_2[i];
+          if (HAS_SRC3) begin
+            issue2_src3_value_selected |=
+                (rs_src3_dispatch_cdb0[i] ?
+                     rs_dispatch_cdb0_value[i] :
+                     (rs_src3_dispatch_cdb1[i] ?
+                          rs_dispatch_cdb1_value[i] :
+                          ((src3_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+                src3_repair_sel[i]
+            ) : rs_src3_value[i]))) & {FLEN{issue_sel_2[i]}};
+            issue2_src3_cdb_bypass_selected |= src3_cdb_bypass[i] & issue_sel_2[i];
+            issue2_src3_cdb_bypass_l1_selected |= src3_cdb_bypass_l1[i] & issue_sel_2[i];
+          end
+        end
+      end
 
       assign stage2b_should_flush = stage2b_valid &&
           (i_flush_all || (i_flush_en && should_flush_entry(
@@ -1233,40 +1302,25 @@ module reservation_station #(
           stage2b_valid <= 1'b0;
         end else if (issue_fire_2) begin
           stage2b_valid <= 1'b1;
-          stage2b_rob_tag <= rs_rob_tag[issue_idx_2];
+          stage2b_rob_tag <= issue2_rob_tag_selected;
           stage2b_op <= riscv_pkg::instr_op_e'(pl2_op_bits);
-          stage2b_src1_value <= rs_src1_dispatch_cdb0[issue_idx_2] ?
-              rs_dispatch_cdb0_value[issue_idx_2] :
-              (rs_src1_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
-               ((src1_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
-              src1_repair_sel[issue_idx_2]
-          ) : rs_src1_value[issue_idx_2]));
-          stage2b_src2_value <= rs_src2_dispatch_cdb0[issue_idx_2] ?
-              rs_dispatch_cdb0_value[issue_idx_2] :
-              (rs_src2_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
-               ((src2_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
-              src2_repair_sel[issue_idx_2]
-          ) : rs_src2_value[issue_idx_2]));
-          stage2b_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx_2]}};
-          stage2b_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx_2]}};
-          stage2b_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx_2]}};
-          stage2b_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx_2]}};
+          stage2b_src1_value <= issue2_src1_value_selected;
+          stage2b_src2_value <= issue2_src2_value_selected;
+          stage2b_src1_bypass_mask <= {FLEN{issue2_src1_cdb_bypass_selected}};
+          stage2b_src2_bypass_mask <= {FLEN{issue2_src2_cdb_bypass_selected}};
+          stage2b_src1_bypass_mask_l1 <= {FLEN{issue2_src1_cdb_bypass_l1_selected}};
+          stage2b_src2_bypass_mask_l1 <= {FLEN{issue2_src2_cdb_bypass_l1_selected}};
           if (HAS_SRC3) begin
-            stage2b_src3_value <= rs_src3_dispatch_cdb0[issue_idx_2] ?
-                rs_dispatch_cdb0_value[issue_idx_2] :
-                (rs_src3_dispatch_cdb1[issue_idx_2] ? rs_dispatch_cdb1_value[issue_idx_2] :
-                 ((src3_repair_sel[issue_idx_2] != 3'd0) ? repair_value_for_sel(
-                src3_repair_sel[issue_idx_2]
-            ) : rs_src3_value[issue_idx_2]));
-            stage2b_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx_2]}};
-            stage2b_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx_2]}};
+            stage2b_src3_value <= issue2_src3_value_selected;
+            stage2b_src3_bypass_mask <= {FLEN{issue2_src3_cdb_bypass_selected}};
+            stage2b_src3_bypass_mask_l1 <= {FLEN{issue2_src3_cdb_bypass_l1_selected}};
           end
           stage2b_cdb_value <= i_cdb.value;
           stage2b_cdb_value_l1 <= i_cdb_2.value;
           stage2b_imm <= pl2_imm;
-          stage2b_use_imm <= rs_use_imm[issue_idx_2];
+          stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
-              rs_writes_cdb_hint[issue_idx_2] : 1'b0;
+              issue2_writes_cdb_hint_selected : 1'b0;
           stage2b_rm <= pl2_rm;
           stage2b_branch_target <= pl2_branch_target;
           stage2b_predicted_taken <= pl2_predicted_taken;
@@ -1357,6 +1411,7 @@ module reservation_station #(
     end else begin : gen_no_issue2
       assign entry_ready_2 = '0;
       assign issue_idx_2 = '0;
+      assign issue_sel_2 = '0;
       assign any_ready_2 = 1'b0;
       assign issue_fire_2 = 1'b0;
       assign stage2b_valid = 1'b0;

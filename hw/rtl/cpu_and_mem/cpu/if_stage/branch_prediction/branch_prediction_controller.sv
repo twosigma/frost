@@ -63,11 +63,12 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 PC for slot-2 BTB lookup.  Equals pc_reg + slot-1
-    // size when slot-2 is valid this cycle; the lookup is gated by
-    // i_slot2_valid so the slot-2 prediction only fires when the slot-2
-    // instruction is actually being processed in IF.
+    // Slot-2 BTB lookup candidates.  The normal port is pc_reg+2 and the
+    // alternate is pc_reg+4; i_slot2_pc_use_alt selects the native-slot-1 case
+    // after both LUTRAM lookups have completed.
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
+    input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
+    input logic                       i_slot2_pc_use_alt,
     input logic                       i_slot2_valid,
     input logic                       i_slot2_pc_is_halfword,
     // Slot-2 instruction's compressed flag (live from instruction_aligner).
@@ -204,6 +205,8 @@ module branch_prediction_controller (
 
       // Slot-2 prediction lookup (uses pc_reg + slot-1 size)
       .i_pc_2(i_pc_2),
+      .i_pc_2_alt(i_pc_2_alt),
+      .i_pc_2_use_alt(i_slot2_pc_use_alt),
       .o_btb_hit_2(btb_hit_2),
       .o_predicted_taken_2(btb_predicted_taken_2),
       .o_predicted_target_2(btb_predicted_target_2),
@@ -261,9 +264,11 @@ module branch_prediction_controller (
   // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
   // reaching from_if_to_pd); slot-2's prediction is combinational, so its index
   // is combinational off i_pc_2.
+  logic [riscv_pkg::XLEN-1:0] selected_slot2_pc;
+  assign selected_slot2_pc = i_slot2_pc_use_alt ? i_pc_2_alt : i_pc_2;
   logic [riscv_pkg::BpDirIdxBits-1:0] pred_idx_snapshot_r;
   assign o_dir_idx   = pred_idx_snapshot_r;
-  assign o_dir_idx_2 = i_pc_2[riscv_pkg::BpDirIdxBits:1];
+  assign o_dir_idx_2 = selected_slot2_pc[riscv_pkg::BpDirIdxBits:1];
 
   // BTB-hit direction comes from the BTB's own 2-bit counter (btb_predicted_taken).
   // The decoupled bimodal (dir_taken) is used ONLY for the PD BTB-miss redirect

@@ -652,36 +652,44 @@ module tomasulo_wrapper #(
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
   // registered — feeds RS/ROB wakeup
-  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus;
+  (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus;
   // same-cycle INT_RS-local copy
-  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
+  (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic [riscv_pkg::FLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // registered lane-1 — feeds RS/ROB wakeup
-  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2;
+  (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2;
   // same-cycle INT_RS-local copy
-  (* equivalent_register_removal = "no" *)riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
+  (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic [riscv_pkg::FLEN-1:0] cdb_bus_2_int_rs_value;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
-  riscv_pkg::fu_complete_t   alu_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   div_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   mem_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_add_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_mul_adapter_to_arbiter;
-  riscv_pkg::fu_complete_t   fp_div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t mem_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
 
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
   // when the adapter is idle.  In production cpu_ooo ties them to '0.
-  riscv_pkg::fu_complete_t   cdb_arb_in_0;
-  riscv_pkg::fu_complete_t   cdb_arb_in_1;
-  riscv_pkg::fu_complete_t   cdb_arb_in_2;
-  riscv_pkg::fu_complete_t   cdb_arb_in_3;
-  riscv_pkg::fu_complete_t   cdb_arb_in_4;
-  riscv_pkg::fu_complete_t   cdb_arb_in_5;
-  riscv_pkg::fu_complete_t   cdb_arb_in_6;
-  riscv_pkg::fu_complete_t   cdb_arb_in_7;
-  riscv_pkg::fu_complete_t   alu2_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t cdb_arb_in_0;
+  riscv_pkg::fu_complete_t cdb_arb_in_1;
+  riscv_pkg::fu_complete_t cdb_arb_in_2;
+  riscv_pkg::fu_complete_t cdb_arb_in_3;
+  riscv_pkg::fu_complete_t cdb_arb_in_4;
+  riscv_pkg::fu_complete_t cdb_arb_in_5;
+  riscv_pkg::fu_complete_t cdb_arb_in_6;
+  riscv_pkg::fu_complete_t cdb_arb_in_7;
+  riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
   always_comb begin
     cdb_arb_in_0 = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
     cdb_arb_in_1 = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
@@ -734,6 +742,8 @@ module tomasulo_wrapper #(
   always_ff @(posedge i_clk) begin
     cdb_bus <= cdb_bus_comb;
     cdb_bus_int_rs <= cdb_bus_comb;
+    cdb_bus_int_rs_tag <= cdb_bus_comb.tag;
+    cdb_bus_int_rs_value <= cdb_bus_comb.value;
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
@@ -754,6 +764,8 @@ module tomasulo_wrapper #(
   always_comb begin
     cdb_bus_int_rs_qualified       = cdb_bus_int_rs;
     cdb_bus_int_rs_qualified.valid = cdb_bus_int_rs_valid;
+    cdb_bus_int_rs_qualified.tag   = cdb_bus_int_rs_tag;
+    cdb_bus_int_rs_qualified.value = cdb_bus_int_rs_value;
   end
 
   // Derive ROB CDB write from CDB broadcast
@@ -797,6 +809,8 @@ module tomasulo_wrapper #(
   always_ff @(posedge i_clk) begin
     cdb_bus_2 <= cdb_bus_2_comb;
     cdb_bus_2_int_rs <= cdb_bus_2_comb;
+    cdb_bus_2_int_rs_tag <= cdb_bus_2_comb.tag;
+    cdb_bus_2_int_rs_value <= cdb_bus_2_comb.value;
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
   always_comb begin
@@ -807,6 +821,8 @@ module tomasulo_wrapper #(
   always_comb begin
     cdb_bus_2_int_rs_qualified       = cdb_bus_2_int_rs;
     cdb_bus_2_int_rs_qualified.valid = cdb_bus_2_int_rs_valid;
+    cdb_bus_2_int_rs_qualified.tag   = cdb_bus_2_int_rs_tag;
+    cdb_bus_2_int_rs_qualified.value = cdb_bus_2_int_rs_value;
   end
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter_2;
   always_comb begin
