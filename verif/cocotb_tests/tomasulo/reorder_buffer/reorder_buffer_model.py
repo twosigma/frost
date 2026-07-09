@@ -259,7 +259,6 @@ class ReorderBufferModel:
         self.serial_state: SerialState = SerialState.IDLE
 
         # External coordination (inputs to model)
-        self.sq_empty: bool = True
         self.sq_committed_empty: bool = True
         self.csr_done: bool = False
         self.mret_done: bool = False

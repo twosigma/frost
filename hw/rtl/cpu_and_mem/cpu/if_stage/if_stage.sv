@@ -1027,26 +1027,30 @@ module if_stage #(
   assign o_from_if_to_pd.effective_instr = replay_saved_if_outputs ? assembled_instr_sc :
                                            assembled_instr;
 
-  // Pre-computed link address for JAL/JALR
+  // Pre-computed link address (the slot-1 fall-through PC), feeding the RAS
+  // call push.  ID recomputes the pipeline link address for JAL/JALR itself
+  // from the registered PC and is_compressed, so this adder no longer rides
+  // the IF→PD packet.
   // Link address = instruction_pc + 2 (compressed) or + 4 (32-bit)
   logic [XLEN-1:0] instruction_pc;
   logic [XLEN-1:0] link_address;
 
-  // link_address (the fall-through PC) must reflect the TRUE size of the slot-1
-  // instruction held across a stall.  The shared sel_compressed_sc is flush-zeroed
-  // by its stall_capture_reg (stall_capture_reg.sv: `if (i_flush) saved <= '0`),
+  // link_address must reflect the TRUE size of the slot-1 instruction held
+  // across a stall.  The shared sel_compressed_sc is flush-zeroed by its
+  // stall_capture_reg (stall_capture_reg.sv: `if (i_flush) saved <= '0`),
   // so on a flush-inside-stall a *compressed* branch held at fetch reads
-  // is_compressed_for_link = 0 -> link_address = pc_reg + 4 (one halfword too far).
-  // That stale fall-through link is then consumed as the not-taken redirect target
-  // (early_misprediction_recovery: `... : rs_issue_int.link_addr`), making fetch
-  // skip the branch's successor parcel.  This is the no-MMU-Linux timer-IRQ
-  // "gremlin": the revmap_size load (`lw a5,80(a0)`) right after a not-taken
-  // `c.beqz` is dropped, so the dependent `bgeu a1,a5` reads a stale a5 and takes
-  // the wrong IRQ-dispatch path.  Capture sel_compressed for the link WITHOUT the
-  // flush-zero so the held size matches the actual held instruction (pc_reg+2/+4
-  // correctly).  sel_compressed_sc's other consumers (o_from_if_to_pd.sel_compressed,
-  // slot2_pc_sc) are replay-gated by sel_nop_saved=1 after a flush, so they are
-  // unaffected; only this link path reads the captured bit in the post-flush window.
+  // is_compressed_for_link = 0 -> link_address = pc_reg + 4 (one halfword too
+  // far).  When ID still consumed the carried link, that stale fall-through
+  // became the not-taken redirect target (early_misprediction_recovery),
+  // making fetch skip the branch's successor parcel — the no-MMU-Linux
+  // timer-IRQ "gremlin": the revmap_size load (`lw a5,80(a0)`) right after a
+  // not-taken `c.beqz` was dropped, so the dependent `bgeu a1,a5` read a stale
+  // a5 and took the wrong IRQ-dispatch path.  Capture sel_compressed for the
+  // link WITHOUT the flush-zero so the held size matches the actual held
+  // instruction (pc_reg+2/+4 correctly); today that keeps the RAS push
+  // address right in the post-flush window.  sel_compressed_sc's other
+  // consumers (o_from_if_to_pd.sel_compressed, slot2_pc_sc) are replay-gated
+  // by sel_nop_saved=1 after a flush, so they are unaffected.
   logic is_compressed_for_link;
   logic sel_compressed_for_link_sc;
   stall_capture_reg #(
@@ -1091,10 +1095,9 @@ module if_stage #(
   );
 
   // Keep the instruction PC aligned with the same stall-replayed instruction
-  // data/link metadata that PD consumes.
+  // data that PD consumes.
   assign o_from_if_to_pd.program_counter = replay_saved_if_outputs ? instruction_pc_sc :
                                            instruction_pc;
-  assign o_from_if_to_pd.link_address = replay_saved_if_outputs ? link_address_sc : link_address;
 
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
@@ -1394,26 +1397,17 @@ module if_stage #(
   assign pc_reg_advance_sel =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
 
-  // Slot-2 PC = slot-1 PC + slot-1 size; slot-2 link = slot-2 PC + slot-2 size.
-  // Use the stall-replayed slot-1 PC and is_compressed_for_link so slot-2's
-  // PC stays aligned with slot-1's even across stall boundaries.
+  // Slot-2 PC = slot-1 PC + slot-1 size.  Use the stall-replayed slot-1 PC so
+  // slot-2's PC stays aligned with slot-1's even across stall boundaries.
   logic [XLEN-1:0] slot2_pc_live;
-  logic [XLEN-1:0] slot2_link_live;
   assign slot2_pc_live   = instruction_pc +
                            (is_compressed ? riscv_pkg::PcIncrementCompressed :
                                             riscv_pkg::PcIncrement32bit);
-  assign slot2_link_live = slot2_pc_live +
-                           (is_compressed_2 ? riscv_pkg::PcIncrementCompressed :
-                                              riscv_pkg::PcIncrement32bit);
 
   logic [XLEN-1:0] slot2_pc_sc;
-  logic [XLEN-1:0] slot2_link_sc;
   assign slot2_pc_sc   = instruction_pc_sc +
                          (sel_compressed_sc ? riscv_pkg::PcIncrementCompressed :
                                               riscv_pkg::PcIncrement32bit);
-  assign slot2_link_sc = slot2_pc_sc +
-                         (sel_compressed_2_sc ? riscv_pkg::PcIncrementCompressed :
-                                                riscv_pkg::PcIncrement32bit);
 
   // Slot-2 IF→PD packet assembly.
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
@@ -1429,7 +1423,6 @@ module if_stage #(
   assign o_from_if_to_pd_2.effective_instr = replay_saved_if_outputs ? effective_instr_2_sc :
                                              effective_instr_2;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
-  assign o_from_if_to_pd_2.link_address = replay_saved_if_outputs ? slot2_link_sc : slot2_link_live;
 
   // BTB metadata (Session Q): slot-2 has its own BTB lookup port now.  The
   // metadata flows combinationally — slot-2 lookup happens at the same

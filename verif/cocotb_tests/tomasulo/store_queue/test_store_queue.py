@@ -698,7 +698,7 @@ async def test_forward_match_no_data(dut: Any) -> None:
 # Test 15: Forwarding - covered sub-word load (SW → LB) forwards image word
 # ============================================================================
 @cocotb.test()
-async def test_forward_size_mismatch(dut: Any) -> None:
+async def test_forward_covered_subword_load(dut: Any) -> None:
     """SW at addr, LB check at same word → forwards the memory-image word.
 
     A word store covers any byte/half load in its word; the SQ delivers the
@@ -1601,7 +1601,7 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_forward_lh_from_fsd_stalls(dut: Any) -> None:
+async def test_forward_lh_from_fsd_both_words(dut: Any) -> None:
     """FSD at addr, LH at base and at the high word → both forward.
 
     Store is DOUBLE (FSD): both of its words are fully written, so sub-word

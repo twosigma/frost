@@ -328,10 +328,6 @@ module pd_stage #(
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id.program_counter <= i_from_if_to_pd.program_counter;
-      // ID recomputes the pipeline link address from the registered PC and
-      // is_compressed bit, keeping the live IF sideband link-adder off this
-      // PD register.
-      o_from_pd_to_id.link_address <= '0;
       // Early source registers for forwarding/hazard timing
       o_from_pd_to_id.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_1;
@@ -390,7 +386,6 @@ module pd_stage #(
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
-      o_from_pd_to_id_2.link_address <= '0;
       o_from_pd_to_id_2.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                                5'd0 : source_reg_1_2;
       o_from_pd_to_id_2.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?

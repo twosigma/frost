@@ -89,7 +89,6 @@ IF_TO_PD_FIELDS = [
     ("sel_nop", 1),
     ("sel_compressed", 1),
     ("effective_instr", 32),
-    ("link_address", XLEN),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
@@ -351,7 +350,6 @@ async def test_reset_holdoff_creates_initial_fetch_lead(dut: Any) -> None:
         effective=NOP_INSTR,
         compressed=False,
     )
-    assert packet["link_address"] == 4
 
 
 @cocotb.test()
@@ -373,7 +371,6 @@ async def test_disabled_prediction_32bit_fetch_packet_and_slot2_nop(
         effective=ADD_INSTR_A,
         compressed=False,
     )
-    assert packet["link_address"] == BASE_PC + 4
     assert not packet["btb_hit"]
     assert not packet["btb_predicted_taken"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
@@ -402,7 +399,6 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=current_word,
         compressed=True,
     )
-    assert packet1["link_address"] == BASE_PC + 2
 
     packet2 = _read_if_packet(dut, slot2=True)
     _assert_packet(
@@ -413,7 +409,6 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=0x108000EF,
         compressed=True,
     )
-    assert packet2["link_address"] == BASE_PC + 4
     assert not packet2["btb_hit"]
     assert not packet2["ras_predicted"]
 
@@ -449,7 +444,6 @@ async def test_stall_registered_replays_captured_if_packet(dut: Any) -> None:
         effective=ADD_INSTR_A,
         compressed=False,
     )
-    assert packet["link_address"] == BASE_PC + 4
 
 
 @cocotb.test()

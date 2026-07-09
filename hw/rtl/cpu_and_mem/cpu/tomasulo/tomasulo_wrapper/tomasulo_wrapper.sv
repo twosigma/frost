@@ -1519,7 +1519,6 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok),
 
       // External coordination
-      .i_sq_empty                 (o_sq_empty),
       .i_sq_committed_empty       (sq_committed_empty),
       .i_fence_i_sync_done        (i_fence_i_sync_done),
       .o_fence_i_sync_req         (o_fence_i_sync_req),

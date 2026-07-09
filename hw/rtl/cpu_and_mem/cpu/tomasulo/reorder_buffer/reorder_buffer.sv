@@ -145,7 +145,6 @@ module reorder_buffer (
     // =========================================================================
     // Store Queue Coordination
     // =========================================================================
-    input  logic i_sq_empty,            // Store queue has no entries at all
     input  logic i_sq_committed_empty,  // No committed entries pending write (for FENCE)
     // FENCE.I cache-sync handshake (see rob_serializer): request held while
     // the serializer waits; done is a level while the request is high.

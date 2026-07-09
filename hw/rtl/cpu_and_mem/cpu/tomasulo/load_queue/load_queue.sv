@@ -773,7 +773,6 @@ module load_queue #(
   logic [IdxWidth-1:0] head_mem_update_idx;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
   logic [DEPTH*ReorderBufferTagWidth-1:0] lq_rob_tag_flat;
-  logic force_head_amo;
 
   for (genvar g_lq_tag = 0; g_lq_tag < DEPTH; g_lq_tag++) begin : gen_lq_rob_tag_flat
     assign lq_rob_tag_flat[g_lq_tag*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
@@ -799,7 +798,6 @@ module load_queue #(
       .head_idx(head_idx),
       .i_rob_head_tag(i_rob_head_tag),
       .i_sq_committed_empty(i_sq_committed_empty),
-      .i_force_head_amo(force_head_amo),
       .o_issue_cdb_found(issue_cdb_found),
       .o_issue_cdb_idx(issue_cdb_idx),
       .o_stored_scan_found(stored_scan_found),
@@ -1187,93 +1185,6 @@ module load_queue #(
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
 
-  // Break the rare ROB-head AMO deadlock without changing steady-state AMO
-  // order.  The normal selector remains pristine until a head AMO is eligible
-  // for issue and the machine has made no useful LQ/SQ progress for a sustained
-  // window.  force_head_amo is now subsumed: the selector admits a head AMO
-  // on i_sq_committed_empty alone and discards i_force_head_amo, so this
-  // counter/flag is inert plumbing kept only for easy re-enable.
-  localparam int unsigned AmoDeadlockThresh = 512;
-  localparam int unsigned AmoDeadlockCntW = $clog2(AmoDeadlockThresh + 1);
-
-  logic head_amo_eligible_waiting;
-  logic sq_check_waiting_older_store;
-  logic head_amo_no_issue_deadlock;
-  logic head_amo_sq_deadlock;
-  logic head_amo_deadlock_wait;
-  logic [AmoDeadlockCntW-1:0] amo_deadlock_cnt_q;
-
-  always_comb begin
-    head_amo_eligible_waiting = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (rob_head_match_q[i] &&
-          lq_valid[i] &&
-          lq_is_amo[i] &&
-          entry_addr_valid_now[i] &&
-          !lq_issued[i] &&
-          !lq_data_valid[i] &&
-          !sq_check_in_flight_mask[i] &&
-          i_sq_committed_empty) begin
-        head_amo_eligible_waiting = 1'b1;
-      end
-    end
-  end
-
-  assign sq_check_waiting_older_store =
-      sq_check_pending && sq_check_phase2 && sq_check_entry_issueable &&
-      !sq_check_misaligned && !sq_commit_interlock &&
-      ((!sq_no_older_store &&
-        (!i_sq_all_older_addrs_known || (i_sq_forward.match && !i_sq_forward.can_forward))) ||
-       older_amo_write_pending) &&
-      !i_mem_bus_busy && !drop_mem_response_pending && !i_flush_all && !i_flush_en;
-
-  assign head_amo_no_issue_deadlock =
-      head_amo_eligible_waiting && !issue_mem_found && !sq_check_pending;
-  assign head_amo_sq_deadlock =
-      head_amo_eligible_waiting && sq_check_waiting_older_store &&
-      (sq_check_rob_tag_q != i_rob_head_tag);
-  assign head_amo_deadlock_wait =
-      !mem_outstanding && (amo_state == AMO_IDLE) &&
-      (head_amo_no_issue_deadlock || head_amo_sq_deadlock);
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all || i_flush_en || !head_amo_deadlock_wait) begin
-      amo_deadlock_cnt_q <= '0;
-    end else if (amo_deadlock_cnt_q < AmoDeadlockCntW'(AmoDeadlockThresh)) begin
-      amo_deadlock_cnt_q <= amo_deadlock_cnt_q + 1'b1;
-    end
-  end
-
-  // Registered form of (amo_deadlock_cnt_q >= AmoDeadlockThresh), armed one
-  // count early so it asserts on exactly the same cycle the combinational
-  // compare would.  The counter moves by at most +1 per cycle and shares this
-  // FF's clear terms, so the two forms are cycle-for-cycle identical — the
-  // register only exists to keep the counter compare out of the issue-select
-  // → sq_check capture cone.
-  logic force_head_amo_q;
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all || i_flush_en || !head_amo_deadlock_wait) begin
-      force_head_amo_q <= 1'b0;
-    end else begin
-      force_head_amo_q <= (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh - 1));
-    end
-  end
-
-  assign force_head_amo = force_head_amo_q;
-
-  // Simulation-only cross-check (Yosys' frontend rejects the assert-else
-  // action block, so keep it out of the formal build like the other sim
-  // assertions below).
-`ifndef SYNTHESIS
-`ifndef FORMAL
-  always_ff @(posedge i_clk) begin
-    if (i_rst_n) begin
-      assert (force_head_amo_q == (amo_deadlock_cnt_q >= AmoDeadlockCntW'(AmoDeadlockThresh)))
-      else $error("force_head_amo_q diverged from the counter compare");
-    end
-  end
-`endif
-`endif
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));

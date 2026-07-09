@@ -64,7 +64,6 @@ module cpu_tb
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
   logic [31:0] tb_served_addr_q;  // address whose window is presented (o_pc, 1 cycle back)
-  localparam logic [31:0] TbNop = 32'h0000_0013;  // addi x0,x0,0
 
   // Ports below are unused by this instruction-feed testbench but must exist as
   // local signals so the wildcard (.*) connection to cpu_ooo resolves.

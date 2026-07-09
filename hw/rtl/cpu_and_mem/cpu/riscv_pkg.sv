@@ -638,8 +638,6 @@ package riscv_pkg;
     logic sel_compressed;  // True if raw_parcel is a compressed instruction
     // Effective 32-bit instruction word (aligned or spanning-assembled)
     instr_t effective_instr;
-    // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
-    logic [XLEN-1:0] link_address;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
@@ -676,9 +674,6 @@ package riscv_pkg;
     // frontend-stall-fed sel_nop select off the o_from_pd_to_id.instruction
     // datapath (the -1.060ns o_from_pd_to_id[funct7] WNS endpoint).
     logic inject_nop;
-    // Always '0 from PD: ID recomputes the JAL/JALR link address from the
-    // registered PC and is_compressed (keeps IF's link adder off this register)
-    logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.
     logic is_compressed;
     // Early source registers for decode and dispatch timing optimization.
