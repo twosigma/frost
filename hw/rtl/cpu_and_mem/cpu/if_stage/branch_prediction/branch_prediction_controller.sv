@@ -263,7 +263,7 @@ module branch_prediction_controller (
   // Carry the predict-time bimodal index.  Slot-1 is registered in the
   // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
   // reaching from_if_to_pd); slot-2's prediction is combinational, so its index
-  // is combinational off i_pc_2.
+  // is combinational off the selected slot-2 lookup PC (i_pc_2 / i_pc_2_alt).
   logic [riscv_pkg::XLEN-1:0] selected_slot2_pc;
   assign selected_slot2_pc = i_slot2_pc_use_alt ? i_pc_2_alt : i_pc_2;
   logic [riscv_pkg::BpDirIdxBits-1:0] pred_idx_snapshot_r;

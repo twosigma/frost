@@ -17,10 +17,10 @@
 /*
  * Tomasulo back-end performance counters.
  *
- * Owns the 60 back-end profiling counters: ROB head-wait / commit-blocked
+ * Owns the 64 back-end profiling counters: ROB head-wait / commit-blocked
  * buckets and their decompositions, per-FU back-pressure, memory disambiguation,
  * occupancy sums, L0$ hit/fill, and widen-commit opportunity/fire/blocker
- * breakdowns. Accumulates each event, snapshots all 60 on demand (4 fanout
+ * breakdowns. Accumulates each event, snapshots all 64 on demand (4 fanout
  * banks), and muxes the selected counter to the CSR read port.
  *
  * Extracted verbatim from tomasulo_wrapper (no functional change): the body

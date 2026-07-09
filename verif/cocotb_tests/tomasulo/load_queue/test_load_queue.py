@@ -1978,8 +1978,8 @@ async def test_blocked_head_amo_does_not_preempt_normal_candidate(dut: Any) -> N
     from .lq_interface import AMOSWAP_W
 
     # Physical order: normal younger load, younger pending AMO, ROB-head AMO.
-    # The head AMO is physically blocked, but the load is a normal candidate, so
-    # the rescue path must stay dormant and preserve speculative load progress.
+    # Both AMOs are architecturally older than the normal load, so the AMO
+    # write fence holds the load and the eligible ROB-head AMO issues first.
     dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
     model.alloc(2, False, MEM_SIZE_WORD, False)
     await dut_if.step()

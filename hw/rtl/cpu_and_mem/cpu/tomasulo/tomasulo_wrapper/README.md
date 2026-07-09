@@ -13,7 +13,7 @@ verbatim, so the flattened design is unchanged:
 
 | Submodule | Dir | What it holds |
 |-----------|-----|---------------|
-| `tomasulo_perf_counters` | `perf/` | The 60 back-end performance counters (accumulate / snapshot / four banks / CSR-style readout). |
+| `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters (accumulate / snapshot / four banks / CSR-style readout). |
 | `commit_bus_pipeline` | `commit_bus/` | The four `always_ff` that register the combinational ROB commit bus into `commit_bus_q` / `commit_bus_2_q` plus the decomposed `commit_q_*` fields. |
 | `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a PERSISTENT repair candidate: it waits for its base tag on the dispatch done-repair channels or the live CDB lanes, latches the repaired base if a fresh update owns the SQ port that cycle, and drains on the next free cycle; candidates are evicted by a newer un-ready store on the same slot, killed when MEM_RS issues their store (which also closes the ROB-tag-reuse window), and cleared on flush. |
 | `dispatch_rs_router` | `dispatch_routing/` | Combinational decode of the dispatch packet(s) into per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent" signals. |
@@ -176,7 +176,7 @@ three FP adapters additionally set `REGISTER_OUTPUT=1`.
 
 ## Performance counters
 
-The wrapper owns 60 live performance counters (in
+The wrapper owns 64 live performance counters (in
 `perf/tomasulo_perf_counters.sv`), snapshot-captured in four banks for
 end-of-test reporting. In rough groups:
 
@@ -190,7 +190,10 @@ end-of-test reporting. In rough groups:
   `load_no_outstanding`); the `load_no_outstanding` half is then split
   into five sub-buckets (`addr_pending`, `sq_disambig`, `bus_blocked`,
   `cdb_wait`, `post_lq`), and `bus_blocked` is further split into five
-  mutually exclusive causes.
+  mutually exclusive causes. The `staging` cause is itself
+  sub-decomposed into four buckets (`other_in_staging`,
+  `launch_gated`, `slow_outstanding`, `capture_gap`) that partition
+  it exactly.
 - **Commit stalls.** `commit_blocked_{csr, fence, wfi, mret, trap}`
   attribute cycles where the head sits in the serializing FSM.
 - **Widen-commit profile.** `head_and_next_done` (1-wide commit
@@ -215,7 +218,7 @@ end-of-test reporting. In rough groups:
 
 Snapshot capture fans out via `max_fanout=768`-annotated bank
 signals so a single capture-enable strobe doesn't need to drive all
-60 counters from one source.
+64 counters from one source.
 
 ## Verification hooks
 

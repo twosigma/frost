@@ -211,7 +211,7 @@ module load_queue #(
     // counter uses, so the sum across sub-buckets equals `bus_blocked`.
     output logic o_head_load_bb_issued,  // head has been issued, waiting for response
     output logic o_head_load_bb_bus_busy,  // i_mem_bus_busy = 1
-    output logic o_head_load_bb_amo,  // older AMO pending (blocked_by_amo prefix OR)
+    output logic o_head_load_bb_amo,  // older AMO pending (any_pending_amo approximation)
     output logic o_head_load_bb_sq_wait,  // in sq_check stage but !sq_check_phase2
     output logic o_head_load_bb_staging,  // catch-all (pre-sq_check capture, drop-pending, etc.)
     // Staging catch-all sub-decomposition (partitions o_head_load_bb_staging):
@@ -723,8 +723,11 @@ module load_queue #(
     else addr_update_pre_match_q <= addr_update_pre_match;
   end
 
-  // Head-priority is only a fairness/performance hint for ordinary loads; the
-  // exact live ROB-head checks remain in the eligibility masks for MMIO/LR/AMO.
+  // Head-priority uses the registered match: for ordinary loads it is a
+  // fairness/performance hint, and for head MMIO/LR loads it is the
+  // staging-slot starvation fix (the head entry stays head, so a 1-cycle-
+  // stale match is safe); the exact live ROB-head issue gates for
+  // MMIO/LR/AMO are downstream in sq_check_entry_issueable.
   // Registering the hint keeps lq_rob_tag compares out of the SQ-check payload
   // address capture cone.
   logic [DEPTH-1:0] rob_head_match_q;
@@ -1187,8 +1190,9 @@ module load_queue #(
   // Break the rare ROB-head AMO deadlock without changing steady-state AMO
   // order.  The normal selector remains pristine until a head AMO is eligible
   // for issue and the machine has made no useful LQ/SQ progress for a sustained
-  // window.  Once saturated, force_head_amo lets the head-priority path choose
-  // that AMO for one capture/replace cycle.
+  // window.  force_head_amo is now subsumed: the selector admits a head AMO
+  // on i_sq_committed_empty alone and discards i_force_head_amo, so this
+  // counter/flag is inert plumbing kept only for easy re-enable.
   localparam int unsigned AmoDeadlockThresh = 512;
   localparam int unsigned AmoDeadlockCntW = $clog2(AmoDeadlockThresh + 1);
 
@@ -1547,9 +1551,10 @@ module load_queue #(
     //         These three sources are mutually exclusive in time:
     //           - cache_hit and sq_forward each require sq_check_pending
     //             on a non-AMO entry. While amo_state == AMO_WRITE_ACTIVE
-    //             the blocked_by_amo prefix-OR keeps the LQ from staging
-    //             any other entry, so the AMO write completion never
-    //             collides with cache_hit or sq_forward.
+    //             the older-AMO write fence (older_amo_write_pending)
+    //             blocks any staged load from hitting or forwarding, so
+    //             the AMO write completion never collides with cache_hit
+    //             or sq_forward.
     //           - cache_hit requires sq_no_older_store while sq_forward
     //             requires the opposite, so they cannot fire together.
     // ---------------------------------------------------------------

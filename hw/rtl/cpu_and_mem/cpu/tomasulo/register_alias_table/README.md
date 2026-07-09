@@ -72,7 +72,9 @@ slot clears.
 ## Bulk free
 
 In addition to per-checkpoint free (driven by ROB commit on a
-correctly-predicted branch), the RAT accepts a bulk free mask that
+correctly-predicted branch — two ports, so a 2-wide commit retiring
+a second branch at head+1 can release two checkpoints in one
+cycle), the RAT accepts a bulk free mask that
 clears multiple checkpoint slots in one cycle. The wrapper uses
 this when a partial flush wipes out a contiguous range of younger
 speculative branches at once — every flushed branch's checkpoint

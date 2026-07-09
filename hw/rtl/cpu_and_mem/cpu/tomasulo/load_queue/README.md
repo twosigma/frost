@@ -71,7 +71,7 @@ Two things the cache intentionally *doesn't* do:
 The parallel issue-selection scan — oldest CDB-ready entry (Phase A),
 memory-issue eligibility masks with MMIO/LR/AMO head gating and older-AMO
 blocking (Phase B), and the explicit ROB-head priority result — lives in
-[`lq_issue_selector.sv`](lq_issue_selector.sv), a pure boundary move out of
+[`lq_issue_selector.sv`](lq_issue_selector.sv), extracted from
 `load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
 which stays in `load_queue.sv`.
 
@@ -82,7 +82,8 @@ could let a younger load slip past a pending AMO and read the pre-AMO
 memory value. A head AMO is admitted to the head-priority scans whenever
 the SQ committed queue is empty — at ROB head everything else in the LQ is
 younger (and fenced), so preemption is always safe; the 512-cycle deadlock
-breaker remains only as a backstop.
+breaker is subsumed — its force output is no longer consumed by the selector
+and remains only as inert plumbing.
 
 For x3 timing the older-AMO block mask (`blocked_by_amo`) is **registered**
 (`blocked_by_amo_phys_q`) so the `lq_rob_tag → age → min-tree → compare` chain
@@ -198,7 +199,10 @@ directly; the head-load wait is split into five sub-buckets
 (`addr_pending`, `sq_disambig`, `bus_blocked`, `cdb_wait`, `post_lq`)
 and the `bus_blocked` bucket is further split into five mutually
 exclusive causes (`bb_issued`, `bb_bus_busy`, `bb_amo`, `bb_sq_wait`,
-`bb_staging`). The wrapper parent counter `head_wait_mem_load` is
+`bb_staging`). The `bb_staging` catch-all is itself decomposed into
+four mutually exclusive sub-causes (`bbs_other_in_staging`,
+`bbs_launch_gated`, `bbs_slow_outstanding`, `bbs_capture_gap`).
+The wrapper parent counter `head_wait_mem_load` is
 still live alongside the decomposition.
 
 ## Verification

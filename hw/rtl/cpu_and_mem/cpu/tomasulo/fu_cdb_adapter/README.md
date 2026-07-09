@@ -45,8 +45,9 @@ There's one state bit (`result_pending`):
 - **Pending, granted, new input arrives**: latch the new input;
   stay pending. (This back-to-back behavior is gated by the
   `ALLOW_GRANT_REFILL` parameter — the wrapper sets it to 0 for every
-  adapter except the ALU, e.g. on the MEM adapter so SC commit
-  ordering can serialize correctly. With refill disabled, a grant
+  adapter except the two integer ALU pipes, e.g. on the MEM adapter
+  so SC commit ordering can serialize correctly. With refill
+  disabled, a grant
   always clears to idle even if a new input is present.)
 
 The two "idle, input arrives" cases above assume the default

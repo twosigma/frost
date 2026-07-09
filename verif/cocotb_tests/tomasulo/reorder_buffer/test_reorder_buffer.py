@@ -46,7 +46,7 @@ Constrained Random Tests:
 Coverage Gap Tests:
 - test_checkpoint_assignment: Checkpoint assignment verified on commit
 - test_jalr_end_to_end: JALR allocate, resolve, commit with link_addr
-- test_amo_waits_for_sq: AMO stalls until store queue drains
+- test_amo_commits_normally: AMO commits normally once done (SQ ordering is enforced at LQ issue, not in the ROB)
 - test_fence_i_waits_for_sq: FENCE.I stalls until SQ drains, then flushes
 - test_exception_on_csr: Exception on CSR enters TRAP_WAIT, not CSR_EXEC
 - test_flush_during_serialization: flush_all during CSR serialization resets cleanly

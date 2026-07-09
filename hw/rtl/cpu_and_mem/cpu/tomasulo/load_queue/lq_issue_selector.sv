@@ -29,7 +29,8 @@
 // timing FF that makes the older-AMO block mask 1-cycle-stale to lift the AMO
 // min-tree off the x3 WNS capture-enable cone (see blocked_by_amo).  A stale
 // block is correctness-safe via load_queue's live older_amo_write_pending
-// backstop.  i_force_head_amo remains the optional registered deadlock breaker.
+// backstop.  i_force_head_amo is kept wired but subsumed (head AMOs are
+// admitted on i_sq_committed_empty alone; see unused_force_head_amo below).
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -335,8 +336,9 @@ module lq_issue_selector #(
       // the ROB head, asserted by p_mmio_only_at_head) keep store->load
       // ordering correct.  A head AMO stays gated on i_sq_committed_empty (its
       // RMW write lives in the LQ, invisible to SQ disambiguation, so it must
-      // see an empty committed queue); i_force_head_amo remains the AMO
-      // deadlock-breaker backstop.  head_mem_update already admitted MMIO — it
+      // see an empty committed queue); i_force_head_amo is subsumed by that
+      // gating and left unconsumed (kept for easy re-enable).
+      // head_mem_update already admitted MMIO — it
       // only excluded LR — so this also removes that stored-vs-update
       // asymmetry (a head MMIO load kept priority only on the exact cycle its
       // address arrived, then lost it once it sat with lq_addr_valid=1).

@@ -107,7 +107,7 @@ module instruction_aligner #(
     // Slot-2 kill-cause classification (profiling taps only; not on the PC
     // path).  Mutually exclusive; meaningful only on cycles where slot-1 is
     // real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
-    output logic o_slot2_kill_slot1_32bit,  // Slot-1 is a native 32-bit instruction
+    output logic o_slot2_kill_slot1_32bit,  // Slot-1 is native 32-bit control flow / serializing
     output logic o_slot2_kill_slot1_ctrl,   // Slot-1 is compressed control flow
     output logic o_slot2_kill_class,        // Slot-2 start is a serialize/FP-compute class op
     output logic o_slot2_kill_transient     // Buffer/BRAM transient state
@@ -615,8 +615,8 @@ module instruction_aligner #(
   // bram_current_word[31:16] into bram_next_word[15:0]) requires
   // !slot2_bram_unsafe to fire.  Mirrors Session J's analysis but extends
   // the bram-reliability requirement to CURRENT_HI 32-bit slot-2.
-  // NEXT_HI is still unreachable here (gated by !o_is_compressed = slot-1 RVC
-  // requirement; NEXT_HI only arises when slot-1 is 32-bit).
+  // NEXT_HI (32b slot-1 at odd, RVC slot-2 only) is reachable too and likewise
+  // requires !slot2_bram_unsafe (see slot2_next_hi_invalid below).
   // Session L: dropped slot2_is_store_op from the OR chain (see detector
   // comment above).
   // Session M: 6-channel done-repair (added) covers slot-2 source-tag

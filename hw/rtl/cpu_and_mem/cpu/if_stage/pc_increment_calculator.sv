@@ -18,7 +18,7 @@
   PC Increment Calculator
 
   Computes the next sequential PC values using parallel adders for timing optimization.
-  This module pre-computes fetch PC increment results (pc+2 through pc+8) in parallel,
+  This module pre-computes fetch PC increment results (pc+2 through pc+10) in parallel,
   then selects the correct result based on instruction type and state.
 
   Key Timing Optimization:
@@ -317,7 +317,7 @@ module pc_increment_calculator #(
   // Linux boot hang), but comparing the muxed 32-bit value puts the wide NEQ
   // AFTER the late sideband-derived i_pc_reg_advance_sel. Both compare
   // operands of every CANDIDATE are register-sourced (i_pc, i_pc_reg, and the
-  // pre-computed increments), so run the five 32-bit compares in parallel off
+  // pre-computed increments), so run the six 32-bit compares in parallel off
   // the registers and let the late selects pick among 1-bit results. Mirrors
   // the o_seq_next_pc_reg selection above arm-for-arm (including the
   // pc_reg_advance_mux unique-case default mapping to the +2 candidate), so

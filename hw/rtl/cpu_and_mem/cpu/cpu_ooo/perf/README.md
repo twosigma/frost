@@ -1,9 +1,9 @@
 # Performance counters
 
-FROST exposes 97 profiling counters through machine-mode custom CSRs. This
+FROST exposes 101 profiling counters through machine-mode custom CSRs. This
 directory holds `perf_counter_aggregator.sv`, which owns the counter index
 space: it accumulates the 37 top-level (front-end / dispatch) counters,
-muxes in the 60 back-end counters owned by
+muxes in the 64 back-end counters owned by
 `../../tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv`, and drives
 the CSR read port. This README documents the whole counter space — both
 blocks — plus the CSR access protocol and the software API.
@@ -12,11 +12,11 @@ blocks — plus the CSR access protocol and the software API.
 
 | CSR | Address | Access | Purpose |
 |-----|---------|--------|---------|
-| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–96) |
+| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–100) |
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Total number of counters (97) |
+| `mperfcount` | `0xFC2` | R | Total number of counters (101) |
 
 How it works:
 
@@ -29,7 +29,7 @@ How it works:
   single-cycle capture pulse (`csr_file.sv`). Both blocks copy every live
   counter into snapshot registers on that same cycle (each block fans the
   pulse out through four `max_fanout`-annotated bank copies, all driven by
-  the one pulse), so the 97 values form one coherent snapshot.
+  the one pulse), so the 101 values form one coherent snapshot.
 - **Reads return the snapshot, never the live value.** Capture first, then
   read. Because `mperfdata`/`mperfdatah` both read the frozen 64-bit
   snapshot, the two halves are consistent without a hi/lo re-read loop.
@@ -38,7 +38,7 @@ How it works:
   counter value reaches `mperfdata` two cycles after `mperfsel` changes.
   This is invisible to software: CSR instructions execute serially at
   commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never outrun it.
-- Selecting an out-of-range index (≥ 97) reads 0.
+- Selecting an out-of-range index (≥ 101) reads 0.
 
 ## Numbering contract
 
@@ -46,7 +46,7 @@ The global index space is two concatenated blocks:
 
 - top-level block: `[0, PerfTopCounterCount)` = 0–36, owned by
   `perf_counter_aggregator.sv`;
-- wrapper block: `[PerfTopCounterCount, PerfCounterCount)` = 37–96, owned by
+- wrapper block: `[PerfTopCounterCount, PerfCounterCount)` = 37–100, owned by
   `tomasulo_perf_counters.sv`, addressed there by the wrapper-local index
   (global − 37).
 
@@ -264,9 +264,9 @@ where the head's op currently sits.
 | 91 | 54 | `HEAD_INT_STAGE2` | cycle | No longer in RS storage; parked in the RS's stage-2 issue register. |
 | 92 | 55 | `HEAD_INT_POST_RS` | cycle | Left the RS entirely (not in stage 2 either); in the FU / CDB path. |
 
-### Wrapper 93–96: widen-commit blocker taxonomy
+### Wrapper 93–100: widen-commit blocker taxonomy + staging catch-all split
 
-Source: `reorder_buffer.sv`. All gated on commit firing with head+1
+Sources: `reorder_buffer.sv` (93–96) and `load_queue.sv` (97–100). 93–96 are gated on commit firing with head+1
 valid+done, so these four partition the hazard-blocked gap:
 93 + 94 + 95 + 96 = 73 − 77.
 

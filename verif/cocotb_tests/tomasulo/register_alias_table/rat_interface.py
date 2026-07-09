@@ -171,7 +171,7 @@ class RATInterface:
         self.dut.i_alloc_dest_reg.value = 0
         self.dut.i_alloc_rob_tag.value = 0
 
-        # Rename write - slot 2 (held inactive in these unit tests)
+        # Rename write - slot 2 (2-wide dispatch)
         self.dut.i_alloc_valid_2.value = 0
         self.dut.i_alloc_dest_rf_2.value = 0
         self.dut.i_alloc_dest_reg_2.value = 0

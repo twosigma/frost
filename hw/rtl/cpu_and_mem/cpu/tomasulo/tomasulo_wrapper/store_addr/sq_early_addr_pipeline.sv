@@ -193,7 +193,8 @@ module sq_early_addr_pipeline (
                                      sq_early_addr_repair_match &&
                                      !i_flush_all && !i_flush_en;
 
-  // Slot-2 repair match — snoops the same 3 CDB channels.  Both
+  // Slot-2 repair match — snoops the same six done-repair channels and
+  // both live CDB lanes.  Both
   // slots can independently match on the same broadcast tag in the rare case
   // where both stores rename to the same source tag (e.g. both stores read the
   // same arch reg with no intervening write); each computes its own address

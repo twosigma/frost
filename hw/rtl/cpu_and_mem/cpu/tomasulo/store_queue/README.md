@@ -194,11 +194,12 @@ writing memory. The reservation register itself lives in the LQ.
 
 Hybrid FF + LUTRAM, same idea as the LQ. Control fields stay in
 flip-flops for parallel CAM-style scan; the 64-bit data payload
-lives in two duplicated LUTRAM instances (identical writes,
-different read addresses) so the forwarding scan and the head
-writeback can read different entries on the same cycle. The
-forwarding scan finds the match index from the FF fields, then reads
-`sq_data` from one LUTRAM at that single address.
+lives in a single LUTRAM instance read by the drain side at
+`drain_idx_q`, plus a per-entry flip-flop mirror written in parallel
+for the forwarding scan. The forwarding scan qualifies entries from
+the FF fields and its winner tree carries the mirrored payload
+directly into the registered output — no LUTRAM read on the
+forwarding path.
 
 The forwarding-check address arrives on two functionally-identical
 ports, `i_sq_check_addr` and `i_sq_check_addr_b` (a `dont_touch`'d

@@ -939,7 +939,8 @@ async def test_in_order_write(dut: Any) -> None:
         await alloc_addr_data(dut_if, model, rob_tag=i, address=addr, data=data)
 
     # Commit all 3 (out of order to test that writes still happen in order).
-    # Commit head entry LAST to avoid prematurely setting write_outstanding.
+    # Commit head entry LAST to avoid prematurely launching the head drain
+    # write (making write_inflight_cnt nonzero).
     for tag in [1, 2, 0]:
         dut_if.drive_commit(tag)
         model.commit(tag)

@@ -9,15 +9,17 @@ instruction/data memory ports.
 
 The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
 result writeback, and commit can each move up to two instructions or completions
-per cycle, but each reservation station still issues only one operation per
-cycle and there is one integer ALU. Result writeback uses a **2-lane common data
+per cycle. Most reservation stations issue one operation per cycle, but the
+INT reservation station is dual-issue, feeding two integer ALU pipes (branches
+stay on pipe 0). Result writeback uses a **2-lane common data
 bus**: the arbiter grants the top two FU completions in fixed-priority order,
 while aligned plain stores bypass the CDB. Lane 0 remains on the same-cycle RS
-issue bypass path; lane 1 updates the ROB and registered RS wakeup /
-dispatch-capture paths, so a resident consumer wakes one cycle later by design.
+issue bypass path, and lane 1 now wakes resident consumers in the same cycle
+as well (symmetric lane-1 wakeup, `LANE1_ISSUE_BYPASS`, on by default).
 Different function units can still execute concurrently — up to six reservation
-stations can issue in the same cycle — but this is not a fully symmetric
-2-issue execution engine.
+stations can issue in the same cycle, up to seven operations counting the INT
+station's second port — but this is not a fully symmetric 2-issue execution
+engine.
 
 The RTL is intended to stay portable: the core uses generic SystemVerilog and
 is built in CI with Verilator for simulation plus Yosys for vendor-agnostic

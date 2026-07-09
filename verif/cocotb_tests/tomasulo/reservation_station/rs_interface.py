@@ -322,7 +322,8 @@ class RSInterface:
         # Slot-2 dispatch (2-wide dispatch plumbing).  Verilator
         # zero-initializes top-module inputs by default so tests would pass
         # without this, but the explicit init avoids any future X-propagation
-        # surprises if the dispatch widening lands here.
+        # surprises.  (Slot-2 dispatch is live: tests drive it via
+        # drive_dispatch_2.)
         self.dut.i_dispatch_2.value = 0
         # Fast slot-1 intent (used only by SPECULATIVE_DATA_WRITES instances).
         # Default-off mirrors the wrapper tie-off for non-speculative RSes.

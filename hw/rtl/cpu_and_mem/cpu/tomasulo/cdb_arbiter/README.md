@@ -38,8 +38,10 @@ It is intended as a flush-independent "would be granted" signal for FU shims
 that pop their FIFOs under kill (the entries are being cleared by the shim's own
 flush input on the same edge, so popping is harmless), keeping `cdb_kill` out of
 the shim FIFO next-state cone. As wired today the wrapper leaves `o_grant_raw`
-unconnected — shims instead take the kill-gated `o_grant` (`o_cdb_grant`) and
-auto-drain flushed FIFO heads on their own — so the port is currently driven but
+unconnected — shims instead pop when their adapter's registered
+`result_pending` bit is clear (the kill-gated `o_grant` only updates that
+flop, so it reaches the shim pop logic one cycle removed) and auto-drain
+flushed FIFO heads on their own — so the port is currently driven but
 unused.
 
 ## Verification

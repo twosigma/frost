@@ -81,7 +81,8 @@ verif/
 │   ├── predecode/         # Fetch provider + predecode-line block tests (L1I fetch seam)
 │   ├── cache/             # Cache hierarchy + line-port arbiter block tests
 │   ├── cpu_ooo/           # OOO block tests (commit, recovery, memory router,
-│   │                      #   register files, perf counters, pipeline control)
+│   │                      #   register files, perf counters, pipeline control,
+│   │                      #   frontend validity tracker)
 │   ├── control/           # Control-block tests (trap_unit interrupt/MRET arbitration)
 │   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
 │                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)

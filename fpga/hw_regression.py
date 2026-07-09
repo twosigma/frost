@@ -110,8 +110,10 @@ from sweep_coremark_pro import (  # noqa: E402
 # Regression score baselines per board, compared with --score-tolerance
 # headroom. None = not yet recorded on that board: the stage reports the
 # measured score without failing so the value can be pasted here to arm the
-# check. The x3 coremark baseline matches the README headline (924 CoreMark
-# at 300 MHz, 3.08 CoreMark/MHz).
+# check. The x3 coremark baseline is the last on-hardware measurement
+# (924 CoreMark at 300 MHz, 3.08 CoreMark/MHz), recorded before the
+# salvage-2wide-backend perf work; the README headline now cites that
+# branch's simulation-measured figure. Re-arm from the next hardware run.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 924.0, "coremark_pro": 75.81},
     "genesys2": {"coremark": 406.91, "coremark_pro": 28.78},

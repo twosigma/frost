@@ -23,6 +23,10 @@ underlying FU's pipeline depth:
   `branch_jump_unit` at top level — but JALR writes its
   link address through here. (JAL is `RS_NONE`: it never reaches an
   RS, and its link value is written at ROB allocation instead.)
+  The wrapper instantiates two copies of this shim (CDB slots `ALU`
+  and `ALU2`) off the dual-issue INT RS's two issue ports;
+  branch-class entries are steered to issue port 0, so only the
+  first pipe carries branch/JALR traffic.
 - **`fp_add_shim`** and **`fp_mul_shim`** wrap shallow FPU pipelines
   (~2–10 cycles) with one in-flight op at a time. A single tag
   register and a one-hot subunit selector are enough. Both NaN-box
@@ -63,6 +67,6 @@ output FIFO) advance their read pointer on pop but intentionally do
 not clear the per-slot `valid` / `flushed` bits. `fifo_count` is the
 authoritative occupancy tracker — the stale bits are ignored until
 the next push to that slot overwrites them. Clearing on pop would
-pull `i_*_accepted` (which depends on the cross-FU CDB arbiter grant
-cone, which depends on `mispredict_recovery_pending`) into each
+pull `i_*_accepted` (derived from the CDB adapter's registered
+`result_pending` bit and the shim's own FIFO-head valid) into each
 FIFO register's next-state logic, hurting timing on the flush cone.
