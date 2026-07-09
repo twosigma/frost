@@ -110,6 +110,16 @@ module sq_forwarding_unit #(
 
   // Forwarding scan result index (drives the SQ data-RAM read address in parent)
   logic [IdxWidth-1:0] fwd_match_idx;
+  (* equivalent_register_removal = "no", max_fanout = 16 *)
+  logic [ReorderBufferTagWidth-1:0] rob_head_tag_q;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      rob_head_tag_q <= '0;
+    end else begin
+      rob_head_tag_q <= i_rob_head_tag;
+    end
+  end
 
   function automatic logic word_addr_eq(input logic [WordAddrWidth-1:0] lhs,
                                         input logic [WordAddrWidth-1:0] rhs);
@@ -229,7 +239,7 @@ module sq_forwarding_unit #(
 `endif
 
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
-  assign fwd_load_age = {1'b0, i_sq_check_rob_tag} - {1'b0, i_rob_head_tag};
+  assign fwd_load_age       = {1'b0, i_sq_check_rob_tag} - {1'b0, rob_head_tag_q};
 
   // Block 1: per-entry forwarding qualification from FF-based fields only
   // (no LUTRAM read, no inter-entry "last match wins" dependency).
@@ -273,7 +283,7 @@ module sq_forwarding_unit #(
       entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
       sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
       sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
-      fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, i_rob_head_tag};
+      fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
       // Program-order rank for winner selection: ring distance from the SQ
       // head.  DEPTH is a power of two, so the subtraction wraps naturally.
       fwd_entry_slot_age[i] = IdxWidth'(i) - i_sq_head_idx;
