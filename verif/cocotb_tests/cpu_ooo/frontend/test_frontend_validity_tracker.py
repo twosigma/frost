@@ -218,6 +218,8 @@ def _drive_if(dut: Any, fields: Mapping[str, int | bool]) -> None:
         "raw_parcel": NOP_INSTR & 0xFFFF,
     }
     packet.update(fields)
+    if "effective_instr" in fields and "raw_parcel" not in fields:
+        packet["raw_parcel"] = int(fields["effective_instr"]) & 0xFFFF
     dut.i_from_if_to_pd.value = _pack_if_to_pd(packet)
 
 
