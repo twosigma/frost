@@ -380,13 +380,14 @@ module store_queue #(
   riscv_pkg::mem_size_e                             sq_size                           [DEPTH];
 
   // ===========================================================================
-  // sq_data LUTRAM — duplicated for 2 read ports
+  // sq_data storage
   // ===========================================================================
-  // sq_data is written once (data_update CAM match) and read at two
-  // independent addresses: fwd_match_idx (forwarding scan result) and
-  // head_idx (memory write).  Duplicate sdp_dist_ram instances receive
-  // identical writes; each provides one async read port.
-  // Valid bits in FFs gate all reads; alloc-time zeroing is unnecessary.
+  // sq_data is written once (data_update CAM match) and read by the drain side
+  // at drain_idx_q.  Store-to-load forwarding mirrors the same payload into
+  // per-entry registers so the forwarding winner tree can carry the selected
+  // data directly, avoiding a critical winner-index -> async LUTRAM -> output
+  // register path.  Valid bits in FFs gate all reads; alloc-time zeroing is
+  // unnecessary.
 
   // Write port: resolved CAM match index from data_update
   logic                                             sq_data_we;
@@ -405,24 +406,23 @@ module store_queue #(
     end
   end
 
-  // Forwarding scan result index (set by forwarding always_comb below)
-  logic [IdxWidth-1:0] fwd_match_idx;
-
   // Read outputs
-  logic [FLEN-1:0] sq_data_fwd_rd;  // at fwd_match_idx
   logic [FLEN-1:0] sq_data_head_rd;  // at head_idx
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(FLEN)
-  ) u_sq_data_fwd (
-      .i_clk,
-      .i_write_enable (sq_data_we),
-      .i_write_address(sq_data_wr_idx),
-      .i_write_data   (i_data_update.data),
-      .i_read_address (fwd_match_idx),
-      .o_read_data    (sq_data_fwd_rd)
-  );
+  logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
+  logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
+
+  initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
+
+  always_ff @(posedge i_clk) begin
+    if (sq_data_we) begin
+      sq_data_fwd_entry[sq_data_wr_idx] <= i_data_update.data;
+    end
+  end
+
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_sq_data_fwd_flat
+    assign sq_data_fwd_flat[i*FLEN+:FLEN] = sq_data_fwd_entry[i];
+  end
 
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
@@ -591,7 +591,7 @@ module store_queue #(
 
   // ===========================================================================
   // Store-to-Load Forwarding -> sq_forwarding_unit.sv (pure boundary move).
-  // The SQ data-RAM forwarding read (addressed by fwd_match_idx) stays here.
+  // The SQ forwarding data mirror stays here.
   // ===========================================================================
   sq_forwarding_unit #(
       .DEPTH(DEPTH)
@@ -619,10 +619,9 @@ module store_queue #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_rd            (sq_data_fwd_rd),
+      .sq_data_fwd_flat          (sq_data_fwd_flat),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
-      .o_sq_forward              (o_sq_forward),
-      .o_fwd_match_idx           (fwd_match_idx)
+      .o_sq_forward              (o_sq_forward)
   );
 
   // ===========================================================================
