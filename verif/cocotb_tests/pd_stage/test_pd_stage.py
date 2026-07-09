@@ -50,7 +50,6 @@ IF_TO_PD_FIELDS = [
     ("sel_nop", 1),
     ("sel_compressed", 1),
     ("effective_instr", 32),
-    ("link_address", XLEN),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
@@ -67,7 +66,6 @@ PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
     ("instruction", 32),
     ("inject_nop", 1),
-    ("link_address", XLEN),
     ("is_compressed", 1),
     ("source_reg_1_early", 5),
     ("source_reg_2_early", 5),
@@ -137,7 +135,6 @@ def _drive_if_packet(
         "sel_nop": True,
         "sel_compressed": False,
         "effective_instr": NOP_INSTR,
-        "link_address": 0,
         "btb_hit": False,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
@@ -292,7 +289,6 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": instruction,
-            "link_address": BASE_PC + 4,
             "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": BASE_PC + 0x40,
@@ -308,7 +304,6 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     packet = _read_pd_packet(dut)
     assert packet["program_counter"] == BASE_PC
     assert packet["instruction"] == instruction
-    assert packet["link_address"] == 0
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 11
     assert packet["source_reg_2_early"] == 12
@@ -343,14 +338,12 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": 0xDEADBEEF,
-            "link_address": BASE_PC + 2,
         },
     )
     await _advance_cycle(dut)
 
     packet = _read_pd_packet(dut)
     assert packet["instruction"] == expected
-    assert packet["link_address"] == 0
     assert packet["is_compressed"] is True
     assert packet["source_reg_1_early"] == 3
     assert packet["source_reg_2_early"] == 1
@@ -379,7 +372,6 @@ async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
             "sel_nop": True,
             "sel_compressed": False,
             "effective_instr": instruction,
-            "link_address": BASE_PC + 4,
         },
     )
     await _advance_cycle(dut)
@@ -411,7 +403,6 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": 0,
-            "link_address": BASE_PC + 2,
         },
     )
     await _advance_cycle(dut)
@@ -430,7 +421,6 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "sel_nop": True,
             "sel_compressed": False,
             "effective_instr": 0,
-            "link_address": BASE_PC + 4,
         },
     )
     await _advance_cycle(dut)
@@ -467,7 +457,6 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
             "raw_parcel": slot1_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": slot1_instr,
-            "link_address": BASE_PC + 4,
         },
     )
     _drive_if_packet(
@@ -477,7 +466,6 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
             "raw_parcel": slot2_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": slot2_instr,
-            "link_address": BASE_PC + 8,
             "btb_hit": True,
             "btb_predicted_taken": True,
             "ras_predicted": True,
@@ -535,7 +523,6 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
             "raw_parcel": first_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": first_instr,
-            "link_address": BASE_PC + 4,
         },
     )
     await _advance_cycle(dut)
@@ -549,7 +536,6 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
             "raw_parcel": second_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": second_instr,
-            "link_address": BASE_PC + 8,
             "btb_hit": True,
         },
     )
@@ -579,7 +565,6 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
             "raw_parcel": branch_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": branch_instr,
-            "link_address": BASE_PC + 4,
             "bp_dir_taken": True,
         },
     )
@@ -610,7 +595,6 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
             "raw_parcel": wrong_path_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": wrong_path_instr,
-            "link_address": BASE_PC + 8,
             "btb_hit": True,
             "btb_predicted_taken": True,
             "ras_predicted": True,
@@ -623,7 +607,6 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
             "raw_parcel": wrong_path_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": wrong_path_instr,
-            "link_address": BASE_PC + 12,
             "btb_hit": True,
             "btb_predicted_taken": True,
             "ras_predicted": True,

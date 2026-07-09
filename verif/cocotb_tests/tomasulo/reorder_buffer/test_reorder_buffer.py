@@ -1567,7 +1567,7 @@ async def test_wfi_stall(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_wait_sq(dut: Any) -> None:
-    """Test FENCE waits for SQ committed_empty (not sq_empty)."""
+    """Test FENCE waits for SQ committed_empty."""
     cocotb.log.info("=== Test: FENCE Wait SQ ===")
 
     dut_if, model = await setup_test(dut)
@@ -2391,9 +2391,8 @@ async def test_amo_commits_normally(dut: Any) -> None:
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # SQ not empty — AMO should still commit (no SQ dependency at ROB)
-    dut_if.set_sq_empty(False)
-    model.sq_empty = False
+    # The ROB has no SQ-empty input — AMO commit does not consult the SQ
+    # (ordering is enforced at LQ issue instead).
 
     # Allocate AMO
     req = AllocationRequest(pc=0x1000, dest_reg=5, dest_valid=True, is_amo=True)
@@ -3228,9 +3227,7 @@ async def test_lr_commits_normally(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # SQ not empty — LR must NOT stall at ROB
-    dut_if.set_sq_empty(False)
-    model.sq_empty = False
+    # The ROB has no SQ-empty input — LR commit does not consult the SQ.
 
     # Allocate LR
     req = AllocationRequest(pc=0x6000, dest_reg=8, dest_valid=True, is_lr=True)
@@ -3258,10 +3255,11 @@ async def test_lr_commits_normally(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_uses_committed_empty(dut: Any) -> None:
-    """FENCE waits for committed_empty, not sq_empty.
+    """FENCE waits for committed_empty only.
 
     SQ can have uncommitted entries (younger stores) while FENCE is at head.
-    FENCE only needs committed stores to drain.
+    FENCE only needs committed stores to drain — the ROB has no
+    all-entries-empty input at all.
     """
     cocotb.log.info("=== Test: FENCE Uses committed_empty ===")
 
@@ -3276,18 +3274,14 @@ async def test_fence_uses_committed_empty(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # SQ has uncommitted entries (sq_empty=false) but no committed ones
-    # (committed_empty=true). FENCE should NOT stall.
-    dut_if.set_sq_empty(False)
-    model.sq_empty = False
+    # No committed entries pending write (committed_empty=true).
+    # FENCE should NOT stall.
     dut_if.set_sq_committed_empty(True)
     model.sq_committed_empty = True
 
     # FENCE should commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
-    assert (
-        dut_if.empty
-    ), "FENCE should commit when committed_empty=true (even if sq_empty=false)"
+    assert dut_if.empty, "FENCE should commit when committed_empty=true"
 
     cocotb.log.info("=== Test Passed ===")

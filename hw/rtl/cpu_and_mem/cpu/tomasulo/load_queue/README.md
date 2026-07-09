@@ -81,9 +81,8 @@ physical position is not allocation order, and a position-based prefix-OR
 could let a younger load slip past a pending AMO and read the pre-AMO
 memory value. A head AMO is admitted to the head-priority scans whenever
 the SQ committed queue is empty — at ROB head everything else in the LQ is
-younger (and fenced), so preemption is always safe; the 512-cycle deadlock
-breaker is subsumed — its force output is no longer consumed by the selector
-and remains only as inert plumbing.
+younger (and fenced), so preemption is always safe; this subsumed the old
+512-cycle deadlock breaker, which has been removed.
 
 For x3 timing the older-AMO block mask (`blocked_by_amo`) is **registered**
 (`blocked_by_amo_phys_q`) so the `lq_rob_tag → age → min-tree → compare` chain

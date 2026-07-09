@@ -373,7 +373,6 @@ class ReorderBufferInterface:
         self.dut.i_branch_update.value = 0
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
-        self.dut.i_sq_empty.value = 1
         self.dut.i_sq_committed_empty.value = 1
         # Zero-latency cache sync by default (mirrors the no-cached-tier
         # shape's done=req): FENCE.I spends exactly one cycle in
@@ -555,10 +554,6 @@ class ReorderBufferInterface:
     # =========================================================================
     # External Coordination Signals
     # =========================================================================
-
-    def set_sq_empty(self, empty: bool) -> None:
-        """Set store queue empty signal."""
-        self.dut.i_sq_empty.value = 1 if empty else 0
 
     def set_sq_committed_empty(self, empty: bool) -> None:
         """Set store queue committed-empty signal."""

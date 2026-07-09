@@ -29,8 +29,9 @@
 // timing FF that makes the older-AMO block mask 1-cycle-stale to lift the AMO
 // min-tree off the x3 WNS capture-enable cone (see blocked_by_amo).  A stale
 // block is correctness-safe via load_queue's live older_amo_write_pending
-// backstop.  i_force_head_amo is kept wired but subsumed (head AMOs are
-// admitted on i_sq_committed_empty alone; see unused_force_head_amo below).
+// backstop.  Head AMOs are admitted to the head-priority scans on
+// i_sq_committed_empty alone (this subsumed the old 512-cycle deadlock
+// breaker, since removed).
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -53,7 +54,6 @@ module lq_issue_selector #(
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
     input logic i_sq_committed_empty,
-    input logic i_force_head_amo,
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
@@ -77,12 +77,6 @@ module lq_issue_selector #(
 
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
-
-  // Head AMOs are admitted to the head-priority scans on i_sq_committed_empty
-  // alone; the deadlock-breaker override is subsumed but the port is kept so
-  // the breaker plumbing in load_queue stays intact as a backstop.
-  logic unused_force_head_amo;
-  assign unused_force_head_amo = i_force_head_amo;
 
   // issue_cdb_* are declared in the parent before this block; the body assigns
   // them, so declare them locally here and export.
@@ -336,8 +330,8 @@ module lq_issue_selector #(
       // the ROB head, asserted by p_mmio_only_at_head) keep store->load
       // ordering correct.  A head AMO stays gated on i_sq_committed_empty (its
       // RMW write lives in the LQ, invisible to SQ disambiguation, so it must
-      // see an empty committed queue); i_force_head_amo is subsumed by that
-      // gating and left unconsumed (kept for easy re-enable).
+      // see an empty committed queue); that gating subsumed the old
+      // force_head_amo deadlock breaker, since removed.
       // head_mem_update already admitted MMIO — it
       // only excluded LR — so this also removes that stored-vs-update
       // asymmetry (a head MMIO load kept priority only on the exact cycle its

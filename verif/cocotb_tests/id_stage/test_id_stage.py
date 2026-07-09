@@ -78,7 +78,6 @@ PD_TO_ID_FIELDS = [
     ("program_counter", XLEN),
     ("instruction", 32),
     ("inject_nop", 1),
-    ("link_address", XLEN),
     ("is_compressed", 1),
     ("source_reg_1_early", 5),
     ("source_reg_2_early", 5),
@@ -274,7 +273,6 @@ def _drive_pd_packet(
     packet = {
         "program_counter": 0,
         "instruction": instruction,
-        "link_address": 0,
         "source_reg_1_early": (instruction >> 15) & 0x1F,
         "source_reg_2_early": (instruction >> 20) & 0x1F,
         "fp_source_reg_3_early": (instruction >> 27) & 0x1F,
@@ -518,7 +516,6 @@ async def test_add_decodes_int_sources_and_wb_bypass(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": instruction,
-            "link_address": BASE_PC + 4,
         },
     )
     _drive_rf(
@@ -566,7 +563,6 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": load,
-            "link_address": BASE_PC + 4,
         },
     )
     _drive_pd_packet(
@@ -574,7 +570,6 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": store,
-            "link_address": BASE_PC + 8,
         },
         slot2=True,
     )
@@ -617,7 +612,6 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "link_address": BASE_PC + 4,
             "btb_hit": False,
             "btb_predicted_taken": False,
             "btb_predicted_target": 0,
@@ -628,7 +622,6 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": slot2_branch,
-            "link_address": BASE_PC + 8,
             "btb_hit": False,
             "btb_predicted_taken": False,
             "btb_predicted_target": 0x12345678,
@@ -673,7 +666,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": jal,
-            "link_address": BASE_PC + 4,
             "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": jal_target,
@@ -686,7 +678,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": jalr_return,
-            "link_address": BASE_PC + 8,
             "ras_predicted": True,
             "ras_predicted_target": ras_target,
             "btb_hit": True,
@@ -766,7 +757,6 @@ async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": add,
-            "link_address": BASE_PC + 4,
         },
     )
     await _advance_cycle(dut)
@@ -778,7 +768,6 @@ async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": load,
-            "link_address": BASE_PC + 8,
         },
     )
     await _advance_cycle(dut)
@@ -810,7 +799,6 @@ async def test_fp_fma_decodes_sources_and_fp_wb_bypass(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": instruction,
-            "link_address": BASE_PC + 4,
         },
     )
     _drive_fp_rf(

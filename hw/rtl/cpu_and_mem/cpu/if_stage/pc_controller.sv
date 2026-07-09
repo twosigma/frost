@@ -405,36 +405,21 @@ module pc_controller #(
   // fetch PC's halfword lane. If pc_reg is already on the predicted PC, the
   // predicted op is being emitted this cycle and the registered target handoff
   // can take over normally.
-  logic pc_reg_next_bit1_for_prediction;
-  logic pc_reg_next_misses_fetch_pc_for_prediction;
-  always_comb begin
-    if (i_slot2_valid) begin
-      // Slot-2 valid implies a two-instruction bundle. Same-size advances
-      // preserve bit 1; mixed-size +6 advances flip it.  This RVC-led-bundle
-      // formula predates 32b-led pairing and the signal is now unused (the
-      // full compare below replaced the bit1 proxy); it kept the live slot-1
-      // compressed sideband off this PC-control path.
-      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ !i_slot2_is_compressed;
-    end else begin
-      // One-wide: compressed advances by +2 and flips bit 1; 32-bit advances
-      // by +4 and preserves it.
-      pc_reg_next_bit1_for_prediction = o_pc_reg[1] ^ i_is_compressed;
-    end
-  end
-  // BOOT-HANG FIX (verification form): the bit1-only fast predictor
-  // (pc_reg_next_bit1_for_prediction != o_pc[1]) diverges from the full result
-  // when pc_reg is >=2 words behind the word-aligned fetch PC -- both are
-  // word-aligned so bit 1 matches, but the words differ. There the fast value
-  // is 0 ("no miss") while the truth (seq_next_pc_reg != o_pc) is 1, so
+  // BOOT-HANG FIX: use the full compare, never a bit1-only proxy.  A bit1
+  // proxy (pc_reg advance XOR size) diverges from the full result when pc_reg
+  // is >=2 words behind the word-aligned fetch PC -- both are word-aligned so
+  // bit 1 matches, but the words differ. There the proxy says 0 ("no miss")
+  // while the truth (seq_next_pc_reg != o_pc) is 1, so
   // prediction_needs_pending is wrongly false, the prediction is applied without
   // the pc_reg handoff, and fetch redirects to the wrong PC (silent on HW where
   // the assert below is compiled out -> the no-MMU Linux boot hang at pid_max).
-  // Use the full compare; conservative-safe (only ever pends MORE, exactly in
-  // the cases the bit1 proxy missed). TIMING: the compare is precomputed
+  // The full compare is conservative-safe (only ever pends MORE, exactly in
+  // the cases a bit1 proxy misses). TIMING: the compare is precomputed
   // per-candidate inside pc_increment_calculator (compare-then-mux off
   // registered operands, bit-identical to (seq_next_pc_reg != o_pc)) so the
   // late sideband-derived advance select only steers a 1-bit mux here instead
   // of feeding a 32-bit comparator on the pending-valid D path.
+  logic pc_reg_next_misses_fetch_pc_for_prediction;
   assign pc_reg_next_misses_fetch_pc_for_prediction = seq_next_pc_reg_neq_pc;
 
   assign prediction_needs_pending =
