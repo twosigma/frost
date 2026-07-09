@@ -17,17 +17,16 @@
 // =============================================================================
 // sq_forwarding_unit
 // =============================================================================
-// Extracted verbatim from store_queue.sv (pure RTL boundary move, zero
-// functional change).  Store-to-load forwarding CAM:
+// Store-to-load forwarding CAM:
 //   * Block 1 - per-entry qualification (older-store / addr-overlap / can-forward)
 //     from the FF-based SQ fields,
 //   * Block 2 - newest-conflicting-store priority select,
 //   * Block 3 - register the result (break MEM_RS -> SQ scan -> LQ path).
-// Produces o_fwd_match_idx (the SQ data-RAM forwarding read address); the RAM
-// itself stays in store_queue and feeds sq_data_fwd_rd back in.  The five helper
+// Forwarding data arrives as a per-entry mirror from store_queue so the winner
+// tree can carry the selected payload directly instead of creating a
+// winner-index -> async LUTRAM -> output-register timing arc.  The helper
 // functions are duplicated from store_queue (pure combinational, already
-// duplicated across modules by design).  Entry-array inputs keep the parent's
-// bare names so the block bodies below are byte-identical.
+// duplicated across modules by design).
 // =============================================================================
 module sq_forwarding_unit #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth
@@ -64,11 +63,10 @@ module sq_forwarding_unit #(
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
     input logic [(DEPTH*2)-1:0] sq_size_flat,
-    input logic [riscv_pkg::FLEN-1:0] sq_data_fwd_rd,
+    input logic [(DEPTH*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat,
 
     output logic o_sq_all_older_addrs_known,
-    output riscv_pkg::sq_forward_result_t o_sq_forward,
-    output logic [$clog2(DEPTH)-1:0] o_fwd_match_idx
+    output riscv_pkg::sq_forward_result_t o_sq_forward
 );
 
   // Local pkg-param aliases (match store_queue) so the verbatim bodies below
@@ -81,16 +79,14 @@ module sq_forwarding_unit #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
   typedef struct packed {
-    logic                valid;
+    logic                       valid;
     // Ring-slot distance from i_sq_head_idx, NOT ROB-tag age: committed
     // entries can outlive their ROB tag (reused next lap), which makes
     // tag-based age rank them as youngest when they are in fact the oldest.
     // Slot order is allocation (= program) order and is wrap-proof.
-    logic [IdxWidth-1:0] age;
-    logic                can_forward;
-    logic [IdxWidth-1:0] idx;
-    logic [1:0]          extract_type;
-    logic [1:0]          store_off;
+    logic [IdxWidth-1:0]        age;
+    logic                       can_forward;
+    logic [riscv_pkg::FLEN-1:0] data;
   } fwd_winner_t;
 
   function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
@@ -108,8 +104,6 @@ module sq_forwarding_unit #(
     end
   endfunction
 
-  // Forwarding scan result index (drives the SQ data-RAM read address in parent)
-  logic [IdxWidth-1:0] fwd_match_idx;
   (* equivalent_register_removal = "no", max_fanout = 16 *)
   logic [ReorderBufferTagWidth-1:0] rob_head_tag_q;
 
@@ -213,16 +207,13 @@ module sq_forwarding_unit #(
     end
   endfunction
 
-  logic [1:0] fwd_extract_type;  // 0=EXACT, 1=LO_WORD, 2=HI_WORD
-  logic [1:0] fwd_winner_store_off;
-
   // Forwarding scan results — promoted to module scope so the per-entry
-  // qualification mask, winner select, and sq_data_fwd_rd consumption stay in
-  // separate blocks and avoid UNOPTFLAT circular combinational logic through
-  // the LUTRAM.
+  // qualification mask and winner select stay in separate blocks and avoid
+  // UNOPTFLAT circular combinational logic.
   logic fwd_all_older_known;
   logic fwd_found_match;
   logic fwd_can_fwd;
+  logic [FLEN-1:0] fwd_selected_data;
   logic [3:0] fwd_load_byte_mask;
   logic [DEPTH-1:0] fwd_addr_unknown_mask;
   logic [DEPTH-1:0] fwd_conflict_mask;
@@ -230,7 +221,7 @@ module sq_forwarding_unit #(
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
   logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
-  logic [1:0] fwd_entry_extract_type[DEPTH];
+  logic [FLEN-1:0] fwd_entry_data[DEPTH];
 `ifndef FORMAL
   fwd_winner_t fwd_leaf[DEPTH];
   fwd_winner_t fwd_pair[4];
@@ -256,6 +247,8 @@ module sq_forwarding_unit #(
     logic [3:0] load_byte_mask;
     logic [ReorderBufferTagWidth-1:0] entry_rob_tag;
     logic [XLEN-1:0] entry_address;
+    logic [FLEN-1:0] entry_data;
+    logic [XLEN-1:0] entry_image_lo;
     riscv_pkg::mem_size_e entry_size;
     // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
     // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
@@ -280,6 +273,8 @@ module sq_forwarding_unit #(
       // the select collapses to a wire-pick of one of the two address ports.
       entry_rob_tag = sq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
       entry_address = sq_address_flat[i*XLEN+:XLEN];
+      entry_data = sq_data_fwd_flat[i*FLEN+:FLEN];
+      entry_image_lo = entry_data[XLEN-1:0] << {entry_address[1:0], 3'b000};
       entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
       sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
       sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
@@ -290,7 +285,7 @@ module sq_forwarding_unit #(
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
-      fwd_entry_extract_type[i] = 2'd0;
+      fwd_entry_data[i] = '0;
 
       // Stores retire from the ROB before they drain from the SQ.  Keep a
       // store visible to younger-load disambiguation in the cycle its commit
@@ -337,8 +332,8 @@ module sq_forwarding_unit #(
                       entry_address, sq_check_addr_for_entry
                   ) && (entry_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
                       (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd0;  // EXACT (64-bit)
+                fwd_can_forward_mask[i] = 1'b1;
+                fwd_entry_data[i]       = entry_data;  // EXACT (64-bit)
                 // Case 2: byte/half/word load whose bytes the store fully
                 // covers in its base word.  store_byte_mask places sub-word
                 // store data at its memory byte lanes (a DOUBLE store's base
@@ -348,13 +343,13 @@ module sq_forwarding_unit #(
               end else if (base_match &&
                   (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE) &&
                   ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd1;  // LO_WORD image
+                fwd_can_forward_mask[i] = 1'b1;
+                fwd_entry_data[i]       = {{(FLEN - XLEN) {1'b0}}, entry_image_lo};
                 // Case 3: byte/half/word load inside the fully-written high
                 // word of a DOUBLE store (addr+4)
               end else if (double_hi_match && (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = 2'd2;  // HI_WORD image
+                fwd_can_forward_mask[i] = 1'b1;
+                fwd_entry_data[i]       = {{(FLEN - XLEN) {1'b0}}, entry_data[FLEN-1:XLEN]};
               end
             end
           end
@@ -378,58 +373,48 @@ module sq_forwarding_unit #(
   // synthesized implementation below remains the timing-optimized tree.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
-  logic [1:0] fwd_formal_winner_store_off;
 
   always_comb begin
-    fwd_formal_winner_valid     = 1'b0;
-    fwd_formal_winner_age       = '0;
-    fwd_formal_winner_store_off = '0;
-    fwd_can_fwd                 = 1'b0;
-    fwd_match_idx               = '0;
-    fwd_extract_type            = 2'd0;
+    fwd_formal_winner_valid = 1'b0;
+    fwd_formal_winner_age   = '0;
+    fwd_can_fwd             = 1'b0;
+    fwd_selected_data       = '0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (fwd_conflict_mask[i] &&
           (!fwd_formal_winner_valid || (fwd_entry_slot_age[i] >= fwd_formal_winner_age))) begin
-        fwd_formal_winner_valid     = 1'b1;
-        fwd_formal_winner_age       = fwd_entry_slot_age[i];
-        fwd_can_fwd                 = fwd_can_forward_mask[i];
-        fwd_match_idx               = IdxWidth'(i);
-        fwd_extract_type            = fwd_entry_extract_type[i];
-        fwd_formal_winner_store_off = sq_address_flat[i*XLEN+:2];
+        fwd_formal_winner_valid = 1'b1;
+        fwd_formal_winner_age   = fwd_entry_slot_age[i];
+        fwd_can_fwd             = fwd_can_forward_mask[i];
+        fwd_selected_data       = fwd_entry_data[i];
       end
     end
   end
-  assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
   // Keep this as a balanced tree: the old serial loop let an SQ-check address
   // bit feed each entry's conflict logic and then walk an 8-entry winner chain
   // before reaching o_sq_forward.can_forward.
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      fwd_leaf[i].valid        = fwd_conflict_mask[i];
-      fwd_leaf[i].age          = fwd_entry_slot_age[i];
-      fwd_leaf[i].can_forward  = fwd_can_forward_mask[i];
-      fwd_leaf[i].idx          = IdxWidth'(i);
-      fwd_leaf[i].extract_type = fwd_entry_extract_type[i];
-      fwd_leaf[i].store_off    = sq_address_flat[i*XLEN+:2];
+      fwd_leaf[i].valid       = fwd_conflict_mask[i];
+      fwd_leaf[i].age         = fwd_entry_slot_age[i];
+      fwd_leaf[i].can_forward = fwd_can_forward_mask[i];
+      fwd_leaf[i].data        = fwd_entry_data[i];
     end
 
-    fwd_pair[0]      = choose_newer_winner(fwd_leaf[0], fwd_leaf[1]);
-    fwd_pair[1]      = choose_newer_winner(fwd_leaf[2], fwd_leaf[3]);
-    fwd_pair[2]      = choose_newer_winner(fwd_leaf[4], fwd_leaf[5]);
-    fwd_pair[3]      = choose_newer_winner(fwd_leaf[6], fwd_leaf[7]);
+    fwd_pair[0]       = choose_newer_winner(fwd_leaf[0], fwd_leaf[1]);
+    fwd_pair[1]       = choose_newer_winner(fwd_leaf[2], fwd_leaf[3]);
+    fwd_pair[2]       = choose_newer_winner(fwd_leaf[4], fwd_leaf[5]);
+    fwd_pair[3]       = choose_newer_winner(fwd_leaf[6], fwd_leaf[7]);
 
-    fwd_quad[0]      = choose_newer_winner(fwd_pair[0], fwd_pair[1]);
-    fwd_quad[1]      = choose_newer_winner(fwd_pair[2], fwd_pair[3]);
+    fwd_quad[0]       = choose_newer_winner(fwd_pair[0], fwd_pair[1]);
+    fwd_quad[1]       = choose_newer_winner(fwd_pair[2], fwd_pair[3]);
 
-    fwd_winner       = choose_newer_winner(fwd_quad[0], fwd_quad[1]);
+    fwd_winner        = choose_newer_winner(fwd_quad[0], fwd_quad[1]);
 
-    fwd_can_fwd      = fwd_winner.valid && fwd_winner.can_forward;
-    fwd_match_idx    = fwd_winner.idx;
-    fwd_extract_type = fwd_winner.extract_type;
+    fwd_can_fwd       = fwd_winner.valid && fwd_winner.can_forward;
+    fwd_selected_data = fwd_winner.data;
   end
-  assign fwd_winner_store_off = fwd_winner.store_off;
 `endif
 
   // Block 3: Registered forwarding outputs.
@@ -447,26 +432,11 @@ module sq_forwarding_unit #(
     end
 
     // Data is qualified by the same-edge match/can_forward above; the
-    // i_sq_check_valid gate just keeps the register from tracking the RAM
-    // while no probe is in flight.
+    // i_sq_check_valid gate just keeps the register from tracking the winner
+    // tree while no probe is in flight.
     if (i_sq_check_valid) begin
-      case (fwd_extract_type)
-        2'd1:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, fwd_image_lo};
-        2'd2:    o_sq_forward.data <= {{(FLEN - XLEN) {1'b0}}, sq_data_fwd_rd[63:32]};
-        default: o_sq_forward.data <= sq_data_fwd_rd;
-      endcase
+      o_sq_forward.data <= fwd_selected_data;
     end
   end
-
-  // Memory-image reconstruction for the base-word arm: store data is held
-  // low-aligned in the SQ data RAM, so a sub-word store's bytes must be
-  // shifted to their memory byte lanes before the LQ extracts the load's
-  // bytes.  Word/double winners have offset 0 (aligned), so the shift is an
-  // identity for the legacy word cases.  The high word of a DOUBLE store
-  // (extract 2) is always lane-aligned.
-  logic [XLEN-1:0] fwd_image_lo;
-  assign fwd_image_lo = sq_data_fwd_rd[XLEN-1:0] << {fwd_winner_store_off, 3'b000};
-
-  assign o_fwd_match_idx = fwd_match_idx;
 
 endmodule

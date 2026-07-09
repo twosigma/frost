@@ -29,10 +29,10 @@ is registered, so the LQ sees it one cycle after raising
 
 The forwarding scan itself (per-entry qualification, newest-match priority
 select, and the output register) lives in
-[`sq_forwarding_unit.sv`](sq_forwarding_unit.sv) — a pure boundary move out of
-`store_queue.sv`. It reads the SQ entry-array state and emits the forwarding
-read index `o_fwd_match_idx`; the `sq_data` LUTRAM read at that index stays in
-`store_queue.sv` and feeds the data back for the registered output.
+[`sq_forwarding_unit.sv`](sq_forwarding_unit.sv). It reads the SQ entry-array
+state plus a per-entry forwarding-data mirror from `store_queue.sv`, then the
+winner tree carries the selected payload directly into the registered output.
+The drain side still reads the canonical `sq_data` LUTRAM at `drain_idx_q`.
 
 Two ordering subtleties in the scan:
 
