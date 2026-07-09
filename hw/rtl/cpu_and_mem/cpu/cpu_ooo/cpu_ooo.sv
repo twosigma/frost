@@ -1945,6 +1945,7 @@ module cpu_ooo #(
       .i_flush_for_trap(flush_for_trap),
       .i_flush_for_mret(flush_for_mret),
       .i_fence_i_flush(fence_i_flush),
+      .i_fence_i_target_pc(rob_head_retired_next_pc),
       .i_checkpoint_in_use(checkpoint_in_use),
       .i_checkpoint_younger_than_flush(checkpoint_younger_than_flush),
       .i_checkpoint_owner_tag(checkpoint_owner_tag),

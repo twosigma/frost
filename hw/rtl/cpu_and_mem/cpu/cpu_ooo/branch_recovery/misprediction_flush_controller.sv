@@ -53,6 +53,7 @@ module misprediction_flush_controller #(
     input logic i_flush_for_trap,
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
+    input logic [XLEN-1:0] i_fence_i_target_pc,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_younger_than_flush,
     input logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0]
@@ -113,6 +114,7 @@ module misprediction_flush_controller #(
   logic flush_for_trap;
   logic flush_for_mret;
   logic fence_i_flush;
+  logic [XLEN-1:0] fence_i_target_pc_pre;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_younger_than_flush;
   logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
@@ -134,6 +136,7 @@ module misprediction_flush_controller #(
   assign flush_for_trap                  = i_flush_for_trap;
   assign flush_for_mret                  = i_flush_for_mret;
   assign fence_i_flush                   = i_fence_i_flush;
+  assign fence_i_target_pc_pre           = i_fence_i_target_pc;
   assign checkpoint_in_use               = i_checkpoint_in_use;
   assign checkpoint_younger_than_flush   = i_checkpoint_younger_than_flush;
   assign checkpoint_owner_tag            = i_checkpoint_owner_tag;
@@ -202,7 +205,7 @@ module misprediction_flush_controller #(
   // instruction instead of from speculative fetch state that was already ahead.
   always_ff @(posedge i_clk) begin
     if (rob_commit_comb.valid && rob_commit_comb.is_fence_i) begin
-      fence_i_target_pc <= rob_commit_comb.pc + (rob_commit_comb.is_compressed ? 32'd2 : 32'd4);
+      fence_i_target_pc <= fence_i_target_pc_pre;
     end
   end
 

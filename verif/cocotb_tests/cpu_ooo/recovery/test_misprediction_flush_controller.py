@@ -130,6 +130,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_flush_for_trap.value = 0
     dut.i_flush_for_mret.value = 0
     dut.i_fence_i_flush.value = 0
+    dut.i_fence_i_target_pc.value = 0
     dut.i_checkpoint_in_use.value = 0
     dut.i_checkpoint_younger_than_flush.value = 0
     dut.i_checkpoint_owner_tag.value = 0
@@ -331,6 +332,7 @@ async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> No
             "is_compressed": False,
         },
     )
+    dut.i_fence_i_target_pc.value = 0x4004
     await _advance_cycle(dut)
 
     assert int(dut.o_fence_i_target_pc.value) == 0x4004
@@ -344,6 +346,7 @@ async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> No
             "is_compressed": True,
         },
     )
+    dut.i_fence_i_target_pc.value = 0x5002
     await _advance_cycle(dut)
 
     assert int(dut.o_fence_i_target_pc.value) == 0x5002
