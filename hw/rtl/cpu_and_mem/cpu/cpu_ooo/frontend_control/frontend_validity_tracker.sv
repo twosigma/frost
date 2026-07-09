@@ -156,66 +156,64 @@ module frontend_validity_tracker (
   logic id_has_indirect_control_flow;
 
   function automatic logic if_stage_has_control_flow(input riscv_pkg::from_if_to_pd_t if_pkt);
-    logic [2:0] c_funct3;
-    logic [3:0] c_funct4;
-    logic [4:0] c_rs1;
-    logic [4:0] c_rs2;
-    logic [1:0] c_op;
+    logic [15:0] parcel;
+    logic [ 2:0] c_funct3;
+    logic [ 3:0] c_funct4;
+    logic [ 4:0] c_rs1;
+    logic [ 4:0] c_rs2;
+    logic [ 1:0] c_op;
     begin
-      c_funct3 = if_pkt.raw_parcel[15:13];
-      c_funct4 = if_pkt.raw_parcel[15:12];
-      c_rs1 = if_pkt.raw_parcel[11:7];
-      c_rs2 = if_pkt.raw_parcel[6:2];
-      c_op = if_pkt.raw_parcel[1:0];
+      parcel = if_pkt.raw_parcel;
+      c_funct3 = parcel[15:13];
+      c_funct4 = parcel[15:12];
+      c_rs1 = parcel[11:7];
+      c_rs2 = parcel[6:2];
+      c_op = parcel[1:0];
 
       if_stage_has_control_flow = 1'b0;
       if (!if_pkt.sel_nop) begin
-        if (if_pkt.sel_compressed) begin
-          // IF stage carries raw compressed parcels, not decompressed opcodes.
-          // Recognize compressed control-flow directly so younger BTB lookups
-          // cannot run ahead of an older unresolved c.branch/c.jump.
-          if_stage_has_control_flow = ((c_op == 2'b01) && ((c_funct3 == 3'b001) ||  // C.JAL (RV32)
-          (c_funct3 == 3'b101) ||  // C.J
-          (c_funct3 == 3'b110) ||  // C.BEQZ
-          (c_funct3 == 3'b111))) ||  // C.BNEZ
-          ((c_op == 2'b10) &&
-               (c_rs2 == 5'b00000) &&
-               (c_rs1 != 5'b00000) &&
-               ((c_funct4 == 4'b1000) ||  // C.JR
-          (c_funct4 == 4'b1001)));  // C.JALR
-        end else begin
-          if_stage_has_control_flow =
-              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) ||
-              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JAL) ||
-              (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JALR);
-        end
+        // raw_parcel is the low halfword of the selected instruction.  Native
+        // 32-bit opcodes and compressed control-flow encodings are disjoint on
+        // parcel[1:0], so this avoids the sideband-derived sel_compressed mux.
+        if_stage_has_control_flow =
+            (parcel[6:0] == riscv_pkg::OPC_BRANCH) ||
+            (parcel[6:0] == riscv_pkg::OPC_JAL) ||
+            (parcel[6:0] == riscv_pkg::OPC_JALR) ||
+            ((c_op == 2'b01) &&
+             ((c_funct3 == 3'b001) ||  // C.JAL (RV32)
+        (c_funct3 == 3'b101) ||  // C.J
+        (c_funct3 == 3'b110) ||  // C.BEQZ
+        (c_funct3 == 3'b111))) ||  // C.BNEZ
+        ((c_op == 2'b10) &&
+             (c_rs2 == 5'b00000) &&
+             (c_rs1 != 5'b00000) &&
+             ((c_funct4 == 4'b1000) ||  // C.JR
+        (c_funct4 == 4'b1001)));  // C.JALR
       end
     end
   endfunction
 
   function automatic logic if_stage_has_indirect_control_flow(
       input riscv_pkg::from_if_to_pd_t if_pkt);
-    logic [15:0] c_instr;
+    logic [15:0] parcel;
     logic [ 1:0] c_op;
     logic [ 3:0] c_funct4;
     logic [4:0] c_rs1, c_rs2;
     begin
+      parcel = if_pkt.raw_parcel;
+      c_op = parcel[1:0];
+      c_funct4 = parcel[15:12];
+      c_rs1 = parcel[11:7];
+      c_rs2 = parcel[6:2];
+
       if_stage_has_indirect_control_flow = 1'b0;
       if (!if_pkt.sel_nop) begin
-        if (if_pkt.sel_compressed) begin
-          c_instr = if_pkt.effective_instr[15:0];
-          c_op = c_instr[1:0];
-          c_funct4 = c_instr[15:12];
-          c_rs1 = c_instr[11:7];
-          c_rs2 = c_instr[6:2];
-          if_stage_has_indirect_control_flow = ((c_op == 2'b10) &&
-                                                (c_rs2 == 5'b00000) &&
-                                                (c_rs1 != 5'b00000) &&
-                                                ((c_funct4 == 4'b1000) ||
-                                                 (c_funct4 == 4'b1001)));
-        end else begin
-          if_stage_has_indirect_control_flow = (if_pkt.effective_instr[6:0] == riscv_pkg::OPC_JALR);
-        end
+        if_stage_has_indirect_control_flow =
+            (parcel[6:0] == riscv_pkg::OPC_JALR) ||
+            ((c_op == 2'b10) &&
+             (c_rs2 == 5'b00000) &&
+             (c_rs1 != 5'b00000) &&
+             ((c_funct4 == 4'b1000) || (c_funct4 == 4'b1001)));
       end
     end
   endfunction
