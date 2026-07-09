@@ -52,7 +52,8 @@ module pd_stage #(
     // heuristic stays slot-1 only.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
-    // Backward-branch-taken static heuristic: PD redirect to IF
+    // Predicted-taken redirect on BTB miss (any offset sign, driven by the
+    // trained direction predictor -- see section below): PD redirect to IF
     output logic o_pd_redirect,
     output logic [XLEN-1:0] o_pd_redirect_target
 );
@@ -282,7 +283,7 @@ module pd_stage #(
     end else if (~i_pipeline_ctrl.stall) begin
       // When flushing or when the registered PD redirect fires (squashing the
       // wrong-path instruction that entered PD one cycle after detection),
-      // insert NOP; otherwise pass values from decompression.
+      // mark the bubble via inject_nop; otherwise pass values from decompression.
       //
       // pd_redirect_r is a registered signal (no timing concern in this mux).
       // x3 TIMING: pass the decoded instruction through un-NOP'd; the bubble

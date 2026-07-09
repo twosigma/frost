@@ -439,6 +439,9 @@ The project uses pytest markers to categorize tests:
 | Marker | Description | When to Run |
 |--------|-------------|-------------|
 | `@pytest.mark.cocotb` | Cocotb simulation tests | RTL changes |
+| `@pytest.mark.cocotb_real_program` | Cocotb real-program tests (CI shard of the cocotb job) | RTL changes |
+| `@pytest.mark.cocotb_unit` | Cocotb unit-bench tests (CI shard of the cocotb job) | RTL changes |
+| `@pytest.mark.coremark_pro` | CoreMark-PRO real-program tests (CI shard of the cocotb job) | RTL changes |
 | `@pytest.mark.synthesis` | Yosys synthesis tests | RTL changes |
 | (default) | Pure Python tests | Python changes |
 

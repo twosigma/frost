@@ -534,7 +534,7 @@ module if_stage #(
       // behavior but is computed locally in instruction_aligner for better timing.
       .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
-      // 2-wide bundle metadata.  Drives the +4/+6 PC advance selection inside
+      // 2-wide bundle metadata.  Drives the +4/+6/+8 PC advance selection inside
       // pc_increment_calculator.  SESSION I fix: pass the
       // OUTPUT slot-2 valid + is_compressed_2 (= replay-aware via stall
       // capture register), not the live aligner outputs.  This keeps PC

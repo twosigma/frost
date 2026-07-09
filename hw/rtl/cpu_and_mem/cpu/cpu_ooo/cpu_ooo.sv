@@ -233,7 +233,7 @@ module cpu_ooo #(
   // instruction whenever the bundle allows it; from_if_to_pd_2 carries it
   // (sel_nop=1 only when there is no valid second instruction this cycle) and
   // PD/ID propagate it to dispatch, which fires slot-2 subject to the bundle
-  // restrictions (slot-1 taken control flow ends the bundle, slot-2 cannot be
+  // restrictions (a slot-1 branch/jump ends the bundle, slot-2 cannot be
   // an FP-compute op, and slot-2 renamed sources use done-repair channels
   // 4/5/6 for the missed-CDB case).
   riscv_pkg::from_if_to_pd_t from_if_to_pd_2;
@@ -721,8 +721,10 @@ module cpu_ooo #(
   riscv_pkg::rat_lookup_t fp_src1_lookup, fp_src2_lookup, fp_src3_lookup;
 
   // RAT lookup - slot 2 (2-wide dispatch).  The integer lookups feed slot-2
-  // rename in dispatch.  The FP lookups are wired but unused (slot-2 cannot be
-  // an FP-compute op), hence the UNUSEDSIGNAL waiver below.
+  // rename in dispatch; the FP lookups feed dispatch's slot-2 source muxes
+  // (rs2 supplies FP-store data — src1/src3 only matter for FP-compute ops,
+  // which the bundle rules keep out of slot 2).  The lint waiver below
+  // covers the struct fields dispatch doesn't read.
   logic [riscv_pkg::RegAddrWidth-1:0] int_src1_addr_2, int_src2_addr_2;
   logic [riscv_pkg::RegAddrWidth-1:0] fp_src1_addr_2, fp_src2_addr_2, fp_src3_addr_2;
   /* verilator lint_off UNUSEDSIGNAL */

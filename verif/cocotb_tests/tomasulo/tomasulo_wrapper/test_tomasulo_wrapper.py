@@ -3405,8 +3405,10 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     """CDB contention forces DIV adapter pending; partial flush suppresses younger.
 
     Exercises the fu_cdb_adapter pending+grant path under partial flush
-    with the pipelined divider FIFO. FP_DIV (highest CDB priority) blocks
-    DIV grants, forcing the adapter into pending state. Releasing contention
+    with the pipelined divider FIFO. (Premise written for the original 1-wide
+    latency-priority CDB where FP_DIV outranked DIV and blocked its grants;
+    on the current 2-wide MUL-first arbiter DIV gets a lane despite FP_DIV
+    contention, so the pending state is not forced.) Releasing contention
     with simultaneous partial flush verifies the younger result is suppressed
     even in the back-to-back adapter capture window.
     """
@@ -3484,7 +3486,8 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     dut_if.clear_rs_dispatch()
 
     # Drive FP_DIV externally with tag_d to create CDB contention.
-    # FP_DIV (slot 6, priority 0) beats DIV (slot 2, priority 1).
+    # DIV (slot 2) outranks FP_DIV (slot 6) in the current arbiter cascade,
+    # and the 2-wide CDB can grant both contenders in the same cycle.
     # tag_d is allocated in ROB but can't commit (tag_a is at head, incomplete).
     # The external input bypasses the idle FP_DIV adapter via the arbiter mux.
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_d, value=0)

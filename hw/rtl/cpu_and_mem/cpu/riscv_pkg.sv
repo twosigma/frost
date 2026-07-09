@@ -676,7 +676,8 @@ package riscv_pkg;
     // frontend-stall-fed sel_nop select off the o_from_pd_to_id.instruction
     // datapath (the -1.060ns o_from_pd_to_id[funct7] WNS endpoint).
     logic inject_nop;
-    // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
+    // Always '0 from PD: ID recomputes the JAL/JALR link address from the
+    // registered PC and is_compressed (keeps IF's link adder off this register)
     logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.
     logic is_compressed;
@@ -1598,12 +1599,12 @@ package riscv_pkg;
   // on deliver1 && !deliver2 cycles, replaying the stall-captured aligner
   // classification so they describe the bundle PD actually received.
   typedef struct packed {
-    logic deliver1;          // IF handed PD a real slot-1 instruction
-    logic deliver2;          // ...and a real slot-2 instruction with it
-    logic kill_slot1_32bit;  // No slot-2: slot-1 is a native 32-bit instruction
-    logic kill_slot1_ctrl;   // No slot-2: slot-1 is compressed control flow
-    logic kill_class;        // No slot-2: slot-2 starts a serialize/FP-compute class op
-    logic kill_transient;    // No slot-2: aligner buffer/BRAM transient state
+    logic deliver1;  // IF handed PD a real slot-1 instruction
+    logic deliver2;  // ...and a real slot-2 instruction with it
+    logic kill_slot1_32bit;  // No slot-2: slot-1 is a native 32-bit control-flow/serializing op
+    logic kill_slot1_ctrl;  // No slot-2: slot-1 is compressed control flow
+    logic kill_class;  // No slot-2: slot-2 starts a serialize/FP-compute class op
+    logic kill_transient;  // No slot-2: aligner buffer/BRAM transient state
   } if_width_events_t;
 
   // ---------------------------------------------------------------------------

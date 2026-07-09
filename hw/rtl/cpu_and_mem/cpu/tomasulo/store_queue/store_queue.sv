@@ -24,7 +24,8 @@
  * Features:
  *   - Parameterized depth (8 entries, hybrid FF + LUTRAM; see Storage Strategy)
  *   - CAM-style tag search for address/data update (all entries in parallel)
- *   - In-order commit: head entry writes to memory when committed + ready
+ *   - In-order drain: the drain-cursor entry writes to memory when committed +
+ *     ready (pipelined to ~1/cycle for plain fast-tier stores; head frees at done)
  *   - Store-to-load forwarding: combinational scan for LQ disambiguation
  *   - Two-phase FSD support (64-bit double → two 32-bit writes)
  *   - MMIO store handling (cache bypass on commit)
@@ -36,11 +37,11 @@
  *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
  *   data_valid, committed, rob_tag, address, size, etc.) remain in FFs
  *   for CAM-style parallel tag search, per-entry invalidation, and
- *   forwarding address scan.  sq_data (store payload) lives in
- *   distributed RAM (duplicated sdp_dist_ram for 2 read ports:
- *   forwarding result + head writeback).  The forwarding scan uses
- *   FF-based fields to find the match index, then reads sq_data from
- *   LUTRAM at that single address.  Valid bits gate all reads.
+ *   forwarding address scan.  sq_data (store payload) lives in a
+ *   single sdp_dist_ram read by the drain side at drain_idx_q, plus a
+ *   per-entry FF mirror for forwarding.  The forwarding scan qualifies
+ *   entries from FF-based fields and its winner tree carries the
+ *   mirrored payload directly.  Valid bits gate all reads.
  *
  * Key Principle: Stores commit IN-ORDER
  *   1. Store dispatches → allocate SQ entry at tail
@@ -115,10 +116,12 @@ module store_queue #(
     input logic                                        i_commit_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
 
-    // Same-cycle commit guard: combinational commit_valid from ROB (unregistered).
-    // When ROB commit and partial flush fire on the same cycle, the registered
-    // i_commit_valid is still for the PREVIOUS cycle's commit. This signal
-    // catches stores being committed THIS cycle so they aren't lost to the flush.
+    // Combinational commit view from ROB (unregistered). NOT a flush guard
+    // anymore: the ROB gates commit_ready_early (the driver of these pulses)
+    // with !i_flush_en && !i_flush_all, so a comb commit can never overlap a
+    // flush (asserted below). These ports now only pessimistically clear
+    // committed_empty so fences/SCs cannot observe stale empty while a
+    // store commit is entering the SQ pipeline.
     input logic                                        i_commit_valid_comb,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb,
 
@@ -1324,11 +1327,11 @@ module store_queue #(
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
       // Only PARTIAL flush (i_flush_en) is dangerous: there the alloc block in
-      // the !flush_all else-branch actually LANDS (sets sq_valid, line ~1060).
+      // the !flush_all else-branch actually LANDS (sets sq_valid, line ~1210).
       // i_flush_all is intentionally excluded — its priority else-if branches
-      // (lines ~859, ~1027) structurally squash the alloc (sq_valid <= '0), a
+      // (lines ~952, ~1193) structurally squash the alloc (sq_valid <= '0), a
       // documented-safe, formally-proven (p_alloc_slot_free) handshake that the
-      // RS issues un-flush-gated for timing closure (see note ~line 1263). The
+      // RS issues un-flush-gated for timing closure (see note ~line 1432). The
       // old (i_flush_all||i_flush_en) form fired ~1178x/run on the benign
       // flush_all handshake, burying the genuinely-unsafe flush_en case.
       if (i_alloc.valid && i_flush_en && !i_flush_all)

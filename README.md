@@ -10,7 +10,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 3.08 CoreMark/MHz (924 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Solid performance** — 3.27 CoreMark/MHz (~982 CoreMark at 300 MHz on UltraScale+; cycle-exact simulation, on-hardware re-measure pending) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Boots no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image; CI builds it from source (`build-frost-linux`) and boots it in both cocotb RTL simulation (`linux-boot-cocotb`) and QEMU (`linux-boot-qemu`).
@@ -87,7 +87,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode; 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8) — the only structural 1-wide case left is a misaligned 32b+32b pair spanning beyond the fetch window
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode; 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8) — the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
 - **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
@@ -337,17 +337,17 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 148,905 | 1,029,600 | 14.5% |
-|   LUT as Logic | 138,669 | 1,029,600 | 13.5% |
-|   LUT as Distributed RAM | 9,066 | — | — |
-|   LUT as Shift Register | 1,170 | — | — |
-| CLB Registers | 113,459 | 2,059,200 | 5.5% |
+| CLB LUTs | 157,767 | 1,029,600 | 15.3% |
+|   LUT as Logic | 146,788 | 1,029,600 | 14.3% |
+|   LUT as Distributed RAM | 9,614 | — | — |
+|   LUT as Shift Register | 1,365 | — | — |
+| CLB Registers | 118,683 | 2,059,200 | 5.8% |
 | Block RAM Tile | 240 | 2,112 | 11.4% |
 | URAM | 64 | 352 | 18.2% |
-| DSPs | 35 | 1,320 | 2.6% |
-| CARRY8 | 4,448 | 128,700 | 3.5% |
-| F7 Muxes | 208 | 514,800 | 0.0% |
-| F8 Muxes | 49 | 257,400 | 0.0% |
+| DSPs | 39 | 1,320 | 3.0% |
+| CARRY8 | 4,972 | 128,700 | 3.9% |
+| F7 Muxes | 216 | 514,800 | 0.0% |
+| F8 Muxes | 53 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
@@ -356,14 +356,14 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 131,253 | 203,800 | 64.4% |
-|   LUT as Logic | 122,671 | 203,800 | 60.2% |
-|   LUT as Distributed RAM | 7,738 | — | — |
-|   LUT as Shift Register | 844 | — | — |
-| Slice Registers | 88,308 | 407,600 | 21.7% |
+| Slice LUTs | 138,903 | 203,800 | 68.2% |
+|   LUT as Logic | 129,616 | 203,800 | 63.6% |
+|   LUT as Distributed RAM | 8,364 | — | — |
+|   LUT as Shift Register | 923 | — | — |
+| Slice Registers | 93,527 | 407,600 | 22.9% |
 | Block RAM Tile | 219 | 445 | 49.2% |
-| DSPs | 36 | 840 | 4.3% |
-| F7 Muxes | 98 | 101,900 | 0.1% |
+| DSPs | 40 | 840 | 4.8% |
+| F7 Muxes | 106 | 101,900 | 0.1% |
 | F8 Muxes | 33 | 50,950 | 0.1% |
 | Bonded IOB | 77 | 500 | 15.4% |
 | MMCM | 3 | 10 | 30.0% |

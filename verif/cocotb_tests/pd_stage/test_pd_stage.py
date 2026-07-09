@@ -360,7 +360,7 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
 @cocotb.test()
 async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
-    """The NOP select overrides native instruction bits and source extraction."""
+    """The NOP select marks the slot as a bubble via inject_nop and zeroes source extraction."""
     await _setup_test(dut)
     instruction = _pack_r(
         funct7=0b0101010,

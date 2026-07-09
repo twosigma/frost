@@ -27,6 +27,9 @@
  *   - Optional third source operand (enabled only for FMA instructions)
  *   - CDB and done-repair snoop for operand wakeup with same-cycle dispatch bypass
  *   - Priority-encoder issue selection (lowest index first)
+ *   - Optional second issue port (DUAL_ISSUE, INT_RS): second lowest-ready
+ *     select skipping branch-class entries, with its own payload read and
+ *     stage2 bank feeding o_issue_2 / i_fu_ready_2
  *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
  *
@@ -109,12 +112,12 @@ module reservation_station #(
     // =========================================================================
     input riscv_pkg::cdb_broadcast_t i_cdb,
 
-    // Second CDB lane (2-wide CDB). Wakeup/value-capture only via the
-    // REGISTERED snoop + dispatch-capture paths below — intentionally NOT wired
-    // into the combinational entry_ready/stage2 bypass cone (see
-    // LANE1_ISSUE_BYPASS, which now closes that gap by default), so a lane-1 result
-    // wakes its consumers one cycle later than lane 0 (the recorded
-    // low-Fmax-risk design) and the timing-critical issue cone is untouched.
+    // Second CDB lane (2-wide CDB). With LANE1_ISSUE_BYPASS (default on, used
+    // by all instances), lane-1 results also feed the combinational
+    // entry_ready/stage2 issue-bypass cone, so a lane-1 result wakes its
+    // consumers in the same cycle, like lane 0.  The registered snoop +
+    // dispatch-capture paths below remain the only wakeup paths when
+    // LANE1_ISSUE_BYPASS is disabled per instance as a timing fallback.
     input riscv_pkg::cdb_broadcast_t i_cdb_2,
 
     // Registered ROB-done repair wakeups from dispatch. These carry operands
@@ -564,9 +567,10 @@ module reservation_station #(
   // ===========================================================================
   // Payload LUTRAM — dispatch-only fields, read at issue
   // ===========================================================================
-  // Written exactly once (at dispatch into free_idx) and read exactly once
-  // (at issue from issue_idx).  No parallel access needed, so they live in
-  // distributed RAM rather than flip-flops.  Valid bits in FFs gate all reads;
+  // Written once per entry at dispatch (free_idx / alloc_idx_2) and read once
+  // per issue port (issue_idx here; DUAL_ISSUE reads a second replicated copy
+  // at issue_idx_2), so they live in distributed RAM rather than flip-flops.
+  // Valid bits in FFs gate all reads;
   // stale payload data behind an invalid entry is harmless.
 
   localparam int unsigned PayloadWidth =
@@ -756,7 +760,7 @@ module reservation_station #(
       end
     end else begin
       // Net occupancy delta: +1 per dispatch (0/1/2 of slot-1/slot-2 firing)
-      // and -1 if issue fires.
+      // and -1 per issue port that fires (0/1/2 of port-0/port-1).
       unique case ({
         dispatch_fire, dispatch_fire_2
       })

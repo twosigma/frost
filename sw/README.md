@@ -473,9 +473,9 @@ and benchmark normalization match the target board.
 ## Memory Map
 
 The unified memory map is identical on every board and in simulation; the
-cache hierarchy behind the cached region (128 KiB L1D + 16 KiB L1I on every
-board, plus a URAM L2 on UltraScale+, over the board's DDR) is opaque to
-software.
+cache hierarchy behind the cached region (128 KiB L1D on every board; a
+16 KiB L1I plus a 2 MiB URAM L2 on UltraScale+, a 128 KiB L1I with no L2
+on Genesys2; over the board's DDR) is opaque to software.
 
 Defined in `common/link.ld`:
 

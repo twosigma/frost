@@ -9,15 +9,17 @@ FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
 on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
 two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
 commit two at a time (with a few slot-2 restrictions). The execution engine is
-still asymmetric: each reservation station issues one operation per cycle (with
-a single integer ALU), but result writeback now has a 2-lane CDB that can
-broadcast two FU completions per cycle, except for CDB-bypassing aligned stores.
-Lane 0 keeps the same-cycle RS issue bypass; lane 1 updates the ROB and the
-registered RS wakeup / dispatch-capture paths, so resident consumers see lane 1
-one cycle later by design. Different function units can execute concurrently
-(up to six RSes can issue in one cycle), but this is not a fully symmetric
-2-issue execution engine — see [2-wide CDB arbitration](#2-wide-cdb-arbitration)
-and the 2-wide notes below.
+still asymmetric: most reservation stations issue one operation per cycle (the
+INT RS dual-issues into two integer ALU pipes, branches staying on pipe 0),
+and result writeback has a 2-lane CDB that can broadcast two FU completions
+per cycle, except for CDB-bypassing aligned stores. Lane 0 keeps the
+same-cycle RS issue bypass, and lane 1 now wakes resident consumers in the
+same cycle as well (`LANE1_ISSUE_BYPASS`, on by default; it can be disabled
+per-instance if the wakeup cone becomes the timing limiter). Different
+function units can execute concurrently (up to six RSes can issue in one
+cycle, up to seven operations counting the INT RS's second port), but this
+is not a fully symmetric 2-issue execution engine — see
+[2-wide CDB arbitration](#2-wide-cdb-arbitration) and the 2-wide notes below.
 
 ```
    IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
@@ -130,7 +132,7 @@ lanes use the same fixed priority, which favors common integer traffic while
 keeping FP/divide valid cones out of the fastest grant paths:
 
 ```
-MUL  >  MEM  >  ALU  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
+MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
 Any FU not selected by either lane latches its result in a one-deep
@@ -193,8 +195,10 @@ slot 1's rename.
 The ROB retires up to two instructions per cycle. Head and head+1
 commit together when both are done and neither is a serializing
 instruction (CSR, FENCE, FENCE.I, WFI, MRET, AMO, LR, SC), neither
-is an exception, the head isn't mispredicting, and head+1 isn't any
-branch. The INT and FP regfiles both support two write ports via
+is an exception, the head isn't mispredicting, and head+1 isn't a
+mispredicted (or early-recovered) branch — a correctly-predicted branch may
+retire at head+1, using a second checkpoint-free port and held BTB/bimodal
+training captures. The INT and FP regfiles both support two write ports via
 2-write-port distributed RAM with a Live Value Table that steers
 reads to the newer (slot-2) tag on same-register conflicts. The RAT
 and SQ each expose parallel slot-2 commit ports so both retires
@@ -215,5 +219,5 @@ Two bypass paths shorten commit and completion latency:
   CAM match is registered before real issue, making entries appear
   `addr_valid` the same cycle MEM_RS issues. On completion, the LQ
   writes its CDB staging register directly from the memory response
-  / L0 hit data, bypassing the per-entry `data_valid` + priority
+  / L0 hit / SQ-forward data, bypassing the per-entry `data_valid` + priority
   encoder path.

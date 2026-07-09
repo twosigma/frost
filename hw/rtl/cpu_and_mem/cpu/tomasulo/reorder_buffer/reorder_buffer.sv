@@ -48,7 +48,7 @@
  *
  * External Coordination:
  *   The Reorder Buffer coordinates with several external units via handshake signals:
- *   - Store Queue: i_sq_empty for FENCE/AMO ordering
+ *   - Store Queue: i_sq_committed_empty for FENCE/FENCE.I and MRET drain ordering
  *   - CSR Unit: o_csr_start/i_csr_done for CSR side effects at commit
  *   - Trap Unit: o_trap_pending/i_trap_taken for exception handling
  *   - Interrupt Controller: i_interrupt_pending for WFI
@@ -123,10 +123,12 @@ module reorder_buffer (
 
     // Widen-commit slot 2 (head+1).  When the 2-wide gate fires, these
     // carry the second retiring entry for the same cycle; otherwise valid
-    // is low and the payload is '0.  Slot 2 can never be a branch,
-    // mispredict, serial op, FENCE.I, exception, or AMO/LR/SC by
-    // construction, so the recovery/mispredict fields are zeroed here —
-    // only the retire/regfile/store-commit consumers need slot 2.
+    // is low and the payload is '0.  Slot 2 can never be a mispredicting
+    // (or early-recovered) branch, serial op, FENCE.I, exception, or
+    // AMO/LR/SC by construction; a correctly-predicted branch MAY retire
+    // here, so the branch/checkpoint fields carry real values (redirect_pc
+    // holds the architectural next-PC) while misprediction stays hardwired
+    // 0 — slot 2 never triggers redirect recovery.
     output riscv_pkg::reorder_buffer_commit_t o_commit_2,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
     output logic                              o_commit_2_valid_raw,
@@ -609,7 +611,7 @@ module reorder_buffer (
   // Widen-commit ("2-wide") gate. Asserted when commit_en is high this
   // cycle AND the entry immediately behind head is also retirable AND
   // neither slot hits a hazard that forces 1-wide commit (serial ops,
-  // head mispredict, head+1 branch, FENCE.I, exceptions, AMO/LR/SC).
+  // head mispredict, head+1 mispredicting branch, FENCE.I, exceptions, AMO/LR/SC).
   // commit_2_gate is the ungated opportunity signal (perf-counter input);
   // commit_2_fire (gate && EnableWidenCommit && i_widen_commit_ok) drives
   // the actual 2-wide retire: head_ptr advances by 2, rob_valid clears at
@@ -748,7 +750,7 @@ module reorder_buffer (
       head_next_is_jal ? head_next_branch_target_jal : head_next_branch_target_resolved;
 
   // Widen-commit hazard gates.  Head may be a correctly-predicted branch;
-  // head+1 may never be a branch (BTB update arbitration).  Both must be
+  // head+1 may also be a correctly-predicted one (see below).  Both must be
   // plain non-serial instructions for 2-wide to fire.
   assign head_ok_2wide = head_f_ok_2wide_static &&
       !head_exception && !(head_f_is_branch && head_mispredicted);
@@ -2222,11 +2224,14 @@ module reorder_buffer (
   // ===========================================================================
   // Widen-Commit Slot 2 Output (head+1)
   // ===========================================================================
-  // Slot 2 is populated whenever commit_2_gate fires.  By construction slot
-  // 2 can never be a branch/mispredict/serial/exception/AMO/LR/SC, so most
-  // control fields are zeroed; only the regfile-writeback + SQ-release
-  // fields (dest_*, value, pc, is_store, is_fp_store, fp_flags, tag,
-  // is_compressed, early_recovered) need to carry real data.
+  // Slot 2 is populated whenever commit_2_fire fires.  By construction slot
+  // 2 can never be a mispredicting branch/serial/exception/AMO/LR/SC; a
+  // correctly-predicted branch may retire here, so the branch/checkpoint
+  // fields (is_branch, branch_taken, branch_target, is_call/return/jal/jalr,
+  // has_checkpoint, checkpoint_id, redirect_pc) carry real data alongside
+  // the regfile-writeback + SQ-release fields (dest_*, value, pc, is_store,
+  // is_fp_store, fp_flags, tag, is_compressed, early_recovered); the
+  // CSR/serial flags and misprediction stay zeroed.
   always_comb begin
     o_commit_comb_2 = '0;
 
@@ -2419,7 +2424,7 @@ module reorder_buffer (
     // the ROB is sitting on a done entry behind a stalled head.
     o_perf_events.head_plus_one_done = head_next_valid_done && !i_flush_all;
     // Widen-commit fire-rate predictor: tighter than head_and_next_done
-    // because the hazard gate (serial ops, head+1 branches, FENCE.I,
+    // because the hazard gate (serial ops, head+1 mispredicting branches, FENCE.I,
     // exceptions, AMO/LR/SC, head-mispredicting-branches) is already
     // applied.  commit_2_fire_actual additionally folds in the master
     // enable and the cpu_ooo slot-2 accept term (i_widen_commit_ok,

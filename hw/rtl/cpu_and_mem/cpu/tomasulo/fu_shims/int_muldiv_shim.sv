@@ -285,12 +285,14 @@ module int_muldiv_shim (
   // FIFO push: multiplier completes with non-flushed entry.
   //
   // We deliberately keep this gating as minimal as the divider side (no
-  // dependence on i_mul_accepted) so that the flush net does not fan into
-  // the mul_fifo_* register cone. A same-cycle bypass that avoided the
+  // dependence on i_mul_accepted) so the accepted handshake does not fan
+  // into the mul_fifo_* register cone. A same-cycle bypass that avoided the
   // 1-cycle FIFO turnaround was tried, but it created an 18-level
   // combinational path from the mispredict_recovery_pending flop through
-  // the wrapper's mul_result_accepted (which depends on speculative_flush_all)
-  // back into mul_fifo_push, producing −0.7 ns of extra WNS on top of the
+  // the wrapper's mul_result_accepted (which at the time depended on
+  // speculative_flush_all; it is now derived only from the adapter's
+  // registered result_pending and the shim's registered FIFO state) back
+  // into mul_fifo_push, producing −0.7 ns of extra WNS on top of the
   // shared flush→FIFO cone. Accept the 1-cycle turnaround on Bench 3 rather
   // than pay that timing cost.
   assign mul_fifo_push = mul_completing;
@@ -338,8 +340,8 @@ module int_muldiv_shim (
       // Pop — advance rd_ptr only. mul_fifo_valid / mul_fifo_flushed stay
       // set; they are only consulted gated by mul_fifo_count (authoritative
       // occupancy) and get overwritten on the next push to this slot, so
-      // clearing them here would only drag i_mul_accepted (which depends on
-      // the cross-FU arbiter grant cone) into the fifo register next-state.
+      // clearing them here would only drag i_mul_accepted into the fifo
+      // register next-state.
       if (mul_fifo_pop) begin
         mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
       end
@@ -572,8 +574,8 @@ module int_muldiv_shim (
       // Pop — advance rd_ptr only. div_fifo_valid / div_fifo_flushed stay
       // set; they are only consulted gated by fifo_count (authoritative
       // occupancy) and get overwritten on the next push to this slot, so
-      // clearing them here would only drag i_div_accepted (which depends on
-      // the cross-FU arbiter grant cone) into the fifo register next-state.
+      // clearing them here would only drag i_div_accepted into the fifo
+      // register next-state.
       if (fifo_pop) begin
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end

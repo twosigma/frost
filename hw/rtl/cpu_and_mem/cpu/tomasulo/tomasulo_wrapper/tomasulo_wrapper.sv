@@ -648,7 +648,7 @@ module tomasulo_wrapper #(
 
 
   // ===========================================================================
-  // CDB Arbiter: FU completions → single CDB broadcast
+  // CDB Arbiter: FU completions → 2-lane CDB broadcast (o_cdb + o_cdb_2)
   // ===========================================================================
   riscv_pkg::cdb_broadcast_t cdb_bus_comb;  // combinational from arbiter
   // registered — feeds RS/ROB wakeup
@@ -3054,7 +3054,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Backend Profiling Counters
   // ===========================================================================
-  // The 60 back-end profiling counters live in tomasulo_perf_counters.
+  // The 64 back-end profiling counters live in tomasulo_perf_counters.
   tomasulo_perf_counters tomasulo_perf_counters_inst (
       .i_clk,
       .i_rst_n,

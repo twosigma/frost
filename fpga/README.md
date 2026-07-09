@@ -50,6 +50,17 @@ The FPGA tooling is organized into three main workflows:
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
 
+On top of the loading workflow, `hw_regression.py` runs a full on-hardware
+regression against an already-programmed board: every JTAG-loadable
+bare-metal app is loaded via `load_software.py` and judged from its UART
+output, then `sweep_coremark_pro.py` runs the nine-workload CoreMark-PRO
+sweep — with CoreMark and CoreMark-PRO scores checked against per-board
+baselines — and finally Linux is booted to the Buildroot login prompt:
+
+```bash
+./fpga/hw_regression.py --board x3
+```
+
 ## Prerequisites
 
 - **Vivado** (see [main README](../README.md#prerequisites) for validated versions)

@@ -54,8 +54,9 @@ Applications are compiled automatically before simulation—no manual build step
 ./test_run_cocotb.py isa_test                      # Run ISA compliance tests
 ./test_run_cocotb.py freertos_demo                 # Run FreeRTOS demo
 ./test_run_cocotb.py coremark_pro_core             # CoreMark-PRO workload system sim
-                                                   # (also: _cjpeg, _linear_alg, _nnet,
-                                                   #  _parser, _sha; long-running)
+                                                   # (also: _cjpeg, _linear_alg, _loops,
+                                                   #  _nnet, _parser, _radix2, _sha,
+                                                   #  _zip; long-running)
 
 # Reproducibility options
 ./test_run_cocotb.py cdb_arbiter --random-seed=12345                       # Use specific seed
@@ -393,5 +394,6 @@ make clean
 
 Some tests (coremark, freertos_demo) run for many cycles. Use environment variable for timeouts:
 ```bash
-COCOTB_SCHEDULER_DEBUG=1 ./test_run_cocotb.py coremark
+COCOTB_COREMARK_MAX_CYCLES=30000000 ./test_run_cocotb.py coremark   # CoreMark-style benchmarks
+COCOTB_MAX_CYCLES=2000000 ./test_run_cocotb.py hello_world          # other programs
 ```

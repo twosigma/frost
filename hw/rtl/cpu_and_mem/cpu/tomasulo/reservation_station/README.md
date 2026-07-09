@@ -97,8 +97,8 @@ elsewhere in the back-end. Older entries are preserved.
 ## Verification
 
 Cocotb tests cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2
-dispatch, both CDB lanes, CDB wakeup for each source slot, same-cycle lane-0
-bypass, dispatch capture from lane 1, issue priority, FU ready gating, immediate
+dispatch, lane-0 CDB wakeup for each source slot, same-cycle lane-0
+bypass, dispatch capture from lane 0, issue priority, FU ready gating, immediate
 bypass, `full_for_2` gating, and partial/full flush. Inline formal properties
 also prove the dispatch / issue / wakeup / flush invariants and cover both-slots
 and slot-2-alone dispatch.
