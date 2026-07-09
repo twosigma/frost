@@ -553,6 +553,7 @@ module reservation_station #(
   logic issue_fire_2;
   logic stage2b_valid;
   logic stage2b_head_query_match;
+  logic [(2**$clog2(DEPTH))-1:0] issue_sel_2_ohread;
 
   // Dispatch condition
   (* max_fanout = 32 *) logic dispatch_fire;
@@ -1129,11 +1130,18 @@ module reservation_station #(
         end
       end
 
+      always_comb begin
+        issue_sel_2_ohread = '0;
+        issue_sel_2_ohread[DEPTH-1:0] = issue_sel_2;
+      end
+
       // Second payload-RAM copy: identical writes, read at issue_idx_2
-      // (LUTRAM replication, the same pattern as the duplicated SQ data
-      // RAMs).
+      // (LUTRAM replication, the same pattern as the duplicated SQ data RAMs).
+      // Port 1 already computes a one-hot select. Feed that to the LVT read
+      // side so the bank-select lookup does not add another binary-address mux
+      // behind the issue2 priority encoder.
       logic [PayloadWidth-1:0] payload_rd_data_b;
-      mwp_dist_ram #(
+      mwp_dist_ram_ohread #(
           .ADDR_WIDTH     ($clog2(DEPTH)),
           .DATA_WIDTH     (PayloadWidth),
           .NUM_WRITE_PORTS(2)
@@ -1142,6 +1150,7 @@ module reservation_station #(
           .i_write_enable ({dispatch_fire_2, dispatch_fire}),
           .i_write_address({alloc_idx_2, free_idx}),
           .i_read_address (issue_idx_2),
+          .i_read_onehot  (issue_sel_2_ohread),
           .i_write_data   ({payload_wr_data_2, payload_wr_data}),
           .o_read_data    (payload_rd_data_b)
       );
