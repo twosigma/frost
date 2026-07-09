@@ -90,6 +90,7 @@ module sq_forwarding_unit #(
     logic                can_forward;
     logic [IdxWidth-1:0] idx;
     logic [1:0]          extract_type;
+    logic [1:0]          store_off;
   } fwd_winner_t;
 
   function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
@@ -203,6 +204,7 @@ module sq_forwarding_unit #(
   endfunction
 
   logic [1:0] fwd_extract_type;  // 0=EXACT, 1=LO_WORD, 2=HI_WORD
+  logic [1:0] fwd_winner_store_off;
 
   // Forwarding scan results — promoted to module scope so the per-entry
   // qualification mask, winner select, and sq_data_fwd_rd consumption stay in
@@ -366,25 +368,29 @@ module sq_forwarding_unit #(
   // synthesized implementation below remains the timing-optimized tree.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
+  logic [1:0] fwd_formal_winner_store_off;
 
   always_comb begin
-    fwd_formal_winner_valid = 1'b0;
-    fwd_formal_winner_age   = '0;
-    fwd_can_fwd             = 1'b0;
-    fwd_match_idx           = '0;
-    fwd_extract_type        = 2'd0;
+    fwd_formal_winner_valid     = 1'b0;
+    fwd_formal_winner_age       = '0;
+    fwd_formal_winner_store_off = '0;
+    fwd_can_fwd                 = 1'b0;
+    fwd_match_idx               = '0;
+    fwd_extract_type            = 2'd0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (fwd_conflict_mask[i] &&
           (!fwd_formal_winner_valid || (fwd_entry_slot_age[i] >= fwd_formal_winner_age))) begin
-        fwd_formal_winner_valid = 1'b1;
-        fwd_formal_winner_age   = fwd_entry_slot_age[i];
-        fwd_can_fwd             = fwd_can_forward_mask[i];
-        fwd_match_idx           = IdxWidth'(i);
-        fwd_extract_type        = fwd_entry_extract_type[i];
+        fwd_formal_winner_valid     = 1'b1;
+        fwd_formal_winner_age       = fwd_entry_slot_age[i];
+        fwd_can_fwd                 = fwd_can_forward_mask[i];
+        fwd_match_idx               = IdxWidth'(i);
+        fwd_extract_type            = fwd_entry_extract_type[i];
+        fwd_formal_winner_store_off = sq_address_flat[i*XLEN+:2];
       end
     end
   end
+  assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
   // Keep this as a balanced tree: the old serial loop let an SQ-check address
   // bit feed each entry's conflict logic and then walk an 8-entry winner chain
@@ -396,6 +402,7 @@ module sq_forwarding_unit #(
       fwd_leaf[i].can_forward  = fwd_can_forward_mask[i];
       fwd_leaf[i].idx          = IdxWidth'(i);
       fwd_leaf[i].extract_type = fwd_entry_extract_type[i];
+      fwd_leaf[i].store_off    = sq_address_flat[i*XLEN+:2];
     end
 
     fwd_pair[0]      = choose_newer_winner(fwd_leaf[0], fwd_leaf[1]);
@@ -412,6 +419,7 @@ module sq_forwarding_unit #(
     fwd_match_idx    = fwd_winner.idx;
     fwd_extract_type = fwd_winner.extract_type;
   end
+  assign fwd_winner_store_off = fwd_winner.store_off;
 `endif
 
   // Block 3: Registered forwarding outputs.
@@ -446,9 +454,7 @@ module sq_forwarding_unit #(
   // bytes.  Word/double winners have offset 0 (aligned), so the shift is an
   // identity for the legacy word cases.  The high word of a DOUBLE store
   // (extract 2) is always lane-aligned.
-  logic [1:0] fwd_winner_store_off;
   logic [XLEN-1:0] fwd_image_lo;
-  assign fwd_winner_store_off = sq_address_flat[fwd_match_idx*XLEN+:2];
   assign fwd_image_lo = sq_data_fwd_rd[XLEN-1:0] << {fwd_winner_store_off, 3'b000};
 
   assign o_fwd_match_idx = fwd_match_idx;

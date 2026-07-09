@@ -644,10 +644,15 @@ module store_queue #(
   logic                drain_first_found;
   logic [IdxWidth-1:0] drain_idx_q;
 
+  logic                mem_write_fire_next;
+  logic                mem_write_completes_next;
+  logic                mem_write_plain_fast_next;
+  logic                drain_complete_fire_next;
+
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       drain_mask_next[i] = sq_valid[i] && !sq_sent[i] &&
-          !(mem_write_fire_next && mem_write_completes_next && (drain_idx_q == IdxWidth'(i)));
+          !(drain_complete_fire_next && (drain_idx_q == IdxWidth'(i)));
     end
     for (int unsigned i = 0; i < DEPTH; i++) begin
       drain_mask_rotated[i] = drain_mask_next[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
@@ -698,14 +703,14 @@ module store_queue #(
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
                        !sq_sent[drain_idx_q];
 
-  logic                       mem_write_fire_next;
   logic [riscv_pkg::XLEN-1:0] mem_write_addr_next;
   logic [riscv_pkg::XLEN-1:0] mem_write_data_next;
   logic [                3:0] mem_write_byte_en_next;
   logic                       mem_write_is_mmio_next;
   logic                       mem_write_is_cached_next;
-  logic                       mem_write_completes_next;
-  logic                       mem_write_plain_fast_next;
+  logic                       mem_write_launch_serial_next;
+  logic                       mem_write_launch_pipelined_next;
+  logic                       mem_write_addr_cached_for_plain_next;
 
   always_comb begin
     // FSD phase 1: write upper word at addr+4
@@ -729,19 +734,29 @@ module store_queue #(
                                  CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
   end
 
+  assign mem_write_addr_cached_for_plain_next =
+      (sq_address[drain_idx_q] >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
+      (sq_address[drain_idx_q] <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
+                                   CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
   assign mem_write_completes_next = !(sq_size[drain_idx_q] == riscv_pkg::MEM_SIZE_DOUBLE &&
                                       !sq_fp64_phase[drain_idx_q]);
   assign mem_write_plain_fast_next = (sq_size[drain_idx_q] != riscv_pkg::MEM_SIZE_DOUBLE) &&
-                                     !mem_write_is_mmio_next && !mem_write_is_cached_next;
+                                     !sq_is_mmio[drain_idx_q] &&
+                                     !mem_write_addr_cached_for_plain_next;
 
   // Launch gate: legacy serial arm for any write type, plus the pipelined
   // arm for plain fast-tier stores.  The occupancy bound counts the write
   // currently on the bus (o_mem_write_en) against the 2-deep FIFO, so a
   // stalled done self-throttles the drain instead of overflowing it.
-  assign mem_write_fire_next = drain_ready &&
-      (((write_inflight_cnt == 2'd0) && !o_mem_write_en) ||
-       (mem_write_plain_fast_next && !write_inflight_special &&
-        (({1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en}) < 3'd2)));
+  assign mem_write_launch_serial_next = (write_inflight_cnt == 2'd0) && !o_mem_write_en;
+  assign mem_write_launch_pipelined_next =
+      mem_write_plain_fast_next && !write_inflight_special &&
+      (({1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en}) < 3'd2);
+  assign mem_write_fire_next =
+      drain_ready && (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
+  assign drain_complete_fire_next = drain_ready && mem_write_completes_next &&
+                                    (mem_write_launch_serial_next ||
+                                     mem_write_launch_pipelined_next);
 
   // Staging register for write_entry_idx and write_completes_entry, captured
   // alongside the write interface so they stay aligned with o_mem_write_en.
