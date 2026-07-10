@@ -1150,6 +1150,7 @@ module tomasulo_wrapper #(
   // SQ ↔ LQ Internal Wiring (store-to-load forwarding)
   // ===========================================================================
   logic sq_check_valid;
+  logic sq_check_capture_valid;  // flush-free capture-enable variant
   logic [riscv_pkg::XLEN-1:0] sq_check_addr;
   // Port-split replica of sq_check_addr — same value, sourced from a
   // dont_touch'd LQ-side replica register so opt_design cannot merge it
@@ -2656,6 +2657,7 @@ module tomasulo_wrapper #(
 
       // SQ disambiguation (internal wiring to store_queue)
       .o_sq_check_valid          (sq_check_valid),
+      .o_sq_check_capture_valid  (sq_check_capture_valid),
       .o_sq_check_addr           (sq_check_addr),
       .o_sq_check_addr_b         (sq_check_addr_b),
       .o_sq_check_rob_tag        (sq_check_rob_tag),
@@ -2929,6 +2931,7 @@ module tomasulo_wrapper #(
 
       // Store-to-load forwarding (from LQ)
       .i_sq_check_valid          (sq_check_valid),
+      .i_sq_check_capture_valid  (sq_check_capture_valid),
       .i_sq_check_addr           (sq_check_addr),
       .i_sq_check_addr_b         (sq_check_addr_b),
       .i_sq_check_rob_tag        (sq_check_rob_tag),

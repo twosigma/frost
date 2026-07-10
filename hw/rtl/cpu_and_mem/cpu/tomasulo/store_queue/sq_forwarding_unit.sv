@@ -37,6 +37,12 @@ module sq_forwarding_unit #(
 
     // Load probe (from MEM_RS via LQ) + ROB head + commit snoop
     input logic i_sq_check_valid,
+    // Flush-free capture enable for the Block-3 output register (identical
+    // to i_sq_check_valid minus the flush terms, which carried the
+    // registered trap/MRET pulse into every capture bit's D; see
+    // load_queue.o_sq_check_capture_valid for the consumer-side-kill
+    // safety argument).
+    input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_b,
     input riscv_pkg::mem_size_e i_sq_check_size,
@@ -438,15 +444,16 @@ module sq_forwarding_unit #(
       o_sq_forward.match         <= 1'b0;
       o_sq_forward.can_forward   <= 1'b0;
     end else begin
-      o_sq_all_older_addrs_known <= i_sq_check_valid ? fwd_all_older_known : 1'b0;
-      o_sq_forward.match         <= i_sq_check_valid ? fwd_found_match : 1'b0;
-      o_sq_forward.can_forward   <= i_sq_check_valid ? fwd_can_fwd : 1'b0;
+      o_sq_all_older_addrs_known <= i_sq_check_capture_valid ? fwd_all_older_known : 1'b0;
+      o_sq_forward.match         <= i_sq_check_capture_valid ? fwd_found_match : 1'b0;
+      o_sq_forward.can_forward   <= i_sq_check_capture_valid ? fwd_can_fwd : 1'b0;
     end
 
     // Data is qualified by the same-edge match/can_forward above; the
-    // i_sq_check_valid gate just keeps the register from tracking the winner
-    // tree while no probe is in flight.
-    if (i_sq_check_valid) begin
+    // capture gate just keeps the register from tracking the winner
+    // tree while no probe is in flight. Must use the SAME enable as the
+    // match/can_forward arm so the pair stays coherent.
+    if (i_sq_check_capture_valid) begin
       o_sq_forward.data <= fwd_selected_data;
     end
   end
