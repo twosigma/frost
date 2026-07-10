@@ -166,6 +166,10 @@ module reorder_buffer (
     output logic [riscv_pkg::XLEN-1:0] o_trap_pc,  // PC of excepting instruction
     // Head decodes as WFI (drives WFI interrupt-resume-PC seed in cpu_ooo)
     output logic o_head_is_wfi,
+    // Head decodes as AMO (drives the trap unit's AMO interrupt shield in
+    // cpu_ooo: interrupts must not flush an AMO whose memory write may
+    // already be in flight -- see trap_unit.i_amo_at_head).
+    output logic o_head_is_amo,
     // TIMING precompute of the architectural next-PC of the head / head+1
     // entry, for cpu_ooo's interrupt_resume_pc capture.  Contract: whenever
     // o_commit_valid_raw (resp. o_commit_2_valid_raw) is high,
@@ -2066,6 +2070,9 @@ module reorder_buffer (
   // interrupt_resume_pc at the pre-WFI instruction's next-PC (== the WFI's own
   // PC) -> mepc=wfi_pc instead of the spec-required wfi_pc+4.
   assign o_head_is_wfi = head_f_is_wfi;
+  // AMO interrupt shield source: the f-partition one-hot read of the head's
+  // is_amo flag, valid-qualified and registered in cpu_ooo before use.
+  assign o_head_is_amo = head_f_is_amo;
   assign o_trap_cause = head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
 

@@ -132,6 +132,8 @@ module tomasulo_wrapper #(
     output logic                                        o_trap_pending,
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_pc,
     output logic                                        o_head_is_wfi,
+    // Head is an AMO (trap unit's AMO interrupt shield; see reorder_buffer).
+    output logic                                        o_head_is_amo,
     // Retired-next-PC precompute for cpu_ooo's interrupt_resume_pc (see
     // reorder_buffer port comment; pure timing restructure).
     output logic                  [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
@@ -1527,6 +1529,7 @@ module tomasulo_wrapper #(
       .o_trap_pending             (o_trap_pending),
       .o_trap_pc                  (o_trap_pc),
       .o_head_is_wfi              (o_head_is_wfi),
+      .o_head_is_amo              (o_head_is_amo),
       .o_head_retired_next_pc     (o_head_retired_next_pc),
       .o_head_next_retired_next_pc(o_head_next_retired_next_pc),
       .o_trap_cause               (o_trap_cause),
