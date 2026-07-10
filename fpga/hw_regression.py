@@ -150,7 +150,7 @@ LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic")
 # linux_boot budget: rebuild (seconds when the Buildroot cache is warm; the
 # loader pre-flight warns when it is not), multi-MB JTAG DDR image load, and
 # the kernel boot to the login prompt.
-DEFAULT_LINUX_TIMEOUT = 900.0
+DEFAULT_LINUX_TIMEOUT = 300.0
 
 # The FROST coremark port prints "Total 64-bit ticks : N" plus this formula;
 # see the module docstring for why Iterations/Sec is not trusted instead.
