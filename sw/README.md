@@ -365,6 +365,8 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 | `ddr_heap_test/` | Multi-MB malloc capacity test through the cache hierarchy into DDR |
 | `ddr_smc_test/` | Self-modifying-code / `fence.i` test: writes instruction words into a DDR buffer and executes them, exercising the full L1D-writeback then L1I-invalidate sync chain |
 | `ddr_test/` | Cached-region bring-up test (stores/loads, byte strobes, eviction sweeps, and the preloaded `.ddr_rodata` image path) |
+| `amo_irq_torture/` | Machine-timer IRQs swept across cached-DDR AMO bursts; the counter-array sum-check catches any double-applied or lost atomic — the directed regression for the interrupt-orphaned AMO write that made `linux_boot` flaky |
+| `tick_torture/` | Linux-faithful CLINT tick re-arm (hi=-1/lo/hi order, torn-read mtime loop, catch-up) under multi-MB DDR thrash, with re-arm readback verify, a lost-tick watchdog, and a bounded-WFI wake check |
 
 ## Building
 

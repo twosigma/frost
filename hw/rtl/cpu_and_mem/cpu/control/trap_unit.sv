@@ -27,6 +27,9 @@
  * =================
  *   - Exception handling from ROB commit (ECALL, EBREAK, misaligned access)
  *   - Interrupt prioritization and masking
+ *   - Interrupt-take gating: committed-store drain (i_sq_committed_empty)
+ *     and the AMO interrupt shield (i_amo_at_head — no interrupt flush may
+ *     land while an AMO owns the ROB head; see the port comment)
  *   - Trap entry: save state, redirect to mtvec
  *   - Trap exit (MRET): restore state, return to mepc
  *   - WFI state machine (unused in cpu_ooo; see WFI Behavior below)

@@ -47,13 +47,17 @@ Stages run in this order on the board selected with ``--board``:
    the sweep runs -- the sweep insists on exclusive access and refuses to
    start if any other process holds the port.
 
-3. (last, the flakiest) linux_boot: pass requires both ``Welcome to
-   Buildroot`` and ``buildroot login:`` on the UART. ``<<TRAP>>`` or
-   ``Kernel panic`` fail the stage immediately; the bare-metal ERROR-word
-   rule is not applied to kernel output, which can legitimately contain it.
-   The stage has its own ``--linux-timeout`` (build + JTAG DDR image load +
-   kernel boot); note the FIRST build on a cold Buildroot cache takes
-   30-60 min, so either pre-build once or raise the timeout for that run.
+3. (last) linux_boot: pass requires both ``Welcome to Buildroot`` and
+   ``buildroot login:`` on the UART. ``<<TRAP>>`` or ``Kernel panic`` fail
+   the stage immediately; the bare-metal ERROR-word rule is not applied to
+   kernel output, which can legitimately contain it. The stage has its own
+   ``--linux-timeout`` (build + JTAG DDR image load + kernel boot); note
+   the FIRST build on a cold Buildroot cache takes 30-60 min, so either
+   pre-build once or raise the timeout for that run. (Historically this
+   stage hung on ~1/3 of runs: an interrupt taken mid-AMO orphaned the
+   atomic's in-flight write and corrupted boot state. The race is fixed —
+   the trap unit's AMO interrupt shield — and the amo_irq_torture phase-1
+   app now regression-guards it directly.)
 
 A score stage FAILS when its measured score drops more than
 ``--score-tolerance`` percent below the board's baseline. A baseline of None
@@ -666,8 +670,8 @@ def main() -> int:
 
     # Canonical stage order: hello_world first (the canonical bring-up smoke
     # test), the remaining apps in VALID_APPS order, then the CoreMark-PRO
-    # sweep, with linux_boot last -- the flakiest stage runs once everything
-    # else has already proven out.
+    # sweep, with linux_boot last -- the longest, whole-system stage runs
+    # once everything else has already proven out.
     phase1 = [
         app
         for app in VALID_APPS
