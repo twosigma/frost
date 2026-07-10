@@ -198,6 +198,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),direction_predictor)
+# IF-stage branch direction predictor unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),branch_prediction_controller)
 # IF-stage branch prediction controller unit test
 COMPILE_ARGS := \
