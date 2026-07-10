@@ -1644,6 +1644,141 @@ async def test_forward_lh_from_fsd_both_words(dut: Any) -> None:
 
 
 # ============================================================================
+# Forwarding - unresolved older store blocks forwarding (rv32ui ld_st bug)
+# ============================================================================
+@cocotb.test()
+async def test_no_forward_while_older_addr_unknown(dut: Any) -> None:
+    """A matching older store must not forward while any older address is unknown.
+
+    Regression test for the SQ→LQ fast-path bug caught by rv32ui ld_st
+    test 22: with store A (resolved, same address) and a NEWER store B
+    (address still unknown) both older than the load, the CAM winner (A)
+    is untrustworthy — B may resolve to the same address a cycle later.
+    The LQ's forward gate consumes o_sq_all_older_addrs_known, registered
+    from the same scan as can_forward, and must see 0 here.  Once B
+    resolves to the same address, forwarding must deliver B's
+    (newest-older) data, not A's.
+    """
+    dut_if, model = await setup(dut)
+
+    # Store A: older, fully resolved at the probe address.
+    await alloc_addr_data(dut_if, model, rob_tag=2, address=0x6000, data=0xAAAA5555)
+
+    # Store B: newer than A but still older than the load; address unknown.
+    dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD)
+    model.alloc(4, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Probe: load (tag 6) at A's address while B's address is unresolved.
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_check(addr=0x6000, rob_tag=6, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    assert not dut_if.read_all_older_addrs_known(), (
+        "all_older_addrs_known must be 0 while an older store's address is "
+        "unresolved — the LQ forward gate depends on it"
+    )
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+    # B resolves to the SAME address with different data: it is the newest
+    # older store, so a re-probe must forward B's data, not A's.
+    dut_if.drive_addr_update(4, 0x6000)
+    model.addr_update(4, 0x6000, False)
+    dut_if.drive_data_update(4, 0xBBBB1111)
+    model.data_update(4, 0xBBBB1111)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+    dut_if.drive_sq_check(addr=0x6000, rob_tag=6, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert dut_if.read_all_older_addrs_known(), "All older addresses resolved"
+    assert fwd.match and fwd.can_forward, "Resolved same-address stores forward"
+    assert (
+        fwd.data == 0xBBBB1111
+    ), f"Newest older store must win: expected 0xBBBB1111, got 0x{fwd.data:x}"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Forwarding - stale age-reference window on same-cycle ROB tag reuse
+# ============================================================================
+@cocotb.test()
+async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
+    """A same-cycle-reused ROB tag must not corrupt forwarding age ranking.
+
+    The forwarding CAM computes load/entry ages against rob_head_tag_q,
+    which lags i_rob_head_tag by one cycle.  When the ROB head advances
+    (tag H retires) in the same cycle dispatch reuses tag H for a NEW
+    youngest store, the stale reference ranks that store age-0 (oldest)
+    for one scan cycle.  Two properties keep the window benign, both
+    locked here: (1) an allocation carries no address, so during the
+    stale cycle the misranked store surfaces as an unresolved "older"
+    store and o_sq_all_older_addrs_known must read 0 (the LQ forward
+    gate blocks); (2) once the reference catches up and the store's
+    address resolves, it ranks younger than the load and must not
+    forward to it.
+    """
+    dut_if, model = await setup(dut)
+
+    # Cycle W: the ROB presents head H=4 while dispatch reuses tag 4 for a
+    # new store (in hardware: tag-4 retires and its tag is re-allocated on
+    # the same edge under a full ROB).  Both land at W's closing edge, so
+    # next cycle the store is visible while rob_head_tag_q still holds the
+    # stale H=4.
+    dut_if.drive_rob_head_tag(4)
+    dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD)
+    model.alloc(4, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Cycle X (the stale window): true head is now 5, but the scan still
+    # ranks against rob_head_tag_q=4, so the reused-tag store computes age
+    # 0 (oldest).  A load (tag 6, truly OLDER than that store) probes.
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_check(addr=0x7000, rob_tag=6, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    # Stale-window scan: the reused-tag store is misranked oldest, but its
+    # address cannot be valid yet, so the coherent all-known flag is low
+    # and nothing forwards.
+    assert not dut_if.read_all_older_addrs_known(), (
+        "Misranked reused-tag store must surface as an unresolved older "
+        "store during the stale-reference cycle (LQ forward gate blocks)"
+    )
+    fwd = dut_if.read_sq_forward()
+    assert not fwd.can_forward, "Nothing resolved at this address to forward"
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+    # Reference caught up (rob_head_tag_q = 5): the tag-4 store is ring-age
+    # youngest.  Resolve it at the probe address; the OLDER load must not
+    # receive its data, and no older store is unresolved anymore.
+    dut_if.drive_addr_update(4, 0x7000)
+    model.addr_update(4, 0x7000, False)
+    dut_if.drive_data_update(4, 0xDEADBEEF)
+    model.data_update(4, 0xDEADBEEF)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+    dut_if.drive_sq_check(addr=0x7000, rob_tag=6, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert dut_if.read_all_older_addrs_known(), (
+        "The reused-tag store ranks younger than the load once the "
+        "reference catches up; no older store is unresolved"
+    )
+    assert not fwd.can_forward, "A younger store must never forward to an older load"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
 # Test 38: Non-contiguous hole reuse without immediate tail compaction
 # ============================================================================
 @cocotb.test()
