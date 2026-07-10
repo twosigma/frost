@@ -1177,11 +1177,23 @@ module load_queue #(
       !older_amo_write_pending &&
       (sq_no_older_store || sq_head_amo_clear ||
        (i_sq_all_older_addrs_known && !i_sq_forward.match));
+  // i_sq_all_older_addrs_known is REQUIRED for forwarding, not just for the
+  // no-match memory-issue path above: the CAM's can_forward/data reflect only
+  // the older stores whose addresses had resolved in the scan cycle.  If an
+  // older store's address is still unknown, it may resolve (as early as the
+  // cycle this registered result is consumed) to the same address as a store
+  // newer than the CAM winner — forwarding the winner's data would then
+  // return stale bytes.  all_older_addrs_known is registered from the same
+  // scan as can_forward, so the pair is coherent.  (rv32ui/ld_st test 22
+  // caught this: lw forwarded a same-address store left over from the
+  // previous test macro while the directly-preceding sw's address was one
+  // cycle from resolving.)
   assign sq_do_forward = ENABLE_SQ_FORWARD_FAST_PATH
       && sq_check_phase2 && sq_check_entry_issueable && !sq_no_older_store &&
       !sq_check_misaligned &&
       !sq_commit_interlock &&
       !older_amo_write_pending &&
+      i_sq_all_older_addrs_known &&
       i_sq_forward.can_forward
       && !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
 
