@@ -25,8 +25,11 @@
 //
 // PERSISTENT REPAIR: a store whose base register is not ready at dispatch
 // becomes a repair candidate that WAITS for its base tag to complete — on
-// the six dispatch-scoped done-repair channels (the dispatch+1 already-done
-// case) or on either live CDB lane (any later completion).  A matched
+// the six dispatch-scoped done-repair channels (the already-done-at-dispatch
+// case; matched one cycle after the channels pulse via the captured-channel
+// registers below, i.e. the repair fires at dispatch+2 — see the TIMING
+// comment at the capture) or on either live CDB lane (any later
+// completion).  A matched
 // candidate emits its SQ update combinationally when the slot's port is
 // free, otherwise latches the repaired base and drains on the next free
 // cycle.  Candidates are evicted by a newer un-ready store on the same

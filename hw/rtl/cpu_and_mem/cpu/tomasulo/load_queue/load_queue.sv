@@ -99,6 +99,16 @@ module load_queue #(
     // Store Queue Disambiguation (combinational handshake)
     // =========================================================================
     output logic o_sq_check_valid,
+    // Flush-free variant for the SQ forwarding unit's CAPTURE enable only
+    // (x3 post-opt -0.135, 65 endpoints: the !i_flush_all/!i_flush_en terms
+    // in o_sq_check_valid carry the registered trap/MRET pulse into every
+    // forward-capture bit's D). On any cycle where this asserts but
+    // o_sq_check_valid does not (flush cycles), the capture latches a dead
+    // probe's result -- unconsumable, because sq_check_phase2 advances only
+    // from the GATED o_sq_check_valid, sq_check_flushed kills the staging,
+    // and every consumer of the captured result (sq_can_issue,
+    // sq_do_forward, sq_commit_interlock) requires sq_check_phase2 lineage.
+    output logic o_sq_check_capture_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
     // Second replica of o_sq_check_addr — drives the upper half of the SQ
     // disambiguation CAM (entries 4..7).  Splitting the address broadcast
@@ -1117,6 +1127,16 @@ module load_queue #(
         !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_valid = 1'b1;
+    end
+
+    // Capture-enable variant: identical minus the flush terms (see port
+    // comment). Every remaining term is registered/early state.
+    o_sq_check_capture_valid = 1'b0;
+    if (!drop_mem_response_pending &&
+        !i_mem_bus_busy && !sq_commit_check_block && sq_check_entry_issueable &&
+        !sq_check_misaligned &&
+        !(sq_check_no_older_store_q || i_sq_empty)) begin
+      o_sq_check_capture_valid = 1'b1;
     end
   end
 

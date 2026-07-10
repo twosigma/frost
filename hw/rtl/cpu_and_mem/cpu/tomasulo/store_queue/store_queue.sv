@@ -138,6 +138,9 @@ module store_queue #(
     // Store-to-Load Forwarding (from LQ disambiguation)
     // =========================================================================
     input logic i_sq_check_valid,
+    // Flush-free capture-enable variant for the forwarding unit's output
+    // register only (see load_queue.o_sq_check_capture_valid).
+    input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
     // Second copy of the same address driven by a dont_touch'd LQ-side
     // replica register.  Used for the upper-half of the SQ CAM (entries
@@ -603,6 +606,7 @@ module store_queue #(
       .i_rst_n                   (i_rst_n),
       .i_flush_all               (i_flush_all),
       .i_sq_check_valid          (i_sq_check_valid),
+      .i_sq_check_capture_valid  (i_sq_check_capture_valid),
       .i_sq_check_addr           (i_sq_check_addr),
       .i_sq_check_addr_b         (i_sq_check_addr_b),
       .i_sq_check_size           (i_sq_check_size),
@@ -1538,12 +1542,15 @@ module store_queue #(
   // Forwarding outputs are driven from staged SQ CAM results, so they reflect
   // the previous check.
   always @(posedge i_clk) begin
+    // The forwarding output register's write condition is the CAPTURE
+    // enable (flush-free; see load_queue.o_sq_check_capture_valid), so the
+    // no-result-without-check property tracks that signal.
     if (f_past_valid && i_rst_n && $past(
             i_rst_n
         ) && !$past(
             i_flush_all
         ) && !$past(
-            i_sq_check_valid
+            i_sq_check_capture_valid
         )) begin
       p_no_fwd_without_check : assert (!o_sq_forward.match);
     end

@@ -28,6 +28,14 @@ cached loads, and a full flush arms the drop-next-response accounting
 so an in-flight cached response can never be misattributed to a
 post-flush load.
 
+The SQ **forwarding result** register follows a capture-then-kill
+contract instead (timing: the flush terms carried the registered
+trap/MRET pulse into every capture bit's D). Its capture enable is the
+flush-free `o_sq_check_capture_valid`; a flush-cycle probe's result may
+be latched but is structurally unconsumable, because `sq_check_phase2`
+advances only from the flush-gated `o_sq_check_valid` and every
+consumer of the captured result requires phase-2 lineage.
+
 The AMO **write** phase has the mirror-image protection, but upstream:
 a full flush would clear `AMO_WRITE_ACTIVE` while the launched write is
 still in flight, orphaning it (memory mutated by a squashed AMO that

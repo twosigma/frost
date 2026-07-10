@@ -178,6 +178,10 @@ class SQInterface:
         self.dut.i_commit_valid_comb_2.value = 0
         self.dut.i_commit_rob_tag_comb_2.value = 0
         self.dut.i_sq_check_valid.value = 0
+        # Flush-free capture-enable variant: the bench has no flush-vs-probe
+        # overlap, so it mirrors i_sq_check_valid exactly (as the LQ does on
+        # every non-flush cycle).
+        self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
         # Port-split replica — same value as i_sq_check_addr (drives upper
         # half of the SQ CAM, entries DEPTH/2..DEPTH-1).  Test interface
@@ -351,6 +355,7 @@ class SQInterface:
     def drive_sq_check(self, addr: int, rob_tag: int, size: int = 2) -> None:
         """Drive forwarding check from LQ."""
         self.dut.i_sq_check_valid.value = 1
+        self.dut.i_sq_check_capture_valid.value = 1
         self.dut.i_sq_check_addr.value = addr & MASK32
         # Mirror the address on the port-split replica so upper-half SQ
         # entries (DEPTH/2..DEPTH-1) see the same address as the lower half.
@@ -361,6 +366,7 @@ class SQInterface:
     def clear_sq_check(self) -> None:
         """Clear forwarding check."""
         self.dut.i_sq_check_valid.value = 0
+        self.dut.i_sq_check_capture_valid.value = 0
 
     def read_sq_forward(self) -> ForwardResult:
         """Read SQ forwarding result outputs."""
