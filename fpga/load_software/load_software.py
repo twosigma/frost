@@ -40,6 +40,7 @@ from software_registry import (  # noqa: E402
 
 # Valid software applications
 VALID_APPS = [
+    "amo_irq_torture",
     "branch_pred_test",
     "c_ext_test",
     "call_stress",
@@ -70,6 +71,7 @@ VALID_APPS = [
     "spanning_test",
     "sprintf_test",
     "strings_test",
+    "tick_torture",
     "tomasulo_perf",
     "tomasulo_test",
     "uart_echo",
@@ -95,6 +97,7 @@ BOARD_CONFIG = {
 # the cached tier to a real DDR controller (has_ddr=True); on other builds
 # that address range reads back zero. Rejected below until then.
 DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
+    "amo_irq_torture",
     "ddr_exec_test",
     "ddr_atomic_test",
     "ddr_heap_test",
@@ -105,6 +108,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "linux_irq_ddr_test",
     "linux_irq_stack_slot_test",
     "pde_return_hazard",
+    "tick_torture",
 }
 
 

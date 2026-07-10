@@ -273,6 +273,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="linux_irq_ddr_test",
         description="Linux-like machine-timer IRQ path with DDR code/data/stack",
     ),
+    "amo_irq_torture": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="amo_irq_torture",
+        description=(
+            "Timer IRQ swept across cached-DDR AMO bursts; counts every atomic "
+            "side effect (AMO-vs-interrupt-flush orphaned-write regression). "
+            "Run with SIM_TIMER_SPEEDUP=1 and EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=<small>"
+        ),
+        include_in_pytest=False,
+    ),
+    "tick_torture": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="tick_torture",
+        description=(
+            "Linux-faithful CLINT re-arm under DDR thrash with readback verify "
+            "and lost-tick watchdog. Run with SIM_TIMER_SPEEDUP=1"
+        ),
+        include_in_pytest=False,
+    ),
     "linux_irq_active_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
