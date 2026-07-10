@@ -22,7 +22,10 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 
 CLOCK_PERIOD_NS = 10
+BP_DIR_IDX_BITS = 10
+BIM_MASK = (1 << BP_DIR_IDX_BITS) - 1
 PC_A = 0x80000100
+PC_B = 0x80000120
 PC_HALFWORD = 0x80000202
 SLOT2_PC = 0x80000300
 SLOT2_HALFWORD_PC = 0x80000402
@@ -68,6 +71,11 @@ def _make_jal(*, rd: int) -> int:
 def _make_jalr(*, rd: int, rs1: int) -> int:
     """Build a JALR instruction with detector-relevant fields set."""
     return _make_instr(rs1=rs1, rd=rd, opcode=OPC_JALR)
+
+
+def _dir_idx(pc: int) -> int:
+    """Return the branch direction predictor index for a fetch PC."""
+    return (pc >> 1) & BIM_MASK
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -159,6 +167,17 @@ async def _btb_update(
     await _settle()
 
 
+async def _dir_update(dut: Any, *, idx: int, taken: bool) -> None:
+    """Apply one branch direction predictor update and clear the update port."""
+    _clear_inputs(dut)
+    dut.i_dir_update_valid.value = 1
+    dut.i_dir_update_idx.value = idx
+    dut.i_dir_update_taken.value = int(taken)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
+    await _settle()
+
+
 def _drive_call(dut: Any, *, link_address: int) -> None:
     """Drive a valid call instruction for RAS push."""
     dut.i_instruction.value = _make_jal(rd=1)
@@ -190,6 +209,51 @@ async def test_reset_clears_registered_prediction_state(dut: Any) -> None:
     assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_ras_predicted.value
+
+
+@cocotb.test()
+async def test_direction_update_trains_registered_slot1_metadata(dut: Any) -> None:
+    """Direction updates train the embedded predictor and snapshot slot-1 metadata."""
+    await _setup_test(dut)
+
+    await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
+    await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
+
+    dut.i_pc.value = PC_A
+    dut.i_pc_2.value = SLOT2_PC
+    await _settle()
+
+    assert not dut.o_predicted_taken.value
+    assert not dut.o_prediction_used.value
+    assert int(dut.o_dir_idx_2.value) == _dir_idx(SLOT2_PC)
+
+    await _advance_cycle(dut)
+
+    assert dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == _dir_idx(PC_A)
+    assert not dut.o_prediction_used_r.value
+
+
+@cocotb.test()
+async def test_direction_slot1_snapshot_holds_during_stall(dut: Any) -> None:
+    """The registered slot-1 direction metadata holds while IF is stalled."""
+    await _setup_test(dut)
+
+    await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
+    await _dir_update(dut, idx=_dir_idx(PC_A), taken=True)
+
+    dut.i_pc.value = PC_A
+    await _advance_cycle(dut)
+
+    assert dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == _dir_idx(PC_A)
+
+    dut.i_pc.value = PC_B
+    dut.i_stall.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == _dir_idx(PC_A)
 
 
 @cocotb.test()
