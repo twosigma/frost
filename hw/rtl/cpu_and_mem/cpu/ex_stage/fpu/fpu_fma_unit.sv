@@ -15,7 +15,7 @@
  */
 
 // FPU FMA Unit Wrapper
-// Wraps S and D fp_fma instances with tracking FSM, NaN-boxing, and dest reg capture.
+// Wraps S and D fp_fma instances with NaN-boxing.
 module fpu_fma_unit #(
     parameter int unsigned FP_WIDTH_D = 64
 ) (
@@ -47,20 +47,26 @@ module fpu_fma_unit #(
     box32 = {{FpPad{1'b1}}, value};
   endfunction
 
-  // Tracking FSM
-  logic started, can_start;
   logic start_s, start_d;
-  assign can_start = ~started;
-  assign start_s   = i_valid & i_use_unit & ~i_op_is_double & can_start;
-  assign start_d   = i_valid & i_use_unit & i_op_is_double & can_start;
-  assign o_start   = start_s | start_d;
+  assign start_s = i_valid & i_use_unit & ~i_op_is_double;
+  assign start_d = i_valid & i_use_unit & i_op_is_double;
+  assign o_start = start_s | start_d;
 
+  logic [4:0] inflight_count;
   always_ff @(posedge i_clk) begin
-    if (i_rst) started <= 1'b0;
-    else if (o_valid) started <= 1'b0;
-    else if (o_start) started <= 1'b1;
+    if (i_rst) begin
+      inflight_count <= '0;
+    end else begin
+      case ({
+        o_start, o_valid
+      })
+        2'b10:   inflight_count <= inflight_count + 1'b1;
+        2'b01:   inflight_count <= inflight_count - 1'b1;
+        default: inflight_count <= inflight_count;
+      endcase
+    end
   end
-  assign o_busy = started & ~o_valid;
+  assign o_busy = (inflight_count != '0);
 
   // S/D results
   logic                 [          31:0] result_s;
@@ -70,14 +76,11 @@ module fpu_fma_unit #(
   logic                                  valid_d;
   riscv_pkg::fp_flags_t                  flags_d;
 
-  assign o_valid  = valid_s | valid_d;
+  assign o_valid = valid_s | valid_d;
   assign o_result = valid_s ? box32(result_s) : valid_d ? result_d : '0;
-  assign o_flags  = valid_s ? flags_s : valid_d ? flags_d : '0;
+  assign o_flags = valid_s ? flags_s : valid_d ? flags_d : '0;
 
-  // Dest reg capture
-  always_ff @(posedge i_clk) begin
-    if (i_valid && i_use_unit && can_start) o_dest_reg <= i_dest_reg;
-  end
+  assign o_dest_reg = i_dest_reg;
 
   fp_fma #(
       .FP_WIDTH(32)

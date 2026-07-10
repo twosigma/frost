@@ -48,7 +48,10 @@ module fp_mul_shim (
     // Pipeline flush (partial)
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
+
+    // Result consumed by downstream adapter
+    input logic i_mul_accepted
 );
 
   localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth;
@@ -146,49 +149,52 @@ module fp_mul_shim (
   wire [63:0] src3_d = i_rs_issue.src3_value;
 
   // ===========================================================================
-  // In-flight + flush tracking
+  // Multi-in-flight metadata and result FIFO
   // ===========================================================================
-  logic in_flight, flushed;
-  logic fire, completing;
+  localparam int unsigned QueueDepth = 32;
+  localparam int unsigned ResultFifoDepth = 16;
+  localparam int unsigned QueuePtrW = $clog2(QueueDepth);
+  localparam int unsigned QueueCountW = $clog2(QueueDepth + 1);
+  localparam int unsigned FifoPtrW = $clog2(ResultFifoDepth);
+  localparam int unsigned FifoCountW = $clog2(ResultFifoDepth + 1);
+  localparam int unsigned CreditCountW = $clog2((2 * QueueDepth) + ResultFifoDepth + 1);
+
+  logic fire, fire_mult, fire_fma;
+  logic mul_busy;
+
+  assign fire = i_rs_issue.valid & (use_mult | use_fma) & ~mul_busy;
+  assign fire_mult = fire & use_mult;
+  assign fire_fma = fire & use_fma;
 
   logic mult_valid_out, fma_valid_out;
-  assign completing = mult_valid_out | fma_valid_out;
-  assign fire = i_rs_issue.valid & ~in_flight & (use_mult | use_fma);
 
-  logic flush_inflight, flush_launching;
-  assign flush_inflight = in_flight & (i_flush | (i_flush_en & is_younger(
-      tag_reg, i_flush_tag, i_rob_head_tag
-  )));
-  assign flush_launching = fire & (i_flush | (i_flush_en & is_younger(
-      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
-  )));
+  logic [TagW-1:0] mult_tag_q    [QueueDepth];
+  logic            mult_flushed_q[QueueDepth];
+  logic            mult_valid_q  [QueueDepth];
+  logic [QueuePtrW-1:0] mult_rd_ptr, mult_wr_ptr;
+  logic [QueueCountW-1:0] mult_count;
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      in_flight <= 1'b0;
-      flushed   <= 1'b0;
-    end else if (completing) begin
-      in_flight <= 1'b0;
-      flushed   <= 1'b0;
-    end else begin
-      if (fire) in_flight <= 1'b1;
-      if (flush_inflight || flush_launching) flushed <= 1'b1;
-    end
-  end
+  logic [       TagW-1:0] fma_tag_q    [QueueDepth];
+  logic                   fma_flushed_q[QueueDepth];
+  logic                   fma_valid_q  [QueueDepth];
+  logic [QueuePtrW-1:0] fma_rd_ptr, fma_wr_ptr;
+  logic [QueueCountW-1:0] fma_count;
 
-  assign o_fu_busy = in_flight;
+  logic [TagW-1:0] fifo_tag[ResultFifoDepth];
+  logic [FLEN-1:0] fifo_value[ResultFifoDepth];
+  riscv_pkg::fp_flags_t fifo_flags[ResultFifoDepth];
+  logic fifo_valid[ResultFifoDepth];
+  logic fifo_flushed[ResultFifoDepth];
+  logic [FifoPtrW-1:0] fifo_rd_ptr, fifo_wr_ptr;
+  logic [  FifoCountW-1:0] fifo_count;
 
-  // Latch ROB tag + op on fire
-  logic [TagW-1:0] tag_reg;
-  logic use_mult_reg, op_double_reg;
-
-  always_ff @(posedge i_clk) begin
-    if (fire) begin
-      tag_reg       <= i_rs_issue.rob_tag;
-      use_mult_reg  <= use_mult;
-      op_double_reg <= op_is_double;
-    end
-  end
+  logic [CreditCountW-1:0] total_occupancy;
+  assign total_occupancy = CreditCountW'(mult_count) + CreditCountW'(fma_count) +
+                           CreditCountW'(fifo_count);
+  assign mul_busy = (total_occupancy >= CreditCountW'(ResultFifoDepth - 2)) ||
+                    (mult_count >= QueueCountW'(QueueDepth - 1)) ||
+                    (fma_count >= QueueCountW'(QueueDepth - 1));
+  assign o_fu_busy = mul_busy;
 
   // ===========================================================================
   // Subunit: Multiplier (FMUL S/D)
@@ -249,26 +255,204 @@ module fp_mul_shim (
   );
 
   // ===========================================================================
-  // Result mux + NaN-boxing
+  // Completion handling and output FIFO
   // ===========================================================================
-  always_comb begin
-    o_fu_complete.valid     = completing & ~flushed;
-    o_fu_complete.tag       = tag_reg;
-    o_fu_complete.value     = '0;
-    o_fu_complete.exception = 1'b0;
-    o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-    o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
+  logic mult_pop, fma_pop;
+  logic mult_head_partial_flushing, fma_head_partial_flushing;
+  logic mult_completion_valid, fma_completion_valid;
 
-    if (completing) begin
-      if (use_mult_reg) begin
-        if (op_double_reg) o_fu_complete.value = mult_result;
-        else o_fu_complete.value = {32'hFFFF_FFFF, mult_result[31:0]};
-        o_fu_complete.fp_flags = mult_flags;
-      end else begin
-        if (op_double_reg) o_fu_complete.value = fma_result;
-        else o_fu_complete.value = {32'hFFFF_FFFF, fma_result[31:0]};
-        o_fu_complete.fp_flags = fma_flags;
+  assign mult_pop = mult_valid_out && (mult_count != '0);
+  assign fma_pop = fma_valid_out && (fma_count != '0);
+
+  assign mult_head_partial_flushing = mult_pop && i_flush_en && is_younger(
+      mult_tag_q[mult_rd_ptr], i_flush_tag, i_rob_head_tag
+  );
+  assign fma_head_partial_flushing = fma_pop && i_flush_en && is_younger(
+      fma_tag_q[fma_rd_ptr], i_flush_tag, i_rob_head_tag
+  );
+
+  assign mult_completion_valid = mult_pop && !i_flush &&
+      !mult_flushed_q[mult_rd_ptr] && !mult_head_partial_flushing;
+  assign fma_completion_valid = fma_pop && !i_flush &&
+      !fma_flushed_q[fma_rd_ptr] && !fma_head_partial_flushing;
+
+  logic [1:0] fifo_push_count;
+  assign fifo_push_count = {1'b0, mult_completion_valid} + {1'b0, fma_completion_valid};
+
+  logic fifo_head_partial_flushing;
+  logic fifo_head_flushed;
+  logic fifo_pop;
+
+  assign fifo_head_partial_flushing = (fifo_count != '0) &&
+      !fifo_flushed[fifo_rd_ptr] && i_flush_en &&
+      is_younger(
+      fifo_tag[fifo_rd_ptr], i_flush_tag, i_rob_head_tag
+  );
+  assign fifo_head_flushed = (fifo_count != '0) &&
+      (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
+  assign fifo_pop = (fifo_count != '0) && (i_mul_accepted || fifo_head_flushed);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      mult_rd_ptr <= '0;
+      mult_wr_ptr <= '0;
+      mult_count  <= '0;
+      fma_rd_ptr  <= '0;
+      fma_wr_ptr  <= '0;
+      fma_count   <= '0;
+      for (int i = 0; i < QueueDepth; i++) begin
+        mult_valid_q[i]   <= 1'b0;
+        mult_flushed_q[i] <= 1'b0;
+        fma_valid_q[i]    <= 1'b0;
+        fma_flushed_q[i]  <= 1'b0;
       end
+    end else begin
+      if (i_flush) begin
+        for (int i = 0; i < QueueDepth; i++) begin
+          if (mult_valid_q[i]) mult_flushed_q[i] <= 1'b1;
+          if (fma_valid_q[i]) fma_flushed_q[i] <= 1'b1;
+        end
+      end else if (i_flush_en) begin
+        for (int i = 0; i < QueueDepth; i++) begin
+          if (mult_valid_q[i] && !mult_flushed_q[i] && is_younger(
+                  mult_tag_q[i], i_flush_tag, i_rob_head_tag
+              )) begin
+            mult_flushed_q[i] <= 1'b1;
+          end
+          if (fma_valid_q[i] && !fma_flushed_q[i] && is_younger(
+                  fma_tag_q[i], i_flush_tag, i_rob_head_tag
+              )) begin
+            fma_flushed_q[i] <= 1'b1;
+          end
+        end
+      end
+
+      if (mult_pop) begin
+        mult_valid_q[mult_rd_ptr] <= 1'b0;
+        mult_flushed_q[mult_rd_ptr] <= 1'b0;
+        mult_rd_ptr <= mult_rd_ptr + 1'b1;
+      end
+      if (fma_pop) begin
+        fma_valid_q[fma_rd_ptr] <= 1'b0;
+        fma_flushed_q[fma_rd_ptr] <= 1'b0;
+        fma_rd_ptr <= fma_rd_ptr + 1'b1;
+      end
+
+      if (fire_mult) begin
+        mult_valid_q[mult_wr_ptr] <= 1'b1;
+        mult_tag_q[mult_wr_ptr] <= i_rs_issue.rob_tag;
+        mult_flushed_q[mult_wr_ptr] <= i_flush || (i_flush_en && is_younger(
+            i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+        ));
+        mult_wr_ptr <= mult_wr_ptr + 1'b1;
+      end
+      if (fire_fma) begin
+        fma_valid_q[fma_wr_ptr] <= 1'b1;
+        fma_tag_q[fma_wr_ptr] <= i_rs_issue.rob_tag;
+        fma_flushed_q[fma_wr_ptr] <= i_flush || (i_flush_en && is_younger(
+            i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+        ));
+        fma_wr_ptr <= fma_wr_ptr + 1'b1;
+      end
+
+      case ({
+        fire_mult, mult_pop
+      })
+        2'b10:   mult_count <= mult_count + 1'b1;
+        2'b01:   mult_count <= mult_count - 1'b1;
+        default: mult_count <= mult_count;
+      endcase
+      case ({
+        fire_fma, fma_pop
+      })
+        2'b10:   fma_count <= fma_count + 1'b1;
+        2'b01:   fma_count <= fma_count - 1'b1;
+        default: fma_count <= fma_count;
+      endcase
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      fifo_rd_ptr <= '0;
+      fifo_wr_ptr <= '0;
+      fifo_count  <= '0;
+      for (int i = 0; i < ResultFifoDepth; i++) begin
+        fifo_valid[i]   <= 1'b0;
+        fifo_flushed[i] <= 1'b0;
+      end
+    end else if (i_flush) begin
+      fifo_rd_ptr <= '0;
+      fifo_wr_ptr <= '0;
+      fifo_count  <= '0;
+      for (int i = 0; i < ResultFifoDepth; i++) begin
+        fifo_valid[i]   <= 1'b0;
+        fifo_flushed[i] <= 1'b0;
+      end
+    end else begin
+      if (i_flush_en) begin
+        for (int i = 0; i < ResultFifoDepth; i++) begin
+          if (fifo_valid[i] && !fifo_flushed[i] && is_younger(
+                  fifo_tag[i], i_flush_tag, i_rob_head_tag
+              )) begin
+            fifo_flushed[i] <= 1'b1;
+          end
+        end
+      end
+
+      if (fifo_pop) begin
+        fifo_valid[fifo_rd_ptr] <= 1'b0;
+        fifo_flushed[fifo_rd_ptr] <= 1'b0;
+        fifo_rd_ptr <= fifo_rd_ptr + 1'b1;
+      end
+
+      if (mult_completion_valid) begin
+        fifo_valid[fifo_wr_ptr]   <= 1'b1;
+        fifo_flushed[fifo_wr_ptr] <= 1'b0;
+        fifo_tag[fifo_wr_ptr]     <= mult_tag_q[mult_rd_ptr];
+        fifo_value[fifo_wr_ptr]   <= mult_result;
+        fifo_flags[fifo_wr_ptr]   <= mult_flags;
+      end
+
+      if (fma_completion_valid) begin
+        fifo_valid[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= 1'b1;
+        fifo_flushed[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)] <= 1'b0;
+        fifo_tag[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]     <= fma_tag_q[fma_rd_ptr];
+        fifo_value[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_result;
+        fifo_flags[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_flags;
+      end
+
+      fifo_wr_ptr <= fifo_wr_ptr + FifoPtrW'(fifo_push_count);
+
+      case ({
+        fifo_push_count, fifo_pop
+      })
+        3'b000:  fifo_count <= fifo_count;
+        3'b001:  fifo_count <= fifo_count - 1'b1;
+        3'b010:  fifo_count <= fifo_count + 1'b1;
+        3'b011:  fifo_count <= fifo_count;
+        3'b100:  fifo_count <= fifo_count + FifoCountW'(2);
+        3'b101:  fifo_count <= fifo_count + 1'b1;
+        default: fifo_count <= fifo_count;
+      endcase
+    end
+  end
+
+  always_comb begin
+    if ((fifo_count != '0) && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
+      o_fu_complete.valid     = 1'b1;
+      o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
+      o_fu_complete.value     = fifo_value[fifo_rd_ptr];
+      o_fu_complete.exception = 1'b0;
+      o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+      o_fu_complete.fp_flags  = fifo_flags[fifo_rd_ptr];
+    end else begin
+      o_fu_complete.valid     = 1'b0;
+      o_fu_complete.tag       = '0;
+      o_fu_complete.value     = '0;
+      o_fu_complete.exception = 1'b0;
+      o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
     end
   end
 
@@ -289,19 +473,9 @@ module fp_mul_shim (
 
   always_comb begin
     if (i_rst_n) begin
-      p_busy_implies_inflight : assert (!o_fu_busy || in_flight);
-    end
-  end
-
-  always_comb begin
-    if (i_rst_n && o_fu_complete.valid) begin
-      p_valid_has_tag : assert (o_fu_complete.tag == tag_reg);
-    end
-  end
-
-  always_comb begin
-    if (i_rst_n && flushed) begin
-      p_no_output_when_flushed : assert (!o_fu_complete.valid);
+      p_mult_count_in_range : assert (mult_count <= QueueCountW'(QueueDepth));
+      p_fma_count_in_range : assert (fma_count <= QueueCountW'(QueueDepth));
+      p_fifo_count_in_range : assert (fifo_count <= FifoCountW'(ResultFifoDepth));
     end
   end
 
@@ -310,7 +484,7 @@ module fp_mul_shim (
       cover_fire_mult : cover (fire && use_mult);
       cover_fire_fma : cover (fire && use_fma);
       cover_complete : cover (o_fu_complete.valid);
-      cover_flush_inflight : cover (flush_inflight);
+      cover_two_completions : cover (mult_completion_valid && fma_completion_valid);
     end
   end
 

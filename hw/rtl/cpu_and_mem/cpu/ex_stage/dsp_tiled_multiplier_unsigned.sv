@@ -52,42 +52,25 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned NumATiles = (A_WIDTH + A_TILE_WIDTH - 1) / A_TILE_WIDTH;
   localparam int unsigned NumBTiles = (B_WIDTH + B_TILE_WIDTH - 1) / B_TILE_WIDTH;
   localparam int unsigned NumTerms = NumATiles * NumBTiles;
-  localparam int unsigned NumReduceStages = (NumTerms <= 1) ? 1 : $clog2(NumTerms);
+  localparam int unsigned NumReduceStages = (NumTerms <= 1) ? 0 : $clog2(NumTerms);
   localparam int unsigned NumChunks = (ProductWidth + ADD_CHUNK_WIDTH - 1) / ADD_CHUNK_WIDTH;
   localparam int unsigned PaddedWidth = NumChunks * ADD_CHUNK_WIDTH;
   localparam int unsigned PartialWidth = A_TILE_WIDTH + B_TILE_WIDTH;
 
-  localparam int unsigned LevelBits = (NumReduceStages <= 1) ? 1 : $clog2(NumReduceStages);
-  localparam int unsigned ChunkBits = (NumChunks <= 1) ? 1 : $clog2(NumChunks);
+  // Keep the FP S/D multiply latency matched.  SP has only one tile, but it
+  // still flows through padding registers so single- and double-precision
+  // results retire in issue order when a wrapper alternates between them.
+  localparam int unsigned MinPipelineStages = 3;
+  localparam int unsigned ReducePipelineStages = NumReduceStages + 1;
+  localparam int unsigned PipelineStages =
+      (ReducePipelineStages < MinPipelineStages) ? MinPipelineStages : ReducePipelineStages;
 
   logic [PaddedWidth-1:0] aligned_term_comb[NumTerms];
-  logic [PaddedWidth-1:0] aligned_terms_reg[NumTerms];
+  logic [PaddedWidth-1:0] pipe_terms[PipelineStages][NumTerms];
+  logic [PipelineStages-1:0] valid_pipe;
 
-  logic [PaddedWidth-1:0] work_terms_reg[NumTerms];
-  logic [PaddedWidth-1:0] partial_terms_reg[NumTerms];
-  logic [PaddedWidth-1:0] partial_terms_next[NumTerms];
-  logic carry_reg[NumTerms];
-  logic carry_next[NumTerms];
-
-  logic [A_WIDTH-1:0] operand_a_reg;
-  logic [B_WIDTH-1:0] operand_b_reg;
-
-  logic busy;
-  logic load_terms_pending;
-  logic work_terms_pending;
-  logic [LevelBits-1:0] level_reg;
-  logic [ChunkBits-1:0] chunk_reg;
-
-  localparam logic [LevelBits-1:0] LastLevel = LevelBits'(NumReduceStages - 1);
-  localparam logic [ChunkBits-1:0] LastChunk = ChunkBits'(NumChunks - 1);
-  localparam logic [ChunkBits-1:0] PenultimateChunk =
-      (NumChunks > 1) ? ChunkBits'(NumChunks - 2) : '0;
-
-  int unsigned prev_terms_current;
-  int unsigned next_terms_current;
-
-  function automatic int unsigned terms_at_level(input int unsigned level);
-    terms_at_level = (NumTerms + (1 << level) - 1) >> level;
+  function automatic int unsigned terms_at_stage(input int unsigned stage);
+    terms_at_stage = (NumTerms + (1 << stage) - 1) >> stage;
   endfunction
 
   // ---------------------------------------------------------------------------
@@ -99,7 +82,7 @@ module dsp_tiled_multiplier_unsigned #(
       localparam int unsigned AWidthThis =
           ((AOffset + A_TILE_WIDTH) <= A_WIDTH) ? A_TILE_WIDTH : (A_WIDTH - AOffset);
       logic [A_TILE_WIDTH-1:0] a_tile;
-      assign a_tile = {{(A_TILE_WIDTH - AWidthThis) {1'b0}}, operand_a_reg[AOffset+:AWidthThis]};
+      assign a_tile = {{(A_TILE_WIDTH - AWidthThis) {1'b0}}, i_operand_a[AOffset+:AWidthThis]};
 
       for (genvar b = 0; b < NumBTiles; b++) begin : gen_b_tiles
         localparam int unsigned BOffset = b * B_TILE_WIDTH;
@@ -110,7 +93,7 @@ module dsp_tiled_multiplier_unsigned #(
         (* use_dsp = "yes" *)logic [PartialWidth-1:0] tiled_partial_product;
         logic [ PaddedWidth-1:0] aligned_term;
 
-        assign b_tile = {{(B_TILE_WIDTH - BWidthThis) {1'b0}}, operand_b_reg[BOffset+:BWidthThis]};
+        assign b_tile = {{(B_TILE_WIDTH - BWidthThis) {1'b0}}, i_operand_b[BOffset+:BWidthThis]};
         assign tiled_partial_product = PartialWidth'(a_tile * b_tile);
         assign aligned_term = PaddedWidth'(tiled_partial_product) << (AOffset + BOffset);
         assign aligned_term_comb[TermIndex] = aligned_term;
@@ -119,142 +102,48 @@ module dsp_tiled_multiplier_unsigned #(
   endgenerate
 
   // ---------------------------------------------------------------------------
-  // Combinational: current reduction bookkeeping and 32-bit chunk add step.
-  // ---------------------------------------------------------------------------
-  always_comb begin
-    prev_terms_current = terms_at_level(int'(level_reg));
-    next_terms_current = terms_at_level(int'(level_reg) + 1);
-
-    for (int t = 0; t < NumTerms; t++) begin
-      logic [ADD_CHUNK_WIDTH-1:0] chunk_a;
-      logic [ADD_CHUNK_WIDTH-1:0] chunk_b;
-      logic [  ADD_CHUNK_WIDTH:0] chunk_sum;
-
-      partial_terms_next[t] = partial_terms_reg[t];
-      carry_next[t] = carry_reg[t];
-
-      chunk_a = '0;
-      chunk_b = '0;
-      chunk_sum = '0;
-
-      if (t < next_terms_current) begin
-        chunk_a = ((2 * t) < prev_terms_current) ?
-            work_terms_reg[2 * t][int'(chunk_reg)*ADD_CHUNK_WIDTH+:ADD_CHUNK_WIDTH] : '0;
-        chunk_b = (((2 * t) + 1) < prev_terms_current) ?
-            work_terms_reg[(2 * t) + 1][int'(chunk_reg)*ADD_CHUNK_WIDTH+:ADD_CHUNK_WIDTH] : '0;
-
-        chunk_sum = {1'b0, chunk_a} + {1'b0, chunk_b} + {{ADD_CHUNK_WIDTH{1'b0}}, carry_reg[t]};
-        partial_terms_next[t][int'(chunk_reg)*ADD_CHUNK_WIDTH+:ADD_CHUNK_WIDTH] =
-            chunk_sum[ADD_CHUNK_WIDTH-1:0];
-        carry_next[t] = chunk_sum[ADD_CHUNK_WIDTH];
-      end else begin
-        carry_next[t] = 1'b0;
-      end
-    end
-  end
-
-  // ---------------------------------------------------------------------------
-  // Sequential control (o_valid_output, busy, load_terms_pending, level_reg,
-  // chunk_reg) - with reset.
+  // Pipelined pairwise reduction tree.
   // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      o_valid_output <= 1'b0;
-      busy <= 1'b0;
-      load_terms_pending <= 1'b0;
-      work_terms_pending <= 1'b0;
-      level_reg <= '0;
-      chunk_reg <= '0;
+      valid_pipe <= '0;
     end else begin
-      o_valid_output <= 1'b0;
-
-      if (!busy) begin
-        if (work_terms_pending) begin
-          busy <= 1'b1;
-          level_reg <= '0;
-          chunk_reg <= '0;
-          work_terms_pending <= 1'b0;
-        end else if (load_terms_pending) begin
-          load_terms_pending <= 1'b0;
-          work_terms_pending <= 1'b1;
-        end else if (i_valid_input) begin
-          load_terms_pending <= 1'b1;
-        end
-      end else begin
-        if (chunk_reg == LastChunk) begin
-          // Completed all chunks for this reduction level.
-          if (level_reg == LastLevel) begin
-            // Final reduction complete.
-            o_valid_output <= 1'b1;
-            busy <= 1'b0;
-          end else begin
-            // Move to next reduction level and reset chunk accumulator.
-            level_reg <= level_reg + 1'b1;
-            chunk_reg <= '0;
-          end
-        end else begin
-          // Continue current reduction level with next 32-bit chunk.
-          chunk_reg <= chunk_reg + 1'b1;
-        end
+      valid_pipe[0] <= i_valid_input;
+      for (int s = 1; s < PipelineStages; s++) begin
+        valid_pipe[s] <= valid_pipe[s-1];
       end
     end
   end
 
-  // ---------------------------------------------------------------------------
-  // Sequential data (o_product_result, operand_a_reg, operand_b_reg,
-  // work_terms_reg, partial_terms_reg, carry_reg) - no reset.
-  // ---------------------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    if (!busy) begin
-      if (work_terms_pending) begin
-        for (int t = 0; t < NumTerms; t++) begin
-          work_terms_reg[t] <= aligned_terms_reg[t];
-          partial_terms_reg[t] <= '0;
-          carry_reg[t] <= 1'b0;
-        end
-      end else if (load_terms_pending) begin
-        for (int t = 0; t < NumTerms; t++) begin
-          aligned_terms_reg[t] <= aligned_term_comb[t];
-        end
-      end else if (i_valid_input) begin
-        operand_a_reg <= i_operand_a;
-        operand_b_reg <= i_operand_b;
-      end
-    end else begin
-      // Apply one 32-bit chunk add across all active term pairs.
-      for (int t = 0; t < NumTerms; t++) begin
-        partial_terms_reg[t] <= partial_terms_next[t];
-        carry_reg[t] <= carry_next[t];
-      end
+    for (int t = 0; t < NumTerms; t++) begin
+      pipe_terms[0][t] <= aligned_term_comb[t];
+    end
 
-      if (chunk_reg == LastChunk) begin
-        // Completed all chunks for this reduction level.
-        if (level_reg == LastLevel) begin
-          // Final reduction complete.
-          o_product_result <= partial_terms_next[0][ProductWidth-1:0];
-        end else begin
-          // Move reduced terms to next level and reset chunk accumulator.
-          for (int t = 0; t < NumTerms; t++) begin
-            if (t < next_terms_current) work_terms_reg[t] <= partial_terms_next[t];
-            else work_terms_reg[t] <= '0;
-            partial_terms_reg[t] <= '0;
-            carry_reg[t] <= 1'b0;
+    for (int s = 1; s < PipelineStages; s++) begin
+      for (int t = 0; t < NumTerms; t++) begin
+        if (t < terms_at_stage(s)) begin
+          if (((2 * t) + 1) < terms_at_stage(s - 1)) begin
+            pipe_terms[s][t] <= pipe_terms[s-1][2*t] + pipe_terms[s-1][(2*t)+1];
+          end else begin
+            pipe_terms[s][t] <= pipe_terms[s-1][2*t];
           end
+        end else begin
+          pipe_terms[s][t] <= '0;
         end
       end
     end
   end
 
   generate
-    if (NumChunks > 1) begin : gen_completing_next
-      assign o_completing_next_cycle = busy &&
-                                       (level_reg == LastLevel) &&
-                                       (chunk_reg == PenultimateChunk);
+    if (PipelineStages > 1) begin : gen_completing_next
+      assign o_completing_next_cycle = valid_pipe[PipelineStages-2];
     end else begin : gen_completing_next_single_chunk
-      assign o_completing_next_cycle = busy &&
-                                       (level_reg == LastLevel) &&
-                                       (chunk_reg == ChunkBits'(0));
+      assign o_completing_next_cycle = i_valid_input;
     end
   endgenerate
+
+  assign o_product_result = pipe_terms[PipelineStages-1][0][ProductWidth-1:0];
+  assign o_valid_output   = valid_pipe[PipelineStages-1];
 
 endmodule : dsp_tiled_multiplier_unsigned
