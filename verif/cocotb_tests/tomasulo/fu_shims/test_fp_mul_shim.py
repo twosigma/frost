@@ -92,6 +92,22 @@ async def wait_for_complete(dut: Any, iface: FpMulShimInterface) -> dict:
     raise AssertionError("fu_complete.valid not asserted within MAX_LATENCY cycles")
 
 
+async def wait_for_completions(
+    dut: Any, iface: FpMulShimInterface, count: int
+) -> list[dict]:
+    """Collect *count* completions within a bounded number of cycles."""
+    results: list[dict] = []
+    for _ in range(MAX_LATENCY + count + 8):
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+        result = iface.read_fu_complete()
+        if result["valid"]:
+            results.append(result)
+            if len(results) == count:
+                return results
+    raise AssertionError(f"only saw {len(results)} of {count} expected completions")
+
+
 # ============================================================================
 # Test 1: After reset, valid=0 and busy=0
 # ============================================================================
@@ -196,11 +212,11 @@ async def test_fmsub_s_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 5: Busy during operation
+# Test 5: Single in-flight operation does not backpressure the pipeline
 # ============================================================================
 @cocotb.test()
-async def test_busy_during_operation(dut: Any) -> None:
-    """Fire FMUL_S, check busy=1 during computation, busy=0 after completion."""
+async def test_single_operation_does_not_assert_busy(dut: Any) -> None:
+    """Fire one FMUL_S; busy should remain low because the pipeline has credits."""
     iface = await setup(dut)
 
     assert not iface.read_busy(), "busy should be 0 before issue"
@@ -218,14 +234,15 @@ async def test_busy_during_operation(dut: Any) -> None:
     # Clear issue after one cycle
     iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
 
-    # Check busy is asserted during computation
-    assert iface.read_busy(), "busy should be 1 while operation is in-flight"
+    assert (
+        not iface.read_busy()
+    ), "busy should remain 0 while pipeline credits are available"
 
     # Wait for completion
     result = await wait_for_complete(dut, iface)
     assert result["valid"], "Expected valid completion"
 
-    # After completion, busy should deassert on the next cycle
+    # After completion, busy should still be low.
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     assert not iface.read_busy(), "busy should be 0 after completion"
@@ -267,3 +284,34 @@ async def test_flush_clears_inflight(dut: Any) -> None:
             "Expected no valid output after flush, "
             f"but got valid with tag={result['tag']}"
         )
+
+
+# ============================================================================
+# Test 7: Back-to-back FMUL operations keep distinct tags/results in flight
+# ============================================================================
+@cocotb.test()
+async def test_back_to_back_fmul_s_tags(dut: Any) -> None:
+    """Issue four FMUL_S ops on consecutive cycles and check ordered completions."""
+    iface = await setup(dut)
+
+    for tag in range(8, 12):
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tag,
+            op=OP_FMUL_S,
+            src1_value=SRC_2_0,
+            src2_value=SRC_3_0,
+        )
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+        assert not iface.read_busy(), "credits should allow back-to-back FMUL issue"
+
+    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+
+    results = await wait_for_completions(dut, iface, 4)
+    tags = [result["tag"] for result in results]
+    assert tags == [8, 9, 10, 11], f"unexpected completion tags: {tags}"
+    for result in results:
+        assert (
+            result["value"] == RES_6_0
+        ), f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), got 0x{result['value']:016X}"

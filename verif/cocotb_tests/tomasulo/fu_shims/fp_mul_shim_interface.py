@@ -46,6 +46,7 @@ class FpMulShimInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
+        self.dut.i_mul_accepted.value = 1
 
     async def reset(self, cycles: int = 3) -> None:
         """Reset sequence: assert i_rst_n low, hold for *cycles*, then release."""
@@ -88,6 +89,10 @@ class FpMulShimInterface:
     def read_busy(self) -> bool:
         """Return the current value of o_fu_busy."""
         return bool(int(self.dut.o_fu_busy.value))
+
+    def drive_accepted(self, accepted: bool) -> None:
+        """Drive the downstream adapter accepted signal."""
+        self.dut.i_mul_accepted.value = int(accepted)
 
     def drive_flush(self) -> None:
         """Assert i_flush (full flush)."""

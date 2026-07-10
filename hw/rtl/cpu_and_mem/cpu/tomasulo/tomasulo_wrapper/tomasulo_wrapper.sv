@@ -1386,7 +1386,10 @@ module tomasulo_wrapper #(
   // fp_mul_adapter_to_arbiter declared above (forward declaration)
   logic                    fp_mul_adapter_result_pending;
   logic                    fp_mul_busy;
+  logic                    fp_mul_result_accepted;
   logic                    fmul_rs_fu_ready;
+
+  assign fp_mul_result_accepted = !fp_mul_adapter_result_pending && fp_mul_shim_out.valid;
 
   assign fmul_rs_fu_ready = i_fmul_rs_fu_ready & ~fp_mul_busy &
                             ~fp_mul_adapter_result_pending & ~i_backend_recovery_hold;
@@ -2996,7 +2999,8 @@ module tomasulo_wrapper #(
       .i_flush       (speculative_flush_all),
       .i_flush_en    (speculative_flush_en),
       .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag)
+      .i_rob_head_tag(head_tag),
+      .i_mul_accepted(fp_mul_result_accepted)
   );
 
   // ===========================================================================

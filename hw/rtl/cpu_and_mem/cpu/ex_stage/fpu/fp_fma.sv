@@ -26,7 +26,7 @@
     FNMADD.S: fd = -(fs1 * fs2) - fs3
     FNMSUB.S: fd = -(fs1 * fs2) + fs3
 
-  Multi-cycle implementation (non-pipelined):
+  Fully pipelined implementation:
     Cycle 0: Capture operands
     Cycle 1: Unpack operands, detect special cases
     Cycle 2: Multiply mantissas (24x24 -> 48 bits)
@@ -61,26 +61,6 @@ module fp_fma #(
     output riscv_pkg::fp_flags_t                o_flags
 );
 
-  typedef enum logic [4:0] {
-    IDLE    = 5'b00000,
-    STAGE1  = 5'b00001,
-    STAGE2  = 5'b00010,
-    STAGE2B = 5'b10000,  // TIMING: Wait for DSP-tiled multiplier result
-    STAGE3A = 5'b00011,
-    STAGE3B = 5'b00100,
-    STAGE4  = 5'b00101,
-    STAGE4B = 5'b00110,
-    STAGE5A = 5'b00111,
-    STAGE5B = 5'b01000,
-    STAGE6  = 5'b01001,
-    STAGE7A = 5'b01010,
-    STAGE7B = 5'b01011,
-    STAGE8  = 5'b01100,
-    STAGE9  = 5'b01101
-  } state_e;
-
-  state_e state, next_state;
-
   localparam int unsigned ExpBits = (FP_WIDTH == 32) ? 8 : 11;
   localparam int unsigned FracBits = (FP_WIDTH == 32) ? 23 : 52;
   localparam int unsigned MantBits = FracBits + 1;
@@ -93,6 +73,17 @@ module fp_fma #(
   localparam int unsigned ShiftBits = $clog2(ProdBits + 1);
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
+
+  localparam int unsigned MultATileWidth = 27;
+  localparam int unsigned MultBTileWidth = 35;
+  localparam int unsigned MultNumATiles = (MantBits + MultATileWidth - 1) / MultATileWidth;
+  localparam int unsigned MultNumBTiles = (MantBits + MultBTileWidth - 1) / MultBTileWidth;
+  localparam int unsigned MultNumTerms = MultNumATiles * MultNumBTiles;
+  localparam int unsigned MultReduceStages = (MultNumTerms <= 1) ? 0 : $clog2(MultNumTerms);
+  localparam int unsigned MultMinLatency = 3;
+  localparam int unsigned MultReduceLatency = MultReduceStages + 1;
+  localparam int unsigned MultLatency =
+      (MultReduceLatency < MultMinLatency) ? MultMinLatency : MultReduceLatency;
   // Input registers
   logic [FP_WIDTH-1:0] operand_a_reg;
   logic [FP_WIDTH-1:0] operand_b_reg;
@@ -231,6 +222,7 @@ module fp_fma #(
 
   logic        [  ProdBits-1:0] prod_mant_s2_tiled;
   logic                         prod_mant_s2_tiled_valid;
+  logic                         valid_s2;
 
   dsp_tiled_multiplier_unsigned #(
       .A_WIDTH(MantBits),
@@ -238,13 +230,24 @@ module fp_fma #(
   ) u_mantissa_multiplier (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid_input(state == STAGE2),
+      .i_valid_input(valid_s2),
       .i_operand_a(mant_a_s2),
       .i_operand_b(mant_b_s2),
       .o_product_result(prod_mant_s2_tiled),
       .o_valid_output(prod_mant_s2_tiled_valid),
       .o_completing_next_cycle(  /*unused*/)
   );
+
+  logic                          mult_meta_valid     [MultLatency];
+  logic signed [ ExpExtBits-1:0] mult_prod_exp       [MultLatency];
+  logic                          mult_prod_sign      [MultLatency];
+  logic signed [ ExpExtBits-1:0] mult_c_exp          [MultLatency];
+  logic        [   MantBits-1:0] mult_mant_c         [MultLatency];
+  logic                          mult_c_sign         [MultLatency];
+  logic        [            2:0] mult_rm             [MultLatency];
+  logic                          mult_is_special     [MultLatency];
+  logic        [   FP_WIDTH-1:0] mult_special_result [MultLatency];
+  logic                          mult_special_invalid[MultLatency];
 
   // =========================================================================
   // Stage 2B -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
@@ -370,6 +373,14 @@ module fp_fma #(
   logic signed [ExpExtBits-1:0] exp_large_s4b;
   logic        [ ShiftBits-1:0] shift_prod_amt_s4b;
   logic        [ ShiftBits-1:0] shift_c_amt_s4b;
+  logic        [  ProdBits-1:0] prod_mant_s4b;
+  logic        [  ProdBits-1:0] c_mant_s4b;
+  logic                         prod_sign_s4b;
+  logic                         c_sign_s4b;
+  logic        [           2:0] rm_s4b;
+  logic                         is_special_s4b;
+  logic        [  FP_WIDTH-1:0] special_result_s4b;
+  logic                         special_invalid_s4b;
 
   // =========================================================================
   // Stage 4b: Align (barrel shift - combinational from stage 4 regs)
@@ -381,29 +392,29 @@ module fp_fma #(
   logic                         sticky_c;
 
   always_comb begin
-    prod_aligned = prod_mant_s4;
+    prod_aligned = prod_mant_s4b;
     sticky_prod  = 1'b0;
     if (shift_prod_amt_s4b >= ShiftBits'(ProdBits)) begin
       prod_aligned = '0;
-      sticky_prod  = |prod_mant_s4;
+      sticky_prod  = |prod_mant_s4b;
     end else if (shift_prod_amt_s4b != 0) begin
-      prod_aligned = prod_mant_s4 >> shift_prod_amt_s4b;
+      prod_aligned = prod_mant_s4b >> shift_prod_amt_s4b;
       sticky_prod  = 1'b0;
       for (int i = 0; i < ProdBits; i++) begin
-        if (i < shift_prod_amt_s4b) sticky_prod = sticky_prod | prod_mant_s4[i];
+        if (i < shift_prod_amt_s4b) sticky_prod = sticky_prod | prod_mant_s4b[i];
       end
     end
 
-    c_aligned = c_mant_s4;
+    c_aligned = c_mant_s4b;
     sticky_c  = 1'b0;
     if (shift_c_amt_s4b >= ShiftBits'(ProdBits)) begin
       c_aligned = '0;
-      sticky_c  = |c_mant_s4;
+      sticky_c  = |c_mant_s4b;
     end else if (shift_c_amt_s4b != 0) begin
-      c_aligned = c_mant_s4 >> shift_c_amt_s4b;
+      c_aligned = c_mant_s4b >> shift_c_amt_s4b;
       sticky_c  = 1'b0;
       for (int i = 0; i < ProdBits; i++) begin
-        if (i < shift_c_amt_s4b) sticky_c = sticky_c | c_mant_s4[i];
+        if (i < shift_c_amt_s4b) sticky_c = sticky_c | c_mant_s4b[i];
       end
     end
   end
@@ -468,18 +479,24 @@ module fp_fma #(
   // Stage 5A -> Stage 5B Pipeline Register (after add/sub)
   // =========================================================================
 
-  logic [SumBits-1:0] sum_s5a;
-  logic result_sign_s5a;
-  logic sign_large_s5a;
-  logic sign_small_s5a;
-  logic sum_is_zero_s5a;
+  logic        [   SumBits-1:0] sum_s5a;
+  logic                         result_sign_s5a;
+  logic                         sign_large_s5a;
+  logic                         sign_small_s5a;
+  logic                         sum_is_zero_s5a;
+  logic signed [ExpExtBits-1:0] exp_large_s5a;
+  logic                         sticky_s5a;
+  logic        [           2:0] rm_s5a;
+  logic                         is_special_s5a;
+  logic        [  FP_WIDTH-1:0] special_result_s5a;
+  logic                         special_invalid_s5a;
 
   // =========================================================================
   // Stage 5B: LZC (combinational from stage 5A regs)
   // =========================================================================
 
-  logic [LzcSumBits-1:0] lzc_s5b_comb;
-  logic lzc_sum_is_zero;
+  logic        [LzcSumBits-1:0] lzc_s5b_comb;
+  logic                         lzc_sum_is_zero;
 
   // LZC on bits [SumBits-2:0] (MSB checked separately in normalize stage)
   fp_lzc #(
@@ -622,6 +639,10 @@ module fp_fma #(
   logic signed [ExpExtBits-1:0] exp_work_s7b;
   logic fp_round_sign_s7b;
   logic is_zero_result_s7b;
+  logic [2:0] rm_s7b;
+  logic is_special_s7b;
+  logic [FP_WIDTH-1:0] special_result_s7b;
+  logic special_invalid_s7b;
 
   // Stage 7B: Compute round-up decision
   logic round_up_s7b_comb;
@@ -630,7 +651,7 @@ module fp_fma #(
   assign lsb_s7b = mantissa_work_s7b[0];
 
   assign round_up_s7b_comb = riscv_pkg::fp_compute_round_up(
-      rm_s7, guard_work_s7b, round_work_s7b, sticky_work_s7b, lsb_s7b, fp_round_sign_s7b
+      rm_s7b, guard_work_s7b, round_work_s7b, sticky_work_s7b, lsb_s7b, fp_round_sign_s7b
   );
 
   // Compute is_inexact for flags
@@ -689,233 +710,228 @@ module fp_fma #(
 
   logic [FP_WIDTH-1:0] result_s9;
   riscv_pkg::fp_flags_t flags_s9;
+  logic valid_s1, valid_s3, valid_s3b, valid_s4, valid_s4b, valid_s5;
+  logic valid_s5a, valid_s6, valid_s7, valid_s7b, valid_s8, valid_s9;
 
   // =========================================================================
-  // State Machine and Sequential Logic
+  // Pipelined Control and Sequential Logic
   // =========================================================================
 
-  // TIMING: Limit fanout to force register replication and improve timing
-  (* max_fanout = 30 *) logic valid_reg;
-
-  // Control: state machine and valid_reg
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state <= IDLE;
-      valid_reg <= 1'b0;
+      valid_s1  <= 1'b0;
+      valid_s2  <= 1'b0;
+      valid_s3  <= 1'b0;
+      valid_s3b <= 1'b0;
+      valid_s4  <= 1'b0;
+      valid_s4b <= 1'b0;
+      valid_s5  <= 1'b0;
+      valid_s5a <= 1'b0;
+      valid_s6  <= 1'b0;
+      valid_s7  <= 1'b0;
+      valid_s7b <= 1'b0;
+      valid_s8  <= 1'b0;
+      valid_s9  <= 1'b0;
+      for (int i = 0; i < MultLatency; i++) begin
+        mult_meta_valid[i] <= 1'b0;
+      end
     end else begin
-      state <= next_state;
-      valid_reg <= (state == STAGE9);
+      valid_s1 <= i_valid;
+      valid_s2 <= valid_s1;
+      valid_s3 <= prod_mant_s2_tiled_valid;
+      valid_s3b <= valid_s3;
+      valid_s4 <= valid_s3b;
+      valid_s4b <= valid_s4;
+      valid_s5 <= valid_s4b;
+      valid_s5a <= valid_s5;
+      valid_s6 <= valid_s5a;
+      valid_s7 <= valid_s6;
+      valid_s7b <= valid_s7;
+      valid_s8 <= valid_s7b;
+      valid_s9 <= valid_s8;
+
+      mult_meta_valid[0] <= valid_s2;
+      for (int i = 1; i < MultLatency; i++) begin
+        mult_meta_valid[i] <= mult_meta_valid[i-1];
+      end
     end
   end
 
-  // Data: pipeline registers (no reset needed)
   always_ff @(posedge i_clk) begin
-    case (state)
-      IDLE: begin
-        if (i_valid) begin
-          operand_a_reg <= i_operand_a;
-          operand_b_reg <= i_operand_b;
-          operand_c_reg <= i_operand_c;
-          negate_product_reg <= i_negate_product;
-          negate_c_reg <= i_negate_c;
-          rm_reg <= i_rounding_mode;
-        end
-      end
+    if (i_valid) begin
+      operand_a_reg <= i_operand_a;
+      operand_b_reg <= i_operand_b;
+      operand_c_reg <= i_operand_c;
+      negate_product_reg <= i_negate_product;
+      negate_c_reg <= i_negate_c;
+      rm_reg <= i_rounding_mode;
+    end
 
-      STAGE1: begin
-        mant_a_s2 <= mant_a_int;
-        mant_b_s2 <= mant_b_int;
-        prod_exp_s2 <= prod_exp_tentative;
-        prod_sign_s2 <= sign_prod;
-        c_exp_s2 <= $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_c_adj});
-        mant_c_s2 <= mant_c_int;
-        c_sign_s2 <= sign_c_adj;
-        rm_s2 <= rm_reg;
-        is_special_s2 <= is_special;
-        special_result_s2 <= special_result;
-        special_invalid_s2 <= special_invalid;
-      end
+    mant_a_s2 <= mant_a_int;
+    mant_b_s2 <= mant_b_int;
+    prod_exp_s2 <= prod_exp_tentative;
+    prod_sign_s2 <= sign_prod;
+    c_exp_s2 <= $signed({{(ExpExtBits - ExpBits) {1'b0}}, exp_c_adj});
+    mant_c_s2 <= mant_c_int;
+    c_sign_s2 <= sign_c_adj;
+    rm_s2 <= rm_reg;
+    is_special_s2 <= is_special;
+    special_result_s2 <= special_result;
+    special_invalid_s2 <= special_invalid;
 
-      STAGE2: begin
-        // Multiply pipeline runs continuously; no action needed here.
-      end
+    mult_prod_exp[0] <= prod_exp_s2;
+    mult_prod_sign[0] <= prod_sign_s2;
+    mult_c_exp[0] <= c_exp_s2;
+    mult_mant_c[0] <= mant_c_s2;
+    mult_c_sign[0] <= c_sign_s2;
+    mult_rm[0] <= rm_s2;
+    mult_is_special[0] <= is_special_s2;
+    mult_special_result[0] <= special_result_s2;
+    mult_special_invalid[0] <= special_invalid_s2;
+    for (int i = 1; i < MultLatency; i++) begin
+      mult_prod_exp[i] <= mult_prod_exp[i-1];
+      mult_prod_sign[i] <= mult_prod_sign[i-1];
+      mult_c_exp[i] <= mult_c_exp[i-1];
+      mult_mant_c[i] <= mult_mant_c[i-1];
+      mult_c_sign[i] <= mult_c_sign[i-1];
+      mult_rm[i] <= mult_rm[i-1];
+      mult_is_special[i] <= mult_is_special[i-1];
+      mult_special_result[i] <= mult_special_result[i-1];
+      mult_special_invalid[i] <= mult_special_invalid[i-1];
+    end
 
-      STAGE2B: begin
-        // TIMING: Wait for DSP-tiled product to emerge, then load stage 3 regs
-        if (prod_mant_s2_tiled_valid) begin
-          prod_mant_s3 <= prod_mant_s2_tiled;
-          prod_exp_s3 <= prod_exp_s2;
-          prod_sign_s3 <= prod_sign_s2;
-          c_exp_s3 <= c_exp_s2;
-          mant_c_s3 <= mant_c_s2;
-          c_sign_s3 <= c_sign_s2;
-          rm_s3 <= rm_s2;
-          is_special_s3 <= is_special_s2;
-          special_result_s3 <= special_result_s2;
-          special_invalid_s3 <= special_invalid_s2;
-        end
-      end
+    prod_mant_s3 <= prod_mant_s2_tiled;
+    prod_exp_s3 <= mult_prod_exp[MultLatency-1];
+    prod_sign_s3 <= mult_prod_sign[MultLatency-1];
+    c_exp_s3 <= mult_c_exp[MultLatency-1];
+    mant_c_s3 <= mult_mant_c[MultLatency-1];
+    c_sign_s3 <= mult_c_sign[MultLatency-1];
+    rm_s3 <= mult_rm[MultLatency-1];
+    is_special_s3 <= mult_is_special[MultLatency-1];
+    special_result_s3 <= mult_special_result[MultLatency-1];
+    special_invalid_s3 <= mult_special_invalid[MultLatency-1];
 
-      STAGE3A: begin
-        // Capture LZC results into stage 3B registers
-        prod_mant_s3b <= prod_mant_s3;
-        prod_exp_s3b <= prod_exp_s3;
-        prod_sign_s3b <= prod_sign_s3;
-        prod_is_zero_s3b <= prod_is_zero;
-        prod_msb_set_s3b <= prod_msb_set;
-        prod_lzc_s3b <= prod_lzc;
-        c_exp_s3b <= c_exp_s3;
-        mant_c_s3b <= mant_c_s3;
-        c_sign_s3b <= c_sign_s3;
-        rm_s3b <= rm_s3;
-        is_special_s3b <= is_special_s3;
-        special_result_s3b <= special_result_s3;
-        special_invalid_s3b <= special_invalid_s3;
-      end
+    prod_mant_s3b <= prod_mant_s3;
+    prod_exp_s3b <= prod_exp_s3;
+    prod_sign_s3b <= prod_sign_s3;
+    prod_is_zero_s3b <= prod_is_zero;
+    prod_msb_set_s3b <= prod_msb_set;
+    prod_lzc_s3b <= prod_lzc;
+    c_exp_s3b <= c_exp_s3;
+    mant_c_s3b <= mant_c_s3;
+    c_sign_s3b <= c_sign_s3;
+    rm_s3b <= rm_s3;
+    is_special_s3b <= is_special_s3;
+    special_result_s3b <= special_result_s3;
+    special_invalid_s3b <= special_invalid_s3;
 
-      STAGE3B: begin
-        // Capture normalized product into stage 4 registers
-        prod_exp_s4 <= prod_exp_norm;
-        prod_mant_s4 <= prod_mant_norm;
-        prod_sign_s4 <= prod_sign_s3b;
-        c_exp_s4 <= c_exp_s3b;
-        c_mant_s4 <= {mant_c_s3b, {MantBits{1'b0}}};
-        c_sign_s4 <= c_sign_s3b;
-        rm_s4 <= rm_s3b;
-        is_special_s4 <= is_special_s3b;
-        special_result_s4 <= special_result_s3b;
-        special_invalid_s4 <= special_invalid_s3b;
-      end
+    prod_exp_s4 <= prod_exp_norm;
+    prod_mant_s4 <= prod_mant_norm;
+    prod_sign_s4 <= prod_sign_s3b;
+    c_exp_s4 <= c_exp_s3b;
+    c_mant_s4 <= {mant_c_s3b, {MantBits{1'b0}}};
+    c_sign_s4 <= c_sign_s3b;
+    rm_s4 <= rm_s3b;
+    is_special_s4 <= is_special_s3b;
+    special_result_s4 <= special_result_s3b;
+    special_invalid_s4 <= special_invalid_s3b;
 
-      STAGE4: begin
-        exp_large_s4b <= exp_large;
-        shift_prod_amt_s4b <= shift_prod_amt;
-        shift_c_amt_s4b <= shift_c_amt;
-      end
+    exp_large_s4b <= exp_large;
+    shift_prod_amt_s4b <= shift_prod_amt;
+    shift_c_amt_s4b <= shift_c_amt;
+    prod_mant_s4b <= prod_mant_s4;
+    c_mant_s4b <= c_mant_s4;
+    prod_sign_s4b <= prod_sign_s4;
+    c_sign_s4b <= c_sign_s4;
+    rm_s4b <= rm_s4;
+    is_special_s4b <= is_special_s4;
+    special_result_s4b <= special_result_s4;
+    special_invalid_s4b <= special_invalid_s4;
 
-      STAGE4B: begin
-        exp_large_s5 <= exp_large_s4b;
-        prod_aligned_s5 <= prod_aligned;
-        c_aligned_s5 <= c_aligned;
-        prod_sign_s5 <= prod_sign_s4;
-        c_sign_s5 <= c_sign_s4;
-        sticky_s5 <= sticky_prod | sticky_c;
-        // Track when the smaller operand was shifted out during subtraction.
-        // This affects the guard bit calculation for FMA precision.
-        sticky_c_sub_s5 <= (prod_sign_s4 != c_sign_s4) ? (
-            (prod_aligned > c_aligned) ? sticky_c :
-            (c_aligned > prod_aligned) ? sticky_prod :
-            1'b0
-        ) : 1'b0;
-        rm_s5 <= rm_s4;
-        is_special_s5 <= is_special_s4;
-        special_result_s5 <= special_result_s4;
-        special_invalid_s5 <= special_invalid_s4;
-      end
+    exp_large_s5 <= exp_large_s4b;
+    prod_aligned_s5 <= prod_aligned;
+    c_aligned_s5 <= c_aligned;
+    prod_sign_s5 <= prod_sign_s4b;
+    c_sign_s5 <= c_sign_s4b;
+    sticky_s5 <= sticky_prod | sticky_c;
+    sticky_c_sub_s5 <= (prod_sign_s4b != c_sign_s4b) ? (
+        (prod_aligned > c_aligned) ? sticky_c :
+        (c_aligned > prod_aligned) ? sticky_prod :
+        1'b0
+    ) : 1'b0;
+    rm_s5 <= rm_s4b;
+    is_special_s5 <= is_special_s4b;
+    special_result_s5 <= special_result_s4b;
+    special_invalid_s5 <= special_invalid_s4b;
 
-      STAGE5A: begin
-        sum_s5a <= sum_s5a_comb;
-        result_sign_s5a <= result_sign_s5a_comb;
-        sign_large_s5a <= sign_large_s5a_comb;
-        sign_small_s5a <= sign_small_s5a_comb;
-        sum_is_zero_s5a <= sum_is_zero_s5a_comb;
-      end
+    sum_s5a <= sum_s5a_comb;
+    result_sign_s5a <= result_sign_s5a_comb;
+    sign_large_s5a <= sign_large_s5a_comb;
+    sign_small_s5a <= sign_small_s5a_comb;
+    sum_is_zero_s5a <= sum_is_zero_s5a_comb;
+    exp_large_s5a <= exp_large_s5;
+    sticky_s5a <= sticky_s5;
+    rm_s5a <= rm_s5;
+    is_special_s5a <= is_special_s5;
+    special_result_s5a <= special_result_s5;
+    special_invalid_s5a <= special_invalid_s5;
 
-      STAGE5B: begin
-        exp_large_s6 <= exp_large_s5;
-        sum_s6 <= sum_s5a;
-        sum_is_zero_s6 <= sum_is_zero_s5a;
-        lzc_s6 <= lzc_s5b_comb;
-        sum_sticky_s6 <= sticky_s5;
-        result_sign_s6 <= result_sign_s5a;
-        sign_large_s6 <= sign_large_s5a;
-        sign_small_s6 <= sign_small_s5a;
-        rm_s6 <= rm_s5;
-        is_special_s6 <= is_special_s5;
-        special_result_s6 <= special_result_s5;
-        special_invalid_s6 <= special_invalid_s5;
-      end
+    exp_large_s6 <= exp_large_s5a;
+    sum_s6 <= sum_s5a;
+    sum_is_zero_s6 <= sum_is_zero_s5a;
+    lzc_s6 <= lzc_s5b_comb;
+    sum_sticky_s6 <= sticky_s5a;
+    result_sign_s6 <= result_sign_s5a;
+    sign_large_s6 <= sign_large_s5a;
+    sign_small_s6 <= sign_small_s5a;
+    rm_s6 <= rm_s5a;
+    is_special_s6 <= is_special_s5a;
+    special_result_s6 <= special_result_s5a;
+    special_invalid_s6 <= special_invalid_s5a;
 
-      STAGE6: begin
-        normalized_sum_s7 <= normalized_sum_s6_comb;
-        normalized_exp_s7 <= normalized_exp_s6_comb;
-        sum_is_zero_s7 <= sum_is_zero_s6;
-        sum_sticky_s7 <= sum_sticky_s6;
-        norm_sticky_s7 <= norm_sticky_s6_comb;
-        result_sign_s7 <= result_sign_s6;
-        sign_large_s7 <= sign_large_s6;
-        sign_small_s7 <= sign_small_s6;
-        rm_s7 <= rm_s6;
-        is_special_s7 <= is_special_s6;
-        special_result_s7 <= special_result_s6;
-        special_invalid_s7 <= special_invalid_s6;
-      end
+    normalized_sum_s7 <= normalized_sum_s6_comb;
+    normalized_exp_s7 <= normalized_exp_s6_comb;
+    sum_is_zero_s7 <= sum_is_zero_s6;
+    sum_sticky_s7 <= sum_sticky_s6;
+    norm_sticky_s7 <= norm_sticky_s6_comb;
+    result_sign_s7 <= result_sign_s6;
+    sign_large_s7 <= sign_large_s6;
+    sign_small_s7 <= sign_small_s6;
+    rm_s7 <= rm_s6;
+    is_special_s7 <= is_special_s6;
+    special_result_s7 <= special_result_s6;
+    special_invalid_s7 <= special_invalid_s6;
 
-      STAGE7A: begin
-        // Capture subnormal handling outputs into stage 7B registers
-        mantissa_work_s7b <= mantissa_work_s7a_comb;
-        guard_work_s7b <= guard_work_s7a_comb;
-        round_work_s7b <= round_work_s7a_comb;
-        sticky_work_s7b <= sticky_work_s7a_comb;
-        exp_work_s7b <= exp_work_s7a_comb;
-        fp_round_sign_s7b <= fp_round_sign_s7a_comb;
-        is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
-      end
+    mantissa_work_s7b <= mantissa_work_s7a_comb;
+    guard_work_s7b <= guard_work_s7a_comb;
+    round_work_s7b <= round_work_s7a_comb;
+    sticky_work_s7b <= sticky_work_s7a_comb;
+    exp_work_s7b <= exp_work_s7a_comb;
+    fp_round_sign_s7b <= fp_round_sign_s7a_comb;
+    is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
+    rm_s7b <= rm_s7;
+    is_special_s7b <= is_special_s7;
+    special_result_s7b <= special_result_s7;
+    special_invalid_s7b <= special_invalid_s7;
 
-      STAGE7B: begin
-        // Capture round-up decision into s8 registers
-        result_sign_s8 <= fp_round_sign_s7b;
-        exp_work_s8 <= exp_work_s7b;
-        mantissa_work_s8 <= mantissa_work_s7b;
-        round_up_s8 <= round_up_s7b_comb;
-        is_inexact_s8 <= is_inexact_s7b;
-        is_zero_result_s8 <= is_zero_result_s7b;
-        rm_s8 <= rm_s7;
-        is_special_s8 <= is_special_s7;
-        special_result_s8 <= special_result_s7;
-        special_invalid_s8 <= special_invalid_s7;
-      end
+    result_sign_s8 <= fp_round_sign_s7b;
+    exp_work_s8 <= exp_work_s7b;
+    mantissa_work_s8 <= mantissa_work_s7b;
+    round_up_s8 <= round_up_s7b_comb;
+    is_inexact_s8 <= is_inexact_s7b;
+    is_zero_result_s8 <= is_zero_result_s7b;
+    rm_s8 <= rm_s7b;
+    is_special_s8 <= is_special_s7b;
+    special_result_s8 <= special_result_s7b;
+    special_invalid_s8 <= special_invalid_s7b;
 
-      STAGE8: begin
-        // Capture final result into s9 registers
-        result_s9 <= final_result_s8_comb;
-        flags_s9  <= final_flags_s8_comb;
-      end
-
-      STAGE9: begin
-        // Output already captured in s9
-      end
-
-      default: ;
-    endcase
-  end
-
-  // Next state logic
-  always_comb begin
-    next_state = state;
-    case (state)
-      IDLE:    if (i_valid) next_state = STAGE1;
-      STAGE1:  next_state = STAGE2;
-      STAGE2:  next_state = STAGE2B;
-      STAGE2B: next_state = state_e'(prod_mant_s2_tiled_valid ? STAGE3A : STAGE2B);
-      STAGE3A: next_state = STAGE3B;
-      STAGE3B: next_state = STAGE4;
-      STAGE4:  next_state = STAGE4B;
-      STAGE4B: next_state = STAGE5A;
-      STAGE5A: next_state = STAGE5B;
-      STAGE5B: next_state = STAGE6;
-      STAGE6:  next_state = STAGE7A;
-      STAGE7A: next_state = STAGE7B;
-      STAGE7B: next_state = STAGE8;
-      STAGE8:  next_state = STAGE9;
-      STAGE9:  next_state = IDLE;
-      default: next_state = IDLE;
-    endcase
+    result_s9 <= final_result_s8_comb;
+    flags_s9 <= final_flags_s8_comb;
   end
 
   // Output logic (from registered s9)
   assign o_result = result_s9;
   assign o_flags  = flags_s9;
-  assign o_valid  = valid_reg;
+  assign o_valid  = valid_s9;
 
 endmodule : fp_fma
