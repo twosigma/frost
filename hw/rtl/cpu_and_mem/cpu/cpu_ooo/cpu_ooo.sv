@@ -142,6 +142,10 @@ module cpu_ooo #(
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
   logic [63:0] wrapper_perf_counter_data;
+  // Width-funnel perf observers from the tomasulo_wrapper (registered at
+  // their sources): MEM_RS single-issue-port limiter and CDB oversubscription.
+  logic perf_mem_rs_two_ready_one_issued;
+  logic perf_cdb_oversubscribed;
 
   // CSR dispatch fence: the CDB carries rs1 (write operand) for CSR ops,
   // not the CSR read result (which is only available at commit). Stall
@@ -1461,7 +1465,12 @@ module cpu_ooo #(
       // Profiling snapshot
       .i_perf_snapshot_capture(perf_snapshot_capture),
       .i_perf_counter_select (wrapper_perf_counter_select),
-      .o_perf_counter_data   (wrapper_perf_counter_data)
+      .o_perf_counter_data   (wrapper_perf_counter_data),
+
+      // Width-funnel perf observers (registered inside the wrapper; counted
+      // as top-level counters by perf_counter_aggregator).
+      .o_perf_mem_rs_two_ready_one_issued(perf_mem_rs_two_ready_one_issued),
+      .o_perf_cdb_oversubscribed(perf_cdb_oversubscribed)
   );
 
   always_ff @(posedge i_clk) begin
@@ -2417,6 +2426,8 @@ module cpu_ooo #(
       .i_rob_alloc_req(rob_alloc_req),
       .i_dispatch_fire_2(rob_alloc_req_2.alloc_valid),
       .i_if_width_events(if_width_events),
+      .i_mem_rs_two_ready_one_issued(perf_mem_rs_two_ready_one_issued),
+      .i_cdb_oversubscribed(perf_cdb_oversubscribed),
       .i_dispatch_status(dispatch_status),
       .i_rob_commit_comb(rob_commit_comb),
       .i_flush_pipeline(flush_pipeline),

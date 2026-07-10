@@ -17,14 +17,16 @@
 /*
  * Top-level performance-counter aggregator.
  *
- * Owns the 37 cpu_ooo top-level profiling counters (dispatch fire/stall,
+ * Owns the 42 cpu_ooo top-level profiling counters (dispatch fire/stall,
  * front-end bubbles, flush recovery, serialization fences, per-resource
  * dispatch-stall reasons, ROB-empty, prediction fences, and the 2-wide
- * width-funnel events: IF delivery width + slot-2 kill causes, dispatch
- * fire-2 + slot-2 blocked causes), accumulates them, snapshots them on
- * demand, and muxes the selected counter (top-level or tomasulo_wrapper
- * range) to the CSR read port. A registered selector and a registered read
- * result break the high-fanout selector -> counter -> CSR cone.
+ * width-funnel events: IF delivery width + slot-2 kill causes + slot-2
+ * BTB predicted-taken, dispatch fire-2 + slot-2 blocked causes, MEM_RS
+ * issue-port limiter, CDB oversubscription), accumulates them, snapshots
+ * them on demand, and muxes the selected counter (top-level or
+ * tomasulo_wrapper range) to the CSR read port. A registered selector and a
+ * registered read result break the high-fanout selector -> counter -> CSR
+ * cone.
  *
  * Extracted verbatim from cpu_ooo (no functional change): the body below is the
  * former "Profiling Counter Aggregation" section together with its parameter and
@@ -42,6 +44,12 @@ module perf_counter_aggregator (
     input logic                                       i_dispatch_fire_2,
     // IF→PD 2-wide delivery events (see if_width_events_t).
     input riscv_pkg::if_width_events_t                i_if_width_events,
+    // MEM_RS issued while >=2 entries were ready (single issue port is the
+    // limiter).  Registered inside the reservation station.
+    input logic                                       i_mem_rs_two_ready_one_issued,
+    // >=3 FU completions requested the 2-lane CDB.  Registered inside the
+    // tomasulo_wrapper.
+    input logic                                       i_cdb_oversubscribed,
     input riscv_pkg::dispatch_status_t                i_dispatch_status,
     input riscv_pkg::reorder_buffer_commit_t          i_rob_commit_comb,
     input logic                                       i_flush_pipeline,
@@ -66,7 +74,7 @@ module perf_counter_aggregator (
     output logic [31:0] o_perf_counter_count
 );
 
-  localparam int unsigned PerfTopCounterCount = 37;
+  localparam int unsigned PerfTopCounterCount = 42;
   localparam int unsigned PerfWrapperCounterCount = 64;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
@@ -96,28 +104,37 @@ module perf_counter_aggregator (
   localparam int unsigned PerfPredictionFenceBranch = 20;
   localparam int unsigned PerfPredictionFenceJal = 21;
   localparam int unsigned PerfPredictionFenceIndirect = 22;
-  // 2-wide width-funnel counters: IF→PD delivery width + slot-2 kill causes.
+  // 2-wide width-funnel counters: IF→PD delivery width + slot-2 kill causes
+  // + slot-2 BTB predicted-taken events.
   localparam int unsigned PerfIfDeliver1 = 23;
   localparam int unsigned PerfIfDeliver2 = 24;
-  localparam int unsigned PerfIfSlot2KillSlot1Native32 = 25;
-  localparam int unsigned PerfIfSlot2KillSlot1Ctrl = 26;
-  localparam int unsigned PerfIfSlot2KillClass = 27;
-  localparam int unsigned PerfIfSlot2KillTransient = 28;
+  localparam int unsigned PerfIfSlot2KillS1NativeCtrl = 25;
+  localparam int unsigned PerfIfSlot2KillS1NativeSerialize = 26;
+  localparam int unsigned PerfIfSlot2KillSlot1Ctrl = 27;
+  localparam int unsigned PerfIfSlot2KillClass = 28;
+  localparam int unsigned PerfIfSlot2KillWindowLimit = 29;
+  localparam int unsigned PerfIfSlot2KillTransient = 30;
+  localparam int unsigned PerfIfSlot2PredTaken = 31;
   // 2-wide width-funnel counters: dispatch fire-2 + slot-2 blocked causes.
-  localparam int unsigned PerfDispatchFire2 = 29;
-  localparam int unsigned PerfDispatchSlot2Present = 30;
-  localparam int unsigned PerfDispatchSlot2FpSerialized = 31;
-  localparam int unsigned PerfDispatchSlot2BlockS1Branch = 32;
-  localparam int unsigned PerfDispatchSlot2BlockRobFull2 = 33;
-  localparam int unsigned PerfDispatchSlot2BlockRsFull2 = 34;
-  localparam int unsigned PerfDispatchSlot2BlockLsqFull2 = 35;
-  localparam int unsigned PerfDispatchSlot2BlockCkpt = 36;
+  localparam int unsigned PerfDispatchFire2 = 32;
+  localparam int unsigned PerfDispatchSlot2Present = 33;
+  localparam int unsigned PerfDispatchSlot2FpSerialized = 34;
+  localparam int unsigned PerfDispatchSlot2BlockS1Branch = 35;
+  localparam int unsigned PerfDispatchSlot2BlockRobFull2 = 36;
+  localparam int unsigned PerfDispatchSlot2BlockRsFull2 = 37;
+  localparam int unsigned PerfDispatchSlot2BlockLsqFull2 = 38;
+  localparam int unsigned PerfDispatchSlot2BlockCkpt = 39;
+  // 2-wide width-funnel counters: back-end single-resource limiters.
+  localparam int unsigned PerfMemRsTwoReadyOneIssued = 40;
+  localparam int unsigned PerfCdbOversubscribed = 41;
   localparam int unsigned PerfTopSnapshotBankSpan = (PerfTopCounterCount + 3) / 4;
 
   // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
   riscv_pkg::reorder_buffer_alloc_req_t        rob_alloc_req;
   logic                                        dispatch_fire_2;
   riscv_pkg::if_width_events_t                 if_width_events;
+  logic                                        mem_rs_two_ready_one_issued;
+  logic                                        cdb_oversubscribed;
   riscv_pkg::dispatch_status_t                 dispatch_status;
   riscv_pkg::reorder_buffer_commit_t           rob_commit_comb;
   logic                                        flush_pipeline;
@@ -137,6 +154,8 @@ module perf_counter_aggregator (
   assign rob_alloc_req                 = i_rob_alloc_req;
   assign dispatch_fire_2               = i_dispatch_fire_2;
   assign if_width_events               = i_if_width_events;
+  assign mem_rs_two_ready_one_issued   = i_mem_rs_two_ready_one_issued;
+  assign cdb_oversubscribed            = i_cdb_oversubscribed;
   assign dispatch_status               = i_dispatch_status;
   assign rob_commit_comb               = i_rob_commit_comb;
   assign flush_pipeline                = i_flush_pipeline;
@@ -228,10 +247,15 @@ module perf_counter_aggregator (
     perf_top_inc[PerfPredictionFenceIndirect] = {{63{1'b0}}, prediction_fence_indirect};
     perf_top_inc[PerfIfDeliver1] = {{63{1'b0}}, if_width_events.deliver1};
     perf_top_inc[PerfIfDeliver2] = {{63{1'b0}}, if_width_events.deliver2};
-    perf_top_inc[PerfIfSlot2KillSlot1Native32] = {{63{1'b0}}, if_width_events.kill_slot1_32bit};
+    perf_top_inc[PerfIfSlot2KillS1NativeCtrl] = {{63{1'b0}}, if_width_events.kill_s1_native_ctrl};
+    perf_top_inc[PerfIfSlot2KillS1NativeSerialize] = {
+      {63{1'b0}}, if_width_events.kill_s1_native_serialize
+    };
     perf_top_inc[PerfIfSlot2KillSlot1Ctrl] = {{63{1'b0}}, if_width_events.kill_slot1_ctrl};
     perf_top_inc[PerfIfSlot2KillClass] = {{63{1'b0}}, if_width_events.kill_class};
+    perf_top_inc[PerfIfSlot2KillWindowLimit] = {{63{1'b0}}, if_width_events.kill_window_limit};
     perf_top_inc[PerfIfSlot2KillTransient] = {{63{1'b0}}, if_width_events.kill_transient};
+    perf_top_inc[PerfIfSlot2PredTaken] = {{63{1'b0}}, if_width_events.slot2_pred_taken};
     perf_top_inc[PerfDispatchFire2] = {{63{1'b0}}, dispatch_fire_2};
     perf_top_inc[PerfDispatchSlot2Present] = {{63{1'b0}}, dispatch_status.slot2_present};
     perf_top_inc[PerfDispatchSlot2FpSerialized] = {{63{1'b0}}, dispatch_status.slot2_fp_serialized};
@@ -248,6 +272,8 @@ module perf_counter_aggregator (
       {63{1'b0}}, dispatch_status.slot2_block_lsq_full2
     };
     perf_top_inc[PerfDispatchSlot2BlockCkpt] = {{63{1'b0}}, dispatch_status.slot2_block_ckpt};
+    perf_top_inc[PerfMemRsTwoReadyOneIssued] = {{63{1'b0}}, mem_rs_two_ready_one_issued};
+    perf_top_inc[PerfCdbOversubscribed] = {{63{1'b0}}, cdb_oversubscribed};
   end
 
   always_ff @(posedge i_clk) begin

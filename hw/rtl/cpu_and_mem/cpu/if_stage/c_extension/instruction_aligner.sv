@@ -107,10 +107,12 @@ module instruction_aligner #(
     // Slot-2 kill-cause classification (profiling taps only; not on the PC
     // path).  Mutually exclusive; meaningful only on cycles where slot-1 is
     // real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
-    output logic o_slot2_kill_slot1_32bit,  // Slot-1 is native 32-bit control flow / serializing
-    output logic o_slot2_kill_slot1_ctrl,   // Slot-1 is compressed control flow
-    output logic o_slot2_kill_class,        // Slot-2 start is a serialize/FP-compute class op
-    output logic o_slot2_kill_transient     // Buffer/BRAM transient state
+    output logic o_slot2_kill_s1_native_ctrl,  // Slot-1 is native 32-bit control flow
+    output logic o_slot2_kill_s1_native_serialize,  // Slot-1 is a native serializing-class op
+    output logic o_slot2_kill_slot1_ctrl,  // Slot-1 is compressed control flow
+    output logic o_slot2_kill_class,  // Slot-2 start is a serialize/FP-compute class op
+    output logic o_slot2_kill_window_limit,  // 32-bit slot-2 at NEXT_HI exceeds the 64-bit window
+    output logic o_slot2_kill_transient  // Buffer/BRAM transient state
 );
 
   // ===========================================================================
@@ -767,23 +769,57 @@ module instruction_aligner #(
   // ===========================================================================
   // Pure taps off existing nets for the width-funnel perf counters; nothing
   // here feeds the PC or packet paths.  Priority makes the causes mutually
-  // exclusive: native-32b slot-1 > compressed-control slot-1 > slot-2 class
+  // exclusive: native slot-1 (control flow / serializing, split by the
+  // NativeSerialize sideband bit) > compressed-control slot-1 > slot-2 class
   // exclusion (Slot2StartValid=0: native CSR/MISC-MEM/AMO/FP-compute) >
-  // buffer/BRAM transient (slot2_bram_unsafe, buffer-at-lo punt).  When
-  // slot-2 is actually valid, all four are 0 by construction.
+  // 64-bit fetch-window limit (a start-valid native 32-bit slot-2 at NEXT_HI
+  // cannot fit the window; fundamental, not transient) > buffer/BRAM
+  // transient (slot2_bram_unsafe, buffer-at-lo punt).  When slot-2 is
+  // actually valid, all six are 0 by construction.
   logic slot2_kill_start_invalid;
   assign slot2_kill_start_invalid =
       slot2_current_hi_candidate ? !slot2_current_hi_start_valid :
       slot2_next_lo_candidate    ? !slot2_next_lo_start_valid    :
       slot2_next_hi_candidate    ? !slot2_next_hi_start_valid    : 1'b0;
 
-  // With 32b-led pairing, !allows for a native slot-1 now means it is a
-  // 32-bit control-flow or serializing instruction (the counter formerly
-  // counted every native 32-bit slot-1).
-  assign o_slot2_kill_slot1_32bit = !slot1_allows_slot2_for_pc && !o_is_compressed;
+  // Slot-1's NativeSerialize sideband bit, muxed like slot1_allows_slot2_for_pc.
+  // Profiling-only: feeds nothing but the kill-cause taps below.
+  logic slot1_native_serialize_for_pc;
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00: slot1_native_serialize_for_pc = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeLo];
+      2'b01: slot1_native_serialize_for_pc = aligned_current_sb[riscv_pkg::ImemSbNativeSerializeHi];
+      2'b10:
+      slot1_native_serialize_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbNativeSerializeLo];
+      2'b11:
+      slot1_native_serialize_for_pc = i_instr_buffer_sideband[riscv_pkg::ImemSbNativeSerializeHi];
+      default: slot1_native_serialize_for_pc = 1'b0;
+    endcase
+  end
+
+  // With 32b-led pairing, !allows for a native slot-1 means it is a 32-bit
+  // control-flow or serializing instruction; the NativeSerialize bit splits
+  // the two (they are disjoint opcode classes).
+  assign o_slot2_kill_s1_native_ctrl = !slot1_allows_slot2_for_pc && !o_is_compressed &&
+                                       !slot1_native_serialize_for_pc;
+  assign o_slot2_kill_s1_native_serialize = !slot1_allows_slot2_for_pc && !o_is_compressed &&
+                                            slot1_native_serialize_for_pc;
   assign o_slot2_kill_slot1_ctrl = !slot1_allows_slot2_for_pc && o_is_compressed;
   assign o_slot2_kill_class = slot1_allows_slot2_for_pc && slot2_kill_start_invalid;
-  assign o_slot2_kill_transient   = slot1_allows_slot2_for_pc && !slot2_kill_start_invalid &&
-                                    !slot2_valid_when_enabled;
+
+  // Remainder bucket (the pre-split kill_transient), divided into the
+  // fundamental 64-bit fetch-window case — the slot-2 candidate sits at
+  // NEXT_HI (32b slot-1 at odd) and is itself native 32-bit, so it can never
+  // fit regardless of BRAM state — and the true transients (BRAM
+  // parity-unsafe reads, buffer-at-lo punt).
+  logic slot2_kill_no_pair;
+  logic slot2_next_hi_native32;
+  assign slot2_kill_no_pair = slot1_allows_slot2_for_pc && !slot2_kill_start_invalid &&
+                              !slot2_valid_when_enabled;
+  assign slot2_next_hi_native32 = slot2_next_hi_candidate && !slot2_next_hi_compressed;
+  assign o_slot2_kill_window_limit = slot2_kill_no_pair && slot2_next_hi_native32;
+  assign o_slot2_kill_transient = slot2_kill_no_pair && !slot2_next_hi_native32;
 
 endmodule : instruction_aligner

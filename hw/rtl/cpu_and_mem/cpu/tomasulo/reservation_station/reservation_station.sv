@@ -195,7 +195,14 @@ module reservation_station #(
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_query_tag,
     output logic                                        o_head_query_in_rs,
     output logic                                        o_head_query_rs_ready,
-    output logic                                        o_head_query_in_stage2
+    output logic                                        o_head_query_in_stage2,
+
+    // Width-funnel perf observer (registered, profiling only): the stage-1
+    // issue port fired while at least one MORE entry was also ready — the
+    // single issue port was the limiter that cycle.  Meaningful for
+    // single-issue-port instances (lane-1 issue is not subtracted); drives
+    // no functional logic.
+    output logic o_perf_two_ready_one_issued
 );
 
   // ===========================================================================
@@ -1016,6 +1023,21 @@ module reservation_station #(
   // cycle. Suppress issue so wrong-path ops cannot leak into stage2 during the
   // misprediction/trap flush cycle.
   assign issue_fire = any_ready && i_fu_ready && can_issue_to_stage2 && !i_flush_all && !i_flush_en;
+
+  // --- Width-funnel perf observer (profiling only) ---
+  // The stage-1 issue port fired while >=2 entries were ready: the single
+  // issue port, not operand readiness, limited throughput this cycle.
+  // x & (x-1) clears the lowest set bit, so it is nonzero iff popcount >= 2.
+  // Registered so the tap adds no load to the issue-select cone.
+  logic perf_two_ready_one_issued_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      perf_two_ready_one_issued_q <= 1'b0;
+    end else begin
+      perf_two_ready_one_issued_q <= issue_fire && |(entry_ready & (entry_ready - 1'b1));
+    end
+  end
+  assign o_perf_two_ready_one_issued = perf_two_ready_one_issued_q;
 
   function automatic logic [FLEN-1:0] repair_value_for_sel(input logic [2:0] sel);
     begin
