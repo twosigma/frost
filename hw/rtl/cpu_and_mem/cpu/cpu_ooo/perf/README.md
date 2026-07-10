@@ -1,9 +1,9 @@
 # Performance counters
 
-FROST exposes 101 profiling counters through machine-mode custom CSRs. This
+FROST exposes 106 profiling counters through machine-mode custom CSRs. This
 directory holds `perf_counter_aggregator.sv`, which owns the counter index
-space: it accumulates the 37 top-level (front-end / dispatch) counters,
-muxes in the 64 back-end counters owned by
+space: it accumulates the 42 top-level (front-end / dispatch / width-funnel)
+counters, muxes in the 64 back-end counters owned by
 `../../tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv`, and drives
 the CSR read port. This README documents the whole counter space — both
 blocks — plus the CSR access protocol and the software API.
@@ -12,11 +12,11 @@ blocks — plus the CSR access protocol and the software API.
 
 | CSR | Address | Access | Purpose |
 |-----|---------|--------|---------|
-| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–100) |
+| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–105) |
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Total number of counters (101) |
+| `mperfcount` | `0xFC2` | R | Total number of counters (106) |
 
 How it works:
 
@@ -29,7 +29,7 @@ How it works:
   single-cycle capture pulse (`csr_file.sv`). Both blocks copy every live
   counter into snapshot registers on that same cycle (each block fans the
   pulse out through four `max_fanout`-annotated bank copies, all driven by
-  the one pulse), so the 101 values form one coherent snapshot.
+  the one pulse), so the 106 values form one coherent snapshot.
 - **Reads return the snapshot, never the live value.** Capture first, then
   read. Because `mperfdata`/`mperfdatah` both read the frozen 64-bit
   snapshot, the two halves are consistent without a hi/lo re-read loop.
@@ -38,17 +38,17 @@ How it works:
   counter value reaches `mperfdata` two cycles after `mperfsel` changes.
   This is invisible to software: CSR instructions execute serially at
   commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never outrun it.
-- Selecting an out-of-range index (≥ 101) reads 0.
+- Selecting an out-of-range index (≥ 106) reads 0.
 
 ## Numbering contract
 
 The global index space is two concatenated blocks:
 
-- top-level block: `[0, PerfTopCounterCount)` = 0–36, owned by
+- top-level block: `[0, PerfTopCounterCount)` = 0–41, owned by
   `perf_counter_aggregator.sv`;
-- wrapper block: `[PerfTopCounterCount, PerfCounterCount)` = 37–100, owned by
+- wrapper block: `[PerfTopCounterCount, PerfCounterCount)` = 42–105, owned by
   `tomasulo_perf_counters.sv`, addressed there by the wrapper-local index
-  (global − 37).
+  (global − 42).
 
 `PerfWrapperBase = PerfTopCounterCount`, so **adding a top-level counter
 shifts every wrapper index**. There is no global enum in `riscv_pkg`; four
@@ -108,178 +108,190 @@ Notes:
 - 7–16 are each gated on a valid slot-1 instruction that actually needs the
   resource; several can fire in the same cycle, so they overlap rather than
   partition counter 1. Cycles where only slot-2 blocks the bundle count in
-  1 but in none of 7–16 — they land in 32–36 instead.
+  1 but in none of 7–16 — they land in 35–39 instead.
 - 20–22 are one-hot per cycle (classifier priority: indirect > JAL >
   branch, ID over PD) and only fire while the prediction fence is pending.
 
-### Top level 23–36: 2-wide width funnel
+### Top level 23–41: 2-wide width funnel
 
 Sources: `if_stage.sv` `o_width_events` / `instruction_aligner.sv`
-`o_slot2_kill_*` (23–28) and `dispatch.sv` `o_status.slot2_*` (29–36).
+`o_slot2_kill_*` (23–30), `branch_prediction_controller.sv` slot-2 port via
+`o_width_events.slot2_pred_taken` (31), `dispatch.sv` `o_status.slot2_*`
+(32–39), and the registered back-end observers in `reservation_station.sv`
+(`o_perf_two_ready_one_issued`, u_mem_rs instance) and `tomasulo_wrapper.sv`
+(CDB request popcount) for 40–41.
 
 | Idx | Name | Type | Increments when |
 |-----|------|------|-----------------|
 | 23 | `IF_DELIVER1` | event | Accepted IF→PD handoff carrying a real slot-1 instruction (one per handoff, stall-qualified). |
 | 24 | `IF_DELIVER2` | event | That handoff also carried a real slot-2 instruction (subset of 23). |
-| 25 | `IF_S2KILL_S1_32BIT` | event | 1-wide handoff: slot-1 is a native 32-bit instruction that terminates its bundle (control flow or serializing class). Since 32b-led bundle formation landed, plain 32-bit slot-1s pair and no longer land here. |
-| 26 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot-1 is compressed control flow (bundle terminates at slot 1). |
-| 27 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate starts an op class excluded from slot 2 (native CSR / MISC-MEM / AMO / FP-compute). |
-| 28 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: aligner buffer / BRAM transient state, plus the 64-bit-window limit (a 32-bit slot-2 for a 32b-led pair starting at a halfword-aligned word, i.e. 32b@odd + 32b, does not fit the fetch window). |
-| 29 | `DISPATCH_FIRE_2` | event | Slot-2 dispatch fired (`rob_alloc_req_2.alloc_valid`) — one per instruction dispatched through slot 2. |
-| 30 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input. |
-| 31 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | Slot-2 instruction present but targets an FP-compute RS (FP / FMUL / FDIV); these never dispatch in slot 2. |
-| 32 | `DISPATCH_SLOT2_BLOCK_S1_BRANCH` | cycle | Slot-2 alone holds the bundle: slot-1 is a branch/jump (bundle terminates). |
-| 33 | `DISPATCH_SLOT2_BLOCK_ROB_FULL2` | cycle | Slot-2 alone holds the bundle: no ROB room for 2. |
-| 34 | `DISPATCH_SLOT2_BLOCK_RS_FULL2` | cycle | Slot-2 alone holds the bundle: slot-2's RS room check failed. |
-| 35 | `DISPATCH_SLOT2_BLOCK_LSQ_FULL2` | cycle | Slot-2 alone holds the bundle: LQ/SQ room check for slot-2 failed. |
-| 36 | `DISPATCH_SLOT2_BLOCK_CKPT` | cycle | Slot-2 alone holds the bundle: no checkpoint free for a slot-2 branch. |
+| 25 | `IF_S2KILL_S1_NATIVE_CTRL` | event | 1-wide handoff: slot-1 is native 32-bit control flow (BRANCH/JAL/JALR — the bundle terminates at slot 1). |
+| 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot-1 is a native serializing-class op (never leads a pair; a slot-2 renamed against a serializing slot-1 would never wake). |
+| 27 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot-1 is compressed control flow (bundle terminates at slot 1). |
+| 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate starts an op class excluded from slot 2 (native CSR / MISC-MEM / AMO / FP-compute). |
+| 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: 64-bit fetch-window limit — the slot-2 candidate sits at NEXT_HI (32-bit slot-1 at an odd halfword) and is itself native 32-bit, so it can never fit the window regardless of BRAM state. |
+| 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: true aligner buffer / BRAM transient state (parity-unsafe `slot2_bram_unsafe` reads, buffer-at-lo punt). |
+| 31 | `IF_SLOT2_PRED_TAKEN` | event | Slot-2 BTB predicted-taken accepted (one per event, `!stall`-qualified in BPC). Each occurrence costs one fetch bubble: the redirect applies via `slot2_redirect_q` the next cycle. |
+| 32 | `DISPATCH_FIRE_2` | event | Slot-2 dispatch fired (`rob_alloc_req_2.alloc_valid`) — one per instruction dispatched through slot 2. |
+| 33 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input. |
+| 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | Slot-2 instruction present but targets an FP-compute RS (FP / FMUL / FDIV); these never dispatch in slot 2. |
+| 35 | `DISPATCH_SLOT2_BLOCK_S1_BRANCH` | cycle | Slot-2 alone holds the bundle: slot-1 is a branch/jump (bundle terminates). |
+| 36 | `DISPATCH_SLOT2_BLOCK_ROB_FULL2` | cycle | Slot-2 alone holds the bundle: no ROB room for 2. |
+| 37 | `DISPATCH_SLOT2_BLOCK_RS_FULL2` | cycle | Slot-2 alone holds the bundle: slot-2's RS room check failed. |
+| 38 | `DISPATCH_SLOT2_BLOCK_LSQ_FULL2` | cycle | Slot-2 alone holds the bundle: LQ/SQ room check for slot-2 failed. |
+| 39 | `DISPATCH_SLOT2_BLOCK_CKPT` | cycle | Slot-2 alone holds the bundle: no checkpoint free for a slot-2 branch. |
+| 40 | `MEM_RS_TWO_READY_ONE_ISSUED` | cycle | MEM_RS stage-1 issue fired while ≥2 entries had all operands ready — its single issue port was the limiter (registered in the RS; 1-cycle lag). |
+| 41 | `CDB_OVERSUBSCRIBED` | cycle | ≥3 FU completions requested the 2-lane CDB, so at least one had to hold its result and retry (registered in the wrapper; 1-cycle lag). |
 
 Ratios and partitions:
 
-- IF 2-wide rate = 24 / 23. The kill causes 25–28 are mutually exclusive
-  and partition the 1-wide handoffs (23 − 24).
-- Dispatch 2-wide rate = 29 / 0; total dispatched instructions = 0 + 29.
-- 32–36 all require `slot2_only_block` (slot-1 could have fired); the
+- IF 2-wide rate = 24 / 23. The kill causes 25–30 are mutually exclusive
+  and partition the 1-wide handoffs (23 − 24). 25 + 26 replace the former
+  `S1_32BIT` bucket (split by the NativeSerialize sideband bit); 29 + 30
+  replace the former `TRANSIENT` bucket (the fundamental window-limit case
+  split out from the true transients).
+- Dispatch 2-wide rate = 32 / 0; total dispatched instructions = 0 + 32.
+- 35–39 all require `slot2_only_block` (slot-1 could have fired); the
   individual cause conjuncts can overlap when several room checks fail in
   the same cycle.
 
-### Wrapper 37–46: ROB head-wait
+### Wrapper 42–51: ROB head-wait
 
 Source: `reorder_buffer.sv` `o_perf_events`. All fire on cycles where the
-ROB head is valid, not done, and no full flush is in progress; 38–46
-partition 37 by the head's class (priority: branch, then AMO/LR, then
+ROB head is valid, not done, and no full flush is in progress; 43–51
+partition 42 by the head's class (priority: branch, then AMO/LR, then
 store, then RS type).
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 37 | 0 | `HEAD_WAIT_TOTAL` | cycle | ROB head valid but not done (waiting for its result). |
-| 38 | 1 | `HEAD_WAIT_INT` | cycle | …and the head is an INT-RS op (not branch/store/AMO). |
-| 39 | 2 | `HEAD_WAIT_BRANCH` | cycle | …and the head is a branch/jump. |
-| 40 | 3 | `HEAD_WAIT_MUL` | cycle | …and the head is a MUL-RS op (MUL/DIV). |
-| 41 | 4 | `HEAD_WAIT_MEM_LOAD` | cycle | …and the head is a MEM-RS op that is not a store or AMO — i.e. a load (INT or FP). |
-| 42 | 5 | `HEAD_WAIT_MEM_STORE` | cycle | …and the head is a store (including FP stores and SC). |
-| 43 | 6 | `HEAD_WAIT_MEM_AMO` | cycle | …and the head is an AMO or LR. |
-| 44 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP-RS (FP add class) op. |
-| 45 | 8 | `HEAD_WAIT_FMUL` | cycle | …and the head is an FMUL-RS op. |
-| 46 | 9 | `HEAD_WAIT_FDIV` | cycle | …and the head is an FDIV-RS op. |
+| 42 | 0 | `HEAD_WAIT_TOTAL` | cycle | ROB head valid but not done (waiting for its result). |
+| 43 | 1 | `HEAD_WAIT_INT` | cycle | …and the head is an INT-RS op (not branch/store/AMO). |
+| 44 | 2 | `HEAD_WAIT_BRANCH` | cycle | …and the head is a branch/jump. |
+| 45 | 3 | `HEAD_WAIT_MUL` | cycle | …and the head is a MUL-RS op (MUL/DIV). |
+| 46 | 4 | `HEAD_WAIT_MEM_LOAD` | cycle | …and the head is a MEM-RS op that is not a store or AMO — i.e. a load (INT or FP). |
+| 47 | 5 | `HEAD_WAIT_MEM_STORE` | cycle | …and the head is a store (including FP stores and SC). |
+| 48 | 6 | `HEAD_WAIT_MEM_AMO` | cycle | …and the head is an AMO or LR. |
+| 49 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP-RS (FP add class) op. |
+| 50 | 8 | `HEAD_WAIT_FMUL` | cycle | …and the head is an FMUL-RS op. |
+| 51 | 9 | `HEAD_WAIT_FDIV` | cycle | …and the head is an FDIV-RS op. |
 
-### Wrapper 47–51: commit blocked in the serializing FSM
+### Wrapper 52–56: commit blocked in the serializing FSM
 
 Source: `reorder_buffer.sv`. All fire on cycles where the head is ready
 (done) but commit is stalled by the serializing FSM, attributed by class.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 47 | 10 | `COMMIT_BLOCKED_CSR` | cycle | Head is a CSR op or the FSM is in CSR execute. |
-| 48 | 11 | `COMMIT_BLOCKED_FENCE` | cycle | Head is FENCE/FENCE.I or the FSM is draining the SQ. |
-| 49 | 12 | `COMMIT_BLOCKED_WFI` | cycle | Head is WFI or the FSM is in the WFI wait state. |
-| 50 | 13 | `COMMIT_BLOCKED_MRET` | cycle | Head is MRET or the FSM is in MRET execute. |
-| 51 | 14 | `COMMIT_BLOCKED_TRAP` | cycle | Head has an exception or the FSM is in the trap wait state. |
+| 52 | 10 | `COMMIT_BLOCKED_CSR` | cycle | Head is a CSR op or the FSM is in CSR execute. |
+| 53 | 11 | `COMMIT_BLOCKED_FENCE` | cycle | Head is FENCE/FENCE.I or the FSM is draining the SQ. |
+| 54 | 12 | `COMMIT_BLOCKED_WFI` | cycle | Head is WFI or the FSM is in the WFI wait state. |
+| 55 | 13 | `COMMIT_BLOCKED_MRET` | cycle | Head is MRET or the FSM is in MRET execute. |
+| 56 | 14 | `COMMIT_BLOCKED_TRAP` | cycle | Head has an exception or the FSM is in the trap wait state. |
 
-### Wrapper 52–57: FU back-pressure
+### Wrapper 57–62: FU back-pressure
 
 Sources: RS `fu_ready`/`empty` status and the MEM `fu_cdb_adapter`.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 52 | 15 | `INT_BACKPRESSURE` | cycle | INT RS non-empty while its FU is not ready (issue blocked downstream). |
-| 53 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. (MUL and DIV share the muldiv shim — there is no separate DIV counter.) |
-| 54 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | MEM FU has a valid result while the MEM CDB adapter still holds a previous result pending a CDB grant. |
-| 55 | 18 | `FP_ADD_BACKPRESSURE` | cycle | Same as 52, FP RS. |
-| 56 | 19 | `FMUL_BACKPRESSURE` | cycle | Same as 52, FMUL RS. |
-| 57 | 20 | `FDIV_BACKPRESSURE` | cycle | Same as 52, FDIV RS. |
+| 57 | 15 | `INT_BACKPRESSURE` | cycle | INT RS non-empty while its FU is not ready (issue blocked downstream). |
+| 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. (MUL and DIV share the muldiv shim — there is no separate DIV counter.) |
+| 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | MEM FU has a valid result while the MEM CDB adapter still holds a previous result pending a CDB grant. |
+| 60 | 18 | `FP_ADD_BACKPRESSURE` | cycle | Same as 57, FP RS. |
+| 61 | 19 | `FMUL_BACKPRESSURE` | cycle | Same as 57, FMUL RS. |
+| 62 | 20 | `FDIV_BACKPRESSURE` | cycle | Same as 57, FDIV RS. |
 
-### Wrapper 58–61: memory / queue activity
+### Wrapper 63–66: memory / queue activity
 
 Sources: `store_queue.sv`, `load_queue.sv`.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 58 | 21 | `MEM_DISAMBIGUATION_WAIT` | cycle | A load's SQ disambiguation/forwarding check is valid but not all older store addresses are known yet. |
-| 59 | 22 | `SQ_COMMITTED_PENDING` | cycle | SQ holds committed stores not yet drained to memory. |
-| 60 | 23 | `SQ_MEM_WRITE_FIRE` | event | SQ issued a store write to memory (registered one-cycle pulse per write). |
-| 61 | 24 | `LQ_MEM_READ_FIRE` | event | LQ launched a load read on the memory port (one pulse per launch). |
+| 63 | 21 | `MEM_DISAMBIGUATION_WAIT` | cycle | A load's SQ disambiguation/forwarding check is valid but not all older store addresses are known yet. |
+| 64 | 22 | `SQ_COMMITTED_PENDING` | cycle | SQ holds committed stores not yet drained to memory. |
+| 65 | 23 | `SQ_MEM_WRITE_FIRE` | event | SQ issued a store write to memory (registered one-cycle pulse per write). |
+| 66 | 24 | `LQ_MEM_READ_FIRE` | event | LQ launched a load read on the memory port (one pulse per launch). |
 
-### Wrapper 62–70: occupancy sums
+### Wrapper 67–75: occupancy sums
 
 Each adds the structure's current entry count every cycle. Average
 occupancy = delta / elapsed cycles.
 
 | Idx | Local | Name | Type | Adds each cycle |
 |-----|-------|------|------|-----------------|
-| 62 | 25 | `ROB_OCCUPANCY_SUM` | sum | ROB entry count. |
-| 63 | 26 | `LQ_OCCUPANCY_SUM` | sum | LQ entry count. |
-| 64 | 27 | `SQ_OCCUPANCY_SUM` | sum | SQ entry count. |
-| 65 | 28 | `INT_RS_OCCUPANCY_SUM` | sum | INT RS entry count. |
-| 66 | 29 | `MUL_RS_OCCUPANCY_SUM` | sum | MUL RS entry count. |
-| 67 | 30 | `MEM_RS_OCCUPANCY_SUM` | sum | MEM RS entry count. |
-| 68 | 31 | `FP_RS_OCCUPANCY_SUM` | sum | FP RS entry count. |
-| 69 | 32 | `FMUL_RS_OCCUPANCY_SUM` | sum | FMUL RS entry count. |
-| 70 | 33 | `FDIV_RS_OCCUPANCY_SUM` | sum | FDIV RS entry count. |
+| 67 | 25 | `ROB_OCCUPANCY_SUM` | sum | ROB entry count. |
+| 68 | 26 | `LQ_OCCUPANCY_SUM` | sum | LQ entry count. |
+| 69 | 27 | `SQ_OCCUPANCY_SUM` | sum | SQ entry count. |
+| 70 | 28 | `INT_RS_OCCUPANCY_SUM` | sum | INT RS entry count. |
+| 71 | 29 | `MUL_RS_OCCUPANCY_SUM` | sum | MUL RS entry count. |
+| 72 | 30 | `MEM_RS_OCCUPANCY_SUM` | sum | MEM RS entry count. |
+| 73 | 31 | `FP_RS_OCCUPANCY_SUM` | sum | FP RS entry count. |
+| 74 | 32 | `FMUL_RS_OCCUPANCY_SUM` | sum | FMUL RS entry count. |
+| 75 | 33 | `FDIV_RS_OCCUPANCY_SUM` | sum | FDIV RS entry count. |
 
-### Wrapper 71–78: L0 cache, widen-commit, head-load split
+### Wrapper 76–83: L0 cache, widen-commit, head-load split
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 71 | 34 | `LQ_L0_HIT` | event | Load completed via the L0 cache fast path. |
-| 72 | 35 | `LQ_L0_FILL` | event | L0 line filled from a memory response. |
-| 73 | 36 | `HEAD_AND_NEXT_DONE` | cycle | Commit fired while the entry behind head was also valid+done — upper bound on 2-wide retire. |
-| 74 | 37 | `HEAD_WAIT_LOAD_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with an LQ memory response in flight (real memory latency). |
-| 75 | 38 | `HEAD_WAIT_LOAD_NO_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with no memory response in flight (decomposed by 79–83). |
-| 76 | 39 | `HEAD_PLUS_ONE_DONE` | cycle | Entry behind head valid+done, whether or not commit fires (not flushing). 76 − 73 = done work stacking up behind a stalled head. |
-| 77 | 40 | `COMMIT_2_OPPORTUNITY` | event | The full 2-wide commit gate passed: commit firing, head+1 done, hazard exclusions clear. |
-| 78 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit actually fired (77 plus the master enable and the pending-write FIFO back-pressure term). 77 − 78 = throttled by FIFO pressure. |
+| 76 | 34 | `LQ_L0_HIT` | event | Load completed via the L0 cache fast path. |
+| 77 | 35 | `LQ_L0_FILL` | event | L0 line filled from a memory response. |
+| 78 | 36 | `HEAD_AND_NEXT_DONE` | cycle | Commit fired while the entry behind head was also valid+done — upper bound on 2-wide retire. |
+| 79 | 37 | `HEAD_WAIT_LOAD_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with an LQ memory response in flight (real memory latency). |
+| 80 | 38 | `HEAD_WAIT_LOAD_NO_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with no memory response in flight (decomposed by 84–88). |
+| 81 | 39 | `HEAD_PLUS_ONE_DONE` | cycle | Entry behind head valid+done, whether or not commit fires (not flushing). 81 − 78 = done work stacking up behind a stalled head. |
+| 82 | 40 | `COMMIT_2_OPPORTUNITY` | event | The full 2-wide commit gate passed: commit firing, head+1 done, hazard exclusions clear. |
+| 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit actually fired (82 plus the master enable and the pending-write FIFO back-pressure term). 82 − 83 = throttled by FIFO pressure. |
 
-Notes: L0 hit rate = 71 / (71 + 61). 74 + 75 = 41.
+Notes: L0 hit rate = 76 / (76 + 66). 79 + 80 = 46.
 
-### Wrapper 79–88: head-load decomposition
+### Wrapper 84–93: head-load decomposition
 
 Source: `load_queue.sv` head-load diagnostics. Every row is additionally
-qualified by `HEAD_WAIT_MEM_LOAD` with no memory response in flight — 79–83
-are sub-buckets of 75, and 84–88 further decompose 81 into mutually
+qualified by `HEAD_WAIT_MEM_LOAD` with no memory response in flight — 84–88
+are sub-buckets of 80, and 89–93 further decompose 86 into mutually
 exclusive causes.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 79 | 42 | `HEAD_LOAD_ADDR_PENDING` | cycle | Head load is in the LQ but its address is not yet computed (waiting on rs1 / MEM_RS). |
-| 80 | 43 | `HEAD_LOAD_SQ_DISAMBIG` | cycle | Address known, blocked on SQ disambiguation. |
-| 81 | 44 | `HEAD_LOAD_BUS_BLOCKED` | cycle | Ready to issue, blocked on bus / arbitration / pipeline (split by 84–88). |
-| 82 | 45 | `HEAD_LOAD_CDB_WAIT` | cycle | Data ready in the LQ, waiting to enter the CDB stage. |
-| 83 | 46 | `HEAD_LOAD_POST_LQ` | cycle | LQ entry already freed; result is in the CDB pipeline on its way to the ROB. |
-| 84 | 47 | `HEAD_LOAD_BB_ISSUED` | cycle | Bus-blocked: request already issued, waiting for the response. |
-| 85 | 48 | `HEAD_LOAD_BB_BUS_BUSY` | cycle | Bus-blocked: memory bus busy. |
-| 86 | 49 | `HEAD_LOAD_BB_AMO` | cycle | Bus-blocked: an older AMO pending blocks the load. |
-| 87 | 50 | `HEAD_LOAD_BB_SQ_WAIT` | cycle | Bus-blocked: in the sq_check stage but phase 2 not reached. |
-| 88 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: catch-all (pre-sq_check capture, drop-pending, etc.). |
+| 84 | 42 | `HEAD_LOAD_ADDR_PENDING` | cycle | Head load is in the LQ but its address is not yet computed (waiting on rs1 / MEM_RS). |
+| 85 | 43 | `HEAD_LOAD_SQ_DISAMBIG` | cycle | Address known, blocked on SQ disambiguation. |
+| 86 | 44 | `HEAD_LOAD_BUS_BLOCKED` | cycle | Ready to issue, blocked on bus / arbitration / pipeline (split by 89–93). |
+| 87 | 45 | `HEAD_LOAD_CDB_WAIT` | cycle | Data ready in the LQ, waiting to enter the CDB stage. |
+| 88 | 46 | `HEAD_LOAD_POST_LQ` | cycle | LQ entry already freed; result is in the CDB pipeline on its way to the ROB. |
+| 89 | 47 | `HEAD_LOAD_BB_ISSUED` | cycle | Bus-blocked: request already issued, waiting for the response. |
+| 90 | 48 | `HEAD_LOAD_BB_BUS_BUSY` | cycle | Bus-blocked: memory bus busy. |
+| 91 | 49 | `HEAD_LOAD_BB_AMO` | cycle | Bus-blocked: an older AMO pending blocks the load. |
+| 92 | 50 | `HEAD_LOAD_BB_SQ_WAIT` | cycle | Bus-blocked: in the sq_check stage but phase 2 not reached. |
+| 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: catch-all (pre-sq_check capture, drop-pending, etc.). |
 
-### Wrapper 89–92: head-INT decomposition
+### Wrapper 94–97: head-INT decomposition
 
-Source: the INT RS head-query diagnostic port. Sub-buckets of 38, keyed on
+Source: the INT RS head-query diagnostic port. Sub-buckets of 43, keyed on
 where the head's op currently sits.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 89 | 52 | `HEAD_INT_OPERAND_WAIT` | cycle | Head op is in the INT RS with operands not yet ready. |
-| 90 | 53 | `HEAD_INT_RS_READY_NOT_ISSUED` | cycle | In the RS and ready, but not picked for issue. |
-| 91 | 54 | `HEAD_INT_STAGE2` | cycle | No longer in RS storage; parked in the RS's stage-2 issue register. |
-| 92 | 55 | `HEAD_INT_POST_RS` | cycle | Left the RS entirely (not in stage 2 either); in the FU / CDB path. |
+| 94 | 52 | `HEAD_INT_OPERAND_WAIT` | cycle | Head op is in the INT RS with operands not yet ready. |
+| 95 | 53 | `HEAD_INT_RS_READY_NOT_ISSUED` | cycle | In the RS and ready, but not picked for issue. |
+| 96 | 54 | `HEAD_INT_STAGE2` | cycle | No longer in RS storage; parked in the RS's stage-2 issue register. |
+| 97 | 55 | `HEAD_INT_POST_RS` | cycle | Left the RS entirely (not in stage 2 either); in the FU / CDB path. |
 
-### Wrapper 93–100: widen-commit blocker taxonomy + staging catch-all split
+### Wrapper 98–105: widen-commit blocker taxonomy + staging catch-all split
 
-Sources: `reorder_buffer.sv` (93–96) and `load_queue.sv` (97–100). 93–96 are gated on commit firing with head+1
+Sources: `reorder_buffer.sv` (98–101) and `load_queue.sv` (102–105). 98–101 are gated on commit firing with head+1
 valid+done, so these four partition the hazard-blocked gap:
-93 + 94 + 95 + 96 = 73 − 77.
+98 + 99 + 100 + 101 = 78 − 82.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 93 | 56 | `COMMIT_2_BLOCKED_HEAD_SERIAL` | cycle | Head itself is a serial op or a mispredicting branch (fails the head 2-wide check). |
-| 94 | 57 | `COMMIT_2_BLOCKED_NEXT_SERIAL` | cycle | Head+1 is a serial op (CSR / FENCE / FENCE.I / WFI / MRET / AMO / LR / SC / exception), not a branch. |
-| 95 | 58 | `COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED` | cycle | Head+1 is a branch that will flush. |
-| 96 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch the gate still refused (early-recovered leftovers). Correct branches retire in slot 2 now, so this reads ~0; persistent nonzero means the slot-2 branch-retire path regressed. |
-| 97 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING` and the single sq_check staging register is occupied by a different load (the one-staging-pipe serialization cost). |
-| 98 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING` and the head load is staged with phase 2 armed but the launch is still gated (drop-response window, launch qualifiers). |
-| 99 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but a cached-tier load in flight serializes launches. |
-| 100 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, no cached load in flight: the head load has not been captured yet (selector / capture-recycle bubble). Counters 97-100 partition 88. |
+| 98 | 56 | `COMMIT_2_BLOCKED_HEAD_SERIAL` | cycle | Head itself is a serial op or a mispredicting branch (fails the head 2-wide check). |
+| 99 | 57 | `COMMIT_2_BLOCKED_NEXT_SERIAL` | cycle | Head+1 is a serial op (CSR / FENCE / FENCE.I / WFI / MRET / AMO / LR / SC / exception), not a branch. |
+| 100 | 58 | `COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED` | cycle | Head+1 is a branch that will flush. |
+| 101 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch the gate still refused (early-recovered leftovers). Correct branches retire in slot 2 now, so this reads ~0; persistent nonzero means the slot-2 branch-retire path regressed. |
+| 102 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING` and the single sq_check staging register is occupied by a different load (the one-staging-pipe serialization cost). |
+| 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING` and the head load is staged with phase 2 armed but the launch is still gated (drop-response window, launch qualifiers). |
+| 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but a cached-tier load in flight serializes launches. |
+| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, no cached load in flight: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102-105 partition 93. |
 
 ## Using the counters from software
 

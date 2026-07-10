@@ -32,8 +32,8 @@ EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 RS_TYPE_WIDTH = 3
 
-PERF_TOP_COUNTER_COUNT = 37
-PERF_COUNTER_COUNT = 101
+PERF_TOP_COUNTER_COUNT = 42
+PERF_COUNTER_COUNT = 106
 PERF_WRAPPER_BASE = PERF_TOP_COUNTER_COUNT
 
 PERF_DISPATCH_FIRE = 0
@@ -61,18 +61,23 @@ PERF_PREDICTION_FENCE_JAL = 21
 PERF_PREDICTION_FENCE_INDIRECT = 22
 PERF_IF_DELIVER1 = 23
 PERF_IF_DELIVER2 = 24
-PERF_IF_S2KILL_S1_32BIT = 25
-PERF_IF_S2KILL_S1_CTRL = 26
-PERF_IF_S2KILL_S2_CLASS = 27
-PERF_IF_S2KILL_TRANSIENT = 28
-PERF_DISPATCH_FIRE_2 = 29
-PERF_DISPATCH_SLOT2_PRESENT = 30
-PERF_DISPATCH_SLOT2_FP_SERIALIZED = 31
-PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH = 32
-PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2 = 33
-PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 34
-PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 35
-PERF_DISPATCH_SLOT2_BLOCK_CKPT = 36
+PERF_IF_S2KILL_S1_NATIVE_CTRL = 25
+PERF_IF_S2KILL_S1_NATIVE_SERIALIZE = 26
+PERF_IF_S2KILL_S1_CTRL = 27
+PERF_IF_S2KILL_S2_CLASS = 28
+PERF_IF_S2KILL_WINDOW_LIMIT = 29
+PERF_IF_S2KILL_TRANSIENT = 30
+PERF_IF_SLOT2_PRED_TAKEN = 31
+PERF_DISPATCH_FIRE_2 = 32
+PERF_DISPATCH_SLOT2_PRESENT = 33
+PERF_DISPATCH_SLOT2_FP_SERIALIZED = 34
+PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH = 35
+PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2 = 36
+PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 37
+PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 38
+PERF_DISPATCH_SLOT2_BLOCK_CKPT = 39
+PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40
+PERF_CDB_OVERSUBSCRIBED = 41
 
 ALLOC_REQ_FIELDS = [
     ("alloc_valid", 1),
@@ -173,10 +178,13 @@ DISPATCH_STATUS_FIELDS = [
 IF_WIDTH_EVENTS_FIELDS = [
     ("deliver1", 1),
     ("deliver2", 1),
-    ("kill_slot1_32bit", 1),
+    ("kill_s1_native_ctrl", 1),
+    ("kill_s1_native_serialize", 1),
     ("kill_slot1_ctrl", 1),
     ("kill_class", 1),
+    ("kill_window_limit", 1),
     ("kill_transient", 1),
+    ("slot2_pred_taken", 1),
 ]
 
 QUIESCENT_DISPATCH_STATUS: dict[str, int | bool] = {"dispatch_valid": True}
@@ -243,6 +251,8 @@ def _clear_inputs(dut: Any) -> None:
     _drive_commit(dut, QUIESCENT_COMMIT)
     _drive_if_width_events(dut, {})
     dut.i_dispatch_fire_2.value = 0
+    dut.i_mem_rs_two_ready_one_issued.value = 0
+    dut.i_cdb_oversubscribed.value = 0
     dut.i_flush_pipeline.value = 0
     dut.i_post_flush_holdoff_q.value = 0
     dut.i_csr_in_flight.value = 0
@@ -541,8 +551,11 @@ async def test_if_width_funnel_counters(dut: Any) -> None:
     await _setup_test(dut)
 
     for _ in range(2):
-        _drive_if_width_events(dut, {"deliver1": True, "kill_slot1_32bit": True})
+        _drive_if_width_events(dut, {"deliver1": True, "kill_s1_native_ctrl": True})
         await _advance_cycle(dut)
+
+    _drive_if_width_events(dut, {"deliver1": True, "kill_s1_native_serialize": True})
+    await _advance_cycle(dut)
 
     _drive_if_width_events(dut, {"deliver1": True, "deliver2": True})
     await _advance_cycle(dut)
@@ -550,21 +563,33 @@ async def test_if_width_funnel_counters(dut: Any) -> None:
     _drive_if_width_events(dut, {"deliver1": True, "kill_class": True})
     await _advance_cycle(dut)
 
+    for _ in range(3):
+        _drive_if_width_events(dut, {"deliver1": True, "kill_window_limit": True})
+        await _advance_cycle(dut)
+
     _drive_if_width_events(dut, {"deliver1": True, "kill_transient": True})
     await _advance_cycle(dut)
 
     _drive_if_width_events(dut, {"deliver1": True, "kill_slot1_ctrl": True})
     await _advance_cycle(dut)
 
+    _drive_if_width_events(
+        dut, {"deliver1": True, "deliver2": True, "slot2_pred_taken": True}
+    )
+    await _advance_cycle(dut)
+
     await _finish_event_pipeline(dut)
     await _capture_snapshot(dut)
 
-    assert await _read_counter(dut, PERF_IF_DELIVER1) == 6
-    assert await _read_counter(dut, PERF_IF_DELIVER2) == 1
-    assert await _read_counter(dut, PERF_IF_S2KILL_S1_32BIT) == 2
+    assert await _read_counter(dut, PERF_IF_DELIVER1) == 11
+    assert await _read_counter(dut, PERF_IF_DELIVER2) == 2
+    assert await _read_counter(dut, PERF_IF_S2KILL_S1_NATIVE_CTRL) == 2
+    assert await _read_counter(dut, PERF_IF_S2KILL_S1_NATIVE_SERIALIZE) == 1
     assert await _read_counter(dut, PERF_IF_S2KILL_S1_CTRL) == 1
     assert await _read_counter(dut, PERF_IF_S2KILL_S2_CLASS) == 1
+    assert await _read_counter(dut, PERF_IF_S2KILL_WINDOW_LIMIT) == 3
     assert await _read_counter(dut, PERF_IF_S2KILL_TRANSIENT) == 1
+    assert await _read_counter(dut, PERF_IF_SLOT2_PRED_TAKEN) == 1
 
 
 @cocotb.test()
@@ -615,3 +640,27 @@ async def test_dispatch_width_funnel_counters(dut: Any) -> None:
     assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2) == 1
     assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2) == 1
     assert await _read_counter(dut, PERF_DISPATCH_SLOT2_BLOCK_CKPT) == 1
+
+
+@cocotb.test()
+async def test_backend_width_limiter_counters(dut: Any) -> None:
+    """MEM_RS issue-port and CDB oversubscription observers accumulate."""
+    await _setup_test(dut)
+
+    for _ in range(2):
+        dut.i_mem_rs_two_ready_one_issued.value = 1
+        await _advance_cycle(dut)
+
+    dut.i_mem_rs_two_ready_one_issued.value = 0
+    dut.i_cdb_oversubscribed.value = 1
+    await _advance_cycle(dut)
+
+    dut.i_mem_rs_two_ready_one_issued.value = 1
+    dut.i_cdb_oversubscribed.value = 1
+    await _advance_cycle(dut)
+
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    assert await _read_counter(dut, PERF_MEM_RS_TWO_READY_ONE_ISSUED) == 3
+    assert await _read_counter(dut, PERF_CDB_OVERSUBSCRIBED) == 2

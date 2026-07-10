@@ -1593,13 +1593,17 @@ package riscv_pkg;
   // if_stage); the kill_* causes are mutually exclusive and meaningful only
   // on deliver1 && !deliver2 cycles, replaying the stall-captured aligner
   // classification so they describe the bundle PD actually received.
+  // slot2_pred_taken is an independent event pulse, not a kill cause.
   typedef struct packed {
     logic deliver1;  // IF handed PD a real slot-1 instruction
     logic deliver2;  // ...and a real slot-2 instruction with it
-    logic kill_slot1_32bit;  // No slot-2: slot-1 is a native 32-bit control-flow/serializing op
+    logic kill_s1_native_ctrl;  // No slot-2: slot-1 is native 32-bit control flow
+    logic kill_s1_native_serialize;  // No slot-2: slot-1 is a native serializing-class op
     logic kill_slot1_ctrl;  // No slot-2: slot-1 is compressed control flow
     logic kill_class;  // No slot-2: slot-2 starts a serialize/FP-compute class op
+    logic kill_window_limit;  // No slot-2: 32-bit slot-2 at NEXT_HI exceeds the 64-bit window
     logic kill_transient;  // No slot-2: aligner buffer/BRAM transient state
+    logic slot2_pred_taken;  // Slot-2 BTB predicted-taken accepted (the 1-bubble redirect)
   } if_width_events_t;
 
   // ---------------------------------------------------------------------------

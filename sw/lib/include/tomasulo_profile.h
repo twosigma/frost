@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 101U
+#define TOMASULO_PROFILE_COUNTER_COUNT 106U
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -48,88 +48,95 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_PRED_FENCE_BRANCH = 20,
     TOMASULO_PERF_PRED_FENCE_JAL = 21,
     TOMASULO_PERF_PRED_FENCE_INDIRECT = 22,
-    /* 2-wide width funnel: IF->PD delivery width + slot-2 kill causes. */
+    /* 2-wide width funnel: IF->PD delivery width + slot-2 kill causes +
+     * slot-2 BTB predicted-taken events. */
     TOMASULO_PERF_IF_DELIVER1 = 23,
     TOMASULO_PERF_IF_DELIVER2 = 24,
-    TOMASULO_PERF_IF_S2KILL_S1_32BIT = 25,
-    TOMASULO_PERF_IF_S2KILL_S1_CTRL = 26,
-    TOMASULO_PERF_IF_S2KILL_S2_CLASS = 27,
-    TOMASULO_PERF_IF_S2KILL_TRANSIENT = 28,
+    TOMASULO_PERF_IF_S2KILL_S1_NATIVE_CTRL = 25,
+    TOMASULO_PERF_IF_S2KILL_S1_NATIVE_SERIALIZE = 26,
+    TOMASULO_PERF_IF_S2KILL_S1_CTRL = 27,
+    TOMASULO_PERF_IF_S2KILL_S2_CLASS = 28,
+    TOMASULO_PERF_IF_S2KILL_WINDOW_LIMIT = 29,
+    TOMASULO_PERF_IF_S2KILL_TRANSIENT = 30,
+    TOMASULO_PERF_IF_SLOT2_PRED_TAKEN = 31,
     /* 2-wide width funnel: dispatch fire-2 + slot-2 blocked causes. */
-    TOMASULO_PERF_DISPATCH_FIRE_2 = 29,
-    TOMASULO_PERF_DISPATCH_SLOT2_PRESENT = 30,
-    TOMASULO_PERF_DISPATCH_SLOT2_FP_SERIALIZED = 31,
-    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH = 32,
-    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2 = 33,
-    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 34,
-    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 35,
-    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_CKPT = 36,
+    TOMASULO_PERF_DISPATCH_FIRE_2 = 32,
+    TOMASULO_PERF_DISPATCH_SLOT2_PRESENT = 33,
+    TOMASULO_PERF_DISPATCH_SLOT2_FP_SERIALIZED = 34,
+    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_S1_BRANCH = 35,
+    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_ROB_FULL2 = 36,
+    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_RS_FULL2 = 37,
+    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 38,
+    TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_CKPT = 39,
+    /* 2-wide width funnel: back-end single-resource limiters. */
+    TOMASULO_PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40,
+    TOMASULO_PERF_CDB_OVERSUBSCRIBED = 41,
     /* Wrapper (tomasulo) counters follow: base shifts with the top block. */
-    TOMASULO_PERF_HEAD_WAIT_TOTAL = 37,
-    TOMASULO_PERF_HEAD_WAIT_INT = 38,
-    TOMASULO_PERF_HEAD_WAIT_BRANCH = 39,
-    TOMASULO_PERF_HEAD_WAIT_MUL = 40,
-    TOMASULO_PERF_HEAD_WAIT_MEM_LOAD = 41,
-    TOMASULO_PERF_HEAD_WAIT_MEM_STORE = 42,
-    TOMASULO_PERF_HEAD_WAIT_MEM_AMO = 43,
-    TOMASULO_PERF_HEAD_WAIT_FP = 44,
-    TOMASULO_PERF_HEAD_WAIT_FMUL = 45,
-    TOMASULO_PERF_HEAD_WAIT_FDIV = 46,
-    TOMASULO_PERF_COMMIT_BLOCKED_CSR = 47,
-    TOMASULO_PERF_COMMIT_BLOCKED_FENCE = 48,
-    TOMASULO_PERF_COMMIT_BLOCKED_WFI = 49,
-    TOMASULO_PERF_COMMIT_BLOCKED_MRET = 50,
-    TOMASULO_PERF_COMMIT_BLOCKED_TRAP = 51,
-    TOMASULO_PERF_INT_BACKPRESSURE = 52,
-    TOMASULO_PERF_MUL_BACKPRESSURE = 53,
-    TOMASULO_PERF_MEM_RESULT_BACKPRESSURE = 54,
-    TOMASULO_PERF_FP_ADD_BACKPRESSURE = 55,
-    TOMASULO_PERF_FMUL_BACKPRESSURE = 56,
-    TOMASULO_PERF_FDIV_BACKPRESSURE = 57,
-    TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT = 58,
-    TOMASULO_PERF_SQ_COMMITTED_PENDING = 59,
-    TOMASULO_PERF_SQ_MEM_WRITE_FIRE = 60,
-    TOMASULO_PERF_LQ_MEM_READ_FIRE = 61,
-    TOMASULO_PERF_ROB_OCCUPANCY_SUM = 62,
-    TOMASULO_PERF_LQ_OCCUPANCY_SUM = 63,
-    TOMASULO_PERF_SQ_OCCUPANCY_SUM = 64,
-    TOMASULO_PERF_INT_RS_OCCUPANCY_SUM = 65,
-    TOMASULO_PERF_MUL_RS_OCCUPANCY_SUM = 66,
-    TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM = 67,
-    TOMASULO_PERF_FP_RS_OCCUPANCY_SUM = 68,
-    TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM = 69,
-    TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 70,
-    TOMASULO_PERF_LQ_L0_HIT = 71,
-    TOMASULO_PERF_LQ_L0_FILL = 72,
-    TOMASULO_PERF_HEAD_AND_NEXT_DONE = 73,
-    TOMASULO_PERF_HEAD_WAIT_LOAD_OUTSTANDING = 74,
-    TOMASULO_PERF_HEAD_WAIT_LOAD_NO_OUTSTANDING = 75,
-    TOMASULO_PERF_HEAD_PLUS_ONE_DONE = 76,
-    TOMASULO_PERF_COMMIT_2_OPPORTUNITY = 77,
-    TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL = 78,
-    TOMASULO_PERF_HEAD_LOAD_ADDR_PENDING = 79,
-    TOMASULO_PERF_HEAD_LOAD_SQ_DISAMBIG = 80,
-    TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 81,
-    TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 82,
-    TOMASULO_PERF_HEAD_LOAD_POST_LQ = 83,
-    TOMASULO_PERF_HEAD_LOAD_BB_ISSUED = 84,
-    TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY = 85,
-    TOMASULO_PERF_HEAD_LOAD_BB_AMO = 86,
-    TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 87,
-    TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 88,
-    TOMASULO_PERF_HEAD_INT_OPERAND_WAIT = 89,
-    TOMASULO_PERF_HEAD_INT_RS_READY_NOT_ISSUED = 90,
-    TOMASULO_PERF_HEAD_INT_STAGE2 = 91,
-    TOMASULO_PERF_HEAD_INT_POST_RS = 92,
-    TOMASULO_PERF_COMMIT_2_BLOCKED_HEAD_SERIAL = 93,
-    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 94,
-    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 95,
-    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 96,
+    TOMASULO_PERF_HEAD_WAIT_TOTAL = 42,
+    TOMASULO_PERF_HEAD_WAIT_INT = 43,
+    TOMASULO_PERF_HEAD_WAIT_BRANCH = 44,
+    TOMASULO_PERF_HEAD_WAIT_MUL = 45,
+    TOMASULO_PERF_HEAD_WAIT_MEM_LOAD = 46,
+    TOMASULO_PERF_HEAD_WAIT_MEM_STORE = 47,
+    TOMASULO_PERF_HEAD_WAIT_MEM_AMO = 48,
+    TOMASULO_PERF_HEAD_WAIT_FP = 49,
+    TOMASULO_PERF_HEAD_WAIT_FMUL = 50,
+    TOMASULO_PERF_HEAD_WAIT_FDIV = 51,
+    TOMASULO_PERF_COMMIT_BLOCKED_CSR = 52,
+    TOMASULO_PERF_COMMIT_BLOCKED_FENCE = 53,
+    TOMASULO_PERF_COMMIT_BLOCKED_WFI = 54,
+    TOMASULO_PERF_COMMIT_BLOCKED_MRET = 55,
+    TOMASULO_PERF_COMMIT_BLOCKED_TRAP = 56,
+    TOMASULO_PERF_INT_BACKPRESSURE = 57,
+    TOMASULO_PERF_MUL_BACKPRESSURE = 58,
+    TOMASULO_PERF_MEM_RESULT_BACKPRESSURE = 59,
+    TOMASULO_PERF_FP_ADD_BACKPRESSURE = 60,
+    TOMASULO_PERF_FMUL_BACKPRESSURE = 61,
+    TOMASULO_PERF_FDIV_BACKPRESSURE = 62,
+    TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT = 63,
+    TOMASULO_PERF_SQ_COMMITTED_PENDING = 64,
+    TOMASULO_PERF_SQ_MEM_WRITE_FIRE = 65,
+    TOMASULO_PERF_LQ_MEM_READ_FIRE = 66,
+    TOMASULO_PERF_ROB_OCCUPANCY_SUM = 67,
+    TOMASULO_PERF_LQ_OCCUPANCY_SUM = 68,
+    TOMASULO_PERF_SQ_OCCUPANCY_SUM = 69,
+    TOMASULO_PERF_INT_RS_OCCUPANCY_SUM = 70,
+    TOMASULO_PERF_MUL_RS_OCCUPANCY_SUM = 71,
+    TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM = 72,
+    TOMASULO_PERF_FP_RS_OCCUPANCY_SUM = 73,
+    TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM = 74,
+    TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 75,
+    TOMASULO_PERF_LQ_L0_HIT = 76,
+    TOMASULO_PERF_LQ_L0_FILL = 77,
+    TOMASULO_PERF_HEAD_AND_NEXT_DONE = 78,
+    TOMASULO_PERF_HEAD_WAIT_LOAD_OUTSTANDING = 79,
+    TOMASULO_PERF_HEAD_WAIT_LOAD_NO_OUTSTANDING = 80,
+    TOMASULO_PERF_HEAD_PLUS_ONE_DONE = 81,
+    TOMASULO_PERF_COMMIT_2_OPPORTUNITY = 82,
+    TOMASULO_PERF_COMMIT_2_FIRE_ACTUAL = 83,
+    TOMASULO_PERF_HEAD_LOAD_ADDR_PENDING = 84,
+    TOMASULO_PERF_HEAD_LOAD_SQ_DISAMBIG = 85,
+    TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 86,
+    TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 87,
+    TOMASULO_PERF_HEAD_LOAD_POST_LQ = 88,
+    TOMASULO_PERF_HEAD_LOAD_BB_ISSUED = 89,
+    TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY = 90,
+    TOMASULO_PERF_HEAD_LOAD_BB_AMO = 91,
+    TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 92,
+    TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 93,
+    TOMASULO_PERF_HEAD_INT_OPERAND_WAIT = 94,
+    TOMASULO_PERF_HEAD_INT_RS_READY_NOT_ISSUED = 95,
+    TOMASULO_PERF_HEAD_INT_STAGE2 = 96,
+    TOMASULO_PERF_HEAD_INT_POST_RS = 97,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_HEAD_SERIAL = 98,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_SERIAL = 99,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED = 100,
+    TOMASULO_PERF_COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT = 101,
     /* Staging catch-all sub-decomposition (partitions HEAD_LOAD_BB_STAGING). */
-    TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 97,
-    TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 98,
-    TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 99,
-    TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 100,
+    TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 102,
+    TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 103,
+    TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 104,
+    TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 105,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -531,15 +538,21 @@ static inline void tomasulo_profile_print_report(const char *label,
         /* Each funnel stage prints value plus percent of its own denominator:
          * IF-2wide%   = 2-wide handoffs / all IF->PD handoffs
          * kill causes = share of the 1-wide handoffs (partition)
+         * s2 pred tkn = slot-2 taken-prediction events / 2-wide handoffs
          * disp-2wide% = slot-2 fires / slot-1 fires
+         * mem-rs/cdb  = limiter cycles / elapsed cycles
          * cmt-2wide%  = dual-retire cycles / total commit cycles */
         tomasulo_profile_print_metric("IF 2-wide (of IF deliveries)", if_d2, if_d1);
         tomasulo_profile_print_metric(
-            "IF kill: slot-1 is 32-bit",
-            tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_S1_32BIT),
+            "IF kill: slot-1 native ctrl",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_S1_NATIVE_CTRL),
             if_kills);
         tomasulo_profile_print_metric(
-            "IF kill: slot-1 is RVC ctrl",
+            "IF kill: slot-1 native serialize",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_S1_NATIVE_SERIALIZE),
+            if_kills);
+        tomasulo_profile_print_metric(
+            "IF kill: slot-1 RVC ctrl",
             tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_S1_CTRL),
             if_kills);
         tomasulo_profile_print_metric(
@@ -547,9 +560,17 @@ static inline void tomasulo_profile_print_report(const char *label,
             tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_S2_CLASS),
             if_kills);
         tomasulo_profile_print_metric(
+            "IF kill: 64b fetch-window limit",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_WINDOW_LIMIT),
+            if_kills);
+        tomasulo_profile_print_metric(
             "IF kill: aligner/BRAM transient",
             tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_S2KILL_TRANSIENT),
             if_kills);
+        tomasulo_profile_print_metric(
+            "Slot-2 BTB pred taken (of 2-wide)",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_IF_SLOT2_PRED_TAKEN),
+            if_d2);
         tomasulo_profile_print_metric("Dispatch 2-wide (of slot-1 fires)", fire_2, dispatch_fire);
         tomasulo_profile_print_metric(
             "Slot-2 present at dispatch",
@@ -578,6 +599,14 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_print_metric(
             "Slot-2 blk: checkpoint",
             tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_SLOT2_BLOCK_CKPT),
+            cycles);
+        tomasulo_profile_print_metric(
+            "MEM_RS 2+ ready, 1 issue port",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RS_TWO_READY_ONE_ISSUED),
+            cycles);
+        tomasulo_profile_print_metric(
+            "CDB 3+ requests for 2 lanes",
+            tomasulo_profile_delta(start, end, TOMASULO_PERF_CDB_OVERSUBSCRIBED),
             cycles);
         tomasulo_profile_print_metric("Commit 2-wide (of commit cycles)", commit_2, commit_cycles);
     }

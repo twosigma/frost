@@ -654,9 +654,11 @@ module if_stage #(
   // Instruction Aligner
   // ===========================================================================
   // Live slot-2 kill-cause taps from the aligner (width-funnel profiling).
-  logic slot2_kill_slot1_32bit_live;
+  logic slot2_kill_s1_native_ctrl_live;
+  logic slot2_kill_s1_native_serialize_live;
   logic slot2_kill_slot1_ctrl_live;
   logic slot2_kill_class_live;
+  logic slot2_kill_window_limit_live;
   logic slot2_kill_transient_live;
 
   instruction_aligner #(
@@ -706,9 +708,11 @@ module if_stage #(
       .o_slot1_is_branch(slot1_is_branch),
 
       // Slot-2 kill-cause profiling taps (width-funnel perf counters).
-      .o_slot2_kill_slot1_32bit(slot2_kill_slot1_32bit_live),
+      .o_slot2_kill_s1_native_ctrl(slot2_kill_s1_native_ctrl_live),
+      .o_slot2_kill_s1_native_serialize(slot2_kill_s1_native_serialize_live),
       .o_slot2_kill_slot1_ctrl(slot2_kill_slot1_ctrl_live),
       .o_slot2_kill_class(slot2_kill_class_live),
+      .o_slot2_kill_window_limit(slot2_kill_window_limit_live),
       .o_slot2_kill_transient(slot2_kill_transient_live)
   );
 
@@ -1515,18 +1519,20 @@ module if_stage #(
   // ride the same stall-capture/replay muxing as the slot-2 packet, so they
   // always classify the bundle PD actually received.  Profiling only — these
   // feed perf_counter_aggregator, nothing functional.
-  logic [3:0] slot2_kill_causes_live;
-  logic [3:0] slot2_kill_causes_sc;
-  logic [3:0] slot2_kill_causes_effective;
+  logic [5:0] slot2_kill_causes_live;
+  logic [5:0] slot2_kill_causes_sc;
+  logic [5:0] slot2_kill_causes_effective;
   assign slot2_kill_causes_live = {
     slot2_kill_transient_live,
+    slot2_kill_window_limit_live,
     slot2_kill_class_live,
     slot2_kill_slot1_ctrl_live,
-    slot2_kill_slot1_32bit_live
+    slot2_kill_s1_native_serialize_live,
+    slot2_kill_s1_native_ctrl_live
   };
 
   stall_capture_reg #(
-      .WIDTH(4)
+      .WIDTH(6)
   ) u_slot2_kill_causes_sc (
       .i_clk,
       .i_reset(1'b0),
@@ -1549,9 +1555,17 @@ module if_stage #(
 
   assign o_width_events.deliver1 = width_deliver1;
   assign o_width_events.deliver2 = width_deliver2;
-  assign o_width_events.kill_slot1_32bit = width_slot2_killed && slot2_kill_causes_effective[0];
-  assign o_width_events.kill_slot1_ctrl = width_slot2_killed && slot2_kill_causes_effective[1];
-  assign o_width_events.kill_class = width_slot2_killed && slot2_kill_causes_effective[2];
-  assign o_width_events.kill_transient = width_slot2_killed && slot2_kill_causes_effective[3];
+  assign o_width_events.kill_s1_native_ctrl = width_slot2_killed && slot2_kill_causes_effective[0];
+  assign o_width_events.kill_s1_native_serialize =
+      width_slot2_killed && slot2_kill_causes_effective[1];
+  assign o_width_events.kill_slot1_ctrl = width_slot2_killed && slot2_kill_causes_effective[2];
+  assign o_width_events.kill_class = width_slot2_killed && slot2_kill_causes_effective[3];
+  assign o_width_events.kill_window_limit = width_slot2_killed && slot2_kill_causes_effective[4];
+  assign o_width_events.kill_transient = width_slot2_killed && slot2_kill_causes_effective[5];
+  // Slot-2 BTB predicted-taken accepted this cycle (already !stall-qualified
+  // inside branch_prediction_controller, so it pulses once per event).  Each
+  // occurrence costs one fetch bubble: the redirect applies via
+  // slot2_redirect_q on the following cycle.
+  assign o_width_events.slot2_pred_taken = slot2_prediction_used;
 
 endmodule : if_stage
