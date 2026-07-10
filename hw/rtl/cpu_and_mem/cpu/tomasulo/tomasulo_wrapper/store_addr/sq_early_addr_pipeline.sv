@@ -153,34 +153,97 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_repair_src1_tag_2_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_2_q;
 
+  // -------------------------------------------------------------------------
+  // TIMING: captured done-repair channels (x3 post-opt -0.118 rob_done -> SQ
+  // address/is_mmio CE cone, 231 endpoints). done_repair_valid_N is a 32:1
+  // read of the design-wide rob_entry_done fanout; resolving it, the priority
+  // chain, the wrapper->SQ net AND the SQ's 8-entry CAM in one cycle was the
+  // whole failing path. Capture each channel (valid+tag+base value) into
+  // local registers the cycle the channels pulse, and match the candidates
+  // against the CAPTURED copies one cycle later: the rob_done mux half now
+  // ends at a local flop, and the priority/net/CAM half starts from local
+  // flops. Functional cost: the base-already-done-at-dispatch repair fires at
+  // dispatch+2 instead of dispatch+1 -- a one-cycle delay on the rare repair
+  // fallback only. NO coverage gap: a base completing in (or after) the gap
+  // cycle broadcasts on the live CDB lanes, which the match chains below
+  // already snoop every cycle. Tag-pairing note: the captured tags travel
+  // WITH their valid bits, so the one-cycle-later compare still pairs each
+  // candidate with its own dispatch bundle's channels; a stale captured tag
+  // cannot alias a new candidate (ROB tags cannot be reused within 2 cycles).
+  // Channels captured during a flush cycle are zeroed for hygiene (their
+  // candidate dies in the same flush anyway).
+  // -------------------------------------------------------------------------
+  logic done_repair_valid_1_q, done_repair_valid_2_q, done_repair_valid_3_q;
+  logic done_repair_valid_4_q, done_repair_valid_5_q, done_repair_valid_6_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] done_repair_tag_1_q, done_repair_tag_2_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] done_repair_tag_3_q, done_repair_tag_4_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] done_repair_tag_5_q, done_repair_tag_6_q;
+  logic [riscv_pkg::XLEN-1:0] done_repair_base_1_q, done_repair_base_2_q, done_repair_base_3_q;
+  logic [riscv_pkg::XLEN-1:0] done_repair_base_4_q, done_repair_base_5_q, done_repair_base_6_q;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) begin
+      done_repair_valid_1_q <= 1'b0;
+      done_repair_valid_2_q <= 1'b0;
+      done_repair_valid_3_q <= 1'b0;
+      done_repair_valid_4_q <= 1'b0;
+      done_repair_valid_5_q <= 1'b0;
+      done_repair_valid_6_q <= 1'b0;
+    end else begin
+      done_repair_valid_1_q <= done_repair_valid_1;
+      done_repair_valid_2_q <= done_repair_valid_2;
+      done_repair_valid_3_q <= done_repair_valid_3;
+      done_repair_valid_4_q <= done_repair_valid_4;
+      done_repair_valid_5_q <= done_repair_valid_5;
+      done_repair_valid_6_q <= done_repair_valid_6;
+    end
+    done_repair_tag_1_q  <= i_bypass_tag_1;
+    done_repair_tag_2_q  <= i_bypass_tag_2;
+    done_repair_tag_3_q  <= i_bypass_tag_3;
+    done_repair_tag_4_q  <= i_bypass_tag_4;
+    done_repair_tag_5_q  <= i_bypass_tag_5;
+    done_repair_tag_6_q  <= i_bypass_tag_6;
+    done_repair_base_1_q <= bypass_value_1[riscv_pkg::XLEN-1:0];
+    done_repair_base_2_q <= bypass_value_2[riscv_pkg::XLEN-1:0];
+    done_repair_base_3_q <= bypass_value_3[riscv_pkg::XLEN-1:0];
+    done_repair_base_4_q <= bypass_value_4[riscv_pkg::XLEN-1:0];
+    done_repair_base_5_q <= bypass_value_5[riscv_pkg::XLEN-1:0];
+    done_repair_base_6_q <= bypass_value_6[riscv_pkg::XLEN-1:0];
+  end
+
   logic sq_early_addr_repair_match;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base;
   logic sq_early_addr_repair_fire;
   always_comb begin
     sq_early_addr_repair_match = 1'b0;
     sq_early_addr_repair_base  = '0;
-    if (done_repair_valid_1 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_1) begin
+    if (done_repair_valid_1_q && sq_early_addr_repair_src1_tag_q == done_repair_tag_1_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_1[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_2 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_2) begin
+      sq_early_addr_repair_base  = done_repair_base_1_q;
+    end else if (done_repair_valid_2_q &&
+                 sq_early_addr_repair_src1_tag_q == done_repair_tag_2_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_2[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_3 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_3) begin
+      sq_early_addr_repair_base  = done_repair_base_2_q;
+    end else if (done_repair_valid_3_q &&
+                 sq_early_addr_repair_src1_tag_q == done_repair_tag_3_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_3[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_4 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_4) begin
+      sq_early_addr_repair_base  = done_repair_base_3_q;
+    end else if (done_repair_valid_4_q &&
+                 sq_early_addr_repair_src1_tag_q == done_repair_tag_4_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_4[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_5 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_5) begin
+      sq_early_addr_repair_base  = done_repair_base_4_q;
+    end else if (done_repair_valid_5_q &&
+                 sq_early_addr_repair_src1_tag_q == done_repair_tag_5_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_5[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_q == i_bypass_tag_6) begin
+      sq_early_addr_repair_base  = done_repair_base_5_q;
+    end else if (done_repair_valid_6_q &&
+                 sq_early_addr_repair_src1_tag_q == done_repair_tag_6_q) begin
       sq_early_addr_repair_match = 1'b1;
-      sq_early_addr_repair_base  = bypass_value_6[riscv_pkg::XLEN-1:0];
+      sq_early_addr_repair_base  = done_repair_base_6_q;
     end else if (i_cdb.valid && sq_early_addr_repair_src1_tag_q == i_cdb.tag) begin
       // Live-lane snoop: the held candidate's base completing on the CDB,
-      // any number of cycles after dispatch (the channels above only cover
-      // the dispatch+1 already-done case).
+      // any number of cycles after dispatch (the captured channels above only
+      // cover the already-done-at-dispatch case, one cycle later).
       sq_early_addr_repair_match = 1'b1;
       sq_early_addr_repair_base  = i_cdb.value[riscv_pkg::XLEN-1:0];
     end else if (i_cdb_2.valid && sq_early_addr_repair_src1_tag_q == i_cdb_2.tag) begin
@@ -205,24 +268,29 @@ module sq_early_addr_pipeline (
   always_comb begin
     sq_early_addr_repair_match_2 = 1'b0;
     sq_early_addr_repair_base_2  = '0;
-    if (done_repair_valid_1 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_1) begin
+    if (done_repair_valid_1_q && sq_early_addr_repair_src1_tag_2_q == done_repair_tag_1_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_1[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_2 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_2) begin
+      sq_early_addr_repair_base_2  = done_repair_base_1_q;
+    end else if (done_repair_valid_2_q &&
+                 sq_early_addr_repair_src1_tag_2_q == done_repair_tag_2_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_2[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_3 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_3) begin
+      sq_early_addr_repair_base_2  = done_repair_base_2_q;
+    end else if (done_repair_valid_3_q &&
+                 sq_early_addr_repair_src1_tag_2_q == done_repair_tag_3_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_3[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_4 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_4) begin
+      sq_early_addr_repair_base_2  = done_repair_base_3_q;
+    end else if (done_repair_valid_4_q &&
+                 sq_early_addr_repair_src1_tag_2_q == done_repair_tag_4_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_4[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_5 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_5) begin
+      sq_early_addr_repair_base_2  = done_repair_base_4_q;
+    end else if (done_repair_valid_5_q &&
+                 sq_early_addr_repair_src1_tag_2_q == done_repair_tag_5_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_5[riscv_pkg::XLEN-1:0];
-    end else if (done_repair_valid_6 && sq_early_addr_repair_src1_tag_2_q == i_bypass_tag_6) begin
+      sq_early_addr_repair_base_2  = done_repair_base_5_q;
+    end else if (done_repair_valid_6_q &&
+                 sq_early_addr_repair_src1_tag_2_q == done_repair_tag_6_q) begin
       sq_early_addr_repair_match_2 = 1'b1;
-      sq_early_addr_repair_base_2  = bypass_value_6[riscv_pkg::XLEN-1:0];
+      sq_early_addr_repair_base_2  = done_repair_base_6_q;
     end else if (i_cdb.valid && sq_early_addr_repair_src1_tag_2_q == i_cdb.tag) begin
       sq_early_addr_repair_match_2 = 1'b1;
       sq_early_addr_repair_base_2  = i_cdb.value[riscv_pkg::XLEN-1:0];

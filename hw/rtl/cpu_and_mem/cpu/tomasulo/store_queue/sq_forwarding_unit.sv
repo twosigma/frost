@@ -420,8 +420,20 @@ module sq_forwarding_unit #(
   // Block 3: Registered forwarding outputs.
   // Keep the SQ compare/forwarding result behind a register so the LQ sees it
   // one cycle later; this breaks the MEM_RS -> SQ scan -> LQ -> BRAM path.
+  //
+  // TIMING (x3 post-opt -0.135, 65 endpoints): the synchronous i_flush_all
+  // clear pulled the registered trap/MRET pulse (trap_taken_prev replicas)
+  // into every capture bit's D-mux, making flush distribution the late
+  // arrival of this cone. Capture-then-kill instead: the register captures
+  // the probe result unconditionally and the flush kills the CONSUMER --
+  // every reader (sq_can_issue, sq_do_forward in load_queue.sv) is gated by
+  // the probing load's staged state (sq_check_phase2 /
+  // sq_check_entry_issueable), which i_flush_all clears in the same cycle.
+  // Staleness is bounded to exactly one cycle: with the LQ flushed no probe
+  // issues, so the i_sq_check_valid arm self-clears these bits on the next
+  // edge.
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
+    if (!i_rst_n) begin
       o_sq_all_older_addrs_known <= 1'b0;
       o_sq_forward.match         <= 1'b0;
       o_sq_forward.can_forward   <= 1'b0;

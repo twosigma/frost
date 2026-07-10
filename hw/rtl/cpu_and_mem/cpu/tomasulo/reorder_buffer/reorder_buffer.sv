@@ -170,6 +170,29 @@ module reorder_buffer (
     // cpu_ooo: interrupts must not flush an AMO whose memory write may
     // already be in flight -- see trap_unit.i_amo_at_head).
     output logic o_head_is_amo,
+    // TIMING pre-decodes for cpu_ooo's regfile-bypass qualifiers (x3 post-opt
+    // -0.271 head_clear -> bypass_p*_we_q cone): dest-write field
+    // conjunctions computed from the head/head+1 field nets, which are
+    // one-hot/LUTRAM reads off REGISTERED masks/pointers and so arrive early
+    // in the cycle. The consumer ANDs them with the 1-bit raw commit fires
+    // (o_commit_valid_raw / o_commit_2_valid_raw) instead of decoding the
+    // full combinational commit structs, which put the whole field mux
+    // BEHIND the late commit gate. Deliberately UNGATED by commit_en /
+    // commit_2_fire: the consumer's AND restores the gate, and the bits are
+    // don't-care while the fires are low.
+    output logic o_head_bypass_int_we_early,
+    output logic o_head_bypass_fp_we_early,
+    output logic o_head_next_bypass_int_we_early,
+    output logic o_head_next_bypass_fp_we_early,
+    // Same pattern for the direction-predictor commit-time training
+    // qualifiers (the dir_update_held_* capture was another -0.227 endpoint
+    // of the same cone): conditional-branch class and resolved direction of
+    // head / head+1, from the early field nets, don't-care while the raw
+    // fires are low.
+    output logic o_head_dir_train_early,
+    output logic o_head_branch_taken_early,
+    output logic o_head_next_dir_train_early,
+    output logic o_head_next_branch_taken_early,
     // TIMING precompute of the architectural next-PC of the head / head+1
     // entry, for cpu_ooo's interrupt_resume_pc capture.  Contract: whenever
     // o_commit_valid_raw (resp. o_commit_2_valid_raw) is high,
@@ -2075,6 +2098,29 @@ module reorder_buffer (
   assign o_head_is_amo = head_f_is_amo;
   assign o_trap_cause = head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
+
+  // Regfile-bypass pre-decodes (see port comment). Field-equivalent to the
+  // o_commit_comb / o_commit_comb_2 struct fields whenever the corresponding
+  // raw fire is high: same head/head+1 nets, same conjunctions as cpu_ooo's
+  // previous struct-decoded expressions (p0 keeps the !exception && !is_csr
+  // defensive terms; p1 never had them -- the commit_2 gate excludes
+  // exceptions and serial classes at head+1 by construction).
+  assign o_head_bypass_int_we_early = head_dest_valid && !head_exception &&
+      !head_is_csr && !head_dest_rf && |head_dest_reg;
+  assign o_head_bypass_fp_we_early = head_dest_valid && !head_exception &&
+      !head_is_csr && head_dest_rf;
+  assign o_head_next_bypass_int_we_early =
+      head_next_dest_valid && !head_next_dest_rf && |head_next_dest_reg;
+  assign o_head_next_bypass_fp_we_early = head_next_dest_valid && head_next_dest_rf;
+  // Direction-predictor training pre-decodes (see port comment). is_branch is
+  // true for branches AND jumps in the commit structs, so the conditional
+  // class excludes JAL/JALR -- identical conjunction to the previous
+  // struct-decoded expressions in cpu_ooo.
+  assign o_head_dir_train_early = head_is_branch && !head_is_jal && !head_is_jalr;
+  assign o_head_branch_taken_early = head_branch_taken;
+  assign o_head_next_dir_train_early =
+      head_next_f_is_branch && !head_next_is_jal && !head_next_is_jalr;
+  assign o_head_next_branch_taken_early = head_next_branch_taken;
 
   // TIMING: retired-next-PC precompute (see port comment).  Equivalence with
   // cpu_ooo's retired_next_pc(o_commit_comb) whenever o_commit_comb.valid:
