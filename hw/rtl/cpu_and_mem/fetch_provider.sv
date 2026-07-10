@@ -121,24 +121,34 @@ module fetch_provider #(
   logic retarget_now;
   assign retarget_now = !accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
 
-  // The ask whose window is formed this cycle (due, and its validity decided,
-  // next cycle).
+  // The ask presented this cycle; its window is due (and its validity is
+  // decided) for the next cycle.
   logic [31:0] fetch_addr;
-  // TIMING (x3 closure): form the window for the REGISTERED ask (ask_q), not the
-  // live leading i_pc.  Driving the presence compares / word extraction from the
-  // combinational i_pc stacked the fill's ENTIRE ask-formation cone (BRAM
-  // sideband -> 2-wide bundle decode -> ask_d -> o_pc) into window_ready_q /
-  // ddr_instr_q -- the x3 WNS cluster (-3.7ns).  ask_q sources those from a
-  // register, cutting the cone at the seam.  Correctness is unchanged: the
-  // publish-valid tag-check below (served_addr_q == ask_q) already gates
-  // consumption on the served window's address matching the owed ask, so a
-  // registered ask just resolves that match one fetch cycle later (queue-hidden
-  // on the high/DDR path).  It costs nothing on CoreMark (BRAM-resident, so this
-  // high-address provider is idle) and nothing on a consume-bound workload
-  // (~0.48 IPC) where fetch out-supplies decode even at the reduced serve rate.
-  // The low BRAM address pins are NOT driven from this mux -- cpu_and_mem keeps
-  // that path direct from o_pc; closing the low-fetch loop is a separate step.
-  assign fetch_addr = ask_q;
+  // SERVE RATE (regression fix): on a serving cycle (o_instr_valid) the window
+  // for the core's LIVE next PC must be formed in the SAME cycle, so the next
+  // window publishes back-to-back (1 window/cycle).  Forming the window from
+  // the registered ask alone (fetch_addr = ask_q, the x3 timing experiment)
+  // inserts a dead tag-mismatch cycle after every consume -- HALVING the
+  // high/DDR fetch bandwidth.  DDR-resident straight-line code (the no-MMU
+  // Linux machine-timer handler, the linux_clksrc_faithful/linux_irq_* /
+  // mtimer_stress-in-DDR programs) is fetch-bound: at half rate the
+  // trap->handler->MRET round trip and the preempted foreground both slow to
+  // the point that a Linux-cadence re-arming timer (deadline ~256..760 cycles)
+  // saturates the core and the foreground crawls -> CI timeouts and the
+  // hardware IRQ failure.  The x3 WNS cone this reopens (live i_pc ->
+  // window_ready_q/ddr_instr_q) must be re-closed by pipelining candidate
+  // windows + a late narrow select, not by degrading the serve rate.
+  // TIMING: neither the retarget 32-bit compare nor the pipeline stall lives in
+  // this combinational mux; both would otherwise stack with the presence
+  // compares into the fill path.  The low BRAM address pins are not driven from
+  // this mux: cpu_and_mem keeps that path direct from o_pc.  The stall gates
+  // only publish-valid (below): while stalled o_instr_valid is held low, so
+  // this mux holds ask_q and the owed window persists for the stalled decode
+  // instead of advancing to the leading PC.  On a retarget cycle this address
+  // is the stale old ask for one extra cycle; the window it yields is squashed
+  // by the core's control-flow holdoff, which the redirect that caused the
+  // retarget has already armed and which extends through no-progress cycles.
+  assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

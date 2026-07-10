@@ -337,11 +337,11 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 157,767 | 1,029,600 | 15.3% |
-|   LUT as Logic | 146,788 | 1,029,600 | 14.3% |
-|   LUT as Distributed RAM | 9,614 | — | — |
-|   LUT as Shift Register | 1,365 | — | — |
-| CLB Registers | 118,683 | 2,059,200 | 5.8% |
+| CLB LUTs | 158,357 | 1,029,600 | 15.4% |
+|   LUT as Logic | 147,507 | 1,029,600 | 14.3% |
+|   LUT as Distributed RAM | 9,602 | — | — |
+|   LUT as Shift Register | 1,248 | — | — |
+| CLB Registers | 119,479 | 2,059,200 | 5.8% |
 | Block RAM Tile | 240 | 2,112 | 11.4% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 39 | 1,320 | 3.0% |
@@ -356,11 +356,11 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 138,903 | 203,800 | 68.2% |
-|   LUT as Logic | 129,616 | 203,800 | 63.6% |
-|   LUT as Distributed RAM | 8,364 | — | — |
+| Slice LUTs | 138,122 | 203,800 | 67.8% |
+|   LUT as Logic | 128,847 | 203,800 | 63.2% |
+|   LUT as Distributed RAM | 8,352 | — | — |
 |   LUT as Shift Register | 923 | — | — |
-| Slice Registers | 93,527 | 407,600 | 22.9% |
+| Slice Registers | 93,477 | 407,600 | 22.9% |
 | Block RAM Tile | 219 | 445 | 49.2% |
 | DSPs | 40 | 840 | 4.8% |
 | F7 Muxes | 106 | 101,900 | 0.1% |

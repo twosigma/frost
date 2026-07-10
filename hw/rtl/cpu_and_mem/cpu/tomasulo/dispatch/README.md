@@ -60,20 +60,23 @@ slots need the same resource. The status output reports independent per-cause
 stall flags (any combination may assert in one cycle) so `cpu_ooo.sv` can
 increment per-cause performance counters without re-deriving the conditions.
 
-For x3 timing, `o_stall` (which drives the front-end hold `frontend_stall` and
-the replay handshake) is computed from the **resource-only** availability
-(`bundle_resource_ok`) — the same resource checks but **without** the live
-`i_valid`/`id_valid` qualifier — so it settles from the registered resource-full
-flags and registered-bundle-derived needs instead of the late
-`replay → id_valid → o_stall` chain (the post-opt WNS limiter). Dropping the
-validity qualifier can only assert *extra* stalls (a presented bundle that needs
-a full resource while `id_valid=0`); each merely holds the front-end, which is
-always safe — the consume engine freezes and re-presents the head, and
-`replay_after_dispatch_stall_q` registers this same `o_stall` so the replay pulse
-stays consistent with `id_stall_q` (no bundle dropped or duplicated). The actual
-fire/dispatch gate (`slot1_can_fire`, `dispatch_fire`, RS writes) keeps the
-`dispatch_valid` qualifier, and `o_status.stall` keeps the real id_valid-qualified
-value so the dispatch-backpressure perf counter is unchanged.
+`o_stall` is the **validity-qualified** dispatch backpressure
+(`dispatch_valid && !bundle_fire_ok`): it asserts only while a valid presented
+bundle is blocked. This is a hard contract, not a style choice — the stall
+feeds `replay_after_dispatch_stall_q`, whose replay pulse overrides
+`id_stall_q` and re-validates the held ID image, so a stall asserted for an
+invalid/killed bundle can re-validate (and double-allocate) a stale
+instruction. A resource-only variant that dropped the validity qualifier
+(commit 0ff60f2, an x3 timing change) violated exactly this and silently
+corrupted CoreMark-PRO workloads; it was reverted. If the
+`replay → id_valid → o_stall` timing cone needs re-closing, split the
+signals — a resource-only term may drive only the high-fanout front-end
+hold while the replay pulse keeps the validity-qualified term — or add a
+one-entry ID→dispatch skid buffer; a bare registered stall without capture
+capacity is not sufficient. The actual fire/dispatch gate (`slot1_can_fire`,
+`dispatch_fire`, RS writes) keeps the `dispatch_valid` qualifier, and
+`o_status.stall` reports the same id_valid-qualified value so the
+dispatch-backpressure perf counter is unchanged.
 
 ## RS routing
 

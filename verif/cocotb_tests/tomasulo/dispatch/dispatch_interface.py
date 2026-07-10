@@ -959,6 +959,13 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
         "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
         "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
+        # id_stage registers is_not_nop = (instruction != NOP) for every real
+        # instruction it presents (id_stage.sv).  Dispatch keys the slot-2
+        # "presence" term of its resource-only o_stall off this flag
+        # (slot2_present_for_stall in dispatch.sv), so packed test
+        # instructions must carry it like real hardware does.  Pass
+        # is_not_nop=0 explicitly to model a NOP bubble.
+        "is_not_nop": 1,
     }
 
 
