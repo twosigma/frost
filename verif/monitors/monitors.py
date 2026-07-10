@@ -53,6 +53,7 @@ from config import (
     FIRST_WRITABLE_REGISTER,
     NUM_REGISTERS,
 )
+from cocotb_tests.test_helpers import read_port_ram_entry
 
 T = TypeVar("T")
 
@@ -137,7 +138,7 @@ class RegisterFileMonitor(Monitor[list[int]]):
         super().__init__(dut, expected_queue, "Register file mismatch")
         paths = signal_paths or DUTSignalPaths()
 
-        # Navigate to register file RAM once
+        # Navigate to the register file read-port RAM once
         obj = dut
         for attr in paths.regfile_ram_rs1_path.split("."):
             obj = getattr(obj, attr)
@@ -148,8 +149,8 @@ class RegisterFileMonitor(Monitor[list[int]]):
         return bool(self.dut.o_vld.value)
 
     def read_actual(self) -> list[int]:
-        """Read all register values from hardware."""
-        return [int(self._ram[i].value) for i in range(NUM_REGISTERS)]
+        """Read all committed register values from hardware."""
+        return [read_port_ram_entry(self._ram, i) for i in range(NUM_REGISTERS)]
 
     def compare(self, actual: list[int], expected: list[int]) -> str | None:
         """Compare actual and expected register file states."""
@@ -211,7 +212,7 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
         super().__init__(dut, expected_queue, "FP Register file mismatch")
         paths = signal_paths or DUTSignalPaths()
 
-        # Navigate to FP register file RAM once
+        # Navigate to the FP register file read-port RAM once
         obj = dut
         for attr in paths.fp_regfile_ram_fs1_path.split("."):
             obj = getattr(obj, attr)
@@ -222,8 +223,8 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
         return bool(self.dut.o_vld.value)
 
     def read_actual(self) -> list[int]:
-        """Read all FP register values from hardware."""
-        return [int(self._ram[i].value) for i in range(NUM_REGISTERS)]
+        """Read all committed FP register values from hardware."""
+        return [read_port_ram_entry(self._ram, i) for i in range(NUM_REGISTERS)]
 
     def compare(self, actual: list[int], expected: list[int]) -> str | None:
         """Compare actual and expected FP register file states.

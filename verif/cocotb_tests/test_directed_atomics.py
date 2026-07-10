@@ -32,6 +32,16 @@ Test Cases:
     4. Back-to-back LR.W/SC.W: Tests pipeline forwarding of reservation
     5. LR.W + intervening ops + SC.W: Reservation should persist through NOPs
 
+OOO retirement model:
+    On the cpu_ooo core an instruction's architectural effects (regfile write,
+    store to memory) land at ROB commit, a variable number of cycles after the
+    cpu_tb harness feeds it -- LR/SC in particular are serialized through the
+    memory RS/LSQ. Register readbacks therefore wait for the instruction's
+    commit on the registered ROB commit bus (wait_for_int_reg_commit) and
+    store visibility waits for the monitor-checked memory write
+    (wait_for_memory_writes) instead of counting a fixed in-order pipeline
+    depth.
+
 LR/SC Protocol:
     ┌────────────────────────────────────────────────────────────────┐
     │ LR.W rd, (rs1)                                                 │
@@ -49,7 +59,7 @@ LR/SC Protocol:
     └────────────────────────────────────────────────────────────────┘
 
 Usage:
-    make test TEST=test_directed_lr_sc
+    cd tests && ./test_run_cocotb.py directed_atomics
 """
 
 import cocotb
@@ -57,11 +67,36 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
 from typing import Any
 
-from config import MASK32, PIPELINE_DEPTH
+from config import MASK32
 from models.memory_model import MemoryModel
 from cocotb_tests.test_helpers import DUTInterface
 from cocotb_tests.test_state import TestState
-from cocotb_tests.test_common import TestConfig, execute_nop
+from cocotb_tests.test_common import (
+    TestConfig,
+    drive_nops_until,
+    execute_nop,
+    wait_for_int_reg_commit,
+)
+
+
+async def wait_for_memory_writes(
+    dut_if: DUTInterface, state: TestState, what: str
+) -> None:
+    """Wait until every queued expected memory write has been performed.
+
+    The MemoryModel monitor pops (and value/address-checks) one entry from the
+    expected-write queues per write it observes on the DUT memory port, so an
+    empty queue means all modeled stores have drained to memory. Pads two more
+    NOPs afterwards so the last write is visible in the memory array.
+    """
+    await drive_nops_until(
+        dut_if,
+        state,
+        lambda: not state.memory_write_address_expected_queue,
+        what,
+    )
+    for _ in range(2):
+        await execute_nop(dut_if, state)
 
 
 async def execute_lr_sc_instruction(
@@ -335,10 +370,11 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     # SW x21, 0(x11) - store test_value_2 to test_address_2
     await execute_store(dut_if, state, mem_model, rs1=11, rs2=21)
 
-    # Wait for stores to complete through pipeline before reading
+    # Wait for both stores to drain to memory. On the OOO core stores leave
+    # the store queue only after ROB commit, so this takes a variable number
+    # of cycles; the MemoryModel monitor checks each write as it happens.
     cocotb.log.info("=== Waiting for stores to complete ===")
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    await wait_for_memory_writes(dut_if, state, "init stores to reach memory")
 
     # Debug: Check what's in the DUT's memory after stores
     word_addr_1 = test_address_1 >> 2  # Convert byte address to word address
@@ -373,9 +409,11 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=None,  # N/A for LR.W
     )
 
-    # Wait for LR.W to complete through pipeline
-    for _ in range(PIPELINE_DEPTH + 4):
-        await execute_nop(dut_if, state)
+    # Wait for the LR.W to retire: its architectural x5 write lands at ROB
+    # commit, a variable number of cycles after issue on the OOO core.
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 5, "Test Case 1 LR.W x5 to commit"
+    )
 
     # Check x5 after LR.W
     x5_value = dut_if.read_register(5)
@@ -400,14 +438,21 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=True,
     )
 
-    # Verify SC.W result after pipeline flush
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    # Verify SC.W result after it retires
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 6, "Test Case 1 SC.W x6 to commit"
+    )
     x6_value = dut_if.read_register(6)
     assert (
         x6_value == 0
     ), f"SC.W Test Case 1 failed: x6 = {x6_value}, expected 0 (success)"
     cocotb.log.info(f"SC.W x6 = {x6_value} (success)")
+
+    # The successful SC.W also stores test_data to test_address_1; wait for
+    # that (monitor-checked) write to drain so later LR.W reads see it.
+    await wait_for_memory_writes(
+        dut_if, state, "Test Case 1 SC.W store to reach memory"
+    )
 
     # ========================================================================
     # Test Case 2: SC.W without LR.W (should fail)
@@ -427,9 +472,10 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=False,
     )
 
-    # Verify SC.W failure
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    # Verify SC.W failure after it retires
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 7, "Test Case 2 SC.W x7 to commit"
+    )
     x7_value = dut_if.read_register(7)
     assert (
         x7_value == 1
@@ -467,9 +513,11 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=False,
     )
 
-    # Verify SC.W failure due to address mismatch
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    # Verify SC.W failure due to address mismatch. Waiting for x9 also
+    # covers the LR.W x8 (ROB commit is in program order).
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 9, "Test Case 3 SC.W x9 to commit"
+    )
     x9_value = dut_if.read_register(9)
     assert (
         x9_value == 1
@@ -508,13 +556,19 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     )
 
     # Verify back-to-back SC.W success
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 14, "Test Case 4 SC.W x14 to commit"
+    )
     x14_value = dut_if.read_register(14)
     assert (
         x14_value == 0
     ), f"SC.W Test Case 4 failed: x14 = {x14_value}, expected 0 (success)"
     cocotb.log.info(f"SC.W x14 = {x14_value} (back-to-back success via forwarding)")
+
+    # Wait for the successful SC.W's store to test_address_2 to drain.
+    await wait_for_memory_writes(
+        dut_if, state, "Test Case 4 SC.W store to reach memory"
+    )
 
     # ========================================================================
     # Test Case 5: LR.W + intervening NOPs + SC.W (reservation persists)
@@ -552,13 +606,19 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     )
 
     # Verify SC.W success after intervening NOPs
-    for _ in range(PIPELINE_DEPTH):
-        await execute_nop(dut_if, state)
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 16, "Test Case 5 SC.W x16 to commit"
+    )
     x16_value = dut_if.read_register(16)
     assert (
         x16_value == 0
     ), f"SC.W Test Case 5 failed: x16 = {x16_value}, expected 0 (success)"
     cocotb.log.info(f"SC.W x16 = {x16_value} (success after NOPs)")
+
+    # Wait for the successful SC.W's store to test_address_1 to drain.
+    await wait_for_memory_writes(
+        dut_if, state, "Test Case 5 SC.W store to reach memory"
+    )
 
     # ========================================================================
     # Cleanup: Flush pipeline with NOPs

@@ -177,18 +177,19 @@ class DUTSignalPaths:
 
     Path Format:
         Paths are dot-separated strings representing hierarchy traversal.
-        Example: "device_under_test.regfile_inst.ram" means
-        dut.device_under_test.regfile_inst.ram
+        Example: "device_under_test.ooo_register_files_inst.regfile_inst"
+        means dut.device_under_test.ooo_register_files_inst.regfile_inst
 
     Default Paths:
-        The defaults below are legacy fallbacks from the pre-rename hierarchy
-        and no longer resolve. The regfiles now live under
-        ``ooo_register_files_inst`` and each read_port_ram sits inside a
-        ``gen_single_write``/``gen_multi_write`` scope, e.g.
-        ``device_under_test.ooo_register_files_inst.regfile_inst.``
-        ``gen_read_port[0].gen_multi_write.read_port_ram`` (test_helpers.py
-        navigates this modern path directly). If your DUT has different
-        module names or hierarchy, create a custom instance:
+        The defaults below point at the cpu_ooo architectural register files
+        (written at ROB commit) under ``ooo_register_files_inst``. Each
+        generic_regfile read port owns a RAM inside a ``gen_multi_write``
+        scope (mwp_dist_ram: one bank per commit write port plus a per-address
+        live-value table). Consumers must therefore read a committed register
+        value through the LVT — use
+        ``cocotb_tests.test_helpers.read_port_ram_entry`` rather than indexing
+        the handle directly. If your DUT has different module names or
+        hierarchy, create a custom instance:
 
         >>> custom_paths = DUTSignalPaths(
         ...     regfile_ram_rs1_path="cpu_core.registers.port_a.data",
@@ -198,29 +199,34 @@ class DUTSignalPaths:
     """
 
     regfile_ram_rs1_path: str = (
-        "device_under_test.regfile_inst.gen_read_port[0].read_port_ram.ram"
+        "device_under_test.ooo_register_files_inst.regfile_inst"
+        ".gen_read_port[0].gen_multi_write.read_port_ram"
     )
-    """Path to integer register file RAM for rs1 read port."""
+    """Path to the integer register file read-port-0 RAM (banked, LVT-steered)."""
 
     regfile_ram_rs2_path: str = (
-        "device_under_test.regfile_inst.gen_read_port[1].read_port_ram.ram"
+        "device_under_test.ooo_register_files_inst.regfile_inst"
+        ".gen_read_port[1].gen_multi_write.read_port_ram"
     )
-    """Path to integer register file RAM for rs2 read port."""
+    """Path to the integer register file read-port-1 RAM (banked, LVT-steered)."""
 
     fp_regfile_ram_fs1_path: str = (
-        "device_under_test.fp_regfile_inst.gen_read_port[0].read_port_ram.ram"
+        "device_under_test.ooo_register_files_inst.fp_regfile_inst"
+        ".gen_read_port[0].gen_multi_write.read_port_ram"
     )
-    """Path to FP register file RAM for fs1 read port."""
+    """Path to the FP register file read-port-0 RAM (banked, LVT-steered)."""
 
     fp_regfile_ram_fs2_path: str = (
-        "device_under_test.fp_regfile_inst.gen_read_port[1].read_port_ram.ram"
+        "device_under_test.ooo_register_files_inst.fp_regfile_inst"
+        ".gen_read_port[1].gen_multi_write.read_port_ram"
     )
-    """Path to FP register file RAM for fs2 read port."""
+    """Path to the FP register file read-port-1 RAM (banked, LVT-steered)."""
 
     fp_regfile_ram_fs3_path: str = (
-        "device_under_test.fp_regfile_inst.gen_read_port[2].read_port_ram.ram"
+        "device_under_test.ooo_register_files_inst.fp_regfile_inst"
+        ".gen_read_port[2].gen_multi_write.read_port_ram"
     )
-    """Path to FP register file RAM for fs3 read port (for FMA instructions)."""
+    """Path to the FP register file read-port-2 RAM (banked, LVT-steered)."""
 
     data_memory_path: str = "data_memory_for_simulation.memory"
     """Path to data memory array in testbench."""
