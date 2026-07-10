@@ -115,7 +115,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # salvage-2wide-backend perf work; the README headline now cites that
 # branch's simulation-measured figure. Re-arm from the next hardware run.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 924.0, "coremark_pro": 75.81},
+    "x3": {"coremark": 974.43, "coremark_pro": 92.78},
     "genesys2": {"coremark": 433.65, "coremark_pro": 34.81},
 }
 
