@@ -92,6 +92,31 @@ module trap_unit #(
     input  logic i_sq_committed_empty,
     output logic o_trap_drain_wait,
 
+    // AMO interrupt shield: a valid AMO occupies the ROB head (registered
+    // image from cpu_ooo). An interrupt taken while the AMO's memory write
+    // is anywhere between launch and COMMIT orphans that write: the flush
+    // clears the LQ's AMO_WRITE_ACTIVE state, so the cached write completes
+    // with no architectural owner (its done is masked from the SQ by
+    // amo_cached_inflight), memory has been mutated by a squashed
+    // instruction, and mepc re-executes the AMO -> double-applied atomic
+    // (silently corrupted kernel refcount/lock) or, if a handler store
+    // reaches the adapter while the orphan is in flight, a lost committed
+    // store plus a permanently wedged SQ (write_inflight_cnt never drains)
+    // that blocks every future trap -- the flaky no-MMU Linux boot hang.
+    // Blocking interrupt-take while an AMO owns the head covers the whole
+    // [read-issue, commit] hazard window. Bounded: commit is NOT held while
+    // this defers (o_trap_drain_wait's arming term lasts one cycle and the
+    // SQ is empty during an AMO by issue rule), so the AMO always commits
+    // and the held-pending interrupt takes right after. The 1-cycle lag of
+    // the registered image is safe: an AMO's earliest memory-write launch
+    // is >= 3 cycles after it reaches the head (head-gated LQ read issue +
+    // response + AMO_WRITE_ACTIVE transition), while a take in the AMO's
+    // first head cycle flushes before any write launches and the cached
+    // read is dropped cleanly via drop_mem_response_pending. Exceptions
+    // stay ungated: mid-AMO the only possible exception is the AMO's own
+    // pre-issue fault, which precedes any memory side effect.
+    input logic i_amo_at_head,
+
     // CSR values from csr_file
     input logic [XLEN-1:0] i_mstatus,
     input logic [XLEN-1:0] i_mie,
@@ -386,7 +411,8 @@ module trap_unit #(
   // (except for WFI stall, which should be broken by interrupt), and no
   // committed store still draining (see i_sq_committed_empty).
   logic take_trap;
-  assign take_trap = ((interrupt_pending_eligible && interrupt_take_armed_q) ||
+  assign take_trap = ((interrupt_pending_eligible && interrupt_take_armed_q &&
+                       !i_amo_at_head) ||
                       exception_pending) &&
       !i_pipeline_stall &&
       i_sq_committed_empty;

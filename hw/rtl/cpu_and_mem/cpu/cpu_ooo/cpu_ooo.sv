@@ -965,6 +965,11 @@ module cpu_ooo #(
   logic trap_mret_commit_hold_q;
   logic [XLEN-1:0] rob_trap_pc;
   logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
+  logic rob_head_is_amo;  // ROB head decodes as AMO (drives the trap unit's AMO interrupt shield)
+  // AMO interrupt shield (see trap_unit.i_amo_at_head): registered image of
+  // "a valid AMO occupies the ROB head", off the take_trap timing cone. The
+  // 1-cycle lag is covered by the AMO's >=3-cycle head-to-write-launch delay.
+  logic amo_at_head_shield_q;
   // Retired-next-PC precompute from the ROB (TIMING): equals
   // retired_next_pc(rob_commit_comb) / (rob_commit_comb_2) whenever the
   // corresponding commit valid is high, but computed from ungated head fields
@@ -1187,6 +1192,7 @@ module cpu_ooo #(
       .o_trap_pending(trap_pending),
       .o_trap_pc(rob_trap_pc),
       .o_head_is_wfi(rob_head_is_wfi),
+      .o_head_is_amo(rob_head_is_amo),
       .o_head_retired_next_pc(rob_head_retired_next_pc),
       .o_head_next_retired_next_pc(rob_head_next_retired_next_pc),
       .o_trap_cause(rob_trap_cause),
@@ -2306,6 +2312,13 @@ module cpu_ooo #(
   // take_trap -> trap_target/CSR-write timing.
   assign sq_committed_empty_for_trap = sq_committed_empty;
 
+  // AMO interrupt shield register (see trap_unit.i_amo_at_head port comment
+  // for the hazard and the lag-safety argument).
+  always_ff @(posedge i_clk) begin
+    if (i_rst) amo_at_head_shield_q <= 1'b0;
+    else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
+  end
+
   trap_unit #(
       .XLEN(XLEN)
   ) trap_unit_inst (
@@ -2314,6 +2327,7 @@ module cpu_ooo #(
       .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
+      .i_amo_at_head(amo_at_head_shield_q),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),

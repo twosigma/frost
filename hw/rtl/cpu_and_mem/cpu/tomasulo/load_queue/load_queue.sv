@@ -2521,6 +2521,14 @@ module load_queue #(
       if (i_flush_all && accept_mem_response)
         $error("LQ: accepted memory response during full flush");
       if (i_flush_all && cache_fill_valid) $error("LQ: filled L0 cache during full flush");
+      // A full flush must never clip an AMO whose memory write is in flight:
+      // the write would complete ownerless (done masked from the SQ by
+      // amo_cached_inflight), memory would carry the side effect of a
+      // squashed instruction, and mepc would re-execute the AMO. Guarded by
+      // the trap unit's AMO interrupt shield (trap_unit.i_amo_at_head) --
+      // this tripwire catches any future flush source that bypasses it.
+      if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
+        $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
