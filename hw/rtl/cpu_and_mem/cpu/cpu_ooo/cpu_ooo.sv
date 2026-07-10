@@ -795,8 +795,14 @@ module cpu_ooo #(
   logic                               dir_update_valid_comb;
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
   logic                               dir_update_taken_comb;
-  assign dir_update_valid_comb = rob_commit_comb.valid && rob_commit_comb.is_branch &&
-                                 !rob_commit_comb.is_jal && !rob_commit_comb.is_jalr;
+  // TIMING (x3 post-opt -0.227 head_clear -> dir_update_held_* cone): the
+  // conditional-branch class and taken direction now come from the ROB's
+  // early field pre-decodes ANDed with the 1-bit raw fires, instead of
+  // decoding the combinational commit structs (which put the whole field mux
+  // behind the late commit gate). Field-equivalent whenever the raw fire is
+  // high; don't-care otherwise (the predictor writes only under
+  // i_update_valid, per the LUTRAM-address note above).
+  assign dir_update_valid_comb = rob_commit_valid_raw && rob_head_dir_train_early;
   // x3 TIMING: address branch_dir_idx_table with the ungated registered head
   // tag rather than rob_commit_comb.tag (= commit_en ? head_idx : '0).  When the
   // read value matters (dir_update_valid_comb=1) commit_en=1 so tag==head_idx==
@@ -806,7 +812,7 @@ module cpu_ooo #(
   // reads head_tag+1 == commit_2's head_next_idx by the same argument.
   wire [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag_p1 = head_tag + 1'b1;
   assign dir_update_idx_comb   = branch_dir_idx_table[head_tag];
-  assign dir_update_taken_comb = rob_commit_comb.branch_taken;
+  assign dir_update_taken_comb = rob_head_branch_taken_early;
 
   // Slot-2 training: pass through directly on slot-1-idle cycles, else hold
   // one deep (a newer slot-2 commit overwrites; the held update drains on
@@ -817,8 +823,7 @@ module cpu_ooo #(
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_held_idx;
   logic                               dir_update_held_taken;
   logic                               dir_slot2_pass;
-  assign dir_update_valid_2_comb = rob_commit_comb_2.valid && rob_commit_comb_2.is_branch &&
-                                   !rob_commit_comb_2.is_jal && !rob_commit_comb_2.is_jalr;
+  assign dir_update_valid_2_comb = rob_commit_2_valid_raw && rob_head_next_dir_train_early;
   assign dir_update_idx_2_comb = branch_dir_idx_table[head_tag_p1];
   assign dir_slot2_pass = dir_update_valid_2_comb && !dir_update_valid_comb &&
                           !dir_update_held_valid;
@@ -829,7 +834,7 @@ module cpu_ooo #(
     end else if (dir_update_valid_2_comb && !dir_slot2_pass) begin
       dir_update_held_valid <= 1'b1;
       dir_update_held_idx   <= dir_update_idx_2_comb;
-      dir_update_held_taken <= rob_commit_comb_2.branch_taken;
+      dir_update_held_taken <= rob_head_next_branch_taken_early;
     end else if (dir_update_held_valid && !dir_update_valid_comb) begin
       dir_update_held_valid <= 1'b0;
     end
@@ -966,6 +971,16 @@ module cpu_ooo #(
   logic [XLEN-1:0] rob_trap_pc;
   logic rob_head_is_wfi;  // ROB head decodes as WFI (drives the WFI interrupt-resume-PC seed)
   logic rob_head_is_amo;  // ROB head decodes as AMO (drives the trap unit's AMO interrupt shield)
+  // Regfile-bypass field pre-decodes from the ROB (early head/head+1 field
+  // conjunctions; see reorder_buffer port comment).
+  logic rob_head_bypass_int_we_early;
+  logic rob_head_bypass_fp_we_early;
+  logic rob_head_next_bypass_int_we_early;
+  logic rob_head_next_bypass_fp_we_early;
+  logic rob_head_dir_train_early;
+  logic rob_head_branch_taken_early;
+  logic rob_head_next_dir_train_early;
+  logic rob_head_next_branch_taken_early;
   // AMO interrupt shield (see trap_unit.i_amo_at_head): registered image of
   // "a valid AMO occupies the ROB head", off the take_trap timing cone. The
   // 1-cycle lag is covered by the AMO's >=3-cycle head-to-write-launch delay.
@@ -1193,6 +1208,14 @@ module cpu_ooo #(
       .o_trap_pc(rob_trap_pc),
       .o_head_is_wfi(rob_head_is_wfi),
       .o_head_is_amo(rob_head_is_amo),
+      .o_head_bypass_int_we_early(rob_head_bypass_int_we_early),
+      .o_head_bypass_fp_we_early(rob_head_bypass_fp_we_early),
+      .o_head_next_bypass_int_we_early(rob_head_next_bypass_int_we_early),
+      .o_head_next_bypass_fp_we_early(rob_head_next_bypass_fp_we_early),
+      .o_head_dir_train_early(rob_head_dir_train_early),
+      .o_head_branch_taken_early(rob_head_branch_taken_early),
+      .o_head_next_dir_train_early(rob_head_next_dir_train_early),
+      .o_head_next_branch_taken_early(rob_head_next_branch_taken_early),
       .o_head_retired_next_pc(rob_head_retired_next_pc),
       .o_head_next_retired_next_pc(rob_head_next_retired_next_pc),
       .o_trap_cause(rob_trap_cause),
@@ -1796,16 +1819,18 @@ module cpu_ooo #(
       bypass_p0_fp_we_q  <= 1'b0;
       bypass_p1_fp_we_q  <= 1'b0;
     end else begin
+      // TIMING (x3 post-opt -0.271/-0.227 head_clear -> bypass_p*_we_q):
+      // the field conjunctions used to be decoded from the combinational
+      // commit STRUCTS, putting the whole head/head+1 field mux behind the
+      // late commit gate on every D. The ROB now pre-decodes them from its
+      // early field nets (rob_head*_bypass_*_we_early, field-equivalent
+      // whenever the raw fire is high -- see reorder_buffer), so each D is
+      // the 1-bit raw fire AND one early bit.
       bypass_p0_int_we_q <= (csr_wb_arm && |rob_commit.dest_reg) ||
-          (rob_commit_comb.valid && rob_commit_comb.dest_valid &&
-           !rob_commit_comb.exception && !rob_commit_comb.is_csr &&
-           !rob_commit_comb.dest_rf && |rob_commit_comb.dest_reg);
-      bypass_p0_fp_we_q <= rob_commit_comb.valid && rob_commit_comb.dest_valid &&
-          !rob_commit_comb.exception && !rob_commit_comb.is_csr && rob_commit_comb.dest_rf;
-      bypass_p1_int_we_q <= rob_commit_comb_2.valid && rob_commit_comb_2.dest_valid &&
-          !rob_commit_comb_2.dest_rf && |rob_commit_comb_2.dest_reg;
-      bypass_p1_fp_we_q <= rob_commit_comb_2.valid && rob_commit_comb_2.dest_valid &&
-          rob_commit_comb_2.dest_rf;
+          (rob_commit_valid_raw && rob_head_bypass_int_we_early);
+      bypass_p0_fp_we_q <= rob_commit_valid_raw && rob_head_bypass_fp_we_early;
+      bypass_p1_int_we_q <= rob_commit_2_valid_raw && rob_head_next_bypass_int_we_early;
+      bypass_p1_fp_we_q <= rob_commit_2_valid_raw && rob_head_next_bypass_fp_we_early;
     end
   end
 
