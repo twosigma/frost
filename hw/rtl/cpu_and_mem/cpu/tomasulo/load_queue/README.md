@@ -28,6 +28,15 @@ cached loads, and a full flush arms the drop-next-response accounting
 so an in-flight cached response can never be misattributed to a
 post-flush load.
 
+The AMO **write** phase has the mirror-image protection, but upstream:
+a full flush would clear `AMO_WRITE_ACTIVE` while the launched write is
+still in flight, orphaning it (memory mutated by a squashed AMO that
+then re-executes). Rather than dropping the write here, interrupt
+delivery is shielded at the trap unit while an AMO owns the ROB head
+(`trap_unit.i_amo_at_head`), so no interrupt flush can land inside the
+AMO's [write-launch, commit] window; a sim tripwire in the LQ `$error`s
+if any future flush source reaches an active AMO write anyway.
+
 MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued
 speculatively. The LQ pins MMIO loads to the ROB head — they only

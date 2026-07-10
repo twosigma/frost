@@ -178,7 +178,7 @@ pytest tests/                              # full regression (riscv-tests, arch 
 ./tests/test_run_cocotb.py directed_traps  # directed M-mode trap/interrupt tests (cpu_tb)
 ```
 
-The pytest run validates the CPU against the riscv-tests ISA suites, the riscv-arch-test compliance suite, and real C programs. The legacy constrained-random `cpu_tb` regression is registered as the CLI-only `cpu_random` target; it predates the OOO integration and needs porting before it passes on the current core.
+The pytest run validates the CPU against the riscv-tests ISA suites, the riscv-arch-test compliance suite, and real C programs. The legacy constrained-random `cpu_tb` regression is registered as the CLI-only `cpu_random` target; its harness plumbing is OOO-aware (register-file hierarchy paths, LVT-aware banked-RAM reads), but its scoreboard still assumes single-wide in-order retirement with fixed fetch-to-writeback offsets and needs a commit-indexed redesign before it passes on the current core (randomized coverage is meanwhile provided by the Spike-referenced `./tests/test_riscv_torture.py`).
 
 ## Directory Structure
 
@@ -356,11 +356,11 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 138,088 | 203,800 | 67.8% |
-|   LUT as Logic | 128,811 | 203,800 | 63.2% |
-|   LUT as Distributed RAM | 8,354 | — | — |
+| Slice LUTs | 139,271 | 203,800 | 68.3% |
+|   LUT as Logic | 129,992 | 203,800 | 63.8% |
+|   LUT as Distributed RAM | 8,356 | — | — |
 |   LUT as Shift Register | 923 | — | — |
-| Slice Registers | 93,510 | 407,600 | 22.9% |
+| Slice Registers | 93,816 | 407,600 | 23.0% |
 | Block RAM Tile | 219 | 445 | 49.2% |
 | DSPs | 40 | 840 | 4.8% |
 | F7 Muxes | 106 | 101,900 | 0.1% |
