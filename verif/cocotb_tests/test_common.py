@@ -29,6 +29,9 @@ Contents:
     handle_branch_flush: Handle pipeline flush after taken branches
     flush_remaining_outputs: Drain pipeline after test completion
     execute_nop: Execute a NOP instruction and model its effects
+    drive_nops_until: Event-based wait (OOO retirement is not fixed-latency)
+    rob_commit_writes_int_reg: Commit-bus probe for a specific x-register write
+    wait_for_int_reg_commit: Wait until an instruction writing x<reg> retires
 
 Usage:
     from cocotb_tests.test_common import (
@@ -218,6 +221,96 @@ async def warmup_pipeline(
         cocotb.log.info(
             f"Warmup NOP {warmup_cycle}: pc_cur={state.program_counter_current}"
         )
+
+
+# Cycle budget for event-based waits in directed tests. Hitting it means the
+# DUT never produced the awaited architectural effect (e.g. an instruction
+# never retired) -- a hard failure, not a tuning knob.
+EVENT_WAIT_BUDGET_CYCLES = 300
+
+
+def rob_commit_writes_int_reg(dut: Any, reg: int) -> bool:
+    """Return True when the registered ROB commit bus is retiring a write to x<reg>.
+
+    Checks both slots of the 2-wide commit. The registered commit bus
+    (dbg_rob_commit_reg_* / dbg_rob_commit_2_reg_* debug taps on cpu_ooo) is
+    what drives the architectural regfile write ports, so a hit here means the
+    regfile write lands on the next rising edge.
+
+    Args:
+        dut: cpu_tb toplevel handle (probes dut.device_under_test)
+        reg: Architectural integer register index being watched (1-31)
+    """
+    d = dut.device_under_test
+    for prefix in ("dbg_rob_commit_reg", "dbg_rob_commit_2_reg"):
+        if (
+            int(getattr(d, f"{prefix}_valid").value)
+            and int(getattr(d, f"{prefix}_dest_valid").value)
+            and int(getattr(d, f"{prefix}_dest_rf").value) == 0  # 0=INT, 1=FP
+            and int(getattr(d, f"{prefix}_dest_reg").value) == reg
+        ):
+            return True
+    return False
+
+
+async def drive_nops_until(
+    dut_if: DUTInterface,
+    state: TestState,
+    done: Any,
+    what: str,
+    budget: int = EVENT_WAIT_BUDGET_CYCLES,
+) -> None:
+    """Feed NOPs and sample ``done()`` once per clock cycle until it holds.
+
+    The cpu_ooo core retires instructions at ROB commit, a variable number of
+    cycles after the cpu_tb harness feeds them (longer still for serialized
+    ops like LR/SC/AMO/CSR), so directed tests must wait for the architectural
+    effect instead of counting a fixed in-order pipeline depth.
+
+    Unlike execute_nop() this samples every clock cycle -- including front-end
+    stall cycles where no new NOP is consumed -- so a single-cycle event such
+    as the registered commit-bus pulse cannot be missed.
+
+    Args:
+        dut_if: DUT interface for signal access
+        state: Test state (cycle counter kept in sync)
+        done: Zero-argument callable sampled after each rising edge
+        what: Description of the awaited event (for the timeout error)
+        budget: Maximum cycles to wait before failing the test
+
+    Raises:
+        AssertionError: If ``done()`` never holds within ``budget`` cycles.
+    """
+    for _ in range(budget):
+        await FallingEdge(dut_if.clock)
+        if dut_if.is_ready():
+            dut_if.instruction = NOP_INSTRUCTION
+        await RisingEdge(dut_if.clock)
+        state.increment_cycle_counter()
+        if done():
+            return
+    raise AssertionError(f"Timed out after {budget} cycles waiting for {what}")
+
+
+async def wait_for_int_reg_commit(
+    dut: Any,
+    dut_if: DUTInterface,
+    state: TestState,
+    reg: int,
+    what: str,
+    budget: int = EVENT_WAIT_BUDGET_CYCLES,
+) -> None:
+    """Wait until the DUT commits an instruction that writes x<reg>.
+
+    After the commit-bus hit, pads two more NOPs so the architectural regfile
+    write (one edge behind the registered commit bus) has landed before the
+    caller does a backdoor read_register() check.
+    """
+    await drive_nops_until(
+        dut_if, state, lambda: rob_commit_writes_int_reg(dut, reg), what, budget
+    )
+    for _ in range(2):
+        await execute_nop(dut_if, state)
 
 
 async def execute_nop(

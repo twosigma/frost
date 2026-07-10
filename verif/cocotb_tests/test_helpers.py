@@ -52,6 +52,27 @@ from encoders.op_tables import LOADS, STORES
 from utils.validation import HardwareAssertions
 
 
+def read_port_ram_entry(ram: Any, index: int) -> int:
+    """Read one committed entry from a regfile read-port RAM handle.
+
+    Supports the three shapes a read-port RAM path can resolve to:
+    - Banked multi-write RAM (mwp_dist_ram): the committed value is the bank
+      selected by the per-address live-value table,
+      ``g_banks[lvt[index]].u_bank.ram[index]``.
+    - Single-write RAM instance (sdp_dist_ram): flat ``ram[index]`` member.
+    - A bare unpacked array handle: indexed directly.
+    """
+    try:
+        sel = int(ram.lvt[index].value)
+        return int(ram.g_banks[sel].u_bank.ram[index].value)
+    except AttributeError:
+        pass
+    try:
+        return int(ram.ram[index].value)
+    except AttributeError:
+        return int(ram[index].value)
+
+
 @dataclass
 class TestStatistics:
     """Track test execution statistics for better reporting."""
@@ -203,7 +224,8 @@ class DUTInterface:
         """Navigate to a signal using dot-separated path string.
 
         Args:
-            path: Dot-separated path (e.g., "device_under_test.regfile_inst.ram")
+            path: Dot-separated path (e.g.,
+                "device_under_test.ooo_register_files_inst.regfile_inst")
 
         Returns:
             Signal object at the path
@@ -228,9 +250,10 @@ class DUTInterface:
             path = self.paths.regfile_ram_rs2_path
         return self._navigate_signal_path(path)
 
-    # Number of read ports on the architectural integer register file
-    # (generic_regfile in the current cpu_ooo).
+    # Number of read ports on the architectural register files
+    # (generic_regfile instances in the current cpu_ooo).
     _INT_RF_READ_PORTS = 8
+    _FP_RF_READ_PORTS = 12
 
     def _int_regfile_inst(self) -> Any | None:
         """Return the architectural integer register-file instance for the cpu_ooo DUT.
@@ -242,7 +265,17 @@ class DUTInterface:
         except Exception:
             return None
 
-    def _int_read_port_ram(self, regfile_inst: Any, port: int) -> tuple[Any, bool]:
+    def _fp_regfile_inst(self) -> Any | None:
+        """Return the architectural FP register-file instance for the cpu_ooo DUT.
+
+        Returns None when the hierarchy does not expose it (other toplevels).
+        """
+        try:
+            return self.dut.device_under_test.ooo_register_files_inst.fp_regfile_inst
+        except Exception:
+            return None
+
+    def _read_port_ram(self, regfile_inst: Any, port: int) -> tuple[Any, bool]:
         """Return (read_port_ram_handle, is_multi_write) for one read port.
 
         generic_regfile gives each read port its own RAM: a multi-write banked
@@ -254,6 +287,27 @@ class DUTInterface:
             return rp.gen_multi_write.read_port_ram, True
         except Exception:
             return rp.gen_single_write.read_port_ram, False
+
+    def _deposit_regfile_value(
+        self, regfile_inst: Any, ports: int, reg: int, value: int
+    ) -> None:
+        """Deposit a register value into every read-port RAM of a regfile.
+
+        For the banked multi-write RAM, writes both banks and clears the
+        live-value table so every read port and the committed-value snapshot
+        return the deposited value.
+        """
+        for port in range(ports):
+            try:
+                ram, multi = self._read_port_ram(regfile_inst, port)
+            except Exception:
+                break
+            if multi:
+                ram.g_banks[0].u_bank.ram[reg].value = value
+                ram.g_banks[1].u_bank.ram[reg].value = value
+                ram.lvt[reg].value = 0
+            else:
+                ram.ram[reg].value = value
 
     def read_register(self, reg: int, ram_index: int = 0) -> int:
         """Read an architectural integer register value from hardware.
@@ -270,15 +324,13 @@ class DUTInterface:
             return 0
         regfile_inst = self._int_regfile_inst()
         if regfile_inst is not None:
-            ram, multi = self._int_read_port_ram(regfile_inst, 0)
-            if multi:
-                # Committed value = the bank chosen by the live-value table.
-                sel = int(ram.lvt[reg].value)
-                return int(ram.g_banks[sel].u_bank.ram[reg].value)
-            return int(ram.ram[reg].value)
-        # Fallback: legacy flat regfile RAM via the configured signal path.
+            ram, _ = self._read_port_ram(regfile_inst, 0)
+            # Committed value = the bank chosen by the live-value table
+            # (banked RAM) or the flat RAM contents (single-write RAM).
+            return read_port_ram_entry(ram, reg)
+        # Fallback: legacy regfile RAM via the configured signal path.
         ram = self._get_regfile_ram(ram_index)
-        return int(ram[reg].value)
+        return read_port_ram_entry(ram, reg)
 
     def write_register(self, reg: int, value: int) -> None:
         """Deposit an architectural integer register value into hardware.
@@ -295,17 +347,9 @@ class DUTInterface:
             # Deposit into every read port (and, for the banked RAM, both banks
             # with the live-value table cleared) so all dispatch read ports and
             # the snapshot read return the deposited value.
-            for port in range(self._INT_RF_READ_PORTS):
-                try:
-                    ram, multi = self._int_read_port_ram(regfile_inst, port)
-                except Exception:
-                    break
-                if multi:
-                    ram.g_banks[0].u_bank.ram[reg].value = value
-                    ram.g_banks[1].u_bank.ram[reg].value = value
-                    ram.lvt[reg].value = 0
-                else:
-                    ram.ram[reg].value = value
+            self._deposit_regfile_value(
+                regfile_inst, self._INT_RF_READ_PORTS, reg, value
+            )
             return
         # Fallback: legacy flat regfile RAM (rs1 + rs2 instances).
         ram_rs1 = self._get_regfile_ram(0)
@@ -342,8 +386,26 @@ class DUTInterface:
             path = self.paths.fp_regfile_ram_fs3_path
         return self._navigate_signal_path(path)
 
+    def read_fp_register(self, reg: int) -> int:
+        """Read an architectural FP register value (as raw bits) from hardware.
+
+        Args:
+            reg: FP register index (0-31)
+
+        Returns:
+            FP register raw bit value
+        """
+        HardwareAssertions.assert_register_valid(reg)
+        regfile_inst = self._fp_regfile_inst()
+        if regfile_inst is not None:
+            ram, _ = self._read_port_ram(regfile_inst, 0)
+            return read_port_ram_entry(ram, reg)
+        # Fallback: legacy FP regfile RAM via the configured signal path.
+        ram = self._get_fp_regfile_ram(0)
+        return read_port_ram_entry(ram, reg)
+
     def write_fp_register(self, reg: int, value: int) -> None:
-        """Write FP register value to hardware (all 3 RAM instances).
+        """Deposit an architectural FP register value into hardware.
 
         Unlike integer registers where x0 is hardwired to zero,
         all FP registers f0-f31 are writable.
@@ -353,11 +415,17 @@ class DUTInterface:
             value: Value to write
         """
         HardwareAssertions.assert_register_valid(reg)
-        # Write to all 3 RAM instances for consistency
+        masked_value = value & MASK64
+        regfile_inst = self._fp_regfile_inst()
+        if regfile_inst is not None:
+            self._deposit_regfile_value(
+                regfile_inst, self._FP_RF_READ_PORTS, reg, masked_value
+            )
+            return
+        # Fallback: legacy flat FP regfile RAM (fs1 + fs2 + fs3 instances).
         ram_fs1 = self._get_fp_regfile_ram(0)
         ram_fs2 = self._get_fp_regfile_ram(1)
         ram_fs3 = self._get_fp_regfile_ram(2)
-        masked_value = value & MASK64
         ram_fs1[reg].value = masked_value
         ram_fs2[reg].value = masked_value
         ram_fs3[reg].value = masked_value

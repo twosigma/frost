@@ -294,6 +294,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
+    "amo_irq_torture_jitter": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="amo_irq_torture",
+        description=(
+            "amo_irq_torture with per-transaction DDR-latency jitter "
+            "(decorrelates completion timing like real DDR refresh, the "
+            "regime that exposed the interrupt-orphaned AMO write). Same "
+            "sim knobs as amo_irq_torture"
+        ),
+        include_in_pytest=False,
+        verilator_extra_args=("-GDDR_MODEL_LATENCY_JITTER=19",),
+    ),
     "linux_irq_active_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -768,19 +781,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
     ),
-    # The remaining cpu_tb suites below predate the OOO integration and have
-    # rotted: they probe pre-rename hierarchy (regfile_inst / fp_regfile_inst)
-    # and in-order fixed latencies, so they fail on the current core until
-    # ported to the maintained DUTInterface helpers (as test_directed_traps
-    # was). Registered CLI-only so they are visible and invokable instead of
-    # silently orphaned; their ISA coverage is meanwhile gated in CI by the
-    # rv32ua/rv32uc/rv32um riscv-tests, the arch-compliance matrix, and the
-    # ddr_atomic_test/c_ext_test real programs. Flip include_in_pytest after
-    # porting.
+    # The cpu_tb suites below predate the OOO integration. directed_atomics
+    # and compressed have been ported (commit-event / settle waits on the
+    # maintained DUTInterface helpers, as test_directed_traps was) and pass;
+    # they stay CLI-only pending a decision to add them to CI.
+    # directed_multicycle and cpu_random still assume in-order fixed
+    # latencies: cpu_random's monitors align full-regfile/PC snapshots to
+    # o_vld by fetch ordinal with fixed IF->WB offsets, which the OOO core's
+    # variable commit latency, 2-wide retire, and wrong-path squashes break --
+    # porting it means a commit-indexed scoreboard. Their ISA coverage is
+    # meanwhile gated in CI by the rv32ua/rv32uc/rv32um riscv-tests, the
+    # arch-compliance matrix, and the ddr_atomic_test/c_ext_test real
+    # programs. Flip include_in_pytest after porting.
     "directed_atomics": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_atomics",
         hdl_toplevel_module="cpu_tb",
-        description="Directed LR.W/SC.W atomic tests (cpu_tb; NEEDS PORTING to OOO)",
+        description="Directed LR.W/SC.W atomic tests (cpu_tb directed suite)",
         include_in_pytest=False,
     ),
     "directed_multicycle": CocotbRunConfig(
@@ -792,13 +808,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "compressed": CocotbRunConfig(
         python_test_module="cocotb_tests.test_compressed",
         hdl_toplevel_module="cpu_tb",
-        description="RISC-V C-extension directed tests (cpu_tb; NEEDS PORTING to OOO)",
+        description="RISC-V C-extension directed tests (cpu_tb directed suite)",
         include_in_pytest=False,
     ),
     "cpu_random": CocotbRunConfig(
         python_test_module="cocotb_tests.test_cpu",
         hdl_toplevel_module="cpu_tb",
-        description="Constrained-random instruction regression (cpu_tb; NEEDS PORTING to OOO)",
+        description="Constrained-random instruction regression (cpu_tb; NEEDS PORTING to OOO: commit-indexed scoreboard)",
         include_in_pytest=False,
     ),
 }
