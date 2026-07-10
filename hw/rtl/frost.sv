@@ -61,6 +61,10 @@ module frost #(
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
     parameter int unsigned DDR_MODEL_LATENCY = 30,
+    // Per-transaction jitter on the model's latency (0 = off, cycle-exact).
+    // Enable in directed/random sims (-G override) to expose completion-
+    // timing races that a fixed latency structurally hides.
+    parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports (hardware boards wire
     // them to their DDR controller subsystem).
@@ -202,6 +206,7 @@ module frost #(
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
+      .DDR_MODEL_LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
