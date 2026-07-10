@@ -18,7 +18,12 @@
  * axi_behavioral_memory -- SIMULATION-ONLY main-memory model (stands in for
  * the DDR controller in Phase 1; replaced by the board's DDR controller
  * (MIG DDR3 / DDR4 IP) + SmartConnect on hardware). AXI4 slave, single-beat 256-bit transactions (asserts on
- * anything else), parameterized response latency to mimic DDR access time.
+ * anything else), parameterized response latency to mimic DDR access time,
+ * plus optional per-transaction LFSR latency jitter (LATENCY_JITTER) to
+ * mimic refresh/arbitration variability — fixed latency structurally hides
+ * completion-timing races (it hid the interrupt-orphaned-AMO-write bug that
+ * real DDR jitter exposed on hardware), so directed/random suites should
+ * prefer a jittered run where determinism is not required.
  *
  * The array is dense and parameter-sized (default 64 MiB) while the DECODED
  * region is 1 GiB: the cache hierarchy above never knows the difference, and
@@ -38,6 +43,15 @@ module axi_behavioral_memory #(
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned MEM_BYTES = 64 * 1024 * 1024,
     parameter int unsigned LATENCY = 30,  // cycles from AR (or AW+W) to R (or B)
+    // Per-transaction response-latency jitter: each transaction takes
+    // LATENCY + (lfsr % (LATENCY_JITTER+1)) cycles. 0 (default) keeps the
+    // model cycle-exact/bit-reproducible for CI; nonzero mimics real DDR
+    // refresh/arbitration jitter, which is what exposes completion-timing
+    // races (e.g. the interrupt-orphaned AMO write) that a fixed latency
+    // structurally hides. The LFSR free-runs every cycle, so a given run is
+    // still deterministic while transaction latencies decorrelate.
+    parameter int unsigned LATENCY_JITTER = 0,
+    parameter bit [15:0] JITTER_SEED = 16'hACE1,
     parameter bit USE_INIT_FILE = 1'b0,
     parameter bit [8*64-1:0] INIT_FILE = "sw_ddr.mem"
 ) (
@@ -90,6 +104,23 @@ module axi_behavioral_memory #(
   end
 `endif
 
+  // ---- Latency jitter LFSR (free-running; see LATENCY_JITTER) ------------------
+  logic [15:0] jitter_lfsr_q;
+  logic [15:0] jitter_extra;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      jitter_lfsr_q <= JITTER_SEED == 16'h0 ? 16'hACE1 : JITTER_SEED;
+    end else begin
+      jitter_lfsr_q <= {
+        jitter_lfsr_q[14:0],
+        jitter_lfsr_q[15] ^ jitter_lfsr_q[13] ^ jitter_lfsr_q[12] ^ jitter_lfsr_q[10]
+      };
+    end
+  end
+  // Sim-only model: the non-power-of-two modulo is fine here and keeps the
+  // extra-latency distribution uniform over [0, LATENCY_JITTER].
+  assign jitter_extra = 16'(32'(jitter_lfsr_q) % (LATENCY_JITTER + 1));
+
   // ---- Write channel ----------------------------------------------------------
   typedef enum logic [1:0] {
     W_IDLE,
@@ -128,7 +159,7 @@ module axi_behavioral_memory #(
           end
           if ((aw_got_q || (i_axi_awvalid && o_axi_awready)) &&
               (w_got_q || (i_axi_wvalid && o_axi_wready))) begin
-            wlat_q   <= 16'(LATENCY);
+            wlat_q   <= 16'(LATENCY) + jitter_extra;
             wstate_q <= W_WAIT;
           end
         end
@@ -188,7 +219,7 @@ module axi_behavioral_memory #(
         R_IDLE: begin
           if (i_axi_arvalid) begin
             araddr_q <= i_axi_araddr;
-            rlat_q   <= 16'(LATENCY);
+            rlat_q   <= 16'(LATENCY) + jitter_extra;
             rstate_q <= R_WAIT;
           end
         end

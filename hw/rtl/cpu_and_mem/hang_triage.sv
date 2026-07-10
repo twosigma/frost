@@ -294,8 +294,15 @@ module hang_triage #(
             em_state <= EM_PREFIX;
           end
         end
+        // Every emit state gates its push on (i_uart_ready && !o_wr_en): the
+        // push is REGISTERED, so in the cycle right after issuing one the
+        // FIFO's occupancy (hence i_uart_ready) does not yet reflect it --
+        // sampling ready alone back-to-back double-pushes into a single free
+        // slot and DROPS a byte. Observed on silicon as "!HANG" instead of
+        // "!!HANG" (byte 1 of every burst lost while the FIFO drains fast).
+        // The one-cycle bubble this inserts is invisible at UART rates.
         EM_PREFIX:
-        if (i_uart_ready) begin
+        if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;
           o_wr_data <= emit_byte;
           if (pcnt == 4'd7) begin
@@ -305,7 +312,7 @@ module hang_triage #(
           end else pcnt <= pcnt + 4'd1;
         end
         EM_FIELD:
-        if (i_uart_ready) begin
+        if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;
           o_wr_data <= emit_byte;
           if (fpos == 4'd10) begin
@@ -319,7 +326,7 @@ module hang_triage #(
           end else fpos <= fpos + 4'd1;
         end
         EM_HPRE:
-        if (i_uart_ready) begin
+        if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;
           o_wr_data <= emit_byte;
           if (pcnt == 4'd2) begin
@@ -329,7 +336,7 @@ module hang_triage #(
           end else pcnt <= pcnt + 4'd1;
         end
         EM_HIST:
-        if (i_uart_ready) begin
+        if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;
           o_wr_data <= emit_byte;
           if (hpos == 4'd8) begin

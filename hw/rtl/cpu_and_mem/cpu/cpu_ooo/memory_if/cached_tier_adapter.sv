@@ -38,7 +38,12 @@
  * one pending-write slot; when both are occupied the read is always the older
  * (the router blocks cached loads while a cached store is in flight, and the
  * LQ's slow_outstanding gate blocks every load while a cached load is in
- * flight), so reads are served first. Invariants are assertion-checked.
+ * flight), so reads are served first. Invariants are assertion-checked in
+ * simulation AND hardware-refused: a request arriving while its slot is
+ * still pending is dropped (deterministic upstream stall) rather than
+ * absorbed, and the serving read's word select is snapshotted at launch, so
+ * an upstream gate regression can no longer silently corrupt the slot or
+ * return the wrong word as valid data.
  */
 module cached_tier_adapter #(
     parameter int unsigned XLEN = 32,
@@ -113,6 +118,16 @@ module cached_tier_adapter #(
   logic [WordSelBits-1:0] read_word_sel;
   assign read_word_sel = pending_read_addr[2+:WordSelBits];
 
+  // HARDENING: the serving transaction's word select, snapshotted at launch.
+  // The upstream gates (LQ slow_outstanding, router write_port_busy) are the
+  // real single-outstanding guarantee, but if they ever regress and a second
+  // read overwrites pending_read_addr mid-flight, muxing the response through
+  // the LIVE address would silently return the WRONG WORD as valid data.
+  // Snapshotting at line_req_fire makes the in-flight response immune; the
+  // duplicate request itself is refused below (deterministic stall, caught by
+  // the sim assertions) instead of corrupting state.
+  logic [WordSelBits-1:0] serving_word_sel_q;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       pending_read_valid  <= 1'b0;
@@ -125,12 +140,16 @@ module cached_tier_adapter #(
       o_read_valid <= 1'b0;
       o_write_done <= 1'b0;
 
-      // Enqueue router requests.
-      if (i_read_req) begin
+      // Enqueue router requests. A request while the same-type slot is still
+      // pending is a protocol violation (see the assertions below): refuse it
+      // so the in-flight transaction's identity/data stay intact -- the
+      // violator hangs waiting for a completion that never comes, which is
+      // deterministic and debuggable, unlike a silently corrupted slot.
+      if (i_read_req && !pending_read_valid) begin
         pending_read_valid <= 1'b1;
         pending_read_addr  <= i_req_addr;
       end
-      if (write_fire) begin
+      if (write_fire && !pending_write_valid) begin
         pending_write_valid   <= 1'b1;
         pending_write_addr    <= i_req_addr;
         pending_write_data    <= i_write_data;
@@ -139,8 +158,9 @@ module cached_tier_adapter #(
 
       // Launch the next line transaction.
       if (line_req_fire) begin
-        busy_q         <= 1'b1;
-        serving_read_q <= issue_read;
+        busy_q             <= 1'b1;
+        serving_read_q     <= issue_read;
+        serving_word_sel_q <= read_word_sel;
       end
 
       // Retire on the line response.
@@ -149,7 +169,7 @@ module cached_tier_adapter #(
         if (serving_read_q) begin
           pending_read_valid <= 1'b0;
           o_read_valid       <= 1'b1;
-          o_read_data        <= i_line_resp_rdata[read_word_sel*XLEN+:XLEN];
+          o_read_data        <= i_line_resp_rdata[serving_word_sel_q*XLEN+:XLEN];
         end else begin
           pending_write_valid <= 1'b0;
           o_write_done        <= 1'b1;

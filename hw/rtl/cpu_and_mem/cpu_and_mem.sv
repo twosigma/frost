@@ -56,6 +56,10 @@ module cpu_and_mem #(
     // replaces it with the DDR controller behind the same AXI port).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,
     parameter int unsigned DDR_MODEL_LATENCY = 30,
+    // Per-transaction latency jitter, 0 = cycle-exact (see
+    // axi_behavioral_memory.LATENCY_JITTER; mimics DDR refresh jitter to
+    // expose completion-timing races that fixed latency hides).
+    parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
     // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
     // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
@@ -790,6 +794,7 @@ module cpu_and_mem #(
           .LINE_BYTES(32),
           .MEM_BYTES(DDR_MODEL_BYTES),
           .LATENCY(DDR_MODEL_LATENCY),
+          .LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
           .USE_INIT_FILE(1'b1),
           .INIT_FILE("sw_ddr.mem")
       ) ddr_model (

@@ -37,6 +37,8 @@ module frost_cache_test_harness #(
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     parameter int unsigned MEM_BYTES = 4 * 1024 * 1024,
     parameter int unsigned MEM_LATENCY = 12,
+    // Per-transaction latency jitter (0 = off; see axi_behavioral_memory).
+    parameter int unsigned MEM_LATENCY_JITTER = 0,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache). The
     // cocotb cache registry runs this bench with it both off (default) and on.
     parameter int unsigned SIM_FAST_MAINT = 0
@@ -168,6 +170,7 @@ module frost_cache_test_harness #(
       .LINE_BYTES(LINE_BYTES),
       .MEM_BYTES(MEM_BYTES),
       .LATENCY(MEM_LATENCY),
+      .LATENCY_JITTER(MEM_LATENCY_JITTER),
       .USE_INIT_FILE(1'b0)
   ) main_memory (
       .i_clk(i_clk),
