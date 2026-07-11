@@ -48,13 +48,25 @@
  * cycle-exact: a per-entry effective-LVT view overrides the staged entry's
  * stale LVT bits during the one-cycle gap, computed purely from the staging
  * registers on the EARLY side of the read mux (the late read address sees the
- * same DEPTH-to-1 select depth as the unstaged module).  Semantics are
- * bit-identical to the unstaged module for every read, PROVIDED a staged
- * port's write address is never written again (by any port) in the very next
- * cycle with a requirement that the STAGED port's value win — the drain
- * applies staged updates first, so a live port writing the same address in
- * the drain cycle wins, exactly like the same-cycle "highest port wins" rule
- * (staged ports must therefore be the LOWEST indices, enforced below).
+ * same DEPTH-to-1 select depth as the unstaged module).
+ *
+ * Staged-port collision semantics (staged ports must be the LOWEST indices,
+ * enforced below):
+ *   - SAME-CYCLE staged+live writes to one address are LEGAL and resolve
+ *     STAGED-WINS — the opposite of the all-live "highest port wins" rule.
+ *     The live port takes the raw LVT at the write edge, but reads in the
+ *     following (drain) cycle see the staged bank via the lvt_eff override,
+ *     and the drain then rewrites the LVT to the staged port.  Callers must
+ *     ensure staged-wins is architecturally correct for every collision
+ *     they can produce (the reorder buffer's case: an allocation write
+ *     colliding with a STALE CDB completion for the tag's previous owner —
+ *     the allocation must win, and does).
+ *   - A LIVE write to the staged address in the NEXT (drain) cycle wins the
+ *     LVT — correct only when it is architecturally newer than the staged
+ *     write.  The reorder buffer excludes this window by contract (no
+ *     completion can arrive one cycle after allocation) and errors on it in
+ *     simulation at the ROB level; a new user of staged ports must provide
+ *     an equivalent guarantee.
  */
 module mwp_dist_ram #(
     parameter int unsigned ADDR_WIDTH           = 5,   // Address width in bits
@@ -190,25 +202,11 @@ module mwp_dist_ram #(
     end
   end
 
-  // Caller invariant required by the staging: a staged port's write address
-  // must not also be written by a LIVE port in the SAME cycle.  (The read
-  // correction would pick the staged bank during the gap cycle, while the
-  // classic same-cycle rule gives the live port the win.)  In the reorder
-  // buffer's use this cannot happen — an entry being allocated (staged ports)
-  // cannot receive a CDB result (live ports) in its allocation cycle.
-  always @(posedge i_clk) begin
-    for (int k = 0; k < StagedLvtPorts; k++) begin
-      for (int wp = StagedLvtPorts; wp < NUM_WRITE_PORTS; wp++) begin
-        if (!$isunknown(
-                {i_write_enable[k], i_write_enable[wp]}
-            ) && i_write_enable[k] && i_write_enable[wp] &&
-                (i_write_address[k] == i_write_address[wp])) begin
-          $error("mwp_dist_ram: staged port %0d and live port %0d wrote 0x%0h same-cycle", k, wp,
-                 i_write_address[k]);
-        end
-      end
-    end
-  end
+  // Same-cycle staged+live writes to one address are legal and resolve
+  // staged-wins (see header) — no check here.  The dangerous arrival is a
+  // live write in the staged address's DRAIN cycle; the reorder buffer (the
+  // only staged-port user) excludes and checks that window at the ROB level,
+  // where allocation context exists to tell stale from legitimate.
 `endif
 `endif
 
