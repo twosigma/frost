@@ -1385,6 +1385,14 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     # pipelines that auto-complete entries, conflicting with manual CDB drives.
     dut_if.set_fu_ready(RS_MEM, True)
     await Timer(1, unit="ps")  # Let fu_ready propagate
+    # The strict issue-order FIFO below requires model/DUT RS slot indices to
+    # stay identical (simultaneous wakeups tie-break by index). Match the
+    # RTL's slot-free timing: an entry consumed this cycle frees its slot for
+    # NEXT cycle's dispatch (model.tick() at each loop top is the cycle edge).
+    # Without this, a consume+dispatch in the same bench cycle diverges the
+    # slot layout and a later simultaneous wakeup legally issues "out of
+    # order" (seed 1783738774: DUT tag 22 vs model tag 20, both correct).
+    model.set_strict_alloc_timing(True)
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()  # Track valid ROB tags for safe CDB
@@ -1406,6 +1414,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                 return
 
     for cycle in range(200):
+        model.tick()
         # Apply deferred CDB from previous cycle (matches registered CDB timing)
         if deferred_cdb is not None:
             model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])

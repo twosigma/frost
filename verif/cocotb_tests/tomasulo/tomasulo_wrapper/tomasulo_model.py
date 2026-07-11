@@ -101,6 +101,16 @@ class TomasuloModel:
         for rs in self._all_rs():
             rs.reset()
 
+    def set_strict_alloc_timing(self, enabled: bool) -> None:
+        """Enable RTL-exact RS slot-free timing (see RSModel.strict_alloc_timing)."""
+        for rs in self._all_rs():
+            rs.strict_alloc_timing = enabled
+
+    def tick(self) -> None:
+        """Advance all RS models one cycle (releases slots consumed last cycle)."""
+        for rs in self._all_rs():
+            rs.tick()
+
     def dispatch(
         self,
         req: AllocationRequest,
