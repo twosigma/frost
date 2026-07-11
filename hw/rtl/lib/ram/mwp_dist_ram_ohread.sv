@@ -194,22 +194,11 @@ module mwp_dist_ram_ohread #(
     end
   end
 
-  // Caller invariant required by staged-LVT ports: a staged port's write
-  // address must not also be written by a LIVE port in the same cycle (see
-  // mwp_dist_ram).
-  always @(posedge i_clk) begin
-    for (int k = 0; k < StagedLvtPorts; k++) begin
-      for (int wp = StagedLvtPorts; wp < NUM_WRITE_PORTS; wp++) begin
-        if (!$isunknown(
-                {i_write_enable[k], i_write_enable[wp]}
-            ) && i_write_enable[k] && i_write_enable[wp] &&
-                (i_write_address[k] == i_write_address[wp])) begin
-          $error("mwp_dist_ram_ohread: staged port %0d and live port %0d wrote 0x%0h same-cycle",
-                 k, wp, i_write_address[k]);
-        end
-      end
-    end
-  end
+  // Same-cycle staged+live writes to one address are legal and resolve
+  // staged-wins (see mwp_dist_ram's header for the full staged-port
+  // collision contract) — no check here.  The dangerous arrival is a live
+  // write in the staged address's DRAIN cycle; the reorder buffer (the only
+  // staged-port user) excludes and checks that window at the ROB level.
 `endif
 `endif
 

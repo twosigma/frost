@@ -382,6 +382,13 @@ ifeq ($(TOPLEVEL),frost)
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 
+# The reorder_buffer UNIT bench drives i_cdb_write directly, without the full
+# machine's alloc->completion latency, so the staged-LVT drain-window check
+# (fatal in every latency-realistic sim) must be disabled for that build only.
+ifeq ($(TOPLEVEL),reorder_buffer)
+	EXTRA_ARGS += -GDrainWindowCheck=0
+endif
+
 # Include Cocotb simulation makefile rules
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
