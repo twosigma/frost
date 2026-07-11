@@ -70,7 +70,7 @@ Applications are compiled automatically before simulation—no manual build step
 
 **Seed Sweep Mode:**
 
-The `--seed-sweep N` flag runs N simulations in parallel, each with a different random seed. This is useful for finding intermittent failures in randomized tests. After all runs complete, a summary report shows which seeds passed and which failed, along with commands to reproduce any failures:
+The `--seed-sweep N` flag runs N simulations in parallel, each with a different random seed. This is useful for finding intermittent failures in randomized tests. Each worker gets an isolated `SIM_BUILD` and `COCOTB_RESULTS_FILE`; for app-based tests the app is compiled once up front and the `sw*.mem` symlinks are shared read-only across workers (per-worker recompiles and results.xml in the shared CWD used to race each other and report phantom failures). After all runs complete, a summary report shows which seeds passed and which failed, with the tail of each failure's output and commands to reproduce:
 
 ```
 ============================================================
