@@ -899,6 +899,11 @@ class CocotbRunner:
         self.hdl_toplevel_module = hdl_toplevel_module
         self.app_name = app_name
         self.verilator_extra_args = verilator_extra_args
+        # Seed-sweep workers share sw/apps/<app> and the tests/sw*.mem
+        # symlinks; the sweep parent compiles once and sets this so workers
+        # skip the (racy) per-run clean+recompile and leave symlink cleanup
+        # to the parent.
+        self.skip_app_compile = False
         self.test_directory = Path(__file__).parent.resolve()
         self.repository_root_directory = self.test_directory.parent
         # Memory tier for the compiled app (real-program tests). The ddr CI job
@@ -949,6 +954,25 @@ class CocotbRunner:
             return None
         app_dir_name = app_build_directory_name(self.app_name)
         return f"../sw/apps/{app_dir_name}/sw.mem"
+
+    @staticmethod
+    def _ensure_symlink(link: Path, target: str) -> None:
+        """Point link at target, leaving an already-correct symlink untouched.
+
+        Idempotence matters for seed sweeps: parallel workers share the same
+        link, and an unconditional unlink+recreate opens a window where a
+        sibling's $readmemh sees no file. A lost creation race against a
+        sibling pointing at the same target is accepted as success.
+        """
+        try:
+            if link.is_symlink() and os.readlink(link) == target:
+                return
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            link.symlink_to(target)
+        except FileExistsError:
+            if not (link.is_symlink() and os.readlink(link) == target):
+                raise
 
     def setup_environment(self) -> dict[str, str]:
         """Set up environment variables for HDL simulation.
@@ -1125,8 +1149,9 @@ class CocotbRunner:
         self, check: bool = True, capture_output: bool = True
     ) -> subprocess.CompletedProcess[str]:
         """Run the cocotb simulation."""
-        # Compile the application first if needed
-        if self.app_name and not self._compile_app():
+        # Compile the application first if needed (sweep workers skip this;
+        # the sweep parent compiled once before spawning them)
+        if self.app_name and not self.skip_app_compile and not self._compile_app():
             raise RuntimeError(f"Failed to compile application: {self.app_name}")
 
         original_dir = os.getcwd()
@@ -1153,15 +1178,10 @@ class CocotbRunner:
             # cached-region DDR image consumed by the behavioral DDR model)
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
-                sw_mem_path = Path("sw.mem")
-                if sw_mem_path.exists() or sw_mem_path.is_symlink():
-                    sw_mem_path.unlink()
-                sw_mem_path.symlink_to(program_memory_file)
-                sw_ddr_path = Path("sw_ddr.mem")
-                if sw_ddr_path.exists() or sw_ddr_path.is_symlink():
-                    sw_ddr_path.unlink()
-                sw_ddr_path.symlink_to(
-                    program_memory_file.replace("sw.mem", "sw_ddr.mem")
+                self._ensure_symlink(Path("sw.mem"), program_memory_file)
+                self._ensure_symlink(
+                    Path("sw_ddr.mem"),
+                    program_memory_file.replace("sw.mem", "sw_ddr.mem"),
                 )
 
             # Run the simulation
@@ -1196,8 +1216,9 @@ class CocotbRunner:
             return result
 
         finally:
-            # Clean up
-            if self.app_name:
+            # Clean up (sweep workers share the symlinks with their siblings;
+            # the sweep parent removes them after the whole pool drains)
+            if self.app_name and not self.skip_app_compile:
                 for mem_name in ("sw.mem", "sw_ddr.mem"):
                     mem_path = Path(mem_name)
                     if mem_path.exists() or mem_path.is_symlink():
@@ -1317,12 +1338,21 @@ def _run_single_seed(
     os.environ["SIM"] = "verilator"
     os.environ["COCOTB_RANDOM_SEED"] = str(seed)
     os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
+    # Per-worker results file. cocotb's default is results.xml in the shared
+    # tests/ CWD, which concurrent workers rm/write/check over each other —
+    # the clobbering shows up as phantom FAILs (44/100 in the 2026-07-11
+    # tomasulo_wrapper sweep; every "failing" seed passed in isolation).
+    os.environ["COCOTB_RESULTS_FILE"] = os.path.join(temp_dir, f"results_{seed}.xml")
 
     if testcase:
         os.environ["COCOTB_TEST_FILTER"] = f"{testcase}$"
 
     config = TEST_REGISTRY[test_name]
     runner = CocotbRunner.from_config(config)
+    # The sweep parent compiled the app (if any) once before the pool;
+    # workers must not clean+recompile the shared sw/apps/<app> build or
+    # unlink the shared tests/sw*.mem symlinks mid-sweep.
+    runner.skip_app_compile = True
 
     try:
         result = runner.run_simulation(check=False, capture_output=True)
@@ -1347,6 +1377,12 @@ def run_seed_sweep(
 ) -> dict[str, Any]:
     """Run multiple simulations with different random seeds in parallel.
 
+    Workers are isolated from each other: each gets its own SIM_BUILD and
+    COCOTB_RESULTS_FILE, and for app-based tests the app is compiled once
+    here (workers run with skip_app_compile and share the sw*.mem symlinks
+    read-only). Without that isolation, concurrent workers clobber the shared
+    tests/results.xml and race the app build, reporting phantom failures.
+
     Args:
         test_name: Name of the test from TEST_REGISTRY
         num_seeds: Number of different seeds to test
@@ -1364,6 +1400,26 @@ def run_seed_sweep(
     print(f"Test: {test_name}")
     print(f"Seeds: {seeds}")
     print(f"{'='*60}\n")
+
+    # Compile the app once up front and create the shared sw*.mem symlinks.
+    # Workers run with skip_app_compile: per-worker clean_first compiles race
+    # each other in sw/apps/<app>, and unlink+recreate of tests/sw.mem opens
+    # windows where a sibling's $readmemh sees a missing or half-written image.
+    parent_runner = CocotbRunner.from_config(TEST_REGISTRY[test_name])
+    if parent_runner.app_name:
+        if not parent_runner._compile_app():
+            raise RuntimeError(
+                f"Failed to compile application: {parent_runner.app_name}"
+            )
+        program_memory_file = parent_runner._get_program_memory_file()
+        if program_memory_file:
+            CocotbRunner._ensure_symlink(
+                parent_runner.test_directory / "sw.mem", program_memory_file
+            )
+            CocotbRunner._ensure_symlink(
+                parent_runner.test_directory / "sw_ddr.mem",
+                program_memory_file.replace("sw.mem", "sw_ddr.mem"),
+            )
 
     results: dict[int, tuple[bool, str]] = {}
     workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
@@ -1390,6 +1446,13 @@ def run_seed_sweep(
                     results[seed] = (False, str(e))
                     print(f"  Seed {seed}: FAILED (exception: {e})")
 
+    # The workers shared the parent-created symlinks; clean up after the pool.
+    if parent_runner.app_name:
+        for mem_name in ("sw.mem", "sw_ddr.mem"):
+            mem_path = parent_runner.test_directory / mem_name
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
+
     # Generate report
     passed_seeds = [s for s, (p, _) in results.items() if p]
     failed_seeds = [s for s, (p, _) in results.items() if not p]
@@ -1406,9 +1469,22 @@ def run_seed_sweep(
         print(f"Passing seeds: {sorted(passed_seeds)}")
     if failed_seeds:
         print(f"Failing seeds: {sorted(failed_seeds)}")
+        print("\nFailure details (tail of each):")
+        for seed in sorted(failed_seeds):
+            _, error_msg = results[seed]
+            tail_lines = [
+                line for line in error_msg.strip().splitlines() if line.strip()
+            ][-3:]
+            print(f"  Seed {seed}:")
+            for line in tail_lines:
+                print(f"    {line}")
+        testcase_arg = f" --testcase {testcase}" if testcase else ""
         print("\nTo reproduce a failure, run:")
         for seed in sorted(failed_seeds):
-            print(f"  ./test_run_cocotb.py {test_name} --random-seed={seed}")
+            print(
+                f"  ./test_run_cocotb.py {test_name}{testcase_arg} "
+                f"--random-seed={seed}"
+            )
 
     print(f"{'='*60}\n")
 
