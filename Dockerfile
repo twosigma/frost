@@ -179,12 +179,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies (cocotb, pytest, pre-commit, etc.)
+# Deliberately NO standalone ruff/mypy: linting runs through pre-commit
+# (CI: `pre-commit run --all-files` in this image), which builds its own
+# hook environments at the versions pinned in .pre-commit-config.yaml.
+# Unpinned standalone binaries drift ahead of those pins and disagree
+# with the real gate (seen 2026-07-11: image ruff 0.15.20 vs pin v0.8.4).
 RUN pip install --no-cache-dir --break-system-packages \
     "cocotb==2.0.1" \
     pytest \
     pytest-cov \
-    mypy \
-    ruff \
     pre-commit \
     click
 
