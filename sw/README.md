@@ -20,8 +20,8 @@ sw/
 │   └── src/          # Source files
 ├── FreeRTOS-Kernel/  # FreeRTOS kernel (submodule)
 └── apps/             # Application programs
-    ├── compile_app.py    # Compile a single application
-    ├── build_all_apps.py # Compile all applications
+    ├── compile_app.py    # Clean and compile a single application
+    ├── build_all_apps.py # Clean and compile ordinary standalone apps
     ├── clean_all_apps.py # Clean all build artifacts
     ├── <app_name>/       # One directory per software app
     └── ...
@@ -57,9 +57,12 @@ size_t n = uart_getline(buf, sizeof(buf)); // Read line with echo/backspace
 - `%s` - string
 - `%d`, `%ld`, `%lld` - signed decimal
 - `%u`, `%lu`, `%llu` - unsigned decimal
-- `%x`, `%X` - hexadecimal (lowercase/uppercase)
+- `%x`, `%lx`, `%llx` (and uppercase variants) - hexadecimal
+- `%f` - floating point when compiled with `UART_PRINTF_ENABLE_FLOAT=1`;
+  finite magnitudes at least 2^64 are reported as `ovf` or `-ovf`
 - `%%` - literal percent sign
-- Field width and zero-padding: `%8d`, `%04x`
+- Right-aligned field width (up to 255) and integer zero-padding: `%8d`, `%04x`
+- Floating-point precision is capped at 9 digits
 
 ### String (`lib/include/string.h`, `lib/src/string.c`)
 
@@ -69,7 +72,9 @@ Minimal C library replacements for bare-metal operation.
 #include "string.h"
 
 memset(buffer, 0, sizeof(buffer));        // Fill memory
-memcpy(dest, src, len);                   // Copy memory
+memcpy(dest, src, len);                   // Copy non-overlapping memory
+memmove(dest, src, len);                  // Overlap-safe memory copy
+int cmp = memcmp(a, b, len);              // Compare binary regions
 size_t len = strlen(str);                 // String length
 size_t len = strnlen(str, n);             // Bounded string length
 strcpy(dest, src);                        // String copy
@@ -117,6 +122,10 @@ long l = atol("12345");                   // String to long
 int a = abs(-7);                          // Absolute value
 ```
 
+`strtol` accepts base 0 or bases 2 through 36. It saturates to `LONG_MIN` or
+`LONG_MAX` on overflow. Invalid bases and inputs with no digits return zero and
+leave `endptr` pointing at the original input.
+
 ### Memory (`lib/include/memory.h`, `lib/src/memory.c`)
 
 Dynamic memory allocation with arena allocator and malloc/free.
@@ -132,7 +141,7 @@ char *p3 = arena_push_align(&arena, 16, 32); // Allocate with 32-byte alignment
 arena_pop(&arena, 16);                    // Deallocate from end
 arena_clear(&arena);                      // Reset arena (free all at once)
 
-// Traditional malloc/free - first-fit freelist allocator
+// Traditional malloc/free - first-fit, coalescing freelist allocator
 void *ptr = malloc(128);                  // Allocate 128 bytes
 void *arr = calloc(16, 8);                // Allocate and zero 16x8 bytes
 ptr = realloc(ptr, 256);                  // Grow/shrink an allocation
@@ -141,7 +150,12 @@ free(ptr);                                // Return to freelist
 
 **Arena vs malloc:**
 - Arena: Fast allocation, bulk deallocation, no fragmentation, fixed lifetime
-- malloc/free: Flexible lifetime, individual deallocation, potential fragmentation
+- malloc/free: Flexible lifetime and individual deallocation; adjacent free
+  blocks are coalesced to limit fragmentation
+
+Arena allocation failure is represented by `arena.start == NULL` and zero
+capacity. Oversized requests and size-arithmetic overflow return `NULL` from
+`malloc`, `calloc`, and `realloc` without consuming or corrupting the heap.
 
 ### Sprintf (`lib/include/sprintf.h`, `lib/src/sprintf.c`)
 
@@ -162,6 +176,11 @@ snprintf(buf, sizeof(buf), "%.2f", 3.14159);   // Bounded (C99 semantics)
 - Flags: `-` `+` `space` `0` `#`
 - Width/precision: literal or `*`
 - Length modifiers: `hh` `h` `l` `ll` `z` `t`
+
+Large widths and floating-point precisions are counted and truncated directly
+into the caller's destination; they do not allocate precision-sized scratch
+buffers. If the would-be output length cannot fit in `int`, the function returns
+`-1` while still terminating a non-empty destination buffer.
 
 **Makefile setup:** The 64-bit integer arithmetic used internally requires `-lgcc`. Add this to your app's Makefile before the `include`:
 ```makefile
@@ -386,8 +405,11 @@ No manual build step is required for normal use.
 
 ### Manual Compilation (Optional)
 
+From the repository root:
+
 ```bash
-cd apps/hello_world
+cd sw/apps/hello_world
+make clean
 make
 ```
 
@@ -396,13 +418,28 @@ make
 ```bash
 ./sw/apps/compile_app.py hello_world        # Compile hello_world
 ./sw/apps/compile_app.py coremark -v        # Compile with verbose output
+./sw/apps/compile_app.py hello_world --mem-config ddr
 ```
 
-### Build All Applications
+The CLI always runs `make clean` first and stops if cleaning fails. This prevents
+an image linked for one memory tier from being silently reused for another.
+Most app builds have a two-minute timeout; `linux_boot` allows up to 90 minutes
+because a fresh checkout builds its Buildroot toolchain, kernel, and initramfs
+before packing the images.
+
+### Build Ordinary Standalone Applications
 
 ```bash
-./sw/apps/build_all_apps.py
+./sw/apps/build_all_apps.py                       # Clean and build ordinary apps
+./sw/apps/build_all_apps.py --list                # Show build/skip decisions
+./sw/apps/build_all_apps.py --include-linux-boot  # Opt in to the long Linux build
 ```
+
+The script discovers non-hidden app directories that contain a `Makefile`. It
+skips `arch_test`, `riscv_tests`, and `riscv_torture` because their dedicated
+runners must choose a test source. It also skips `linux_boot` by default because
+its first Buildroot build takes roughly 30-60 minutes; the opt-in flag above
+includes it. Each skip is printed with its reason.
 
 ### Clean All Applications
 
@@ -440,6 +477,11 @@ program is linked into:
 make                    # MEM_CONFIG=bram (default): whole program in low BRAM
 make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
 ```
+
+`common.mk` fingerprints the effective tool/flag/link configuration and tracks
+included headers and Makefiles. A direct `make` therefore rebuilds when a header
+changes or when switching between `bram` and `ddr`; unknown `MEM_CONFIG` values
+are rejected. The CLI still cleans first for a deterministic standalone build.
 
 - `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
   (and the malloc heap) sit in the cached DDR region. Every board/FPGA flow uses

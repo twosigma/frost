@@ -26,15 +26,32 @@
 #include "ctype.h"
 #include "limits.h"
 
-/* Convert string to long integer */
+static int digit_value(unsigned char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'z')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'Z')
+        return c - 'A' + 10;
+    return -1;
+}
+
+/* Convert string to long integer. Invalid bases and strings containing no
+ * digits return zero and leave endptr pointing at the original string. */
 long strtol(const char *s, char **endptr, int base)
 {
     const char *p = s;
-    long result = 0;
+    unsigned long result = 0;
     int negative = 0;
     int overflow = 0;
-    long cutoff;
-    int cutlim;
+    int any_digits = 0;
+
+    if (base != 0 && (base < 2 || base > 36)) {
+        if (endptr != NULL)
+            *endptr = (char *) s;
+        return 0;
+    }
 
     /* Skip leading whitespace */
     while (isspace(*p))
@@ -48,61 +65,60 @@ long strtol(const char *s, char **endptr, int base)
         p++;
     }
 
-    /* Auto-detect base if base is 0 */
-    if (base == 0) {
-        if (*p == '0') {
-            p++;
-            if (*p == 'x' || *p == 'X') {
-                base = 16;
-                p++;
-            } else {
-                base = 8;
-            }
-        } else {
-            base = 10;
-        }
-    } else if (base == 16) {
-        /* Skip optional 0x/0X prefix for hex */
-        if (*p == '0' && (*(p + 1) == 'x' || *(p + 1) == 'X'))
-            p += 2;
+    /* A hexadecimal prefix is consumed only when at least one hexadecimal
+     * digit follows it. This leaves "0x" parsed as the single digit zero. */
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X') &&
+        digit_value((unsigned char) p[2]) >= 0 && digit_value((unsigned char) p[2]) < 16) {
+        base = 16;
+        p += 2;
+    } else if (base == 0) {
+        base = (*p == '0') ? 8 : 10;
     }
 
-    /* Set up overflow detection */
-    cutoff = negative ? -(LONG_MIN / base) : LONG_MAX / base;
-    cutlim = negative ? -(int) (LONG_MIN % base) : (int) (LONG_MAX % base);
+    /* Accumulate the magnitude in unsigned long. LONG_MIN has a magnitude one
+     * greater than LONG_MAX, so a signed accumulator cannot represent it. */
+    const unsigned long limit =
+        negative ? (unsigned long) LONG_MAX + 1UL : (unsigned long) LONG_MAX;
+    const unsigned long cutoff = limit / (unsigned int) base;
+    const unsigned int cutlim = (unsigned int) (limit % (unsigned int) base);
 
     /* Parse digits */
     while (*p) {
-        int digit;
-
-        if (isdigit(*p))
-            digit = *p - '0';
-        else if (isalpha(*p))
-            digit = tolower(*p) - 'a' + 10;
-        else
-            break;
-
+        int digit = digit_value((unsigned char) *p);
         if (digit >= base)
             break;
+        if (digit < 0)
+            break;
+
+        any_digits = 1;
 
         /* Check for overflow */
-        if (result > cutoff || (result == cutoff && digit > cutlim)) {
+        if (result > cutoff || (result == cutoff && (unsigned int) digit > cutlim)) {
             overflow = 1;
         } else {
-            result = result * base + digit;
+            result = result * (unsigned int) base + (unsigned int) digit;
         }
         p++;
     }
 
-    /* Set endptr if provided */
-    if (endptr)
+    if (!any_digits) {
+        if (endptr != NULL)
+            *endptr = (char *) s;
+        return 0;
+    }
+
+    if (endptr != NULL)
         *endptr = (char *) p;
 
     /* Handle overflow */
     if (overflow)
         return negative ? LONG_MIN : LONG_MAX;
 
-    return negative ? -result : result;
+    if (!negative)
+        return (long) result;
+    if (result == (unsigned long) LONG_MAX + 1UL)
+        return LONG_MIN;
+    return -(long) result;
 }
 
 /* Convert string to integer */

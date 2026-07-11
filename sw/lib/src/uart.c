@@ -61,8 +61,24 @@ void uart_puts(const char *s)
         uart_putchar(*s++);
 }
 
-/* Generic unsigned decimal printer - works for all unsigned integer types */
-static void uart_put_unsigned_decimal(unsigned long long val, int max_digits)
+static void uart_put_padding(int count, char c)
+{
+    while (count-- > 0)
+        uart_putchar(c);
+}
+
+static int uart_decimal_digits(unsigned long long val)
+{
+    int digits = 1;
+    while (val >= 10) {
+        val /= 10;
+        digits++;
+    }
+    return digits;
+}
+
+/* Generic unsigned decimal printer - works for all unsigned integer types. */
+static void uart_put_unsigned_decimal_raw(unsigned long long val)
 {
     char buf[20]; /* Buffer fits max value: 18,446,744,073,709,551,615 */
     int count = 0;
@@ -73,7 +89,7 @@ static void uart_put_unsigned_decimal(unsigned long long val, int max_digits)
     }
 
     /* Extract digits in reverse order (least significant first) */
-    while (val && count < max_digits && count < (int) sizeof(buf)) {
+    while (val && count < (int) sizeof(buf)) {
         buf[count++] = (char) ('0' + (val % 10));
         val /= 10;
     }
@@ -83,26 +99,34 @@ static void uart_put_unsigned_decimal(unsigned long long val, int max_digits)
         uart_putchar(buf[count]);
 }
 
-/* Wrapper functions for specific unsigned integer types */
-static inline void uart_put_uint(unsigned int value)
+static void uart_put_unsigned_decimal(unsigned long long value, int width, int zero_pad)
 {
-    uart_put_unsigned_decimal(value, 10); /* Maximum 10 digits for 32-bit unsigned */
+    uart_put_padding(width - uart_decimal_digits(value), zero_pad ? '0' : ' ');
+    uart_put_unsigned_decimal_raw(value);
 }
 
-static inline void uart_put_ulong(unsigned long value)
+/* Generic signed decimal printer - handles the most-negative value without
+ * signed negation overflow and places zero padding after the sign. */
+static void uart_put_signed_decimal(long long value, int width, int zero_pad)
 {
-    uart_put_unsigned_decimal(value, 20); /* Maximum 20 digits for 64-bit unsigned */
-}
+    int negative = value < 0;
+    unsigned long long magnitude =
+        negative ? (unsigned long long) (-(value + 1LL)) + 1ULL : (unsigned long long) value;
+    int padding = width - uart_decimal_digits(magnitude) - negative;
 
-static inline void uart_put_ulonglong(unsigned long long value)
-{
-    uart_put_unsigned_decimal(value, 20); /* Maximum 20 digits for 64-bit unsigned */
+    if (!zero_pad)
+        uart_put_padding(padding, ' ');
+    if (negative)
+        uart_putchar('-');
+    if (zero_pad)
+        uart_put_padding(padding, '0');
+    uart_put_unsigned_decimal_raw(magnitude);
 }
 
 /* Print hexadecimal value with specified number of digits */
-static void uart_put_hex(unsigned int val, int ndigits, int uppercase)
+static void uart_put_hex(unsigned long long val, int ndigits, int uppercase)
 {
-    char buf[8];
+    char buf[16];
     int i = 0;
 
     /* Extract hex digits in reverse order (least significant first) */
@@ -110,7 +134,7 @@ static void uart_put_hex(unsigned int val, int ndigits, int uppercase)
         unsigned d = val & 0xF;
         buf[i++] = (d < 10) ? ('0' + d) : (uppercase ? 'A' : 'a') + d - 10;
         val >>= 4;
-    } while (val && i < 8);
+    } while (val && i < (int) sizeof(buf));
 
     /* Pad with zeros to reach requested number of digits */
     while (i < ndigits)
@@ -121,43 +145,45 @@ static void uart_put_hex(unsigned int val, int ndigits, int uppercase)
         uart_putchar(buf[i]);
 }
 
-/* Generic signed decimal printer - handles negative values */
-static void uart_put_signed_decimal(long long val, int max_digits)
+static int uart_hex_digits(unsigned long long value)
 {
-    if (val < 0) {
-        uart_putchar('-');
-        uart_put_unsigned_decimal((unsigned long long) (-(val + 1LL)) + 1ULL, max_digits);
-        return;
+    int digits = 1;
+    while (value >>= 4) {
+        digits++;
     }
-    uart_put_unsigned_decimal((unsigned long long) val, max_digits);
-}
-
-static inline void uart_put_int(int value)
-{
-    uart_put_signed_decimal(value, 10); /* Maximum 10 digits for 32-bit signed */
-}
-
-static inline void uart_put_longlong(long long value)
-{
-    uart_put_signed_decimal(value, 20); /* Maximum 20 digits for 64-bit signed */
+    return digits;
 }
 
 #if UART_PRINTF_ENABLE_FLOAT
 static void uart_put_float(double value, int precision)
 {
-    float fval = (float) value;
-    if (fval != fval) {
+    if (value != value) {
         uart_puts("nan");
         return;
     }
-    if (fval > 3.4028235e38f) {
+    if (value > 0x1.fffffffffffffp1023) {
         uart_puts("inf");
         return;
     }
-    if (fval < -3.4028235e38f) {
+    if (value < -0x1.fffffffffffffp1023) {
         uart_puts("-inf");
         return;
     }
+
+    /* Converting a floating value outside the unsigned long long range to an
+     * integer is undefined in C. This tiny fixed-point formatter intentionally
+     * avoids a 39-digit large-number path and reports its finite range limit
+     * explicitly instead. */
+    if (value >= 0x1p64) {
+        uart_puts("ovf");
+        return;
+    }
+    if (value <= -0x1p64) {
+        uart_puts("-ovf");
+        return;
+    }
+
+    double fval = value;
 
     if (precision < 0)
         precision = 6;
@@ -168,20 +194,20 @@ static void uart_put_float(double value, int precision)
     }
 
     unsigned long long int_part = (unsigned long long) fval;
-    uart_put_unsigned_decimal(int_part, 20);
+    uart_put_unsigned_decimal_raw(int_part);
 
     if (precision == 0)
         return;
 
     uart_putchar('.');
-    float frac = fval - (float) int_part;
-    if (frac < 0.0f)
-        frac = 0.0f;
+    double frac = fval - (double) int_part;
+    if (frac < 0.0)
+        frac = 0.0;
     for (int i = 0; i < precision; ++i) {
-        frac *= 10.0f;
+        frac *= 10.0;
         int digit = (int) frac;
         uart_putchar((char) ('0' + digit));
-        frac -= (float) digit;
+        frac -= (double) digit;
     }
 }
 #endif
@@ -202,7 +228,8 @@ void uart_printf(const char *fmt, ...)
             continue;
         }
 
-        /* Parse format specifier flags and width */
+        /* Parse format specifier flags and width. Width is capped to keep a
+         * malformed embedded format string from producing unbounded output. */
         int zero_pad = 0, width = 0;
         int precision = -1;
 
@@ -214,7 +241,10 @@ void uart_printf(const char *fmt, ...)
 
         /* Parse field width (e.g., %8d, %04x) */
         while (*p >= '0' && *p <= '9') {
-            width = width * 10 + (*p - '0');
+            if (width < 255)
+                width = width * 10 + (*p - '0');
+            if (width > 255)
+                width = 255;
             ++p;
         }
 
@@ -223,19 +253,13 @@ void uart_printf(const char *fmt, ...)
             precision = 0;
             ++p;
             while (*p >= '0' && *p <= '9') {
-                precision = precision * 10 + (*p - '0');
+                if (precision < 9)
+                    precision = precision * 10 + (*p - '0');
+                if (precision > 9)
+                    precision = 9;
                 ++p;
             }
         }
-
-        /* Limit field width to 8 digits maximum.
-           This matches the buffer size in uart_put_hex() and is sufficient
-           for 32-bit values (0xFFFFFFFF = 8 hex digits). Larger widths would require
-           larger stack buffers and aren't needed for this embedded printf. */
-        if (width > 8)
-            width = 8;
-        if (width == 0)
-            width = 1;
 
         /* Parse optional length modifiers ('l' for long, 'll' for long long) */
         int is_long = 0;
@@ -252,52 +276,67 @@ void uart_printf(const char *fmt, ...)
             }
         }
 
+        if (*p == '\0') {
+            uart_putchar('%');
+            break;
+        }
+
         /* Process conversion specifier */
         switch (*p) {
             case 'c': {
                 /* %c - print single character */
                 char ch = (char) va_arg(args, int);
+                uart_put_padding(width - 1, ' ');
                 uart_putchar(ch);
                 break;
             }
 
             case 's': {
                 /* %s - print null-terminated string */
-                uart_puts(va_arg(args, const char *));
+                const char *s = va_arg(args, const char *);
+                if (s == NULL)
+                    s = "(null)";
+                int length = 0;
+                while (s[length] != '\0')
+                    length++;
+                uart_put_padding(width - length, ' ');
+                uart_puts(s);
                 break;
             }
 
             case 'd': {
                 /* %d / %ld / %lld - signed decimal integer */
                 if (is_longlong)
-                    uart_put_longlong(va_arg(args, long long));
+                    uart_put_signed_decimal(va_arg(args, long long), width, zero_pad);
                 else if (is_long)
-                    uart_put_int((int) va_arg(args, long));
+                    uart_put_signed_decimal(va_arg(args, long), width, zero_pad);
                 else
-                    uart_put_int(va_arg(args, int));
+                    uart_put_signed_decimal(va_arg(args, int), width, zero_pad);
                 break;
             }
 
             case 'u': {
                 /* %u / %lu / %llu - unsigned decimal integer */
                 if (is_longlong)
-                    uart_put_ulonglong(va_arg(args, unsigned long long));
+                    uart_put_unsigned_decimal(va_arg(args, unsigned long long), width, zero_pad);
                 else if (is_long)
-                    uart_put_ulong(va_arg(args, unsigned long));
+                    uart_put_unsigned_decimal(va_arg(args, unsigned long), width, zero_pad);
                 else
-                    uart_put_uint(va_arg(args, unsigned int));
+                    uart_put_unsigned_decimal(va_arg(args, unsigned int), width, zero_pad);
                 break;
             }
 
-            case 'x': /* %x / %X - hexadecimal (32-bit only) */
+            case 'x': /* %x / %X, with optional l/ll length */
             case 'X': {
-                unsigned int hexval = va_arg(args, unsigned int);
+                unsigned long long hexval;
+                if (is_longlong)
+                    hexval = va_arg(args, unsigned long long);
+                else if (is_long)
+                    hexval = va_arg(args, unsigned long);
+                else
+                    hexval = va_arg(args, unsigned int);
 
-                /* Determine minimum number of hex digits needed for this value */
-                unsigned tmp = hexval;
-                int ndigits = 1;
-                while (tmp >>= 4)
-                    ++ndigits;
+                int ndigits = uart_hex_digits(hexval);
 
                 /* Use field width if larger than needed digits */
                 if (width < ndigits)
@@ -318,6 +357,7 @@ void uart_printf(const char *fmt, ...)
                 /* %f - floating point (double promoted) */
                 uart_put_float(va_arg(args, double), precision);
 #else
+                (void) va_arg(args, double);
                 uart_putchar('%');
                 uart_putchar('f');
 #endif

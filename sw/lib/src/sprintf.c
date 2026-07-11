@@ -40,18 +40,42 @@ typedef struct {
     char *buf;
     size_t size;
     size_t pos;
+    bool overflow;
 } OutCtx;
+
+static inline void ctx_advance(OutCtx *c, size_t n)
+{
+    if (n > SIZE_MAX - c->pos) {
+        c->pos = SIZE_MAX;
+        c->overflow = true;
+    } else {
+        c->pos += n;
+    }
+}
 
 static inline void ctx_putc(OutCtx *c, char ch)
 {
-    if (c->buf && c->pos + 1 < c->size)
+    if (c->buf && c->size > 0 && c->pos < c->size - 1)
         c->buf[c->pos] = ch;
-    c->pos++;
+    ctx_advance(c, 1);
 }
 static void ctx_write(OutCtx *c, const char *s, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-        ctx_putc(c, s[i]);
+    if (c->buf && c->size > 0 && c->pos < c->size - 1) {
+        size_t room = c->size - 1 - c->pos;
+        size_t copy = n < room ? n : room;
+        memcpy(c->buf + c->pos, s, copy);
+    }
+    ctx_advance(c, n);
+}
+static void ctx_repeat(OutCtx *c, char ch, size_t n)
+{
+    if (c->buf && c->size > 0 && c->pos < c->size - 1) {
+        size_t room = c->size - 1 - c->pos;
+        size_t fill = n < room ? n : room;
+        memset(c->buf + c->pos, (unsigned char) ch, fill);
+    }
+    ctx_advance(c, n);
 }
 static void ctx_term(OutCtx *c)
 {
@@ -151,39 +175,18 @@ static int exp10of(double d)
 
 static void sp_special(OutCtx *c, const char *s, int w, bool lj)
 {
-    int l = (int) strlen(s), pad = w - l;
+    size_t l = strlen(s);
+    size_t pad = (w > 0 && (size_t) w > l) ? (size_t) w - l : 0;
     if (!lj)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
-    ctx_write(c, s, (size_t) l);
+        ctx_repeat(c, ' ', pad);
+    ctx_write(c, s, l);
     if (lj)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
-}
-
-/* emit sign + number string, padding to width */
-static void padout(
-    OutCtx *c, char sgn, const char *pfx, int pl, const char *num, int nl, int w, bool lj, bool zp)
-{
-    int content = (sgn ? 1 : 0) + pl + nl, pad = (w > content) ? w - content : 0;
-    if (!lj && !zp)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
-    if (sgn)
-        ctx_putc(c, sgn);
-    if (pl)
-        ctx_write(c, pfx, (size_t) pl);
-    if (!lj && zp)
-        while (pad-- > 0)
-            ctx_putc(c, '0');
-    ctx_write(c, num, (size_t) nl);
-    if (lj)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
+        ctx_repeat(c, ' ', pad);
 }
 
 /* ── %f ───────────────────────────────────────────────────────────────── */
-static void do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, bool zp)
+static void
+do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, bool zp, bool trim)
 {
     if (prec < 0)
         prec = 6;
@@ -205,11 +208,13 @@ static void do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int 
     int idigs = (e10 >= 0) ? (e10 + 1) : 0;
 
     /* cap precision so idigs+prec <= NP10 (fits in uint64_t) */
-    int sp = prec;
-    if (idigs + sp > (int) NP10)
-        sp = (int) NP10 - idigs;
-    if (sp < 0)
+    int sp;
+    if (idigs >= (int) NP10) {
         sp = 0;
+    } else {
+        int max_sp = (int) NP10 - idigs;
+        sp = prec < max_sp ? prec : max_sp;
+    }
 
     /* scaled = round(ad * 10^sp) */
     double sh = ad * (double) P10U[sp] + 0.5;
@@ -218,42 +223,64 @@ static void do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int 
     uint64_t scale = P10U[sp];
     uint64_t ipart = scaled / scale, fpart = scaled % scale;
 
-    char fb[80];
-    int fi = 0;
-
-    /* integer part */
-    if (ipart == 0) {
-        fb[fi++] = '0';
-    } else {
-        char ib[IBUF];
-        size_t il;
-        const char *ip = u64str(ipart, 10, false, ib, &il);
-        for (size_t k = 0; k < il; k++)
-            fb[fi++] = ip[k];
-    }
-    /* fractional part */
-    if (prec > 0 || fh) {
-        fb[fi++] = '.';
-        if (sp > 0) {
-            char ib[IBUF];
-            size_t fl2;
-            const char *fp2 = u64str(fpart, 10, false, ib, &fl2);
-            int lz = sp - (int) fl2;
-            for (int k = 0; k < lz; k++)
-                fb[fi++] = '0';
-            for (size_t k = 0; k < fl2; k++)
-                fb[fi++] = fp2[k];
+    int frac_digits = sp;
+    int out_prec = prec;
+    if (trim && !fh) {
+        while (frac_digits > 0 && fpart % 10U == 0) {
+            fpart /= 10U;
+            frac_digits--;
         }
-        for (int k = sp; k < prec; k++)
-            fb[fi++] = '0';
+        out_prec = frac_digits;
     }
-    fb[fi] = '\0';
-    padout(c, sgn, NULL, 0, fb, fi, w, lj, zp);
+
+    char ib[IBUF];
+    size_t il;
+    const char *ip = u64str(ipart, 10, false, ib, &il);
+
+    char frac_buf[IBUF];
+    size_t fl = 0;
+    const char *frac = NULL;
+    if (frac_digits > 0)
+        frac = u64str(fpart, 10, false, frac_buf, &fl);
+
+    size_t body = il;
+    if (out_prec > 0 || fh)
+        body += 1U + (size_t) out_prec;
+    size_t content = body + (sgn ? 1U : 0U);
+    size_t pad = (w > 0 && (size_t) w > content) ? (size_t) w - content : 0;
+
+    if (!lj && !zp)
+        ctx_repeat(c, ' ', pad);
+    if (sgn)
+        ctx_putc(c, sgn);
+    if (!lj && zp)
+        ctx_repeat(c, '0', pad);
+
+    ctx_write(c, ip, il);
+    if (out_prec > 0 || fh) {
+        ctx_putc(c, '.');
+        if (frac_digits > 0) {
+            ctx_repeat(c, '0', (size_t) frac_digits - fl);
+            ctx_write(c, frac, fl);
+        }
+        ctx_repeat(c, '0', (size_t) (out_prec - frac_digits));
+    }
+    if (lj)
+        ctx_repeat(c, ' ', pad);
 }
 
 /* ── %e / %E ─────────────────────────────────────────────────────────── */
-static void
-do_e(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, bool zp, bool up)
+static void do_e(OutCtx *c,
+                 double d,
+                 int prec,
+                 bool fp,
+                 bool fsp,
+                 bool fh,
+                 int w,
+                 bool lj,
+                 bool zp,
+                 bool up,
+                 bool trim)
 {
     if (prec < 0)
         prec = 6;
@@ -311,58 +338,61 @@ do_e(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, 
 
     uint64_t first = scaled / scale, frac = scaled % scale;
 
-    char fb[80];
-    int fi = 0;
-    fb[fi++] = (char) ('0' + (int) first);
-    if (prec > 0 || fh) {
-        fb[fi++] = '.';
-        if (sp > 0) {
-            char ib[IBUF];
-            size_t fl;
-            const char *fp2 = u64str(frac, 10, false, ib, &fl);
-            int lz = sp - (int) fl;
-            for (int k = 0; k < lz; k++)
-                fb[fi++] = '0';
-            for (size_t k = 0; k < fl; k++)
-                fb[fi++] = fp2[k];
+    int frac_digits = sp;
+    int out_prec = prec;
+    if (trim && !fh) {
+        while (frac_digits > 0 && frac % 10U == 0) {
+            frac /= 10U;
+            frac_digits--;
         }
-        for (int k = sp; k < prec; k++)
-            fb[fi++] = '0';
+        out_prec = frac_digits;
     }
-    /* exponent */
-    fb[fi++] = up ? 'E' : 'e';
+
+    char frac_buf[IBUF];
+    size_t fl = 0;
+    const char *frac_str = NULL;
+    if (frac_digits > 0)
+        frac_str = u64str(frac, 10, false, frac_buf, &fl);
+
     int ae = e10;
-    fb[fi++] = (ae < 0) ? '-' : '+';
+    char exp_sign = (ae < 0) ? '-' : '+';
     if (ae < 0)
         ae = -ae;
-    if (ae >= 100)
-        fb[fi++] = (char) ('0' + ae / 100);
-    fb[fi++] = (char) ('0' + (ae / 10) % 10);
-    fb[fi++] = (char) ('0' + ae % 10);
-    fb[fi] = '\0';
-    padout(c, sgn, NULL, 0, fb, fi, w, lj, zp);
-}
+    char exp_buf[IBUF];
+    size_t exp_digits;
+    const char *exp_str = u64str((uint64_t) ae, 10, false, exp_buf, &exp_digits);
+    size_t exponent_len = 2U + (exp_digits < 2U ? 2U : exp_digits);
 
-/* strip trailing zeros (and lone '.') after fractional dot, in-place */
-static int strip_tz(char *s, int len, bool fh)
-{
-    if (fh)
-        return len;
-    int dot = -1;
-    for (int i = 0; i < len; i++)
-        if (s[i] == '.') {
-            dot = i;
-            break;
+    size_t body = 1U + exponent_len;
+    if (out_prec > 0 || fh)
+        body += 1U + (size_t) out_prec;
+    size_t content = body + (sgn ? 1U : 0U);
+    size_t pad = (w > 0 && (size_t) w > content) ? (size_t) w - content : 0;
+
+    if (!lj && !zp)
+        ctx_repeat(c, ' ', pad);
+    if (sgn)
+        ctx_putc(c, sgn);
+    if (!lj && zp)
+        ctx_repeat(c, '0', pad);
+
+    ctx_putc(c, (char) ('0' + (int) first));
+    if (out_prec > 0 || fh) {
+        ctx_putc(c, '.');
+        if (frac_digits > 0) {
+            ctx_repeat(c, '0', (size_t) frac_digits - fl);
+            ctx_write(c, frac_str, fl);
         }
-    if (dot < 0)
-        return len;
-    int nl = len;
-    while (nl > dot + 1 && s[nl - 1] == '0')
-        nl--;
-    if (nl > 0 && s[nl - 1] == '.')
-        nl--;
-    s[nl] = '\0';
-    return nl;
+        ctx_repeat(c, '0', (size_t) (out_prec - frac_digits));
+    }
+    ctx_putc(c, up ? 'E' : 'e');
+    ctx_putc(c, exp_sign);
+    if (exp_digits < 2U)
+        ctx_putc(c, '0');
+    ctx_write(c, exp_str, exp_digits);
+
+    if (lj)
+        ctx_repeat(c, ' ', pad);
 }
 
 /* ── %g / %G ─────────────────────────────────────────────────────────── */
@@ -386,78 +416,13 @@ do_g(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, 
     double ad = dabs(d);
     int e10 = (ad == 0.0) ? 0 : exp10of(ad);
 
-    /* build into scratch (no width/padding yet) */
-    char tmp[128];
-    OutCtx sc = {tmp, sizeof(tmp), 0};
-
     if (e10 < -4 || e10 >= prec) {
-        do_e(&sc, d, prec - 1, fp, fsp, fh, 0, false, false, up);
+        do_e(c, d, prec - 1, fp, fsp, fh, w, lj, zp, up, true);
     } else {
-        int p = prec - 1 - e10;
-        if (p < 0)
-            p = 0;
-        do_f(&sc, d, p, fp, fsp, fh, 0, false, false);
+        int64_t requested = (int64_t) prec - 1 - e10;
+        int p = requested > INT_MAX ? INT_MAX : (int) requested;
+        do_f(c, d, p, fp, fsp, fh, w, lj, zp, true);
     }
-    ctx_term(&sc);
-    int tlen = (int) sc.pos;
-
-    /* strip trailing zeros from the mantissa portion */
-    if (!fh) {
-        /* find where the sign/space prefix ends */
-        int start = (tmp[0] == '-' || tmp[0] == '+' || tmp[0] == ' ') ? 1 : 0;
-        /* find 'e'/'E' if present */
-        int epos = -1;
-        for (int i = start; i < tlen; i++)
-            if (tmp[i] == 'e' || tmp[i] == 'E') {
-                epos = i;
-                break;
-            }
-
-        if (epos >= 0) {
-            /* strip in mantissa [start..epos) */
-            char mant[64];
-            int ml = epos - start;
-            memcpy(mant, &tmp[start], (size_t) ml);
-            mant[ml] = '\0';
-            int nml = strip_tz(mant, ml, false);
-            /* rebuild */
-            char nb[128];
-            int ni = 0;
-            if (start)
-                nb[ni++] = tmp[0];
-            memcpy(&nb[ni], mant, (size_t) nml);
-            ni += nml;
-            int el = tlen - epos;
-            memcpy(&nb[ni], &tmp[epos], (size_t) el);
-            ni += el;
-            nb[ni] = '\0';
-            memcpy(tmp, nb, (size_t) (ni + 1));
-            tlen = ni;
-        } else {
-            int start2 = (tmp[0] == '-' || tmp[0] == '+' || tmp[0] == ' ') ? 1 : 0;
-            int nsl = strip_tz(tmp + start2, tlen - start2, false);
-            tlen = nsl + start2;
-            tmp[tlen] = '\0';
-        }
-    }
-
-    /* now apply width/padding */
-    int start = (tmp[0] == '-' || tmp[0] == '+' || tmp[0] == ' ') ? 1 : 0;
-    char sgn2 = (start ? tmp[0] : 0);
-    int plen = tlen - start;
-    int pad = (w > tlen) ? w - tlen : 0;
-    if (!lj && !zp)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
-    if (sgn2)
-        ctx_putc(c, sgn2);
-    if (!lj && zp)
-        while (pad-- > 0)
-            ctx_putc(c, '0');
-    ctx_write(c, tmp + start, (size_t) plen);
-    if (lj)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
 }
 
 /* ── Integer emit ──────────────────────────────────────────────────────── */
@@ -486,15 +451,14 @@ static void emit_int(OutCtx *c,
             else if (fsp)
                 sc = ' ';
         }
-        int pad = w - (sc ? 1 : 0);
+        size_t content = sc ? 1U : 0U;
+        size_t pad = (w > 0 && (size_t) w > content) ? (size_t) w - content : 0;
         if (!lj)
-            while (pad-- > 0)
-                ctx_putc(c, ' ');
+            ctx_repeat(c, ' ', pad);
         if (sc)
             ctx_putc(c, sc);
         if (lj)
-            while (pad-- > 0)
-                ctx_putc(c, ' ');
+            ctx_repeat(c, ' ', pad);
         return;
     }
 
@@ -520,34 +484,48 @@ static void emit_int(OutCtx *c,
         }
     }
 
-    int pp = (prec > 0 && (int) dl < prec) ? prec - (int) dl : 0;
-    int nl = pl + pp + (int) dl;
-    int pad = (w > nl) ? w - nl : 0;
+    size_t pp = (prec > 0 && dl < (size_t) prec) ? (size_t) prec - dl : 0;
+    size_t nl = (size_t) pl + pp + dl;
+    size_t pad = (w > 0 && (size_t) w > nl) ? (size_t) w - nl : 0;
     bool dozp = zp && prec < 0 && !lj;
 
     if (!lj && !dozp)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
+        ctx_repeat(c, ' ', pad);
     for (int i = 0; i < pl; i++)
         ctx_putc(c, pfx[i]);
     if (!lj && dozp)
-        while (pad-- > 0)
-            ctx_putc(c, '0');
-    for (int i = 0; i < pp; i++)
-        ctx_putc(c, '0');
+        ctx_repeat(c, '0', pad);
+    ctx_repeat(c, '0', pp);
     ctx_write(c, digs, dl);
     if (lj)
-        while (pad-- > 0)
-            ctx_putc(c, ' ');
+        ctx_repeat(c, ' ', pad);
 }
 
 /* ── Core engine ─────────────────────────────────────────────────────── */
 
 typedef enum { LM_NONE, LM_HH, LM_H, LM_L, LM_LL, LM_Z, LM_T } LenMod;
 
+static int parse_decimal_int(const char **cursor, bool *clamped)
+{
+    const char *p = *cursor;
+    int value = 0;
+
+    while (*p >= '0' && *p <= '9') {
+        int digit = *p++ - '0';
+        if (value > (INT_MAX - digit) / 10) {
+            value = INT_MAX;
+            *clamped = true;
+        } else {
+            value = value * 10 + digit;
+        }
+    }
+    *cursor = p;
+    return value;
+}
+
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
-    OutCtx ctx = {buf, size, 0};
+    OutCtx ctx = {buf, size, 0, false};
 
     for (const char *p = fmt; *p; p++) {
         if (*p != '%') {
@@ -555,6 +533,11 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
             continue;
         }
         p++;
+        if (*p == '\0') {
+            /* A trailing '%' is malformed, but it must not walk past fmt. */
+            ctx_putc(&ctx, '%');
+            break;
+        }
 
         bool fm = false, fp = false, fsp = false, fz = false, fh = false;
         for (;;) {
@@ -588,14 +571,21 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
             w = va_arg(ap, int);
             if (w < 0) {
                 fm = true;
-                w = -w;
+                if (w == INT_MIN) {
+                    /* The positive width cannot be represented by int. */
+                    w = INT_MAX;
+                    ctx.overflow = true;
+                } else {
+                    w = -w;
+                }
             }
             p++;
-        } else
-            while (*p >= '0' && *p <= '9')
-                w = w * 10 + (*p++ - '0');
+        } else {
+            w = parse_decimal_int(&p, &ctx.overflow);
+        }
 
         int prec = -1;
+        bool precision_clamped = false;
         if (*p == '.') {
             p++;
             prec = 0;
@@ -604,9 +594,9 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 if (prec < 0)
                     prec = -1;
                 p++;
-            } else
-                while (*p >= '0' && *p <= '9')
-                    prec = prec * 10 + (*p++ - '0');
+            } else {
+                prec = parse_decimal_int(&p, &precision_clamped);
+            }
         }
 
         LenMod lm = LM_NONE;
@@ -629,6 +619,22 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 break;
         }
 
+        if (*p == '\0') {
+            /* Likewise, do not advance beyond an incomplete conversion. */
+            break;
+        }
+
+        /* A precision larger than INT_MAX does not itself imply that the
+         * formatted output is too long: for example, it may merely bound a
+         * one-character string. Integer precision, however, is a minimum
+         * digit count, so a clamped integer precision necessarily exceeds the
+         * representable snprintf return range. Do this after consuming length
+         * modifiers so *p names the actual conversion. */
+        if (precision_clamped &&
+            (*p == 'd' || *p == 'i' || *p == 'u' || *p == 'o' || *p == 'x' || *p == 'X')) {
+            ctx.overflow = true;
+        }
+
         switch (*p) {
             case '%':
                 ctx_putc(&ctx, '%');
@@ -636,31 +642,25 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 
             case 'c': {
                 char ch = (char) va_arg(ap, int);
-                int pad = w - 1;
+                size_t pad = w > 1 ? (size_t) w - 1U : 0;
                 if (!fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 ctx_putc(&ctx, ch);
                 if (fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 break;
             }
             case 's': {
                 const char *s = va_arg(ap, const char *);
                 if (!s)
                     s = "(null)";
-                size_t sl = strlen(s);
-                if (prec >= 0 && (size_t) prec < sl)
-                    sl = (size_t) prec;
-                int pad = (w > (int) sl) ? w - (int) sl : 0;
+                size_t sl = prec >= 0 ? strnlen(s, (size_t) prec) : strlen(s);
+                size_t pad = (w > 0 && (size_t) w > sl) ? (size_t) w - sl : 0;
                 if (!fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 ctx_write(&ctx, s, sl);
                 if (fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 break;
             }
             case 'p': {
@@ -669,16 +669,15 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 char ib[IBUF];
                 size_t dl;
                 const char *digs = u64str((uint64_t) uv, 16, false, ib, &dl);
-                int cont = 2 + (int) dl, pad = (w > cont) ? w - cont : 0;
+                size_t cont = 2U + dl;
+                size_t pad = (w > 0 && (size_t) w > cont) ? (size_t) w - cont : 0;
                 if (!fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 ctx_putc(&ctx, '0');
                 ctx_putc(&ctx, 'x');
                 ctx_write(&ctx, digs, dl);
                 if (fm)
-                    while (pad-- > 0)
-                        ctx_putc(&ctx, ' ');
+                    ctx_repeat(&ctx, ' ', pad);
                 break;
             }
             case 'd':
@@ -785,11 +784,11 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
             }
             case 'f':
             case 'F':
-                do_f(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz);
+                do_f(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, false);
                 break;
             case 'e':
             case 'E':
-                do_e(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, *p == 'E');
+                do_e(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, *p == 'E', false);
                 break;
             case 'g':
             case 'G':
@@ -808,6 +807,8 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
         }
     }
     ctx_term(&ctx);
+    if (ctx.overflow || ctx.pos > INT_MAX)
+        return -1;
     return (int) ctx.pos;
 }
 

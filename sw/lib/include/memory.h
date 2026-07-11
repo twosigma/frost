@@ -26,7 +26,7 @@ typedef struct {
     uint32_t capacity;
 } arena_t;
 
-/* Create a new arena on the heap. */
+/* Create a new arena on the heap. On failure, start is NULL and capacity is zero. */
 arena_t arena_alloc(uint32_t size);
 /* Release the arena. No-op on this bare-metal platform (see memory.c for details). */
 void arena_release(arena_t *arena);
@@ -35,8 +35,9 @@ void arena_release(arena_t *arena);
 void *arena_push(arena_t *arena, uint32_t size);
 /* Allocate `size` bytes on arena and zero the data. 8 byte aligned. */
 void *arena_push_zero(arena_t *arena, uint32_t size);
-/* Push to arena with `align` byte alignment of the returned pointer. `align` must be a power of 2.
- */
+/* Push to arena with `align` byte alignment of the returned pointer. Returns
+ * NULL without changing the arena if `align` is not a nonzero power of two or
+ * if the allocation does not fit. */
 char *arena_push_align(arena_t *arena, uint32_t size, uint8_t align);
 
 /* Pop `size` bytes from the end of an arena. */
@@ -44,6 +45,8 @@ void arena_pop(arena_t *arena, uint32_t size);
 /* Clear all bytes from arena. */
 void arena_clear(arena_t *arena);
 
+/* Allocate 8-byte-aligned storage. Zero-size, overflowing, and out-of-heap
+ * requests return NULL. Adjacent freed blocks are coalesced. */
 void *malloc(size_t size);
 void free(void *ptr);
 

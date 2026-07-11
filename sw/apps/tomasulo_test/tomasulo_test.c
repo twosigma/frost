@@ -35,8 +35,10 @@
  *   9. Branch with loop - speculative execution / branch prediction
  *  10. CDB contention - multiple simultaneous completions
  *  11. FP hazards - RAW/WAR/WAW/crossover with double-precision FP
+ *  12. Profile arithmetic - overflow-safe scaled counter ratios
  */
 
+#include "tomasulo_profile.h"
 #include "uart.h"
 #include <stdint.h>
 
@@ -636,6 +638,39 @@ static void test_fp_hazards(void)
 }
 
 /* ========================================================================== */
+/* Test 12: Profile Helper Arithmetic                                          */
+/* Tests: Scaled ratios remain correct at the uint32/uint64 boundaries         */
+/* ========================================================================== */
+
+static void test_profile_arithmetic(void)
+{
+    uart_printf("Test 12: Profile arithmetic...");
+
+    TEST("ratio zero total", tomasulo_profile_ratio_scaled(1, 0, 1000), 0);
+    TEST("ratio zero scale", tomasulo_profile_ratio_scaled(1, 1, 0), 0);
+    TEST("ratio one third", tomasulo_profile_ratio_scaled(1, 3, 1000), 333);
+    TEST("ratio two thirds rounded", tomasulo_profile_ratio_scaled(2, 3, 1000), 667);
+    TEST("ratio rounding boundary", tomasulo_profile_ratio_scaled(4294967, 4294967, 1000), 1000);
+    TEST("ratio max-scale half",
+         tomasulo_profile_ratio_scaled(1, 2, UINT32_MAX),
+         UINT32_C(0x80000000));
+    TEST("ratio large below half",
+         tomasulo_profile_ratio_scaled(6442450, UINT64_C(4294967296), 1000),
+         1);
+    TEST("ratio large above half",
+         tomasulo_profile_ratio_scaled(6442451, UINT64_C(4294967296), 1000),
+         2);
+    TEST("ratio large half-up",
+         tomasulo_profile_ratio_scaled(21474837, UINT64_C(4294967296), 100),
+         1);
+    TEST("ratio uint32 max", tomasulo_profile_ratio_scaled(UINT32_MAX, UINT32_MAX, 1000), 1000);
+    TEST("ratio uint64 max", tomasulo_profile_ratio_scaled(UINT64_MAX, UINT64_MAX, 1000), 1000);
+    TEST("ratio saturation", tomasulo_profile_ratio_scaled(UINT64_MAX, 1, UINT32_MAX), UINT32_MAX);
+
+    uart_printf(" done\n");
+}
+
+/* ========================================================================== */
 /* Main Entry Point                                                           */
 /* ========================================================================== */
 
@@ -657,6 +692,7 @@ int main(void)
     test_branch_loop();
     test_cdb_contention();
     test_fp_hazards();
+    test_profile_arithmetic();
 
     uart_printf("\n------------------------------------------------------------\n");
     uart_printf(

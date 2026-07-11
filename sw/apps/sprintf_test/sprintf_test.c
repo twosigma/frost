@@ -29,6 +29,7 @@
 #include <sprintf.h>
 #include <uart.h>
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h> /* strcmp, strlen, memset, memcmp */
@@ -113,6 +114,18 @@ static void check(
         print_int(got_ret);
         uart_putchar('\n');
     }
+}
+
+static void check_bool(const char *name, bool ok)
+{
+    if (ok) {
+        g_pass++;
+        return;
+    }
+    g_fail++;
+    uart_puts("FAIL  ");
+    uart_puts(name);
+    uart_putchar('\n');
 }
 
 /* Floating-point: accept +/-1 ULP in the last printed digit */
@@ -232,6 +245,13 @@ static void test_string(void)
     T("str no trunc", "hello", 5, "%3s", "hello"); /* no truncation without prec */
     T("str prec=1", "h", 1, "%.1s", "hello");
     T("str lj prec", "he   |", 6, "%-5.2s|", "hello");
+    {
+        /* A precision-bounded %s need not have a NUL within the bytes read. */
+        const char src[3] = {'a', 'b', 'c'};
+        char got[8];
+        int r = snprintf(got, sizeof(got), "%.*s", 3, src);
+        check("str bounded non-NUL", "abc", 3, got, r);
+    }
 }
 
 /* ── %d / %i ─────────────────────────────────────────────────────────────── */
@@ -506,6 +526,70 @@ static void test_snprintf_trunc(void)
     }
 }
 
+/* Large precisions must count omitted output without using precision-sized
+ * scratch buffers or touching bytes around the caller's destination. */
+static void test_large_precision_safety(void)
+{
+    section("Large precision safety");
+
+    struct guarded_buffer {
+        uint32_t before;
+        char buf[8];
+        uint32_t after;
+    };
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.*f", 100, 1.0);
+        check("f prec 100 tiny", "1.00000", 102, got.buf, r);
+        check_bool("f prec 100 canaries", got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.*e", 100, 1.0);
+        check("e prec 100 tiny", "1.00000", 106, got.buf, r);
+        check_bool("e prec 100 canaries", got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.*g", 100, 1.0);
+        check("g prec 100 tiny", "1", 1, got.buf, r);
+        check_bool("g prec 100 canaries", got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.*f", INT_MAX, 1.0);
+        check("f INT_MAX prec reports overflow", "1.00000", -1, got.buf, r);
+        check_bool("f INT_MAX prec canaries",
+                   got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.2147483648s", "x");
+        check("oversized str prec bounds short input", "x", 1, got.buf, r);
+        check_bool("oversized str prec canaries",
+                   got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+
+    {
+        struct guarded_buffer got = {.before = 0x13579BDFU, .after = 0x2468ACE0U};
+        memset(got.buf, 'X', sizeof(got.buf));
+        int r = snprintf(got.buf, sizeof(got.buf), "%.2147483648llu", 1ULL);
+        check("oversized ll prec reports overflow", "0000000", -1, got.buf, r);
+        check_bool("oversized integer prec canaries",
+                   got.before == 0x13579BDFU && got.after == 0x2468ACE0U);
+    }
+}
+
 /* ── Flags edge cases ────────────────────────────────────────────────────── */
 static void test_flags(void)
 {
@@ -721,6 +805,7 @@ int main(void)
     test_float_g();
     test_mixed();
     test_snprintf_trunc();
+    test_large_precision_safety();
     test_flags();
     test_length_mods();
     test_pointer();
