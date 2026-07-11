@@ -1415,8 +1415,16 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
 
     for cycle in range(200):
         model.tick()
-        # Apply deferred CDB from previous cycle (matches registered CDB timing)
+        # Apply deferred CDB from previous cycle (matches registered CDB
+        # timing). Keep it as live_cdb for this cycle: the DUT's registered
+        # CDB broadcasts it NOW, and a same-cycle RS dispatch snoops it
+        # (dispatch-time CDB bypass), so a model dispatch this cycle must see
+        # it too — otherwise the model entry pends forever on a tag that has
+        # already completed (seed 718859617: DUT tag 24 ready via bypass at
+        # dispatch, model expected 17).
+        live_cdb: tuple[int, int] | None = None
         if deferred_cdb is not None:
+            live_cdb = deferred_cdb
             model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])
             deferred_cdb = None
 
@@ -1514,6 +1522,9 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                     src2_tag=src2_tag,
                     src2_value=src2_value,
                     src3_ready=True,
+                    cdb_valid=live_cdb is not None,
+                    cdb_tag=live_cdb[0] if live_cdb else 0,
+                    cdb_value=live_cdb[1] if live_cdb else 0,
                 )
                 rs_live_tags.add(tag)
                 await dut_if.step()
@@ -2249,8 +2260,13 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
                 return
 
     for cycle in range(300):
-        # Apply deferred CDB from previous cycle (matches registered CDB timing)
+        # Apply deferred CDB from previous cycle (matches registered CDB
+        # timing). live_cdb feeds a same-cycle model dispatch's CDB bypass,
+        # mirroring the RTL's dispatch-time snoop of the in-flight broadcast
+        # (see test_random_dispatch_execute_commit).
+        live_cdb: tuple[int, int] | None = None
         if deferred_cdb is not None:
+            live_cdb = deferred_cdb
             model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])
             deferred_cdb = None
 
@@ -2340,6 +2356,9 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
                     src3_ready=src3_ready,
                     src3_tag=src3_tag,
                     src3_value=src3_value,
+                    cdb_valid=live_cdb is not None,
+                    cdb_tag=live_cdb[0] if live_cdb else 0,
+                    cdb_value=live_cdb[1] if live_cdb else 0,
                 )
                 rs_live_tags[rs_type].add(tag)
                 await dut_if.step()
