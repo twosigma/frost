@@ -56,9 +56,15 @@
 #define CLINT_MTIME_HI (*(volatile uint32_t *) 0x4001BFFCu)
 
 /* Tick period in mtime units (cycles). Linux uses 533,333 (4 ms at 133 MHz);
- * 8192 (~61 us) compresses ~65 boots' worth of re-arms into each second. */
+ * 8192 (~61 us) compresses ~65 boots' worth of re-arms into each second.
+ * Both knobs are overridable (EXTRA_CFLAGS=-DTARGET_TICKS=...) so simulation
+ * can run a shrunk sweep; the defaults are hardware-scale (~2.1B cycles). */
+#ifndef PERIOD_CYCLES
 #define PERIOD_CYCLES 8192u
+#endif
+#ifndef TARGET_TICKS
 #define TARGET_TICKS 262144u /* ~16 s of armed time at 133 MHz */
+#endif
 #define WATCHDOG_PERIODS 64u
 #define WFI_PHASE_EVERY 64u /* thrash sweeps between WFI idle phases */
 #define DDR_STACK_SIZE 4096u

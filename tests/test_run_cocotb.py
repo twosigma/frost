@@ -280,7 +280,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Timer IRQ swept across cached-DDR AMO bursts; counts every atomic "
             "side effect (AMO-vs-interrupt-flush orphaned-write regression). "
-            "Run with SIM_TIMER_SPEEDUP=1 and EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=<small>"
+            "Sim runs need EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=<=384 (default "
+            "24000 is hardware-scale); the bench budgets 6M cycles/run "
+            "(COCOTB_AMO_TORTURE_MAX_CYCLES overrides)"
         ),
         include_in_pytest=False,
     ),
@@ -290,7 +292,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="tick_torture",
         description=(
             "Linux-faithful CLINT re-arm under DDR thrash with readback verify "
-            "and lost-tick watchdog. Run with SIM_TIMER_SPEEDUP=1"
+            "and lost-tick watchdog. Hardware-scale by default (262144 ticks "
+            "~ 2.1B cycles); sim runs need EXTRA_CFLAGS='-DTARGET_TICKS=<small>' "
+            "plus a matching COCOTB_MAX_CYCLES"
         ),
         include_in_pytest=False,
     ),

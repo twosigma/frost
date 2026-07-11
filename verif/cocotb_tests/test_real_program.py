@@ -201,6 +201,17 @@ WFI_LOST_TICK_MAX_CYCLES = 800000
 # No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
 LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 
+# amo_irq_torture boots entirely from cached DDR (MEM_CONFIG=ddr): cold-cache
+# boot plus zeroing the 320 KiB counter/evict .bss puts even the banner past
+# the generic 500k budget, and the sweep itself needs ~2.61M cycles/run at
+# EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=256 (~3.9M at 384). Runs that omit this
+# budget time out with zero UART output — which looks exactly like a
+# pre-banner hang (that ghost was chased as a "seeded" flake on 2026-07-10;
+# the seed was irrelevant). Also covers amo_irq_torture_jitter (same app).
+AMO_IRQ_TORTURE_MAX_CYCLES = int(
+    os.environ.get("COCOTB_AMO_TORTURE_MAX_CYCLES", 6000000)
+)
+
 # Number of clock cycles to hold reset between runs
 RESET_CYCLES = 10
 
@@ -3538,6 +3549,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
     elif app_name == "wfi_lost_tick":
         max_cycles = WFI_LOST_TICK_MAX_CYCLES
+    elif app_name == "amo_irq_torture":
+        max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES
     else:

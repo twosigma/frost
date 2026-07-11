@@ -311,7 +311,8 @@ self-skip in the ddr tier.
 
 `test_real_program.py` honors two env knobs directly: `COCOTB_NUM_RUNS`
 (reset-and-rerun count, default 2) and `COCOTB_MAX_CYCLES` (timeout budget;
-CoreMark-style benchmarks use a larger default).
+CoreMark-style benchmarks, linux_boot, and amo_irq_torture have larger
+per-app defaults with their own env overrides).
 
 ### Customizing for Different DUT Implementations
 
