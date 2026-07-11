@@ -47,6 +47,9 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     FU_FP_MUL,
     FU_FP_DIV,
 )
+from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
+    unpack_commit,
+)
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
     CDBWrite,
@@ -3166,6 +3169,482 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     assert dut_if.rob_empty, "Load should retire after memory-backed completion"
 
     assert dut_if.rob_empty
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
+    """Full flush on the registered store-commit cycle of a live phase-2 probe.
+
+    Directed integration test for the 272f662/951e281 audit scenario.
+
+    Commit 272f662 split the SQ commit pulses into ARCHITECTURAL pulses
+    (sq_commit_valid, comb-killed by i_flush_all_wb_mask inside
+    commit_bus_pipeline) and SCAN-ONLY raw pulses (sq_commit_valid_scan,
+    deliberately unkilled) that feed only the forwarding unit's
+    committed-store qualification.  They diverge by design exactly on a
+    full-flush cycle.  Commit 951e281/272f662 additionally made the
+    forwarding unit's Block-3 output register capture-then-kill: the
+    capture enable (sq_check_capture_valid) omits every flush term, so a
+    flush-cycle probe result IS captured and must be structurally
+    unconsumable afterwards.
+
+    Cycle-exact construction (edge N = rising edge N; the bench drives
+    inputs at falling edges, so a value driven at the falling edge inside
+    cycle N-1 is sampled at edge N):
+
+      edge E   : S1 (store SW addr_x, at ROB head, done, commit hold just
+                 released) commits combinationally -> commit_bus_pipeline
+                 registers the pulse.  ROB head advances past S1.
+      cycle E  : the RAW registered pulse cycle.  commit_bus_q_valid_raw=1,
+                 sq_commit_valid_scan=1.  We assert i_flush_all +
+                 i_flush_all_wb_mask mid-cycle, so:
+                   - sq_commit_valid (architectural) is comb-killed,
+                   - sq_commit_valid_scan stays high (the divergence),
+                   - the LQ probe for load L is still staged with
+                     sq_check_phase2=1 (armed earlier, camped),
+                   - sq_check_capture_valid=1 (we drop the bus-busy
+                     blanket this cycle; the capture enable has no flush
+                     term by design),
+                   - the CAM scan sees S1 as a committed older store
+                     (scan pulse + tag age) with addr+data valid ->
+                     fwd_found_match=1 / fwd_can_fwd=1 at the capture
+                     D-pins.
+      edge E+1 : flush and capture land on the SAME edge: LQ/SQ/ROB state
+                 clears (sq_check_phase2/pending die, S1's entry dies
+                 uncommitted) while o_sq_forward latches the poisoned
+                 {match=1, can_forward=1, data=S1} result.
+      cycle E+1: the poison is live but unconsumable (phase2=0, LQ empty).
+      edge E+2 : capture enable was 0 during E+1, so match/can_forward
+                 self-clear -- staleness bounded to exactly one cycle.
+
+    The probe is parked in phase-2 across an arbitrary setup stretch by a
+    two-stage camp: S1's store data is left pending (src2 waits on a CDB
+    tag), so every capture is match=1/can_forward=0 (consumable by
+    nothing); then i_slow_write_inflight (the LQ bus-busy hold the memory
+    router asserts during a slow-tier store flight -- our older committed
+    store S0 targets the cached tier to match) suppresses captures
+    entirely while S1's data+completion are delivered.  phase2 holds
+    through bus-busy by construction.
+
+    Post-flush checks (audit items):
+      1. no memory write ever fires for the flushed store (global SQ-write
+         log is exactly the three legitimate writes; data_stale never
+         appears);
+      2. no load is served from dead SQ state: the poisoned capture is
+         observed latched at E+1, gone at E+2, and the post-flush load
+         (which reuses the LQ slot, the SQ slot of the dead store, and a
+         flushed ROB tag) forwards data_fresh;
+      3. no CDB completion fires for flushed tags (post-flush quiet window
+         + exact-match global CDB log);
+      4. same-index reuse behaves architecturally (fresh store drains
+         data_fresh to addr_x, fresh load forwards data_fresh, everything
+         retires).
+
+    Every alignment precondition is HARD-ASSERTED on the flush cycle, so
+    the test fails loudly if the window is ever missed.
+    """
+    cocotb.log.info("=== Test: SQ Commit-Scan Flush Race (capture-then-kill) ===")
+    dut_if, model = await setup_test(dut)
+
+    # addr_y sits in the cached tier [0x8000_0000, 0xC000_0000): its drain is
+    # a slow-tier write, matching the i_slow_write_inflight bus-hold story.
+    # addr_x is a plain BRAM address (non-MMIO quadrant 00, non-cached) so
+    # sq_commit_check_block (cached-region interlock) never gates the probe.
+    addr_y = 0x8000_0100
+    data_y0 = 0x0BAD_5EED
+    data_y1 = 0x0BAD_F00D
+    addr_x = 0x0000_2000
+    data_stale = 0x5EAD_D1D1  # flushed store S1's data: must never escape
+    data_fresh = 0x600D_D2D2  # post-flush store's data: must win everywhere
+
+    dut.i_slow_write_inflight.value = 0
+    dut_if.set_fu_ready(RS_MEM, True)
+    dut_if.set_commit_hold(True)
+
+    # Global monitors: every SQ memory write and every CDB broadcast in the
+    # whole test is logged; final asserts exact-match them (checks 1 and 3).
+    sq_writes: list[tuple[int, int]] = []
+    lq_reads: list[int] = []
+    cdb_log: list[tuple[int, int]] = []
+
+    async def bus_monitor() -> None:
+        while True:
+            await FallingEdge(dut_if.clock)
+            w = dut_if.read_sq_mem_write()
+            if w["en"]:
+                sq_writes.append((w["addr"], w["data"]))
+            r = dut_if.read_lq_mem_request()
+            if r["en"]:
+                lq_reads.append(r["addr"])
+            cdb = dut_if.read_cdb_output()
+            if cdb.valid:
+                cdb_log.append((cdb.tag, cdb.value & 0xFFFF_FFFF))
+
+    cocotb.start_soon(bus_monitor())
+
+    # ---------------------------------------------------------------------
+    # Phase 0: ROB allocation (program order).  Tags are deterministic from
+    # reset: S0=0, S1=1, L=2, P2=3.
+    #   S0: older store to addr_y (committed + drained before the race)
+    #   S1: the store whose commit pulse the flush kills (SW addr_x)
+    #   L : the younger probing load (LW addr_x)
+    #   P2: ROB-only placeholder; its tag is S1's src2 producer, so waking
+    #       S1's data is a plain CDB injection to a valid ROB entry.
+    # ---------------------------------------------------------------------
+    tag_s0 = await dut_if.dispatch(make_store_req(pc=0x9000))
+    tag_s1 = await dut_if.dispatch(make_store_req(pc=0x9004))
+    tag_l = await dut_if.dispatch(make_int_req(pc=0x9008, rd=7))
+    tag_p2 = await dut_if.dispatch(AllocationRequest(pc=0x900C, dest_valid=False))
+    assert (tag_s0, tag_s1, tag_l, tag_p2) == (
+        0,
+        1,
+        2,
+        3,
+    ), f"unexpected tag layout {(tag_s0, tag_s1, tag_l, tag_p2)}"
+
+    # ---------------------------------------------------------------------
+    # Phase 1: S0 issues, commits, and drains (older committed store).
+    # ---------------------------------------------------------------------
+    await issue_sw_via_mem_rs(dut_if, tag_s0, addr_y, data_y0)
+
+    # Release the hold for S0's commit.  Re-asserting it in the same cycle
+    # the combinational commit is observed would cancel that commit (the
+    # hold is sampled at the commit edge), so leave it low: S1 is not done,
+    # so the commit stream stalls naturally at the head after S0 retires.
+    # The hold is re-armed below, before S1's data/completion are delivered.
+    dut_if.set_commit_hold(False)
+    commit_s0 = await wait_for_commit(dut_if)
+    assert commit_s0["tag"] == tag_s0 and commit_s0["is_store"]
+
+    for _ in range(10):
+        if dut_if.read_sq_mem_write()["en"]:
+            break
+        await dut_if.step()
+    w = dut_if.read_sq_mem_write()
+    assert (
+        w["en"] and w["addr"] == addr_y and w["data"] == data_y0
+    ), f"S0 drain mismatch: {w}"
+    await dut_if.step()
+    dut_if.drive_sq_mem_write_done()
+    await dut_if.step()
+    dut_if.clear_sq_mem_write_done()
+    await dut_if.step()
+    assert dut_if.sq_empty, "S0 should be drained and freed"
+
+    # ---------------------------------------------------------------------
+    # Phase 2: S1 dispatches to MEM_RS with base ready but DATA pending
+    # (src2 waits on tag_p2).  The early-address pipeline delivers addr_x to
+    # S1's SQ entry ~2 cycles after dispatch, so the load can probe against
+    # a resolved address while can_forward stays 0 (no data).
+    # ---------------------------------------------------------------------
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_s1,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=addr_x,
+        src2_ready=False,
+        src2_tag=tag_p2,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # S0 drained from slot 0 and the SQ ring tail is at 1, so S1 occupies
+    # physical slot 1 -- remember it for the per-entry peeks below.
+    s1_slot = 1
+    for _ in range(5):
+        if (int(dut.u_sq.sq_addr_valid.value) >> s1_slot) & 1:
+            break
+        await dut_if.step()
+    assert (int(dut.u_sq.sq_valid.value) >> s1_slot) & 1, "S1 not in SQ slot 1"
+    assert (
+        int(dut.u_sq.sq_addr_valid.value) >> s1_slot
+    ) & 1, "S1 early address not delivered"
+    assert not (
+        (int(dut.u_sq.sq_data_valid.value) >> s1_slot) & 1
+    ), "S1 data must still be pending"
+
+    # ---------------------------------------------------------------------
+    # Phase 3: the load dispatches, issues, and CAMPS in phase-2.
+    # sq_can_issue is blocked by match=1; sq_do_forward by can_forward=0.
+    # ---------------------------------------------------------------------
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=addr_x,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    camped = False
+    for _ in range(12):
+        assert not dut_if.read_lq_mem_request()[
+            "en"
+        ], "camped load must never launch to memory"
+        if int(dut.u_lq.sq_check_pending.value) and int(dut.u_lq.sq_check_phase2.value):
+            camped = True
+            break
+        await dut_if.step()
+    assert camped, "load never reached the staged phase-2 probe state"
+
+    # Two settle cycles, then verify the steady camped capture:
+    # match=1 (S1 conflicts), can_forward=0 (no data), all-older-known=1.
+    await dut_if.step()
+    await dut_if.step()
+    fwd = int(dut.sq_forward.value)
+    assert (fwd >> 65) & 1, "camped probe should capture match=1"
+    assert not ((fwd >> 64) & 1), "camped probe must not be forwardable yet"
+    assert int(dut.sq_all_older_addrs_known.value) == 1
+
+    # ---------------------------------------------------------------------
+    # Phase 4: raise the bus-busy blanket (slow-tier write hold).  Captures
+    # stop (capture enable requires !i_mem_bus_busy) and the Block-3
+    # registers self-clear, but sq_check_phase2 HOLDS by construction.
+    # ---------------------------------------------------------------------
+    dut.i_slow_write_inflight.value = 1
+    await dut_if.step()
+    await dut_if.step()
+    assert int(dut.u_lq.sq_check_phase2.value) == 1, "phase2 must hold under bus-busy"
+    fwd = int(dut.sq_forward.value)
+    assert not ((fwd >> 65) & 1) and not (
+        (fwd >> 64) & 1
+    ), "captures must be suppressed (and self-cleared) under bus-busy"
+
+    # Under the blanket: wake S1's data via a CDB completion for tag_p2
+    # (valid ROB entry -> clean broadcast).  S1 then issues from MEM_RS,
+    # writing its SQ data and marking itself done in the ROB (plain stores
+    # complete directly, no CDB slot).  Re-arm the commit hold FIRST so the
+    # now-completing S1 cannot retire until the race is staged.
+    dut_if.set_commit_hold(True)
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_p2, value=data_stale)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    dut_if.set_read_tag(tag_s1)
+    ready = False
+    for _ in range(12):
+        await dut_if.step()
+        if (
+            (int(dut.u_sq.sq_data_valid.value) >> s1_slot) & 1
+        ) and dut_if.read_entry_done():
+            ready = True
+            break
+    assert ready, "S1 never became data-valid + ROB-done under the blanket"
+
+    # Give the pipeline two quiesce cycles, then check the pre-race posture.
+    await dut_if.step()
+    await dut_if.step()
+    assert (
+        dut_if.head_tag == tag_s1 and dut_if.head_valid and dut_if.head_done
+    ), "S1 must be the done instruction at the ROB head"
+    assert int(dut.u_lq.sq_check_phase2.value) == 1
+    assert int(dut.u_lq.sq_check_pending.value) == 1
+    fwd = int(dut.sq_forward.value)
+    assert not ((fwd >> 65) & 1), "captures must still be suppressed pre-race"
+    assert not ((int(dut.u_sq.sq_committed.value) >> s1_slot) & 1)
+
+    # ---------------------------------------------------------------------
+    # Phase 5: THE RACE.
+    # fe(E-1): release the commit hold -> S1's combinational commit is
+    #          sampled at edge E (ROB head advances; commit_bus_pipeline
+    #          loads the pulse).
+    # ---------------------------------------------------------------------
+    dut_if.set_commit_hold(False)
+    await dut_if.step()
+    # fe(E): the RAW registered-pulse cycle.  Pre-flush reads first: the
+    # architectural pulse is currently ALIVE (flush not asserted yet).
+    reg_commit = unpack_commit(int(dut.o_commit.value))
+    assert (
+        reg_commit["valid"] and reg_commit["tag"] == tag_s1 and reg_commit["is_store"]
+    ), f"registered store-commit pulse not live at E: {reg_commit}"
+    assert int(dut.commit_bus_q_valid_raw.value) == 1
+    assert int(dut.sq_commit_valid.value) == 1, "arch pulse should be alive pre-kill"
+    assert int(dut.sq_commit_valid_scan.value) == 1
+    assert not (
+        (int(dut.u_sq.sq_committed.value) >> s1_slot) & 1
+    ), "sq_committed must still lag the pulse (the one-cycle window)"
+
+    # Land the flush ON this cycle and open the capture window: flush_all +
+    # wb_mask assert (sampled at edge E+1, comb-killing the arch pulse now)
+    # and the bus-busy blanket drops (capture enable goes high now).
+    dut_if.drive_flush_all()
+    dut.i_slow_write_inflight.value = 0
+    dut_if.set_commit_hold(True)
+    await Timer(1, unit="ps")
+
+    # HARD alignment asserts -- the window-coverage proof.  All of these
+    # are simultaneously true only on the exact divergence cycle.
+    assert int(dut.sq_commit_valid_scan.value) == 1, "scan pulse must stay raw"
+    assert int(dut.sq_commit_valid.value) == 0, "arch pulse must be comb-killed"
+    assert int(dut.commit_bus_q_valid_raw.value) == 1
+    reg_commit_killed = unpack_commit(int(dut.o_commit.value))
+    assert not reg_commit_killed["valid"], "registered commit output must be masked"
+    assert int(dut.u_lq.sq_check_phase2.value) == 1, "phase-2 probe active at flush"
+    assert int(dut.u_lq.sq_check_pending.value) == 1
+    assert (
+        int(dut.sq_check_capture_valid.value) == 1
+    ), "capture enable must fire on the flush cycle (flush-free by design)"
+    assert int(dut.sq_check_valid.value) == 0, "o_sq_check_valid is flush-gated"
+    assert (
+        int(dut.u_sq.sq_valid.value) >> s1_slot
+    ) & 1, "the dying store must still be scanned this cycle"
+    assert int(dut.u_sq.sq_forwarding_unit_inst.fwd_found_match.value) == 1
+    assert (
+        int(dut.u_sq.sq_forwarding_unit_inst.fwd_can_fwd.value) == 1
+    ), "the poisoned would-be-forward must be at the capture D-pins"
+
+    # ---------------------------------------------------------------------
+    # Phase 6: edge E+1 -- flush and capture land together.
+    # ---------------------------------------------------------------------
+    await dut_if.step()
+    dut_if.clear_flush_all()
+
+    fwd = int(dut.sq_forward.value)
+    assert (fwd >> 65) & 1 and (
+        fwd >> 64
+    ) & 1, "poisoned capture must be LATCHED at E+1 (proves the window was hit)"
+    assert (
+        fwd & 0xFFFF_FFFF
+    ) == data_stale, f"captured forward data {fwd & 0xFFFFFFFF:#x} != dead store data"
+    assert int(dut.u_lq.sq_check_phase2.value) == 0, "flush must kill phase2"
+    assert int(dut.u_lq.sq_check_pending.value) == 0
+    # Read the empties into a local so mypy's property narrowing does not
+    # mark the later retire-wait loop unreachable.
+    all_empty = dut_if.lq_empty and dut_if.sq_empty and dut_if.rob_empty
+    assert all_empty, "LQ/SQ/ROB must all be empty right after the flush"
+    assert not dut_if.read_sq_mem_write()["en"]
+
+    await dut_if.step()
+    fwd = int(dut.sq_forward.value)
+    assert not ((fwd >> 65) & 1) and not (
+        (fwd >> 64) & 1
+    ), "poison must self-clear after exactly one cycle (capture-then-kill)"
+
+    # Post-flush quiet window: no CDB completion, no commit, no memory
+    # traffic of any kind may surface for the flushed instructions.
+    for cycle in range(8):
+        assert (
+            not dut_if.read_cdb_output().valid
+        ), f"stray CDB completion {cycle} cycles after flush"
+        assert not unpack_commit(int(dut.o_commit.value))["valid"]
+        assert not unpack_commit(int(dut.o_commit_comb.value))["valid"]
+        assert not dut_if.read_sq_mem_write()["en"], "stray SQ write after flush"
+        assert not dut_if.read_lq_mem_request()["en"], "stray LQ read after flush"
+        assert not dut_if.read_amo_mem_write()["en"]
+        await dut_if.step()
+
+    # ---------------------------------------------------------------------
+    # Phase 7: index/tag REUSE.  S1's commit at edge E advanced the ROB
+    # head to tag_l, and flush_all collapses the tail onto the head, so the
+    # FIRST new allocation reuses the dead probing load's ROB tag.  The SQ
+    # and LQ ring pointers reset to 0, so the new same-address store lands
+    # in the dead store's physical SQ slot (slot 1) and the new load in the
+    # dead load's LQ slot (slot 0).
+    # ---------------------------------------------------------------------
+    dut_if.set_commit_hold(True)
+    tag_ns0 = await dut_if.dispatch(make_store_req(pc=0xA000))
+    tag_ns1 = await dut_if.dispatch(make_store_req(pc=0xA004))
+    tag_nl = await dut_if.dispatch(make_int_req(pc=0xA008, rd=7))
+    assert (
+        tag_ns0 == tag_l
+    ), f"first post-flush tag {tag_ns0} should reuse the dead load's tag {tag_l}"
+    assert tag_ns1 == tag_p2, f"second post-flush tag {tag_ns1} != {tag_p2}"
+
+    await issue_sw_via_mem_rs(dut_if, tag_ns0, addr_y, data_y1)
+    await issue_sw_via_mem_rs(dut_if, tag_ns1, addr_x, data_fresh)
+
+    # New stores must occupy SQ slots 0 and 1 (slot 1 == dead S1's slot).
+    assert (
+        int(dut.u_sq.sq_valid.value) == 0b11
+    ), f"SQ slot reuse mismatch: sq_valid={int(dut.u_sq.sq_valid.value):#b}"
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_nl,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=addr_x,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # With commits held, the fresh load must be served by SQ forwarding from
+    # the fresh uncommitted store -- and must carry data_fresh, never the
+    # dead capture's data_stale.
+    cdb = await wait_for_cdb(dut_if)
+    assert cdb.tag == tag_nl, f"CDB tag {cdb.tag} != fresh load {tag_nl}"
+    assert (
+        (cdb.value & 0xFFFF_FFFF) == data_fresh
+    ), f"fresh load forwarded {cdb.value & 0xFFFFFFFF:#x}, expected data_fresh"
+
+    # ---------------------------------------------------------------------
+    # Phase 8: release commits; both new stores drain; everything retires.
+    # ---------------------------------------------------------------------
+    dut_if.set_commit_hold(False)
+
+    for expect_addr, expect_data in ((addr_y, data_y1), (addr_x, data_fresh)):
+        for _ in range(20):
+            if dut_if.read_sq_mem_write()["en"]:
+                break
+            await dut_if.step()
+        w = dut_if.read_sq_mem_write()
+        assert (
+            w["en"] and w["addr"] == expect_addr and w["data"] == expect_data
+        ), f"post-flush drain mismatch: {w} != ({expect_addr:#x}, {expect_data:#x})"
+        await dut_if.step()
+        dut_if.drive_sq_mem_write_done()
+        await dut_if.step()
+        dut_if.clear_sq_mem_write_done()
+
+    for _ in range(20):
+        if dut_if.rob_empty and dut_if.sq_empty and dut_if.lq_empty:
+            break
+        await dut_if.step()
+    assert dut_if.rob_empty and dut_if.sq_empty and dut_if.lq_empty
+
+    # ---------------------------------------------------------------------
+    # Global monitor asserts (checks 1-3 over the whole test):
+    #  - exactly three SQ writes ever, none carrying the dead store's data,
+    #    exactly one write to addr_x and it is data_fresh;
+    #  - no LQ memory read ever happened (the camped load died in the
+    #    flush; the fresh load was SQ-forwarded, so no dead-state value
+    #    could have been laundered through memory);
+    #  - the only CDB broadcasts in the entire test are the P2 wake
+    #    injection and the fresh load's forwarded completion -- in
+    #    particular nothing for a flushed tag after the flush.
+    # ---------------------------------------------------------------------
+    assert sq_writes == [
+        (addr_y, data_y0),
+        (addr_y, data_y1),
+        (addr_x, data_fresh),
+    ], f"unexpected SQ write history: {[(hex(a), hex(d)) for a, d in sq_writes]}"
+    assert all(d != data_stale for _, d in sq_writes), "dead store data escaped"
+    assert lq_reads == [], f"no load should touch memory in this test: {lq_reads}"
+    assert cdb_log == [
+        (tag_p2, data_stale),
+        (tag_nl, data_fresh),
+    ], f"unexpected CDB history: {[(t, hex(v)) for t, v in cdb_log]}"
+
     cocotb.log.info("=== Test Passed ===")
 
 
