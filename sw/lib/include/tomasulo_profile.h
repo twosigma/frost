@@ -192,20 +192,113 @@ static inline uint64_t tomasulo_profile_delta(const tomasulo_profile_snapshot_t 
     return end->counters[idx] - start->counters[idx];
 }
 
+typedef struct tomasulo_profile_u96 {
+    uint32_t lo;
+    uint32_t mid;
+    uint32_t hi;
+} tomasulo_profile_u96_t;
+
+/* Multiply a 64-bit value by a 32-bit value without requiring a 64-bit
+ * multiply. Each partial product is only 32x32->64. */
+static inline tomasulo_profile_u96_t tomasulo_profile_mul_u64_u32(uint64_t value,
+                                                                  uint32_t multiplier)
+{
+    uint64_t lo_product = (uint64_t) (uint32_t) value * multiplier;
+    uint64_t hi_product = (uint64_t) (uint32_t) (value >> 32) * multiplier;
+    uint64_t middle = (lo_product >> 32) + (uint32_t) hi_product;
+    tomasulo_profile_u96_t result;
+
+    result.lo = (uint32_t) lo_product;
+    result.mid = (uint32_t) middle;
+    result.hi = (uint32_t) (hi_product >> 32) + (uint32_t) (middle >> 32);
+    return result;
+}
+
+static inline int tomasulo_profile_cmp_u96(tomasulo_profile_u96_t lhs, tomasulo_profile_u96_t rhs)
+{
+    if (lhs.hi != rhs.hi) {
+        return lhs.hi < rhs.hi ? -1 : 1;
+    }
+    if (lhs.mid != rhs.mid) {
+        return lhs.mid < rhs.mid ? -1 : 1;
+    }
+    if (lhs.lo != rhs.lo) {
+        return lhs.lo < rhs.lo ? -1 : 1;
+    }
+    return 0;
+}
+
+static inline tomasulo_profile_u96_t tomasulo_profile_add_u64(tomasulo_profile_u96_t value,
+                                                              uint64_t addend)
+{
+    uint32_t old_lo = value.lo;
+    uint32_t old_mid;
+    uint32_t carry;
+
+    value.lo += (uint32_t) addend;
+    carry = value.lo < old_lo;
+
+    old_mid = value.mid;
+    value.mid += (uint32_t) (addend >> 32);
+    value.hi += value.mid < old_mid;
+
+    old_mid = value.mid;
+    value.mid += carry;
+    value.hi += value.mid < old_mid;
+    return value;
+}
+
 static inline uint32_t tomasulo_profile_ratio_scaled(uint64_t value, uint64_t total, uint32_t scale)
 {
-    if (total == 0) {
+    tomasulo_profile_u96_t numerator;
+    tomasulo_profile_u96_t product;
+    uint32_t low;
+    uint32_t high;
+
+    if (total == 0 || scale == 0) {
         return 0;
     }
-    while (value > (UINT32_MAX / scale) || total > UINT32_MAX) {
-        value >>= 1;
-        total >>= 1;
-        if (total == 0) {
-            total = 1;
-            break;
+
+    /* Keep the common case in native 32-bit arithmetic. */
+    if (value <= UINT32_MAX && total <= UINT32_MAX) {
+        uint32_t value32 = (uint32_t) value;
+        uint32_t total32 = (uint32_t) total;
+        uint32_t half = total32 / 2U;
+
+        if (value32 <= (UINT32_MAX - half) / scale) {
+            return (value32 * scale + half) / total32;
         }
     }
-    return (((uint32_t) value * scale) + ((uint32_t) total / 2U)) / (uint32_t) total;
+
+    /* The exact fallback represents products as three 32-bit limbs. Avoiding
+     * an approximate right shift preserves low-order bits around rounding
+     * boundaries, while binary search avoids a 64-bit division helper on
+     * RV32. */
+    numerator = tomasulo_profile_mul_u64_u32(value, scale);
+    product = tomasulo_profile_mul_u64_u32(total, UINT32_MAX);
+    if (tomasulo_profile_cmp_u96(numerator, product) >= 0) {
+        return UINT32_MAX;
+    }
+
+    low = 0;
+    high = UINT32_MAX - 1U;
+    while (low < high) {
+        uint32_t quotient = low + ((high - low) >> 1) + 1U;
+
+        product = tomasulo_profile_mul_u64_u32(total, quotient);
+        if (tomasulo_profile_cmp_u96(product, numerator) <= 0) {
+            low = quotient;
+        } else {
+            high = quotient - 1U;
+        }
+    }
+
+    product = tomasulo_profile_mul_u64_u32(total, low);
+    product = tomasulo_profile_add_u64(product, (total >> 1) + (total & 1U));
+    if (tomasulo_profile_cmp_u96(numerator, product) >= 0) {
+        low++;
+    }
+    return low;
 }
 
 static inline uint32_t tomasulo_profile_pct_x10(uint64_t value, uint64_t total)

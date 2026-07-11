@@ -54,7 +54,8 @@ int sprintf(char *buf, const char *fmt, ...);
  * snprintf – format into at most (size-1) characters + NUL.
  * Always NUL-terminates when size > 0.
  * Returns the number of characters that *would* have been written had the
- * buffer been large enough (excluding NUL), matching C99 semantics.
+ * buffer been large enough (excluding NUL), or -1 when that count exceeds
+ * INT_MAX. A non-empty destination is still NUL-terminated in that case.
  */
 int snprintf(char *buf, size_t size, const char *fmt, ...);
 

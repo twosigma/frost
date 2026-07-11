@@ -40,10 +40,43 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     },
 }
 
+# Most bare-metal apps compile in seconds. linux_boot is different: on a fresh
+# checkout its Makefile builds a Buildroot toolchain, kernel, and initramfs before
+# packing the memory images. Keep the normal path strict while giving that
+# documented 30-60 minute first build enough time to finish.
+DEFAULT_CLEAN_TIMEOUT_SECONDS = 30
+DEFAULT_BUILD_TIMEOUT_SECONDS = 120
+APP_TIMEOUTS_SECONDS: dict[str, tuple[int, int]] = {
+    "linux_boot": (300, 5400),
+}
+
 
 def get_apps_directory() -> Path:
     """Get the path to the sw/apps directory."""
     return Path(__file__).parent
+
+
+def _app_timeouts(app_name: str) -> tuple[int, int]:
+    """Return the clean and build timeouts for an application."""
+    return APP_TIMEOUTS_SECONDS.get(
+        app_name,
+        (DEFAULT_CLEAN_TIMEOUT_SECONDS, DEFAULT_BUILD_TIMEOUT_SECONDS),
+    )
+
+
+def _report_command_failure(
+    app_name: str,
+    action: str,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """Report a failed make action, including captured output when available."""
+    print(
+        f"Error: {action} failed for {app_name} (exit code {result.returncode})",
+        file=sys.stderr,
+    )
+    for output in (result.stdout, result.stderr):
+        if output:
+            print(output.rstrip(), file=sys.stderr)
 
 
 def compile_app(
@@ -60,11 +93,10 @@ def compile_app(
         mem_config: Memory tier passed to the app's Makefile as MEM_CONFIG
             ("bram" = low BRAM, today's default; "ddr" = whole program in the
             cached DDR region behind a ROM boot stub).
-        clean_first: Force `make clean` before building. The cocotb runner sets
-            this so a build can never reuse a stale image from the OTHER memory
-            tier: sw.elf/sw.mem/sw.bin are shared filenames and make's mtime
-            check does not catch a linker-script swap, so a bram build after a
-            ddr build of the same app would otherwise keep running from DDR.
+        clean_first: Force `make clean` before building. The cocotb runner and
+            command-line interface use this deterministic path; common.mk's
+            build fingerprint also protects direct incremental builds when a
+            memory tier or compiler setting changes.
 
     Returns:
         True if compilation succeeded, False otherwise
@@ -77,6 +109,7 @@ def compile_app(
     app_dir_name = app_build_directory_name(app_name)
     app_dir = apps_dir / app_dir_name
     make_vars = coremark_pro_make_vars(app_name, hardware=False)
+    clean_timeout, build_timeout = _app_timeouts(app_name)
 
     if not app_dir.exists():
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
@@ -101,32 +134,40 @@ def compile_app(
             if verbose:
                 print(f"  Setting {key}={value} for simulation")
 
+    action = "Build"
+    action_timeout = build_timeout
     try:
         if verbose:
             print(f"Compiling {app_name}...")
             for key, value in make_vars.items():
                 print(f"  Setting {key}={value}")
 
-        # Clean first when explicitly requested (the cocotb path always does, so
-        # a build never reuses a stale image from the other memory tier -- make's
-        # mtime check does not catch a linker-script swap), or for app-specific
-        # settings / coremark-pro vars / a non-default tier.
+        # Clean first when explicitly requested (the cocotb and CLI paths always
+        # do), or for app-specific settings / CoreMark-PRO vars / a non-default
+        # tier. common.mk separately fingerprints direct incremental builds.
         if (
             clean_first
             or app_name in APP_SIM_SETTINGS
             or make_vars
             or mem_config != "bram"
         ):
-            subprocess.run(
+            action = "Clean"
+            action_timeout = clean_timeout
+            clean_result = subprocess.run(
                 ["make", "clean"],
                 cwd=app_dir,
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=clean_timeout,
             )
+            if clean_result.returncode != 0:
+                _report_command_failure(app_name, action, clean_result)
+                return False
 
         # Run make in the application directory
+        action = "Build"
+        action_timeout = build_timeout
         make_command = ["make", f"MEM_CONFIG={mem_config}"]
         make_command.extend(f"{key}={value}" for key, value in make_vars.items())
         result = subprocess.run(
@@ -135,13 +176,11 @@ def compile_app(
             env=env,
             capture_output=not verbose,
             text=True,
-            timeout=120,  # 2 minute timeout
+            timeout=build_timeout,
         )
 
         if result.returncode != 0:
-            if not verbose and result.stderr:
-                print(f"Compilation failed for {app_name}:", file=sys.stderr)
-                print(result.stderr, file=sys.stderr)
+            _report_command_failure(app_name, action, result)
             return False
 
         # Verify BOTH memory images were created. The cocotb runner symlinks
@@ -159,14 +198,17 @@ def compile_app(
         return True
 
     except subprocess.TimeoutExpired:
-        print(f"Error: Compilation timed out for {app_name}", file=sys.stderr)
+        print(
+            f"Error: {action} timed out for {app_name} after {action_timeout} seconds",
+            file=sys.stderr,
+        )
         return False
     except Exception as e:
         print(f"Error compiling {app_name}: {e}", file=sys.stderr)
         return False
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Command-line interface for compiling applications."""
     import argparse
 
@@ -187,10 +229,13 @@ def main() -> int:
         default="bram",
         help="Memory tier: bram (low BRAM, default) or ddr (cached DDR region)",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     success = compile_app(
-        args.app_name, verbose=args.verbose, mem_config=args.mem_config
+        args.app_name,
+        verbose=args.verbose,
+        mem_config=args.mem_config,
+        clean_first=True,
     )
     return 0 if success else 1
 

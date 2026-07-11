@@ -494,6 +494,7 @@ static void test_strtol(void)
     uart_printf("\n=== strtol ===\n");
 
     char *end;
+    const char *input;
 
     /* Basic decimal */
     check("\"123\" base 10", strtol("123", NULL, 10) == 123);
@@ -519,6 +520,8 @@ static void test_strtol(void)
     check("\"123\" base 0", strtol("123", NULL, 0) == 123);
     check("\"0x1a\" base 0", strtol("0x1a", NULL, 0) == 26);
     check("\"077\" base 0", strtol("077", NULL, 0) == 63);
+    check("\"0\" base 0", strtol("0", NULL, 0) == 0);
+    check("\"z\" base 36", strtol("z", NULL, 36) == 35);
 
     /* End pointer */
     strtol("123abc", &end, 10);
@@ -527,9 +530,30 @@ static void test_strtol(void)
     strtol("  -42xyz", &end, 10);
     check("endptr at 'x'", *end == 'x');
 
-    /* Overflow */
+    input = "0x";
+    strtol(input, &end, 0);
+    check("incomplete hex parses zero", end == input + 1);
+
+    input = "  -xyz";
+    check("no digits returns zero", strtol(input, &end, 10) == 0);
+    check("no digits endptr unchanged", end == input);
+
+    input = "+";
+    check("sign only returns zero", strtol(input, &end, 10) == 0);
+    check("sign only endptr unchanged", end == input);
+
+    input = "123";
+    check("invalid base returns zero", strtol(input, &end, 1) == 0);
+    check("invalid base endptr unchanged", end == input);
+
+    /* Exact limits and overflow. LONG_MIN must not rely on signed overflow. */
+    check("LONG_MAX exact", strtol("2147483647", NULL, 10) == LONG_MAX);
+    check("LONG_MIN exact", strtol("-2147483648", NULL, 10) == LONG_MIN);
+    check("hex LONG_MIN exact", strtol("-0x80000000", NULL, 0) == LONG_MIN);
     check("overflow pos", strtol("99999999999", NULL, 10) == LONG_MAX);
     check("overflow neg", strtol("-99999999999", NULL, 10) == LONG_MIN);
+    check("overflow by one pos", strtol("2147483648", NULL, 10) == LONG_MAX);
+    check("overflow by one neg", strtol("-2147483649", NULL, 10) == LONG_MIN);
 }
 
 /* Test atoi function */

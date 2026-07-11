@@ -102,6 +102,12 @@ RISCV_FLAGS  = -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
 # DEFAULT is bram, so every board/FPGA flow is unaffected.
 MEM_CONFIG ?= bram
 
+ifneq ($(MEM_CONFIG),bram)
+ifneq ($(MEM_CONFIG),ddr)
+$(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
+endif
+endif
+
 ifeq ($(MEM_CONFIG),ddr)
 # App Makefiles may still override LINKER_SCRIPT (e.g. freertos sets its own ddr
 # linker before including this file); ?= respects that.
@@ -124,7 +130,10 @@ LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(EXTRA_LDFLAGS
 
 # C compilation flags - includes RISC-V flags plus include paths and defines
 CFLAGS = $(RISCV_FLAGS)
-CFLAGS += -I../../lib/include -I. -I$(INCLUDE_DIR)  # Include directories
+# addprefix leaves the optional app-specific include list completely absent when
+# INCLUDE_DIR is empty.  A bare `-I` would consume the following -D option as its
+# argument and silently drop that preprocessor definition.
+CFLAGS += -I../../lib/include -I. $(addprefix -I,$(strip $(INCLUDE_DIR)))
 CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
           '-DCOMPILER_FLAGS="$(RISCV_FLAGS)"' \
           '-DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)' \
@@ -149,18 +158,65 @@ IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
 IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
+# These bookkeeping files deliberately use globally ignored build-artifact
+# suffixes (*.bin / *.o), so ordinary app builds never pollute git status.
+BUILD_CONFIG_FILE       := .frost-build-config.bin
+DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
 IMEM_INIT_TARGETS :=
 ifeq ($(GENERATE_IMEM_INIT),1)
 IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
 endif
 
+# Make does not normally notice changes to command-line flags because the output
+# names are shared by every configuration.  Keep one content-addressed stamp: a
+# tier/ABI/flag/tool change updates its mtime, while an identical invocation
+# leaves it untouched.  This also makes switching back to a previously used
+# configuration safe (unlike one stamp per configuration).
+EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
+
+# Quote one single-line make value for a POSIX shell.  In particular, CFLAGS
+# contains literal single quotes around its string-valued preprocessor defines.
+shell_quote = '$(subst ','"'"',$(1))'
+
+# The ELF is linked directly from source, so there are no per-object .d files.
+# Generate an equivalent dependency fragment before each relink.  It records all
+# non-system headers actually included by every C/preprocessed-assembly source;
+# -MP keeps a removed header from making the old dependency fragment unparseable.
+
 # Build targets
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
      $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
-# Link C sources and assembly startup into ELF executable
-$(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT)
+# Keep `all` as the default goal even after the generated fragment exists (its
+# first dependency rule also names sw.elf).
+-include $(DEPENDENCY_FILE)
+
+.PHONY: FORCE
+FORCE:
+
+$(BUILD_CONFIG_FILE): FORCE
+	@tmp='$@.$$$$.tmp'; \
+	printf '%s\n' $(call shell_quote,$(EFFECTIVE_BUILD_CONFIG)) > "$$tmp"; \
+	if cmp -s "$$tmp" '$@'; then \
+	    rm -f "$$tmp"; \
+	else \
+	    mv "$$tmp" '$@'; \
+	fi
+
+# Link C sources and assembly startup into the ELF executable.  MAKEFILE_LIST
+# covers the app Makefile plus this included common file, so changing build logic
+# is itself a rebuild trigger in addition to the effective-config stamp.
+$(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT) \
+                        $(MAKEFILE_LIST) $(BUILD_CONFIG_FILE)
+	@tmp='$(DEPENDENCY_FILE).$$$$.tmp'; \
+	if $(CC) $(CFLAGS) -MM -MP -MT '$@' \
+	        $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) > "$$tmp"; then \
+	    mv "$$tmp" '$(DEPENDENCY_FILE)'; \
+	else \
+	    rm -f "$$tmp"; \
+	    exit 1; \
+	fi
 	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) -o $@
 
 # Generate disassembly listing for debugging
@@ -185,23 +241,37 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 # Generate the cached-region (DDR) image: only the .ddr_* loaded sections,
 # rebased so file offset 0 = the cached-region base (0x8000_0000). Loaded by
 # the behavioral DDR model in simulation and the JTAG loader on hardware.
-# Programs with no .ddr_* sections get a single zero word so consumers can
-# always $readmemh the file.
+# Programs with no selected loaded sections get a single zero word so consumers
+# can always $readmemh the file.  Objcopy successfully emits an empty file for
+# that legitimate case; any nonzero objcopy status is a real build failure.
+# Generate into a temporary path so a failed conversion cannot bless or replace
+# a previously generated image.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
-	      --change-addresses -0x80000000 $< $@ 2>/dev/null
-	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
+	@set -e; \
+	tmp='$@.$$$$.tmp'; \
+	trap 'rm -f "$$tmp"' 0 1 2 3 15; \
+	$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
+	      --change-addresses -0x80000000 '$<' "$$tmp"; \
+	if [ ! -s "$$tmp" ]; then printf '00000000\n' > "$$tmp"; fi; \
+	mv "$$tmp" '$@'
 
 # DDR image for the JTAG loader: dense 32-bit words from the region base
 # (the .ddr_* sections start exactly at 0x8000_0000). Empty when the program
-# places nothing in the cached region; the loader skips empty files.
+# places nothing in the cached region; the loader skips empty files.  As above,
+# temporary outputs prevent a failed objcopy from reusing stale DDR contents.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) $< sw_ddr.bin 2>/dev/null
-	@if [ -s sw_ddr.bin ]; then \
-	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
+	@set -e; \
+	bin_tmp='sw_ddr.bin.$$$$.tmp'; \
+	txt_tmp='$@.$$$$.tmp'; \
+	trap 'rm -f "$$bin_tmp" "$$txt_tmp"' 0 1 2 3 15; \
+	$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) '$<' "$$bin_tmp"; \
+	if [ -s "$$bin_tmp" ]; then \
+	    xxd -e -g4 -c4 "$$bin_tmp" | awk '{printf "%08x\n", strtonum("0x" $$2)}' > "$$txt_tmp"; \
 	else \
-	    : > $@; \
-	fi
+	    : > "$$txt_tmp"; \
+	fi; \
+	mv "$$bin_tmp" sw_ddr.bin; \
+	mv "$$txt_tmp" '$@'
 
 # Generate Vivado BRAM initialization file (8 hex digits per line, zero-padded)
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
@@ -225,7 +295,7 @@ size: $(EXECUTABLE_ELF_FILE)
 # Clean all build artifacts
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
-	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) \
+	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
 	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
 
 .PHONY: all size clean

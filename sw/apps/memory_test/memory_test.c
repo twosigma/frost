@@ -26,6 +26,7 @@
  *   - arena_clear: Reset arena position
  *   - malloc: Dynamic memory allocation
  *   - free: Return memory to freelist
+ *   - calloc/realloc: Standard allocation helpers and overflow handling
  */
 
 #include "memory.h"
@@ -59,6 +60,10 @@ static void test_arena_alloc(void)
     check("arena created", arena.start != 0);
     check("arena position zero", arena.pos == 0);
     check("arena capacity correct", arena.capacity == 1024);
+
+    arena_t too_large = arena_alloc(UINT32_MAX);
+    check("oversized arena rejected", too_large.start == NULL);
+    check("failed arena has zero capacity", too_large.capacity == 0);
 }
 
 /* Test arena_push function */
@@ -148,6 +153,13 @@ static void test_arena_push_align(void)
     char *p3 = arena_push_align(&arena, 8, 4);
     check("4-align non-null", p3 != 0);
     check("4-align correct", ((uintptr_t) p3 % 4) == 0);
+
+    uint32_t position = arena.pos;
+    check("zero alignment rejected", arena_push_align(&arena, 8, 0) == NULL);
+    check("non-power-of-two rejected", arena_push_align(&arena, 8, 3) == NULL);
+    check("invalid alignment preserves position", arena.pos == position);
+    check("out-of-space rejected", arena_push_align(&arena, 256, 8) == NULL);
+    check("out-of-space preserves position", arena.pos == position);
 }
 
 /* Test arena_pop function */
@@ -224,6 +236,45 @@ static void test_malloc(void)
     memset(p2, 0xBB, 32);
     check("can write to p1", ((char *) p1)[0] == (char) 0xAA);
     check("can write to p2", ((char *) p2)[0] == (char) 0xBB);
+
+    /* Rounding the request and adding metadata must not wrap on RV32. */
+    check("malloc(SIZE_MAX) rejected", malloc(SIZE_MAX) == NULL);
+    check("malloc near SIZE_MAX rejected", malloc(SIZE_MAX - 3U) == NULL);
+}
+
+/* Test a two-sided free-block merge. These allocations come from the fresh
+ * heap because this runs before any successful free. */
+static void test_malloc_coalescing(void)
+{
+    uart_printf("\n=== malloc coalescing ===\n");
+
+    void *left = malloc(16);
+    void *middle = malloc(16);
+    void *right = malloc(16);
+    void *canary = malloc(16);
+    int allocated = left != NULL && middle != NULL && right != NULL && canary != NULL;
+    check("coalesce blocks allocated", allocated);
+    if (!allocated) {
+        free(left);
+        free(middle);
+        free(right);
+        free(canary);
+        return;
+    }
+
+    memset(canary, 0x5A, 16);
+    free(left);
+    free(right);
+    free(middle);
+
+    /* Three 16-byte payloads plus their metadata form one 72-byte free
+     * region, exactly large enough for a 64-byte payload and its metadata. */
+    void *combined = malloc(64);
+    check("both neighbors combined", combined == left);
+    check("neighbor remains intact", ((unsigned char *) canary)[0] == 0x5A);
+
+    free(combined);
+    free(canary);
 }
 
 /* Test free function */
@@ -281,6 +332,45 @@ static void test_malloc_reuse(void)
     }
 }
 
+static void test_calloc_realloc(void)
+{
+    uart_printf("\n=== calloc/realloc ===\n");
+
+    unsigned char *zeroed = calloc(8, 4);
+    check("calloc allocated", zeroed != NULL);
+    check("calloc overflow rejected", calloc(SIZE_MAX / 2U + 1U, 2) == NULL);
+    if (zeroed == NULL)
+        return;
+
+    int all_zero = 1;
+    for (int i = 0; i < 32; i++) {
+        if (zeroed[i] != 0) {
+            all_zero = 0;
+            break;
+        }
+    }
+    check("calloc zeroed", all_zero);
+
+    for (int i = 0; i < 32; i++)
+        zeroed[i] = (unsigned char) i;
+    unsigned char *grown = realloc(zeroed, 80);
+    check("realloc grow allocated", grown != NULL);
+    if (grown == NULL) {
+        free(zeroed);
+        return;
+    }
+    check("realloc grow preserves data", grown[0] == 0 && grown[31] == 31);
+
+    void *failed = realloc(grown, SIZE_MAX);
+    check("realloc overflow rejected", failed == NULL);
+    if (failed != NULL) {
+        free(failed);
+        return;
+    }
+    check("failed realloc preserves original", grown[1] == 1 && grown[31] == 31);
+    free(grown);
+}
+
 int main(void)
 {
     uart_printf("Memory Library Test Suite\n");
@@ -293,8 +383,10 @@ int main(void)
     test_arena_pop();
     test_arena_clear();
     test_malloc();
+    test_malloc_coalescing();
     test_free();
     test_malloc_reuse();
+    test_calloc_realloc();
 
     uart_printf("\n=========================\n");
     uart_printf("Results: %lu passed, %lu failed\n",

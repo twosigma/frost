@@ -20,7 +20,9 @@
 #include "limits.h"
 #include <stddef.h>
 
-/* Convert string to long integer */
+/* Convert a string to long in base 0 or 2..36. Overflow saturates at LONG_MIN
+ * or LONG_MAX. Invalid bases and inputs with no digits return zero and set
+ * endptr to the original string. */
 long strtol(const char *s, char **endptr, int base);
 
 /* Convert string to integer */

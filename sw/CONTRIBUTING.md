@@ -30,7 +30,7 @@ sw/
 │   ├── coremark/       # CoreMark benchmark
 │   ├── isa_test/       # ISA self-test for the Frost extensions
 │   ├── freertos_demo/  # FreeRTOS RTOS example
-│   ├── build_all_apps.py # Build script for all applications
+│   ├── build_all_apps.py # Build ordinary standalone applications
 │   └── ...             # Other applications
 └── FreeRTOS-Kernel/    # FreeRTOS submodule (git submodule)
 ```
@@ -65,7 +65,7 @@ All source files must include the Apache 2.0 license header:
 **C/C++ (block comment):**
 ```c
 /*
- *    Copyright 2024-2025 Two Sigma Open Source, LLC
+ *    Copyright 2026 Two Sigma Open Source, LLC
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -83,7 +83,7 @@ All source files must include the Apache 2.0 license header:
 
 **Assembly:**
 ```assembly
-# Copyright 2024-2025 Two Sigma Open Source, LLC
+# Copyright 2026 Two Sigma Open Source, LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # ...
@@ -217,9 +217,12 @@ SRC_C := ../../lib/src/uart.c your_app.c
 include ../../common/common.mk
 ```
 
-4. `build_all_apps.py` auto-discovers every app directory with a `Makefile`, so
-   no manual registration is needed (it only skips suites that require special
-   parameters, e.g. `arch_test`)
+4. `build_all_apps.py` auto-discovers non-hidden app directories with a
+   `Makefile`, so ordinary standalone apps need no manual registration. It
+   explicitly skips the parameterized `arch_test`, `riscv_tests`, and
+   `riscv_torture` suites, and skips the 30-60 minute `linux_boot` Buildroot
+   build unless `--include-linux-boot` is passed. Run it with `--list` to review
+   the build/skip decisions.
 
 5. Document the application purpose in its source file
 
@@ -284,30 +287,48 @@ These markers are detected by the Cocotb verification framework.
 
 ### Running Tests
 
+Build aggregation can run from `sw/`:
+
 ```bash
-# Build all applications
+# Clean and build ordinary standalone applications (special suites are reported as skipped)
 ./apps/build_all_apps.py
-
-# Run a specific test in simulation (from the tests/ directory)
-cd ../tests
-./test_run_cocotb.py hello_world
-
-# Run the ISA self-test
-./test_run_cocotb.py isa_test
-
-# List the available tests
-./test_run_cocotb.py --list-tests
 ```
 
-To run a suite in the DDR memory tier instead of low BRAM, set
-`FROST_COCOTB_MEM_CONFIG=ddr` before the runner (or pass `--mem-config ddr` to
-`test_arch_compliance.py` / `test_riscv_tests.py` / `test_riscv_torture.py`).
+Cocotb regression evidence must use the repository's pinned `frost` image. From
+the repository root, clean before every test:
+
+```bash
+# Run a specific real-program test
+docker run --rm -v "$(pwd)":/workspace frost \
+  bash -c "cd tests && make clean && ./test_run_cocotb.py hello_world"
+
+# Run that suite from the cached DDR tier
+docker run --rm -v "$(pwd)":/workspace frost \
+  bash -c "cd tests && make clean && FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py hello_world"
+
+# List the available tests
+docker run --rm -v "$(pwd)":/workspace frost \
+  bash -c "cd tests && ./test_run_cocotb.py --list-tests"
+```
+
+The container writes mounted files as root. After a Docker session that touched
+the repository, restore ownership before native work (especially Vivado):
+
+```bash
+docker run --rm -v "$(pwd)":/workspace --entrypoint bash frost \
+  -c "chown -R $(id -u):$(id -g) /workspace"
+```
+
+Parameterized runners use the same container/clean pattern and accept
+`--mem-config ddr` (`test_arch_compliance.py`, `test_riscv_tests.py`, and
+`test_riscv_torture.py`).
 
 ### Hardware Testing
 
 When possible, test on actual FPGA hardware:
 
 ```bash
+# From the repository root; Vivado and board flows run natively, not in Docker.
 # Program bitstream (once) - specify your board: x3 or genesys2
 ./fpga/program_bitstream/program_bitstream.py x3
 
@@ -343,7 +364,9 @@ Remember these constraints when writing software:
 ## Pull Request Guidelines
 
 1. Keep changes focused and atomic - one feature or fix per PR
-2. Ensure all affected applications still build: `./apps/build_all_apps.py`
+2. Ensure all affected ordinary applications still build:
+   `./apps/build_all_apps.py`. Run parameterized or long-build apps through
+   their dedicated workflow when your change affects them.
 3. Test your changes on hardware or in simulation
 4. Add license headers to new files
 5. Update documentation if adding or changing functionality

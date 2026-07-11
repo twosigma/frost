@@ -45,10 +45,13 @@ void uart_puts(const char *s);
  *   %s - string
  *   %d, %ld, %lld - signed decimal
  *   %u, %lu, %llu - unsigned decimal
- *   %x, %X - hexadecimal (lowercase/uppercase)
- *   %f - floating point (default precision 6, supports %.Nf) when enabled
+ *   %x, %lx, %llx / uppercase variants - hexadecimal
+ *   %f - floating point (default precision 6, precision capped at 9) when enabled;
+ *        finite magnitudes >= 2^64 are reported as "ovf" / "-ovf"
  *   %% - literal percent sign
- * Supports field width (e.g., %8d) and zero-padding (e.g., %04x)
+ * Integer, string, and character conversions support right-aligned field
+ * widths up to 255 (e.g., %8d); integers also support zero-padding (e.g.,
+ * %04x).
  */
 void uart_printf(const char *fmt, ...);
 

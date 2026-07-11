@@ -26,8 +26,9 @@
  * 2. malloc/free - Traditional freelist allocator with first-fit strategy.
  *    Best for allocations with varied lifetimes.
  *
- * Both allocators use _sbrk() to request memory from a simple heap that grows
- * from _heap_start toward _heap_end (defined in the linker script).
+ * Both allocators share a checked bump-pointer heap that grows from _heap_start
+ * toward _heap_end (defined in the linker script). A non-shrinking _sbrk()
+ * compatibility entry point exposes the same heap to bare-metal callers.
  */
 
 #include "memory.h"
@@ -52,29 +53,44 @@ extern char _heap_start;
 extern char _heap_end;
 
 static char *heap_mark = &_heap_start;
-char *_sbrk(int incr)
+
+static char *heap_grow(size_t increment)
 {
-    char *prev_heap = heap_mark;
-    if (heap_mark + incr > &_heap_end) {
+    uintptr_t mark = (uintptr_t) heap_mark;
+    uintptr_t end = (uintptr_t) &_heap_end;
+
+    if (mark > end || increment > end - mark) {
         return NULL;
     }
-    heap_mark += incr;
+
+    char *prev_heap = heap_mark;
+    heap_mark = (char *) (mark + increment);
     return prev_heap;
 }
 
+char *_sbrk(int incr)
+{
+    if (incr < 0)
+        return NULL;
+    return heap_grow((size_t) incr);
+}
 
 arena_t arena_alloc(uint32_t size)
 {
-    return (arena_t) {
-        .start = _sbrk((int) size),
-        .pos = 0,
-        .capacity = size,
-    };
+    char *start = heap_grow(size);
+    return (arena_t) {.start = start, .pos = 0, .capacity = start != NULL ? size : 0};
 }
 
-#define DEFAULT_ALIGN sizeof(long long)
-#define ALIGN(ptr, align) (((ptr) + ((align) - 1)) & ~((align) - 1))
-#define ALIGN_PADDING(ptr, align) (ALIGN(ptr, align) - (ptr))
+#define DEFAULT_ALIGN ((size_t) sizeof(long long))
+#define ALIGNED_METADATA_SIZE DEFAULT_ALIGN
+
+static int align_size_up(size_t value, size_t align, size_t *result)
+{
+    if (value > SIZE_MAX - (align - 1U))
+        return 0;
+    *result = (value + align - 1U) & ~(align - 1U);
+    return 1;
+}
 
 #if FROST_MALLOC_EVICT_FREE
 static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
@@ -98,17 +114,23 @@ static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
 
 char *arena_push_align(arena_t *arena, uint32_t size, uint8_t align)
 {
-    /* Align the actual pointer address, not just the position within the arena */
-    char *p = (char *) ALIGN((uintptr_t) (arena->start + arena->pos), align);
-    uint32_t new_pos = (uint32_t) (p - arena->start) + size;
-
-    /* Bounds check: ensure allocation fits within arena capacity */
-    if (new_pos > arena->capacity) {
+    if (arena == NULL || arena->start == NULL || arena->pos > arena->capacity || align == 0 ||
+        (align & (align - 1U)) != 0) {
         return NULL;
     }
 
-    arena->pos = new_pos;
-    return p;
+    uintptr_t start = (uintptr_t) arena->start;
+    if (arena->pos > UINTPTR_MAX - start)
+        return NULL;
+
+    uintptr_t current = start + arena->pos;
+    uintptr_t padding = (-(uintptr_t) current) & ((uintptr_t) align - 1U);
+    uint32_t remaining = arena->capacity - arena->pos;
+    if (padding > remaining || size > remaining - (uint32_t) padding)
+        return NULL;
+
+    arena->pos += (uint32_t) padding + size;
+    return (char *) (current + padding);
 }
 
 void *arena_push(arena_t *arena, uint32_t size)
@@ -169,10 +191,16 @@ void *malloc(size_t size)
         return NULL;
     }
 
-    /* Allocate using a first-fit algorithm */
+    size_t aligned_payload;
+    if (!align_size_up(size, DEFAULT_ALIGN, &aligned_payload) ||
+        aligned_payload > UINT32_MAX - ALIGNED_METADATA_SIZE) {
+        return NULL;
+    }
+
+    /* Allocate using a first-fit algorithm. Block sizes include the aligned
+     * metadata prefix and always fit in the uint32_t stored in that prefix. */
     struct free_slot **p = &freelist;
-    uint32_t block_size =
-        ALIGN(size, DEFAULT_ALIGN) + ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+    uint32_t block_size = (uint32_t) (aligned_payload + ALIGNED_METADATA_SIZE);
 
     char *result = NULL;
     while (*p != NULL) {
@@ -181,7 +209,7 @@ void *malloc(size_t size)
         if (block_size <= slot->size) {
             /* Shrink down free slot */
             slot->size -= block_size;
-            result = (char *) slot + slot->size + ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+            result = (char *) slot + slot->size + ALIGNED_METADATA_SIZE;
 
             if (slot->size == 0) {
                 /* Delete this node from the freelist */
@@ -194,11 +222,13 @@ void *malloc(size_t size)
     }
 
     if (result == NULL) {
-        char *raw = _sbrk(block_size + ALIGN_PADDING((uintptr_t) heap_mark, DEFAULT_ALIGN));
+        size_t padding = (-(uintptr_t) heap_mark) & (DEFAULT_ALIGN - 1U);
+        if (block_size > SIZE_MAX - padding)
+            return NULL;
+        char *raw = heap_grow((size_t) block_size + padding);
         if (raw == NULL)
             return NULL;
-        result = (char *) ALIGN((uintptr_t) raw, DEFAULT_ALIGN) +
-                 ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+        result = raw + padding + ALIGNED_METADATA_SIZE;
     }
 
     /* Write metadata */
@@ -206,6 +236,31 @@ void *malloc(size_t size)
     *md = (struct metadata) {.size = block_size};
 
     return result;
+}
+
+static void freelist_insert_and_coalesce(struct free_slot *slot)
+{
+    struct free_slot *previous = NULL;
+    struct free_slot **link = &freelist;
+    uintptr_t slot_address = (uintptr_t) slot;
+
+    while (*link != NULL && (uintptr_t) *link < slot_address) {
+        previous = *link;
+        link = &(*link)->next;
+    }
+
+    slot->next = *link;
+    *link = slot;
+
+    if (slot->next != NULL && slot_address + slot->size == (uintptr_t) slot->next) {
+        slot->size += slot->next->size;
+        slot->next = slot->next->next;
+    }
+
+    if (previous != NULL && (uintptr_t) previous + previous->size == slot_address) {
+        previous->size += slot->size;
+        previous->next = slot->next;
+    }
 }
 
 void free(void *ptr)
@@ -220,7 +275,7 @@ void free(void *ptr)
      */
     (void) ptr;
 #else
-    uintptr_t header_size = ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+    uintptr_t header_size = ALIGNED_METADATA_SIZE;
 #if FROST_MALLOC_GUARD_FREE
     uintptr_t payload = (uintptr_t) ptr;
     uintptr_t heap_start = (uintptr_t) &_heap_start;
@@ -246,9 +301,8 @@ void free(void *ptr)
 #endif
 
     struct free_slot *slot = ptr - header_size;
-    slot->next = freelist;
     slot->size = block_size;
-    freelist = slot;
+    freelist_insert_and_coalesce(slot);
 #endif
 }
 
@@ -278,7 +332,7 @@ void *realloc(void *ptr, size_t size)
     /* Recover the old payload size from the metadata malloc wrote ahead of the
      * block, so we copy exactly the still-live bytes (never past the old end). */
     struct metadata *md = (struct metadata *) ptr - 1;
-    uint32_t old_payload = md->size - ALIGN(sizeof(struct metadata), DEFAULT_ALIGN);
+    uint32_t old_payload = md->size - ALIGNED_METADATA_SIZE;
 
     if (size <= old_payload)
         return ptr;

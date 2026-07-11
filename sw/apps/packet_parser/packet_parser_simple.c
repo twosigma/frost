@@ -120,35 +120,39 @@ static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
     /* Read first chunk to get length */
     chunk = fifo_read_word(fifo_id);
 
-    uint8_t len = chunk & 0xFF;
-    if (len == 0) {
+    uint8_t wire_len = chunk & 0xFF;
+    if (wire_len == 0) {
         return false;
     }
 
-    if (len >= MAX_STRING_LEN) {
-        len = MAX_STRING_LEN - 1;
-    }
-
-    str->len = len;
-    int idx = 0;
+    uint8_t stored_len = wire_len < MAX_STRING_LEN ? wire_len : MAX_STRING_LEN - 1;
+    str->len = stored_len;
+    int consumed = 0;
+    int stored = 0;
     int chunk_idx = 1;
 
-    /* Copy first 3 bytes from first chunk if available */
-    while (chunk_idx < 4 && idx < len) {
-        str->data[idx++] = (chunk >> (chunk_idx * 8)) & 0xFF;
+    /* Copy the first three payload bytes from the length word. Even when the
+     * local buffer truncates an oversized value, consume its full wire length
+     * so the next FIFO read starts at the next string boundary. */
+    while (chunk_idx < 4 && consumed < wire_len) {
+        if (stored < stored_len)
+            str->data[stored++] = (chunk >> (chunk_idx * 8)) & 0xFF;
+        consumed++;
         chunk_idx++;
     }
 
     /* Read additional chunks as needed */
-    while (idx < len) {
+    while (consumed < wire_len) {
         chunk = fifo_read_word(fifo_id);
 
-        for (int i = 0; i < 4 && idx < len; i++) {
-            str->data[idx++] = (chunk >> (i * 8)) & 0xFF;
+        for (int i = 0; i < 4 && consumed < wire_len; i++) {
+            if (stored < stored_len)
+                str->data[stored++] = (chunk >> (i * 8)) & 0xFF;
+            consumed++;
         }
     }
 
-    str->data[len] = '\0';
+    str->data[stored_len] = '\0';
     return true;
 }
 
@@ -306,10 +310,31 @@ static void write_string_to_fifo(int fifo_id, const char *str)
     }
 }
 
+/* Verify that truncating an oversized local string does not leave unread wire
+ * bytes behind to corrupt the following length-prefixed string. */
+static bool test_oversized_fifo_string(void)
+{
+    static const char oversized[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-overflow";
+    static const char expected_prefix[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-";
+    string_buffer_t truncated;
+    string_buffer_t following;
+
+    write_string_to_fifo(0, oversized);
+    write_string_to_fifo(0, "next");
+
+    bool has_truncated = read_string_from_fifo(0, &truncated);
+    bool has_following = read_string_from_fifo(0, &following);
+    return has_truncated && has_following && truncated.len == MAX_STRING_LEN - 1 &&
+           strcmp(truncated.data, expected_prefix) == 0 && following.len == 4 &&
+           strcmp(following.data, "next") == 0;
+}
+
 /* Test FIX message: ICE venue accepted execution report */
 static const char *test_fix_message[][2] = {
     {"8", "FIX.4.2"},                /* BeginString */
-    {"9", "289"},                    /* BodyLength */
+    {"9", "292"},                    /* BodyLength */
     {"35", "8"},                     /* MsgType (ExecutionReport) */
     {"49", "ICE"},                   /* SenderCompID */
     {"56", "26583"},                 /* TargetCompID */
@@ -339,7 +364,7 @@ static const char *test_fix_message[][2] = {
     {"9821", "2661779"},             /* Custom: VenueOrderID */
     {"9175", "4"},                   /* Custom: VenueStatus */
     {"9120", "R"},                   /* Custom: DisplayIndicator */
-    {"10", "172"},                   /* CheckSum */
+    {"10", "238"},                   /* CheckSum */
 };
 
 #define TEST_FIX_MESSAGE_COUNT (sizeof(test_fix_message) / sizeof(test_fix_message[0]))
@@ -364,6 +389,8 @@ int main(void)
     /* Drain any leftover data so we start at a message boundary. */
     drain_fifo_pairs();
 
+    bool fifo_framing_ok = test_oversized_fifo_string();
+
     /* Fill FIFOs with FIX message */
     fill_fifos_with_fix_message();
     delay_ticks(1000);
@@ -375,6 +402,11 @@ int main(void)
     bool parse_ok = true;
     bool fix_version_ok = true;
     bink_v1_venue_accepted_t msg = parse_venue_accepted(&parse_ok, &fix_version_ok);
+    bool message_ok =
+        fifo_framing_ok && parse_ok && fix_version_ok && msg.msg_header.msg_type == 38 &&
+        msg.venue_id == 76 && msg.accepted_quantity.amount == 150 &&
+        msg.accepted_price.amount == 9400000000LL && msg.accepted_price.scale == TARGET_SCALE &&
+        msg.venue_sent_timestamp - msg.venue_transx_timestamp == 1000000ULL;
 
     /* End timing */
     end_time = read_timer();
@@ -387,6 +419,12 @@ int main(void)
     }
     if (!parse_ok) {
         uart_printf("ERROR: FIFO mismatch\n");
+    }
+    if (!fifo_framing_ok) {
+        uart_printf("ERROR: oversized FIFO string corrupted framing\n");
+    }
+    if (!message_ok) {
+        uart_printf("ERROR: parsed fields did not match the expected message\n");
     }
 
     uart_printf("\n=== Parsed Bink Venue Accepted Message ===\n");
@@ -415,7 +453,7 @@ int main(void)
                 (end_time - start_time) * CLOCK_PERIOD_PS / 1000);
 
     uart_printf("\n=== Test Complete ===\n");
-    if (parse_ok) {
+    if (message_ok) {
         uart_printf("<<PASS>>\n");
     } else {
         uart_printf("<<FAIL>>\n");
