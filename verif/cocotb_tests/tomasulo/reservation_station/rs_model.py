@@ -73,10 +73,25 @@ class RSModel:
         """Initialize RS model with given depth."""
         self.depth = depth
         self.entries: list[RSEntry] = [RSEntry() for _ in range(depth)]
+        # Opt-in RTL-exact allocation timing: the RTL clears an issued entry's
+        # valid bit at the clock edge, so its slot is not visible to the
+        # free-slot priority encoder until the NEXT cycle. A model consume in
+        # bench-cycle N must therefore not free the slot for a dispatch in the
+        # same bench cycle, or model/DUT slot indices diverge and simultaneous
+        # wakeups legally tie-break to different entries. Cycle-driven tests
+        # enable this and call tick() once per cycle; directed tests that step
+        # freely keep the immediate-reuse behavior.
+        self.strict_alloc_timing = False
+        self._alloc_blocked: set[int] = set()
 
     def reset(self) -> None:
         """Reset all entries."""
         self.entries = [RSEntry() for _ in range(self.depth)]
+        self._alloc_blocked.clear()
+
+    def tick(self) -> None:
+        """Advance one cycle: slots consumed last cycle become allocatable."""
+        self._alloc_blocked.clear()
 
     def is_full(self) -> bool:
         """Return whether all entries are valid."""
@@ -97,7 +112,7 @@ class RSModel:
     def _find_free(self) -> int | None:
         """Find lowest-index free entry (priority encoder)."""
         for i, e in enumerate(self.entries):
-            if not e.valid:
+            if not e.valid and i not in self._alloc_blocked:
                 return i
         return None
 
@@ -255,6 +270,8 @@ class RSModel:
     def consume_issue(self, idx: int) -> None:
         """Consume an issued entry by index."""
         self.entries[idx].valid = False
+        if self.strict_alloc_timing:
+            self._alloc_blocked.add(idx)
 
     def try_issue(self, fu_ready: bool = True) -> dict | None:
         """Try to issue the lowest-index ready entry.
