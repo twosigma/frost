@@ -121,10 +121,12 @@ module mwp_dist_ram #(
   // Staged-LVT state: bit wp mirrors write port wp, held one cycle.  Bits at
   // or above NUM_STAGED_LVT_PORTS are tied 0 and synthesize away (the classic
   // all-live configuration when NUM_STAGED_LVT_PORTS=0).
-  logic [NUM_WRITE_PORTS-1:0]                 staged_lvt_we_q;
+  // Initialized at declaration (not via an initial block): IEEE 1800
+  // 9.2.2.4 forbids an always_ff variable being written by another process,
+  // but explicitly permits declaration initialization (Verilator >=5.050
+  // enforces this; yosys formal needs the pinned init value either way).
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
   logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
-
-  initial staged_lvt_we_q = '0;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
