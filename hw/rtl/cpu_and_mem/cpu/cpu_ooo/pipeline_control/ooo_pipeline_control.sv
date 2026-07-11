@@ -242,7 +242,14 @@ module ooo_pipeline_control #(
 
   // Registered stall for IF stage stall-capture registers.
   logic stall_q;
-  logic id_stall_q;
+  // TIMING: cap the replicated fanout of the registered ID stall. Its net
+  // reached fanout ~853 (dispatch/alloc CE cones designwide, plus the
+  // width-funnel observer replay bits), and Vivado's replication heuristic
+  // proved mood-sensitive there: a handful of added observer loads swung the
+  // id_stall -> ROB-alloc LVT cone from marginal to the post-opt WNS
+  // (-0.233 -> -0.363). Bounded replicas make the split deterministic,
+  // mirroring the max_fanout treatment on other 1-bit control nets.
+  (* max_fanout = 64 *)logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
   logic replay_after_serialize_stall_next;

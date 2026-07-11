@@ -41,6 +41,14 @@ module commit_bus_pipeline (
     // Registered slot-1 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_q,
     output logic o_commit_bus_q_valid,
+    // RAW (pre-flush-mask) registered valid — the flop value without the
+    // !i_flush_all output gate.  For SCAN-ONLY consumers whose result is
+    // structurally unconsumable on flush cycles (the SQ forwarding probe's
+    // capture data path): the flush mask term is the registered trap/MRET
+    // pulse, and keeping it off the scan cone removes the last trap entry
+    // into the o_sq_forward capture D-pins (x3 post-opt -0.138, 65
+    // endpoints).  Never use this for an architectural side effect.
+    output logic o_commit_bus_q_valid_raw,
     output logic o_commit_q_dest_valid,
     output logic o_commit_q_dest_rf,
     output logic [riscv_pkg::RegAddrWidth-1:0] o_commit_q_dest_reg,
@@ -52,6 +60,8 @@ module commit_bus_pipeline (
     // Registered slot-2 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_2_q,
     output logic o_commit_bus_2_q_valid,
+    // Slot-2 twin of o_commit_bus_q_valid_raw (same contract).
+    output logic o_commit_bus_2_q_valid_raw,
     output logic o_commit_q_2_dest_valid,
     output logic o_commit_q_2_dest_rf,
     output logic [riscv_pkg::RegAddrWidth-1:0] o_commit_q_2_dest_reg,
@@ -124,6 +134,7 @@ module commit_bus_pipeline (
   // more architectural side effect while the backend is being squashed.
   assign o_commit_bus_q             = commit_bus_q;
   assign o_commit_bus_q_valid       = commit_bus_q_valid && !i_flush_all;
+  assign o_commit_bus_q_valid_raw   = commit_bus_q_valid;
   assign o_commit_q_dest_valid      = commit_q_dest_valid;
   assign o_commit_q_dest_rf         = commit_q_dest_rf;
   assign o_commit_q_dest_reg        = commit_q_dest_reg;
@@ -133,6 +144,7 @@ module commit_bus_pipeline (
   assign o_commit_q_sc_failed       = commit_q_sc_failed;
   assign o_commit_bus_2_q           = commit_bus_2_q;
   assign o_commit_bus_2_q_valid     = commit_bus_2_q_valid && !i_flush_all;
+  assign o_commit_bus_2_q_valid_raw = commit_bus_2_q_valid;
   assign o_commit_q_2_dest_valid    = commit_q_2_dest_valid;
   assign o_commit_q_2_dest_rf       = commit_q_2_dest_rf;
   assign o_commit_q_2_dest_reg      = commit_q_2_dest_reg;

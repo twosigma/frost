@@ -34,6 +34,17 @@ state plus a per-entry forwarding-data mirror from `store_queue.sv`, then the
 winner tree carries the selected payload directly into the registered output.
 The drain side still reads the canonical `sq_data` LUTRAM at `drain_idx_q`.
 
+The scan's same-cycle committed-store guard consumes the trap-cone-free
+`i_commit_valid_scan/_scan_2` pulses (the wrapper builds them from the
+commit-bus pipeline's pre-flush-mask valids) instead of the architectural
+commit pulses. They differ only on the full-flush cycle, whose captured
+probe result is structurally unconsumable under the capture-then-kill
+contract (see the load_queue README); keeping the flush mask off the scan
+keeps the registered trap/MRET pulse off the forwarding capture's D-pins.
+The architectural consumers below (`sq_committed`, committed-empty, the
+flush-exemption mask) keep the masked pulses — a squashed store must never
+latch committed state.
+
 Two ordering subtleties in the scan:
 
 - *Older-than-load qualification* uses ROB-tag age (`tag − head`, valid

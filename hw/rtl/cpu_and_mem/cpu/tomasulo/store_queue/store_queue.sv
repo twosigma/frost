@@ -134,6 +134,20 @@ module store_queue #(
     input logic                                        i_commit_valid_comb_2,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb_2,
 
+    // Trap-cone-free commit pulses for the FORWARDING SCAN only (same tags as
+    // i_commit_valid/_2).  Identical to i_commit_valid/_2 except the full-
+    // flush mask (the registered trap/MRET/FENCE.I pulse) is omitted, keeping
+    // the trap cone off the o_sq_forward capture D-pins (x3 post-opt -0.138,
+    // 65 endpoints).  Differs from the architectural pulses ONLY on the
+    // full-flush cycle, where the captured probe result is structurally
+    // unconsumable (capture-then-kill: o_sq_check_valid is flush-gated,
+    // sq_check_phase2 clears, consumers require phase-2 lineage).  The
+    // architectural consumers (sq_committed, committed_empty, flush_kill
+    // exemption) MUST keep the masked pulses: a squashed store must not
+    // latch committed state.
+    input logic i_commit_valid_scan,
+    input logic i_commit_valid_scan_2,
+
     // =========================================================================
     // Store-to-Load Forwarding (from LQ disambiguation)
     // =========================================================================
@@ -612,9 +626,11 @@ module store_queue #(
       .i_sq_check_size           (i_sq_check_size),
       .i_sq_check_rob_tag        (i_sq_check_rob_tag),
       .i_rob_head_tag            (i_rob_head_tag),
-      .i_commit_valid            (i_commit_valid),
+      // Scan-only trap-cone-free commit pulses (tags shared with the
+      // architectural ports; see the i_commit_valid_scan port comment).
+      .i_commit_valid            (i_commit_valid_scan),
       .i_commit_rob_tag          (i_commit_rob_tag),
-      .i_commit_valid_2          (i_commit_valid_2),
+      .i_commit_valid_2          (i_commit_valid_scan_2),
       .i_commit_rob_tag_2        (i_commit_rob_tag_2),
       .i_sq_head_idx             (head_idx),
       .sq_valid                  (sq_valid),
@@ -1460,6 +1476,18 @@ module store_queue #(
   // processing), and flush_en only flushes younger entries while the
   // committed head is always older than the flush boundary.
   // (assumption removed — was: no commit during flush)
+
+  // Scan-variant commit pulses: identical to the architectural pulses off
+  // full-flush cycles (the wrapper omits only the full-flush mask term).
+  // On i_flush_all cycles they are left free — the architectural pulses are
+  // then 0 and the scan pulses may assert for the squashed commit, which is
+  // the over-approximation the capture-then-kill contract tolerates.
+  always_comb begin
+    if (!i_flush_all) begin
+      assume (i_commit_valid_scan == i_commit_valid);
+      assume (i_commit_valid_scan_2 == i_commit_valid_2);
+    end
+  end
 
   // -------------------------------------------------------------------------
   // Combinational assertions

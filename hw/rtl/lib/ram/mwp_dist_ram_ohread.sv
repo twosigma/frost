@@ -37,11 +37,20 @@
  * Intended use: the reorder buffer head / head+1 read ports, whose one-hot
  * images (head_clear_mask / head_next_clear_mask) are already maintained as
  * registers that move in lockstep with head_ptr.
+ *
+ * NUM_STAGED_LVT_PORTS: same register-staged LVT-update option as
+ * mwp_dist_ram (see that header for the full contract).  Ports
+ * [NUM_STAGED_LVT_PORTS-1:0] write their bank same-cycle but update the LVT
+ * one cycle later from staging registers; reads stay cycle-exact via a
+ * per-entry effective-LVT override computed from the staging registers.
  */
 module mwp_dist_ram_ohread #(
-    parameter int unsigned ADDR_WIDTH      = 5,   // Address width in bits
-    parameter int unsigned DATA_WIDTH      = 32,  // Data width in bits
-    parameter int unsigned NUM_WRITE_PORTS = 2    // Number of write ports (>= 2)
+    parameter int unsigned ADDR_WIDTH           = 5,   // Address width in bits
+    parameter int unsigned DATA_WIDTH           = 32,  // Data width in bits
+    parameter int unsigned NUM_WRITE_PORTS      = 2,   // Number of write ports (>= 2)
+    // Ports [NUM_STAGED_LVT_PORTS-1:0] update the LVT one cycle late from
+    // staging registers (banks still write same-cycle).  See mwp_dist_ram.
+    parameter int unsigned NUM_STAGED_LVT_PORTS = 0
 ) (
     input logic i_clk,
 
@@ -60,6 +69,10 @@ module mwp_dist_ram_ohread #(
 
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned SelWidth = $clog2(NUM_WRITE_PORTS);
+  // Signed mirror for loop-bound comparisons (loop vars are signed int;
+  // comparing against the unsigned parameter is a constant-comparison
+  // lint warning when NUM_STAGED_LVT_PORTS=0).
+  localparam int StagedLvtPorts = int'(NUM_STAGED_LVT_PORTS);
 
   // ---------------------------------------------------------------------------
   // RAM bank per write port (identical to mwp_dist_ram)
@@ -81,15 +94,58 @@ module mwp_dist_ram_ohread #(
   end : g_banks
 
   // ---------------------------------------------------------------------------
-  // Live Value Table (register-based, identical write behavior)
+  // Live Value Table (register-based, identical write behavior).
+  // Staged ports (indices < NUM_STAGED_LVT_PORTS) update one cycle late from
+  // staging registers; staged drains apply first so a live same-address write
+  // in the drain cycle wins.  See mwp_dist_ram for the full contract.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
 
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
 
+  logic [NUM_WRITE_PORTS-1:0]                 staged_lvt_we_q;
+  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+
+  initial staged_lvt_we_q = '0;
+
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
-      if (i_write_enable[wp]) lvt[i_write_address[wp]] <= SelWidth'(wp);
+      if (wp < StagedLvtPorts) begin
+        staged_lvt_we_q[wp]   <= i_write_enable[wp];
+        staged_lvt_addr_q[wp] <= i_write_address[wp];
+      end else begin
+        staged_lvt_we_q[wp]   <= 1'b0;
+        staged_lvt_addr_q[wp] <= '0;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    // Staged drains first: a live same-address write below overrides.
+    for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
+      if (staged_lvt_we_q[wp]) lvt[staged_lvt_addr_q[wp]] <= SelWidth'(wp);
+    end
+    for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
+      if (wp >= StagedLvtPorts) begin
+        if (i_write_enable[wp]) lvt[i_write_address[wp]] <= SelWidth'(wp);
+      end
+    end
+  end
+
+  // Per-entry effective-LVT view: overrides the staged entries' still-stale
+  // LVT bits during the one-cycle drain gap, purely from staging registers
+  // (early side of the reduction — the one-hot mask sees unchanged depth).
+  logic [SelWidth-1:0] lvt_eff[RamDepth];
+
+  always_comb begin
+    for (int i = 0; i < RamDepth; i++) begin
+      lvt_eff[i] = lvt[i];
+      for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
+        if ((wp < StagedLvtPorts) && staged_lvt_we_q[wp] &&
+            (staged_lvt_addr_q[wp] == ADDR_WIDTH'(i))) begin
+          lvt_eff[i] = SelWidth'(wp);
+        end
+      end
     end
   end
 
@@ -100,7 +156,7 @@ module mwp_dist_ram_ohread #(
   always_comb begin
     lvt_read_sel = '0;
     for (int i = 0; i < RamDepth; i++) begin
-      if (i_read_onehot[i]) lvt_read_sel |= lvt[i];
+      if (i_read_onehot[i]) lvt_read_sel |= lvt_eff[i];
     end
   end
 
@@ -108,6 +164,13 @@ module mwp_dist_ram_ohread #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  initial begin
+    if (NUM_STAGED_LVT_PORTS > NUM_WRITE_PORTS) begin
+      $fatal(1, "mwp_dist_ram_ohread: NUM_STAGED_LVT_PORTS (%0d) > NUM_WRITE_PORTS (%0d)",
+             NUM_STAGED_LVT_PORTS, NUM_WRITE_PORTS);
+    end
+  end
+
   // Simulation-only contract check: the one-hot select must mirror the binary
   // read address whenever both are known.  A mismatch would silently return
   // the wrong bank's data, so treat it as an error.  The all-zero case is
@@ -126,6 +189,23 @@ module mwp_dist_ram_ohread #(
         ) && (i_read_onehot != '0) && (i_read_onehot != (RamDepth'(1) << i_read_address))) begin
       $error("mwp_dist_ram_ohread: i_read_onehot (0x%0h) != 1 << i_read_address (%0d)",
              i_read_onehot, i_read_address);
+    end
+  end
+
+  // Caller invariant required by staged-LVT ports: a staged port's write
+  // address must not also be written by a LIVE port in the same cycle (see
+  // mwp_dist_ram).
+  always @(posedge i_clk) begin
+    for (int k = 0; k < StagedLvtPorts; k++) begin
+      for (int wp = StagedLvtPorts; wp < NUM_WRITE_PORTS; wp++) begin
+        if (!$isunknown(
+                {i_write_enable[k], i_write_enable[wp]}
+            ) && i_write_enable[k] && i_write_enable[wp] &&
+                (i_write_address[k] == i_write_address[wp])) begin
+          $error("mwp_dist_ram_ohread: staged port %0d and live port %0d wrote 0x%0h same-cycle",
+                 k, wp, i_write_address[k]);
+        end
+      end
     end
   end
 `endif

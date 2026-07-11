@@ -35,6 +35,16 @@ for slot-1 sources, three for slot-2 sources), and three more for the
 wrapper's FMUL operand-repair queue — implemented as multiple LUTRAM
 instances with identical writes and different read addresses.
 
+The twelve `value` instances run their two alloc write ports in the
+RAM modules' register-staged LVT mode (`NUM_STAGED_LVT_PORTS(2)`):
+the late alloc enables still write the banks in the alloc cycle, but
+the Live Value Table update runs one cycle later from staging
+registers, keeping the dispatch-gate cone off every LVT bit of every
+replica (this was the x3 post-opt WNS). Reads stay cycle-exact via a
+per-entry effective-LVT correction inside the RAM modules — the
+load-bearing case is JAL, done at alloc, whose link value may be read
+at alloc+1.
+
 This saves several thousand FFs vs. a pure-FF design.
 
 ## Two-wide allocation

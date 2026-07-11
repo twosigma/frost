@@ -505,6 +505,9 @@ module tomasulo_wrapper #(
   // Split commit_bus_q into separate valid + data to prevent Vivado from
   // dragging the reset net onto payload register bits.
   logic commit_bus_q_valid;
+  // Pre-flush-mask registered valid (scan-only consumers; see
+  // commit_bus_pipeline port comment).
+  logic commit_bus_q_valid_raw;
   riscv_pkg::reorder_buffer_commit_t commit_bus_q;
   logic commit_q_dest_valid;
   logic commit_q_dest_rf;
@@ -524,6 +527,7 @@ module tomasulo_wrapper #(
   riscv_pkg::reorder_buffer_commit_t commit_bus_2;
   riscv_pkg::reorder_buffer_commit_t commit_bus_2_q;
   logic commit_bus_2_q_valid;
+  logic commit_bus_2_q_valid_raw;
   logic commit_q_2_dest_valid;
   logic commit_q_2_dest_rf;
   logic [riscv_pkg::RegAddrWidth-1:0] commit_q_2_dest_reg;
@@ -543,6 +547,7 @@ module tomasulo_wrapper #(
       .i_commit_bus_2            (commit_bus_2),
       .o_commit_bus_q            (commit_bus_q),
       .o_commit_bus_q_valid      (commit_bus_q_valid),
+      .o_commit_bus_q_valid_raw  (commit_bus_q_valid_raw),
       .o_commit_q_dest_valid     (commit_q_dest_valid),
       .o_commit_q_dest_rf        (commit_q_dest_rf),
       .o_commit_q_dest_reg       (commit_q_dest_reg),
@@ -552,6 +557,7 @@ module tomasulo_wrapper #(
       .o_commit_q_sc_failed      (commit_q_sc_failed),
       .o_commit_bus_2_q          (commit_bus_2_q),
       .o_commit_bus_2_q_valid    (commit_bus_2_q_valid),
+      .o_commit_bus_2_q_valid_raw(commit_bus_2_q_valid_raw),
       .o_commit_q_2_dest_valid   (commit_q_2_dest_valid),
       .o_commit_q_2_dest_rf      (commit_q_2_dest_rf),
       .o_commit_q_2_dest_reg     (commit_q_2_dest_reg),
@@ -1236,6 +1242,25 @@ module tomasulo_wrapper #(
   // never be an SC, so no sc_discard gate.
   logic sq_commit_valid_2;
   assign sq_commit_valid_2 = commit_bus_2_q_valid && commit_q_2_is_store_like;
+
+  // SCAN-ONLY commit pulses for the SQ forwarding probe (trap-cone-free).
+  // Identical to sq_commit_valid/_2 except built from the RAW (pre-flush-mask)
+  // registered valids: the !i_flush_all mask is the registered trap/MRET/
+  // FENCE.I pulse, and routing it into the forwarding scan put the trap cone
+  // on every o_sq_forward capture D-pin (x3 post-opt -0.138, 65 endpoints).
+  // The variants differ from the architectural pulses ONLY on the full-flush
+  // cycle, where the probe's captured result is structurally unconsumable
+  // (o_sq_check_valid is flush-gated low, sq_check_phase2 is cleared, and
+  // every consumer requires phase-2 lineage) — the same capture-then-kill
+  // contract that lets the capture ENABLE omit its flush terms.  Never use
+  // these for an architectural side effect (sq_committed, committed_empty,
+  // flush_kill exemptions keep the masked pulses).
+  logic sc_discard_raw;
+  assign sc_discard_raw = commit_bus_q_valid_raw && commit_q_sc_failed;
+  logic sq_commit_valid_scan;
+  assign sq_commit_valid_scan = commit_bus_q_valid_raw && commit_q_is_store_like && !sc_discard_raw;
+  logic sq_commit_valid_scan_2;
+  assign sq_commit_valid_scan_2 = commit_bus_2_q_valid_raw && commit_q_2_is_store_like;
 
   // ===========================================================================
   // SC Pending Register: SC waits for ROB head + SQ committed-empty
@@ -2948,6 +2973,11 @@ module tomasulo_wrapper #(
       // is the head+1 tag when 2-wide commit fires and zero otherwise.
       .i_commit_valid_2  (sq_commit_valid_2),
       .i_commit_rob_tag_2(commit_q_2_tag),
+
+      // Trap-cone-free commit pulses for the forwarding probe's scan only
+      // (see the sq_commit_valid_scan definition above for the contract).
+      .i_commit_valid_scan  (sq_commit_valid_scan),
+      .i_commit_valid_scan_2(sq_commit_valid_scan_2),
 
       // Same-cycle commit guard (combinational, for flush race protection).
       // Use the narrow raw ROB pulse instead of the wide commit bus so the

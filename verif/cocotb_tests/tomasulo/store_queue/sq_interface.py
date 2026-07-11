@@ -177,6 +177,11 @@ class SQInterface:
         self.dut.i_commit_rob_tag_2.value = 0
         self.dut.i_commit_valid_comb_2.value = 0
         self.dut.i_commit_rob_tag_comb_2.value = 0
+        # Trap-cone-free scan variants: the bench never overlaps a commit
+        # with a full flush, so they mirror i_commit_valid/_2 exactly (as the
+        # wrapper does on every non-flush cycle).
+        self.dut.i_commit_valid_scan.value = 0
+        self.dut.i_commit_valid_scan_2.value = 0
         self.dut.i_sq_check_valid.value = 0
         # Flush-free capture-enable variant: the bench has no flush-vs-probe
         # overlap, so it mirrors i_sq_check_valid exactly (as the LQ does on
@@ -313,8 +318,9 @@ class SQInterface:
     # =========================================================================
 
     def drive_commit(self, rob_tag: int) -> None:
-        """Drive commit signal for a store."""
+        """Drive commit signal for a store (scan variant in lockstep)."""
         self.dut.i_commit_valid.value = 1
+        self.dut.i_commit_valid_scan.value = 1
         self.dut.i_commit_rob_tag.value = rob_tag & MASK_TAG
 
     def drive_commit_comb(self, rob_tag: int) -> None:
@@ -323,8 +329,9 @@ class SQInterface:
         self.dut.i_commit_rob_tag_comb.value = rob_tag & MASK_TAG
 
     def drive_commit_2(self, rob_tag: int) -> None:
-        """Drive widen-commit slot-2 signal for a store."""
+        """Drive widen-commit slot-2 signal for a store (scan in lockstep)."""
         self.dut.i_commit_valid_2.value = 1
+        self.dut.i_commit_valid_scan_2.value = 1
         self.dut.i_commit_rob_tag_2.value = rob_tag & MASK_TAG
 
     def drive_commit_comb_2(self, rob_tag: int) -> None:
@@ -335,6 +342,7 @@ class SQInterface:
     def clear_commit(self) -> None:
         """Clear commit signal."""
         self.dut.i_commit_valid.value = 0
+        self.dut.i_commit_valid_scan.value = 0
 
     def clear_commit_comb(self) -> None:
         """Clear same-cycle combinational commit guard for slot 1."""
@@ -343,6 +351,7 @@ class SQInterface:
     def clear_commit_2(self) -> None:
         """Clear widen-commit slot-2 signal."""
         self.dut.i_commit_valid_2.value = 0
+        self.dut.i_commit_valid_scan_2.value = 0
 
     def clear_commit_comb_2(self) -> None:
         """Clear same-cycle combinational commit guard for slot 2."""

@@ -48,6 +48,14 @@ module sq_forwarding_unit #(
     input riscv_pkg::mem_size_e i_sq_check_size,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sq_check_rob_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
+    // Commit pulses for the same-cycle committed-store scan guard.  The
+    // store_queue feeds these from the TRAP-CONE-FREE scan variants (no
+    // full-flush mask term): on the one cycle where they differ from the
+    // architectural pulses (registered trap/MRET/FENCE.I flush), the capture
+    // below latches a result that is structurally unconsumable
+    // (capture-then-kill — see the Block-3 comment).  Keeping the flush mask
+    // off these inputs keeps the registered trap pulse off every capture
+    // D-pin (x3 post-opt -0.138, 65 endpoints).
     input logic i_commit_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
     input logic i_commit_valid_2,
@@ -438,6 +446,13 @@ module sq_forwarding_unit #(
   // Staleness is bounded to exactly one cycle: with the LQ flushed no probe
   // issues, so the i_sq_check_valid arm self-clears these bits on the next
   // edge.
+  //
+  // The same contract covers the capture DATA cone: the capture enable
+  // (i_sq_check_capture_valid) omits the flush and commit-block terms, and
+  // the commit pulses feeding the scan above are the trap-cone-free scan
+  // variants.  A capture computed on the flush cycle may therefore treat a
+  // squashed store commit as visible — and is exactly as unconsumable as any
+  // other flush-cycle capture.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       o_sq_all_older_addrs_known <= 1'b0;

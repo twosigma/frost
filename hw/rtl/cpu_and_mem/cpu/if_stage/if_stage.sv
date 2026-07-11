@@ -127,6 +127,8 @@ module if_stage #(
     // 2-wide width-funnel profiling events at the IF→PD boundary (perf
     // counters only; see if_width_events_t).  Pulses once per accepted
     // handoff; kill causes are replay-exact via the stall-capture path.
+    // REGISTERED at this boundary (one cycle after the observed handoff) so
+    // the perf taps cannot fuse into the slot-2-redirect/next-PC cone.
     output riscv_pkg::if_width_events_t o_width_events
 );
 
@@ -1553,19 +1555,36 @@ module if_stage #(
   assign width_deliver2 = width_deliver1 && !o_from_if_to_pd_2.sel_nop;
   assign width_slot2_killed = width_deliver1 && o_from_if_to_pd_2.sel_nop;
 
-  assign o_width_events.deliver1 = width_deliver1;
-  assign o_width_events.deliver2 = width_deliver2;
-  assign o_width_events.kill_s1_native_ctrl = width_slot2_killed && slot2_kill_causes_effective[0];
-  assign o_width_events.kill_s1_native_serialize =
-      width_slot2_killed && slot2_kill_causes_effective[1];
-  assign o_width_events.kill_slot1_ctrl = width_slot2_killed && slot2_kill_causes_effective[2];
-  assign o_width_events.kill_class = width_slot2_killed && slot2_kill_causes_effective[3];
-  assign o_width_events.kill_window_limit = width_slot2_killed && slot2_kill_causes_effective[4];
-  assign o_width_events.kill_transient = width_slot2_killed && slot2_kill_causes_effective[5];
-  // Slot-2 BTB predicted-taken accepted this cycle (already !stall-qualified
-  // inside branch_prediction_controller, so it pulses once per event).  Each
-  // occurrence costs one fetch bubble: the redirect applies via
-  // slot2_redirect_q on the following cycle.
-  assign o_width_events.slot2_pred_taken = slot2_prediction_used;
+  // TIMING: register the width-funnel taps at the IF boundary before they
+  // leave for the perf aggregator, so observer logic cannot share LUTs with
+  // the slot-2 kill/redirect cluster it taps (the dispatch-side taps
+  // measurably produced exactly that fusion in the alloc-gate cone).
+  // Honest outcome note: the x3 post-opt imem->fetch-PC cone regressed
+  // -0.233 -> -0.300 when the five extended width-funnel counters landed,
+  // but registering these taps did NOT recover it (identical worst path
+  // either way) — that shift was an indirect synthesis-choice effect, and
+  // the residual -0.300 is the base fetch-redirect loop.  These bits only
+  // feed free-running counters, so a uniform one-cycle delay is
+  // count-neutral over any run and keeps the deliver/kill decomposition
+  // internally consistent; the flops sit AFTER the stall-capture replay
+  // alignment (slot2_kill_causes_effective / width_slot2_killed), so
+  // per-bundle attribution is unchanged.
+  riscv_pkg::if_width_events_t width_events_q;
+  always_ff @(posedge i_clk) begin
+    width_events_q.deliver1 <= width_deliver1;
+    width_events_q.deliver2 <= width_deliver2;
+    width_events_q.kill_s1_native_ctrl <= width_slot2_killed && slot2_kill_causes_effective[0];
+    width_events_q.kill_s1_native_serialize <= width_slot2_killed && slot2_kill_causes_effective[1];
+    width_events_q.kill_slot1_ctrl <= width_slot2_killed && slot2_kill_causes_effective[2];
+    width_events_q.kill_class <= width_slot2_killed && slot2_kill_causes_effective[3];
+    width_events_q.kill_window_limit <= width_slot2_killed && slot2_kill_causes_effective[4];
+    width_events_q.kill_transient <= width_slot2_killed && slot2_kill_causes_effective[5];
+    // Slot-2 BTB predicted-taken accepted (already !stall-qualified inside
+    // branch_prediction_controller, so it pulses once per event).  Each
+    // occurrence costs one fetch bubble: the redirect applies via
+    // slot2_redirect_q on the following cycle.
+    width_events_q.slot2_pred_taken <= slot2_prediction_used;
+  end
+  assign o_width_events = width_events_q;
 
 endmodule : if_stage
