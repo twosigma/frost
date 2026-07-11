@@ -99,15 +99,19 @@ module load_queue #(
     // Store Queue Disambiguation (combinational handshake)
     // =========================================================================
     output logic o_sq_check_valid,
-    // Flush-free variant for the SQ forwarding unit's CAPTURE enable only
-    // (x3 post-opt -0.135, 65 endpoints: the !i_flush_all/!i_flush_en terms
-    // in o_sq_check_valid carry the registered trap/MRET pulse into every
-    // forward-capture bit's D). On any cycle where this asserts but
-    // o_sq_check_valid does not (flush cycles), the capture latches a dead
-    // probe's result -- unconsumable, because sq_check_phase2 advances only
-    // from the GATED o_sq_check_valid, sq_check_flushed kills the staging,
-    // and every consumer of the captured result (sq_can_issue,
-    // sq_do_forward, sq_commit_interlock) requires sq_check_phase2 lineage.
+    // Trap-cone-free variant for the SQ forwarding unit's CAPTURE enable
+    // only (x3 post-opt -0.135, 65 endpoints). Two late terms of
+    // o_sq_check_valid carried the registered trap/MRET pulse into every
+    // forward-capture bit's D: the !i_flush_all/!i_flush_en gates, and
+    // !sq_commit_check_block (commit_en-derived via the trap unit's
+    // combinational o_trap_drain_wait commit-hold). Both are omitted here.
+    // On any cycle where this asserts but o_sq_check_valid does not, the
+    // capture latches a result that is unconsumable that cycle:
+    // sq_check_phase2 advances only from the GATED o_sq_check_valid,
+    // sq_check_flushed kills flushed staging, and every consumer of the
+    // captured result (sq_can_issue, sq_do_forward) requires phase-2
+    // lineage AND !sq_commit_interlock, which re-applies the commit-block
+    // at the decision point.
     output logic o_sq_check_capture_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
     // Second replica of o_sq_check_addr — drives the upper half of the SQ
@@ -1129,11 +1133,20 @@ module load_queue #(
       o_sq_check_valid = 1'b1;
     end
 
-    // Capture-enable variant: identical minus the flush terms (see port
-    // comment). Every remaining term is registered/early state.
+    // Capture-enable variant: identical minus the flush terms AND minus
+    // !sq_commit_check_block (see port comment). The block term is
+    // commit_en-derived (i_sq_commit_pending sits behind the trap unit's
+    // combinational o_trap_drain_wait commit-hold), which kept the
+    // registered trap pulse on the capture cone; its ordering purpose is
+    // enforced at the consumers via sq_commit_interlock (sq_can_issue and
+    // sq_do_forward both require !sq_commit_interlock), so a capture during
+    // a blocked cycle is architecturally valid data that simply cannot be
+    // consumed until the interlock lifts -- and the capture refreshes every
+    // enabled cycle, so it can never go stale across the block. Every
+    // remaining term is registered/early state.
     o_sq_check_capture_valid = 1'b0;
     if (!drop_mem_response_pending &&
-        !i_mem_bus_busy && !sq_commit_check_block && sq_check_entry_issueable &&
+        !i_mem_bus_busy && sq_check_entry_issueable &&
         !sq_check_misaligned &&
         !(sq_check_no_older_store_q || i_sq_empty)) begin
       o_sq_check_capture_valid = 1'b1;

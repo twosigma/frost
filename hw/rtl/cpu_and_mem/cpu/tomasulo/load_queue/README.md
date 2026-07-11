@@ -29,12 +29,25 @@ so an in-flight cached response can never be misattributed to a
 post-flush load.
 
 The SQ **forwarding result** register follows a capture-then-kill
-contract instead (timing: the flush terms carried the registered
-trap/MRET pulse into every capture bit's D). Its capture enable is the
-flush-free `o_sq_check_capture_valid`; a flush-cycle probe's result may
-be latched but is structurally unconsumable, because `sq_check_phase2`
-advances only from the flush-gated `o_sq_check_valid` and every
-consumer of the captured result requires phase-2 lineage.
+contract instead (timing: the flush terms and the commit_en-derived
+`sq_commit_check_block` term carried the registered trap/MRET pulse
+into every capture bit's D). Its capture enable is the trap-cone-free
+`o_sq_check_capture_valid`; a result captured on a flushed or
+commit-blocked cycle is structurally unconsumable, because
+`sq_check_phase2` advances only from the fully-gated `o_sq_check_valid`
+and every consumer of the captured result requires phase-2 lineage plus
+`!sq_commit_interlock`, which re-applies the commit block at the
+decision point.
+
+The same contract covers the capture's **data** cone: the forwarding
+scan's same-cycle committed-store guard consumes trap-cone-free "scan"
+commit pulses (`store_queue.i_commit_valid_scan/_scan_2`, built in the
+wrapper from the commit-bus pipeline's pre-flush-mask valids). They
+differ from the architectural pulses only on the full-flush cycle,
+where the scan may treat a squashed store commit as visible — and the
+capture of that cycle is unconsumable exactly as above. Architectural
+SQ commit consumers (`sq_committed`, `committed_empty`, the
+flush-exemption mask) keep the masked pulses.
 
 The AMO **write** phase has the mirror-image protection, but upstream:
 a full flush would clear `AMO_WRITE_ACTIVE` while the launched write is

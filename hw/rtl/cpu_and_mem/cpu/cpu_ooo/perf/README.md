@@ -121,6 +121,13 @@ Sources: `if_stage.sv` `o_width_events` / `instruction_aligner.sv`
 (`o_perf_two_ready_one_issued`, u_mem_rs instance) and `tomasulo_wrapper.sv`
 (CDB request popcount) for 40–41.
 
+The whole `o_width_events` struct (23–31) is registered at the IF boundary
+(timing hygiene: bare combinational taps allow synthesis to share LUTs
+between observer logic and the slot-2 redirect cluster they observe), so
+these events reach the aggregator one cycle after the observed
+bundle/redirect. Totals are unaffected; only same-cycle alignment against
+other counters shifts by one.
+
 | Idx | Name | Type | Increments when |
 |-----|------|------|-----------------|
 | 23 | `IF_DELIVER1` | event | Accepted IF→PD handoff carrying a real slot-1 instruction (one per handoff, stall-qualified). |
