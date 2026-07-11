@@ -2651,18 +2651,23 @@ module reorder_buffer (
     end
   end
 
-  // Check that CDB writes target valid entries (unless a flush just happened).
-  // The CDB is pipelined (registered in tomasulo_wrapper), so the CDB may
-  // present results for entries that were flushed between capture and delivery.
-  // This is harmless: cdb_state_wr_en gates all FF/RAM writes on rob_valid.
+  // Tripwire: CDB writes are expected to target valid (allocated) entries.
+  // Every producer path kills flushed results before delivery (fu_cdb_adapter
+  // age-kill, multi-cycle shim flush-marking, load_queue cdb_stage kill,
+  // cdb_arbiter i_kill); the registered CDB pipeline in tomasulo_wrapper can
+  // at most deliver a result in the same cycle its entry is flushed or
+  // bypass-commits, while rob_valid is still set. NOTE: only the state-FF
+  // write (cdb_state_wr_en) is rob_valid-gated — the value/exc_cause/fp_flags
+  // RAM writes use the raw CDB enables, and the staged-LVT exclusion in
+  // mwp_dist_ram depends on this valid-targeting contract. The FORMAL block
+  // below assumes it at the boundary and asserts the same-entry exclusion
+  // (p_no_alloc*_cdb_same_entry_*); this $warning is the sim-side tripwire
+  // should a future FU path skip the flush-kill discipline.
   logic dbg_flush_prev_cycle;
   always @(posedge i_clk) begin
     if (!i_rst_n) dbg_flush_prev_cycle <= 1'b0;
     else dbg_flush_prev_cycle <= i_flush_all || i_flush_en || dbg_flush_prev_cycle;
   end
-  // With age-based partial flush, stale CDB results from younger-flushed
-  // instructions can arrive 2+ cycles after flush. The actual write is
-  // gated by rob_valid, so this is functionally harmless.
   always @(posedge i_clk) begin
     if (i_rst_n && i_cdb_write.valid && !rob_valid[i_cdb_write.tag] &&
         !dbg_flush_prev_cycle && !i_flush_all && !i_flush_en) begin
@@ -2738,6 +2743,27 @@ module reorder_buffer (
     assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
+  // CDB writes only target currently-allocated entries.  This is the
+  // flush-kill contract the environment provides on every producer path into
+  // the CDB: fu_cdb_adapter age-kills held and same-cycle pass-through
+  // results on partial flush, the multi-cycle FU shims (int_muldiv_shim,
+  // fp_*_shim) flush-mark in-flight ops and suppress their completion, the
+  // load_queue flushes/clears its cdb_stage, and cdb_arbiter.i_kill
+  // suppresses broadcasts during speculative full flush — so a result is
+  // never broadcast after its ROB entry has been freed.  A broadcast may
+  // coincide with the cycle its entry is flushed or commits (CDB bypass);
+  // rob_valid is still set during that cycle, so the implication holds.
+  //
+  // The register-staged LVT of the rob_value RAMs (NUM_STAGED_LVT_PORTS=2)
+  // leans on this contract: the value-RAM write ports are wired to the RAW
+  // cdb_ram_wr_en (no rob_valid qualification), so only this environment
+  // guarantee keeps a CDB write off an entry that is being allocated in the
+  // same cycle (proven by the p_no_alloc_cdb_* asserts below).
+  always_comb begin
+    assume (!i_cdb_write.valid || rob_valid[i_cdb_write.tag]);
+    assume (!i_cdb_write_2.valid || rob_valid[i_cdb_write_2.tag]);
+  end
+
   // -------------------------------------------------------------------------
   // Combinational properties (asserts, active when i_rst_n)
   // -------------------------------------------------------------------------
@@ -2767,6 +2793,31 @@ module reorder_buffer (
 
       // alloc_en implies !full
       p_alloc_not_when_full : assert (!alloc_en || !full);
+
+      // Allocation only targets free (not currently valid) entries.  This is
+      // the internal invariant that, combined with the CDB valid-targeting
+      // assumption above, yields the staged-LVT exclusion asserts below.
+      p_alloc_targets_free : assert (!alloc_en || !rob_valid[tail_idx]);
+      p_alloc_2_targets_free : assert (!alloc_en_2 || !rob_valid[tail_idx_2]);
+
+      // Staged-LVT precondition of the twelve rob_value RAM replicas
+      // (mwp_dist_ram / mwp_dist_ram_ohread with NUM_STAGED_LVT_PORTS=2): a
+      // staged alloc-port write (ports 0/1) and a live CDB-port write (ports
+      // 2/3) must never target the same entry in the same cycle.  Checked
+      // over the enables/addresses exactly as wired to the RAM instances —
+      // the RAW cdb_ram_wr_en/_2 (not the rob_valid-qualified
+      // cdb_state_wr_en) against alloc_en/tail_idx and alloc_en_2/tail_idx_2.
+      // The RAM primitives carry the equivalent simulation-only $error check,
+      // which is compiled out of FORMAL builds; these asserts prove the
+      // precondition instead of trusting simulation.
+      p_no_alloc_cdb_same_entry_l0 :
+      assert (!(alloc_en && cdb_ram_wr_en && (tail_idx == i_cdb_write.tag)));
+      p_no_alloc_cdb_same_entry_l1 :
+      assert (!(alloc_en && cdb_ram_wr_en_2 && (tail_idx == i_cdb_write_2.tag)));
+      p_no_alloc_2_cdb_same_entry_l0 :
+      assert (!(alloc_en_2 && cdb_ram_wr_en && (tail_idx_2 == i_cdb_write.tag)));
+      p_no_alloc_2_cdb_same_entry_l1 :
+      assert (!(alloc_en_2 && cdb_ram_wr_en_2 && (tail_idx_2 == i_cdb_write_2.tag)));
 
       // commit_en implies head_valid && head_done_eff (head_done_eff folds in the
       // same-cycle CDB bypass: when commit fires from a CDB write arriving this
@@ -2849,6 +2900,12 @@ module reorder_buffer (
     if (i_rst_n) begin
       // Allocation and commit in same cycle
       cover_alloc_and_commit : cover (alloc_en && commit_en);
+
+      // Anti-vacuity for the staged-LVT exclusion asserts: an alloc and a
+      // raw CDB RAM write in the same cycle (necessarily to different
+      // entries) is reachable — the assumes above do not empty the overlap.
+      cover_alloc_with_cdb_write : cover (alloc_en && cdb_ram_wr_en);
+      cover_alloc_2_with_cdb_write_2 : cover (alloc_en_2 && cdb_ram_wr_en_2);
 
       // Buffer reaches full state
       cover_buffer_full : cover (full);
