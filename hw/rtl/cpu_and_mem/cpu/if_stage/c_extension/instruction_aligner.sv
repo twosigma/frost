@@ -784,7 +784,18 @@ module instruction_aligner #(
 
   // Slot-1's NativeSerialize sideband bit, muxed like slot1_allows_slot2_for_pc.
   // Profiling-only: feeds nothing but the kill-cause taps below.
-  logic slot1_native_serialize_for_pc;
+  //
+  // TIMING (keep-pinned, MEASURED): this read and slot2_next_hi_native32 below
+  // are the two profiling-only consumers of the live sideband decode that the
+  // width-funnel counters added.  Unpinned, synthesis absorbs them into the
+  // functional sideband/slot-2 select cluster and re-clusters the whole
+  // imem -> fetch-PC cone: post-opt WNS -0.233 -> -0.300.  Proven by tie-off
+  // (both expressions forced to 0 => the cone returns to -0.233 with a
+  // byte-identical path); the pins recover it and then some (-0.175), because
+  // they also stop a pre-existing fusion.  Cost is one private LUT per tap;
+  // the taps still read the same nets in the same cycle, so the kill-cause
+  // attribution and its stall-capture replay are untouched.
+  (* keep = "true" *) logic slot1_native_serialize_for_pc;
   always_comb begin
     unique case ({
       o_use_instr_buffer, i_pc_reg[1]
@@ -815,7 +826,8 @@ module instruction_aligner #(
   // fit regardless of BRAM state — and the true transients (BRAM
   // parity-unsafe reads, buffer-at-lo punt).
   logic slot2_kill_no_pair;
-  logic slot2_next_hi_native32;
+  // TIMING: keep-pinned for the same reason as slot1_native_serialize_for_pc.
+  (* keep = "true" *)logic slot2_next_hi_native32;
   assign slot2_kill_no_pair = slot1_allows_slot2_for_pc && !slot2_kill_start_invalid &&
                               !slot2_valid_when_enabled;
   assign slot2_next_hi_native32 = slot2_next_hi_candidate && !slot2_next_hi_compressed;
