@@ -512,6 +512,60 @@ async def test_input_ignored_while_pending(dut: Any) -> None:
 
 
 # ============================================================================
+# Grant-refill partial-flush filter: a flushed-younger input on the grant
+# cycle must not be captured as held state (it would be re-presented AFTER
+# the flush — observed as ALU-slot stale CDB deliveries to long-freed ROB
+# entries in CoreMark before the refill arm applied partial_flush_input).
+# ============================================================================
+@cocotb.test()
+async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
+    """Refill capture must apply the partial-flush input age filter."""
+    dut_if, _model = await setup(dut)
+
+    # Held result tag=5 (older than the flush boundary), waiting for grant.
+    dut_if.drive_fu_result(tag=5, value=0x5555)
+    await dut_if.step()
+    assert dut_if.read_result_pending()
+
+    # Grant the held result while a YOUNGER input (tag=10) arrives on the
+    # same cycle as a partial flush with boundary tag=6 (head=0): the input
+    # is squashed and must NOT refill the holding register.
+    dut_if.drive_fu_result(tag=10, value=0xAAAA)
+    dut_if.drive_grant()
+    dut_if.drive_partial_flush(flush_tag=6, rob_head_tag=0)
+    await dut_if.step()
+    dut_if.clear_fu_result()
+    dut_if.clear_grant()
+    dut_if.clear_partial_flush()
+    await Timer(1, unit="ns")
+
+    assert not dut_if.read_result_pending(), (
+        "flushed-younger input must not survive as held state via the "
+        "grant-refill capture"
+    )
+    assert not dut_if.read_fu_complete().valid
+
+    # Negative control: an input OLDER than the flush boundary refills
+    # normally under the same grant+flush alignment (held tag=2 older too,
+    # so the held-kill arm stays out of the way).
+    dut_if.drive_fu_result(tag=2, value=0x2222)
+    await dut_if.step()
+    assert dut_if.read_result_pending()
+    dut_if.drive_fu_result(tag=3, value=0x3333)
+    dut_if.drive_grant()
+    dut_if.drive_partial_flush(flush_tag=6, rob_head_tag=0)
+    await dut_if.step()
+    dut_if.clear_fu_result()
+    dut_if.clear_grant()
+    dut_if.clear_partial_flush()
+    await Timer(1, unit="ns")
+
+    assert dut_if.read_result_pending(), "older input must refill normally"
+    dut_out = dut_if.read_fu_complete()
+    assert dut_out.tag == 3, f"expected refilled tag=3, got {dut_out.tag}"
+
+
+# ============================================================================
 # Test 16: Random stress test — model match every cycle
 # ============================================================================
 @cocotb.test()
