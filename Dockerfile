@@ -37,6 +37,11 @@ ARG BOOLECTOR_VERSION=3.2.4
 # xPack RISC-V toolchain version (bare-metal, includes newlib)
 ARG XPACK_RISCV_VERSION=15.2.0-1
 
+# Ubuntu's clang-tidy package is used by the local pre-commit hook. Assert its
+# exact frontend version so a base-image/package drift fails the image build
+# instead of silently changing the lint gate.
+ARG CLANG_TIDY_VERSION=18.1.3
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     # Python
@@ -73,6 +78,8 @@ RUN apt-get update && apt-get install -y \
     libboost-all-dev \
     # Cleanup apt cache
     && rm -rf /var/lib/apt/lists/*
+
+RUN clang-tidy --version | grep -F "version ${CLANG_TIDY_VERSION}"
 
 # Install Verible (SystemVerilog formatter and linter)
 ARG VERIBLE_VERSION=0.0-4051-g9fdb4057
@@ -196,13 +203,17 @@ WORKDIR /workspace
 
 # Copy and set entrypoint script (initializes submodules if needed)
 COPY docker_entrypoint.py /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker_entrypoint.py
+# Some source-tool install steps preserve an unexpectedly private mode on the
+# shared bin directory.  Keep the image usable with ``docker run --user`` so a
+# bind-mounted checkout does not accumulate root-owned build artifacts.
+RUN chmod 0755 /usr/local/bin \
+    && chmod 0755 /usr/local/bin/docker_entrypoint.py
 ENTRYPOINT ["/usr/local/bin/docker_entrypoint.py"]
 
 # Default command
 CMD ["/bin/bash"]
 
 # Usage:
-#   docker build -t frost-dev .
-#   docker run -it --rm -v $(pwd):/workspace frost-dev
-#   pytest tests/ -m cocotb
+#   docker build -t frost .
+#   ./scripts/frost.py cocotb hello_world
+#   ./scripts/frost.py shell

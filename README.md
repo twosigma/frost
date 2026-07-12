@@ -121,23 +121,24 @@ Validated with these tool versions:
 | **FPGA**      | Vivado (optional) | 2025.2  |
 | **Linting**   | pre-commit        | 4.0     |
 |               | clang-format      | 19.0    |
-|               | clang-tidy        | 19.0    |
+|               | clang-tidy        | 18.1.3  |
 |               | Verible           | 0.0-4051|
 
 ## Docker Development Environment
 
-A Docker image is provided with all tools pre-installed for reproducible development:
+A Docker image is provided with all tools pre-installed for reproducible
+development. Build it once, then use the repository wrapper so container
+outputs keep the invoking user's UID/GID instead of becoming root-owned:
 
 ```bash
 # Build the Docker image
 docker build -t frost .
 
-# Run interactively (mounts current directory to /workspace)
-docker run -it --rm -v $(pwd):/workspace frost
+# Run a clean Hello World cocotb simulation
+./scripts/frost.py cocotb hello_world
 
-# Inside container, run tests
-pytest tests/
-./tests/test_run_cocotb.py hello_world
+# Open an interactive shell when needed
+./scripts/frost.py shell
 ```
 
 The Docker image includes:
@@ -146,18 +147,15 @@ The Docker image includes:
 - SymbiYosys 0.63 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
 - RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
 - Python 3.12 with Cocotb 2.0.1 and pytest
-- Pre-commit with all linters (clang-format, clang-tidy, Verible, ruff, mypy)
+- Pre-commit plus system clang-tidy/Verible; pinned Ruff, mypy, and
+  clang-format hook environments install on the first lint run and are cached
 
-## Setting Up Pre-commit Hooks
+## Running Code-Quality Checks
 
-Pre-commit hooks run automatically on `git commit` to check code quality:
+Run the pinned pre-commit hooks through the same image used by CI:
 
 ```bash
-# Install hooks (one-time setup, or use Docker)
-pre-commit install
-
-# Run all hooks manually
-pre-commit run --all-files
+./scripts/frost.py lint
 ```
 
 ## Quick Start
@@ -166,7 +164,7 @@ Get FROST running in simulation in one command:
 
 ```bash
 # Run Hello World simulation (compiles automatically)
-./tests/test_run_cocotb.py hello_world
+./scripts/frost.py cocotb hello_world
 ```
 
 You should see "Hello, world!" in the output.
@@ -174,11 +172,19 @@ You should see "Hello, world!" in the output.
 ### Run the CPU Verification Suite
 
 ```bash
-pytest tests/                              # full regression (riscv-tests, arch compliance, C programs, …)
-./tests/test_run_cocotb.py directed_traps  # directed M-mode trap/interrupt tests (cpu_tb)
+./scripts/frost.py pytest                  # all pytest-registered cocotb targets
+./scripts/frost.py cocotb directed_traps   # directed M-mode trap/interrupt tests
 ```
 
-The pytest run validates the CPU against the riscv-tests ISA suites, the riscv-arch-test compliance suite, and real C programs. The legacy constrained-random `cpu_tb` regression is registered as the CLI-only `cpu_random` target; its harness plumbing is OOO-aware (register-file hierarchy paths, LVT-aware banked-RAM reads), but its scoreboard still assumes single-wide in-order retirement with fixed fetch-to-writeback offsets and needs a commit-indexed redesign before it passes on the current core (randomized coverage is meanwhile provided by the Spike-referenced `./tests/test_riscv_torture.py`).
+The pytest run covers the registry's unit benches and real programs. The
+riscv-tests, riscv-arch-test, and torture matrices have dedicated runners; see
+`tests/README.md` for their pinned-container commands. The legacy
+constrained-random `cpu_tb` regression is registered as the CLI-only
+`cpu_random` target; its harness plumbing is OOO-aware (register-file hierarchy
+paths, LVT-aware banked-RAM reads), but its scoreboard still assumes single-wide
+in-order retirement with fixed fetch-to-writeback offsets and needs a
+commit-indexed redesign before it passes on the current core (randomized
+coverage is meanwhile provided by the Spike-referenced torture runner).
 
 ## Directory Structure
 
@@ -232,10 +238,10 @@ Applications are compiled automatically when running simulations, loading to FPG
 
 ```bash
 # Compile a specific application
-make -C sw/apps/hello_world
+./scripts/frost.py run make -C sw/apps/hello_world
 
 # Compile all applications
-./sw/apps/build_all_apps.py
+./scripts/frost.py run python3 sw/apps/build_all_apps.py
 
 # Initialize submodules first for coremark and freertos_demo
 git submodule update --init
@@ -244,41 +250,36 @@ git submodule update --init
 ### Running Simulations
 
 ```bash
-# Using pytest (recommended)
-pytest tests/                              # Run all tests
-pytest tests/ -s                           # With live output
-# Standalone test runner
-./tests/test_run_cocotb.py directed_traps  # Directed trap/interrupt tests (cpu_tb)
-./tests/test_run_cocotb.py hello_world     # Hello World program
-./tests/test_run_cocotb.py isa_test        # ISA compliance
-./tests/test_run_cocotb.py coremark        # CoreMark benchmark
-./tests/test_run_cocotb.py coremark_pro_core  # CoreMark-PRO workload (all nine:
-                                           # _cjpeg/_linear_alg/_loops/_nnet/
-                                           # _parser/_radix2/_sha/_zip)
-./tests/test_run_cocotb.py ddr_test        # Cached-region (DDR) tier test
-./tests/test_run_cocotb.py ddr_heap_test   # Multi-MB malloc through the caches
-./tests/test_run_cocotb.py frost_cache     # Cache-hierarchy unit bench (X3 shape)
-./tests/test_run_cocotb.py freertos_demo   # FreeRTOS demo
+./scripts/frost.py cocotb directed_traps   # Directed M-mode trap/interrupt tests
+./scripts/frost.py cocotb hello_world      # Hello World program
+./scripts/frost.py cocotb isa_test         # ISA compliance application
+./scripts/frost.py cocotb coremark         # CoreMark benchmark
+./scripts/frost.py cocotb coremark_pro_core  # CoreMark-PRO (also _cjpeg,
+                                             # _linear_alg, _loops, _nnet,
+                                             # _parser, _radix2, _sha, _zip)
+./scripts/frost.py cocotb ddr_test         # Cached-region (DDR) tier test
+./scripts/frost.py cocotb ddr_heap_test    # Multi-MB malloc through the caches
+./scripts/frost.py cocotb frost_cache      # Cache-hierarchy unit bench (X3 shape)
+./scripts/frost.py cocotb freertos_demo    # FreeRTOS demo
 
-# With waveform output (cpu_tb Makefile flow; note the default constrained-random
-# suite is the CLI-only `cpu_random` target and needs porting to the OOO core)
-WAVES=1 make -C tests
+# Generate waveforms for one selected test
+WAVES=1 ./scripts/frost.py cocotb directed_traps
 ```
 
 ### Running Synthesis
 
 ```bash
 # Open-source RTL synthesis checks (Yosys)
-./tests/test_run_yosys.py
+./scripts/frost.py synthesis
 
 # FPGA synthesis (Vivado)
 ./fpga/build/build.py x3                   # Alveo X3
 ./fpga/build/build.py genesys2             # Genesys2
 ```
 
-### Pytest Test Coverage
+### CI Test Coverage
 
-Running `pytest tests/` exercises:
+The CI workflow exercises:
 
 - **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv32ua/rv32uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb directed suites and the constrained-random regression are CLI-only pending a port to the OOO core)
 - **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across I, M, A, F, D, C, B, K, Zicond, and Zifencei extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)

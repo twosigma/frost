@@ -23,7 +23,6 @@ references.
 Can be run standalone:
     ./test_riscv_torture.py --all
     ./test_riscv_torture.py --test test_001
-    ./test_riscv_torture.py --parallel 4
 
 Or via pytest:
     pytest test_riscv_torture.py -v -m slow
@@ -33,7 +32,6 @@ import argparse
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -56,11 +54,17 @@ REFERENCES_DIR = TORTURE_APP_DIR / "references"
 # Mirrors tests/test_arch_compliance.py.
 MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
+PARALLEL_UNSAFE_MESSAGE = (
+    "parallel execution is disabled: workers share application outputs, memory-image "
+    "symlinks, and simulator build/results paths; use --parallel 1"
+)
 
 
 @dataclass
 class TestResult:
     """Result of a single torture test."""
+
+    __test__ = False
 
     test_name: str
     status: str  # "PASS", "FAIL", "SKIP"
@@ -176,21 +180,18 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
 def extract_signature(sim_output: str) -> list[str]:
     """Extract hex signature lines from simulation UART output.
 
-    Same logic as arch_test: collect 8-char hex lines before <<PASS>>.
+    Same logic as arch_test: collect 8-char hex lines before <<PASS>>, ignoring
+    interspersed simulator log lines. Long UART dumps can cross cocotb's
+    periodic progress messages; those messages do not delimit a new signature.
     """
     lines = sim_output.splitlines()
     sig_lines: list[str] = []
-    collecting = False
     for line in lines:
         stripped = line.strip()
         if len(stripped) == 8 and all(c in "0123456789abcdefABCDEF" for c in stripped):
-            collecting = True
             sig_lines.append(stripped.lower())
-        elif collecting and stripped.startswith("<<PASS"):
+        elif sig_lines and stripped.startswith("<<PASS"):
             break
-        elif collecting and stripped:
-            sig_lines = []
-            collecting = False
     return sig_lines
 
 
@@ -267,7 +268,7 @@ def run_single_test(
 
     result = run_simulation(simulator)
     if result is None:
-        return TestResult(test_name, "SKIP", "Simulation timed out")
+        return TestResult(test_name, "FAIL", "Simulation timed out")
 
     combined_output = (result.stdout or "") + (result.stderr or "")
 
@@ -288,7 +289,9 @@ def run_single_test(
         )
 
     if result.returncode != 0:
-        return TestResult(test_name, "SKIP", "Simulation error")
+        return TestResult(
+            test_name, "FAIL", f"Simulation error (exit code {result.returncode})"
+        )
 
     if "<<FAIL>>" in combined_output:
         return TestResult(test_name, "FAIL", "Test trapped (<<FAIL>> TRAP)")
@@ -297,17 +300,6 @@ def run_single_test(
         return TestResult(test_name, "FAIL", "No <<PASS>> marker in output")
 
     return TestResult(test_name, "FAIL", "No signature data in output")
-
-
-def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
-    """Worker function for parallel test execution."""
-    test_src_str, simulator, app_dir_str, mem_config = args
-    global TORTURE_APP_DIR, TORTURE_TESTS_DIR, REFERENCES_DIR
-    TORTURE_APP_DIR = Path(app_dir_str)
-    TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests"
-    REFERENCES_DIR = TORTURE_APP_DIR / "references"
-
-    return run_single_test(Path(test_src_str), simulator, mem_config)
 
 
 def _print_result(result: TestResult) -> None:
@@ -326,6 +318,9 @@ def run_all_tests(
     mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all torture tests."""
+    if parallel != 1:
+        raise ValueError(PARALLEL_UNSAFE_MESSAGE)
+
     tests = discover_tests()
     if not tests:
         print(f"  No torture tests found in {TORTURE_TESTS_DIR}")
@@ -335,28 +330,10 @@ def run_all_tests(
 
     results = []
 
-    if parallel > 1:
-        work_items = [
-            (str(t), simulator, str(TORTURE_APP_DIR), mem_config) for t in tests
-        ]
-        with ProcessPoolExecutor(max_workers=parallel) as executor:
-            futures = {
-                executor.submit(_run_test_worker, item): item[0] for item in work_items
-            }
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    failed_src = futures[future]
-                    test_name = Path(failed_src).stem
-                    result = TestResult(test_name, "SKIP", str(e))
-                results.append(result)
-                _print_result(result)
-    else:
-        for test_src in tests:
-            result = run_single_test(test_src, simulator, mem_config)
-            results.append(result)
-            _print_result(result)
+    for test_src in tests:
+        result = run_single_test(test_src, simulator, mem_config)
+        results.append(result)
+        _print_result(result)
 
     return results
 
@@ -402,7 +379,6 @@ def main() -> int:
 Examples:
   %(prog)s --all
   %(prog)s --test test_001
-  %(prog)s --parallel 4
 """,
     )
     group = parser.add_mutually_exclusive_group(required=True)
@@ -426,7 +402,7 @@ Examples:
         type=int,
         default=1,
         metavar="N",
-        help="Number of parallel test workers (default: 1)",
+        help="Number of workers; currently only 1 is safe and supported",
     )
     parser.add_argument(
         "--mem-config",
@@ -440,6 +416,8 @@ Examples:
     )
 
     args = parser.parse_args()
+    if args.parallel != 1:
+        parser.error(PARALLEL_UNSAFE_MESSAGE)
 
     if args.list:
         tests = discover_tests()

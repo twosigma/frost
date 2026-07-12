@@ -29,30 +29,33 @@ files in this directory.
 
 ```bash
 # List all targets and their supported tasks
-./tests/test_run_formal.py --list-targets
+./scripts/frost.py formal --list-targets
 
 # See CLI help (includes --target choices)
-./tests/test_run_formal.py --help
+./scripts/frost.py formal --help
 ```
 
 ## Running
 
-```bash
-# Run all formal targets (via pytest)
-pytest tests/test_run_formal.py
+Run formal workflows from the repository root through `./scripts/frost.py`.
+The wrapper uses the pinned `frost` image as the invoking user's UID and GID
+with its home under `/tmp`, so proof artifacts remain writable outside the
+container and the tool versions match CI.
 
-# Standalone runner
-./tests/test_run_formal.py
-./tests/test_run_formal.py --list-targets
-./tests/test_run_formal.py --target trap_unit
-./tests/test_run_formal.py --task bmc
-./tests/test_run_formal.py --verbose
+```bash
+# Run all formal targets
+./scripts/frost.py formal
+
+# Discover and select targets/tasks
+./scripts/frost.py formal --list-targets
+./scripts/frost.py formal --target trap_unit
+./scripts/frost.py formal --task bmc
+./scripts/frost.py formal --verbose
 
 # Direct SymbiYosys invocation
-cd formal/
-sby -f trap_unit.sby bmc      # Prove assertions
-sby -f trap_unit.sby cover    # Prove reachability
-sby -f reorder_buffer.sby bmc # ROB checks
+./scripts/frost.py run bash -c 'cd formal && sby -f trap_unit.sby bmc'
+./scripts/frost.py run bash -c 'cd formal && sby -f trap_unit.sby cover'
+./scripts/frost.py run bash -c 'cd formal && sby -f reorder_buffer.sby bmc'
 ```
 
 ## Property Style: Contract-Based

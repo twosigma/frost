@@ -18,6 +18,7 @@ This document covers bare-metal software contributions. For RTL, verification, o
 sw/
 ├── common/             # Shared build infrastructure
 │   ├── common.mk       # RISC-V compilation rules and flags (MEM_CONFIG bram|ddr)
+│   ├── standalone_asm.mk # Rules for applications that define their own _start
 │   ├── crt0.S          # Assembly startup code (stack init, BSS zeroing)
 │   ├── crt0_ddr_boot.S # ROM boot stub for MEM_CONFIG=ddr (far-jumps to DDR _start)
 │   ├── link.ld         # Linker script (low BRAM + 1 GiB cached DDR region)
@@ -217,6 +218,18 @@ SRC_C := ../../lib/src/uart.c your_app.c
 include ../../common/common.mk
 ```
 
+An assembly application that defines its own `_start` cannot link `crt0.S`.
+Use the shared standalone backend instead so it retains the same
+configuration-aware BRAM/DDR image handling:
+
+```makefile
+ARCH := rv32imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI := ilp32
+ASM_SRC := your_app.S
+
+include ../../common/standalone_asm.mk
+```
+
 4. `build_all_apps.py` auto-discovers non-hidden app directories with a
    `Makefile`, so ordinary standalone apps need no manual registration. It
    explicitly skips the parameterized `arch_test`, `riscv_tests`, and
@@ -287,39 +300,31 @@ These markers are detected by the Cocotb verification framework.
 
 ### Running Tests
 
-Build aggregation can run from `sw/`:
+Build aggregation uses the pinned toolchain from the repository root:
 
 ```bash
 # Clean and build ordinary standalone applications (special suites are reported as skipped)
-./apps/build_all_apps.py
+./scripts/frost.py run python3 sw/apps/build_all_apps.py
 ```
 
-Cocotb regression evidence must use the repository's pinned `frost` image. From
-the repository root, clean before every test:
+Cocotb regression evidence must use the repository's pinned `frost` image.
+`./scripts/frost.py` runs it as the host UID/GID, keeping generated files
+writable for later native Vivado work. Its cocotb shortcut cleans before every
+test:
 
 ```bash
 # Run a specific real-program test
-docker run --rm -v "$(pwd)":/workspace frost \
-  bash -c "cd tests && make clean && ./test_run_cocotb.py hello_world"
+./scripts/frost.py cocotb hello_world
 
 # Run that suite from the cached DDR tier
-docker run --rm -v "$(pwd)":/workspace frost \
-  bash -c "cd tests && make clean && FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py hello_world"
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 
 # List the available tests
-docker run --rm -v "$(pwd)":/workspace frost \
-  bash -c "cd tests && ./test_run_cocotb.py --list-tests"
+./scripts/frost.py cocotb --list-tests
 ```
 
-The container writes mounted files as root. After a Docker session that touched
-the repository, restore ownership before native work (especially Vivado):
-
-```bash
-docker run --rm -v "$(pwd)":/workspace --entrypoint bash frost \
-  -c "chown -R $(id -u):$(id -g) /workspace"
-```
-
-Parameterized runners use the same container/clean pattern and accept
+Parameterized runners use the wrapper's `run` workflow after an explicit
+`./scripts/frost.py run make -C tests clean`; they accept
 `--mem-config ddr` (`test_arch_compliance.py`, `test_riscv_tests.py`, and
 `test_riscv_torture.py`).
 

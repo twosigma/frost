@@ -23,7 +23,6 @@ Can be run standalone:
     ./test_riscv_tests.py --suites rv32ui rv32um
     ./test_riscv_tests.py --all
     ./test_riscv_tests.py --test rv32ui/add
-    ./test_riscv_tests.py --suites rv32ui --parallel 4
     ./test_riscv_tests.py --benchmarks median qsort
     ./test_riscv_tests.py --all-benchmarks
 
@@ -35,7 +34,6 @@ import argparse
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,6 +76,10 @@ ISA_TEST_SUITES = {
 # tests/test_arch_compliance.py.
 MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
+PARALLEL_UNSAFE_MESSAGE = (
+    "parallel execution is disabled: workers share application outputs, memory-image "
+    "symlinks, and simulator build/results paths; use --parallel 1"
+)
 
 # ISA tests to skip in EVERY tier (genuinely unsupported on Frost).
 ISA_SKIP_TESTS: dict[str, set[str]] = {
@@ -126,6 +128,8 @@ BENCHMARKS = {
 @dataclass
 class TestResult:
     """Result of a single test."""
+
+    __test__ = False
 
     test_name: str
     suite: str
@@ -279,7 +283,9 @@ def run_simulation(
 def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, str]:
     """Check simulation output for <<PASS>> or <<FAIL>>.
 
-    Returns (status, message) where status is "PASS", "FAIL", or "SKIP".
+    Returns (status, message) where status is "PASS" or "FAIL". Simulator
+    infrastructure errors are failures: the standalone runner is a CI gate, so
+    treating them as skips would make a broken simulation falsely green.
     """
     combined_output = (sim_result.stdout or "") + (sim_result.stderr or "")
 
@@ -293,7 +299,7 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
                 if "<<FAIL>>" in line:
                     return "FAIL", f"Test reported failure: {line.strip()}"
             return "FAIL", "Test reported <<FAIL>>"
-        return "SKIP", "Simulation error (non-zero return code)"
+        return "FAIL", f"Simulation error (exit code {sim_result.returncode})"
 
     if "<<PASS>>" in combined_output:
         return "PASS", ""
@@ -320,7 +326,7 @@ def run_single_isa_test(
 
     result = run_simulation(simulator)
     if result is None:
-        return TestResult(test_name, suite, "SKIP", "Simulation timed out")
+        return TestResult(test_name, suite, "FAIL", "Simulation timed out")
 
     status, message = check_pass_fail(result)
     return TestResult(test_name, suite, status, message)
@@ -341,21 +347,10 @@ def run_single_benchmark(
     # Benchmarks may need more cycles than ISA tests
     result = run_simulation(simulator, max_cycles="50000000")
     if result is None:
-        return TestResult(bench_name, "benchmarks", "SKIP", "Simulation timed out")
+        return TestResult(bench_name, "benchmarks", "FAIL", "Simulation timed out")
 
     status, message = check_pass_fail(result)
     return TestResult(bench_name, "benchmarks", status, message)
-
-
-def _run_isa_test_worker(args: tuple[str, str, str, str, str]) -> TestResult:
-    """Worker function for parallel ISA test execution."""
-    test_src_str, suite, simulator, app_dir_str, mem_config = args
-    global RISCV_TESTS_APP_DIR, RISCV_TESTS_DIR, ISA_DIR
-    RISCV_TESTS_APP_DIR = Path(app_dir_str)
-    RISCV_TESTS_DIR = RISCV_TESTS_APP_DIR / "riscv-tests"
-    ISA_DIR = RISCV_TESTS_DIR / "isa"
-
-    return run_single_isa_test(Path(test_src_str), suite, simulator, mem_config)
 
 
 def _print_result(result: TestResult) -> None:
@@ -375,6 +370,9 @@ def run_suite_tests(
     mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all tests for a given ISA test suite."""
+    if parallel != 1:
+        raise ValueError(PARALLEL_UNSAFE_MESSAGE)
+
     tests = discover_isa_tests(suite, mem_config)
     if not tests:
         print(f"  No tests found for suite {suite}")
@@ -385,30 +383,10 @@ def run_suite_tests(
 
     results = []
 
-    if parallel > 1:
-        work_items = [
-            (str(t), suite, simulator, str(RISCV_TESTS_APP_DIR), mem_config)
-            for t in tests
-        ]
-        with ProcessPoolExecutor(max_workers=parallel) as executor:
-            futures = {
-                executor.submit(_run_isa_test_worker, item): item[0]
-                for item in work_items
-            }
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    failed_src = futures[future]
-                    test_name = Path(failed_src).stem
-                    result = TestResult(test_name, suite, "SKIP", str(e))
-                results.append(result)
-                _print_result(result)
-    else:
-        for test_src in tests:
-            result = run_single_isa_test(test_src, suite, simulator, mem_config)
-            results.append(result)
-            _print_result(result)
+    for test_src in tests:
+        result = run_single_isa_test(test_src, suite, simulator, mem_config)
+        results.append(result)
+        _print_result(result)
 
     return results
 
@@ -494,7 +472,6 @@ Examples:
   %(prog)s --suites rv32ui rv32um
   %(prog)s --all
   %(prog)s --test rv32ui/add
-  %(prog)s --suites rv32ui --parallel 4
   %(prog)s --benchmarks median qsort mm
   %(prog)s --all-benchmarks
   %(prog)s --list
@@ -541,7 +518,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
         type=int,
         default=1,
         metavar="N",
-        help="Number of parallel test workers (default: 1, sequential)",
+        help="Number of workers; currently only 1 is safe and supported",
     )
     parser.add_argument(
         "--mem-config",
@@ -555,6 +532,8 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
     )
 
     args = parser.parse_args()
+    if args.parallel != 1:
+        parser.error(PARALLEL_UNSAFE_MESSAGE)
 
     if args.list:
         print("ISA Test Suites:")

@@ -36,7 +36,8 @@ int memcmp(const void *s1, const void *s2, size_t n);
 /* Calculate length of null-terminated string */
 size_t strlen(const char *s);
 
-/* Copy string with length limit, padding with nulls if needed */
+/* Copy at most n bytes, padding after an in-range null. The source need not be
+ * null-terminated within n bytes; n == 0 accesses neither source nor destination. */
 char *strncpy(char *dst, const char *src, size_t n);
 
 /* Compare two strings lexicographically */

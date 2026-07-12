@@ -10,6 +10,7 @@ This directory contains libraries and applications that run directly on Frost ha
 sw/
 ├── common/           # Shared build infrastructure
 │   ├── common.mk     # Common Makefile definitions (MEM_CONFIG bram|ddr)
+│   ├── standalone_asm.mk # Shared rules for apps that define their own _start
 │   ├── crt0.S        # C runtime startup (runs before main)
 │   ├── crt0_ddr_boot.S # ROM boot stub: far-jumps to a DDR-resident _start (MEM_CONFIG=ddr)
 │   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
@@ -350,7 +351,7 @@ fix_price_t price = parse_price("94.5000");
 
 Each app directory contains a source-level doc comment with full details.
 The table below is a quick-reference; see the source for authoritative descriptions.
-Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
+Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
@@ -392,7 +393,7 @@ Apps are also discoverable via `./tests/test_run_cocotb.py --list-tests`.
 ### Automatic Compilation
 
 Applications are compiled automatically when needed by:
-- `./tests/test_run_cocotb.py` — compiles before simulation
+- `./scripts/frost.py cocotb <test>` — cleans, then compiles before simulation
 - `./fpga/load_software/load_software.py` — compiles before loading to FPGA
 - `./fpga/build/build.py` — compiles hello_world for initial BRAM contents
 
@@ -478,10 +479,14 @@ make                    # MEM_CONFIG=bram (default): whole program in low BRAM
 make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
 ```
 
-`common.mk` fingerprints the effective tool/flag/link configuration and tracks
-included headers and Makefiles. A direct `make` therefore rebuilds when a header
-changes or when switching between `bram` and `ddr`; unknown `MEM_CONFIG` values
-are rejected. The CLI still cleans first for a deterministic standalone build.
+The shared build backends fingerprint their effective tool/flag/link
+configuration: C applications use `common.mk`, and self-starting assembly apps
+use `common/standalone_asm.mk`. CoreMark-PRO applies the same guarantee to its
+workload-specific object graph and tracks included headers per object. A direct
+`make` therefore rebuilds when a tracked header changes, when switching between
+`bram` and `ddr` in either direction, or when selecting another CoreMark-PRO
+workload; unknown `MEM_CONFIG` values are rejected. The CLI still cleans first
+for a deterministic standalone build.
 
 - `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
   (and the malloc heap) sit in the cached DDR region. Every board/FPGA flow uses

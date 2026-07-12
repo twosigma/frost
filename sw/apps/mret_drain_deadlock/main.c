@@ -112,10 +112,9 @@ __attribute__((naked, aligned(4))) static void trap_canary(void)
  * flow (the MRET is the loop branch). Uses only caller-saved temporaries, so the
  * final `ret` returns to C with ra intact.
  */
-__attribute__((naked)) static void mret_drain_loop(volatile uint32_t *ddr, uint32_t iters)
+__attribute__((naked)) static void mret_drain_loop(volatile uint32_t *ddr __attribute__((unused)),
+                                                   uint32_t iters __attribute__((unused)))
 {
-    (void) ddr;
-    (void) iters;
     __asm__ volatile(
         /* MRET return target = loop top. Constant, so set mepc ONCE; MRET reads
          * mepc but never writes it. */
