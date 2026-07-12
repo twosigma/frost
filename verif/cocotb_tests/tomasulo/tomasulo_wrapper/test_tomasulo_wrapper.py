@@ -6146,3 +6146,228 @@ async def test_stale_cdb_fdiv_fifo_contention_flush_probe(dut: Any) -> None:
             dut_if, anchor_tag, blocker_tag, expected_commits=5
         )
     cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Ghost-alloc-during-flush probes
+# =============================================================================
+# Dispatch presents its LQ/SQ alloc requests un-flush-gated (timing: the
+# dispatch-fire cone must not absorb the flush broadcast), so on every flush
+# pulse that coincides with a live dispatch the receiving structures decide
+# the outcome themselves.  The ROB self-gates (alloc_en has
+# !i_flush_all && !i_flush_en) and rejects the alloc; the LQ/SQ must mirror
+# that decision exactly.  A queue that instead accepts writes a GHOST entry:
+# its alloc arm runs after the partial-flush invalidate loop in the same
+# always_ff (last-write-wins), leaving a valid entry whose tag the ROB never
+# allocated.  The ghost leaks the slot until the next full flush, and when
+# the ROB tail later hands the same tag to a real instruction the queue
+# holds a duplicate-tag pair — violating the tag-uniqueness precondition the
+# LQ/SQ formal contracts assume, and (for two same-tag loads) re-creating
+# the double-CDB-delivery class the stale-CDB work eliminated.
+
+
+def _pending_load_kwargs(rob_tag: int) -> dict[str, Any]:
+    """rs_dispatch kwargs for a load whose src1 pends forever (never issues)."""
+    return dict(
+        rs_type=RS_MEM,
+        rob_tag=rob_tag,
+        op=OP_LW,
+        src1_ready=False,
+        src1_tag=31,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+
+
+def _pending_store_kwargs(rob_tag: int) -> dict[str, Any]:
+    """rs_dispatch kwargs for a store whose src1 pends forever (never issues)."""
+    return dict(
+        rs_type=RS_MEM,
+        rob_tag=rob_tag,
+        op=OP_SW,
+        src1_ready=False,
+        src1_tag=31,
+        src2_ready=True,
+        src2_value=0xCAFE,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+    )
+
+
+@cocotb.test()
+async def test_lq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
+    """LQ must ignore an alloc presented on a partial-flush cycle (ROB parity)."""
+    cocotb.log.info("=== Test: LQ No Ghost Alloc During Partial Flush ===")
+    dut_if, _model = await setup_test(dut)
+
+    # Survivor load (older than the flush point) — must outlive the flush.
+    tag_l0 = await dut_if.dispatch(make_int_req(pc=0x1000, rd=5))
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l0))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.lq_count == 1, "survivor load must allocate"
+
+    # Flush point: a branch the partial flush recovers to.
+    tag_br = await dut_if.dispatch(make_branch_req(pc=0x1004))
+
+    # Victim load (younger than the branch) — killed by the flush.
+    tag_l2 = await dut_if.dispatch(make_int_req(pc=0x1008, rd=6))
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l2))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.lq_count == 2, "victim load must allocate"
+
+    # EVENT: a younger load's alloc presented on the SAME cycle as the
+    # partial-flush pulse (the tag the straggler would carry:
+    # the pre-flush ROB tail).  The ROB rejects this alloc; the LQ must too.
+    ghost_tag = (tag_l2 + 1) % 32
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs(ghost_tag))
+    dut_if.drive_flush_en(flush_tag=tag_br)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.clear_flush_en()
+    await dut_if.step()  # SQ-style pullback slot: no alloc here by contract
+
+    assert dut_if.lq_count == 1, (
+        f"lq_count={dut_if.lq_count} after flush-cycle alloc: a ghost LQ "
+        f"entry was written by the un-flush-gated alloc arm (tag "
+        f"{ghost_tag} was never ROB-allocated)"
+    )
+
+    # Tag-reuse phase: the ROB tail retreated to the flush point, so real
+    # dispatches now re-issue the squashed tags — including the ghost's.
+    # With the ghost present this creates a duplicate-tag LQ pair.
+    tag_r1 = await dut_if.dispatch(make_int_req(pc=0x2000, rd=7))
+    tag_r2 = await dut_if.dispatch(make_int_req(pc=0x2004, rd=8))
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_r2))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    cocotb.log.info(f"post-flush tags: {tag_r1}, {tag_r2} (ghost was {ghost_tag})")
+    assert dut_if.lq_count == 2, (
+        f"lq_count={dut_if.lq_count} after tag-reuse dispatch: ghost entry "
+        f"still resident (duplicate-tag pair if {ghost_tag} in "
+        f"({tag_r1}, {tag_r2}))"
+    )
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_sq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
+    """SQ must ignore an alloc presented on a partial-flush cycle (ROB parity).
+
+    The SQ variant is worse than the LQ's: its tail arm gives the flush and
+    the deferred tail-pullback priority over the alloc, so an accepted
+    flush-cycle alloc sets sq_valid without advancing the tail — the ghost
+    then sits outside the ring window and a later real alloc lands on top
+    of it (p_alloc_slot_free violation).
+    """
+    cocotb.log.info("=== Test: SQ No Ghost Alloc During Partial Flush ===")
+    dut_if, _model = await setup_test(dut)
+
+    # Survivor store (older than the flush point).
+    tag_s0 = await dut_if.dispatch(make_store_req(pc=0x1000))
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs(tag_s0))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.sq_count == 1, "survivor store must allocate"
+
+    # Flush point.
+    tag_br = await dut_if.dispatch(make_branch_req(pc=0x1004))
+
+    # Victim store (younger).
+    tag_s2 = await dut_if.dispatch(make_store_req(pc=0x1008))
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs(tag_s2))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.sq_count == 2, "victim store must allocate"
+
+    # EVENT: store alloc presented on the partial-flush pulse cycle.
+    ghost_tag = (tag_s2 + 1) % 32
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs(ghost_tag))
+    dut_if.drive_flush_en(flush_tag=tag_br)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.clear_flush_en()
+    await dut_if.step()  # pullback cycle: no alloc here by contract
+
+    assert dut_if.sq_count == 1, (
+        f"sq_count={dut_if.sq_count} after flush-cycle alloc: a ghost SQ "
+        f"entry was written by the un-flush-gated alloc arm (tag "
+        f"{ghost_tag} was never ROB-allocated, tail never advanced)"
+    )
+
+    # Tag-reuse phase: a real store after the pullback must land cleanly.
+    await dut_if.dispatch(make_int_req(pc=0x2000, rd=7))  # takes one tag
+    tag_r2 = await dut_if.dispatch(make_store_req(pc=0x2004))
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs(tag_r2))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.sq_count == 2, (
+        f"sq_count={dut_if.sq_count} after tag-reuse dispatch: ghost entry "
+        f"still resident"
+    )
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_lq_sq_alloc_during_full_flush_ignored(dut: Any) -> None:
+    """Full-flush-cycle allocs must vanish (the benign trap-cycle handshake).
+
+    On trap/MRET/FENCE.I cycles the frontend kill is edge-delayed, so a
+    straggler (wrong-path, or FENCE.I's to-be-refetched next instruction)
+    legitimately presents its alloc exactly on the
+    flush_all pulse (the frequent case in Linux: the ROB rejects it and the
+    queues' full-flush arms must squash it).  Negative control for the
+    partial-flush probes above: this contract already held structurally
+    (else-if priority), and must keep holding once the alloc enables carry
+    explicit flush gates.
+    """
+    cocotb.log.info("=== Test: LQ/SQ Alloc During Full Flush Ignored ===")
+    dut_if, _model = await setup_test(dut)
+
+    # Pre-populate one load + one store, then flush_all coincident with a
+    # fresh load alloc AND a slot-2-style store alloc on the same cycle.
+    tag_l0 = await dut_if.dispatch(make_int_req(pc=0x1000, rd=5))
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l0))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    tag_s1 = await dut_if.dispatch(make_store_req(pc=0x1004))
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs(tag_s1))
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.lq_count == 1 and dut_if.sq_count == 1
+
+    dut_if.drive_rs_dispatch(**_pending_load_kwargs((tag_s1 + 1) % 32))
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.clear_flush_all()
+    await dut_if.step()
+
+    assert dut_if.lq_count == 0, (
+        f"lq_count={dut_if.lq_count}: flush_all must clear the LQ and squash "
+        f"the coincident alloc"
+    )
+    assert dut_if.sq_count == 0, (
+        f"sq_count={dut_if.sq_count}: flush_all must clear the SQ and squash "
+        f"the coincident alloc"
+    )
+
+    dut_if.drive_rs_dispatch(**_pending_store_kwargs((tag_s1 + 2) % 32))
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.clear_flush_all()
+    await dut_if.step()
+
+    assert dut_if.sq_count == 0, (
+        f"sq_count={dut_if.sq_count}: flush_all must squash the coincident "
+        f"store alloc"
+    )
+    cocotb.log.info("=== Test Passed ===")

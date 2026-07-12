@@ -665,8 +665,26 @@ module load_queue #(
   // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
   // valid (slot-1 might be a non-mem instruction), but if both are valid,
   // slot-1 takes the first free slot and slot-2 takes the second.
-  assign slot1_alloc_en = i_alloc.valid && !full;
-  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
+  //
+  // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en):
+  // dispatch presents alloc requests un-flush-gated (the dispatch-fire cone
+  // must not absorb the flush broadcast — on trap/MRET/FENCE.I pulse cycles
+  // the frontend kill is edge-delayed and a straggler — wrong-path, or
+  // FENCE.I's to-be-refetched next instruction — legitimately presents here), so every allocation target decides locally
+  // and must reach the same verdict on the same cycle.  The ROB rejects;
+  // without these terms the LQ accepted, and because the alloc arm runs
+  // AFTER the partial-flush invalidate loop in the same always_ff
+  // (last-write-wins), a flush_en-cycle alloc wrote a GHOST entry — valid,
+  // with a tag the ROB never allocated: a slot leak, then a duplicate-tag
+  // pair once the ROB tail re-issues the tag (tag uniqueness is a formal
+  // precondition here and in the SQ).  flush_all cycles were already benign
+  // for lq_valid (priority else-if branch) but still wrote the no-reset
+  // payload RAMs; the gate silences those too.
+  logic alloc_flush_ok;
+  assign alloc_flush_ok = !i_flush_all && !i_flush_en;
+  assign slot1_alloc_en = i_alloc.valid && !full && alloc_flush_ok;
+  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) &&
+                          alloc_flush_ok;
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
@@ -2545,8 +2563,10 @@ module load_queue #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
-      if (i_alloc.valid && (i_flush_all || i_flush_en))
-        $warning("LQ: allocation attempted during flush");
+      // No advisory for alloc-during-flush: dispatch legitimately presents on
+      // trap/MRET/FENCE.I pulse cycles (edge-delayed frontend kill), and the
+      // alloc enables suppress the request exactly like the ROB's alloc_en.
+      // The FORMAL section asserts the suppression.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
         $warning("LQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
@@ -2596,10 +2616,16 @@ module load_queue #(
   // Structural constraints (assumes)
   // -------------------------------------------------------------------------
 
-  // No allocation during flush
+  // Alloc requests MAY arrive during flush (dispatch presents un-flush-gated
+  // for timing; the trap-cycle straggler handshake does exactly
+  // this in the real core).  The alloc enables carry the same
+  // !i_flush_all && !i_flush_en gate as the ROB's alloc_en, so a flush-cycle
+  // request must never write queue state.
+  // (assumption removed — was: no allocation during flush)
   always_comb begin
-    if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
-    if (i_flush_all || i_flush_en) assume (!i_alloc_2.valid);
+    if (i_rst_n && (i_flush_all || i_flush_en)) begin
+      p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
+    end
   end
 
   // Slot-2 must respect capacity given whether slot-1 is also firing.

@@ -173,6 +173,19 @@ This is pinned by the single-delivery collision test in the
 `tomasulo_wrapper` bench (which reproduces the duplicate the old accept
 gating caused roughly once per few hundred thousand cycles of Linux boot).
 
+The allocation side upholds the same argument: the LQ/SQ slot alloc enables
+carry the ROB's flush gate (`!i_flush_all && !i_flush_en`), so an alloc
+request presented on a flush-pulse cycle is suppressed by every structure on
+the same cycle. Dispatch legitimately presents on trap/MRET/FENCE.I pulse
+cycles (the frontend kill is edge-delayed, so a straggler's fire —
+wrong-path, or FENCE.I's to-be-refetched next instruction — coincides); before the gate, a partial-flush-cycle alloc wrote a GHOST queue
+entry whose tag the ROB never allocated — a slot leak that turned into a
+duplicate-tag pair (two same-tag completions, i.e. a duplicate delivery
+source) once the rewound ROB tail re-issued the tag. Pinned by the
+ghost-alloc probes in the `tomasulo_wrapper` bench and by
+`p_no_alloc_during_flush` asserts in the LQ/SQ formal contracts (which now
+leave alloc-valid free during flushes instead of assuming it away).
+
 The deep FP shims (`fp_mul_shim`, `fp_div_shim`) consume a one-cycle
 REGISTERED flush snapshot (pulse + flush tag + head captured on the pulse
 cycle) instead of the live broadcast: their per-entry marking fanout was the

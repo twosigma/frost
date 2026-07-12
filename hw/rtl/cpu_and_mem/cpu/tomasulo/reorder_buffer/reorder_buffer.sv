@@ -2663,7 +2663,10 @@ module reorder_buffer #(
   // ("stale delivery") has two conceivable sources: a completion for a
   // FLUSHED tag escaping a producer's kill discipline, or a DUPLICATE
   // broadcast of a completion whose first delivery already committed the
-  // instruction.  The events observed in CoreMark-PRO and Linux-boot runs
+  // instruction.  (A third class — duplicate-tag LQ/SQ pairs seeded by a
+  // flush-cycle ghost allocation, which would complete the same tag twice —
+  // is closed structurally: the queue alloc enables carry this module's
+  // !i_flush_all && !i_flush_en gate, see load_queue/store_queue.)  The events observed in CoreMark-PRO and Linux-boot runs
   // (previously misattributed here to FDIV/FSQRT-latency flushed-tag
   // arrivals; the "cycles after last flush" distances pointed at unrelated
   // flushes) were forensically traced to the second kind: the MEM-slot
