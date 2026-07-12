@@ -2659,11 +2659,21 @@ module reorder_buffer #(
     end
   end
 
-  // CDB staleness tripwires.  Stale CDB completions for flushed tags are a
-  // FACT of this pipeline and can arrive MANY cycles after the flush that
-  // killed their instruction (observed: FDIV/FSQRT-latency-class results
-  // landing 18-34 cycles post-flush in CoreMark-PRO and Linux-boot runs).
-  // The design absorbs them:
+  // CDB staleness tripwires.  A CDB write whose tag the ROB no longer tracks
+  // ("stale delivery") has two conceivable sources: a completion for a
+  // FLUSHED tag escaping a producer's kill discipline, or a DUPLICATE
+  // broadcast of a completion whose first delivery already committed the
+  // instruction.  The events observed in CoreMark-PRO and Linux-boot runs
+  // (previously misattributed here to FDIV/FSQRT-latency flushed-tag
+  // arrivals; the "cycles after last flush" distances pointed at unrelated
+  // flushes) were forensically traced to the second kind: the MEM-slot
+  // accept/present divergence duplicated a load completion one cycle after a
+  // colliding misaligned-store issue — fixed at lq_result_accepted in
+  // tomasulo_wrapper.sv.  Flushed-tag escapes have never been observed; the
+  // producer kill discipline is pinned by the tomasulo_wrapper stale-CDB
+  // probes and the fp_div_shim FORMAL flushed-tag assert.  Both diagnostics
+  // below are expected to stay silent; the design still absorbs a stale
+  // arrival defensively:
   //   - state-FF writes (cdb_state_wr_en) are rob_valid-gated;
   //   - a value-RAM write to a still-free entry is invisible (nothing reads
   //     invalid entries) and healed by the next allocation's LVT takeover;
@@ -2676,9 +2686,15 @@ module reorder_buffer #(
   // dispatch -> issue -> FU -> registered CDB always exceeds one cycle), so
   // that window is a fatal error below.  Stale arrivals >=2 cycles after
   // REALLOCATION (tag ABA) would be accepted as legitimate at this boundary;
-  // ruling those out is the producer-side kill discipline's job (adapter
-  // age-kill, shim flush-marking, LQ cdb_stage kill, arbiter kill) — open
-  // verification item, see the FORMAL contract below.
+  // ruling those out is the job of the producer-side kill discipline
+  // (adapter age-kill, shim flush-marking, LQ cdb_stage kill, arbiter kill)
+  // plus the MEM-slot single-delivery discipline (each completion pops the
+  // cycle it is granted; see lq_result_accepted).  Both are pinned by the
+  // directed stale-CDB/single-delivery tests in the tomasulo_wrapper bench,
+  // the fp_div_shim FORMAL flushed-tag assert, and the wrapper's
+  // fu_type-carrying stale-delivery diagnostics; any escape that does occur
+  // remains loudly visible here (free-entry warnings + the fatal
+  // drain-window tripwire).
   logic dbg_flush_prev_cycle;
   always @(posedge i_clk) begin
     if (!i_rst_n) dbg_flush_prev_cycle <= 1'b0;
@@ -2725,14 +2741,41 @@ module reorder_buffer #(
     if (!i_rst_n || i_flush_all || i_flush_en) dbg_cyc_since_flush <= 0;
     else dbg_cyc_since_flush <= dbg_cyc_since_flush + 1;
   end
+  // Benign-delivery filter (mirrors the wrapper diagnostic): a write whose
+  // tag committed within the last two cycles is the JALR wakeup broadcast
+  // trailing its branch_update-driven commit — value stored at alloc, entry
+  // not reallocatable that fast (tail wrap needs >=32 net allocations).
+  logic [3:0] dbg_recent_commit_valid;
+  logic [3:0][ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) dbg_recent_commit_valid <= '0;
+    else begin
+      dbg_recent_commit_valid <= {
+        dbg_recent_commit_valid[1:0], o_commit_comb_2.valid, o_commit_comb.valid
+      };
+      dbg_recent_commit_tag <= {dbg_recent_commit_tag[1:0], o_commit_comb_2.tag, o_commit_comb.tag};
+    end
+  end
+  function automatic logic dbg_recently_committed(input logic [ReorderBufferTagWidth-1:0] tag);
+    dbg_recently_committed = 1'b0;
+    for (int k = 0; k < 4; k++) begin
+      if (dbg_recent_commit_valid[k] && dbg_recent_commit_tag[k] == tag) begin
+        dbg_recently_committed = 1'b1;
+      end
+    end
+  endfunction
   always @(posedge i_clk) begin
     if (i_rst_n && dbg_stale_cdb_logged < 8) begin
-      if (i_cdb_write.valid && !rob_valid[i_cdb_write.tag]) begin
+      if (i_cdb_write.valid && !rob_valid[i_cdb_write.tag] && !dbg_recently_committed(
+              i_cdb_write.tag
+          )) begin
         dbg_stale_cdb_logged <= dbg_stale_cdb_logged + 1;
         $warning(
             "Reorder Buffer: stale CDB lane0 write tag=%0d (%0d cycles after last flush; absorbed)",
             i_cdb_write.tag, dbg_cyc_since_flush);
-      end else if (i_cdb_write_2.valid && !rob_valid[i_cdb_write_2.tag]) begin
+      end else if (i_cdb_write_2.valid && !rob_valid[i_cdb_write_2.tag] && !dbg_recently_committed(
+              i_cdb_write_2.tag
+          )) begin
         dbg_stale_cdb_logged <= dbg_stale_cdb_logged + 1;
         $warning(
             "Reorder Buffer: stale CDB lane1 write tag=%0d (%0d cycles after last flush; absorbed)",
@@ -2810,21 +2853,25 @@ module reorder_buffer #(
     assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
-  // CDB drain-window contract.  Stale CDB completions for flushed tags DO
-  // reach this boundary — long-latency results (FDIV/FSQRT class) have been
-  // observed arriving 18-34 cycles after the flush that killed them, and a
-  // stale write may even coincide with the same entry's REALLOCATION cycle
-  // (that collision is legal: the staged LVT of the rob_value RAMs resolves
-  // it alloc-wins, and rob_valid gates the state-FF writes).  The single
-  // arrival the design cannot absorb is a CDB write to an entry allocated
-  // in the PREVIOUS cycle — the staged-LVT drain cycle, where a live write
-  // wins the LVT and rob_valid no longer gates it.  No legitimate
-  // completion can exist that early (alloc -> dispatch -> issue -> FU ->
-  // registered CDB always exceeds one cycle), so it is assumed away here as
-  // the environment contract; the sim tripwire in the debug section errors
-  // on any violation in every simulation.  Stale writes >=2 cycles after
-  // reallocation (tag ABA) are NOT excluded by this contract and remain an
-  // open producer-side verification item.
+  // CDB drain-window contract.  Stale CDB writes (a tag the ROB no longer
+  // tracks) have reached this boundary in real runs — forensically traced to
+  // MEM-slot DUPLICATE deliveries (the accept/present divergence fixed at
+  // lq_result_accepted in tomasulo_wrapper.sv), historically misread as
+  // FDIV/FSQRT-latency flushed-tag arrivals.  A stale write may even
+  // coincide with the same entry's REALLOCATION cycle (that collision is
+  // legal: the staged LVT of the rob_value RAMs resolves it alloc-wins, and
+  // rob_valid gates the state-FF writes).  The single arrival the design
+  // cannot absorb is a CDB write to an entry allocated in the PREVIOUS
+  // cycle — the staged-LVT drain cycle, where a live write wins the LVT and
+  // rob_valid no longer gates it.  No legitimate completion can exist that
+  // early (alloc -> dispatch -> issue -> FU -> registered CDB always exceeds
+  // one cycle), so it is assumed away here as the environment contract; the
+  // sim tripwire in the debug section errors on any violation in every
+  // simulation.  Stale writes >=2 cycles after reallocation (tag ABA) are
+  // NOT excluded by this contract; they are ruled out by the producer-side
+  // kill discipline and the MEM single-delivery discipline, pinned by the
+  // tomasulo_wrapper stale-CDB/single-delivery tests and the fp_div_shim
+  // FORMAL flushed-tag assert.
   logic [1:0] f_prev_alloc_valid;
   logic [1:0][ReorderBufferTagWidth-1:0] f_prev_alloc_idx;
   always @(posedge i_clk) begin

@@ -145,6 +145,35 @@ input, rather than replicated across every per-FU adapter — this suppresses bo
 broadcast lanes and keeps the broadly-fanned flush signal out of each adapter's
 output cone.
 
+Because ROB tags are reused as soon as the tail rewinds, a completion
+belonging to a squashed instruction must never reach the CDB after its flush
+(a delivery landing two or more cycles after the tag's reallocation would be
+indistinguishable from the new instruction's completion — tag ABA). Every
+producer therefore kills squashed work at its own boundary: the shims
+flush-mark their tag queues / hold buffers / result FIFOs, the adapters
+age-kill held and pass-through results, the LQ drops in-flight responses for
+squashed loads, and the arbiter kills full-flush cycles. This discipline is
+pinned by directed stale-CDB probes in the `tomasulo_wrapper` bench (flush
+alignment swept across issue and pipeline depth, killed tag reallocated at
+the earliest legal cycle), by an anyconst flushed-tag assert in the
+`fp_div_shim` formal target, and by always-on stale-delivery diagnostics in
+the wrapper (with producing `fu_type`) and ROB; the one arrival with no
+consumer-side defense — the cycle after reallocation — is a fatal sim
+tripwire in the ROB (see `reorder_buffer.sv`, drain-window section).
+
+The same tag-reuse argument requires each completion to broadcast exactly
+ONCE: a duplicate delivery landing after the first one committed the
+instruction writes a freed (or eventually reallocated) entry. The MEM slot's
+accept therefore mirrors its presentation mux exactly — a presented MEM
+result always wins a CDB lane the same cycle (only MUL outranks it and the
+CDB is 2-wide), so it pops the LQ `cdb_stage` that cycle
+(`lq_result_accepted`); a colliding misaligned-store issue captures into its
+registered exception slot in parallel and owns the MEM slot the next cycle.
+This is pinned by the single-delivery collision test in the
+`tomasulo_wrapper` bench (which reproduces the duplicate the old accept
+gating caused roughly once per few hundred thousand cycles of Linux boot).
+
+
 ### Instruction → reservation station routing
 
 | RS         | Depth | Instructions |

@@ -958,6 +958,7 @@ module cpu_ooo #(
 
   // CDB
   riscv_pkg::cdb_broadcast_t cdb_out;
+  riscv_pkg::cdb_broadcast_t cdb_out_2;
   logic [riscv_pkg::NumFus-1:0] cdb_grant;
 
   // ROB status
@@ -1176,6 +1177,7 @@ module cpu_ooo #(
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
+      .o_cdb_2(cdb_out_2),
 
       // Branch update
       .i_branch_update(branch_update),

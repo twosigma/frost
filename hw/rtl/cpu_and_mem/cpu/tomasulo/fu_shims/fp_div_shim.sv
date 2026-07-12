@@ -701,6 +701,97 @@ module fp_div_shim (
     end
   end
 
+  // ---------------------------------------------------------------------------
+  // Flushed-tag discipline: once a flush squashes an in-flight op, its tag
+  // must never appear on o_fu_complete — until a NEW op with the same tag
+  // value fires (the ROB entry was reallocated and re-dispatched here, which
+  // legitimizes that tag again).  This is the producer-side contract the ROB
+  // and RS rely on to rule out tag-ABA corruption from stale deliveries
+  // landing >=2 cycles after reallocation (see reorder_buffer.sv drain-window
+  // section).  Tracks one arbitrary (anyconst) tag through the tag queues,
+  // hold buffers, and result FIFO.
+  // ---------------------------------------------------------------------------
+  (* anyconst *) logic [TagW-1:0] f_watch_tag;
+
+  // Occupancy scan for the watched tag (FIFO membership is ring-buffer
+  // arithmetic: valid/flushed bits persist after pop by design).
+  logic f_watch_inflight;
+  always_comb begin
+    f_watch_inflight = 1'b0;
+    for (int u = 0; u < NumUnits; u++) begin
+      for (int i = 0; i < MaxPipeDepth; i++) begin
+        if ((u == UDivS  && i < DivSDepth)  ||
+            (u == UDivD  && i < DivDDepth)  ||
+            (u == USqrtS && i < SqrtSDepth) ||
+            (u == USqrtD && i < SqrtDDepth)) begin
+          if (tq_valid[u][i] && tq_tag[u][i] == f_watch_tag) f_watch_inflight = 1'b1;
+        end
+      end
+      for (int s = 0; s < 2; s++) begin
+        if (hold_valid[u][s] && hold_tag[u][s] == f_watch_tag) f_watch_inflight = 1'b1;
+      end
+    end
+    for (int i = 0; i < FifoDepth; i++) begin
+      if ((($clog2(
+              FifoDepth + 1
+          ))'(($clog2(
+              FifoDepth
+          ))'(i) - fifo_rd_ptr) < fifo_count) && fifo_tag[i] == f_watch_tag) begin
+        f_watch_inflight = 1'b1;
+      end
+    end
+  end
+
+  logic f_watch_fire;
+  assign f_watch_fire = fire && (i_rs_issue.rob_tag == f_watch_tag);
+
+  // Flush event squashing the watched tag this cycle (any residency stage or
+  // the fire-cycle race; age compare mirrors the DUT's own kill terms).
+  logic f_watch_squashed_now;
+  assign f_watch_squashed_now =
+      (i_flush && (f_watch_inflight || f_watch_fire)) ||
+      (i_flush_en && (f_watch_inflight || f_watch_fire) &&
+       is_younger(
+      f_watch_tag, i_flush_tag, i_rob_head_tag
+  ));
+
+  // Armed from the cycle after the squash until a new op reuses the tag.
+  // A fire on the squash cycle itself is squashed too (fire-cycle marking),
+  // so the squash term wins over the disarm.
+  logic f_watch_dead_q;
+  initial f_watch_dead_q = 1'b0;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) f_watch_dead_q <= 1'b0;
+    else if (f_watch_squashed_now) f_watch_dead_q <= 1'b1;
+    else if (f_watch_fire) f_watch_dead_q <= 1'b0;
+  end
+
+  // Same-cycle: a PARTIALLY-flushed head must be suppressed by the live kill
+  // terms (fifo_head_partial_flushing).  The full-flush squash cycle is
+  // exempt at this boundary: the shim may present the head that cycle and the
+  // wrapper's CDB arbiter i_kill suppresses the broadcast (full-flush CDB
+  // suppression is centralized there — see fu_cdb_adapter header).
+  always_comb begin
+    if (i_rst_n && !i_flush && f_watch_squashed_now && o_fu_complete.valid) begin
+      p_no_complete_on_squash_cycle : assert (o_fu_complete.tag != f_watch_tag);
+    end
+  end
+
+  // Post-squash: the dead incarnation must never complete (until tag reuse).
+  always_comb begin
+    if (i_rst_n && f_watch_dead_q && !f_watch_fire && o_fu_complete.valid) begin
+      p_no_stale_complete : assert (o_fu_complete.tag != f_watch_tag);
+    end
+  end
+
+  // Reachability: the interesting arcs are exercisable.
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      cover_watch_squashed : cover (f_watch_squashed_now);
+      cover_watch_dead_then_reused : cover (f_watch_dead_q && f_watch_fire);
+    end
+  end
+
 `endif  // FORMAL
 
 

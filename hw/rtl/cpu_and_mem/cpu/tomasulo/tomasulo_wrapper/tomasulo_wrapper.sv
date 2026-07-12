@@ -89,9 +89,10 @@ module tomasulo_wrapper #(
     output logic [riscv_pkg::NumFus-1:0] o_cdb_grant,
 
     // =========================================================================
-    // CDB Broadcast Output (for testbench observation)
+    // CDB Broadcast Output (for testbench observation; both lanes)
     // =========================================================================
     output riscv_pkg::cdb_broadcast_t o_cdb,
+    output riscv_pkg::cdb_broadcast_t o_cdb_2,
 
     // =========================================================================
     // ROB Branch Update Interface (from Branch Unit)
@@ -790,7 +791,8 @@ module tomasulo_wrapper #(
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
-  assign o_cdb = cdb_bus_comb;
+  assign o_cdb   = cdb_bus_comb;
+  assign o_cdb_2 = cdb_bus_2_comb;
 
   // Reconstruct CDB broadcast with reset-qualified valid for downstream consumers
   riscv_pkg::cdb_broadcast_t cdb_bus_qualified;
@@ -1394,9 +1396,25 @@ module tomasulo_wrapper #(
   // LQ is blocked while the registered SC completion owns MEM.  SC arming only
   // occurs when LQ is not presenting a result, avoiding a combinational SC
   // head-tag compare on the LQ/CDB backpressure cone.
+  //
+  // The accept term must match the PRESENTATION mux above exactly: whenever
+  // the LQ result is the one presented, it is also granted that cycle (MEM
+  // outranks everything but MUL and the CDB is 2-wide, so a presented MEM
+  // result always wins a lane), so it must pop.  A live store_misalign_issue
+  // used to block the accept here without blocking the presentation — the
+  // granted-and-broadcast load then stayed in cdb_stage, the registered
+  // misalign exception took the next cycle, and the leftover load was
+  // presented and GRANTED A SECOND TIME one cycle later.  The duplicate
+  // broadcast landed after the first delivery had already committed the load
+  // through the CDB->head-done bypass, writing a freed ROB entry (the
+  // "stale CDB delivery" events observed in Linux boot, one per few hundred
+  // k cycles; a duplicate landing after the entry's index is REALLOCATED
+  // would corrupt the new instruction — the tag-ABA hazard).  The same-cycle
+  // misalign capture into store_misalign_fu_complete_reg needs no yield from
+  // the load: it owns the MEM slot the NEXT cycle via the register either
+  // way.
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_reg.valid &&
-                              !store_misalign_issue &&
                               !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
@@ -3666,6 +3684,112 @@ module tomasulo_wrapper #(
       if (fmul_rs_dispatch.valid) assert (fmul_rs_dispatch.rm != riscv_pkg::FRM_DYN);
       if (fdiv_rs_dispatch.valid) assert (fdiv_rs_dispatch.rm != riscv_pkg::FRM_DYN);
     end
+
+  // ===========================================================================
+  // Simulation-only: stale-CDB producer diagnostics.
+  //
+  // The ROB's own diagnostics (reorder_buffer.sv, drain-window section) report
+  // deliveries to free entries but cannot name the producer — fu_type does not
+  // cross the reorder_buffer_cdb_write_t boundary.  Here both registered CDB
+  // lanes still carry it, so a delivery targeting a free ROB entry is logged
+  // with the FU slot that produced it.  Any hit is a producer discipline
+  // escape — a flushed-tag kill miss (adapter age-kill, shim flush-marking,
+  // LQ cdb_stage kill, arbiter kill) or a duplicate broadcast (single-
+  // delivery accept/present divergence; the MEM-slot instance of this was
+  // traced with exactly these diagnostics and fixed at lq_result_accepted).
+  // Expected silent; the design absorbs an escape unless it lands in the
+  // drain window (fatal there, see the ROB tripwire).
+  // ===========================================================================
+  int unsigned dbg_stale_cyc_since_flush;
+  int unsigned dbg_stale_logged;
+  always @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) dbg_stale_cyc_since_flush <= 0;
+    else dbg_stale_cyc_since_flush <= dbg_stale_cyc_since_flush + 1;
+  end
+  // Benign-delivery filter: a broadcast whose tag committed within the last
+  // two cycles is the known JALR double-completion (the link value is stored
+  // at alloc and done comes from branch_update, so the commit can beat the
+  // CDB wakeup broadcast by a cycle when the ALU adapter is contended; the
+  // write lands on the just-committed entry, which cannot be reallocated
+  // that fast — tail wrap needs >=32 net allocations).  Deliveries beyond
+  // that window stay loud: they approach the reallocation wrap window.
+  logic [3:0] dbg_recent_commit_valid;
+  logic [3:0][riscv_pkg::ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) dbg_recent_commit_valid <= '0;
+    else begin
+      dbg_recent_commit_valid <= {
+        dbg_recent_commit_valid[1:0], commit_bus_2.valid, commit_bus.valid
+      };
+      dbg_recent_commit_tag <= {dbg_recent_commit_tag[1:0], commit_bus_2.tag, commit_bus.tag};
+    end
+  end
+  function automatic logic dbg_recently_committed(
+      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag);
+    dbg_recently_committed = 1'b0;
+    for (int k = 0; k < 4; k++) begin
+      if (dbg_recent_commit_valid[k] && dbg_recent_commit_tag[k] == tag) begin
+        dbg_recently_committed = 1'b1;
+      end
+    end
+  endfunction
+  // Grant-cycle snapshot of the MEM-slot sources: the registered broadcast
+  // lands one cycle after the grant, so when a stale MEM delivery is
+  // detected these name which sub-source (SC reg / misalign reg / LQ
+  // cdb_stage passthrough / adapter held) supplied it.
+  logic dbg_prev_sc_valid, dbg_prev_mis_valid, dbg_prev_lq_valid;
+  logic dbg_prev_adapter_pending;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dbg_prev_lq_tag, dbg_prev_adapter_tag;
+  always @(posedge i_clk) begin
+    dbg_prev_sc_valid        <= sc_fu_complete_reg.valid;
+    dbg_prev_mis_valid       <= store_misalign_fu_complete_reg.valid;
+    dbg_prev_lq_valid        <= lq_fu_complete.valid;
+    dbg_prev_lq_tag          <= lq_fu_complete.tag;
+    dbg_prev_adapter_pending <= mem_adapter_result_pending;
+    dbg_prev_adapter_tag     <= u_mem_adapter.held_result.tag;
+  end
+  always @(posedge i_clk) begin
+    if (i_rst_n && dbg_stale_logged < 16) begin
+      if (cdb_bus_valid && !u_rob.rob_valid[cdb_bus.tag] && !dbg_recently_committed(
+              cdb_bus.tag
+          )) begin
+        dbg_stale_logged <= dbg_stale_logged + 1;
+        $warning("tomasulo_wrapper: stale CDB lane0 tag=%0d fu_type=%0d (%0d cyc after last flush)",
+                 cdb_bus.tag, cdb_bus.fu_type, dbg_stale_cyc_since_flush);
+        if (cdb_bus.fu_type == riscv_pkg::FU_MEM) begin
+          $warning(
+              "  MEM sources at grant: sc=%0d mis=%0d lq_v=%0d lq_tag=%0d adp_held=%0d adp_tag=%0d",
+              dbg_prev_sc_valid, dbg_prev_mis_valid, dbg_prev_lq_valid, dbg_prev_lq_tag,
+              dbg_prev_adapter_pending, dbg_prev_adapter_tag);
+        end
+      end
+      if (cdb_bus_2_valid && !u_rob.rob_valid[cdb_bus_2.tag] && !dbg_recently_committed(
+              cdb_bus_2.tag
+          )) begin
+        dbg_stale_logged <= dbg_stale_logged + 1;
+        $warning("tomasulo_wrapper: stale CDB lane1 tag=%0d fu_type=%0d (%0d cyc after last flush)",
+                 cdb_bus_2.tag, cdb_bus_2.fu_type, dbg_stale_cyc_since_flush);
+      end
+    end
+  end
+
+  // Capture-time check on the LQ cdb_stage: a captured completion whose tag
+  // the ROB no longer tracks means a Phase-A / bypass-path escape (dead at
+  // capture); if deliveries above are stale but captures here are clean, the
+  // escape is instead in the cdb_stage kill between capture and grant.
+  always @(posedge i_clk) begin
+    if (i_rst_n && dbg_stale_logged < 16) begin
+      if (u_lq.issue_cdb_fire && !u_rob.rob_valid[u_lq.issue_cdb_result.tag]) begin
+        $warning("tomasulo_wrapper: LQ captured DEAD tag=%0d via issue path (idx=%0d)",
+                 u_lq.issue_cdb_result.tag, u_lq.issue_cdb_idx);
+      end
+      if (u_lq.bypass_fire && !u_rob.rob_valid[u_lq.bypass_tag]) begin
+        $warning("tomasulo_wrapper: LQ captured DEAD tag=%0d via bypass (r=%0d h=%0d f=%0d m=%0d)",
+                 u_lq.bypass_tag, u_lq.resp_bypass_fire, u_lq.cache_hit_bypass_fire,
+                 u_lq.fwd_bypass_fire, u_lq.misalign_bypass_fire);
+      end
+    end
+  end
 `endif
 
 endmodule

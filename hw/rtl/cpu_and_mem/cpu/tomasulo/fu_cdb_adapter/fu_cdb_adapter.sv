@@ -30,7 +30,9 @@
  *   - Pipeline flush support: `i_flush` (full) discards any held result on
  *     the next edge. `i_flush_en` (partial) discards held results whose tag
  *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`). Same-cycle
- *     pass-through of a younger partial-flush result is still suppressed here;
+ *     pass-through of a younger partial-flush result is still suppressed here,
+ *     and the same input filter gates the grant-refill capture (a flushed
+ *     result issued on the flush cycle must not survive as held state);
  *     speculative full-flush CDB suppression is handled once at the arbiter.
  *
  * State machine (1 bit: result_pending):
@@ -103,7 +105,14 @@ module fu_cdb_adapter #(
   assign partial_flush_held = i_flush_en & result_pending & is_younger(
       held_result.tag, i_flush_tag, i_rob_head_tag
   );
-  assign partial_flush_input = i_flush_en & ~result_pending & i_fu_result.valid & is_younger(
+  // Input-side kill: valid on ANY cycle the input presents a flushed-younger
+  // result — including the grant-refill cycle (result_pending high), where a
+  // doomed same-cycle issue would otherwise be captured into held_result and
+  // re-presented AFTER the flush (observed on the ALU slot in CoreMark: the
+  // refilled corpse lost arbitration for ~20 cycles and then broadcast to a
+  // long-freed ROB entry).  Consumers that only care about the idle
+  // pass-through case are all already !result_pending-guarded.
+  assign partial_flush_input = i_flush_en & i_fu_result.valid & is_younger(
       i_fu_result.tag, i_flush_tag, i_rob_head_tag
   );
 
@@ -145,7 +154,10 @@ module fu_cdb_adapter #(
     end else if (i_flush || partial_flush_held) begin
       result_pending <= 1'b0;
     end else if (result_pending && i_grant) begin
-      result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid;
+      // Grant-refill must apply the same partial-flush input filter as the
+      // idle capture below: without it a flushed-younger result issued on
+      // the flush cycle survives as held state past the flush.
+      result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid && !partial_flush_input;
     end else if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
       result_pending <= REGISTER_OUTPUT || !i_grant;
     end
@@ -389,6 +401,49 @@ module fu_cdb_adapter #(
 
       // Partial flush suppresses pass-through (younger tag)
       cover_partial_flush_passthrough : cover (partial_flush_input);
+    end
+  end
+
+  // -------------------------------------------------------------------------
+  // Flushed-tag discipline: once a partial flush squashes the watched tag
+  // (as held state or as a same-cycle input, including the grant-refill
+  // case), that tag must never appear on o_fu_complete until a NEW input
+  // legitimately re-presents it (ROB tag reuse).  This is the adapter-local
+  // pin of the producer-side stale-CDB contract; the grant-refill arm
+  // missing the input filter is exactly the escape it would have caught.
+  // -------------------------------------------------------------------------
+  (* anyconst *) logic [TagW-1:0] f_watch_tag;
+
+  logic f_watch_squashed_now;
+  assign f_watch_squashed_now = (i_flush_en && is_younger(
+      f_watch_tag, i_flush_tag, i_rob_head_tag
+  ) && ((result_pending && held_result.tag == f_watch_tag) ||
+        (i_fu_result.valid && i_fu_result.tag == f_watch_tag))) ||
+      (i_flush && ((result_pending && held_result.tag == f_watch_tag) ||
+                   (i_fu_result.valid && i_fu_result.tag == f_watch_tag)));
+
+  logic f_watch_refire;
+  assign f_watch_refire = i_fu_result.valid && (i_fu_result.tag == f_watch_tag);
+
+  logic f_watch_dead_q;
+  initial f_watch_dead_q = 1'b0;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) f_watch_dead_q <= 1'b0;
+    else if (f_watch_squashed_now) f_watch_dead_q <= 1'b1;
+    else if (f_watch_refire) f_watch_dead_q <= 1'b0;
+  end
+
+  always_comb begin
+    if (i_rst_n && f_watch_dead_q && !f_watch_refire && o_fu_complete.valid) begin
+      p_no_stale_output : assert (o_fu_complete.tag != f_watch_tag);
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      cover_watch_squashed_held : cover (f_watch_squashed_now && result_pending);
+      cover_watch_squashed_refill :
+      cover (f_watch_squashed_now && result_pending && i_grant && i_fu_result.valid);
     end
   end
 
