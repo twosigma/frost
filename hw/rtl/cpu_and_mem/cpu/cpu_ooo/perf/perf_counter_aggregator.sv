@@ -199,10 +199,24 @@ module perf_counter_aggregator (
        (perf_counter_select_q < PerfCounterCountSel)) ?
       (perf_counter_select_q - PerfWrapperBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
-  assign perf_top_snapshot_capture_bank0 = perf_snapshot_capture;
-  assign perf_top_snapshot_capture_bank1 = perf_snapshot_capture;
-  assign perf_top_snapshot_capture_bank2 = perf_snapshot_capture;
-  assign perf_top_snapshot_capture_bank3 = perf_snapshot_capture;
+  // Registered per-bank capture copies (same treatment and rationale as
+  // perf_counter_select_q above, and as the wrapper-level counters in
+  // tomasulo_perf_counters): the trigger comes off the commit cone and fans
+  // into hundreds of snapshot CE loads; capture lands one cycle after the
+  // trigger commit, invisible under CSR serialization and delta reads.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_top_snapshot_capture_bank0 <= 1'b0;
+      perf_top_snapshot_capture_bank1 <= 1'b0;
+      perf_top_snapshot_capture_bank2 <= 1'b0;
+      perf_top_snapshot_capture_bank3 <= 1'b0;
+    end else begin
+      perf_top_snapshot_capture_bank0 <= perf_snapshot_capture;
+      perf_top_snapshot_capture_bank1 <= perf_snapshot_capture;
+      perf_top_snapshot_capture_bank2 <= perf_snapshot_capture;
+      perf_top_snapshot_capture_bank3 <= perf_snapshot_capture;
+    end
+  end
 
   always_comb begin
     for (int i = 0; i < PerfTopCounterCount; i++) begin
