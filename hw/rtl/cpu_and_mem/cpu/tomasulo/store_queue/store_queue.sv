@@ -544,8 +544,26 @@ module store_queue #(
   // valid; if both fire, slot-1 (older) takes the first free slot from
   // tail_ptr and slot-2 (younger) takes the second so the SQ's in-order
   // commit/drain at head_idx writes stores to memory in program order.
-  assign slot1_alloc_en = i_alloc.valid && !full;
-  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full);
+  //
+  // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en):
+  // dispatch presents alloc requests un-flush-gated (the dispatch-fire cone
+  // must not absorb the flush broadcast — on trap/MRET/FENCE.I pulse cycles
+  // the frontend kill is edge-delayed and a straggler — wrong-path, or
+  // FENCE.I's to-be-refetched next instruction — legitimately presents here), so every allocation target decides locally
+  // and must reach the same verdict on the same cycle.  The ROB rejects;
+  // without these terms a flush_en-cycle alloc wrote a GHOST entry: the
+  // sq_valid alloc arm runs AFTER the partial-flush kill loop
+  // (last-write-wins) while the tail arm gives the flush priority, so the
+  // ghost sat valid with the tail never advanced — outside the ring window,
+  // with a tag the ROB never allocated, waiting for a later real alloc to
+  // land on top of it (p_alloc_slot_free violation).  flush_all cycles were
+  // already benign (priority else-if branch) but still wrote the no-reset
+  // payload flops; the gate silences those too.
+  logic alloc_flush_ok;
+  assign alloc_flush_ok = !i_flush_all && !i_flush_en;
+  assign slot1_alloc_en = i_alloc.valid && !full && alloc_flush_ok;
+  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) &&
+                          alloc_flush_ok;
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
@@ -1010,9 +1028,13 @@ module store_queue #(
       // the per-entry kills land, then the pending arm pulls it back over
       // the killed program-order suffix from the registered valid mask (see
       // Flush Tail Pullback) so flush holes never persist and ring position
-      // keeps encoding program order. Dispatch never allocates in a flush
-      // or pullback cycle (asserted below), so the arms are mutually
-      // exclusive.
+      // keeps encoding program order. The arms are mutually exclusive:
+      // flush-cycle allocs are suppressed structurally (alloc_flush_ok in
+      // the slot enables), and dispatch never allocates in the pullback
+      // cycle — a dispatch-side contract enforced by the $error tripwire in
+      // the sim-assertion block and assumed in the FORMAL section (the
+      // front-end redirect/refill latency after any partial flush keeps
+      // dispatch quiet well past it).
       if (i_flush_en) begin
         // Hold: pullback applies next cycle from registered state.
       end else if (flush_pullback_pending) begin
@@ -1346,22 +1368,25 @@ module store_queue #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
-      // Only PARTIAL flush (i_flush_en) is dangerous: there the alloc block in
-      // the !flush_all else-branch actually LANDS (sets sq_valid, line ~1210).
-      // i_flush_all is intentionally excluded — its priority else-if branches
-      // (lines ~952, ~1193) structurally squash the alloc (sq_valid <= '0), a
-      // documented-safe, formally-proven (p_alloc_slot_free) handshake that the
-      // RS issues un-flush-gated for timing closure (see note ~line 1432). The
-      // old (i_flush_all||i_flush_en) form fired ~1178x/run on the benign
-      // flush_all handshake, burying the genuinely-unsafe flush_en case.
-      if (i_alloc.valid && i_flush_en && !i_flush_all)
-        $warning("SQ: allocation attempted during partial flush");
+      // No advisory for alloc-during-flush: dispatch legitimately presents on
+      // trap/MRET/FENCE.I pulse cycles (edge-delayed frontend kill; it fired
+      // ~1178x/run as the old advisory's benign flush_all handshake), and the
+      // alloc enables now suppress the request exactly like the ROB's
+      // alloc_en — including the formerly-unsafe flush_en case.  The FORMAL
+      // section asserts the suppression.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
         $warning("SQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
         $warning("SQ: slot-2 alloc attempted alone when full");
-      if (i_alloc_2.valid && i_flush_en && !i_flush_all)
-        $warning("SQ: slot-2 alloc attempted during partial flush");
+      // Dispatch must never allocate in the deferred tail-pullback cycle:
+      // the tail is stale until the pullback lands, so an accepted alloc
+      // would write sq_valid outside the post-pullback ring window.  The
+      // alloc enables gate only on the flush pulse itself (ROB parity);
+      // this cycle is a dispatch-side contract — the front-end
+      // redirect/refill latency after any partial flush keeps dispatch
+      // quiet for several cycles (the FORMAL section assumes the same).
+      if ((i_alloc.valid || i_alloc_2.valid) && flush_pullback_pending)
+        $error("SQ: allocation attempted during flush tail-pullback cycle");
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
     end
@@ -1410,14 +1435,26 @@ module store_queue #(
   // Structural constraints (assumes)
   // -------------------------------------------------------------------------
 
-  // No allocation during flush, nor during the deferred tail-pullback cycle
-  // that follows a partial flush (the tail is stale until the pullback
-  // lands). The front-end redirect/refill latency guarantees both with
-  // cycles to spare; the simulation assertion block (ifndef FORMAL, below)
-  // checks the same contract against the real dispatcher.
+  // Alloc requests MAY arrive during flush (dispatch presents un-flush-gated
+  // for timing; the trap-cycle straggler handshake does exactly
+  // this in the real core).  The alloc enables carry the same
+  // !i_flush_all && !i_flush_en gate as the ROB's alloc_en, so a flush-cycle
+  // request must never write queue state.
+  // (assumption removed — was: no allocation during flush)
   always_comb begin
-    if (i_flush_all || i_flush_en) assume (!i_alloc.valid);
-    if (i_flush_all || i_flush_en) assume (!i_alloc_2.valid);
+    if (i_rst_n && (i_flush_all || i_flush_en)) begin
+      p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
+    end
+  end
+
+  // No allocation during the deferred tail-pullback cycle that follows a
+  // partial flush: the tail is stale until the pullback lands, so an
+  // accepted alloc would land outside the post-pullback ring window.  This
+  // remains a dispatch-side contract (the front-end redirect/refill latency
+  // after any partial flush keeps dispatch quiet well past this cycle); the
+  // simulation assertion block (ifndef FORMAL, above) checks it against the
+  // real dispatcher with an $error tripwire.
+  always_comb begin
     if (flush_pullback_pending) assume (!i_alloc.valid);
     if (flush_pullback_pending) assume (!i_alloc_2.valid);
   end

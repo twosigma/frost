@@ -144,9 +144,15 @@ later the tail is pulled back to just past the youngest survivor, recomputed
 entirely from registered state (rotate `sq_valid` so the head maps to index
 0, take the highest set offset, add back). Retiming the pullback keeps the
 late ROB commit/flush cone off the pointer D/CE pins — computing it in the
-flush cycle was an 18-LUT-level path at 300 MHz. The deferred cycle is safe:
-dispatch cannot allocate again that soon after a flush (asserted in the RTL),
-and capacity reads conservatively in the meantime. Head advancement uses the
+flush cycle was an 18-LUT-level path at 300 MHz. Flush-cycle allocs are
+suppressed structurally: the slot alloc enables carry the ROB's flush gate
+(`!i_flush_all && !i_flush_en`), so a dispatch presented on the pulse cycle
+(the trap-cycle straggler handshake) is rejected by the SQ on the
+same cycle the ROB rejects it — previously it set `sq_valid` without a tail
+advance, a ghost outside the ring window. The deferred pullback cycle is
+safe: dispatch cannot allocate again that soon after a flush (an `$error`
+tripwire in the RTL checks it), and capacity reads conservatively in the
+meantime. Head advancement uses the
 same rotate → tree-encode → add-back form over `sq_valid` to skip-advance
 past freed entries, collapsing onto the tail when the window empties.
 

@@ -219,6 +219,16 @@ Allocation metadata has separate slot-1 and slot-2 write paths. When both slots
 allocate loads, slot 1 takes the older free entry and slot 2 takes the next free
 entry; when only slot 2 is a load, it takes the first free entry.
 
+Both alloc enables carry the ROB's flush gate (`!i_flush_all &&
+!i_flush_en`): dispatch presents alloc requests un-flush-gated (on
+trap/MRET/FENCE.I pulse cycles a straggler's fire legitimately
+coincides with the flush), so the LQ must reach the ROB's reject verdict on
+the same cycle. Without the gate, a partial-flush-cycle alloc wrote a ghost
+entry: the alloc arm runs after the invalidate loop in the same `always_ff`
+(last-write-wins), leaving a valid entry whose tag the ROB never allocated —
+a slot leak, then a duplicate-tag pair once the rewound tail re-issued the
+tag.
+
 ## Performance counters
 
 The LQ emits pulses for the wrapper's performance counters so the
