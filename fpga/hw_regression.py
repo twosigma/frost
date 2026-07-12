@@ -120,7 +120,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # branch's simulation-measured figure. Re-arm from the next hardware run.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 974.43, "coremark_pro": 100.32},
-    "genesys2": {"coremark": 433.65, "coremark_pro": 37.22},
+    "genesys2": {"coremark": 433.65, "coremark_pro": 39.0},
 }
 
 # Default allowed drop below baseline (percent). FROST is cycle-deterministic
