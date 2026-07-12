@@ -56,7 +56,7 @@ static void n_puts(const char *s)
 
 static void ns_init(void)
 {
-    NS_IER = 0x00u; /* polled (no interrupts wired) */
+    NS_IER = 0x00u; /* Keep IRQs disabled; this directed test exercises polled I/O. */
     NS_LCR = 0x80u; /* DLAB = 1 */
     NS_THR = 0x01u; /* DLL (baud divisor low) -- FROST ignores the divisor */
     NS_IER = 0x00u; /* DLM (baud divisor high) */
