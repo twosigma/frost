@@ -173,6 +173,14 @@ This is pinned by the single-delivery collision test in the
 `tomasulo_wrapper` bench (which reproduces the duplicate the old accept
 gating caused roughly once per few hundred thousand cycles of Linux boot).
 
+The deep FP shims (`fp_mul_shim`, `fp_div_shim`) consume a one-cycle
+REGISTERED flush snapshot (pulse + flush tag + head captured on the pulse
+cycle) instead of the live broadcast: their per-entry marking fanout was the
+dominant post-place failing-path population on x3. The pulse+0 boundary stays
+covered by the live-flushed adapters (REGISTER_OUTPUT, so nothing passes
+through combinationally), and the FP adapters' full-flush window is extended
+one cycle to cover the shim FIFO turnaround; the stale-CDB probes gate this
+timing contract end-to-end.
 
 ### Instruction → reservation station routing
 

@@ -671,6 +671,53 @@ module tomasulo_wrapper #(
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
   assign cdb_kill = speculative_flush_all;
 
+  // Registered flush snapshot for the deep FP shims (fp_mul / fp_div).
+  //
+  // The live flush pulses fan out into hundreds of per-entry marking bits
+  // inside the multi-cycle FP pipelines (32-entry FMUL/FMA tag queues,
+  // 36/65-stage divider tag shift registers, hold buffers, result FIFOs) —
+  // on x3 this net-dominated cone was ~1k failing endpoints post-place.
+  // Those shims therefore consume a one-cycle-registered copy of the pulse
+  // TOGETHER WITH the flush references snapshotted on the pulse cycle
+  // (flush_tag/head move on later cycles as commits proceed; the age
+  // compares must use the values that were live with the pulse).
+  //
+  // Legality contract (see the stale-CDB probes in the tomasulo_wrapper
+  // bench and the fp_div_shim FORMAL flushed-tag discipline section):
+  //  - The shims' ENTIRE kill logic shifts uniformly to the pulse+1 cycle:
+  //    per-entry sweeps mark at the registered edge and the shims' own
+  //    same-cycle head/tail guards evaluate against the registered pulse,
+  //    so a squashed result is never PRESENTED from the pulse+1 cycle on.
+  //  - The pulse+0 boundary is held by the (still live-flushed) adapters:
+  //    partial flush age-kills the presented input / held result at the
+  //    adapter, and both FP adapters are REGISTER_OUTPUT (no combinational
+  //    pass-through), so nothing squashed can be granted on the pulse cycle.
+  //  - For full-flush kinds the FP adapters' i_flush window is extended by
+  //    one cycle (below) so a completion that pops into a shim FIFO on the
+  //    pulse cycle and is presented on pulse+1 (before the registered clear
+  //    lands) cannot be captured into the adapter holding register.
+  //  - Occupancy/credit counts see squashed entries one cycle longer, which
+  //    only adds back-pressure (no FIFO-overflow risk).
+  // CoreMark is FP-free, so this retime is cycle-neutral there by
+  // construction; int_muldiv/fp_add/alu shims keep live flushes.
+  logic fp_shim_flush_all_q;
+  logic fp_shim_flush_en_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_shim_flush_tag_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_shim_flush_head_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      fp_shim_flush_all_q <= 1'b0;
+      fp_shim_flush_en_q  <= 1'b0;
+    end else begin
+      fp_shim_flush_all_q <= speculative_flush_all;
+      fp_shim_flush_en_q  <= speculative_flush_en;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    fp_shim_flush_tag_q  <= i_flush_tag;
+    fp_shim_flush_head_q <= head_tag;
+  end
+
 
   // ===========================================================================
   // CDB Arbiter: FU completions → 2-lane CDB broadcast (o_cdb + o_cdb_2)
@@ -3092,16 +3139,19 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // FP Multiply Shim: translate rs_issue_t → FPU mult/FMA → fu_complete_t
   // ===========================================================================
+  // Deep-pipeline shim: consumes the registered flush snapshot (see the
+  // fp_shim_flush_*_q block) — per-entry squash marking lands one cycle
+  // after the live pulse with pulse-cycle tag/head references.
   fp_mul_shim u_fp_mul_shim (
       .i_clk         (i_clk),
       .i_rst_n       (i_rst_n),
       .i_rs_issue    (fmul_rs_issue_w),
       .o_fu_complete (fp_mul_shim_out),
       .o_fu_busy     (fp_mul_busy),
-      .i_flush       (speculative_flush_all),
-      .i_flush_en    (speculative_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
+      .i_flush       (fp_shim_flush_all_q),
+      .i_flush_en    (fp_shim_flush_en_q),
+      .i_flush_tag   (fp_shim_flush_tag_q),
+      .i_rob_head_tag(fp_shim_flush_head_q),
       .i_mul_accepted(fp_mul_result_accepted)
   );
 
@@ -3118,7 +3168,13 @@ module tomasulo_wrapper #(
       .o_fu_complete   (fp_mul_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[5]),
       .o_result_pending(fp_mul_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
+      // Full-flush window extended one cycle: the shim's registered clear
+      // lands on pulse+1, so a squashed completion pushed into the shim FIFO
+      // on the pulse cycle is still presented during pulse+1 — the extended
+      // window keeps it out of the holding register (REGISTER_OUTPUT means
+      // it is never passed through combinationally).  Partial flush stays
+      // live: the age compare is the pulse-cycle boundary guard.
+      .i_flush         (speculative_flush_all || fp_shim_flush_all_q),
       .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
@@ -3127,16 +3183,18 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // FP Divide/Sqrt Shim: translate rs_issue_t → FPU div/sqrt → fu_complete_t
   // ===========================================================================
+  // Deep-pipeline shim: registered flush snapshot, same contract as
+  // u_fp_mul_shim above.
   fp_div_shim u_fp_div_shim (
       .i_clk         (i_clk),
       .i_rst_n       (i_rst_n),
       .i_rs_issue    (fdiv_rs_issue_w),
       .o_fu_complete (fp_div_shim_out),
       .o_fu_busy     (fp_div_busy),
-      .i_flush       (speculative_flush_all),
-      .i_flush_en    (speculative_flush_en),
-      .i_flush_tag   (i_flush_tag),
-      .i_rob_head_tag(head_tag),
+      .i_flush       (fp_shim_flush_all_q),
+      .i_flush_en    (fp_shim_flush_en_q),
+      .i_flush_tag   (fp_shim_flush_tag_q),
+      .i_rob_head_tag(fp_shim_flush_head_q),
       .i_div_accepted(fp_div_result_accepted)
   );
 
@@ -3153,7 +3211,9 @@ module tomasulo_wrapper #(
       .o_fu_complete   (fp_div_adapter_to_arbiter),
       .i_grant         (o_cdb_grant[6]),
       .o_result_pending(fp_div_adapter_result_pending),
-      .i_flush         (speculative_flush_all),
+      // Full-flush window extended one cycle — same contract as
+      // u_fp_mul_adapter above.
+      .i_flush         (speculative_flush_all || fp_shim_flush_all_q),
       .i_flush_en      (speculative_flush_en),
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)

@@ -21,7 +21,9 @@
  * buckets and their decompositions, per-FU back-pressure, memory disambiguation,
  * occupancy sums, L0$ hit/fill, and widen-commit opportunity/fire/blocker
  * breakdowns. Accumulates each event, snapshots all 64 on demand (4 fanout
- * banks), and muxes the selected counter to the CSR read port.
+ * banks whose capture strobe is registered per bank — the snapshot lands one
+ * cycle after the mperfctl trigger commit, which CSR serialization makes
+ * invisible to software), and muxes the selected counter to the CSR read port.
  *
  * Extracted verbatim from tomasulo_wrapper (no functional change): the body
  * below is the former "Backend Profiling Counters" section together with its
@@ -244,14 +246,30 @@ module tomasulo_perf_counters (
   logic [63:0] perf_inc[WrapperPerfCounterCount];
   logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
+  // Registered per-bank capture copies: the trigger arrives from the commit
+  // cone (mperfctl CSR write commit) and fans into ~1.5k snapshot CE loads;
+  // registering here keeps that cone off the commit critical path (x3
+  // post-place: 900+ net-dominated failing endpoints).  Capture lands one
+  // cycle after the trigger commit — CSR serialization means the first
+  // snapshot read commits later than that, and measurement deltas between
+  // two snapshots cancel the constant skew.
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank3;
-  assign perf_snapshot_capture_bank0 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank1 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank2 = i_perf_snapshot_capture;
-  assign perf_snapshot_capture_bank3 = i_perf_snapshot_capture;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      perf_snapshot_capture_bank0 <= 1'b0;
+      perf_snapshot_capture_bank1 <= 1'b0;
+      perf_snapshot_capture_bank2 <= 1'b0;
+      perf_snapshot_capture_bank3 <= 1'b0;
+    end else begin
+      perf_snapshot_capture_bank0 <= i_perf_snapshot_capture;
+      perf_snapshot_capture_bank1 <= i_perf_snapshot_capture;
+      perf_snapshot_capture_bank2 <= i_perf_snapshot_capture;
+      perf_snapshot_capture_bank3 <= i_perf_snapshot_capture;
+    end
+  end
 
   always_comb begin
     for (int i = 0; i < WrapperPerfCounterCount; i++) begin
