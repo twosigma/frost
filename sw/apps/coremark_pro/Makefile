@@ -557,7 +557,15 @@ SHIM_OBJS := al_frost.o
 # MITH headers/types, NOT the FROST lib headers.
 INTERPOSE_OBJS := frost_mith_main.o
 
+COMPILED_OBJS := $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS)
 ALL_OBJS := $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS)
+# Keep generated dependency fragments ignored by using the repository's *.o
+# build-artifact suffix even though their contents are Make rules, not objects.
+DEPENDENCY_FILES := $(addprefix .frost-deps-,$(COMPILED_OBJS))
+BUILD_CONFIG_FILE := .frost-build-config.bin
+# Capture the real Makefiles before the generated dependency fragments are
+# included below; the fragments must not become cross-object prerequisites.
+BUILD_MAKEFILES := $(MAKEFILE_LIST)
 
 # --- Output files ----------------------------------------------------------
 EXECUTABLE_ELF_FILE := sw.elf
@@ -568,51 +576,81 @@ DDR_HEX_FILE        := sw_ddr.mem
 DDR_TXT_FILE        := sw_ddr.txt
 DISASSEMBLY_FILE    := sw.S
 
+# Workload/tier/tool/flag changes share output and object names. Make cannot
+# infer those command-line changes from timestamps, so keep one content-addressed
+# stamp and make every compiled object depend on it. This prevents shared MITH
+# objects from leaking one workload's defines into the next incremental build.
+EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
+shell_quote = '$(subst ','"'"',$(1))'
+
 # --- Build targets ---------------------------------------------------------
+.DEFAULT_GOAL := all
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
      $(DDR_HEX_FILE) $(DDR_TXT_FILE) $(DISASSEMBLY_FILE)
+
+-include $(DEPENDENCY_FILES)
+
+.PHONY: FORCE
+FORCE:
+
+$(BUILD_CONFIG_FILE): FORCE
+	@tmp="$@.$$$$.tmp"; \
+	printf '%s\n' $(call shell_quote,$(EFFECTIVE_BUILD_CONFIG)) > "$$tmp"; \
+	if cmp -s "$$tmp" '$@'; then \
+	    rm -f "$$tmp"; \
+	else \
+	    mv "$$tmp" '$@'; \
+	fi
+
+$(COMPILED_OBJS): $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILES)
 
 # FROST libc objects: compiled with the lib's own include path in isolation so
 # the MITH sources never see the FROST headers (no header shadowing).
 frostlib_%.o: $(LIB_DIR)/src/%.c
-	$(CC) $(FROST_CFLAGS) -c $< -o $@
+	$(CC) $(FROST_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # FROST shims (need csr.h / uart.h / sprintf.h from sw/lib).
 al_frost.o: al_frost.c
-	$(CC) $(FROST_CFLAGS) -c $< -o $@
+	$(CC) $(FROST_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # Generic rule for every MITH / workload / benchmark / dataset / library
 # source. vpath (above) resolves each <name>.c to its source directory.
 %.o: %.c
-	$(CC) $(MITH_CFLAGS) -c $< -o $@
+	$(CC) $(MITH_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # mith_lib.c: rename the harness entry mith_main() -> mith_main_real() so the
 # FROST interpose (frost_mith_main.c) can wrap it. This explicit rule overrides
 # the generic pattern for just this translation unit; the workload's mith_main()
 # call site is compiled normally and therefore resolves to our wrapper.
 mith_lib.o: $(CMP_DIR)/mith/src/mith_lib.c
-	$(CC) $(MITH_CFLAGS) -Dmith_main=mith_main_real -c $< -o $@
+	$(CC) $(MITH_CFLAGS) -Dmith_main=mith_main_real -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # The workload wrapper ($(WORKLOAD).c): rename its main() -> cmp_workload_main()
 # so the FROST main() in frost_mith_main.c can select a simulation-friendly
 # preset before running it. Explicit rule (overrides the generic pattern) so
 # only the wrapper is renamed.
 $(WORKLOAD).o: $(WORKLOAD_SRC)
-	$(CC) $(MITH_CFLAGS) -Dmain=cmp_workload_main -c $< -o $@
+	$(CC) $(MITH_CFLAGS) -Dmain=cmp_workload_main -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # FROST interpose (local source; needs the MITH headers/types). Provides the
 # FROST main() and the mith_main() PASS/FAIL wrapper. CMP_PGO_TRAINING selects
 # whether main() enables pgo_training_run (the minimal-preset selector).
 frost_mith_main.o: frost_mith_main.c
-	$(CC) $(INTERPOSE_CFLAGS) -c $< -o $@
+	$(CC) $(INTERPOSE_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # Link everything. The libc definitions resolve from the FROST objects; the
 # MITH code saw correct system-header declarations at compile time. The ddr
 # config also links the ROM boot stub ($(DDR_BOOT_STUB), a .boot section that
 # far-jumps to the DDR-resident _start); the bram config leaves it empty
 # (crt0's _start already sits at 0x0).
-$(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(DDR_BOOT_STUB) $(LINKER_SCRIPT)
-	$(CC) $(BASE_FLAGS) $(DDR_BOOT_STUB) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o $@
+$(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(DDR_BOOT_STUB) $(LINKER_SCRIPT) \
+                        $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILES)
+	@set -e; \
+	tmp='$@.tmp'; \
+	trap 'rm -f "$$tmp"' 0 1 2 3 15; \
+	$(CC) $(BASE_FLAGS) $(DDR_BOOT_STUB) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) \
+	      $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o "$$tmp"; \
+	mv "$$tmp" '$@'
 
 # Low BRAM image: everything NOT split out to the DDR image. The bram config
 # excludes only the opt-in .ddr_* sections; the ddr config excludes the whole
@@ -630,19 +668,29 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 # whole program. Always exists (zero word fallback) so the behavioral DDR model
 # / loader can unconditionally consume it.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
-	      --change-addresses -0x80000000 $< $@ 2>/dev/null
-	@if [ ! -s $@ ]; then echo 00000000 > $@; fi
+	@set -e; \
+	tmp="$@.$$$$.tmp"; \
+	trap 'rm -f "$$tmp"' 0 1 2 3 15; \
+	$(OBJCOPY) -O verilog --verilog-data-width 4 $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) \
+	      --change-addresses -0x80000000 '$<' "$$tmp"; \
+	if [ ! -s "$$tmp" ]; then printf '00000000\n' > "$$tmp"; fi; \
+	mv "$$tmp" '$@'
 
 # DDR image for the JTAG loader (dense words from the region base; empty when
 # nothing lives in the cached region -- the loader skips empty files).
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
-	-$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) $< sw_ddr.bin 2>/dev/null
-	@if [ -s sw_ddr.bin ]; then \
-	    xxd -e -g4 -c4 sw_ddr.bin | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@; \
+	@set -e; \
+	bin_tmp="sw_ddr.bin.$$$$.tmp"; \
+	txt_tmp="$@.$$$$.tmp"; \
+	trap 'rm -f "$$bin_tmp" "$$txt_tmp"' 0 1 2 3 15; \
+	$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SPLIT_SECTIONS)) '$<' "$$bin_tmp"; \
+	if [ -s "$$bin_tmp" ]; then \
+	    xxd -e -g4 -c4 "$$bin_tmp" | awk '{printf "%08x\n", strtonum("0x" $$2)}' > "$$txt_tmp"; \
 	else \
-	    : > $@; \
-	fi
+	    : > "$$txt_tmp"; \
+	fi; \
+	mv "$$bin_tmp" sw_ddr.bin; \
+	mv "$$txt_tmp" '$@'
 
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
@@ -655,6 +703,7 @@ size: $(EXECUTABLE_ELF_FILE)
 
 clean:
 	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
-	      $(DDR_HEX_FILE) $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE)
+	      $(DDR_HEX_FILE) $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) \
+	      .frost-deps-*.o $(BUILD_CONFIG_FILE)
 
 .PHONY: all size clean

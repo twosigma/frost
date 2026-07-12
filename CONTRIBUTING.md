@@ -2,7 +2,9 @@
 
 Thank you for your interest in contributing to FROST. We welcome contributions of all sizes, from documentation fixes to new features.
 
-**Quick start:** Fork the repo, make your changes, run the tests, and open a PR. Pre-commit hooks enforce formatting automatically.
+**Quick start:** Fork the repo, build the pinned `frost` development image, make
+your changes, run the affected workflows through `./scripts/frost.py`, and open
+a PR. Run `./scripts/frost.py lint` before submitting.
 
 This document provides guidelines for contributors. The detailed style sections are primarily for reference.
 
@@ -56,13 +58,14 @@ See `hw/rtl/README.md` for the authoritative memory map and per-register MMIO la
 
 ### Prerequisites
 
-Before contributing, ensure you have the required tools installed. See the [main README](README.md#prerequisites) for validated versions.
+Local simulation, formal, synthesis, and lint workflows require Docker. The
+repository image contains the same pinned Verilator, Cocotb, Yosys,
+SymbiYosys, RISC-V GCC, and lint tools used by CI; host-native copies are not
+valid regression evidence. Vivado and physical-board workflows are the
+exception and run natively because Vivado is not distributed in the image.
 
-Required tools:
-- **RISC-V GCC** (`riscv-none-elf-gcc`) - for compiling bare-metal software
-- **Cocotb** - Python-based verification framework
-- **Simulator**: Verilator
-- **Yosys** - for synthesis verification
+See the [main README](README.md#prerequisites) for the validated Docker and
+Vivado setup.
 
 ### Setting Up Your Development Environment
 
@@ -77,15 +80,49 @@ Required tools:
    git submodule update --init --recursive
    ```
 
-3. Verify your setup by running the test suite:
+3. Build the pinned development image:
+
    ```bash
-   pytest tests/test_run_cocotb.py -s
+   docker build -t frost .
    ```
 
-4. Build sample software to verify toolchain:
+4. Verify the simulator and cross-toolchain with a small real-program test:
+
    ```bash
-   cd sw/apps/hello_world && make
+   ./scripts/frost.py cocotb hello_world
    ```
+
+5. Run the repository checks:
+
+   ```bash
+   ./scripts/frost.py lint
+   ./scripts/frost.py run pytest tests \
+     -m "not cocotb and not synthesis and not formal and not slow" -v
+   ```
+
+### Pinned Development Workflows
+
+`./scripts/frost.py` is the canonical local entry point for reproducible
+development commands. It starts the `frost` image as the invoking user's UID
+and GID and puts the container home under `/tmp`, so generated files remain
+writable by native tools. The `cocotb` and `pytest` shortcuts always run
+`make clean` in `tests/` before launching; the `pytest` shortcut is scoped to
+`tests/test_run_cocotb.py` for marker-based Cocotb shards.
+Hook environments are cached under `/tmp/frost-container-cache-<uid>`, so only
+the first lint run needs to install the pinned pre-commit environments.
+
+```bash
+./scripts/frost.py cocotb hello_world
+./scripts/frost.py pytest -m "cocotb and cocotb_unit" -v
+./scripts/frost.py formal --target trap_unit
+./scripts/frost.py synthesis --target generic
+./scripts/frost.py lint
+```
+
+Use `./scripts/frost.py run <command> ...` for other commands that need the
+pinned toolchain. `COCOTB_*`, `FROST_*`, proxy variables, and documented
+simulator controls such as `WAVES` and `DDR_MODEL_LATENCY` are forwarded to the
+container. Run `./scripts/frost.py --help` for the complete interface.
 
 ## Development Workflow
 
@@ -96,9 +133,12 @@ Required tools:
    git checkout -b feature/your-feature-name
    ```
 
-2. Run the existing test suite to ensure everything passes:
+2. Run the fast tests and the affected pinned workflow to establish a baseline:
+
    ```bash
-   pytest tests/ -s
+   ./scripts/frost.py run pytest tests \
+     -m "not cocotb and not synthesis and not formal and not slow" -v
+   ./scripts/frost.py cocotb hello_world
    ```
 
 ### Submitting Changes
@@ -443,43 +483,61 @@ The project uses pytest markers to categorize tests:
 | `@pytest.mark.cocotb_unit` | Cocotb unit-bench tests (CI shard of the cocotb job) | RTL changes |
 | `@pytest.mark.coremark_pro` | CoreMark-PRO real-program tests (CI shard of the cocotb job) | RTL changes |
 | `@pytest.mark.synthesis` | Yosys synthesis tests | RTL changes |
+| `@pytest.mark.formal` | SymbiYosys formal tests | RTL or property changes |
+| `@pytest.mark.slow` | Long-running tests | When their covered path changes |
 | (default) | Pure Python tests | Python changes |
 
 ### RTL Changes
 
 Run the full CPU test suite:
+
 ```bash
 # Full cocotb test suite
-pytest tests/test_run_cocotb.py -s
+./scripts/frost.py pytest -v
 
 # Directed trap/exception tests
-./tests/test_run_cocotb.py directed_traps
+./scripts/frost.py cocotb directed_traps
 
 # ISA compliance tests
-pytest "tests/test_run_cocotb.py::TestRealPrograms::test_real_program[isa_test]" -s
+./scripts/frost.py cocotb isa_test
 
 # Synthesis verification
-pytest tests/test_run_yosys.py -s
+./scripts/frost.py synthesis
 ```
 
 ### Software Changes
 
 Build and run Hello World:
+
 ```bash
-cd sw/apps/hello_world && make
-pytest "tests/test_run_cocotb.py::TestRealPrograms::test_real_program[hello_world]" -s
+./scripts/frost.py cocotb hello_world
 ```
 
 Build all applications to verify no breakage:
+
 ```bash
-cd sw/apps && ./build_all_apps.py
+./scripts/frost.py run python3 sw/apps/build_all_apps.py
 ```
 
 ### Python/Verification Changes
 
-Run the integration tests:
+Run the fast Python tests and lint checks. If the change affects Cocotb-facing
+verification code, run the relevant Cocotb target or marker shard too:
+
 ```bash
-pytest tests/test_run_cocotb.py -s
+./scripts/frost.py run pytest tests \
+  -m "not cocotb and not synthesis and not formal and not slow" -v
+./scripts/frost.py lint
+./scripts/frost.py pytest -m "cocotb and cocotb_unit" -v
+```
+
+### Formal Changes
+
+Run the affected target, then the full formal registry when appropriate:
+
+```bash
+./scripts/frost.py formal --target trap_unit
+./scripts/frost.py formal
 ```
 
 ## Adding New Components
@@ -526,9 +584,12 @@ pytest tests/test_run_cocotb.py -s
    include ../../common/common.mk
    ```
 
-3. Add to `build_all_apps.py` if it should be built in CI
+3. Ordinary app directories with a `Makefile` are discovered automatically by
+   `sw/apps/build_all_apps.py`; no build-list edit is needed. Parameterized or
+   unusually long builds may need an explicit skip policy there.
 
-4. Add test case in `tests/test_run_cocotb.py` if needed
+4. Add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
+   `tests/test_run_cocotb.py` if the application should run in simulation.
 
 ### Adding a New Verification Test
 
@@ -540,14 +601,20 @@ pytest tests/test_run_cocotb.py -s
        # Test implementation
    ```
 
-2. For pytest integration, add to `tests/test_run_cocotb.py`:
+2. For pytest integration, register the testbench in
+   `TEST_REGISTRY` in `tests/test_run_cocotb.py`:
+
    ```python
-   def test_new_feature(self):
-       """Test description."""
-       # Call Cocotb test
+   "new_feature": CocotbRunConfig(
+       python_test_module="cocotb_tests.path.test_new_feature",
+       hdl_toplevel_module="new_feature",
+       description="New feature unit tests",
+   ),
    ```
 
-3. Use appropriate fixtures from `tests/conftest.py`
+3. Confirm the target appears in
+   `./scripts/frost.py cocotb --list-tests`, then run it with
+   `./scripts/frost.py cocotb new_feature`.
 
 ### Adding a New Peripheral
 

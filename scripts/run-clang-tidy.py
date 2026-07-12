@@ -16,14 +16,36 @@
 
 """Run clang-tidy on C files with RISC-V target and correct include paths.
 
-This script extracts compiler flags from common.mk to ensure clang-tidy
-uses the same settings as the actual RISC-V compilation.
+This script asks each source file's Makefile for its compiler flags so
+clang-tidy uses the same ABI, defines, and include paths as the real build.
+
+Compiler diagnostics are enforced as errors.  The broader bugprone, misc,
+performance, and readability checks in .clang-tidy remain advisory while the
+repository's existing findings are paid down; promoting those checks requires
+an explicit clean baseline rather than silently breaking every C change. Their
+per-file counts are always reported; set FROST_CLANG_TIDY_SHOW_ADVISORIES=1 to
+show the complete advisory diagnostics.
 """
 
+import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+
+_MAKE_VALUE_PREFIX = "__FROST_CLANG_TIDY_MAKE_VALUE__"
+_CLANG_UNSUPPORTED_FLAGS = {"-fno-tree-loop-distribute-patterns"}
+_ADVISORY_DIAGNOSTIC = re.compile(r"^.+:\d+:\d+: warning:", re.MULTILINE)
+_SHOW_ADVISORIES_ENV = "FROST_CLANG_TIDY_SHOW_ADVISORIES"
+_COREMARK_PRO_CONTEXTS = {
+    "al_frost.c": ("FROST_CFLAGS", "core"),
+    "frost_cjpeg_tiny.c": ("MITH_CFLAGS", "cjpeg-rose7-preset"),
+    "frost_linpack_tiny_f32.c": ("MITH_CFLAGS", "linear_alg-mid-100x100-sp"),
+    "frost_mith_main.c": ("INTERPOSE_CFLAGS", "core"),
+    "frost_zip_darkmark_sim.c": ("MITH_CFLAGS", "zip-test"),
+}
 
 
 def get_root_dir() -> Path:
@@ -31,46 +53,225 @@ def get_root_dir() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+def _evaluate_make_variables(
+    working_directory: Path,
+    makefile: str,
+    variable_names: tuple[str, ...],
+    make_arguments: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Evaluate Make variables without running the Makefile's build targets."""
+    info_lines = "\n".join(
+        f"$(info {_MAKE_VALUE_PREFIX}{name}=$(strip $({name})))"
+        for name in variable_names
+    )
+    make_probe = f"""\
+include {makefile}
+.DEFAULT_GOAL := __frost_clang_tidy_config
+{info_lines}
+.PHONY: __frost_clang_tidy_config
+__frost_clang_tidy_config:
+\t@:
+"""
+
+    command = [
+        "make",
+        "--no-print-directory",
+        "--silent",
+        "-f",
+        "-",
+        *make_arguments,
+        "__frost_clang_tidy_config",
+    ]
+    makefile_path = working_directory / makefile
+    try:
+        result = subprocess.run(
+            command,
+            cwd=working_directory,
+            input=make_probe,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"Failed to run Make for {makefile_path}: {error}"
+        ) from error
+
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()
+        suffix = f":\n{details}" if details else ""
+        raise RuntimeError(
+            f"Make could not evaluate clang-tidy flags from {makefile_path}{suffix}"
+        )
+
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        for name in variable_names:
+            prefix = f"{_MAKE_VALUE_PREFIX}{name}="
+            if line.startswith(prefix):
+                values[name] = line.removeprefix(prefix).strip()
+
+    missing = [name for name in variable_names if not values.get(name)]
+    if missing:
+        raise RuntimeError(
+            f"Make did not provide {', '.join(missing)} from {makefile_path}"
+        )
+
+    return values
+
+
 def extract_flags_from_common_mk(root_dir: Path) -> tuple[str, str]:
-    """Extract RISCV_FLAGS and FPGA_CPU_CLK_FREQ from common.mk.
+    """Evaluate RISCV_FLAGS and FPGA_CPU_CLK_FREQ from common.mk.
+
+    GNU Make is the source of truth for these values.  Asking Make to expand
+    them preserves the semantics of ``?=`` assignments, recursive variables
+    such as ``$(MABI)``, and environment overrides.  A text parser cannot do
+    that reliably and previously produced invalid flags such as ``-mabi=``.
 
     Returns:
         Tuple of (riscv_flags, fpga_clk_freq)
+
+    Raises:
+        FileNotFoundError: If common.mk does not exist.
+        RuntimeError: If Make cannot evaluate the configuration.
     """
     common_mk = root_dir / "sw" / "common" / "common.mk"
 
     if not common_mk.exists():
-        return "", ""
+        raise FileNotFoundError(f"Cannot find {common_mk}")
 
-    content = common_mk.read_text()
-
-    # Extract RISCV_FLAGS (may span multiple lines with backslash continuation)
-    riscv_flags = ""
-    riscv_match = re.search(
-        r"RISCV_FLAGS\s*=\s*(.+?)(?=\n[A-Z]|\n\n|\Z)",
-        content,
-        re.DOTALL,
+    values = _evaluate_make_variables(
+        root_dir,
+        "sw/common/common.mk",
+        ("RISCV_FLAGS", "FPGA_CPU_CLK_FREQ"),
     )
-    if riscv_match:
-        riscv_flags = riscv_match.group(1)
-        # Remove backslash continuations and normalize whitespace
-        riscv_flags = re.sub(r"\\\n\s*", " ", riscv_flags)
-        # Remove variable references like $(OPT_LEVEL)
-        riscv_flags = re.sub(r"\$\([^)]+\)", "", riscv_flags)
-        riscv_flags = " ".join(riscv_flags.split())
+    return values["RISCV_FLAGS"], values["FPGA_CPU_CLK_FREQ"]
 
-    # Extract FPGA_CPU_CLK_FREQ
-    fpga_clk_freq = ""
-    freq_match = re.search(r"FPGA_CPU_CLK_FREQ\s*=\s*(\d+)", content)
-    if freq_match:
-        fpga_clk_freq = freq_match.group(1)
 
-    return riscv_flags, fpga_clk_freq
+def _resolve_include_paths(flags: str, working_directory: Path) -> str:
+    """Make relative compiler include paths absolute for a repository-root run."""
+    tokens = shlex.split(flags)
+    resolved: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _CLANG_UNSUPPORTED_FLAGS:
+            index += 1
+            continue
+        if token == "-I" and index + 1 < len(tokens):
+            include_path = Path(tokens[index + 1])
+            if not include_path.is_absolute():
+                include_path = (working_directory / include_path).resolve()
+            resolved.extend(("-I", str(include_path)))
+            index += 2
+            continue
+        if token.startswith("-I") and len(token) > 2:
+            include_path = Path(token[2:])
+            if not include_path.is_absolute():
+                include_path = (working_directory / include_path).resolve()
+            resolved.append(f"-I{include_path}")
+        else:
+            resolved.append(token)
+        index += 1
+    return shlex.join(resolved)
+
+
+def extract_flags_for_file(
+    file_path: str,
+    root_dir: Path,
+    default_flags: str,
+    default_clock: str,
+) -> tuple[str, str]:
+    """Evaluate the compile flags that the file's owning app actually uses."""
+    path = Path(file_path)
+    if path.is_absolute():
+        try:
+            relative_path = path.resolve().relative_to(root_dir.resolve())
+        except ValueError:
+            relative_path = path
+    else:
+        relative_path = path
+
+    if len(relative_path.parts) < 3 or relative_path.parts[:2] != ("sw", "apps"):
+        lib_include = root_dir / "sw" / "lib" / "include"
+        return f"{default_flags} -I{lib_include}", default_clock
+
+    app_name = relative_path.parts[2]
+    app_dir = root_dir / "sw" / "apps" / app_name
+    filename = relative_path.name
+
+    if app_name == "coremark_pro":
+        try:
+            flag_variable, workload = _COREMARK_PRO_CONTEXTS[filename]
+        except KeyError as error:
+            raise RuntimeError(
+                f"No CoreMark-PRO clang-tidy build context for {file_path}"
+            ) from error
+        values = _evaluate_make_variables(
+            app_dir,
+            "Makefile",
+            (flag_variable, "FPGA_CPU_CLK_FREQ"),
+            (f"WORKLOAD={workload}",),
+        )
+        flags = values[flag_variable]
+        clock = values["FPGA_CPU_CLK_FREQ"]
+    elif app_name == "riscv_tests":
+        values = _evaluate_make_variables(
+            app_dir,
+            "Makefile.bench",
+            ("CFLAGS", "INCLUDES"),
+        )
+        flags = f"{values['CFLAGS']} {values['INCLUDES']}"
+        clock = default_clock
+    elif app_name == "arch_test":
+        values = _evaluate_make_variables(
+            app_dir,
+            "Makefile",
+            ("ARCH", "ABI", "INCLUDES"),
+        )
+        flags = (
+            f"-march={values['ARCH']} -mabi={values['ABI']} -DXLEN=32 -DFLEN=64 "
+            f"{values['INCLUDES']}"
+        )
+        clock = default_clock
+    else:
+        values = _evaluate_make_variables(
+            app_dir,
+            "Makefile",
+            ("CFLAGS", "FPGA_CPU_CLK_FREQ"),
+        )
+        flags = values["CFLAGS"]
+        clock = values["FPGA_CPU_CLK_FREQ"]
+
+    return _resolve_include_paths(flags, app_dir), clock
+
+
+def get_riscv_sysroot(root_dir: Path) -> str:
+    """Return the C library sysroot used by the RISC-V GCC toolchain."""
+    try:
+        result = subprocess.run(
+            ["riscv-none-elf-gcc", "-print-sysroot"],
+            cwd=root_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"Failed to query the RISC-V GCC sysroot: {error}"
+        ) from error
+
+    sysroot = result.stdout.strip()
+    if result.returncode != 0 or not sysroot:
+        details = (result.stderr or result.stdout).strip()
+        suffix = f": {details}" if details else ""
+        raise RuntimeError(f"Could not determine the RISC-V GCC sysroot{suffix}")
+    return str(Path(sysroot).resolve())
 
 
 def run_clang_tidy(
     file_path: str,
-    root_dir: Path,
+    _root_dir: Path,
     riscv_flags: str,
     fpga_clk_freq: str,
 ) -> bool:
@@ -79,32 +280,57 @@ def run_clang_tidy(
     Returns:
         True if clang-tidy passed, False otherwise
     """
-    # Build clang-tidy flags
-    clang_tidy_flags = [
-        "--target=riscv32-unknown-elf",
-        f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}",
-        f"-I{root_dir}/sw/lib/include",
-    ]
-
-    # Add RISCV_FLAGS
-    if riscv_flags:
-        clang_tidy_flags.extend(riscv_flags.split())
-
-    # For app files, add the app's directory to include path
-    if file_path.startswith("sw/apps/"):
-        app_dir = Path(file_path).parent
-        clang_tidy_flags.append(f"-I{root_dir}/{app_dir}")
+    # Build clang-tidy flags. App Makefiles normally define the clock already;
+    # add it only for fallback/common.mk contexts to avoid macro redefinitions.
+    resolved_flags = shlex.split(riscv_flags) if riscv_flags else []
+    clang_tidy_flags = ["--target=riscv32-unknown-elf"]
+    if not any(flag.startswith("-DFPGA_CPU_CLK_FREQ=") for flag in resolved_flags):
+        clang_tidy_flags.append(f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}")
+    clang_tidy_flags.extend(resolved_flags)
 
     # Run clang-tidy
-    cmd = ["clang-tidy", "--quiet", file_path, "--"] + clang_tidy_flags
+    cmd = [
+        "clang-tidy",
+        "--quiet",
+        "--warnings-as-errors=clang-diagnostic-*",
+        file_path,
+        "--",
+    ] + clang_tidy_flags
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        print(f"clang-tidy could not run for {file_path}: {error}", file=sys.stderr)
+        return False
+
+    if result.returncode == 0:
+        combined_output = "\n".join(
+            output.rstrip() for output in (result.stdout, result.stderr) if output
+        )
+        advisory_count = len(_ADVISORY_DIAGNOSTIC.findall(combined_output))
+        if advisory_count:
+            print(
+                f"clang-tidy advisory: {file_path} has {advisory_count} "
+                f"non-blocking finding(s); set {_SHOW_ADVISORIES_ENV}=1 for details",
+                file=sys.stderr,
+            )
+            if os.environ.get(_SHOW_ADVISORIES_ENV) == "1":
+                print(combined_output, file=sys.stderr)
         return True
-    except subprocess.CalledProcessError:
-        # clang-tidy found issues, but we don't fail the hook
-        # (matching the original || true behavior)
-        return True
+
+    print(
+        f"clang-tidy failed for {file_path} (exit {result.returncode}):",
+        file=sys.stderr,
+    )
+    for output in (result.stdout, result.stderr):
+        if output:
+            print(output.rstrip(), file=sys.stderr)
+    return False
 
 
 def main() -> int:
@@ -113,19 +339,32 @@ def main() -> int:
         return 0
 
     root_dir = get_root_dir()
-    common_mk = root_dir / "sw" / "common" / "common.mk"
-
-    if not common_mk.exists():
-        print(f"WARNING: Cannot find {common_mk}, skipping clang-tidy.")
-        return 0
-
-    riscv_flags, fpga_clk_freq = extract_flags_from_common_mk(root_dir)
+    try:
+        default_flags, default_clock = extract_flags_from_common_mk(root_dir)
+        sysroot = get_riscv_sysroot(root_dir)
+    except (OSError, RuntimeError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
 
     # Process each file passed as argument
+    passed = True
     for file_path in sys.argv[1:]:
-        run_clang_tidy(file_path, root_dir, riscv_flags, fpga_clk_freq)
+        try:
+            riscv_flags, fpga_clk_freq = extract_flags_for_file(
+                file_path,
+                root_dir,
+                default_flags,
+                default_clock,
+            )
+        except (OSError, RuntimeError) as error:
+            print(f"ERROR configuring {file_path}: {error}", file=sys.stderr)
+            passed = False
+            continue
+        riscv_flags = f"{riscv_flags} --sysroot={shlex.quote(sysroot)}"
+        if not run_clang_tidy(file_path, root_dir, riscv_flags, fpga_clk_freq):
+            passed = False
 
-    return 0
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

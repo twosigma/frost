@@ -238,6 +238,18 @@ static void test_strncpy(void)
     strncpy(dst, "Test", 4);
     check("exact fit", dst[0] == 'T' && dst[3] == 't' && dst[4] == 'X');
 
+    /* The source is not required to contain a null within the copied range. */
+    const char bounded_src[4] = {'A', 'B', 'C', 'D'};
+    memset(dst, 'X', sizeof(dst));
+    strncpy(dst, bounded_src, sizeof(bounded_src));
+    check("non-null bounded src",
+          dst[0] == 'A' && dst[1] == 'B' && dst[2] == 'C' && dst[3] == 'D' && dst[4] == 'X');
+
+    /* A zero-length copy performs no source or destination accesses. */
+    dst[0] = 'Z';
+    strncpy(dst, bounded_src, 0);
+    check("zero length no-op", dst[0] == 'Z');
+
     /* Empty source */
     memset(dst, 'X', sizeof(dst));
     strncpy(dst, "", 4);

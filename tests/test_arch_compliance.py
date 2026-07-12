@@ -23,7 +23,6 @@ Can be run standalone:
     ./test_arch_compliance.py --extensions I M
     ./test_arch_compliance.py --all
     ./test_arch_compliance.py --test rv32i_m/I/src/add-01.S
-    ./test_arch_compliance.py --extensions I --parallel 4
 
 Or via pytest:
     pytest test_arch_compliance.py -v -m slow
@@ -33,7 +32,6 @@ import argparse
 import os
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -117,11 +115,17 @@ ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600")
 #            tier on every load/store); the historical default.
 MEM_CONFIGS = ("bram", "icache", "ddr")
 DEFAULT_MEM_CONFIG = "ddr"
+PARALLEL_UNSAFE_MESSAGE = (
+    "parallel execution is disabled: workers share application outputs, memory-image "
+    "symlinks, and simulator build/results paths; use --parallel 1"
+)
 
 
 @dataclass
 class TestResult:
     """Result of a single architecture test."""
+
+    __test__ = False
 
     test_name: str
     extension: str
@@ -387,7 +391,7 @@ def run_single_test(
         return TestResult(
             test_name,
             extension,
-            "SKIP",
+            "FAIL",
             f"Simulation timed out after {ARCH_SIM_TIMEOUT_SEC}s",
         )
 
@@ -397,7 +401,12 @@ def run_single_test(
     # contains the literal '<<PASS>>' string (the marker it was searching for),
     # which would cause a false positive if we checked output text first.
     if result.returncode != 0:
-        return TestResult(test_name, extension, "SKIP", "Simulation error")
+        return TestResult(
+            test_name,
+            extension,
+            "FAIL",
+            f"Simulation error (exit code {result.returncode})",
+        )
 
     if "<<PASS>>" not in combined_output:
         return TestResult(test_name, extension, "FAIL", "No <<PASS>> marker in output")
@@ -418,19 +427,6 @@ def run_single_test(
         )
 
 
-def _run_test_worker(args: tuple[str, str, str, str]) -> TestResult:
-    """Worker function for parallel test execution."""
-    test_src_str, extension, arch_test_app_dir_str, mem_config = args
-    # Restore module-level paths in worker process
-    global ARCH_TEST_APP_DIR, ARCH_TEST_DIR, SUITE_DIR, REFERENCES_DIR
-    ARCH_TEST_APP_DIR = Path(arch_test_app_dir_str)
-    ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
-    SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
-    REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
-
-    return run_single_test(Path(test_src_str), extension, mem_config)
-
-
 def run_extension_tests(
     extension: str,
     parallel: int = 1,
@@ -438,6 +434,9 @@ def run_extension_tests(
     mem_config: str = DEFAULT_MEM_CONFIG,
 ) -> list[TestResult]:
     """Run all tests for a given extension."""
+    if parallel != 1:
+        raise ValueError(PARALLEL_UNSAFE_MESSAGE)
+
     tests = discover_tests(extension, include_all=include_all)
     if not tests:
         print(f"  No tests found for extension {extension}")
@@ -447,30 +446,10 @@ def run_extension_tests(
 
     results = []
 
-    if parallel > 1:
-        # Parallel execution
-        work_items = [
-            (str(t), extension, str(ARCH_TEST_APP_DIR), mem_config) for t in tests
-        ]
-        with ProcessPoolExecutor(max_workers=parallel) as executor:
-            futures = {
-                executor.submit(_run_test_worker, item): item[0] for item in work_items
-            }
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    failed_src = futures[future]
-                    test_name = Path(failed_src).stem
-                    result = TestResult(test_name, extension, "SKIP", str(e))
-                results.append(result)
-                _print_result(result)
-    else:
-        # Sequential execution
-        for test_src in tests:
-            result = run_single_test(test_src, extension, mem_config)
-            results.append(result)
-            _print_result(result)
+    for test_src in tests:
+        result = run_single_test(test_src, extension, mem_config)
+        results.append(result)
+        _print_result(result)
 
     return results
 
@@ -539,7 +518,6 @@ Examples:
   %(prog)s --extensions I M
   %(prog)s --all
   %(prog)s --test rv32i_m/I/src/add-01.S
-  %(prog)s --extensions I --parallel 4
 
 Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
 """,
@@ -566,7 +544,7 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         type=int,
         default=1,
         metavar="N",
-        help="Number of parallel test workers (default: 1, sequential)",
+        help="Number of workers; currently only 1 is safe and supported",
     )
     parser.add_argument(
         "--no-sim-filter",
@@ -586,6 +564,8 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     )
 
     args = parser.parse_args()
+    if args.parallel != 1:
+        parser.error(PARALLEL_UNSAFE_MESSAGE)
 
     # Single test mode
     if args.test:

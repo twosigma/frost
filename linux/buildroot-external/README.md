@@ -76,9 +76,9 @@ Out-of-tree build (keeps the Buildroot submodule pristine):
 
 ```bash
 # from the repo root
-make -C linux/buildroot O="$(pwd)/linux/build" \
-     BR2_EXTERNAL="$(pwd)/linux/buildroot-external" frost_nommu_rv32_defconfig
-make -C linux/buildroot O="$(pwd)/linux/build"
+./scripts/frost.py run make -C linux/buildroot O=/workspace/linux/build \
+  BR2_EXTERNAL=/workspace/linux/buildroot-external frost_nommu_rv32_defconfig
+./scripts/frost.py run make -C linux/buildroot O=/workspace/linux/build
 ```
 
 First build is ~30–60 min (it builds the cross toolchain from source). Outputs
@@ -101,8 +101,8 @@ land in `linux/build/images/`:
 mkdir -p sw/apps/linux_boot
 cp linux/build/images/sw.mem     sw/apps/linux_boot/sw.mem
 cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
-# then, per the repo CLAUDE.md test flow:
-cd tests && make clean && ./test_run_cocotb.py linux_boot
+# The wrapper runs in the pinned image and cleans tests/ before launching.
+./scripts/frost.py cocotb linux_boot
 ```
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
@@ -112,13 +112,13 @@ linux_boot` and the
 CI `build-frost-linux` job drive:
 
 ```bash
-make -C sw/apps/linux_boot            # genesys2 clock (133.33 MHz) by default
-make -C sw/apps/linux_boot FPGA_CPU_CLK_FREQ=300000000   # x3 clock
+./scripts/frost.py run make -C sw/apps/linux_boot  # genesys2 (133.33 MHz) default
+FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
-The `linux_boot` cocotb registry entry (`linux_boot` / `linux_boot_128k`) and
-its `build-frost-linux` + `linux-boot-cocotb` + `linux-boot-qemu` CI jobs live
-on this branch (`nommu_linux`); they reach `main` when the branch merges.
+The `linux_boot` cocotb registry entries (`linux_boot` / `linux_boot_128k`) are
+covered by the `build-frost-linux`, `linux-boot-cocotb`, and `linux-boot-qemu`
+CI jobs in the main workflow.
 
 ## How the kernel config is assembled
 

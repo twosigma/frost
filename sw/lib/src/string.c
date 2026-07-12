@@ -159,19 +159,19 @@ size_t strlen(const char *s)
     return p - s; /* Pointer difference gives length */
 }
 
-/* Copy string with length limit, padding with nulls if needed */
+/* Copy at most n bytes from src, padding with nulls after an in-range
+ * terminator. The source only needs to be readable through the first n bytes;
+ * in particular, do not use an unbounded strlen() to choose the copy length. */
 char *strncpy(char *dst, const char *src, size_t n)
 {
-    size_t srclen = strlen(src);
+    size_t i = 0;
 
-    if (srclen < n) {
-        /* Source is shorter: copy all of source, then pad with null bytes */
-        memcpy(dst, src, srclen + 1);
-        memset(dst + srclen + 1, '\0', n - srclen - 1);
-    } else {
-        /* Source is longer or equal: copy only n bytes (no null terminator) */
-        memcpy(dst, src, n);
+    while (i < n && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
     }
+    while (i < n)
+        dst[i++] = '\0';
 
     frost_memory_write_fence();
     return dst;

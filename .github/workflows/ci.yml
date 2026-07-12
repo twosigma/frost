@@ -20,6 +20,17 @@ on:
   pull_request:
     branches: [main]
 
+# The workflow only checks out source and publishes artifacts within its own
+# run. Keep the automatically issued token read-only.
+permissions:
+  contents: read
+
+# This workflow expands into dozens of long simulation jobs. A newer push to
+# the same PR/ref makes the older run obsolete, so release those runners early.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Tool versions - single source of truth (also in Dockerfile)
   VERILATOR_VERSION: "5.050"
@@ -350,6 +361,41 @@ jobs:
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pre-commit run --all-files
+
+  # Run ordinary Python/tooling tests without selecting any simulator,
+  # synthesis, or formal jobs. Run as the GitHub runner's UID/GID, matching
+  # scripts/frost.py, so this lane also guards non-root container support.
+  test-python:
+    name: Fast Python Tests
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run fast Python tests as the host user
+        run: |
+          # Keep the normal image entrypoint: this lane must catch regressions
+          # that make the entrypoint or its parent directories inaccessible to
+          # a non-root user.
+          docker run --rm --init --pull=never \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env FROST_SKIP_SUBMODULE_INIT=1 \
+            --volume "${{ github.workspace }}:/workspace" \
+            --workdir /workspace \
+            frost-dev:latest \
+            pytest tests \
+              -m "not cocotb and not synthesis and not formal and not slow" -v
 
   # ---------------------------------------------------------------------------
   # FROST no-MMU M-mode Linux: build the image from source, then boot it two

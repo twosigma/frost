@@ -16,7 +16,9 @@
 
 """Docker entrypoint script for FROST development container.
 
-Initializes git submodules if needed before running the command.
+Initializes every configured git submodule if needed before running the command.
+Tooling-only jobs may set ``FROST_SKIP_SUBMODULE_INIT=1`` to avoid fetching
+submodules they do not consume.
 """
 
 import os
@@ -25,21 +27,23 @@ import sys
 from pathlib import Path
 
 WORKSPACE = Path("/workspace")
+SKIP_SUBMODULE_INIT_ENV = "FROST_SKIP_SUBMODULE_INIT"
 
 
 def submodules_need_init() -> bool:
-    """Check if git submodules need to be initialized."""
+    """Return whether any configured (including nested) submodule is uninitialized."""
     gitmodules = WORKSPACE / ".gitmodules"
     if not gitmodules.exists():
         return False
 
-    # Check if submodules are populated
-    freertos_marker = WORKSPACE / "sw" / "FreeRTOS-Kernel" / "include" / "FreeRTOS.h"
-    coremark_marker = (
-        WORKSPACE / "sw" / "apps" / "coremark" / "coremark" / "core_main.c"
+    result = subprocess.run(
+        ["git", "-C", str(WORKSPACE), "submodule", "status", "--recursive"],
+        check=True,
+        capture_output=True,
+        text=True,
     )
-
-    return not freertos_marker.exists() or not coremark_marker.exists()
+    # `git submodule status` prefixes an uninitialized worktree with `-`.
+    return any(line.startswith("-") for line in result.stdout.splitlines())
 
 
 def init_submodules() -> None:
@@ -54,7 +58,7 @@ def init_submodules() -> None:
 def main() -> int:
     """Run entrypoint logic."""
     # Initialize git submodules if needed
-    if submodules_need_init():
+    if os.environ.get(SKIP_SUBMODULE_INIT_ENV) != "1" and submodules_need_init():
         init_submodules()
 
     # Execute the command passed to docker run

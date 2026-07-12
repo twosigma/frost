@@ -254,10 +254,12 @@ Structured logging output example:
 
 ### Running Tests
 
-All commands below run from the `tests/` directory. The registry-driven real
-program / unit tests are launched with `./test_run_cocotb.py <name>`; use
-`./test_run_cocotb.py --list-tests` for the canonical target list (the single
-source of truth is `TEST_REGISTRY` in `tests/test_run_cocotb.py`).
+Run all commands below from the repository root through `./scripts/frost.py`.
+The wrapper uses the pinned CI image as the invoking user's UID/GID and always
+cleans `tests/` before a cocotb run. Registry-driven real-program and unit tests
+use `./scripts/frost.py cocotb <name>`; pass `--list-tests` for the canonical
+target list (the single source of truth is `TEST_REGISTRY` in
+`tests/test_run_cocotb.py`).
 
 The random-regression and directed CPU tests all run on the `cpu_tb`
 testbench and are `test_run_cocotb.py` registry targets: `directed_traps`
@@ -273,22 +275,22 @@ the riscv-tests / arch-compliance / real-program suites). Note that a bare
 Run a cpu_tb suite via the registry:
 ```bash
 # Trap handling (ECALL, EBREAK, MRET) -- ported, runs in CI
-./test_run_cocotb.py directed_traps
+./scripts/frost.py cocotb directed_traps
 # LR.W/SC.W atomic instructions -- NEEDS PORTING, expected to fail
-./test_run_cocotb.py directed_atomics
+./scripts/frost.py cocotb directed_atomics
 ```
 
 Run a single test function with `--testcase` (sets cocotb's
 `COCOTB_TEST_FILTER` to an exact match):
 ```bash
-./test_run_cocotb.py directed_traps --testcase test_directed_trap_handling
-./test_run_cocotb.py directed_atomics --testcase test_directed_lr_sc
+./scripts/frost.py cocotb directed_traps --testcase test_directed_trap_handling
+./scripts/frost.py cocotb directed_atomics --testcase test_directed_lr_sc
 ```
 
 Run integration tests with real programs (registry targets):
 ```bash
-./test_run_cocotb.py hello_world
-./test_run_cocotb.py hello_world --testcase test_real_program   # one test function
+./scripts/frost.py cocotb hello_world
+./scripts/frost.py cocotb hello_world --testcase test_real_program
 ```
 
 ### Memory tier (BRAM vs cached DDR)
@@ -301,7 +303,7 @@ behavioral DDR model loads the program's `sw_ddr.mem` image. Both tiers run as
 separate CI jobs (the ddr job adds `-e FROST_COCOTB_MEM_CONFIG=ddr`).
 
 ```bash
-FROST_COCOTB_MEM_CONFIG=ddr ./test_run_cocotb.py coremark
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb coremark
 ```
 
 In the ddr tier the behavioral DDR persists across reset and `.data` is loaded
