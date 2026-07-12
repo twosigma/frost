@@ -3713,16 +3713,19 @@ module tomasulo_wrapper #(
       // LQ allocation
       cover_lq_alloc : cover (lq_alloc_req.valid);
 
-      // LQ memory read issued
-      cover_lq_mem_issue : cover (o_lq_mem_read_en);
-
       // SQ allocation
       cover_sq_alloc : cover (sq_alloc_req.valid);
 
 `ifdef FORMAL_DEEP_COVER
-      // Full dispatch -> commit -> SQ memory-write integration path. This is
-      // intentionally kept out of the default wrapper cover task because the
-      // SQ itself covers memory writes and this path dominates CI runtime.
+      // Deep integration paths, intentionally kept out of the default
+      // wrapper cover task because the LQ/SQ module targets already cover
+      // the same events (load_queue.cover_mem_issue, SQ write covers) and
+      // these chains dominate CI runtime: each needs the deepest unrolling
+      // of the whole wrapper (the LQ read chain is dispatch -> LQ alloc ->
+      // MEM RS issue -> SQ disambiguation -> launch, reachable only at
+      // step 5 — a single SAT query that alone blew the runner's 40-minute
+      // backstop while every other cover finishes by step 4 in ~2 minutes).
+      cover_lq_mem_issue : cover (o_lq_mem_read_en);
       cover_sq_mem_write : cover (o_sq_mem_write_en);
 `endif
 
