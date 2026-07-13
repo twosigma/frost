@@ -1,6 +1,6 @@
 # The development image installs its toolchain from pinned upstream releases.
 # Source and build products enter only through the runtime /workspace mount;
-# docker_entrypoint.py is the sole file copied into the image itself.
+# Dockerfile and docker_entrypoint.py are embedded for doctor fingerprints.
 **
 !Dockerfile
 !docker_entrypoint.py
