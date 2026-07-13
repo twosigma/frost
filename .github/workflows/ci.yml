@@ -348,6 +348,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # The clang-tidy gate compiles tracked application sources whose
+      # includes resolve inside these submodules. Fetch exactly them here;
+      # the in-container auto-init stays skipped below so the lint lane
+      # never pays for the submodules it does not lint (notably buildroot).
+      - name: Fetch the submodules clang-tidy lints against
+        run: |
+          git submodule update --init --recursive \
+            sw/FreeRTOS-Kernel \
+            sw/apps/coremark/coremark \
+            sw/apps/coremark_pro/coremark-pro \
+            sw/apps/riscv_tests/riscv-tests
+
       - name: Download Docker image
         uses: actions/download-artifact@v4
         with:
