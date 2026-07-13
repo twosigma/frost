@@ -61,6 +61,7 @@ markers = [
     "cocotb_unit: marks cocotb unit-bench tests",
     "coremark_pro: marks CoreMark-PRO real-program tests",
     "synthesis: marks tests that run synthesis tools",
+    "formal: marks tests that run formal verification tools",
     "slow: marks tests as slow running",
 ]
 
