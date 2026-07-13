@@ -35,7 +35,15 @@ Run the examples in this guide from the repository root through
 the invoking user's UID and GID, and sets the container home under `/tmp`, so
 test artifacts remain writable by native tools. Its `cocotb` and `pytest`
 shortcuts always run `make clean` in `tests/` before launching. Build the image
-once with `docker build -t frost .`.
+once with `docker build -t frost .`, then run the read-only setup preflight:
+
+```bash
+./scripts/frost.py doctor
+```
+
+The preflight labels every diagnostic `PASS`, `WARN`, `FAIL`, or
+dependency-gated `SKIP`, returns nonzero for failures, and never repairs the
+checkout. Its generated-artifact ownership scan deliberately skips `./hw`.
 
 ## Test Files
 
@@ -323,9 +331,28 @@ for 7-series, UltraScale, and UltraScale+.
 ### Run Fast Python Tests
 
 This is the non-simulator selection used by CI. It catches ordinary tooling
-and helper tests without launching Cocotb, synthesis, or formal jobs:
+and helper tests without launching Cocotb, synthesis, or formal jobs. The
+exact underlying command is retained here for focused debugging:
 
 ```bash
+./scripts/frost.py run pytest tests \
+  -m "not cocotb and not synthesis and not formal and not slow" -v
+```
+
+For the normal local gate, run both this selection and CI's exact lint job:
+
+```bash
+./scripts/frost.py check
+```
+
+`check` keeps going after the first failed phase so its summary includes both
+jobs; use `./scripts/frost.py check --fail-fast` to stop immediately. The lint
+hooks include automatic formatters and fixers, so `check` may modify files;
+review the working-tree diff. The two exact commands represented by `check`
+are:
+
+```bash
+./scripts/frost.py lint
 ./scripts/frost.py run pytest tests \
   -m "not cocotb and not synthesis and not formal and not slow" -v
 ```

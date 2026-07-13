@@ -4,7 +4,7 @@ Thank you for your interest in contributing to FROST. We welcome contributions o
 
 **Quick start:** Fork the repo, build the pinned `frost` development image, make
 your changes, run the affected workflows through `./scripts/frost.py`, and open
-a PR. Run `./scripts/frost.py lint` before submitting.
+a PR. Run `./scripts/frost.py check` before submitting.
 
 This document provides guidelines for contributors. The detailed style sections are primarily for reference.
 
@@ -86,19 +86,34 @@ Vivado setup.
    docker build -t frost .
    ```
 
-4. Verify the simulator and cross-toolchain with a small real-program test:
+4. Diagnose the local setup:
+
+   ```bash
+   ./scripts/frost.py doctor
+   ```
+
+   `doctor` is read-only. It prints `PASS`, `WARN`, `FAIL`, or dependency-gated
+   `SKIP` for each Docker, image, submodule, cache, and ownership diagnostic and
+   exits nonzero when a check fails. Its ownership scan deliberately skips
+   `./hw`.
+
+5. Verify the simulator and cross-toolchain with a small real-program test:
 
    ```bash
    ./scripts/frost.py cocotb hello_world
    ```
 
-5. Run the repository checks:
+6. Run the fast repository checks:
 
    ```bash
-   ./scripts/frost.py lint
-   ./scripts/frost.py run pytest tests \
-     -m "not cocotb and not synthesis and not formal and not slow" -v
+   ./scripts/frost.py check
    ```
+
+   This runs exactly CI's `Lint` and `Fast Python Tests` jobs, not the full
+   simulator/formal/synthesis regression. Both phases run by default even if
+   the first fails; use `./scripts/frost.py check --fail-fast` to stop at the
+   first failure. Lint hooks include automatic fixers and formatters, so this
+   command may modify files; always review the resulting diff.
 
 ### Pinned Development Workflows
 
@@ -108,16 +123,28 @@ and GID and puts the container home under `/tmp`, so generated files remain
 writable by native tools. The `cocotb` and `pytest` shortcuts always run
 `make clean` in `tests/` before launching; the `pytest` shortcut is scoped to
 `tests/test_run_cocotb.py` for marker-based Cocotb shards.
-Hook environments are cached under `/tmp/frost-container-cache-<uid>`, so only
-the first lint run needs to install the pinned pre-commit environments.
+Hook environments are cached on the host under
+`$XDG_CACHE_HOME/frost/container` when that variable is set, or under
+`~/.cache/frost/container` otherwise, so only the first lint run needs to
+install the pinned pre-commit environments.
 
 ```bash
+./scripts/frost.py doctor
+./scripts/frost.py check
 ./scripts/frost.py cocotb hello_world
 ./scripts/frost.py pytest -m "cocotb and cocotb_unit" -v
 ./scripts/frost.py formal --target trap_unit
 ./scripts/frost.py synthesis --target generic
 ./scripts/frost.py lint
 ```
+
+`doctor` does not repair or initialize anything: its
+`PASS`/`WARN`/`FAIL`/`SKIP` report is safe to run before other workflows, and
+its ownership scan excludes `./hw`. `check` is the convenience command for
+exactly the two fast CI jobs.
+It keeps going after a failed phase unless `--fail-fast` is supplied. Because
+the lint phase runs the repository's automatic fixers and formatters, `check`
+can modify the working tree.
 
 Use `./scripts/frost.py run <command> ...` for other commands that need the
 pinned toolchain. `COCOTB_*`, `FROST_*`, proxy variables, and documented
@@ -133,11 +160,10 @@ container. Run `./scripts/frost.py --help` for the complete interface.
    git checkout -b feature/your-feature-name
    ```
 
-2. Run the fast tests and the affected pinned workflow to establish a baseline:
+2. Run the fast checks and the affected pinned workflow to establish a baseline:
 
    ```bash
-   ./scripts/frost.py run pytest tests \
-     -m "not cocotb and not synthesis and not formal and not slow" -v
+   ./scripts/frost.py check
    ./scripts/frost.py cocotb hello_world
    ```
 
@@ -525,9 +551,7 @@ Run the fast Python tests and lint checks. If the change affects Cocotb-facing
 verification code, run the relevant Cocotb target or marker shard too:
 
 ```bash
-./scripts/frost.py run pytest tests \
-  -m "not cocotb and not synthesis and not formal and not slow" -v
-./scripts/frost.py lint
+./scripts/frost.py check
 ./scripts/frost.py pytest -m "cocotb and cocotb_unit" -v
 ```
 

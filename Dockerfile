@@ -191,23 +191,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # hook environments at the versions pinned in .pre-commit-config.yaml.
 # Unpinned standalone binaries drift ahead of those pins and disagree
 # with the real gate (seen 2026-07-11: image ruff 0.15.20 vs pin v0.8.4).
+ARG COCOTB_VERSION=2.0.1
+ARG PYTEST_VERSION=9.1.1
+ARG PYTEST_COV_VERSION=7.1.0
+ARG PRE_COMMIT_VERSION=4.6.0
+ARG CLICK_VERSION=8.4.2
 RUN pip install --no-cache-dir --break-system-packages \
-    "cocotb==2.0.1" \
-    pytest \
-    pytest-cov \
-    pre-commit \
-    click
+    "cocotb==${COCOTB_VERSION}" \
+    "pytest==${PYTEST_VERSION}" \
+    "pytest-cov==${PYTEST_COV_VERSION}" \
+    "pre-commit==${PRE_COMMIT_VERSION}" \
+    "click==${CLICK_VERSION}"
 
 # Set working directory
 WORKDIR /workspace
 
-# Copy and set entrypoint script (initializes submodules if needed)
+# Embed the exact local image inputs so ``frost.py doctor`` can distinguish a
+# current image from one that merely happens to expose similar tool versions.
+COPY Dockerfile docker_entrypoint.py /usr/local/share/frost-image-inputs/
+
+# Copy and set entrypoint script (initializes submodules if needed).
 COPY docker_entrypoint.py /usr/local/bin/
 # Some source-tool install steps preserve an unexpectedly private mode on the
 # shared bin directory.  Keep the image usable with ``docker run --user`` so a
 # bind-mounted checkout does not accumulate root-owned build artifacts.
 RUN chmod 0755 /usr/local/bin \
-    && chmod 0755 /usr/local/bin/docker_entrypoint.py
+    && chmod 0755 /usr/local/bin/docker_entrypoint.py \
+    && chmod 0444 /usr/local/share/frost-image-inputs/*
 ENTRYPOINT ["/usr/local/bin/docker_entrypoint.py"]
 
 # Default command
@@ -215,5 +225,7 @@ CMD ["/bin/bash"]
 
 # Usage:
 #   docker build -t frost .
+#   ./scripts/frost.py doctor
+#   ./scripts/frost.py check
 #   ./scripts/frost.py cocotb hello_world
 #   ./scripts/frost.py shell

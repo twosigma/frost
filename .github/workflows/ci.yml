@@ -359,7 +359,8 @@ jobs:
 
       - name: Run pre-commit hooks
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_SKIP_SUBMODULE_INIT=1 \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pre-commit run --all-files
 
   # Run ordinary Python/tooling tests without selecting any simulator,

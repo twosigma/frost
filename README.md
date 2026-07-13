@@ -113,13 +113,14 @@ Validated with these tool versions:
 |---------------|-------------------|---------|
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
 | **Testbench** | Cocotb            | 2.0.1   |
+|               | pytest            | 9.1.1   |
 | **Simulator** | Verilator         | 5.050   |
 | **Synthesis** | Yosys             | 0.64    |
 | **Formal**    | SymbiYosys        | 0.63    |
 |               | Z3                | 4.15.0  |
 |               | Boolector         | 3.2.4   |
 | **FPGA**      | Vivado (optional) | 2025.2  |
-| **Linting**   | pre-commit        | 4.0     |
+| **Linting**   | pre-commit        | 4.6.0   |
 |               | clang-format      | 19.0    |
 |               | clang-tidy        | 18.1.3  |
 |               | Verible           | 0.0-4051|
@@ -133,6 +134,9 @@ outputs keep the invoking user's UID/GID instead of becoming root-owned:
 ```bash
 # Build the Docker image
 docker build -t frost .
+
+# Diagnose the local Docker/image/submodule setup
+./scripts/frost.py doctor
 
 # Run a clean Hello World cocotb simulation
 ./scripts/frost.py cocotb hello_world
@@ -150,13 +154,28 @@ The Docker image includes:
 - Pre-commit plus system clang-tidy/Verible; pinned Ruff, mypy, and
   clang-format hook environments install on the first lint run and are cached
 
+`doctor` is a read-only preflight. It reports each diagnostic as `PASS`,
+`WARN`, `FAIL`, or dependency-gated `SKIP`, then returns a nonzero status if any
+check failed. It checks
+Docker access, image compatibility, submodules, the persistent hook cache, and
+generated-artifact ownership. The ownership scan deliberately skips `./hw`.
+The hook cache lives at `$XDG_CACHE_HOME/frost/container` when that variable is
+set, or at `~/.cache/frost/container` otherwise.
+
 ## Running Code-Quality Checks
 
-Run the pinned pre-commit hooks through the same image used by CI:
+Run the two fast CI gates—the `Lint` and `Fast Python Tests` jobs—with one
+command:
 
 ```bash
-./scripts/frost.py lint
+./scripts/frost.py check
 ```
+
+`check` runs both gates even if the first fails so one invocation reports all
+fast feedback; pass `--fail-fast` to stop at the first failure. This is not the
+full simulator/formal/synthesis regression. The lint hooks include automatic
+formatters and fixers, so `check` may modify files; review the resulting diff.
+Use `./scripts/frost.py lint` when you only want the lint phase.
 
 ## Quick Start
 
