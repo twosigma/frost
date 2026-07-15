@@ -25,7 +25,7 @@ C Extension Overview:
     - 16-bit instructions aligned on 2-byte boundaries
     - Can be identified by bits [1:0] != 0b11
     - Most common instructions have compressed forms
-    - Some instructions only operate on registers x8-x15 (s0-s7/a0-a7)
+    - Some instructions only operate on registers x8-x15 (s0-s1/a0-a5)
 
 Compressed Instruction Categories:
     ┌─────────────────────────────────────────────────────────────────┐
@@ -56,8 +56,7 @@ Test Strategy:
     3. Test edge cases (negative immediates, shifts, etc.)
 
 Usage:
-    make test TEST=test_compressed_instructions
-    make test TEST=test_random_riscv_regression_with_compressed
+    cd tests && ./test_run_cocotb.py compressed
 """
 
 import cocotb
@@ -293,7 +292,7 @@ async def run_compressed_instruction_test(
     # Test 5: C.SUB (Subtract Registers) - uses x8-x15 only
     # ========================================================================
     cocotb.log.info("=== Test 5: C.SUB ===")
-    # Set up x8 = 100, x9 = 30
+    # Set up x8 = 93, x9 = 30
     await execute_compressed_instr(enc_c_li(rd=8, imm=31))  # Max positive imm is 31
     await execute_compressed_instr(enc_c_addi(rd=8, nzimm=31))  # 31 + 31 = 62
     await execute_compressed_instr(enc_c_addi(rd=8, nzimm=31))  # 62 + 31 = 93
@@ -374,15 +373,12 @@ async def test_compressed_instructions(dut: Any) -> None:
 async def test_random_riscv_regression_with_compressed(dut: Any) -> None:
     """Random RISC-V regression with C extension compressed instructions.
 
-    This test exercises compressed (16-bit) instruction execution by running
-    pairs of compressed ALU instructions. Unlike the main random test which
-    uses 32-bit instructions with PC+4, this test uses 16-bit instructions
-    with PC+2, properly handling instruction alignment.
-
-    Tests: C.ADD, C.MV, C.AND, C.OR, C.XOR, C.SUB, C.ADDI, C.LI, C.SLLI,
-           C.SRLI, C.SRAI, C.ANDI, C.LW, C.LWSP
+    Despite the name, this currently re-runs the directed suite in
+    run_compressed_instruction_test (see its docstring for the instruction
+    list). That suite consumes only the clock/reset fields of TestConfig,
+    which are left at their defaults here, so the stimulus is identical to
+    test_compressed_instructions.
     """
-    # Use the dedicated compressed instruction test with more iterations
     config = TestConfig(num_loops=1000, min_coverage_count=10)
     await run_compressed_instruction_test(dut, config)
 

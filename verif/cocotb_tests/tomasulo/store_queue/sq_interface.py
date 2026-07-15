@@ -34,19 +34,6 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# sq_alloc_req_t packed layout (MSB-first in SV):
-# valid(1) | rob_tag(5) | is_fp(1) | size(2) | is_sc(1) |
-# addr_valid(1) | address(32) | is_mmio(1) = 44 bits
-SQ_ALLOC_WIDTH = 44
-
-# sq_addr_update_t packed layout:
-# is_mmio(1) | address(32) | rob_tag(5) | valid(1) = 39 bits
-SQ_ADDR_UPDATE_WIDTH = 39
-
-# sq_data_update_t packed layout:
-# data(64) | rob_tag(5) | valid(1) = 70 bits
-SQ_DATA_UPDATE_WIDTH = 70
-
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
 SQ_FORWARD_WIDTH = 66
@@ -323,39 +310,21 @@ class SQInterface:
         self.dut.i_commit_valid_scan.value = 1
         self.dut.i_commit_rob_tag.value = rob_tag & MASK_TAG
 
-    def drive_commit_comb(self, rob_tag: int) -> None:
-        """Drive same-cycle combinational commit guard for slot 1."""
-        self.dut.i_commit_valid_comb.value = 1
-        self.dut.i_commit_rob_tag_comb.value = rob_tag & MASK_TAG
-
     def drive_commit_2(self, rob_tag: int) -> None:
         """Drive widen-commit slot-2 signal for a store (scan in lockstep)."""
         self.dut.i_commit_valid_2.value = 1
         self.dut.i_commit_valid_scan_2.value = 1
         self.dut.i_commit_rob_tag_2.value = rob_tag & MASK_TAG
 
-    def drive_commit_comb_2(self, rob_tag: int) -> None:
-        """Drive same-cycle combinational commit guard for slot 2."""
-        self.dut.i_commit_valid_comb_2.value = 1
-        self.dut.i_commit_rob_tag_comb_2.value = rob_tag & MASK_TAG
-
     def clear_commit(self) -> None:
         """Clear commit signal."""
         self.dut.i_commit_valid.value = 0
         self.dut.i_commit_valid_scan.value = 0
 
-    def clear_commit_comb(self) -> None:
-        """Clear same-cycle combinational commit guard for slot 1."""
-        self.dut.i_commit_valid_comb.value = 0
-
     def clear_commit_2(self) -> None:
         """Clear widen-commit slot-2 signal."""
         self.dut.i_commit_valid_2.value = 0
         self.dut.i_commit_valid_scan_2.value = 0
-
-    def clear_commit_comb_2(self) -> None:
-        """Clear same-cycle combinational commit guard for slot 2."""
-        self.dut.i_commit_valid_comb_2.value = 0
 
     # =========================================================================
     # Store-to-Load Forwarding Check

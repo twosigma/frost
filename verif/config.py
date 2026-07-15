@@ -81,11 +81,6 @@ MEMORY_SIZE_WORDS: Final[int] = 2**14
 MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
 
-MMIO_SIZE_BYTES: Final[int] = 0x2C
-"""Legacy MMIO range size; currently unused. The RTL window is 0x1_C000 bytes
-(see cpu_and_mem.sv MmioSizeBytes) with the ns16550 UART at +0x1000 and the
-CLINT at +0x10000."""
-
 # ============================================================================
 # Register File Configuration
 # ============================================================================

@@ -135,14 +135,9 @@ _INSTR_OPS = _parse_instr_op_enum()
 OP_ADD = _INSTR_OPS["ADD"]
 OP_SUB = _INSTR_OPS["SUB"]
 OP_MUL = _INSTR_OPS["MUL"]
-OP_MULH = _INSTR_OPS["MULH"]
-OP_DIV = _INSTR_OPS["DIV"]
 OP_DIVU = _INSTR_OPS["DIVU"]
-OP_REM = _INSTR_OPS["REM"]
 OP_LW = _INSTR_OPS["LW"]
-OP_LB = _INSTR_OPS["LB"]
 OP_SW = _INSTR_OPS["SW"]
-OP_FLW = _INSTR_OPS["FLW"]
 OP_LR_W = _INSTR_OPS["LR_W"]
 OP_SC_W = _INSTR_OPS["SC_W"]
 OP_FADD_D = _INSTR_OPS["FADD_D"]
@@ -172,8 +167,6 @@ RS_DEPTHS = {
 
 # All RS types for iteration
 ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
-# RS types without integrated FU pipeline (safe for manual CDB completion)
-MANUAL_CDB_RS_TYPES = [RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
 RS_NAMES = {
     RS_INT: "INT_RS",
     RS_MUL: "MUL_RS",

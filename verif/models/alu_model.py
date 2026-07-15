@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Enhanced ALU operations with better abstractions.
+"""Reference implementations of ALU operations.
 
 ALU Operations
 ==============
@@ -80,23 +80,6 @@ def limit_shift_amount(function: Callable) -> Callable:
         return function(value, shift_amount & SHIFT_AMOUNT_MASK)  # Only use bits [4:0]
 
     return wrapper
-
-
-# Protocols for ALU operations
-class BinaryOperation(Protocol):
-    """Protocol for binary ALU operations (two operands)."""
-
-    def __call__(self, operand_a: int, operand_b: int) -> int:
-        """Execute binary operation on two operands."""
-        ...
-
-
-class UnaryOperation(Protocol):
-    """Protocol for unary ALU operations (one operand)."""
-
-    def __call__(self, value: int) -> int:
-        """Execute unary operation on one operand."""
-        ...
 
 
 # Base integer ALU operations (RV32I)

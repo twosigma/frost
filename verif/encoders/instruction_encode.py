@@ -124,14 +124,6 @@ class Funct3(IntEnum):
     CSRRCI = 0x7  # Read/Clear bits Immediate
 
 
-class Funct7(IntEnum):
-    """7-bit function codes."""
-
-    DEFAULT = 0x00
-    ALTERNATE = 0x20  # Used for SUB, SRA
-    MULDIV = 0x01
-
-
 class FPFunct7(IntEnum):
     """7-bit function codes for F extension operations."""
 
@@ -583,23 +575,6 @@ def enc_lui(rd: int, immediate_20bit: int) -> int:
         32-bit encoded instruction
     """
     return UType.encode(immediate_20bit & 0xFFFFF, rd, Opcode.LUI)
-
-
-def enc_auipc(rd: int, immediate_20bit: int) -> int:
-    """Encode AUIPC (Add Upper Immediate to PC) instruction (opcode 0x17).
-
-    AUIPC forms a 32-bit offset from the 20-bit immediate (filling low 12 bits
-    with zeros), adds it to the PC of the AUIPC instruction, and stores the
-    result in rd.
-
-    Args:
-        rd: Destination register
-        immediate_20bit: 20-bit immediate value
-
-    Returns:
-        32-bit encoded instruction
-    """
-    return UType.encode(immediate_20bit & 0xFFFFF, rd, Opcode.AUIPC)
 
 
 def enc_fence() -> int:

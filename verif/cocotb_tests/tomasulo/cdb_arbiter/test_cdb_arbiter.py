@@ -296,11 +296,11 @@ async def test_priority_mul_over_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: All 7 FUs valid -> MUL wins (highest priority)
+# Test 6: All 8 FUs valid -> MUL wins (highest priority)
 # ============================================================================
 @cocotb.test()
 async def test_priority_all_valid(dut: Any) -> None:
-    """All 7 FUs valid -> MUL wins (highest priority)."""
+    """All 8 FUs valid -> MUL wins (highest priority)."""
     dut_if, model = await setup(dut)
 
     specs = {}

@@ -36,7 +36,6 @@ OP_ADD = 0
 OP_SUB = 1
 OP_AND = 2
 OP_OR = 3
-OP_MUL = 38  # approximate
 
 
 def _parse_op_value(name: str) -> int:

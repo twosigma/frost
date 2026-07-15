@@ -112,51 +112,6 @@ def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> i
         return raw_data & MASK32
 
 
-# instr_op_e enum values for atomics
-AMOSWAP_W = 95
-AMOADD_W = 96
-AMOXOR_W = 97
-AMOAND_W = 98
-AMOOR_W = 99
-AMOMIN_W = 100
-AMOMAX_W = 101
-AMOMINU_W = 102
-AMOMAXU_W = 103
-
-
-def _signed32(val: int) -> int:
-    """Interpret 32-bit unsigned value as signed."""
-    val = val & MASK32
-    if val & 0x80000000:
-        return val - 0x100000000
-    return val
-
-
-def amo_compute(op: int, old_val: int, rs2: int) -> int:
-    """Compute AMO result (combinational)."""
-    old_val = old_val & MASK32
-    rs2 = rs2 & MASK32
-    if op == AMOSWAP_W:
-        return rs2
-    elif op == AMOADD_W:
-        return (old_val + rs2) & MASK32
-    elif op == AMOXOR_W:
-        return old_val ^ rs2
-    elif op == AMOAND_W:
-        return old_val & rs2
-    elif op == AMOOR_W:
-        return old_val | rs2
-    elif op == AMOMIN_W:
-        return old_val if _signed32(old_val) < _signed32(rs2) else rs2
-    elif op == AMOMAX_W:
-        return old_val if _signed32(old_val) > _signed32(rs2) else rs2
-    elif op == AMOMINU_W:
-        return old_val if old_val < rs2 else rs2
-    elif op == AMOMAXU_W:
-        return old_val if old_val > rs2 else rs2
-    return old_val
-
-
 def is_younger(entry_tag: int, flush_tag: int, head: int) -> bool:
     """Check if entry_tag is younger than flush_tag relative to head."""
     mask = MASK_TAG
@@ -334,26 +289,6 @@ class LQModel:
                     mem_idx = idx
                     break
         return cdb_idx, mem_idx
-
-    def get_sq_check(
-        self,
-        rob_head_tag: int,
-        sq_committed_empty: bool = True,
-    ) -> dict | None:
-        """Get SQ disambiguation check if Phase B candidate exists."""
-        _, mem_idx = self._issue_scan(rob_head_tag, sq_committed_empty)
-        if mem_idx is None or self.mem_outstanding:
-            return None
-        e = self.entries[mem_idx]
-        if e.is_mmio and e.rob_tag != (rob_head_tag & MASK_TAG):
-            return None
-        return {
-            "valid": True,
-            "addr": e.address,
-            "rob_tag": e.rob_tag,
-            "size": e.size,
-            "idx": mem_idx,
-        }
 
     def apply_forward(self, sq_forward: SQForwardResult) -> None:
         """Apply SQ forwarding result to the Phase B candidate."""

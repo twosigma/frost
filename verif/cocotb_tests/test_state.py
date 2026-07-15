@@ -52,7 +52,6 @@ from config import (
     MASK64,
     MEMORY_WORD_ALIGN_MASK,
     PIPELINE_IF_TO_EX_CYCLES,
-    PIPELINE_IF_TO_MA_CYCLES,
 )
 from encoders.instruction_encode import CSRAddress
 
@@ -80,8 +79,6 @@ class TestState:
         csr_instret_counter: Instruction retired counter for CSR verification
         reservation_valid: Whether an LR/SC reservation is active
         reservation_address: Word-aligned address of current reservation
-        pending_lr_address: Address of pending LR.W (not yet at MA stage)
-        pending_lr_countdown: Cycles until pending LR.W reaches MA stage
         last_sc_succeeded: Whether the last SC.W instruction succeeded
         last_sc_address: Address of the last SC.W instruction
         last_sc_data: Data value of the last SC.W instruction
@@ -143,8 +140,6 @@ class TestState:
         # ====================================================================
         self.reservation_valid: bool = False
         self.reservation_address: int = 0
-        self.pending_lr_address: int | None = None
-        self.pending_lr_countdown: int = 0
         self.last_sc_succeeded: bool = False
         self.last_sc_address: int = 0
         self.last_sc_data: int = 0
@@ -284,31 +279,6 @@ class TestState:
         if not self.reservation_valid:
             return False
         return (address & MEMORY_WORD_ALIGN_MASK) == self.reservation_address
-
-    def schedule_reservation(self, address: int) -> None:
-        """Schedule a reservation to be set after pipeline delay.
-
-        LR.W is generated at IF stage but reservation is set at MA stage
-        (3 cycles later). This tracks the pending reservation.
-
-        Args:
-            address: Word-aligned address for reservation
-        """
-        self.pending_lr_address = address & MEMORY_WORD_ALIGN_MASK
-        self.pending_lr_countdown = (
-            PIPELINE_IF_TO_MA_CYCLES  # LR.W sets reservation at MA stage
-        )
-
-    def advance_pending_reservation(self) -> None:
-        """Advance pending reservation countdown, setting reservation when ready.
-
-        Called once per cycle to model pipeline timing of reservation setting.
-        """
-        if self.pending_lr_countdown > 0:
-            self.pending_lr_countdown -= 1
-            if self.pending_lr_countdown == 0 and self.pending_lr_address is not None:
-                self.set_reservation(self.pending_lr_address)
-                self.pending_lr_address = None
 
     # ========================================================================
     # CSR Read Methods

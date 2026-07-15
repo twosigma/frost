@@ -133,40 +133,7 @@ class HardwareAssertions:
         assert_in_range(imm, -2048, 2047, "12-bit immediate")
 
     @staticmethod
-    def assert_immediate_20bit(imm: int) -> None:
-        """Assert immediate fits in 20 bits (signed)."""
-        assert_in_range(imm, -524288, 524287, "20-bit immediate")
-
-    @staticmethod
     def assert_branch_offset(offset: int) -> None:
         """Assert branch offset is valid."""
         assert_aligned(offset, 2, "branch offset")
         assert_in_range(offset, -4096, 4094, "branch offset")
-
-    @staticmethod
-    def assert_jump_offset(offset: int) -> None:
-        """Assert jump offset is valid."""
-        assert_aligned(offset, 2, "jump offset")
-        assert_in_range(offset, -1048576, 1048574, "jump offset")
-
-
-def validate_instruction_encoding(instr: int) -> str | None:
-    """Validate instruction encoding and return instruction type."""
-    opcode = instr & 0x7F
-
-    opcode_map = {
-        0x03: "LOAD",
-        0x13: "I-ALU",
-        0x23: "STORE",
-        0x33: "R-ALU",
-        0x63: "BRANCH",
-        0x67: "JALR",
-        0x6F: "JAL",
-    }
-
-    if opcode not in opcode_map:
-        raise ValidationError(
-            "Invalid opcode", instruction=hex(instr), opcode=hex(opcode)
-        )
-
-    return opcode_map[opcode]

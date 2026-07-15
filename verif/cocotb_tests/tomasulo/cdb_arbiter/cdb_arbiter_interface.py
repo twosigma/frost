@@ -18,7 +18,7 @@ Provides packing/unpacking for fu_complete_t array and cdb_broadcast_t output,
 plus transaction helpers for driving stimulus and reading results.
 
 The RTL exposes individual FU completion ports
-(i_fu_complete_0 .. i_fu_complete_6).  The _get_fu_signal helper also accepts
+(i_fu_complete_0 .. i_fu_complete_7).  The _get_fu_signal helper also accepts
 an indexable array-style handle so older local wrappers keep working.
 """
 
@@ -135,7 +135,7 @@ class CdbArbiterInterface:
         Older wrappers may expose an indexable array handle:
           dut.i_fu_complete[index]
         The current RTL exposes individual ports:
-          dut.i_fu_complete_0 .. dut.i_fu_complete_6
+          dut.i_fu_complete_0 .. dut.i_fu_complete_7
         """
         if hasattr(self.dut, "i_fu_complete_0"):
             return getattr(self.dut, f"i_fu_complete_{fu_index}")

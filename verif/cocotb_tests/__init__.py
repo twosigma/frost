@@ -59,11 +59,12 @@ Infrastructure:
 
 Running Tests
 -------------
-From the build directory::
+Run registered tests from the repository root through the frost wrapper,
+naming a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py``::
 
-    make test TEST=test_random_riscv_regression
-    make test TEST=test_directed_lr_sc
-    make test TEST=test_compressed_instructions
+    ./scripts/frost.py cocotb directed_traps
+    ./scripts/frost.py cocotb hello_world
+    ./scripts/frost.py cocotb --list-tests
 """
 
 # Re-export commonly used classes for convenience

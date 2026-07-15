@@ -617,11 +617,6 @@ class TomasuloInterface:
         return bool(self.dut.o_rob_full.value)
 
     @property
-    def rob_full_for_2(self) -> bool:
-        """Return whether ROB lacks room for a 2-wide allocation."""
-        return bool(self.dut.o_rob_full_for_2.value)
-
-    @property
     def rob_empty(self) -> bool:
         """Return whether ROB is empty."""
         return bool(self.dut.o_rob_empty.value)

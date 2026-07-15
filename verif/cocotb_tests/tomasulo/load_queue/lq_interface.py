@@ -50,19 +50,15 @@ AMOMAXU_W = 103
 
 # lq_alloc_req_t packed layout (MSB-first in SV):
 # valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(32) = 44 bits
-LQ_ALLOC_WIDTH = 44
 
 # lq_addr_update_t packed layout:
 # valid(1) | rob_tag(5) | address(32) | is_mmio(1) | amo_rs2(32) = 71 bits
-LQ_ADDR_UPDATE_WIDTH = 71
 
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
-SQ_FORWARD_WIDTH = 66
 
 # fu_complete_t packed layout:
 # fp_flags(5) | exc_cause(5) | exception(1) | value(64) | tag(5) | valid(1) = 81 bits
-FU_COMPLETE_WIDTH = 81
 
 
 def pack_lq_alloc(
@@ -366,10 +362,6 @@ class LQInterface:
     # =========================================================================
     # CDB / FU Complete
     # =========================================================================
-
-    def drive_adapter_pending(self, pending: bool = True) -> None:
-        """Drive the downstream-busy hint."""
-        self.dut.i_adapter_result_pending.value = 1 if pending else 0
 
     def drive_result_accepted(self, accepted: bool = True) -> None:
         """Drive the staged-result acceptance handshake."""

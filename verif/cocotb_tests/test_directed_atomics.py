@@ -304,7 +304,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     test_address_2 = 0x200  # Second test address (for mismatch test)
     test_data = 0xDEADBEEF
 
-    # Set up specific register values for testing
     # All registers get set to their final test values BEFORE queueing expected values
     test_value_1 = 0x12345678  # Initial value for addr1
     test_value_2 = 0x87654321  # Initial value for addr2

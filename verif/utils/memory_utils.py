@@ -247,8 +247,6 @@ def generate_aligned_immediate(
     """Generate an immediate value that produces aligned address when added to base.
 
     Uses rejection sampling to efficiently find a valid immediate value.
-    Functionally equivalent to the original while-loop approach but more
-    organized and with optional memory constraints.
 
     Args:
         base_value: Base register value
@@ -269,8 +267,7 @@ def generate_aligned_immediate(
     """
     import random
 
-    # Use rejection sampling (same as original while loop approach)
-    # This is more efficient than pre-computing all valid values
+    # Rejection sampling is more efficient than pre-computing all valid values
     max_attempts = 1000  # Safety limit to prevent infinite loops
 
     for _ in range(max_attempts):

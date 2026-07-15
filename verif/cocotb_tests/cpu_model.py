@@ -194,7 +194,7 @@ class CPUModel:
             state.branch_was_jal_current = False
         elif operation in JUMPS:
             state.branch_taken_current = True  # Jumps are always taken
-            # JAL and JALR are now both resolved in EX stage (3 flush cycles each)
+            # JAL and JALR are both resolved in EX stage (3 flush cycles each)
             state.branch_was_jal_current = False
         else:
             state.branch_taken_current = False
@@ -281,7 +281,7 @@ class CPUModel:
             return state.get_csr_value(csr_address)
         elif operation in LOADS:
             # Execute load operation from memory
-            # Load functions now take (memory, address) to avoid global state
+            # Load functions take (memory, address) to avoid global state
             _, fn = LOADS[operation]
             return fn(memory_model, memory_model.read_address)
         elif operation in I_ALU:
