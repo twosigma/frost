@@ -16,9 +16,10 @@
 
 # FROST Buildroot external tree (`BR2_EXTERNAL`)
 
-Reproducibly builds the FROST **RV32 / no-MMU / M-mode Linux** kernel (6.18.7),
-a busybox initramfs, and packages them into the memory images the FROST cocotb
-`linux_boot` simulation (and the FPGA JTAG loader) consume.
+This tree reproducibly builds the FROST **RV32 / no-MMU / M-mode Linux**
+kernel (6.18.7) and a busybox initramfs, then packages them into the memory
+images consumed by the FROST cocotb `linux_boot` simulation and the FPGA JTAG
+loader.
 
 This is a standard Buildroot [`BR2_EXTERNAL`](https://buildroot.org/downloads/manual/manual.html#outside-br-custom)
 tree. It carries **no** Buildroot source itself — point an out-of-tree build at
@@ -107,9 +108,8 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
 Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock) -- this is what `fpga/load_software/load_software.py <board>
-linux_boot` and the
-CI `build-frost-linux` job drive:
+board clock) — this is what `fpga/load_software/load_software.py <board>
+linux_boot` and the CI `build-frost-linux` job drive:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot  # genesys2 (133.33 MHz) default
@@ -131,7 +131,7 @@ rootfs to an initramfs (`BLK_DEV_INITRD` + `RD_GZIP`), and drops
 virtio / PCI / net / ext2 / PLIC. See the header of the fragment for the full,
 per-symbol rationale and the hardware caveats.
 
-## Notes, assumptions and gaps
+## Notes, assumptions, and gaps
 
 - **Rootfs reproduction.** `rootfs.cpio.gz` is reproduced from Buildroot's
   default busybox (`busybox-minimal.config`) + `BR2_TARGET_ROOTFS_CPIO[_GZIP]`,
@@ -139,15 +139,15 @@ per-symbol rationale and the hardware caveats.
   `frost-artifacts/rootfs.cpio.gz` but **not** byte-identical. Add a
   `rootfs-overlay/` + `BR2_ROOTFS_OVERLAY` here if a specific userspace is
   required.
-- **Fragment vs. the latest hand-built Image.** This defconfig *applies* the
-  FROST fragment (per the build notes' "Option A"). The most recent artifact
-  `Image` checked on the dev box was actually built from the **stock**
+- **Fragment vs. the most recent hand-built image.** This defconfig *applies*
+  the FROST fragment (the build notes' "Option A"). The most recent hand-built
+  `Image` artifact was instead produced from the **stock**
   `qemu_riscv32_nommu_virt_defconfig` *without* the fragment (it still had
   `CONFIG_NET` / `CONFIG_VIRTIO_BLK` / `CONFIG_SIFIVE_PLIC` / `CONFIG_EXT2_FS`
-  set). Decide whether the fragment-applied kernel here is the intended target
-  (it should be — it is strictly closer to FROST and the generated DTB has no
-  PLIC/virtio nodes) or whether to drop the fragment to match that artifact
-  bit-for-bit.
+  set). The fragment-applied kernel built here should be the target — it is
+  strictly closer to FROST, and the generated DTB has no PLIC/virtio nodes —
+  but it does not reproduce that artifact bit-for-bit; drop the fragment only
+  if exact reproduction of that artifact is required.
 - **Boot shim toolchain.** Standalone, the packer uses the xPack
   `riscv-none-elf-*` bare-metal toolchain (`rv32i_zicsr` / `ilp32`). In CI
   `post-image.sh` instead uses the Buildroot-built `riscv32-*-` toolchain with

@@ -6,9 +6,9 @@ slot-2 allocation ports for 2-wide dispatch. Stores are non-speculative:
 nothing leaves the SQ until commit, so flushed speculative stores never reach
 the bus.
 
-## What makes stores interesting
+## Design overview
 
-Two things: forwarding and ordering.
+Two concerns dominate the design: forwarding and ordering.
 
 **Forwarding.** A younger load may need data from an older store
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
@@ -187,12 +187,12 @@ the registered commit path.
 
 When a flush arrives one cycle after a store's raw commit pulse — partial-flush
 misprediction recovery and full-flush trap / MRET / FENCE.I drains alike — the
-SQ sees the REGISTERED commit view in the flush cycle while `sq_committed` is
+SQ sees the *registered* commit view in the flush cycle while `sq_committed` is
 still one NBA behind, so the flush could otherwise wipe out a store that just
 committed. The partial-flush kill (`flush_kill_base`) therefore excludes
 entries matching the registered commit ports.
 
-A commit pulse landing IN the flush cycle itself cannot happen: the ROB gates
+A commit pulse landing *in* the flush cycle itself cannot happen: the ROB gates
 `commit_ready_early` — and with it the raw store-commit pulses that drive
 `i_commit_valid_comb/_comb_2` — with `!i_flush_en && !i_flush_all` on the same
 flush nets this kill runs under. The kill therefore takes no combinational

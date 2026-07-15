@@ -62,7 +62,7 @@ The canonical test list lives in `TEST_REGISTRY` inside `test_run_cocotb.py`, no
 
 **Standalone Usage:**
 
-Applications are compiled automatically before simulation—no manual build step required.
+Applications are compiled automatically before simulation — no manual build step required.
 
 ```bash
 # Basic usage
@@ -88,7 +88,16 @@ Applications are compiled automatically before simulation—no manual build step
 
 **Seed Sweep Mode:**
 
-The `--seed-sweep N` flag runs N simulations in parallel, each with a different random seed. This is useful for finding intermittent failures in randomized tests. Each worker gets an isolated `SIM_BUILD` and `COCOTB_RESULTS_FILE`; for app-based tests the app is compiled once up front and the `sw*.mem` symlinks are shared read-only across workers (per-worker recompiles and results.xml in the shared CWD used to race each other and report phantom failures). After all runs complete, a summary report shows which seeds passed and which failed, with the tail of each failure's output and commands to reproduce:
+The `--seed-sweep N` flag runs N simulations in parallel, each with a different
+random seed. This is useful for finding intermittent failures in randomized
+tests.
+
+Each worker gets an isolated `SIM_BUILD` and `COCOTB_RESULTS_FILE`; for
+app-based tests the app is compiled once up front and the `sw*.mem` symlinks
+are shared read-only across workers (per-worker recompiles and results.xml in
+the shared CWD used to race each other and report phantom failures). After all
+runs complete, a summary report shows which seeds passed and which failed, with
+the tail of each failure's output and commands to reproduce:
 
 ```
 ============================================================
@@ -111,9 +120,9 @@ the same arguments as
 `./scripts/frost.py cocotb cdb_arbiter --random-seed=987654321`.
 
 Options:
-- `--seed-sweep N` - Number of random seeds to test
-- `--max-workers W` - Limit parallel workers (default: min(N, cpu_count))
-- Can be combined with `--testcase` to sweep a specific test function
+- `--seed-sweep N` — number of random seeds to test
+- `--max-workers W` — limit parallel workers (default: min(N, cpu_count))
+- The sweep can be combined with `--testcase` to target a specific test function
 
 **Pytest Usage:**
 
@@ -179,9 +188,9 @@ cross-test corruption. Cocotb's separate seed-sweep mode is isolated and still
 supports parallel workers.
 
 **Memory tiers (`--mem-config`):** Each test selects where its code vs data/signature lives, so a failure is attributable to one path. The Makefile knob `MEM_CONFIG` picks the linker script + crt0 boot stub accordingly:
-- `bram` - code + data + signature all in low BRAM (pure ISA conformance).
-- `icache` - code in DDR (L1I fetch path under test), data + signature in low BRAM (isolates instruction fetch from the D-side cached tier). Diagnostic only; not a CI job.
-- `ddr` - code + data + signature in DDR; also exercises the D-side cached tier on every load/store. **This is the default** (`DEFAULT_MEM_CONFIG`).
+- `bram` — code + data + signature all in low BRAM (pure ISA conformance).
+- `icache` — code in DDR (L1I fetch path under test), data + signature in low BRAM (isolates instruction fetch from the D-side cached tier). Diagnostic only; not a CI job.
+- `ddr` — code + data + signature in DDR; also exercises the D-side cached tier on every load/store. **This is the default** (`DEFAULT_MEM_CONFIG`).
 
 The pytest entry point honors `FROST_ARCH_MEM_CONFIG` to override the default.
 
@@ -399,8 +408,8 @@ sim_build/
 
 ### Test Results
 
-- `results.xml` - JUnit-format test results (for CI integration)
-- `dump.vcd` / `dump.fst` - Waveform files (when `WAVES=1`)
+- `results.xml` — JUnit-format test results (for CI integration)
+- `dump.vcd` / `dump.fst` — waveform files (when `WAVES=1`)
 
 ## Requirements
 
@@ -422,7 +431,7 @@ required tools are failures rather than silent skips. The `Fast Python Tests`
 job runs the default/unmarked tests as the host UID and GID with `HOME=/tmp`,
 which also guards the non-root execution model used by `scripts/frost.py`.
 
-The riscv-tests, riscv-torture, and Cocotb real-program suites each run in BOTH a `bram` tier (whole program in low BRAM) AND a `ddr` tier (whole program in the cached DDR region) as separate jobs. Arch compliance uses the same memory tiers for most extensions, with F/D DDR disabled in CI because those permutations time out on GitHub-hosted runners:
+The riscv-tests, riscv-torture, and Cocotb real-program suites each run in both a `bram` tier (whole program in low BRAM) and a `ddr` tier (whole program in the cached DDR region) as separate jobs. Arch compliance uses the same memory tiers for most extensions, with F/D DDR disabled in CI because those permutations time out on GitHub-hosted runners:
 
 - **Cocotb**: a `bram` matrix split into non-CoreMark-PRO real programs, unit benches, and CoreMark-PRO real programs, plus one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
 - **Arch compliance**: an extension x memory tier (`[bram, ddr]`) matrix with `fail-fast: false`. Zifencei is excluded from the `bram` tier (DDR-tier-only), and F/D are excluded from the `ddr` tier to keep CI runtime bounded. Kept separate from the main Cocotb job to avoid blocking it with long-running FP tests.
@@ -467,7 +476,8 @@ The canonical shortcuts clean automatically; rerun through the wrapper:
 
 ### Tests timing out
 
-Some tests (coremark, freertos_demo) run for many cycles. Use environment variable for timeouts:
+Some tests (coremark, freertos_demo) run for many cycles. Raise the cycle
+budget through environment variables:
 
 ```bash
 COCOTB_COREMARK_MAX_CYCLES=30000000 ./scripts/frost.py cocotb coremark

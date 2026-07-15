@@ -112,7 +112,7 @@ data L1, and instruction fetch through a dedicated 16 KiB L1I
 (`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
 `line_port_arbiter` (D-side priority) merges the two L1s below the level
 the L2 or DDR bridge sees. The low BRAM range and MMIO stay 1-cycle; cached
-accesses complete by HANDSHAKE with variable latency — an L1 hit in a few
+accesses complete by handshake with variable latency — an L1 hit in a few
 cycles, a miss after a writeback/fill round trip through `frost_cache`
 (direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)
 and, on X3, the URAM L2, down to the DDR AXI port. `cached_tier_adapter`
@@ -170,33 +170,25 @@ If these addresses change, update `cpu_and_mem.sv`, `cpu_ooo.sv` parameters,
 
 ## Build and Simulation
 
-From the repo root:
+From the repo root (simulation and synthesis checks run in the pinned
+container via the wrapper; Vivado builds run natively):
 
 ```bash
 # Cocotb/Verilator simulation
-./tests/test_run_cocotb.py hello_world
-./tests/test_run_cocotb.py tomasulo_test
-./tests/test_run_cocotb.py --list-tests   # show all registered tests
+./scripts/frost.py cocotb hello_world
+./scripts/frost.py cocotb tomasulo_test
+./scripts/frost.py cocotb --list-tests    # show all registered tests
 
 # Open-source RTL synthesis checks
-./tests/test_run_yosys.py
+./scripts/frost.py synthesis
 
 # Vivado FPGA builds
 ./fpga/build/build.py x3
 ./fpga/build/build.py genesys2
 ```
 
-The top-level simulation file list is:
-
-```bash
-sed -n '1,200p' hw/rtl/frost.f
-```
-
-The CPU build file list is:
-
-```bash
-sed -n '1,200p' hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f
-```
+The top-level simulation file list is `frost.f`; the CPU build file list is
+`cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f`.
 
 ## Parameters
 

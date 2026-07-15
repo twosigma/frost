@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory contains a comprehensive Python-based verification framework for the Frost RISC-V CPU core. The framework uses [Cocotb](https://www.cocotb.org/) to verify the RTL implementation against software reference models.
+This directory contains the Python verification framework for the Frost RISC-V CPU core. The framework uses [Cocotb](https://www.cocotb.org/) to verify the RTL implementation against software reference models.
 
 ## Architecture
 
@@ -47,11 +47,18 @@ Additional features:
 
 ### Verification Methodology
 
-The framework employs multiple verification strategies:
+The framework combines several strategies:
 
-1. **Constrained Random Testing**: Generates thousands of random instruction sequences
-2. **Directed Testing**: Runs real programs (Hello World, CoreMark)
-3. **Coverage-Driven Verification**: Ensures all instruction types are thoroughly tested
+1. **Constrained-random testing** — thousands of generated instructions
+   checked against the software reference model (`test_cpu.py`)
+2. **Directed testing** — targeted scenarios for traps, atomics, compressed
+   instructions, and multi-cycle hazards (`test_directed_*.py`,
+   `test_compressed.py`)
+3. **Real-program integration** — complete compiled applications (Hello World,
+   CoreMark, CoreMark-PRO) run with pass/fail detection (`test_real_program.py`)
+4. **Coverage tracking** — the random regression fails if any tracked
+   instruction type falls below a minimum execution count
+   (`min_coverage_count`)
 
 ## Directory Structure
 
@@ -109,7 +116,7 @@ verif/
 ### Test Infrastructure (`/cocotb_tests`)
 
 #### Main CPU Test (`test_cpu.py`)
-The primary test orchestration that:
+The primary test orchestration module. It:
 - Generates constrained-random instruction sequences
 - Coordinates between instruction generation, modeling, and DUT driving
 - Manages expected value queues for verification monitors
@@ -154,8 +161,8 @@ Key types:
 - Validates long-running software execution
 
 #### Test Helpers (`test_helpers.py`)
-- `DUTInterface`: Clean abstraction for DUT signal access with configurable paths
-- `TestStatistics`: Comprehensive test metrics and coverage tracking
+- `DUTInterface`: DUT signal access behind configurable hierarchy paths
+- `TestStatistics`: Test metrics and coverage tracking
 
 ### Reference Models (`/models`)
 
@@ -202,7 +209,7 @@ Maps instruction mnemonics to encoder/evaluator pairs:
 
 ### Monitors (`/monitors`)
 
-Real-time verification monitors that continuously check (`monitors.py`):
+Runtime monitors (`monitors.py`) that check DUT outputs continuously during simulation:
 - **Register File Monitor**: Validates all register writes against expected values
 - **Program Counter Monitor**: Verifies control flow correctness
 - **Memory Interface Monitor**: Checks load/store operations (integrated in memory_model.py)
@@ -264,19 +271,19 @@ target list (the single source of truth is `TEST_REGISTRY` in
 The random-regression and directed CPU tests all run on the `cpu_tb`
 testbench and are `test_run_cocotb.py` registry targets: `directed_traps`
 (pytest-collected, in CI) plus `directed_atomics`, `directed_multicycle`,
-`compressed`, and `cpu_random` (registered CLI-only -- these four predate the
+`compressed`, and `cpu_random` (registered CLI-only — these four predate the
 OOO integration and currently fail on the OOO core until ported to the
 maintained `DUTInterface` helpers; their ISA coverage is meanwhile gated by
 the riscv-tests / arch-compliance / real-program suites). Note that a bare
 `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported
-`cpu_random` module -- prefer the registry targets:
+`cpu_random` module — prefer the registry targets:
 
 Run a cpu_tb suite via the registry:
 ```bash
 # Trap handling (ECALL, EBREAK, MRET) -- ported, runs in CI
 ./scripts/frost.py cocotb directed_traps
-# LR.W/SC.W atomic instructions -- NEEDS PORTING, expected to fail
+# LR.W/SC.W atomic instructions -- not yet ported, expected to fail
 ./scripts/frost.py cocotb directed_atomics
 ```
 
@@ -330,27 +337,18 @@ custom_paths = DUTSignalPaths(
 dut_if = DUTInterface(dut, signal_paths=custom_paths)
 ```
 
-## Architecture & Design Principles
+## Extending the Framework
 
-### Modular Design
-- **Separation of Concerns**: Each module has a single, clear responsibility
-- **Instruction Generation**: Isolated in dedicated module
-- **CPU Modeling**: Software reference model in separate module
-- **Test Orchestration**: High-level test flow coordination only
-
-### Configurability
-- **Centralized Configuration**: All constants in `config.py`
-- **DUT Signal Paths**: Configurable via `DUTSignalPaths` for different implementations
-- **Optional Features**: Address constraints, structured logging
-- **Test Parameters**: Easy adjustment of loops, coverage, memory size
-
-### Type Safety & Error Handling
-- **Type Aliases**: Clear, semantic types (`Address`, `RegisterIndex`, etc.)
-- **Custom Exceptions**: Rich context for debugging failures
-- **Hardware Assertions**: RISC-V-specific validations
-
-### Extensibility
-- **Adding Instructions**: Update `op_tables.py` with encoder/evaluator pairs
-- **New Monitors**: Simple coroutine interface
-- **Different DUTs**: Configure signal paths without code changes
-- **Plugin Architecture**: Encoders and models are decoupled
+- **Adding an instruction**: register an encoder/evaluator pair in
+  `encoders/op_tables.py`. Instructions in existing operation families are
+  picked up from the table; a new format or operation family also needs
+  generator and reference-model support.
+- **Adding a monitor**: monitors are plain coroutines started by the test —
+  see `monitors/monitors.py` for existing examples.
+- **Adapting to a different DUT hierarchy**: override signal paths through
+  `DUTSignalPaths` (see above) instead of editing test code.
+- **Configuration**: shared constants live in `config.py`, per-run behavior in
+  `TestConfig`. Semantic type aliases (`Address`, `RegisterIndex`, …) are
+  defined in `verification_types.py`, the custom exception hierarchy in
+  `exceptions.py`, and RISC-V-specific validation helpers
+  (`HardwareAssertions`) in `utils/validation.py`.

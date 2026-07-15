@@ -54,14 +54,14 @@ size_t n = uart_getline(buf, sizeof(buf)); // Read line with echo/backspace
 ```
 
 **Supported format specifiers (printf):**
-- `%c` - character
-- `%s` - string
-- `%d`, `%ld`, `%lld` - signed decimal
-- `%u`, `%lu`, `%llu` - unsigned decimal
-- `%x`, `%lx`, `%llx` (and uppercase variants) - hexadecimal
-- `%f` - floating point when compiled with `UART_PRINTF_ENABLE_FLOAT=1`;
+- `%c` — character
+- `%s` — string
+- `%d`, `%ld`, `%lld` — signed decimal
+- `%u`, `%lu`, `%llu` — unsigned decimal
+- `%x`, `%lx`, `%llx` (and uppercase variants) — hexadecimal
+- `%f` — floating point when compiled with `UART_PRINTF_ENABLE_FLOAT=1`;
   finite magnitudes at least 2^64 are reported as `ovf` or `-ovf`
-- `%%` - literal percent sign
+- `%%` — literal percent sign
 - Right-aligned field width (up to 255) and integer zero-padding: `%8d`, `%04x`
 - Floating-point precision is capped at 9 digits
 
@@ -357,16 +357,16 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 |-----|-------------|
 | `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 400+ tests, Verilator only) |
 | `branch_pred_test/` | Assembly-level branch predictor verification (45 BTB tests) |
-| `c_ext_test/` | Compressed (C ext) instruction test -- JAL/JALR/JR alignment cases |
+| `c_ext_test/` | Compressed (C ext) instruction test — JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) instruction test |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
-| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule); all nine official workloads run on both boards with per-workload calibration in `apps/software_registry.py`; builds on the unified linker script with the malloc heap (and large datasets such as radix2's FFT tables) in the 1 GiB cached DDR region |
+| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on both boards, calibrated per workload in `apps/software_registry.py`; builds use the unified linker script, placing the malloc heap (and large datasets such as radix2's FFT tables) in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
-| `hello_world/` | Minimal UART/timer sanity check -- prints a greeting every second |
+| `hello_world/` | Minimal UART/timer sanity check — prints a greeting every second |
 | `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV32GCB + M-mode) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
@@ -379,7 +379,7 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 | `sprintf_test/` | sprintf/snprintf formatting test suite (~200 cases) |
 | `strings_test/` | String/ctype/stdlib library test suite |
 | `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
-| `tomasulo_test/` | Tomasulo correctness test -- RAW/WAR/WAW hazards, renaming, OOO execution |
+| `tomasulo_test/` | Tomasulo correctness test — RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
 | `ddr_exec_test/` | Execute-from-DDR test: runs `.ddr_text` functions through the L1I fetch path (leaf/loop/recursion, cross-quadrant calls, bodies larger than the fetch buffer, warm-vs-cold) |
 | `ddr_heap_test/` | Multi-MB malloc capacity test through the cache hierarchy into DDR |
@@ -455,13 +455,13 @@ cached-region `sw_ddr.mem`/`sw_ddr.txt`/`sw_ddr.bin` images, and any split-bank
 ### Build Outputs
 
 Compilation produces:
-- `sw.elf` - ELF executable with debug symbols
-- `sw.mem` - Verilog hex format for `$readmemh` (low BRAM image)
-- `sw.bin` - Raw binary (low BRAM image)
-- `sw.txt` - BRAM initialization for Vivado
-- `sw_ddr.mem` - Cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region
-- `sw_ddr.txt` - Cached-region (DDR) image for the JTAG loader (dense words)
-- `sw.S` - Disassembly listing
+- `sw.elf` — ELF executable with debug symbols
+- `sw.mem` — Verilog hex format for `$readmemh` (low BRAM image)
+- `sw.bin` — raw binary (low BRAM image)
+- `sw.txt` — BRAM initialization for Vivado
+- `sw_ddr.mem` — cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region
+- `sw_ddr.txt` — cached-region (DDR) image for the JTAG loader (dense words)
+- `sw.S` — disassembly listing
 
 ### Toolchain Override
 

@@ -149,7 +149,7 @@ For manual Vivado project setup:
    - `boards/xilinx_frost_subsystem.sv` (common subsystem)
    - The board-specific wrapper (e.g., `genesys2/genesys2_frost.sv`)
 3. Add the constraint file from `constr/`
-4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) and the board's DDR `ddr_subsys` block design - see `fpga/build/build_step.tcl` and `fpga/build/<board>_ddr_bd.tcl` for configuration
+4. Generate the required Xilinx IP cores (jtag_axi_0, axi_bram_ctrl_0) and the board's DDR `ddr_subsys` block design — see `fpga/build/build_step.tcl` and `fpga/build/<board>_ddr_bd.tcl` for configuration
 5. Set the top module (e.g., `genesys2_frost`)
 6. Run synthesis and implementation
 7. Generate the bitstream

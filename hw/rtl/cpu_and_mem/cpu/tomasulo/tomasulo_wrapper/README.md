@@ -30,10 +30,10 @@ stays in the wrapper: it is tightly coupled to the integration and carries
 load-bearing synthesis attributes (`max_fanout`, `keep`) whose placement is best
 left undisturbed.
 
-## Why it's not a passive harness
+## Inline glue logic
 
-If the wrapper were just module instantiations, the rest of this README
-wouldn't exist. The interesting parts are below.
+The wrapper is not a passive harness: the subsections below describe the
+logic that lives here because it straddles submodule boundaries.
 
 ### FMUL operand-repair queue
 
