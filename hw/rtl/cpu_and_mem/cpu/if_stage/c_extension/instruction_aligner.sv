@@ -721,16 +721,24 @@ module instruction_aligner #(
   assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_start_valid ||
                                  !slot2_next_hi_compressed;
 
-  logic slot2_current_hi_valid_for_pc;
-  logic slot2_next_lo_valid_for_pc;
-  logic slot2_next_hi_valid_for_pc;
-  assign slot2_current_hi_valid_for_pc = slot2_current_hi_candidate && !slot2_current_hi_invalid;
-  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate && !slot2_next_lo_invalid;
-  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate && !slot2_next_hi_invalid;
+  // Select target validity independently of the late AllowsSlot2After bit.
+  // Every supported shape shares the same NOP and allows gates, so apply
+  // those once after this mux instead of qualifying three separate arms.
+  logic slot2_shape_valid_for_pc;
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1], slot1_compressed_for_pc
+    })
+      3'b001: slot2_shape_valid_for_pc = !slot2_current_hi_invalid;
+      3'b000, 3'b011, 3'b111: slot2_shape_valid_for_pc = !slot2_next_lo_invalid;
+      3'b010, 3'b110: slot2_shape_valid_for_pc = !slot2_next_hi_invalid;
+      default: slot2_shape_valid_for_pc = 1'b0;
+    endcase
+  end
 
   logic slot2_valid_when_enabled;
-  assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc ||
-      slot2_next_lo_valid_for_pc || slot2_next_hi_valid_for_pc;
+  assign slot2_valid_when_enabled =
+      !o_sel_nop && slot1_allows_slot2_for_pc && slot2_shape_valid_for_pc;
   assign o_slot2_valid_for_pc = slot2_valid_when_enabled;
   // Consumers only inspect the compression bit when slot-2 is valid.  Keep the
   // valid predicate out of this high-fanout select so the sideband "allows
