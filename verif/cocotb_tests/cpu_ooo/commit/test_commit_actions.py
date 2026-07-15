@@ -25,8 +25,6 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import COMMIT
 
 
 CLOCK_PERIOD_NS = 10
-MASK32 = (1 << 32) - 1
-MASK64 = (1 << 64) - 1
 
 
 def pack_commit(fields: Mapping[str, int | bool]) -> int:

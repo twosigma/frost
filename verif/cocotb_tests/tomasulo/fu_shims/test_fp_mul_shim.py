@@ -14,9 +14,9 @@
 
 """Cocotb tests for the fp_mul_shim module.
 
-Verifies FMUL_S/D, FMADD/FMSUB/FNMADD/FNMSUB S/D operations through
-the shim, including NaN-boxing of single-precision results, busy
-back-pressure, and flush behavior.
+Verifies FMUL_S, FMADD_S, and FMSUB_S operations through the shim,
+including NaN-boxing of single-precision results, busy back-pressure,
+and flush behavior.
 """
 
 from typing import Any
@@ -38,8 +38,6 @@ _INSTR_OPS = _parse_instr_op_enum()
 OP_FMUL_S = _INSTR_OPS["FMUL_S"]
 OP_FMADD_S = _INSTR_OPS["FMADD_S"]
 OP_FMSUB_S = _INSTR_OPS["FMSUB_S"]
-OP_FNMADD_S = _INSTR_OPS["FNMADD_S"]
-OP_FNMSUB_S = _INSTR_OPS["FNMSUB_S"]
 
 # ---------------------------------------------------------------------------
 # IEEE 754 single-precision constants (NaN-boxed in 64-bit)

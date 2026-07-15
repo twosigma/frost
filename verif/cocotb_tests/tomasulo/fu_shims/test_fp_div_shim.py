@@ -35,15 +35,12 @@ from .fp_div_shim_interface import (
 # IEEE 754 single-precision constants (NaN-boxed in 64-bit)
 NAN_BOX = 0xFFFF_FFFF_0000_0000
 SP_2_0 = NAN_BOX | 0x4000_0000  # 2.0f
-SP_3_0 = NAN_BOX | 0x4040_0000  # 3.0f
 SP_4_0 = NAN_BOX | 0x4080_0000  # 4.0f
 SP_6_0 = NAN_BOX | 0x40C0_0000  # 6.0f
-SP_9_0 = NAN_BOX | 0x4110_0000  # 9.0f
 
 # IEEE 754 double-precision constants
 DP_2_0 = 0x4000_0000_0000_0000  # 2.0
 DP_6_0 = 0x4018_0000_0000_0000  # 6.0
-DP_4_0 = 0x4010_0000_0000_0000  # 4.0
 
 # Expected NaN-boxed results
 EXPECTED_3_0 = 0xFFFF_FFFF_4040_0000  # 6.0 / 2.0 = 3.0
@@ -51,7 +48,6 @@ EXPECTED_2_0 = 0xFFFF_FFFF_4000_0000  # sqrt(4.0) = 2.0
 EXPECTED_3_0_SP = 0xFFFF_FFFF_4040_0000  # 6.0 / 2.0 = 3.0 (SP, NaN-boxed)
 EXPECTED_2_0_SP = 0xFFFF_FFFF_4000_0000  # sqrt(4.0) = 2.0 (SP, NaN-boxed)
 EXPECTED_3_0_DP = 0x4008_0000_0000_0000  # 6.0 / 2.0 = 3.0 (DP)
-EXPECTED_2_0_DP = 0x4000_0000_0000_0000  # sqrt(4.0) = 2.0 (DP)
 
 MAX_LATENCY = 80  # DP pipeline is 65 stages, allow margin
 

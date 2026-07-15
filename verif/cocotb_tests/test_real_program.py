@@ -3508,7 +3508,7 @@ async def test_real_program(dut: Any) -> None:
     Different programs have different success criteria:
     - Test suites (isa_test, strings_test, etc.): Must print "<<PASS>>"
     - Hello World: Must print "Hello, world!"
-    - CoreMark: Must print "Coremark" welcome message
+    - CoreMark: Must print "<<PASS>>"
 
     The program is run twice with a reset in between to verify that programs
     are robust to reset and all state is properly initialized.

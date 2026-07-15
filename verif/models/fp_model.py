@@ -12,13 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""IEEE 754 single-precision floating-point model for F extension verification.
+"""IEEE 754 floating-point model for F/D extension verification.
 
 FP Model
 ========
 
-This module implements software models for all RISC-V F extension operations.
-It uses Python's struct module to perform bit-accurate IEEE 754 conversions.
+This module implements software models for the RISC-V F and D extension
+operations. It uses Python's struct module to perform bit-accurate IEEE 754
+conversions.
 
 The model handles:
     - Arithmetic operations (add, sub, mul, div, sqrt, fma)
@@ -511,13 +512,6 @@ def is_inf(bits: int) -> bool:
 def is_zero(bits: int) -> bool:
     """Check if bits represent a zero value (+0 or -0)."""
     return (bits & 0x7FFFFFFF) == 0
-
-
-def is_subnormal(bits: int) -> bool:
-    """Check if bits represent a subnormal (denormalized) number."""
-    exp = (bits & FP_EXP_MASK) >> 23
-    mant = bits & FP_MANT_MASK
-    return exp == 0 and mant != 0
 
 
 def is_negative(bits: int) -> bool:

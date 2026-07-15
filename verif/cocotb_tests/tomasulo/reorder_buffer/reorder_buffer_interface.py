@@ -145,11 +145,6 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     return val
 
 
-def pack_alloc_request_invalid() -> int:
-    """Pack an invalid allocation request (alloc_valid = 0)."""
-    return 0
-
-
 # reorder_buffer_alloc_resp_t (7 bits total):
 # [6]   alloc_ready
 # [5:1] alloc_tag (5 bits)
@@ -170,9 +165,6 @@ def unpack_alloc_response(val: int) -> tuple[bool, int, bool]:
 
 # reorder_buffer_cdb_write_t:
 # valid (1) + tag (5) + value (64) + exception (1) + exc_cause (5) + fp_flags (5) = 81 bits
-CDB_WRITE_WIDTH = 81
-
-
 def pack_cdb_write(write: CDBWrite) -> int:
     """Pack CDBWrite into a bit vector."""
     val = 0
@@ -193,16 +185,8 @@ def pack_cdb_write(write: CDBWrite) -> int:
     return val
 
 
-def pack_cdb_write_invalid() -> int:
-    """Pack an invalid CDB write (valid = 0)."""
-    return 0
-
-
 # reorder_buffer_branch_update_t:
 # valid (1) + tag (5) + taken (1) + target (32) + mispredicted (1) = 40 bits
-BRANCH_UPDATE_WIDTH = 40
-
-
 def pack_branch_update(update: BranchUpdate) -> int:
     """Pack BranchUpdate into a bit vector."""
     val = 0
@@ -219,11 +203,6 @@ def pack_branch_update(update: BranchUpdate) -> int:
     val |= 1 << bit  # valid = 1
 
     return val
-
-
-def pack_branch_update_invalid() -> int:
-    """Pack an invalid branch update (valid = 0)."""
-    return 0
 
 
 COMMIT_FIELDS = [
@@ -723,15 +702,3 @@ class ReorderBufferInterface:
     def read_entry_value(self) -> int:
         """Read entry value. Call after setting tag and rising edge."""
         return int(self.dut.o_read_value.value)
-
-    async def read_entry(self, tag: int) -> tuple[bool, int]:
-        """Read entry done status and value.
-
-        Sets the read tag on falling edge, waits for rising edge, then reads.
-        """
-        await FallingEdge(self.clock)
-        self.set_read_tag(tag)
-        await RisingEdge(self.clock)
-        done = self.read_entry_done()
-        value = self.read_entry_value()
-        return done, value

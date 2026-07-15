@@ -33,7 +33,6 @@ from collections import deque
 
 # Match RTL parameters
 REORDER_BUFFER_DEPTH = 32
-REORDER_BUFFER_TAG_WIDTH = 5  # $clog2(32)
 XLEN = 32
 FLEN = 64
 MASK32 = (1 << 32) - 1
@@ -313,10 +312,6 @@ class ReorderBufferModel:
     # =========================================================================
     # Allocation
     # =========================================================================
-
-    def can_allocate(self) -> bool:
-        """Check if allocation is possible."""
-        return not self.full
 
     def allocate(self, req: AllocationRequest) -> int | None:
         """Allocate a new entry.

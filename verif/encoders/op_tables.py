@@ -147,8 +147,6 @@ from encoders.compressed_encode import (
     # C extension (compressed instructions)
     enc_c_addi,
     enc_c_li,
-    enc_c_lui,
-    enc_c_addi16sp,
     enc_c_slli,
     enc_c_srli,
     enc_c_srai,
@@ -169,12 +167,6 @@ from encoders.compressed_encode import (
     enc_c_jalr,
     enc_c_beqz,
     enc_c_bnez,
-    is_compressible_reg,
-    # C extension FP (compressed floating-point load/store)
-    enc_c_flw,
-    enc_c_fsw,
-    enc_c_flwsp,
-    enc_c_fswsp,
 )
 from models.alu_model import (
     add,
@@ -651,51 +643,6 @@ C_JUMPS: dict[str, Callable] = {
     "c.jal": lambda offset: enc_c_jal(offset),
     "c.jr": lambda rs1: enc_c_jr(rs1),
     "c.jalr": lambda rs1: enc_c_jalr(rs1),
-}
-
-# C extension special operations
-C_SPECIAL: dict[str, tuple[Callable, Callable]] = {
-    "c.lui": (lambda rd, imm: enc_c_lui(rd, imm), lambda x, y: (y << 12) & 0xFFFFFFFF),
-    "c.addi16sp": (lambda imm: enc_c_addi16sp(imm), add),
-}
-
-# Helper to check if a register can be used in compressed instructions
-is_compressed_reg = is_compressible_reg
-
-# =============================================================================
-# C extension FP (compressed floating-point load/store)
-# =============================================================================
-#
-# These are the only compressed floating-point instructions in RV32FC:
-#   - C.FLW: Load FP word from base+offset (rd'=FP, rs1'=INT)
-#   - C.FSW: Store FP word to base+offset (rs1'=INT, rs2'=FP)
-#   - C.FLWSP: Load FP word from SP+offset (rd=FP)
-#   - C.FSWSP: Store FP word to SP+offset (rs2=FP)
-#
-# Note: The evaluator for loads is 'lw' since it loads 32 bits to FP register.
-
-# Compressed FP load (limited register set: f8-f15 for rd', x8-x15 for rs1')
-# Format: (encoder, evaluator)
-C_FP_LOADS_LIMITED: dict[str, tuple[Callable, Callable]] = {
-    "c.flw": (lambda rd, rs1, uimm: enc_c_flw(rd, rs1, uimm), lw),
-}
-
-# Compressed FP store (limited register set: x8-x15 for rs1', f8-f15 for rs2')
-# Format: encoder only (store has no return value)
-C_FP_STORES_LIMITED: dict[str, Callable] = {
-    "c.fsw": lambda rs1, rs2, uimm: enc_c_fsw(rs1, rs2, uimm),
-}
-
-# Compressed FP load from stack (full FP register set: f0-f31)
-# Format: (encoder, evaluator)
-C_FP_LOADS_STACK: dict[str, tuple[Callable, Callable]] = {
-    "c.flwsp": (lambda rd, uimm: enc_c_flwsp(rd, uimm), lw),
-}
-
-# Compressed FP store to stack (full FP register set: f0-f31)
-# Format: encoder only (store has no return value)
-C_FP_STORES_STACK: dict[str, Callable] = {
-    "c.fswsp": lambda rs2, uimm: enc_c_fswsp(rs2, uimm),
 }
 
 # =============================================================================

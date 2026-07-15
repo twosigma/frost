@@ -53,6 +53,8 @@ Related Test Modules:
 Entry Points:
     - test_random_riscv_regression(): Default random test (16,000 instructions)
     - test_random_riscv_regression_force_one_address(): Single address stress test
+    - Six FP variants (see "Floating-Point Test Wrappers" below): mixed
+      integer/floating-point runs covering the F and D extensions
 """
 
 import cocotb
@@ -358,7 +360,7 @@ async def run_random_regression(
         # Step 6: Advance Software State for Next Cycle
         # ====================================================================
         # Move PC through pipeline stages
-        # All control flow (JAL, JALR, branches) now resolved in EX stage with same timing
+        # All control flow (JAL, JALR, branches) resolved in EX stage with same timing
         pc_update = CPUModel.calculate_internal_pc_update(
             state,
             operation,

@@ -31,7 +31,7 @@ Subpackages:
     monitors
         Runtime verification monitors for register file, PC, and memory
 
-    tests
+    cocotb_tests
         Test cases and infrastructure for random and directed testing
 
     utils
@@ -49,18 +49,12 @@ Modules:
 
 Quick Start
 -----------
-Run the default random instruction test::
+Run registered tests from the repository root through the frost wrapper,
+naming a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py``::
 
-    make test TEST=test_random_riscv_regression
-
-Run directed tests::
-
-    make test TEST=test_directed_lr_sc
-    make test TEST=test_directed_trap_handling
-
-Run integration tests with real programs::
-
-    make test TEST=test_real_program
+    ./scripts/frost.py cocotb hello_world
+    ./scripts/frost.py cocotb directed_traps
+    ./scripts/frost.py cocotb --list-tests
 
 For more information, see the README.md in this directory.
 """

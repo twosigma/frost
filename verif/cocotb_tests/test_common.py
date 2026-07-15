@@ -173,7 +173,6 @@ async def flush_remaining_outputs(
         dut_if: Optional DUT interface (for cleaner signal access)
     """
     # Pad PC queue with sequential PC values for instructions still in pipeline
-    # This accounts for instructions still in the pipeline
     for _ in range(PIPELINE_FLUSH_CYCLES):
         expected_pc = (state.program_counter_current + 4) & MASK32
         state.program_counter_expected_values_queue.append(expected_pc)

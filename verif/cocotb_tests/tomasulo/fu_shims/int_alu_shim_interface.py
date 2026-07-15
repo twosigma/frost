@@ -112,10 +112,6 @@ class IntAluShimInterface:
         self.dut.i_rs_issue.value = packed
         self.dut.i_issue_writes_cdb_hint.value = 0 if op in _BRANCH_OPS else 1
 
-    def drive_csr_read_data(self, value: int) -> None:
-        """Drive i_csr_read_data."""
-        self.dut.i_csr_read_data.value = value & 0xFFFFFFFF
-
     def clear_issue(self) -> None:
         """Clear i_rs_issue (drive to zero / invalid)."""
         self.dut.i_rs_issue.value = 0

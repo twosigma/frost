@@ -2713,7 +2713,7 @@ async def test_fp_flags_commit_verification(dut: Any) -> None:
     """Test that FP exception flags propagate correctly through commit.
 
     Allocate an FP instruction, CDB-write with specific fp_flags (overflow + inexact
-    = 0b01001), commit, and verify the exact fp_flags value in the commit struct.
+    = 0b00101), commit, and verify the exact fp_flags value in the commit struct.
     """
     cocotb.log.info("=== Test: FP Flags Commit Verification ===")
 

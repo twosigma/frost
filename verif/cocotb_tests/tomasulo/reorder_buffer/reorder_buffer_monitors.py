@@ -414,37 +414,3 @@ class StatusMonitor:
             raise AssertionError(
                 f"StatusMonitor: {len(self.errors)} errors:\n" + "\n".join(self.errors)
             )
-
-
-async def commit_monitor(
-    dut: Any,
-    expected_queue: deque[ExpectedCommit],
-    check_value: bool = True,
-) -> None:
-    """Coroutine wrapper for CommitMonitor.
-
-    For compatibility with existing test patterns.
-    """
-    monitor = CommitMonitor(dut, expected_queue, check_value)
-    await monitor.run()
-
-
-async def allocation_monitor(
-    dut: Any,
-    expected_queue: deque[tuple[bool, int]],
-) -> None:
-    """Coroutine wrapper for AllocationMonitor.
-
-    For compatibility with existing test patterns.
-    """
-    monitor = AllocationMonitor(dut, expected_queue)
-    await monitor.run()
-
-
-async def status_monitor(dut: Any, depth: int = 32) -> None:
-    """Coroutine wrapper for StatusMonitor.
-
-    For compatibility with existing test patterns.
-    """
-    monitor = StatusMonitor(dut, depth)
-    await monitor.run()

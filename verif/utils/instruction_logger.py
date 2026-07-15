@@ -91,35 +91,6 @@ class InstructionLogger:
         cocotb.log.info(" ".join(parts))
 
     @staticmethod
-    def log_memory_operation(
-        cycle: int,
-        operation: str,
-        address: int,
-        data: int | None = None,
-        mask: int | None = None,
-    ) -> None:
-        """Log memory load or store operation.
-
-        Args:
-            cycle: Current simulation cycle
-            operation: Memory operation ("lw", "sw", etc.)
-            address: Memory address
-            data: Data value (for stores)
-            mask: Byte enable mask (for stores)
-        """
-        if operation in LOADS:
-            cocotb.log.info(
-                f"[Cycle {cycle:5d}] {operation:6s} loading from address 0x{address:08x}"
-            )
-        elif operation in STORES:
-            mask_str = f" mask=0b{mask:04b}" if mask is not None else ""
-            data_str = f" data=0x{data:08x}" if data is not None else ""
-            cocotb.log.info(
-                f"[Cycle {cycle:5d}] {operation:6s} storing to 0x{address:08x}"
-                f"{data_str}{mask_str}"
-            )
-
-    @staticmethod
     def log_pipeline_event(cycle: int, event: str, details: str = "") -> None:
         """Log pipeline events like stalls, flushes, or hazards.
 
@@ -141,29 +112,6 @@ class InstructionLogger:
         """
         InstructionLogger.log_pipeline_event(
             cycle, "FLUSH", f"Branch misprediction at PC=0x{pc:08x}, inserting NOP"
-        )
-
-    @staticmethod
-    def log_mismatch(
-        component: str,
-        cycle: int,
-        expected: int,
-        actual: int,
-        register: int | None = None,
-    ) -> None:
-        """Log hardware-software mismatch for debugging.
-
-        Args:
-            component: Component that mismatched ("REGFILE", "PC", "MEMORY")
-            cycle: Cycle when mismatch occurred
-            expected: Expected value from software model
-            actual: Actual value from hardware
-            register: Register index (if applicable)
-        """
-        reg_str = f" x{register}" if register is not None else ""
-        cocotb.log.error(
-            f"[Cycle {cycle:5d}] MISMATCH {component}{reg_str}: "
-            f"expected=0x{expected:08x}, actual=0x{actual:08x}"
         )
 
     @staticmethod

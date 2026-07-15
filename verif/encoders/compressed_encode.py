@@ -100,37 +100,6 @@ def is_compressible_reg(reg: int) -> bool:
 # =============================================================================
 
 
-def enc_c_addi4spn(rd_prime: int, nzuimm: int) -> int:
-    """Encode C.ADDI4SPN: addi rd', sp, nzuimm.
-
-    Adds a zero-extended non-zero immediate, scaled by 4, to the stack pointer,
-    and writes the result to rd'. Used to generate pointers to stack-allocated
-    variables.
-
-    Args:
-        rd_prime: Destination register (x8-x15, will be compressed)
-        nzuimm: Non-zero unsigned immediate, must be multiple of 4, range [4, 1020]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert 8 <= rd_prime <= 15, f"rd' must be x8-x15, got x{rd_prime}"
-    assert nzuimm != 0 and nzuimm % 4 == 0, "nzuimm must be non-zero multiple of 4"
-    assert 4 <= nzuimm <= 1020, f"nzuimm out of range: {nzuimm}"
-
-    # Immediate encoding: nzuimm[5:4|9:6|2|3]
-    # Bits [12:5] = nzuimm[5:4] | nzuimm[9:6] | nzuimm[2] | nzuimm[3]
-    imm = nzuimm
-    return CompressedEncoder._pack_bits(
-        ((imm >> 4) & 0x3, 11, 0x3),  # nzuimm[5:4] -> bits [12:11]
-        ((imm >> 6) & 0xF, 7, 0xF),  # nzuimm[9:6] -> bits [10:7]
-        ((imm >> 2) & 0x1, 6, 0x1),  # nzuimm[2] -> bit [6]
-        ((imm >> 3) & 0x1, 5, 0x1),  # nzuimm[3] -> bit [5]
-        (compress_reg(rd_prime), 2, 0x7),  # rd' -> bits [4:2]
-        (0b00, 0, 0x3),  # opcode quadrant 0
-    )
-
-
 def enc_c_lw(rd_prime: int, rs1_prime: int, uimm: int) -> int:
     """Encode C.LW: lw rd', offset(rs1').
 
@@ -724,15 +693,6 @@ def enc_c_mv(rd: int, rs2: int) -> int:
         (rs2, 2, 0x1F),  # rs2 -> bits [6:2]
         (0b10, 0, 0x3),  # opcode quadrant 2
     )
-
-
-def enc_c_ebreak() -> int:
-    """Encode C.EBREAK: ebreak.
-
-    Returns:
-        16-bit encoded instruction (0x9002)
-    """
-    return 0x9002
 
 
 def enc_c_jalr(rs1: int) -> int:

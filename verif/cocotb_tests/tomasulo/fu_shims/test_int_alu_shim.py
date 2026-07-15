@@ -600,7 +600,7 @@ async def test_branch_no_valid(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: CSR read (CSRRS with i_csr_read_data)
+# Test 20: CSR read (CSRRS with i_csr_read_data)
 # ============================================================================
 @cocotb.test()
 async def test_csr_read(dut: Any) -> None:
