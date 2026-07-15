@@ -2049,15 +2049,24 @@ module tomasulo_wrapper #(
   // ---------------------------------------------------------------------------
   riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch;
   riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch_2;
+  // Keep the MEM_RS src2-ready load local to its eight entries.  The shared
+  // dispatch predicate also feeds other backend consumers, and allowing that
+  // cone to fan directly into MEM_RS puts its ready flops on a long net.
+  (* max_fanout = 8 *)
+  logic                                                           mem_rs_dispatch_src2_ready;
   logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
   logic                                                           mem_rs_pre_issue_needs_lq;
 
-  always_comb begin
-    mem_rs_dispatch         = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
-    mem_rs_dispatch.valid   = mem_rs_dispatch_valid;
+  assign mem_rs_dispatch_src2_ready =
+      SPLIT_RS_DISPATCH ? i_mem_rs_dispatch.src2_ready : i_rs_dispatch.src2_ready;
 
-    mem_rs_dispatch_2       = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch_2 : '0;
-    mem_rs_dispatch_2.valid = mem_rs_dispatch_valid_2;
+  always_comb begin
+    mem_rs_dispatch            = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
+    mem_rs_dispatch.valid      = mem_rs_dispatch_valid;
+    mem_rs_dispatch.src2_ready = mem_rs_dispatch_src2_ready;
+
+    mem_rs_dispatch_2          = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch_2 : '0;
+    mem_rs_dispatch_2.valid    = mem_rs_dispatch_valid_2;
   end
 
   reservation_station #(
