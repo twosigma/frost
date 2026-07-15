@@ -81,14 +81,33 @@ module fu_cdb_adapter #(
   function automatic logic is_younger(input logic [TagW-1:0] entry_tag,
                                       input logic [TagW-1:0] flush_tag,
                                       input logic [TagW-1:0] head);
+    logic entry_before_head;
+    logic flush_before_head;
+    begin
+      // Split the circular ordering at the ROB head.  Tags on opposite sides
+      // are ordered by their region; tags in the same region compare directly.
+      // This is equivalent to comparing widened (tag - head) ages without
+      // putting two subtractors ahead of the flush-valid cone.
+      entry_before_head = entry_tag < head;
+      flush_before_head = flush_tag < head;
+      is_younger = (entry_before_head != flush_before_head) ?
+          entry_before_head : (entry_tag > flush_tag);
+    end
+  endfunction
+
+`ifndef SYNTHESIS
+  function automatic logic is_younger_age_oracle(input logic [TagW-1:0] entry_tag,
+                                                 input logic [TagW-1:0] flush_tag,
+                                                 input logic [TagW-1:0] head);
     logic [TagW:0] entry_age;
     logic [TagW:0] flush_age;
     begin
-      entry_age  = {1'b0, entry_tag} - {1'b0, head};
-      flush_age  = {1'b0, flush_tag} - {1'b0, head};
-      is_younger = entry_age > flush_age;
+      entry_age = {1'b0, entry_tag} - {1'b0, head};
+      flush_age = {1'b0, flush_tag} - {1'b0, head};
+      is_younger_age_oracle = entry_age > flush_age;
     end
   endfunction
+`endif
 
   // ---------------------------------------------------------------------------
   // Internal state
@@ -115,6 +134,27 @@ module fu_cdb_adapter #(
   assign partial_flush_input = i_flush_en & i_fu_result.valid & is_younger(
       i_fu_result.tag, i_flush_tag, i_rob_head_tag
   );
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (i_rst_n && result_pending) begin
+      p_held_age_rewrite_equivalent :
+      assert (is_younger(
+          held_result.tag, i_flush_tag, i_rob_head_tag
+      ) == is_younger_age_oracle(
+          held_result.tag, i_flush_tag, i_rob_head_tag
+      ));
+    end
+    if (i_rst_n && i_fu_result.valid) begin
+      p_input_age_rewrite_equivalent :
+      assert (is_younger(
+          i_fu_result.tag, i_flush_tag, i_rob_head_tag
+      ) == is_younger_age_oracle(
+          i_fu_result.tag, i_flush_tag, i_rob_head_tag
+      ));
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
