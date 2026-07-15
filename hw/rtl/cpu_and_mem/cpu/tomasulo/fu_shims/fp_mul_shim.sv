@@ -20,8 +20,8 @@
  * Translates rs_issue_t from FMUL_RS into FPU subunit native ports.
  *
  * Subunits:
- *   - fpu_mult_unit: FMUL_S/D (~9 cycles)
- *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (~10 cycles)
+ *   - fpu_mult_unit: FMUL_S/D (~11 cycles)
+ *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (~16 cycles)
  *
  * FMA operand mapping: a=src1, b=src2, c=src3
  *   FMADD:  negate_product=0, negate_c=0  → a*b + c
@@ -409,17 +409,11 @@ module fp_mul_shim (
       if (mult_completion_valid) begin
         fifo_valid[fifo_wr_ptr]   <= 1'b1;
         fifo_flushed[fifo_wr_ptr] <= 1'b0;
-        fifo_tag[fifo_wr_ptr]     <= mult_tag_q[mult_rd_ptr];
-        fifo_value[fifo_wr_ptr]   <= mult_result;
-        fifo_flags[fifo_wr_ptr]   <= mult_flags;
       end
 
       if (fma_completion_valid) begin
         fifo_valid[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= 1'b1;
         fifo_flushed[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)] <= 1'b0;
-        fifo_tag[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]     <= fma_tag_q[fma_rd_ptr];
-        fifo_value[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_result;
-        fifo_flags[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_flags;
       end
 
       fifo_wr_ptr <= fifo_wr_ptr + FifoPtrW'(fifo_push_count);
@@ -435,6 +429,25 @@ module fp_mul_shim (
         3'b101:  fifo_count <= fifo_count + 1'b1;
         default: fifo_count <= fifo_count;
       endcase
+    end
+  end
+
+  // Keep the wide payload RAM writes out of the flush/control process.  The
+  // payload is don't-care whenever fifo_valid is clear, so reset and full
+  // flush intentionally leave it unchanged just as the combined process did.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && !i_flush) begin
+      if (mult_completion_valid) begin
+        fifo_tag[fifo_wr_ptr]   <= mult_tag_q[mult_rd_ptr];
+        fifo_value[fifo_wr_ptr] <= mult_result;
+        fifo_flags[fifo_wr_ptr] <= mult_flags;
+      end
+
+      if (fma_completion_valid) begin
+        fifo_tag[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_tag_q[fma_rd_ptr];
+        fifo_value[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)] <= fma_result;
+        fifo_flags[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)] <= fma_flags;
+      end
     end
   end
 

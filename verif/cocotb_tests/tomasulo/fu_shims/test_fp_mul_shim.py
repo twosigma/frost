@@ -50,18 +50,24 @@ F32_3_0 = 0x4040_0000
 F32_5_0 = 0x40A0_0000
 F32_6_0 = 0x40C0_0000
 F32_7_0 = 0x40E0_0000
+F32_MAX_FINITE = 0x7F7F_FFFF
+F32_POS_INF = 0x7F80_0000
 
 # NaN-boxed 64-bit representations for driving src values
 SRC_1_0 = NAN_BOX | F32_1_0
 SRC_2_0 = NAN_BOX | F32_2_0
 SRC_3_0 = NAN_BOX | F32_3_0
+SRC_MAX_FINITE = NAN_BOX | F32_MAX_FINITE
 
 # Expected NaN-boxed 64-bit results
 RES_5_0 = NAN_BOX | F32_5_0
 RES_6_0 = NAN_BOX | F32_6_0
 RES_7_0 = NAN_BOX | F32_7_0
+RES_POS_INF = NAN_BOX | F32_POS_INF
 
-# Maximum cycles to wait for completion (mult ~9 cycles, fma ~10 cycles)
+FP_FLAGS_OF_NX = 0x05
+
+# Maximum cycles to wait for completion (FMUL 11 cycles, FMA 16 cycles)
 MAX_LATENCY = 20
 
 
@@ -104,6 +110,70 @@ async def wait_for_completions(
             if len(results) == count:
                 return results
     raise AssertionError(f"only saw {len(results)} of {count} expected completions")
+
+
+async def issue_aligned_fma_fmul_pair(
+    dut: Any,
+    iface: FpMulShimInterface,
+    *,
+    fma_tag: int,
+    mult_tag: int,
+    mult_src1: int = SRC_2_0,
+    mult_src2: int = SRC_3_0,
+) -> None:
+    """Issue an FMA five cycles before an FMUL so both complete together."""
+    iface.drive_issue(
+        valid=True,
+        rob_tag=fma_tag,
+        op=OP_FMADD_S,
+        src1_value=SRC_2_0,
+        src2_value=SRC_3_0,
+        src3_value=SRC_1_0,
+    )
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+
+    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+    # Four idle issue edges put the FMUL issue edge five cycles after the FMA.
+    for _ in range(4):
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=mult_tag,
+        op=OP_FMUL_S,
+        src1_value=mult_src1,
+        src2_value=mult_src2,
+    )
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+
+
+async def wait_for_simultaneous_subunit_completions(dut: Any) -> None:
+    """Stop in the cycle before simultaneous FMUL/FMA results enter the FIFO."""
+    for _ in range(MAX_LATENCY):
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+        if int(dut.mult_completion_valid.value) and int(dut.fma_completion_valid.value):
+            return
+    raise AssertionError("FMUL and FMA did not complete simultaneously")
+
+
+def assert_completion(
+    result: dict, *, tag: int, value: int, fp_flags: int, context: str
+) -> None:
+    """Check every payload field stored by the result FIFO."""
+    assert result["valid"], f"{context}: expected a valid completion"
+    assert result["tag"] == tag, f"{context}: expected tag={tag}, got {result['tag']}"
+    assert (
+        result["value"] == value
+    ), f"{context}: expected value 0x{value:016X}, got 0x{result['value']:016X}"
+    assert result["fp_flags"] == fp_flags, (
+        f"{context}: expected fp_flags=0x{fp_flags:02X}, "
+        f"got 0x{result['fp_flags']:02X}"
+    )
 
 
 # ============================================================================
@@ -313,3 +383,112 @@ async def test_back_to_back_fmul_s_tags(dut: Any) -> None:
         assert (
             result["value"] == RES_6_0
         ), f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), got 0x{result['value']:016X}"
+
+
+# ============================================================================
+# Test 8: Simultaneous FMUL/FMA completions survive FIFO backpressure
+# ============================================================================
+@cocotb.test()
+async def test_simultaneous_fmul_fma_completion_backpressure(dut: Any) -> None:
+    """Hold a two-result push, then drain all payload fields in FIFO order."""
+    iface = await setup(dut)
+    iface.drive_accepted(False)
+
+    await issue_aligned_fma_fmul_pair(
+        dut,
+        iface,
+        fma_tag=22,
+        mult_tag=21,
+        mult_src1=SRC_MAX_FINITE,
+        mult_src2=SRC_2_0,
+    )
+    await wait_for_simultaneous_subunit_completions(dut)
+
+    # Both writes enter the FIFO on this edge.  FMUL has the lower write slot
+    # and FMA follows it when the subunits complete on the same cycle.
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    assert int(dut.fifo_count.value) == 2, "expected a two-result FIFO push"
+
+    mult_result = iface.read_fu_complete()
+    assert_completion(
+        mult_result,
+        tag=21,
+        value=RES_POS_INF,
+        fp_flags=FP_FLAGS_OF_NX,
+        context="held FMUL",
+    )
+
+    # Backpressure must hold the complete payload, not just valid/tag.
+    for _ in range(3):
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+        assert (
+            iface.read_fu_complete() == mult_result
+        ), "FMUL payload changed while i_mul_accepted was low"
+
+    iface.drive_accepted(True)
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    assert_completion(
+        iface.read_fu_complete(),
+        tag=22,
+        value=RES_7_0,
+        fp_flags=0,
+        context="drained FMA",
+    )
+
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    assert not iface.read_fu_complete()["valid"], "FIFO did not drain both results"
+
+
+# ============================================================================
+# Test 9: Same-edge partial flush compacts a surviving FMA result
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_simultaneous_completion_compacts_fma(dut: Any) -> None:
+    """Kill the FMUL as both subunits complete and keep the FMA at the head."""
+    iface = await setup(dut)
+    iface.drive_accepted(False)
+
+    # With ROB head 0 and flush tag 10, tag 12 is younger and must be killed;
+    # tag 8 is older and must survive.  The pair is timed to complete together.
+    await issue_aligned_fma_fmul_pair(
+        dut,
+        iface,
+        fma_tag=8,
+        mult_tag=12,
+    )
+    await wait_for_simultaneous_subunit_completions(dut)
+
+    # Assert the partial flush in the completion cycle.  Because the FMUL is
+    # filtered, the FMA must use fifo_wr_ptr itself rather than leave slot zero
+    # empty by offsetting from the raw FMUL pop.
+    iface.drive_partial_flush(flush_tag=10, head_tag=0)
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    iface.clear_partial_flush()
+
+    assert (
+        int(dut.fifo_count.value) == 1
+    ), "same-edge partial flush should enqueue only the surviving FMA"
+    assert_completion(
+        iface.read_fu_complete(),
+        tag=8,
+        value=RES_7_0,
+        fp_flags=0,
+        context="compacted FMA",
+    )
+
+    iface.drive_accepted(True)
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    assert not iface.read_fu_complete()["valid"], "flushed FMUL result reappeared"
+
+    for _ in range(3):
+        await RisingEdge(dut.i_clk)
+        await FallingEdge(dut.i_clk)
+        assert not iface.read_fu_complete()[
+            "valid"
+        ], "unexpected completion after draining the surviving FMA"
