@@ -121,10 +121,10 @@ Program the FPGA with the generated bitstream via JTAG.
 ```
 
 **Arguments:**
-- `board` - Target board: `x3` or `genesys2`
-- `remote_host` - (Optional) Hostname for remote FPGA programming
-- `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
-- `--list-targets` - (Optional) List available hardware targets for this board and exit
+- `board` — target board: `x3` or `genesys2`
+- `remote_host` — (optional) hostname for remote FPGA programming
+- `--target PATTERN` — (optional) select hardware target by index (0, 1, 2, …) or pattern (e.g., serial number)
+- `--list-targets` — (optional) list available hardware targets for this board and exit
 
 **Examples:**
 ```bash
@@ -149,7 +149,7 @@ Program the FPGA with the generated bitstream via JTAG.
 Load software without regenerating the bitstream. The loader writes the
 low-BRAM image and, when the app emits a non-empty `sw_ddr.txt`, bursts that
 cached-region image into DDR before releasing reset. Applications are compiled
-automatically before loading—no manual build step required. The board argument
+automatically before loading — no manual build step required. The board argument
 sets the correct clock frequency and scales CoreMark iterations appropriately.
 
 ```bash
@@ -157,11 +157,11 @@ sets the correct clock frequency and scales CoreMark iterations appropriately.
 ```
 
 **Arguments:**
-- `board` - Target board: `x3` or `genesys2`
-- `app` - Application name (run `./fpga/load_software/load_software.py --help` for choices)
-- `remote_host` - (Optional) Hostname for remote FPGA
-- `--target PATTERN` - (Optional) Select hardware target by index (0, 1, 2...) or pattern (e.g., serial number)
-- `--list-targets` - (Optional) List available hardware targets for this board and exit (does not require `app`)
+- `board` — target board: `x3` or `genesys2`
+- `app` — application name (run `./fpga/load_software/load_software.py --help` for choices)
+- `remote_host` — (optional) hostname for remote FPGA
+- `--target PATTERN` — (optional) select hardware target by index (0, 1, 2, …) or pattern (e.g., serial number)
+- `--list-targets` — (optional) list available hardware targets for this board and exit (does not require `app`)
 
 The script compiles the application with the correct clock frequency for the
 target board, writes `sw.txt` to low BRAM starting at address `0x00000000`, and
@@ -220,8 +220,8 @@ Target names follow the format `hostname:port/xilinx_tcf/<vendor>/<serial>`:
 - Alveo boards: `localhost:3121/xilinx_tcf/Xilinx/00001234abcd`
 
 The `--target` pattern matching is case-insensitive and matches anywhere in the target name, so you can use:
-- `210299A8B4D1` - matches a specific board by serial number
-- `0`, `1`, `2` - select by index from the filtered target list
+- `210299A8B4D1` — matches a specific board by serial number
+- `0`, `1`, `2` — select by index from the filtered target list
 
 ## Architecture
 
@@ -275,7 +275,7 @@ To program or load software on a remote FPGA:
 ### Adding a New Board
 
 1. Create `boards/<board>/` with:
-   - `<board>_frost.sv` - Top-level wrapper with clock generation
+   - `<board>_frost.sv` — top-level wrapper with clock generation
      - Generate CPU clock and /4 clock using MMCM
      - Instantiate the board's DDR controller subsystem (the `ddr_subsys`
        block design built by `build/<board>_ddr_bd.tcl`) and the FROST
@@ -283,8 +283,8 @@ To program or load software on a remote FPGA:
      - Instantiate `xilinx_frost_subsystem` (see `boards/xilinx_frost_subsystem.sv`),
        passing `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` for the board's hierarchy
        shape (`CACHED_HAS_L2=1` only where UltraRAM exists, e.g. X3)
-   - `constr/<board>.xdc` - Pin assignments and timing constraints
-   - `<board>_frost.f` - File list for synthesis (include the subsystem and core)
+   - `constr/<board>.xdc` — pin assignments and timing constraints
+   - `<board>_frost.f` — file list for synthesis (include the subsystem and core)
 
    The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and the per-board DDR
    `ddr_subsys` block design are created on the fly during synthesis by

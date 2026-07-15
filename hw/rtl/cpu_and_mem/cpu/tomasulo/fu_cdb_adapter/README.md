@@ -58,9 +58,8 @@ PENDING the following cycle, so results take one extra cycle.
 
 ## Verification
 
-The whole reason this module is small enough to be slightly
-interesting is that its state space is also small enough to formally
-verify exhaustively. The `` `ifdef FORMAL `` block proves all the
+The module's state space is small enough to verify exhaustively with
+formal methods. The `` `ifdef FORMAL `` block proves all the
 state transitions, the tag/value/exception stability while pending,
 the pass-through correctness (and the registered-output mode's
 idle-invalid output), the flush semantics, and the back-pressure

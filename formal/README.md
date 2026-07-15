@@ -6,7 +6,7 @@ Formal verification uses SMT solvers to mathematically prove that properties hol
 
 | Tool | Purpose |
 |------|---------|
-| **SymbiYosys (sby)** | Formal verification frontend - orchestrates Yosys + solvers |
+| **SymbiYosys (sby)** | Formal verification frontend — orchestrates Yosys + solvers |
 | **Yosys** | RTL synthesis and preparation for SMT encoding |
 | **Boolector / Z3** | SMT solvers (the `smtbmc` engine; each `.sby` selects one) |
 | **btormc** | BTOR model checker (the `btor` engine; faster on some targets, e.g. ROB BMC) |
@@ -17,15 +17,15 @@ Assertions are embedded directly in the RTL inside `ifdef FORMAL` blocks. These 
 
 Each `.sby` file defines a verification target with tasks:
 
-- **BMC (Bounded Model Checking)** -- proves all `assert` properties hold for N clock cycles, across all possible input combinations
-- **Cover** -- proves all `cover` properties are reachable (i.e., the scenarios aren't dead code)
-- **Prove (k-induction)** -- optional unbounded safety proof via k-induction for targets that define a `prove` task.
+- **BMC (Bounded Model Checking)** — proves all `assert` properties hold for N clock cycles, across all possible input combinations
+- **Cover** — proves all `cover` properties are reachable (i.e., the scenarios are not dead code)
+- **Prove (k-induction)** — optional unbounded safety proof via k-induction for targets that define a `prove` task
 
 ## Targets
 
-Formal targets are intentionally documented from code, not duplicated in this README.
-The source of truth is `FORMAL_TARGETS` in `tests/test_run_formal.py` plus the `.sby`
-files in this directory.
+The list of formal targets is deliberately kept in code rather than duplicated
+in this README. The source of truth is `FORMAL_TARGETS` in
+`tests/test_run_formal.py` plus the `.sby` files in this directory.
 
 ```bash
 # List all targets and their supported tasks
@@ -60,9 +60,9 @@ container and the tool versions match CI.
 
 ## Property Style: Contract-Based
 
-Properties follow contract-style verification rather than tautological restating of RTL:
+Properties follow contract-style verification rather than tautologically restating the RTL:
 
-- **Contract properties** verify input-to-output relationships that are falsifiable -- changing the implementation could break them
+- **Contract properties** verify input-to-output relationships that are falsifiable — changing the implementation could break them
 - **Sequential contracts** use `$past()` to verify state transitions across clock edges
 - **Structural constraints** use `assume` to model impossible input combinations (e.g., `!(trap && mret)`)
 - **Wiring guards** verify output port assignments match internal signals (catch cut-paste errors)
@@ -124,7 +124,7 @@ Yosys supports a subset of SystemVerilog Assertions. Key constraints:
 - Use immediate assertions inside `always @(posedge clk)` blocks
 - Use `!a || b` for implication (not `a |-> b` which is concurrent-only)
 - Use `$past(signal)` for sequential properties
-- No hierarchical references (`u_sub.signal`) -- assertions must be inside the module
+- No hierarchical references (`u_sub.signal`) — assertions must be inside the module
 - Use `initial assume(i_rst)` to ensure registers start in a known state
 
 ## File Organization

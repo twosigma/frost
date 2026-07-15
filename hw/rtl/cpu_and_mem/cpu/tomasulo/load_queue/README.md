@@ -6,9 +6,9 @@ reservation register, and the AMO read-modify-write path. Loads allocate in
 program order at dispatch, with independent slot-1 and slot-2 allocation ports
 for 2-wide bundles, and free when their result is broadcast on the CDB.
 
-## What makes loads interesting
+## Design overview
 
-The hard part of an OOO load queue is figuring out *when* a load may
+The hard part of an OOO load queue is deciding *when* a load may
 issue. The LQ uses conservative disambiguation: a load can't issue
 to memory until every older store address is known. If a matching
 older store turns up that covers the load's bytes, the LQ pulls the

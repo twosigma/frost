@@ -6,11 +6,11 @@ An out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tom
 
 ## Why FROST?
 
-There are many RISC-V cores. Here's what makes FROST different:
+What distinguishes FROST from other RISC-V cores:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Solid performance** — 3.25 CoreMark/MHz (974 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Performance** — 3.25 CoreMark/MHz (974 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Boots no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image; CI builds it from source (`build-frost-linux`) and boots it in both cocotb RTL simulation (`linux-boot-cocotb`) and QEMU (`linux-boot-qemu`).
@@ -87,7 +87,7 @@ There are many RISC-V cores. Here's what makes FROST different:
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode; 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8) — the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode. 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8); the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
 - **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
@@ -101,13 +101,15 @@ There are many RISC-V cores. Here's what makes FROST different:
 - **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). Both instruction fetch (a read-only L1I — 16 KiB on X3, 128 KiB on Genesys2) and data (a 128 KiB L1D) run through it on every board — so code can execute from DDR, not just from low BRAM — sharing a 2:1 line-port arbiter (data-side priority), plus a 2 MiB UltraRAM L2 spliced in on UltraScale+, over the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
+- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the two L1s sharing a 2:1 line-port arbiter (data-side priority). On UltraScale+ a 2 MiB UltraRAM L2 is spliced in below the L1s; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
 - **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (execute-from-DDR code, heap, and large data); the hierarchy shape behind it is opaque to software
 - **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
 
-Validated with these tool versions:
+FROST is validated with the tool versions below. The Docker image described in
+the next section provides all of them except Vivado, so no host installation is
+required for simulation, formal verification, or linting.
 
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
@@ -155,16 +157,16 @@ The Docker image includes:
   clang-format hook environments install on the first lint run and are cached
 
 `doctor` is a read-only preflight. It reports each diagnostic as `PASS`,
-`WARN`, `FAIL`, or dependency-gated `SKIP`, then returns a nonzero status if any
-check failed. It checks
-Docker access, image compatibility, submodules, the persistent hook cache, and
-generated-artifact ownership. The ownership scan deliberately skips `./hw`.
-The hook cache lives at `$XDG_CACHE_HOME/frost/container` when that variable is
-set, or at `~/.cache/frost/container` otherwise.
+`WARN`, `FAIL`, or dependency-gated `SKIP`, then returns a nonzero status if
+any check failed. It checks Docker access, image compatibility, submodules,
+the persistent hook cache, and generated-artifact ownership. The ownership
+scan deliberately skips `./hw`. The hook cache lives at
+`$XDG_CACHE_HOME/frost/container` when that variable is set, or at
+`~/.cache/frost/container` otherwise.
 
 ## Running Code-Quality Checks
 
-Run the two fast CI gates—the `Lint` and `Fast Python Tests` jobs—with one
+Run the two fast CI gates — the `Lint` and `Fast Python Tests` jobs — with one
 command:
 
 ```bash
@@ -199,11 +201,11 @@ The pytest run covers the registry's unit benches and real programs. The
 riscv-tests, riscv-arch-test, and torture matrices have dedicated runners; see
 `tests/README.md` for their pinned-container commands. The legacy
 constrained-random `cpu_tb` regression is registered as the CLI-only
-`cpu_random` target; its harness plumbing is OOO-aware (register-file hierarchy
+`cpu_random` target: its harness plumbing is OOO-aware (register-file hierarchy
 paths, LVT-aware banked-RAM reads), but its scoreboard still assumes single-wide
 in-order retirement with fixed fetch-to-writeback offsets and needs a
-commit-indexed redesign before it passes on the current core (randomized
-coverage is meanwhile provided by the Spike-referenced torture runner).
+commit-indexed redesign before it passes on the current core. Randomized
+coverage is meanwhile provided by the Spike-referenced torture runner.
 
 ## Directory Structure
 
@@ -320,7 +322,7 @@ Most program-level suites run in **two memory tiers as separate CI jobs**: a `br
 # 2. Program FPGA
 ./fpga/program_bitstream/program_bitstream.py x3
 
-# 3. Load software (fast - no re-synthesis)
+# 3. Load software (fast — no re-synthesis)
 ./fpga/load_software/load_software.py x3 hello_world
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
@@ -393,8 +395,8 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ## CPU Internals
 
-For a deeper dive into the OOO design and the cross-cutting decisions that
-hold it together, see the CPU README at
+For detailed documentation of the OOO design and the cross-cutting decisions
+behind it, see the CPU README at
 [`hw/rtl/cpu_and_mem/cpu/README.md`](hw/rtl/cpu_and_mem/cpu/README.md) and
 the Tomasulo back-end README at
 [`hw/rtl/cpu_and_mem/cpu/tomasulo/README.md`](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md).
