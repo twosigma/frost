@@ -90,6 +90,10 @@ class FpMulShimInterface:
         """Return the current value of o_fu_busy."""
         return bool(int(self.dut.o_fu_busy.value))
 
+    def drive_accepted(self, accepted: bool) -> None:
+        """Drive completion acceptance/backpressure."""
+        self.dut.i_mul_accepted.value = int(accepted)
+
     def drive_flush(self) -> None:
         """Assert i_flush (full flush)."""
         self.dut.i_flush.value = 1
