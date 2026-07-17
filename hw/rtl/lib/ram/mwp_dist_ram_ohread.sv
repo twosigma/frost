@@ -107,12 +107,8 @@ module mwp_dist_ram_ohread #(
   // 9.2.2.4 forbids an always_ff variable being written by another process,
   // but explicitly permits declaration initialization (Verilator >=5.050
   // enforces this; yosys formal needs the pinned init value either way).
-  // DONT_TOUCH: prevents Vivado's equivalent-driver merging from collapsing
-  // the identical staging flops of replicated read-port instances into one
-  // cross-die star; see mwp_dist_ram.sv for the measured x3 pathology and
-  // the all-live-configuration cost argument.
-  (* dont_touch = "true" *) logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  (* dont_touch = "true" *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
@@ -128,11 +124,8 @@ module mwp_dist_ram_ohread #(
 
   always_ff @(posedge i_clk) begin
     // Staged drains first: a live same-address write below overrides.
-    // The wp < StagedLvtPorts guard is semantically redundant (unstaged bits
-    // of staged_lvt_we_q are constant 0) but statically prunes the drain
-    // arms in all-live instances, where DONT_TOUCH pins the dead flops.
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
-      if ((wp < StagedLvtPorts) && staged_lvt_we_q[wp]) lvt[staged_lvt_addr_q[wp]] <= SelWidth'(wp);
+      if (staged_lvt_we_q[wp]) lvt[staged_lvt_addr_q[wp]] <= SelWidth'(wp);
     end
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
       if (wp >= StagedLvtPorts) begin
