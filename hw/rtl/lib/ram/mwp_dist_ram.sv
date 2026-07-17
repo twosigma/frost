@@ -130,15 +130,26 @@ module mwp_dist_ram #(
 
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
 
-  // Staged-LVT state: bit wp mirrors write port wp, held one cycle.  Bits at
-  // or above NUM_STAGED_LVT_PORTS are tied 0 and synthesize away (the classic
-  // all-live configuration when NUM_STAGED_LVT_PORTS=0).
+  // Staged-LVT state: bit wp mirrors write port wp, held one cycle.
+  //
+  // DONT_TOUCH (x3 TIMING): read-port replication instantiates many copies
+  // of this module with IDENTICAL write sides (the reorder buffer's 12+
+  // value replicas), so every replica's staging flops are equivalent and
+  // Vivado's equivalent-driver merging (opt_design -merge_equivalent_drivers)
+  // collapses them into one physical copy — turning the per-replica,
+  // per-entry lvt_eff compare fans into a single cross-die star (measured:
+  // ~27% of all post-route failing paths on x3 started at the one surviving
+  // staging register set). Pinning the flops keeps each replica's compare
+  // fan local to that replica. In all-live configurations
+  // (NUM_STAGED_LVT_PORTS=0) the flops are dead but every consumer is
+  // statically pruned by the wp < StagedLvtPorts guards, so the pin costs a
+  // few area-only flops there.
   // Initialized at declaration (not via an initial block): IEEE 1800
   // 9.2.2.4 forbids an always_ff variable being written by another process,
   // but explicitly permits declaration initialization (Verilator >=5.050
   // enforces this; yosys formal needs the pinned init value either way).
-  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  (* dont_touch = "true" *) logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+  (* dont_touch = "true" *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
@@ -154,8 +165,11 @@ module mwp_dist_ram #(
 
   always_ff @(posedge i_clk) begin
     // Staged drains first: a live same-address write below overrides.
+    // The wp < StagedLvtPorts guard is semantically redundant (unstaged bits
+    // of staged_lvt_we_q are constant 0) but statically prunes the drain
+    // arms in all-live instances, where DONT_TOUCH pins the dead flops.
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
-      if (staged_lvt_we_q[wp]) lvt[staged_lvt_addr_q[wp]] <= SelWidth'(wp);
+      if ((wp < StagedLvtPorts) && staged_lvt_we_q[wp]) lvt[staged_lvt_addr_q[wp]] <= SelWidth'(wp);
     end
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
       if (wp >= StagedLvtPorts) begin
