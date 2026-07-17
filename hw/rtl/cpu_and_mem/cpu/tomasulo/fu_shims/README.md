@@ -18,7 +18,11 @@ underlying FU's pipeline depth:
 
 - **`int_alu_shim`** is combinational. The ALU has no state, so the
   shim is essentially a wire with operand-format conversion. The
-  result tag flows directly with the data. Conditional branches
+  result tag flows directly with the data. It instantiates the shared
+  `alu` with `HAS_MULDIV=0`: MUL/DIV ops dispatch only to the MUL_RS
+  (served by `int_muldiv_shim`), so the two INT pipes synthesize no
+  multiplier/divider hardware — a simulation-only assertion enforces
+  the steering invariant. Conditional branches
   don't write the CDB at all — branch resolution lives in
   `branch_jump_unit` at top level — but JALR writes its
   link address through here. (JAL is `RS_NONE`: it never reaches an

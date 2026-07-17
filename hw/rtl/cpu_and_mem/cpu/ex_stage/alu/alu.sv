@@ -20,9 +20,14 @@
  * base integer ISA, M-extension multiply/divide operations, B-extension
  * operations (Zba, Zbb, Zbs), plus Zicond and Zbkb. B = Zba + Zbb + Zbs.
  * The ALU handles immediate and register-based operations, computes branch addresses
- * for JAL/JALR, and generates upper immediate values for LUI/AUIPC. It instantiates
- * separate multiplier and divider units for M-extension operations which require
- * multiple cycles. The module manages stall signals for multi-cycle operations and
+ * for JAL/JALR, and generates upper immediate values for LUI/AUIPC. When
+ * HAS_MULDIV is set it instantiates separate multiplier and divider units for
+ * M-extension operations which require multiple cycles; integrations that route
+ * MUL/DIV to a dedicated unit (the Tomasulo MUL_RS / int_muldiv_shim path) set
+ * HAS_MULDIV = 0 so no dead multiplier/divider hardware is synthesized — the
+ * M-extension case arms then never complete (o_write_enable stays 0), which is
+ * only reachable if an op is misrouted (asserted against in int_alu_shim).
+ * The module manages stall signals for multi-cycle operations and
  * controls the register file write enable based on instruction validity and operation
  * completion. Special cases for divide-by-zero and signed overflow are handled
  * according to RISC-V specifications.
@@ -33,7 +38,11 @@
  *   These use tree-based parallel structures for optimal timing.
  */
 module alu #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = 32,
+    // Instantiate the M-extension multiplier/divider. Set to 0 when MUL/DIV
+    // are served by a dedicated FU elsewhere (Tomasulo MUL_RS): the units and
+    // their busy-tracking flops are then not synthesized at all.
+    parameter bit HAS_MULDIV = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -72,40 +81,56 @@ module alu #(
   logic [XLEN:0] difference;
   logic sltu;
 
-  // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
-  multiplier multiplier_inst (
-      .i_clk,
-      .i_rst,
-      .i_operand_a(multiplier_input_a),
-      .i_operand_b(multiplier_input_b),
-      .i_valid_input(multiplier_valid_input),
-      .o_product_result(multiplier_result),
-      .o_valid_output(multiplier_valid_output),
-      .o_completing_next_cycle(o_multiply_completing_next_cycle)
-  );
-  // Track multiply operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) multiplier_valid_input_registered <= 1'b0;
-    else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
-    else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
+  generate
+    if (HAS_MULDIV) begin : gen_muldiv
+      // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
+      multiplier multiplier_inst (
+          .i_clk,
+          .i_rst,
+          .i_operand_a(multiplier_input_a),
+          .i_operand_b(multiplier_input_b),
+          .i_valid_input(multiplier_valid_input),
+          .o_product_result(multiplier_result),
+          .o_valid_output(multiplier_valid_output),
+          .o_completing_next_cycle(o_multiply_completing_next_cycle)
+      );
+      // Track multiply operation state: set when operation starts, clear when done
+      always_ff @(posedge i_clk)
+        if (i_rst) multiplier_valid_input_registered <= 1'b0;
+        else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
+        else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
 
-  // Divider unit - computes quotient and remainder over multiple cycles
-  divider divider_inst (
-      .i_clk,
-      .i_rst,
-      .i_valid_input(divider_valid_input),
-      .i_is_signed_operation(divider_is_signed_operation),
-      .i_dividend(i_operand_a),
-      .i_divisor(i_operand_b),
-      .o_valid_output(divider_valid_output),
-      .o_quotient(divider_quotient_result),
-      .o_remainder(divider_remainder_result)
-  );
-  // Track divide operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) divider_valid_input_registered <= 1'b0;
-    else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
-    else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+      // Divider unit - computes quotient and remainder over multiple cycles
+      divider divider_inst (
+          .i_clk,
+          .i_rst,
+          .i_valid_input(divider_valid_input),
+          .i_is_signed_operation(divider_is_signed_operation),
+          .i_dividend(i_operand_a),
+          .i_divisor(i_operand_b),
+          .o_valid_output(divider_valid_output),
+          .o_quotient(divider_quotient_result),
+          .o_remainder(divider_remainder_result)
+      );
+      // Track divide operation state: set when operation starts, clear when done
+      always_ff @(posedge i_clk)
+        if (i_rst) divider_valid_input_registered <= 1'b0;
+        else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
+        else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+    end else begin : gen_no_muldiv
+      // MUL/DIV are served by a dedicated FU (MUL_RS / int_muldiv_shim).
+      // Tie the result/handshake nets off so the M-extension case arms below
+      // synthesize to constants and no multiplier/divider hardware exists.
+      assign multiplier_result                 = '0;
+      assign multiplier_valid_output           = 1'b0;
+      assign o_multiply_completing_next_cycle  = 1'b0;
+      assign multiplier_valid_input_registered = 1'b0;
+      assign divider_quotient_result           = '0;
+      assign divider_remainder_result          = '0;
+      assign divider_valid_output              = 1'b0;
+      assign divider_valid_input_registered    = 1'b0;
+    end
+  endgenerate
 
   function automatic logic op_is_imm_not_reg(input logic [6:0] opcode);
     logic [6:0] unique_opcode_bits;

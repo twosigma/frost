@@ -25,8 +25,11 @@
  *
  * The ALU is single-cycle for all INT_RS operations (ADD, SUB, shifts,
  * LUI, AUIPC, JALR link, CSR read, bit-manipulation).  MUL/DIV are
- * routed to MUL_RS, so the internal multiplier/divider are never triggered
- * (i_is_multiply_operation = 0, i_is_divide_operation = 0).
+ * routed to MUL_RS, so the ALU is instantiated with HAS_MULDIV = 0: no
+ * multiplier/divider hardware is synthesized in this shim at all (before
+ * this, the two dead units survived synthesis inside both ALU shims and one
+ * of them owned the post-place WNS path on x3).  A sim-only assertion below
+ * catches any misrouted M-extension op.
  *
  * Key translations:
  *   - i_instruction.opcode : OPC_OP_IMM when use_imm, else OPC_OP
@@ -80,7 +83,8 @@ module int_alu_shim (
   logic                       alu_mul_completing;  // unused
 
   alu #(
-      .XLEN(riscv_pkg::XLEN)
+      .XLEN(riscv_pkg::XLEN),
+      .HAS_MULDIV(1'b0)
   ) u_alu (
       .i_clk(i_clk),
       .i_rst(~i_rst_n),  // ALU uses active-high reset
@@ -160,6 +164,21 @@ module int_alu_shim (
   end
 
 `ifndef SYNTHESIS
+  // HAS_MULDIV = 0: an M-extension op reaching this shim would never complete
+  // (the ALU's MUL/DIV arms keep o_write_enable low with no hardware behind
+  // them). Dispatch routes those ops to MUL_RS; catch any misroute loudly.
+  always_comb begin
+    if (i_rst_n && i_rs_issue.valid) begin
+      assert (!(i_rs_issue.op inside {riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU,
+                                      riscv_pkg::MULHU, riscv_pkg::DIV, riscv_pkg::DIVU,
+                                      riscv_pkg::REM, riscv_pkg::REMU}))
+      else
+        $error(
+            "int_alu_shim: M-extension op 0x%0h issued to INT ALU (HAS_MULDIV=0)", i_rs_issue.op
+        );
+    end
+  end
+
   always_comb begin
     if (i_rst_n && i_rs_issue.valid) begin
       if (i_issue_writes_cdb_hint) begin
