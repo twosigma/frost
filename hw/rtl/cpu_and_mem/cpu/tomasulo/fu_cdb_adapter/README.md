@@ -17,20 +17,22 @@ granted. The wrapper instantiates one per FU slot.
   invalid in the idle cycle). The wrapper uses `REGISTER_OUTPUT=1`
   for the long-latency / non-critical FUs (DIV, FP add/mul/div) where
   the pass-through valid cone hurts timing.
-- **Partial-flush support.** Held results whose tag is younger than
-  the partial-flush boundary are dropped, and a same-cycle
-  pass-through of a younger result is suppressed locally. The kill
-  gates only `o_fu_complete.valid`; the payload (value/tag/exception)
-  passes through un-squashed. Every consumer qualifies the payload
-  with valid — the arbiter never grants or lane-selects an invalid
-  input — so a killed result's payload is dead data, and the
-  flush-tag age compare stays off the wide CDB value muxes. Full-flush
-  CDB suppression lives once in the CDB arbiter's `i_kill` input
-  rather than replicated in every adapter, so this module's output
-  cone doesn't have to carry the broadly-fanned speculative-flush
-  signal. The full-flush `i_flush` input is still wired in — it just
-  clears the `result_pending` register on the next edge; the
-  combinational output only filters partial flushes.
+- **Partial-flush hygiene (state only — the output is not filtered
+  here).** Held state never survives a partial flush: a held result
+  whose tag is younger than the flush boundary is dropped from the
+  register, and the same input filter gates the grant-refill capture,
+  so a flushed result issued on the flush cycle can't be latched as
+  held state. The combinational `o_fu_complete` presents un-killed:
+  partial-flush broadcast suppression is centralized at the registered
+  CDB bus valids in `tomasulo_wrapper` (one age compare per lane on
+  the arbiter winner's tag), and full-flush suppression lives once in
+  the CDB arbiter's `i_kill` input — so this module's output cone
+  carries neither the broadly-fanned speculative-flush signal nor the
+  flush-tag age compare. A doomed result may therefore still win a
+  grant on the flush cycle; the grant just frees this adapter's slot,
+  and no consumer ever observes the masked broadcast. The full-flush
+  `i_flush` input is still wired in — it clears the `result_pending`
+  register on the next edge.
 
 ## Behavior
 

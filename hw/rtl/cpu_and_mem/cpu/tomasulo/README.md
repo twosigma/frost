@@ -190,11 +190,17 @@ leave alloc-valid free during flushes instead of assuming it away).
 The deep FP shims (`fp_mul_shim`, `fp_div_shim`) consume a one-cycle
 *registered* flush snapshot (pulse + flush tag + head captured on the pulse
 cycle) instead of the live broadcast: their per-entry marking fanout was the
-dominant post-place failing-path population on x3. The pulse+0 boundary stays
-covered by the live-flushed adapters (REGISTER_OUTPUT, so nothing passes
-through combinationally), and the FP adapters' full-flush window is extended
-one cycle to cover the shim FIFO turnaround; the stale-CDB probes gate this
-timing contract end-to-end.
+dominant post-place failing-path population on x3. The pulse+0 boundary is
+covered by the centralized CDB partial-flush mask in `tomasulo_wrapper`: the
+per-adapter presentation kill moved out of the eight adapter valid cones (it
+was dragging the branch-recovery flush tag into the arbiter's grant/select
+network and every registered CDB value bit), and the same-cycle age kill now
+runs once per lane on the arbiter winner's tag, masking the valid captured
+into every registered copy of the bus. A squashed result may win (and waste)
+a grant slot on the pulse cycle, but no consumer ever observes it; adapter
+held-state hygiene (held clear + capture filters) is unchanged, and the FP
+adapters' full-flush window is still extended one cycle to cover the shim
+FIFO turnaround; the stale-CDB probes gate this timing contract end-to-end.
 
 ### Instruction → reservation station routing
 

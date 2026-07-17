@@ -29,11 +29,15 @@
  *     non-critical FUs when the pass-through valid cone hurts timing.
  *   - Pipeline flush support: `i_flush` (full) discards any held result on
  *     the next edge. `i_flush_en` (partial) discards held results whose tag
- *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`). Same-cycle
- *     pass-through of a younger partial-flush result is still suppressed here,
- *     and the same input filter gates the grant-refill capture (a flushed
- *     result issued on the flush cycle must not survive as held state);
+ *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`), and the
+ *     same input filter gates the grant-refill capture (a flushed result
+ *     issued on the flush cycle must not survive as held state). Same-cycle
+ *     PRESENTATION of a younger result is NOT suppressed here: partial-flush
+ *     broadcast suppression is centralized at the registered CDB bus valid
+ *     in tomasulo_wrapper (one compare per lane on the arbiter winner), and
  *     speculative full-flush CDB suppression is handled once at the arbiter.
+ *     A doomed result may therefore win a grant on the flush cycle; the
+ *     grant only frees this adapter's slot — no consumer sees the broadcast.
  *
  * State machine (1 bit: result_pending):
  *
@@ -159,24 +163,28 @@ module fu_cdb_adapter #(
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
-  // Same-cycle partial flush of a younger pass-through result must still be
-  // suppressed locally. Full-flush kill is centralized at the CDB arbiter so
-  // this one-deep adapter doesn't have to carry that signal through its
-  // output/held-result control cone.
-  //
-  // Only .valid carries the partial-flush kill; the payload (value/tag/...)
-  // passes through un-squashed. Every consumer qualifies the payload with
-  // valid (the arbiter never grants or selects an invalid input), so a
-  // killed result's payload is dead data — and keeping the flush-tag age
-  // compare off the wide value mux keeps the branch-recovery tag registers
-  // out of the CDB value cone.
+  // PRESENTATION IS NOT PARTIAL-FLUSH-KILLED HERE. Both flush kills are
+  // centralized away from the adapter output cone:
+  //   - full flush: at the CDB arbiter (i_kill suppresses grants/valid), and
+  //   - partial flush: at the registered CDB bus valid in tomasulo_wrapper
+  //     (one is_younger compare per lane on the arbiter winner, same cycle as
+  //     the flush pulse — same kill timing as the old per-adapter input/held
+  //     suppression, without the flush-tag age compares sitting inside eight
+  //     adapter valid cones and the arbiter's grant/select network).
+  // Consequences: a flushed-younger result may still WIN arbitration on the
+  // pulse cycle and be granted; its broadcast valid is masked at the bus
+  // register, so no consumer observes it. The grant frees this adapter's
+  // slot, which is correct — the result was dead. An older result that lost
+  // that arbitration round stays held here and re-presents next cycle.
+  // Held-state hygiene below still uses the live partial flush
+  // (partial_flush_held / partial_flush_input) so no squashed result
+  // survives as held state past the pulse.
   always_comb begin
     if (result_pending) begin
       o_fu_complete       = held_result;
-      o_fu_complete.valid = !partial_flush_held;
+      o_fu_complete.valid = 1'b1;
     end else if (!REGISTER_OUTPUT) begin
-      o_fu_complete       = i_fu_result;
-      o_fu_complete.valid = i_fu_result.valid && !partial_flush_input;
+      o_fu_complete = i_fu_result;
     end else begin
       o_fu_complete = '0;
     end

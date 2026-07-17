@@ -688,10 +688,13 @@ module tomasulo_wrapper #(
   //    per-entry sweeps mark at the registered edge and the shims' own
   //    same-cycle head/tail guards evaluate against the registered pulse,
   //    so a squashed result is never PRESENTED from the pulse+1 cycle on.
-  //  - The pulse+0 boundary is held by the (still live-flushed) adapters:
-  //    partial flush age-kills the presented input / held result at the
-  //    adapter, and both FP adapters are REGISTER_OUTPUT (no combinational
-  //    pass-through), so nothing squashed can be granted on the pulse cycle.
+  //  - The pulse+0 boundary is held by the centralized CDB partial-flush
+  //    mask (see "Centralized partial-flush broadcast kill" below): a
+  //    squashed result may now win a grant on the pulse cycle, but its
+  //    broadcast valid is masked at the bus registers, so nothing squashed
+  //    is ever OBSERVED from the pulse cycle on. Adapter held-state hygiene
+  //    (live partial_flush_held / capture filters) is unchanged, and both FP
+  //    adapters are REGISTER_OUTPUT (no combinational pass-through).
   //  - For full-flush kinds the FP adapters' i_flush window is extended by
   //    one cycle (below) so a completion that pops into a shim FIFO on the
   //    pulse cycle and is presented on pulse+1 (before the registered clear
@@ -810,6 +813,58 @@ module tomasulo_wrapper #(
       .o_grant_raw    ()
   );
 
+  // ===========================================================================
+  // Centralized partial-flush broadcast kill (both lanes)
+  // ===========================================================================
+  // The per-adapter presentation kill used to put the flush-tag age compare
+  // inside eight adapter output-valid cones feeding the arbiter's
+  // grant/select network — dragging the branch-recovery flush registers into
+  // the D-cones of every registered CDB value bit (a dominant net-delay
+  // family post-place on x3). The adapters now present un-killed (see
+  // fu_cdb_adapter.sv); the SAME-CYCLE partial-flush kill is applied here,
+  // once per lane, on the arbiter winner's tag only. Every registered copy
+  // of the lane valid (and the o_cdb/o_cdb_2 bench views) captures the
+  // masked value, so no consumer — RS wakeup, ROB write, sq_early_addr
+  // repair snoop, bench probes — can observe a flushed-younger broadcast.
+  // A doomed winner wastes at most one grant slot on the flush cycle (its
+  // grant only frees the adapter slot); an older loser stays held in its
+  // adapter and re-presents the next cycle.
+  //
+  // Comparator-form circular age check — same rewrite as fu_cdb_adapter's
+  // is_younger (proved equivalent to the widened-subtraction age oracle
+  // there; sim assertions in the adapter cross-check the form every cycle).
+  function automatic logic cdb_is_younger(
+      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
+      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
+      input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
+    logic entry_before_head;
+    logic flush_before_head;
+    begin
+      entry_before_head = entry_tag < head;
+      flush_before_head = flush_tag < head;
+      cdb_is_younger = (entry_before_head != flush_before_head) ?
+          entry_before_head : (entry_tag > flush_tag);
+    end
+  endfunction
+
+  logic cdb_partial_kill_l0;
+  logic cdb_partial_kill_l1;
+  assign cdb_partial_kill_l0 = speculative_flush_en && cdb_is_younger(
+      cdb_bus_comb.tag, i_flush_tag, head_tag
+  );
+  assign cdb_partial_kill_l1 = speculative_flush_en && cdb_is_younger(
+      cdb_bus_2_comb.tag, i_flush_tag, head_tag
+  );
+
+  riscv_pkg::cdb_broadcast_t cdb_bus_comb_masked;
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_comb_masked;
+  always_comb begin
+    cdb_bus_comb_masked         = cdb_bus_comb;
+    cdb_bus_comb_masked.valid   = cdb_bus_comb.valid && !cdb_partial_kill_l0;
+    cdb_bus_2_comb_masked       = cdb_bus_2_comb;
+    cdb_bus_2_comb_masked.valid = cdb_bus_2_comb.valid && !cdb_partial_kill_l1;
+  end
+
   // Pipeline register: break the CDB arbiter → RS/ROB wakeup critical path.
   // Grants stay combinational (back to adapters); only the broadcast fanout
   // to RS snoop + ROB CDB-write is registered.
@@ -822,24 +877,26 @@ module tomasulo_wrapper #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_valid <= 1'b0;
-    else cdb_bus_valid <= cdb_bus_comb.valid;
+    else cdb_bus_valid <= cdb_bus_comb_masked.valid;
   end
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_int_rs_valid <= 1'b0;
-    else cdb_bus_int_rs_valid <= cdb_bus_comb.valid;
+    else cdb_bus_int_rs_valid <= cdb_bus_comb_masked.valid;
   end
 
   always_ff @(posedge i_clk) begin
-    cdb_bus <= cdb_bus_comb;
-    cdb_bus_int_rs <= cdb_bus_comb;
-    cdb_bus_int_rs_tag <= cdb_bus_comb.tag;
-    cdb_bus_int_rs_value <= cdb_bus_comb.value;
+    cdb_bus <= cdb_bus_comb_masked;
+    cdb_bus_int_rs <= cdb_bus_comb_masked;
+    cdb_bus_int_rs_tag <= cdb_bus_comb_masked.tag;
+    cdb_bus_int_rs_value <= cdb_bus_comb_masked.value;
   end
 
-  // Expose combinational CDB for testbench observation (grant timing matches)
-  assign o_cdb   = cdb_bus_comb;
-  assign o_cdb_2 = cdb_bus_2_comb;
+  // Expose combinational CDB for testbench observation (grant timing matches;
+  // the partial-flush mask is applied so bench probes see exactly what
+  // consumers will see registered next cycle)
+  assign o_cdb   = cdb_bus_comb_masked;
+  assign o_cdb_2 = cdb_bus_2_comb_masked;
 
   // Reconstruct CDB broadcast with reset-qualified valid for downstream consumers
   riscv_pkg::cdb_broadcast_t cdb_bus_qualified;
@@ -892,17 +949,17 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no", max_fanout = 32 *)logic cdb_bus_2_int_rs_valid;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_2_valid <= 1'b0;
-    else cdb_bus_2_valid <= cdb_bus_2_comb.valid;
+    else cdb_bus_2_valid <= cdb_bus_2_comb_masked.valid;
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) cdb_bus_2_int_rs_valid <= 1'b0;
-    else cdb_bus_2_int_rs_valid <= cdb_bus_2_comb.valid;
+    else cdb_bus_2_int_rs_valid <= cdb_bus_2_comb_masked.valid;
   end
   always_ff @(posedge i_clk) begin
-    cdb_bus_2 <= cdb_bus_2_comb;
-    cdb_bus_2_int_rs <= cdb_bus_2_comb;
-    cdb_bus_2_int_rs_tag <= cdb_bus_2_comb.tag;
-    cdb_bus_2_int_rs_value <= cdb_bus_2_comb.value;
+    cdb_bus_2 <= cdb_bus_2_comb_masked;
+    cdb_bus_2_int_rs <= cdb_bus_2_comb_masked;
+    cdb_bus_2_int_rs_tag <= cdb_bus_2_comb_masked.tag;
+    cdb_bus_2_int_rs_value <= cdb_bus_2_comb_masked.value;
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
   always_comb begin
