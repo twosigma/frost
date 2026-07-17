@@ -212,13 +212,19 @@ module pd_stage #(
       ((i_from_if_to_pd.raw_parcel[15:13] == 3'b110) ||
        (i_from_if_to_pd.raw_parcel[15:13] == 3'b111));
 
-  logic [XLEN-1:0] pd_backward_target_native;
-  logic [XLEN-1:0] pd_backward_target_compressed;
-  logic [XLEN-1:0] pd_backward_target;
-  assign pd_backward_target_native = i_from_if_to_pd.program_counter + pd_imm_b_native;
-  assign pd_backward_target_compressed = i_from_if_to_pd.program_counter + pd_imm_b_compressed;
-  assign pd_backward_target = pd_compressed_branch ? pd_backward_target_compressed :
-                              pd_backward_target_native;
+  // x3 TIMING: the target adder used to run in the SAME cycle as the live IF
+  // word (BRAM Tco → word/buffer muxes → imm extract → 32-bit CARRY8 →
+  // pd_redirect_target_r/D), which became the worst post-place path once the
+  // fetch web was flattened. Instead, capture the SHALLOW pieces (PC and the
+  // selected immediate — one select LUT after pure-wiring extraction) into
+  // registers, and run the single target adder in the FIRE cycle from those
+  // registers. The redirect DECISION and its timing are completely unchanged
+  // (same cycle, same 2-bubble cost — a +1-staged variant was measured at
+  // +2.4% CoreMark cycles and rejected); only the adder moved from the
+  // BRAM-sourced capture cycle to the FF-sourced fire cycle, where it feeds
+  // the pc_controller redirect arm well within its early-priority budget.
+  logic [XLEN-1:0] pd_imm_b_selected;
+  assign pd_imm_b_selected = pd_compressed_branch ? pd_imm_b_compressed : pd_imm_b_native;
 
   // Fire the PD redirect for any conditional branch (native B-type or
   // compressed C.BEQZ/C.BNEZ) that the front-end did NOT already redirect and
@@ -256,9 +262,21 @@ module pd_stage #(
     // Hold during stall (implicit)
   end
 
+  // Shallow captures for the fire-cycle target adder. Same !stall hold
+  // discipline as pd_redirect_r, so the (pc_q + imm_q) sum below holds the
+  // exact value the old pd_redirect_target_r register held.
+  logic [XLEN-1:0] pd_rdr_pc_q;
+  logic [XLEN-1:0] pd_rdr_imm_q;
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.stall) pd_redirect_target_r <= pd_backward_target;
+    if (!i_pipeline_ctrl.stall) begin
+      pd_rdr_pc_q  <= i_from_if_to_pd.program_counter;
+      pd_rdr_imm_q <= pd_imm_b_selected;
+    end
   end
+
+  // FF-sourced target adder in the fire cycle (replaces the registered
+  // pd_redirect_target_r whose D-input carried the BRAM→imm→CARRY8 cone).
+  assign pd_redirect_target_r = pd_rdr_pc_q + pd_rdr_imm_q;
 
   assign o_pd_redirect = pd_redirect_r;
   assign o_pd_redirect_target = pd_redirect_target_r;
