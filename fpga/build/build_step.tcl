@@ -403,6 +403,8 @@ if {$step eq "synth"} {
     read_mem [file join $software_mem_directory sw_imem_odd.mem]
     read_mem [file join $software_mem_directory sw_imem_even_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
+    read_mem [file join $software_mem_directory sw_dmem_bank0.mem]
+    read_mem [file join $software_mem_directory sw_dmem_bank1.mem]
     read_xdc $constraints_file
     set_property top $top_level_module_name [current_fileset]
 

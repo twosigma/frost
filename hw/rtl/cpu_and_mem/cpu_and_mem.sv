@@ -19,8 +19,10 @@
   dual-port RAM and memory-mapped I/O peripherals. This module serves as the main
   compute and storage subsystem, managing the instruction fetch interface, data memory
   access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
-  instantiates the Tomasulo OOO RISC-V CPU alongside two separate dual-port RAMs:
-  one for instruction fetch and one for data access. Both memories use Port A on the
+  instantiates the Tomasulo OOO RISC-V CPU alongside separate fetch and data RAMs:
+  a half-size (IMEM_SIZE_BYTES) predecode instruction mirror, and the full
+  MEM_SIZE_BYTES data RAM built from two half-depth banks (gen_dmem_banks,
+  address-MSB select with a registered read-back mux). Both memories use Port A on the
   divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
   clock (i_clk) for runtime operations - instruction fetch from memory 0 and data
   loads/stores from memory 1. This dual-clock architecture eliminates clock domain
@@ -34,6 +36,10 @@
 */
 module cpu_and_mem #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
+    // Fetch-side instruction array size (see frost.sv): text is
+    // linker-bounded to the 96K ROM region, so the imem covers 128KiB while
+    // the data memory (stack home) keeps MEM_SIZE_BYTES.
+    parameter int unsigned IMEM_SIZE_BYTES = 2 ** 17,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
@@ -142,6 +148,8 @@ module cpu_and_mem #(
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
   // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
+  localparam int unsigned ImemByteAddrWidth = $clog2(IMEM_SIZE_BYTES);
+  localparam int unsigned ImemWordAddrWidth = ImemByteAddrWidth - 2;
 
   // Memory-mapped I/O addresses for peripherals
   // IMPORTANT: If these addresses are changed, they must also be updated in:
@@ -194,6 +202,19 @@ module cpu_and_mem #(
   logic cpu_uart_wr_en;
   logic [7:0] cpu_uart_wr_data;
   logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
+`ifndef SYNTHESIS
+  // IMEM/DMEM size split contract: low-region instruction fetches must stay
+  // inside the (smaller) instruction array — text is linker-bounded to the
+  // 96K ROM region in every linker script, so this can only fire on a rogue
+  // jump into the data-only region (which would alias in hardware).
+  always_ff @(posedge i_clk) begin
+    if (!fetch_address[31] && (fetch_address >= IMEM_SIZE_BYTES) &&
+        fetch_address < 32'h4000_0000) begin
+      $error("cpu_and_mem: low-region fetch 0x%08h beyond IMEM_SIZE_BYTES (0x%08h)", fetch_address,
+             IMEM_SIZE_BYTES);
+    end
+  end
+`endif
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
@@ -581,7 +602,7 @@ module cpu_and_mem #(
   // Port A: Instruction programming only (div4 clock, write only)
   // Port B: Instruction fetch (main clock, read only)
   imem_predecode #(
-      .ADDR_WIDTH(MemWordAddrWidth),
+      .ADDR_WIDTH(ImemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
       .INIT_FILE("sw.mem")
   ) instruction_memory (
@@ -590,7 +611,12 @@ module cpu_and_mem #(
       // Port A: Instruction programming (div4 clock, write only)
       .i_port_a_byte_address(i_instr_mem_addr),
       .i_port_a_write_data(i_instr_mem_wrdata),
-      .i_port_a_write_enable(i_instr_mem_en && (|i_instr_mem_we)),
+      // Bound: the JTAG loader window spans the full MEM_SIZE_BYTES image;
+      // words at/above IMEM_SIZE_BYTES are data-memory-only (text is
+      // linker-bounded to the 96K ROM region) and must not alias into the
+      // smaller instruction array via address truncation.
+      .i_port_a_write_enable(i_instr_mem_en && (|i_instr_mem_we) &&
+                             (i_instr_mem_addr < IMEM_SIZE_BYTES)),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only)
       .i_port_b_clk(i_clk),
@@ -628,25 +654,58 @@ module cpu_and_mem #(
   // Memory 1: Data memory
   // Port A: Instruction programming (div4 clock, write only - fan out)
   // Port B: Data access (main clock, loads/stores from CPU)
-  tdp_bram_dc_byte_en #(
-      .DATA_WIDTH(32),
-      .ADDR_WIDTH(MemWordAddrWidth),
-      .USE_INIT_FILE(1'b1),
-      .INIT_FILE("sw.mem")  // Software initialization file
-  ) data_memory (
-      .i_port_a_clk(i_clk_div4),
-      .i_port_b_clk(i_clk),
-      // Port A: Instruction programming (div4 clock, write only)
-      .i_port_a_byte_address(i_instr_mem_addr),
-      .i_port_a_write_data(i_instr_mem_wrdata),
-      .i_port_a_byte_write_enable(i_instr_mem_we & {4{i_instr_mem_en}}),
-      .o_port_a_read_data(  /* unused - write only */),
-      // Port B: Data memory for loads and stores
-      .i_port_b_byte_address(data_memory_address),
-      .i_port_b_write_data(data_memory_write_data),
-      .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
-      .o_port_b_read_data(data_memory_read_data)
-  );
+  // x3 timing: two half-depth physical banks (bank = word-address MSB,
+  // registered-bit output mux) instead of one 64-BRAM bit-sliced monolith
+  // spanning six BRAM columns. Purely physical: same capacity, same
+  // single-cycle latency, same write-first semantics (each port has one
+  // address, so the registered bank bit is the accessed bank for both the
+  // read and the write-first forward). Each leaf keeps the pristine inferred
+  // TDP template; simulation initializes both banks by slicing sw.mem, and
+  // synthesis reads the pre-split sw_dmem_bank{0,1}.mem images.
+  localparam int unsigned DmemBankAddrWidth = MemWordAddrWidth - 1;
+  localparam int unsigned DmemBankSelBit = MemByteAddrWidth - 1;  // byte-addr MSB
+
+  logic dmem_a_bank_sel, dmem_b_bank_sel;
+  assign dmem_a_bank_sel = i_instr_mem_addr[DmemBankSelBit];
+  assign dmem_b_bank_sel = data_memory_address[DmemBankSelBit];
+
+  logic dmem_b_bank_sel_q;
+  always_ff @(posedge i_clk) dmem_b_bank_sel_q <= dmem_b_bank_sel;
+
+  logic [31:0] dmem_bank_b_read_data[2];
+
+  for (genvar bank = 0; bank < 2; bank++) begin : gen_dmem_banks
+    tdp_bram_dc_byte_en #(
+        .DATA_WIDTH(32),
+        .ADDR_WIDTH(DmemBankAddrWidth),
+        .USE_INIT_FILE(1'b1),
+        .INIT_FILE(bank == 0 ? "sw_dmem_bank0.mem" : "sw_dmem_bank1.mem"),
+        .INIT_IMAGE_FILE("sw.mem"),
+        .INIT_IMAGE_DEPTH_WORDS(2 ** MemWordAddrWidth),
+        .INIT_IMAGE_OFFSET_WORDS(bank * (2 ** DmemBankAddrWidth))
+    ) data_memory (
+        .i_port_a_clk(i_clk_div4),
+        .i_port_b_clk(i_clk),
+        // Port A: Instruction programming (div4 clock, write only)
+        .i_port_a_byte_address(i_instr_mem_addr),
+        .i_port_a_write_data(i_instr_mem_wrdata),
+        .i_port_a_byte_write_enable(
+            i_instr_mem_we & {4{i_instr_mem_en && (dmem_a_bank_sel == bank[0])}}),
+        .o_port_a_read_data(  /* unused - write only */),
+        // Port B: Data memory for loads and stores
+        .i_port_b_byte_address(data_memory_address),
+        .i_port_b_write_data(data_memory_write_data),
+        .i_port_b_byte_write_enable(
+            data_memory_bram_byte_write_enable & {4{dmem_b_bank_sel == bank[0]}}),
+        .o_port_b_read_data(dmem_bank_b_read_data[bank])
+    );
+  end : gen_dmem_banks
+
+  // Registered-bit output mux: dmem_b_bank_sel_q aligns with the banks'
+  // registered read data (and, port semantics being one-address, with the
+  // write-first forward of the written bank).
+  assign data_memory_read_data = dmem_bank_b_read_data[dmem_b_bank_sel_q];
+
   assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
 
   // Cached tier: high-address region behind the cache hierarchy. The router

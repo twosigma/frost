@@ -33,8 +33,8 @@ lives under `fpga/` and `boards/`.
 ```
 frost.sv
   cpu_and_mem.sv
-    instruction RAM  <---- JTAG/software-load port on clk_div4
-    data RAM (low 256 KiB BRAM, 1-cycle)
+    instruction RAM (128 KiB predecode mirror)  <---- JTAG/software-load port on clk_div4
+    data RAM (low 256 KiB BRAM, 2 half-depth banks, 1-cycle)
     fetch_provider -> two-line L1I fetch buffer (cached fetch @ 0x8000_0000)
     cached tier @ 0x8000_0000 (1 GiB), frost_cache_hierarchy:
       data: cached_tier_adapter -> L1D (128 KiB BRAM) -\
@@ -97,8 +97,14 @@ backend notes.
 ## Memory Map
 
 The low BRAM memory is 256 KiB (96 KiB ROM + 160 KiB RAM in the unified
-linker script); the data port additionally reaches a 1 GiB cached region
-served by the cache hierarchy:
+linker script). Physically the data RAM covers the full 256 KiB as two
+half-depth BRAM banks (address-MSB bank select with a registered read
+mux), while the fetch-side predecode instruction RAM mirrors only the
+first 128 KiB — text is linker-bounded to the 96 KiB ROM in every linker
+script, and halving the fetch array halves its BRAM span on the
+PC-critical fetch path; low-region fetch at or above 128 KiB is
+unsupported (asserted in simulation). The data port additionally reaches
+a 1 GiB cached region served by the cache hierarchy:
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|

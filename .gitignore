@@ -63,6 +63,7 @@ sw_ddr.mem
 sw_ddr.txt
 sw_ddr.bin
 sw_imem_*.mem
+sw_dmem_bank*.mem
 sw/apps/*/sw.S
 
 # FROST no-MMU Linux: out-of-tree Buildroot build output + download/ccache

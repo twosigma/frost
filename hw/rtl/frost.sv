@@ -32,6 +32,13 @@ module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
     // Memory size in bytes - default 256KB for synthesis, override via Verilator -G for simulation
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
+    // Instruction-memory (fetch-side BRAM array) size. Split from
+    // MEM_SIZE_BYTES: text is linker-bounded to the 96K ROM region in every
+    // linker script in the repo, so the fetch arrays only need to cover
+    // 128KiB — half the BRAM footprint/span on the o_pc-critical fetch path.
+    // The data memory (which holds every program's stack, including
+    // CoreMark-PRO's measured 112KiB high-water) keeps the full size.
+    parameter int unsigned IMEM_SIZE_BYTES = 2 ** 17,
     // Timer speedup for simulation - multiplies mtime increment rate
     // Set to 1 for synthesis (normal behavior), higher for faster simulation
     // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
@@ -195,6 +202,7 @@ module frost #(
   // Instruction memory programming interface is directly on div4 clock domain (no CDC needed)
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
+      .IMEM_SIZE_BYTES(IMEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),

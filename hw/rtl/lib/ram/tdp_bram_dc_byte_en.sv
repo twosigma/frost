@@ -29,7 +29,18 @@ module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)
     parameter int unsigned ADDR_WIDTH = 14,  // Word address width (memory depth = 2^ADDR_WIDTH)
     parameter bit USE_INIT_FILE = 1'b1,
-    parameter bit [47:0] INIT_FILE = "sw.mem"  // Optional hex file for initialization
+    parameter string INIT_FILE = "sw.mem",  // Init hex file (synthesis reads exactly this)
+    // Bank-of-a-larger-image initialization (simulation only): when
+    // INIT_IMAGE_DEPTH_WORDS > 0, generic simulators load INIT_IMAGE_FILE
+    // (the full image) into a staging array and copy
+    // [INIT_IMAGE_OFFSET_WORDS +: 2**ADDR_WIDTH) into this instance, so a
+    // banked composition can simulate from the single sw.mem. Synthesis
+    // NEVER sees the staging array (kept behind the FROST_VIVADO_SYNTH
+    // define so Vivado's strict TDP-BRAM template match is undisturbed) and
+    // reads the pre-split INIT_FILE instead.
+    parameter string INIT_IMAGE_FILE = "",
+    parameter int unsigned INIT_IMAGE_DEPTH_WORDS = 0,
+    parameter int unsigned INIT_IMAGE_OFFSET_WORDS = 0
 ) (
     // Port A
     input  logic                    i_port_a_clk,
@@ -64,11 +75,37 @@ module tdp_bram_dc_byte_en #(
   /* verilator lint_on MULTIDRIVEN */
 
   // Initialize memory contents
+`ifdef FROST_VIVADO_SYNTH
+  // Plain form only: Vivado's TDP-BRAM template match rejects staging-array
+  // copies, so banked compositions must pass a pre-split INIT_FILE here.
   initial
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
     // Initialize with non-zero pattern to catch bugs where code assumes zero-init
     else
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;
+`else
+  generate
+    if (INIT_IMAGE_DEPTH_WORDS > 0) begin : gen_image_slice_init
+      // Simulation: slice this bank's window out of the full image.
+      logic [DATA_WIDTH-1:0] init_stage[INIT_IMAGE_DEPTH_WORDS];
+      initial begin
+        if (USE_INIT_FILE) begin
+          $readmemh(INIT_IMAGE_FILE, init_stage);
+          for (int i = 0; i < MemDepthInWords; ++i)
+          memory[i] = init_stage[INIT_IMAGE_OFFSET_WORDS+i];
+        end else begin
+          for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;
+        end
+      end
+    end else begin : gen_plain_init
+      initial
+        if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
+        // Initialize with non-zero pattern to catch bugs where code assumes zero-init
+        else
+          for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;
+    end
+  endgenerate
+`endif
 
   // Address conversion from byte-addressing to word-addressing
   // Lower bits are byte offset within word, remaining bits are word address

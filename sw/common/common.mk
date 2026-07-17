@@ -13,6 +13,8 @@
 #    limitations under the License.
 
 # Common Makefile definitions for RISC-V bare-metal software compilation
+# NOTE: --depth-words 32768 below = the INSTRUCTION array depth (IMEM_SIZE_BYTES
+# = 128KiB in hw/rtl/frost.sv). The data memory stays at MEM_SIZE_BYTES (256KiB).
 # Configures toolchain and build rules for FROST RISC-V processor
 
 # RISC-V cross-compiler toolchain prefix (can be overridden)
@@ -158,6 +160,9 @@ IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
 IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
+DMEM_BANK0_INIT_FILE    := sw_dmem_bank0.mem
+DMEM_BANK1_INIT_FILE    := sw_dmem_bank1.mem
+DMEM_BANK_INIT_SCRIPT   := ../../common/generate_dmem_bank_init.py
 # These bookkeeping files deliberately use globally ignored build-artifact
 # suffixes (*.bin / *.o), so ordinary app builds never pollute git status.
 BUILD_CONFIG_FILE       := .frost-build-config.bin
@@ -165,7 +170,7 @@ DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
 IMEM_INIT_TARGETS :=
 ifeq ($(GENERATE_IMEM_INIT),1)
-IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE)
+IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) $(DMEM_BANK0_INIT_FILE) $(DMEM_BANK1_INIT_FILE)
 endif
 
 # Make does not normally notice changes to command-line flags because the output
@@ -281,11 +286,19 @@ $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 ifeq ($(GENERATE_IMEM_INIT),1)
 $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
-		--depth-words 65536 \
+		--depth-words 32768 \
 		--even-data $(IMEM_EVEN_INIT_FILE) \
 		--odd-data $(IMEM_ODD_INIT_FILE) \
 		--even-sideband $(IMEM_EVEN_SIDEBAND_FILE) \
 		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE)
+
+# Per-bank init files for the banked data memory (Vivado TDP inference
+# cannot consume a staging-array copy loop; see tdp_bram_dc_byte_en.sv).
+$(DMEM_BANK0_INIT_FILE) $(DMEM_BANK1_INIT_FILE): $(VERILOG_HEX_FILE) $(DMEM_BANK_INIT_SCRIPT)
+	python3 $(DMEM_BANK_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
+		--depth-words 65536 \
+		--bank-output $(DMEM_BANK0_INIT_FILE) \
+		--bank-output $(DMEM_BANK1_INIT_FILE)
 endif
 
 # Display memory usage statistics

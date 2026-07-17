@@ -310,6 +310,8 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "IMEM_ODD_INIT_FILE": output_dir / "sw_imem_odd.mem",
         "IMEM_EVEN_SIDEBAND_FILE": output_dir / "sw_imem_even_sideband.mem",
         "IMEM_ODD_SIDEBAND_FILE": output_dir / "sw_imem_odd_sideband.mem",
+        "DMEM_BANK0_INIT_FILE": output_dir / "sw_dmem_bank0.mem",
+        "DMEM_BANK1_INIT_FILE": output_dir / "sw_dmem_bank1.mem",
     }
 
     for output_path in outputs.values():
