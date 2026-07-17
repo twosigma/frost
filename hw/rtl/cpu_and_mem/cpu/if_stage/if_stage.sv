@@ -160,6 +160,15 @@ module if_stage #(
   logic [XLEN-1:0] slot2_predicted_target;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
+  // Serial (BPC-computed) references for the flat versions above — consumed
+  // only by the simulation equivalence oracle.
+  logic slot2_prediction_used_bpc;
+  logic slot2_prediction_used_for_pc_bpc;
+  // EARLY per-candidate slot-2 prediction legs from the BPC (see flat web).
+  logic slot2_cand_taken_p2;
+  logic slot2_cand_taken_p4;
+  logic slot2_cand_comp_p2;
+  logic slot2_cand_comp_p4;
 
   // RAS (Return Address Stack) signals
   logic ras_predicted;  // RAS prediction was used
@@ -480,12 +489,20 @@ module if_stage #(
       .o_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
 
-      // Slot-2 prediction outputs (Session Q)
-      .o_slot2_prediction_used(slot2_prediction_used),
-      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      // Slot-2 prediction outputs (Session Q). The serial used/used_for_pc
+      // outputs land on _bpc reference nets: the machine-facing
+      // slot2_prediction_used{,_for_pc} are driven by the flattened PC web
+      // below (bit-identical; asserted in simulation).
+      .o_slot2_prediction_used(slot2_prediction_used_bpc),
+      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_bpc),
       .o_slot2_btb_hit(slot2_btb_hit),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
+      // EARLY per-candidate slot-2 prediction legs for the flat PC web.
+      .o_slot2_cand_taken_p2(slot2_cand_taken_p2),
+      .o_slot2_cand_taken_p4(slot2_cand_taken_p4),
+      .o_slot2_cand_comp_p2(slot2_cand_comp_p2),
+      .o_slot2_cand_comp_p4(slot2_cand_comp_p4),
 
       // RAS prediction outputs
       .o_ras_predicted(ras_predicted),
@@ -544,6 +561,7 @@ module if_stage #(
       .i_slot2_valid(slot2_valid_for_pc),
       .i_slot2_is_compressed(slot2_is_compressed_for_pc),
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
+      .i_pc_fetch_advance_onehot(pc_fetch_advance_onehot_eff),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
 
       // Branch prediction (from branch_prediction_controller)
@@ -1341,39 +1359,272 @@ module if_stage #(
     end
   end
 
-  // Bundle advance = slot-1 size + slot-2 size: {RVC,RVC}=+4, {RVC,32b} and
-  // {32b,RVC}=+6, {32b,32b}=+8.
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] bundle_advance_sel_live;
+  // ===========================================================================
+  // Flattened PC-critical fetch web — one-hot context arms (x3 timing)
+  // ===========================================================================
+  // The three late strands that reach the o_pc/o_pc_reg muxes — the PC
+  // advance-selects, the slot-2 BTB prediction redirect, and slot-2 validity
+  // — used to be a serial derivation through the aligner (aligned-sideband
+  // mux → slot-1 allows/size muxes → shape validity → valid AND → bundle
+  // formation → BPC slot-2 gating), ~7-9 LUT levels of fanout-loaded nets
+  // after the imem BRAM DOUT. Every select in that chain is early
+  // ({use_buffer, pc_reg[1], bank parity swap}, holdoffs, replay); only the
+  // 24 fetched sideband wires, is_compressed_fast (1 LUT off those wires)
+  // and the EX branch_taken gate are late. So: evaluate ALL of these
+  // per {use_buffer, pc_reg[1], swap} context directly off the raw sideband
+  // pins (per context, `unsafe` and the cur/next half assignment are
+  // constants, and the BTB candidate legs arrive EARLY from the dual slot-2
+  // lookup), then combine with a one-hot AND-OR keyed by the early context
+  // decode. The aligner's serial web is untouched and keeps feeding the
+  // decode path (IF→PD packets), the stall captures, and the profiling taps
+  // — endpoints with their own slack, structurally separate from this block
+  // so opt_design cannot re-cluster them into the PC cone (the failure mode
+  // of the earlier single-strand flatten). Bit-identical to the serial
+  // forms by construction; asserted in simulation below.
+  localparam int unsigned PcWebSbW = riscv_pkg::ImemSidebandWidth;
+
+  logic pc_web_swap;
+  assign pc_web_swap = instr_bank_sel_for_aligner ^ pc_reg[2];
+
+  logic [7:0] pc_web_ctx_onehot;
+  always_comb begin
+    pc_web_ctx_onehot = '0;
+    pc_web_ctx_onehot[{use_instr_buffer, pc_reg[1], pc_web_swap}] = 1'b1;
+  end
+
+  // The arms compute ONLY the deep sideband derivation (slot-2 validity and
+  // slot-2 size). Every other participant — sel_nop (carries a pc_reg-word
+  // compare through the served-window guard), is_compressed_fast (1 LUT off
+  // the sideband), the EARLY BTB candidate legs, branch_taken — joins AFTER
+  // the one-hot combine, at the same shallow depths the original serial
+  // forms gave them. Folding them into the arms (first attempt) made every
+  // such input traverse the full arm depth and simply moved the critical
+  // entry point.
+  typedef struct packed {
+    logic valid_en;  // mirrors aligner slot2_valid_when_enabled
+    logic is_comp2;  // mirrors aligner o_slot2_is_compressed_for_pc
+  } pc_web_arm_t;
+
+  function automatic pc_web_arm_t pc_web_eval(
+      input logic ctx_buf,  // context: use_instr_buffer value
+      input logic ctx_hi,  // context: pc_reg[1] value
+      input logic ctx_swap,  // context: fetch-word parity swap value
+      input logic [PcWebSbW-1:0] sb_lo_word,  // i_instr_sideband[11:0]  (late)
+      input logic [PcWebSbW-1:0] sb_hi_word,  // i_instr_sideband[23:12] (late)
+      input logic [PcWebSbW-1:0] sb_buf,  // buffer sideband (early FFs)
+      input logic aligner_sel_nop
+  );  // aligner o_sel_nop (early)
+    logic [PcWebSbW-1:0] csb, nsb;
+    logic unsafe, allows, comp1, shape_valid, valid_en;
+    logic ch_cand, nh_cand, comp2;
+    pc_web_arm_t r;
+    // Per-context constants: which fetched half is "current"/"next", and
+    // whether the parity-unsafe punt applies.
+    csb = ctx_swap ? sb_hi_word : sb_lo_word;
+    nsb = ctx_swap ? sb_lo_word : sb_hi_word;
+    unsafe = !ctx_buf && ctx_swap;
+    // Mirrors aligner slot1_allows_slot2_for_pc / slot1_compressed_for_pc.
+    allows = ctx_buf
+        ? (ctx_hi ? sb_buf[riscv_pkg::ImemSbAllowsSlot2AfterHi]
+                  : sb_buf[riscv_pkg::ImemSbAllowsSlot2AfterLo])
+        : (ctx_hi ? csb[riscv_pkg::ImemSbAllowsSlot2AfterHi]
+                  : csb[riscv_pkg::ImemSbAllowsSlot2AfterLo]);
+    comp1 = ctx_buf
+        ? (ctx_hi ? sb_buf[riscv_pkg::ImemSbIsCompressedHi]
+                  : sb_buf[riscv_pkg::ImemSbIsCompressedLo])
+        : (ctx_hi ? csb[riscv_pkg::ImemSbIsCompressedHi]
+                  : csb[riscv_pkg::ImemSbIsCompressedLo]);
+    // Mirrors aligner slot2_shape_valid_for_pc (same case, unsafe folded).
+    unique case ({
+      ctx_buf, ctx_hi, comp1
+    })
+      3'b001:
+      shape_valid = csb[riscv_pkg::ImemSbSlot2StartValidHi] &&
+                            !(unsafe && !csb[riscv_pkg::ImemSbIsCompressedHi]);
+      3'b000, 3'b011, 3'b111: shape_valid = !unsafe && nsb[riscv_pkg::ImemSbSlot2StartValidLo];
+      3'b010, 3'b110:
+      shape_valid = !unsafe && nsb[riscv_pkg::ImemSbSlot2StartValidHi] &&
+                    nsb[riscv_pkg::ImemSbIsCompressedHi];
+      default: shape_valid = 1'b0;
+    endcase
+    valid_en = !aligner_sel_nop && allows && shape_valid;
+    // Mirrors the aligner slot2_*_candidate priority feeding
+    // o_slot2_is_compressed_for_pc (including its don't-care cycles).
+    ch_cand = !aligner_sel_nop && !ctx_buf && !ctx_hi &&
+              csb[riscv_pkg::ImemSbAllowsSlot2AfterLo] && csb[riscv_pkg::ImemSbIsCompressedLo];
+    nh_cand = !aligner_sel_nop && ctx_hi && allows && !comp1;
+    comp2 = ch_cand ? csb[riscv_pkg::ImemSbIsCompressedHi] :
+            nh_cand ? nsb[riscv_pkg::ImemSbIsCompressedHi] :
+                      nsb[riscv_pkg::ImemSbIsCompressedLo];
+    r.valid_en = valid_en;
+    r.is_comp2 = comp2;
+    return r;
+  endfunction
+
+  pc_web_arm_t pc_web_arm[8];
+  always_comb begin
+    for (int c = 0; c < 8; c++) begin
+      pc_web_arm[c] = pc_web_eval(
+        logic'(c[2]),
+        logic'(c[1]),
+        logic'(c[0]),
+        i_instr_sideband[PcWebSbW-1:0],
+        i_instr_sideband[(2*PcWebSbW)-1:PcWebSbW],
+        instr_buffer_sideband,
+        sel_nop_align
+      );
+    end
+  end
+
+  // One-hot AND-OR combine (exactly one pc_web_ctx_onehot bit is set).
+  logic pc_web_slot2_valid_en;  // == aligner slot2_valid_when_enabled
+  logic pc_web_slot2_comp2;  // == aligner o_slot2_is_compressed_for_pc
+  always_comb begin
+    pc_web_slot2_valid_en = 1'b0;
+    pc_web_slot2_comp2    = 1'b0;
+    for (int c = 0; c < 8; c++) begin
+      pc_web_slot2_valid_en |= pc_web_ctx_onehot[c] & pc_web_arm[c].valid_en;
+      pc_web_slot2_comp2 |= pc_web_ctx_onehot[c] & pc_web_arm[c].is_comp2;
+    end
+  end
+
+  // Shallow post-combine joins — each late-ish participant enters here, at
+  // the same depth-from-its-own-arrival the original serial forms gave it.
+  //
+  // Advance selects (mirror the original bundle/advance formation exactly).
+  // Produced BOTH as the binary code (stall captures, replay muxes, existing
+  // consumers, sim oracle) and as ONE-HOT masks (o_pc_fetch_advance_onehot)
+  // that pc_controller AND-ORs directly over the precomputed next-PC
+  // candidates — skipping the binary encode → 4:1-decode round trip on the
+  // fetch-critical tail. Bit k of the one-hot = (advance == Plus{2,4,6,8}).
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_web_bundle_sel;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_web_slot1_sel;
+  logic pc_web_take_bundle;
+  always_comb begin
+    unique case ({
+      is_compressed_fast, pc_web_slot2_comp2
+    })
+      2'b11:   pc_web_bundle_sel = riscv_pkg::PcAdvancePlus4;
+      2'b10:   pc_web_bundle_sel = riscv_pkg::PcAdvancePlus6;
+      2'b01:   pc_web_bundle_sel = riscv_pkg::PcAdvancePlus6;
+      default: pc_web_bundle_sel = riscv_pkg::PcAdvancePlus8;
+    endcase
+  end
+  assign pc_web_slot1_sel = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
+                                                 riscv_pkg::PcAdvancePlus4;
+  assign pc_web_take_bundle = !sel_nop && pc_web_slot2_valid_en;
+  assign pc_fetch_advance_sel_live = pc_web_take_bundle ? pc_web_bundle_sel : pc_web_slot1_sel;
+  assign pc_reg_advance_sel_live = sel_nop ? riscv_pkg::PcAdvancePlus2 :
+      (pc_web_slot2_valid_en ? pc_web_bundle_sel : pc_web_slot1_sel);
+
+  // One-hot advance masks for the fetch-PC tail, formed directly from the
+  // same terms (mutually exclusive and exactly one set — asserted below):
+  //   [0]=+2, [1]=+4, [2]=+6, [3]=+8.
+  logic [3:0] pc_fetch_advance_onehot;
+  assign pc_fetch_advance_onehot[0] = !pc_web_take_bundle && is_compressed_fast;
+  assign pc_fetch_advance_onehot[1] =
+      (!pc_web_take_bundle && !is_compressed_fast) ||
+      (pc_web_take_bundle && is_compressed_fast && pc_web_slot2_comp2);
+  assign pc_fetch_advance_onehot[2] =
+      pc_web_take_bundle && (is_compressed_fast ^ pc_web_slot2_comp2);
+  assign pc_fetch_advance_onehot[3] =
+      pc_web_take_bundle && !is_compressed_fast && !pc_web_slot2_comp2;
+
+  // Slot-2 BTB prediction, mirroring branch_prediction_controller's serial
+  // chain (slot2_prediction_common → allowed → sel_btb) with the late
+  // slot-1-size leg select applied against the EARLY candidate pair:
+  //   i_slot2_valid            == pc_web_slot2_valid_en && !sel_nop
+  //   i_slot2_pc_use_alt       == !is_compressed_fast  (slot-2 PC = pc_reg+4)
+  //   i_slot2_pc_is_halfword   == is_compressed_fast ? !pc_reg[1] : pc_reg[1]
+  //   btb_compressed_2 / dir_predicted_taken_2 == selected candidate leg
+  //   (prediction_common is folded into cand_taken_* by the BPC)
+  // i_slot2_is_compressed (decode-form slot-2 size) equals the flat
+  // candidate-priority comp2 whenever slot-2 is valid; both sides AND with
+  // validity, so the product is bit-identical (asserted below).
+  logic pc_web_s2_halfword;
+  logic pc_web_s2_comp_leg;
+  logic pc_web_s2_taken_leg;
+  logic pc_web_s2_sizecheck;
+  logic pc_web_s2pred;
+  assign pc_web_s2_halfword = is_compressed_fast ? !pc_reg[1] : pc_reg[1];
+  assign pc_web_s2_comp_leg = is_compressed_fast ? slot2_cand_comp_p2 : slot2_cand_comp_p4;
+  assign pc_web_s2_taken_leg = is_compressed_fast ? slot2_cand_taken_p2 : slot2_cand_taken_p4;
+  assign pc_web_s2_sizecheck = !pc_web_s2_halfword || (pc_web_slot2_comp2 == pc_web_s2_comp_leg);
+  assign pc_web_s2pred =
+      pc_web_slot2_valid_en && !sel_nop && pc_web_s2_sizecheck && pc_web_s2_taken_leg;
+
+  // Machine-facing slot-2 prediction outputs (previously BPC-driven; the BPC
+  // serial versions land on *_bpc and are oracle-checked below). Late gates
+  // mirror branch_prediction_controller: !i_branch_taken for the _for_pc
+  // form, plus !i_stall for the effective form (i_is_32bit_spanning is
+  // tied 0 at the BPC instantiation).
+  assign slot2_prediction_used_for_pc = pc_web_s2pred && !i_from_ex_comb.branch_taken;
+  assign slot2_prediction_used = slot2_prediction_used_for_pc && !if_stage_stall;
+
+`ifndef SYNTHESIS
+  // Serial reference forms — the flattened web must match them bit-for-bit.
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] bundle_advance_sel_ref;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_ref;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_ref;
   always_comb begin
     unique case ({
       is_compressed_fast, slot2_is_compressed_for_pc_live
     })
-      2'b11:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus4;
-      2'b10:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
-      2'b01:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
-      default: bundle_advance_sel_live = riscv_pkg::PcAdvancePlus8;
+      2'b11:   bundle_advance_sel_ref = riscv_pkg::PcAdvancePlus4;
+      2'b10:   bundle_advance_sel_ref = riscv_pkg::PcAdvancePlus6;
+      2'b01:   bundle_advance_sel_ref = riscv_pkg::PcAdvancePlus6;
+      default: bundle_advance_sel_ref = riscv_pkg::PcAdvancePlus8;
     endcase
   end
-
   always_comb begin
-    pc_fetch_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
-                                                     riscv_pkg::PcAdvancePlus4;
+    pc_fetch_advance_sel_ref = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
+                                                    riscv_pkg::PcAdvancePlus4;
     if (!sel_nop && slot2_valid_for_pc_live) begin
-      pc_fetch_advance_sel_live = bundle_advance_sel_live;
+      pc_fetch_advance_sel_ref = bundle_advance_sel_ref;
     end
   end
-
   always_comb begin
-    pc_reg_advance_sel_live = riscv_pkg::PcAdvancePlus2;
+    pc_reg_advance_sel_ref = riscv_pkg::PcAdvancePlus2;
     if (!sel_nop) begin
       if (slot2_valid_for_pc_live) begin
-        pc_reg_advance_sel_live = bundle_advance_sel_live;
+        pc_reg_advance_sel_ref = bundle_advance_sel_ref;
       end else begin
-        pc_reg_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
-                                                       riscv_pkg::PcAdvancePlus4;
+        pc_reg_advance_sel_ref = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
+                                                      riscv_pkg::PcAdvancePlus4;
       end
     end
   end
+  always_comb begin
+    assert (pc_fetch_advance_sel_live == pc_fetch_advance_sel_ref)
+    else
+      $error(
+          "if_stage: flat pc_fetch_advance_sel %0d != serial %0d",
+          pc_fetch_advance_sel_live,
+          pc_fetch_advance_sel_ref
+      );
+    assert (pc_reg_advance_sel_live == pc_reg_advance_sel_ref)
+    else
+      $error(
+          "if_stage: flat pc_reg_advance_sel %0d != serial %0d",
+          pc_reg_advance_sel_live,
+          pc_reg_advance_sel_ref
+      );
+    assert (slot2_prediction_used_for_pc == slot2_prediction_used_for_pc_bpc)
+    else
+      $error(
+          "if_stage: flat slot2_prediction_used_for_pc %b != BPC serial %b",
+          slot2_prediction_used_for_pc,
+          slot2_prediction_used_for_pc_bpc
+      );
+    assert (slot2_prediction_used == slot2_prediction_used_bpc)
+    else
+      $error(
+          "if_stage: flat slot2_prediction_used %b != BPC serial %b",
+          slot2_prediction_used,
+          slot2_prediction_used_bpc
+      );
+  end
+`endif
 
   // Save the PC-only bundle metadata directly at stall entry.  Reconstructing
   // this from the replayed PD packet (`sel_compressed_2_sc`) puts the general
@@ -1402,6 +1653,37 @@ module if_stage #(
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
   assign pc_reg_advance_sel =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
+
+  // One-hot advance replay mirror (same save/replay discipline as the binary
+  // code above; flush default = +2 = bit 0).
+  logic [3:0] pc_fetch_advance_onehot_saved;
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      pc_fetch_advance_onehot_saved <= 4'b0001;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      pc_fetch_advance_onehot_saved <= pc_fetch_advance_onehot;
+    end
+  end
+  logic [3:0] pc_fetch_advance_onehot_eff;
+  assign pc_fetch_advance_onehot_eff =
+      replay_saved_if_outputs ? pc_fetch_advance_onehot_saved : pc_fetch_advance_onehot;
+
+`ifndef SYNTHESIS
+  // The one-hot advance must stay exactly one-hot and consistent with the
+  // binary code on every cycle (live and replayed).
+  always_comb begin
+    assert ($onehot(pc_fetch_advance_onehot_eff))
+    else
+      $error("if_stage: pc_fetch_advance_onehot_eff not one-hot: %b", pc_fetch_advance_onehot_eff);
+    assert (pc_fetch_advance_onehot_eff[pc_fetch_advance_sel] == 1'b1)
+    else
+      $error(
+          "if_stage: advance one-hot %b inconsistent with binary %0d",
+          pc_fetch_advance_onehot_eff,
+          pc_fetch_advance_sel
+      );
+  end
+`endif
 
   // Slot-2 PC = slot-1 PC + slot-1 size.  Use the stall-replayed slot-1 PC so
   // slot-2's PC stays aligned with slot-1's even across stall boundaries.

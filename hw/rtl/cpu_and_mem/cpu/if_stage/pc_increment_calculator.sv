@@ -65,6 +65,10 @@ module pc_increment_calculator #(
     // Encoded instruction-bundle advance: +2/+4 one-wide, +4/+6/+8 for
     // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b).
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
+    // Pre-decoded one-hot form of i_pc_fetch_advance_sel ([0]=+2 [1]=+4
+    // [2]=+6 [3]=+8) from if_stage's flattened fetch web; lets the fetch
+    // advance mux skip the binary-decode level.
+    input logic [3:0] i_pc_fetch_advance_onehot,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
 
     // Holdoff and control signals
@@ -162,6 +166,7 @@ module pc_increment_calculator #(
       .i_next_pc_plus_8(next_pc_plus_8),
       .i_next_pc_plus_10(next_pc_plus_10),
       .i_advance_sel(i_pc_fetch_advance_sel),
+      .i_advance_onehot(i_pc_fetch_advance_onehot),
       .o_fetch_seq_next_pc(fetch_seq_next_pc),
       .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2)
   );
@@ -365,34 +370,65 @@ module pc_fetch_advance_mux #(
     input logic [XLEN-1:0] i_next_pc_plus_8,
     input logic [XLEN-1:0] i_next_pc_plus_10,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_advance_sel,
+    input logic [3:0] i_advance_onehot,
     output logic [XLEN-1:0] o_fetch_seq_next_pc,
     output logic [XLEN-1:0] o_fetch_seq_next_pc_plus_2
 );
 
+  // One-hot AND-OR data mux: i_advance_onehot comes pre-decoded from
+  // if_stage's flattened fetch web ([0]=+2 [1]=+4 [2]=+6 [3]=+8, exactly one
+  // bit set — asserted in if_stage), so the 4:1 binary decode level
+  // disappears from the fetch-critical tail. The binary code is still
+  // received for the simulation equivalence oracle below.
   always_comb begin
+    o_fetch_seq_next_pc = ({XLEN{i_advance_onehot[0]}} & i_next_pc_plus_2) |
+        ({XLEN{i_advance_onehot[1]}} & i_next_pc_plus_4) |
+        ({XLEN{i_advance_onehot[2]}} & i_next_pc_plus_6) |
+        ({XLEN{i_advance_onehot[3]}} & i_next_pc_plus_8);
+    o_fetch_seq_next_pc_plus_2 = ({XLEN{i_advance_onehot[0]}} & i_next_pc_plus_4) |
+        ({XLEN{i_advance_onehot[1]}} & i_next_pc_plus_6) |
+        ({XLEN{i_advance_onehot[2]}} & i_next_pc_plus_8) |
+        ({XLEN{i_advance_onehot[3]}} & i_next_pc_plus_10);
+  end
+
+`ifndef SYNTHESIS
+  // Reference: the original binary-select behavior.
+  always_comb begin
+    logic [XLEN-1:0] ref_pc, ref_pc_p2;
     unique case (i_advance_sel)
       riscv_pkg::PcAdvancePlus2: begin
-        o_fetch_seq_next_pc        = i_next_pc_plus_2;
-        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_4;
+        ref_pc    = i_next_pc_plus_2;
+        ref_pc_p2 = i_next_pc_plus_4;
       end
       riscv_pkg::PcAdvancePlus4: begin
-        o_fetch_seq_next_pc        = i_next_pc_plus_4;
-        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_6;
+        ref_pc    = i_next_pc_plus_4;
+        ref_pc_p2 = i_next_pc_plus_6;
       end
       riscv_pkg::PcAdvancePlus6: begin
-        o_fetch_seq_next_pc        = i_next_pc_plus_6;
-        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_8;
+        ref_pc    = i_next_pc_plus_6;
+        ref_pc_p2 = i_next_pc_plus_8;
       end
       riscv_pkg::PcAdvancePlus8: begin
-        o_fetch_seq_next_pc        = i_next_pc_plus_8;
-        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_10;
+        ref_pc    = i_next_pc_plus_8;
+        ref_pc_p2 = i_next_pc_plus_10;
       end
       default: begin
-        o_fetch_seq_next_pc        = i_next_pc_plus_2;
-        o_fetch_seq_next_pc_plus_2 = i_next_pc_plus_4;
+        ref_pc    = i_next_pc_plus_2;
+        ref_pc_p2 = i_next_pc_plus_4;
       end
     endcase
+    assert (o_fetch_seq_next_pc == ref_pc)
+    else
+      $error("pc_fetch_advance_mux: one-hot pc %h != binary ref %h", o_fetch_seq_next_pc, ref_pc);
+    assert (o_fetch_seq_next_pc_plus_2 == ref_pc_p2)
+    else
+      $error(
+          "pc_fetch_advance_mux: one-hot pc+2 %h != binary ref %h",
+          o_fetch_seq_next_pc_plus_2,
+          ref_pc_p2
+      );
   end
+`endif
 
 endmodule : pc_fetch_advance_mux
 

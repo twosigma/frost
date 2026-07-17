@@ -146,6 +146,15 @@ module branch_prediction_controller (
     output logic                       o_slot2_btb_hit,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
+    // EARLY per-candidate slot-2 prediction legs for the flattened PC web in
+    // if_stage (prediction_common folded in; both legs from LUTRAM reads
+    // addressed by registered pc_reg+2 / pc_reg+4). The flat context arms
+    // apply the late slot-1-size select + slot-2 validity themselves, so the
+    // whole serial slot2_prediction_allowed chain stays off the PC cone.
+    output logic                       o_slot2_cand_taken_p2,           // slot-2 PC = pc_reg+2 leg
+    output logic                       o_slot2_cand_taken_p4,           // slot-2 PC = pc_reg+4 leg
+    output logic                       o_slot2_cand_comp_p2,            // BTB-compressed, +2 leg
+    output logic                       o_slot2_cand_comp_p4,            // BTB-compressed, +4 leg
 
     // RAS prediction outputs (for pipeline passthrough)
     output logic o_ras_predicted,  // RAS prediction was used
@@ -180,6 +189,10 @@ module branch_prediction_controller (
   // Slot-2 BTB outputs.
   logic            btb_hit_2;
   logic            btb_predicted_taken_2;
+  logic            btb_predicted_taken_2_noalt;
+  logic            btb_predicted_taken_2_alt;
+  logic            btb_compressed_2_noalt;
+  logic            btb_compressed_2_alt;
   logic [XLEN-1:0] btb_predicted_target_2;
   logic            btb_compressed_2;
   logic            btb_requires_pc_reg_handoff_2;
@@ -209,6 +222,10 @@ module branch_prediction_controller (
       .i_pc_2_use_alt(i_slot2_pc_use_alt),
       .o_btb_hit_2(btb_hit_2),
       .o_predicted_taken_2(btb_predicted_taken_2),
+      .o_predicted_taken_2_noalt(btb_predicted_taken_2_noalt),
+      .o_predicted_taken_2_alt(btb_predicted_taken_2_alt),
+      .o_btb_compressed_2_noalt(btb_compressed_2_noalt),
+      .o_btb_compressed_2_alt(btb_compressed_2_alt),
       .o_predicted_target_2(btb_predicted_target_2),
       .o_btb_compressed_2(btb_compressed_2),
       .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
@@ -657,6 +674,16 @@ module branch_prediction_controller (
 
   logic slot2_sel_btb_prediction;
   assign slot2_sel_btb_prediction = slot2_prediction_allowed && dir_predicted_taken_2;
+
+  // EARLY per-candidate exports for the if_stage flat PC web (see port
+  // comment). prediction_common is all-registered by construction (365-371),
+  // so these are complete early candidates: the flat arms only apply the
+  // late slot-1-size leg select, slot-2 validity, the halfword size-match,
+  // and !i_branch_taken.
+  assign o_slot2_cand_taken_p2 = prediction_common && btb_predicted_taken_2_noalt;
+  assign o_slot2_cand_taken_p4 = prediction_common && btb_predicted_taken_2_alt;
+  assign o_slot2_cand_comp_p2 = btb_compressed_2_noalt;
+  assign o_slot2_cand_comp_p4 = btb_compressed_2_alt;
 
   // Final slot-2 prediction-used: same late-arrival gates as slot-1
   // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction

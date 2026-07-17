@@ -122,6 +122,7 @@ module pc_controller #(
     input logic i_slot2_valid,
     input logic i_slot2_is_compressed,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
+    input logic [3:0] i_pc_fetch_advance_onehot,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
 
     // Branch prediction (from branch_prediction_controller)
@@ -259,6 +260,7 @@ module pc_controller #(
       .i_is_compressed_for_pc,
       .i_sel_nop,
       .i_pc_fetch_advance_sel,
+      .i_pc_fetch_advance_onehot,
       .i_pc_reg_advance_sel,
 
       // Holdoff and control signals

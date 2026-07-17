@@ -87,6 +87,15 @@ module branch_predictor #(
     input  logic            i_pc_2_use_alt,
     output logic            o_btb_hit_2,
     output logic            o_predicted_taken_2,
+    // Per-candidate (pre-use_alt-select) slot-2 legs for the flattened PC
+    // web in if_stage: everything here is EARLY (LUTRAM reads addressed by
+    // registered pc_reg+2 / pc_reg+4), so the late slot-1-size select can be
+    // applied inside the one-hot context arms instead of in front of the
+    // whole slot-2 prediction chain.
+    output logic            o_predicted_taken_2_noalt,       // i_pc_2 leg (pc_reg+2)
+    output logic            o_predicted_taken_2_alt,         // i_pc_2_alt leg (pc_reg+4)
+    output logic            o_btb_compressed_2_noalt,        // hit-gated, i_pc_2 leg
+    output logic            o_btb_compressed_2_alt,          // hit-gated, i_pc_2_alt leg
     output logic [XLEN-1:0] o_predicted_target_2,
     output logic            o_btb_compressed_2,
     output logic            o_btb_requires_pc_reg_handoff_2,
@@ -387,6 +396,12 @@ module branch_predictor #(
   wire btb_hit_2 = lookup_valid_2 && (lookup_tag_stored_2 == lookup_tag_2);
   wire btb_hit_2_alt = lookup_valid_2_alt && (lookup_tag_stored_2_alt == lookup_tag_2_alt);
   wire selected_btb_hit_2 = i_pc_2_use_alt ? btb_hit_2_alt : btb_hit_2;
+  // Per-leg exports (see port comment): bit-identical to the use_alt-selected
+  // outputs below under the corresponding i_pc_2_use_alt value.
+  assign o_predicted_taken_2_noalt = btb_hit_2 && lookup_counter_2[1];
+  assign o_predicted_taken_2_alt = btb_hit_2_alt && lookup_counter_2_alt[1];
+  assign o_btb_compressed_2_noalt = btb_hit_2 && btb_compressed_lookup_2;
+  assign o_btb_compressed_2_alt = btb_hit_2_alt && btb_compressed_lookup_2_alt;
   assign o_btb_hit_2 = selected_btb_hit_2;
   assign o_predicted_taken_2 = i_pc_2_use_alt ?
       (btb_hit_2_alt && lookup_counter_2_alt[1]) :
