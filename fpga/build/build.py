@@ -125,8 +125,12 @@ PLACER_DIRECTIVES = [
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.010
 X3_PLACE_SETUP_UNCERTAINTIES_NS = [
-    X3_PLACE_BASELINE_UNCERTAINTY_NS,
-    X3_PLACE_BASELINE_UNCERTAINTY_NS - X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS,
+    float(seed)
+    for seed in os.environ.get(
+        "FROST_X3_UNCERTAINTY_SEEDS",
+        f"{X3_PLACE_BASELINE_UNCERTAINTY_NS},"
+        f"{X3_PLACE_BASELINE_UNCERTAINTY_NS - X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS}",
+    ).split(",")
 ]
 
 ROUTER_DIRECTIVES = [
@@ -1068,8 +1072,14 @@ Examples:
     parser.add_argument(
         "--opt-directive",
         choices=OPT_DIRECTIVES,
-        default="Explore",
-        help="Opt directive (default: Explore)",
+        default=None,
+        help="Opt directive (default: Default on x3, Explore elsewhere). "
+        "On x3, opt=Default measured the best 22-job placer sweep of the "
+        "campaign (-0.772 vs -0.787 under Explore) with bit-identical "
+        "post-opt QoR; Explore's extra passes also merge equivalent "
+        "registers across hierarchy, silently undoing the RTL's deliberate "
+        "per-consumer register copies. Genesys2 keeps Explore (unmeasured "
+        "with Default there).",
     )
     parser.add_argument(
         "--place-directive",
@@ -1121,12 +1131,18 @@ Examples:
         route_directive = args.route_directive
         second_route_directive = args.second_route_directive
 
+    # Per-board opt default (see --opt-directive help): x3 = Default,
+    # everything else keeps Explore.
+    opt_directive = args.opt_directive
+    if opt_directive is None:
+        opt_directive = "Default" if board_name == "x3" else "Explore"
+
     # Per-step directives. The three phys_opt stages all run hardcoded sweeps
     # in the TCL and ignore the directive arg; we pass "Sweep" as a sentinel
     # so banners and the temp work dir name make this obvious.
     step_directives = {
         "synth": args.synth_directive,
-        "opt": args.opt_directive,
+        "opt": opt_directive,
         "place": place_directive,
         "post_place_physopt": "Sweep",
         "route": route_directive,

@@ -463,6 +463,18 @@ if {$step eq "synth"} {
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
+    # Optional incremental-placement reference: when FROST_PLACE_INCR_REF
+    # names a post_place checkpoint, matching cells reuse its placement so a
+    # netlist delta measures its marginal effect instead of re-rolling the
+    # global placement lottery (winner directives rotate per netlist
+    # otherwise). Reference must be same device/constraints; check the
+    # incremental reuse percentage in the log when interpreting results.
+    set x3_place_incr_ref [getenv_default FROST_PLACE_INCR_REF ""]
+    if {$x3_place_incr_ref ne ""} {
+        read_checkpoint -incremental $x3_place_incr_ref
+        puts "Incremental placement reference: $x3_place_incr_ref"
+    }
+
     place_design -directive $directive
 
     # Add the shaved 10 ps back now that placement is done: every seed is
