@@ -39,24 +39,24 @@
 #define CLOCK_PERIOD_PS 3103
 
 
-/* Type definitions matching the C++ version */
-typedef uint8_t bink_v1_msg_type_t;
-typedef uint8_t bink_venue_v1_t;
-typedef uint8_t bink_v1_display_t;
-typedef uint8_t bink_v1_currency_t;
-typedef uint8_t bink_v1_line_setter_status_t;
+/* Versioned packet types produced by the parser */
+typedef uint8_t packet_v1_msg_type_t;
+typedef uint8_t packet_v1_venue_t;
+typedef uint8_t packet_v1_display_t;
+typedef uint8_t packet_v1_currency_t;
+typedef uint8_t packet_v1_line_setter_status_t;
 
 typedef struct __attribute__((packed)) {
     uint16_t len;
-    bink_v1_msg_type_t msg_type;
-} bink_v1_msg_header_t;
+    packet_v1_msg_type_t msg_type;
+} packet_v1_msg_header_t;
 
 typedef struct __attribute__((packed)) {
     int64_t amount;
     uint8_t scale;
-} bink_v1_quantity_t;
+} packet_v1_quantity_t;
 
-typedef fix_price_t bink_v1_price_t;
+typedef fix_price_t packet_v1_price_t;
 
 typedef struct __attribute__((packed)) {
     uint16_t offset;
@@ -64,22 +64,22 @@ typedef struct __attribute__((packed)) {
 } dma_vardata_t;
 
 typedef struct __attribute__((packed)) {
-    bink_v1_msg_header_t msg_header;
-    bink_venue_v1_t venue_id;
+    packet_v1_msg_header_t msg_header;
+    packet_v1_venue_t venue_id;
     uint32_t order_id;
     uint16_t line_id;
     uint64_t mapped_order_id;
     uint64_t venue_transx_timestamp;
     uint64_t venue_sent_timestamp;
     uint64_t ts_receive;
-    bink_v1_quantity_t accepted_quantity;
-    bink_v1_price_t accepted_price;
-    bink_v1_price_t display_price;
-    bink_v1_display_t accepted_display;
+    packet_v1_quantity_t accepted_quantity;
+    packet_v1_price_t accepted_price;
+    packet_v1_price_t display_price;
+    packet_v1_display_t accepted_display;
     dma_vardata_t accepted_order_id;
-    bink_v1_currency_t currency;
-    bink_v1_line_setter_status_t line_setter_status;
-} bink_v1_venue_accepted_t;
+    packet_v1_currency_t currency;
+    packet_v1_line_setter_status_t line_setter_status;
+} packet_v1_venue_accepted_t;
 
 typedef struct __attribute__((packed)) {
     uint8_t sac_id;
@@ -172,9 +172,9 @@ static void drain_fifo_pairs(void)
     }
 }
 
-static bink_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_version_ok)
+static packet_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_version_ok)
 {
-    bink_v1_venue_accepted_t msg;
+    packet_v1_venue_accepted_t msg;
     string_buffer_t key_buf, val_buf;
     bool success = true;
     bool fix_ok = true;
@@ -227,7 +227,7 @@ static bink_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_version
             case FIX_TAG_MSG_TYPE:
                 if (strcmp(val_buf.data, "8") == 0) {
                     msg.msg_header.msg_type = 38; /* venue accepted */
-                    msg.msg_header.len = sizeof(bink_v1_venue_accepted_t);
+                    msg.msg_header.len = sizeof(packet_v1_venue_accepted_t);
                 }
                 break;
 
@@ -401,7 +401,7 @@ int main(void)
     /* Parse the message */
     bool parse_ok = true;
     bool fix_version_ok = true;
-    bink_v1_venue_accepted_t msg = parse_venue_accepted(&parse_ok, &fix_version_ok);
+    packet_v1_venue_accepted_t msg = parse_venue_accepted(&parse_ok, &fix_version_ok);
     bool message_ok =
         fifo_framing_ok && parse_ok && fix_version_ok && msg.msg_header.msg_type == 38 &&
         msg.venue_id == 76 && msg.accepted_quantity.amount == 150 &&
@@ -412,7 +412,7 @@ int main(void)
     end_time = read_timer();
 
     /* Print results */
-    uart_printf("\n=== FROST Packet Parser - Full Bink Message ===\n");
+    uart_printf("\n=== FROST Packet Parser - Full Parsed Message ===\n");
     uart_printf("Writing FIX message to FIFOs...\n");
     if (!fix_version_ok) {
         uart_printf("Warning: Expected FIX.4.2\n");
@@ -427,7 +427,7 @@ int main(void)
         uart_printf("ERROR: parsed fields did not match the expected message\n");
     }
 
-    uart_printf("\n=== Parsed Bink Venue Accepted Message ===\n");
+    uart_printf("\n=== Parsed Venue Accepted Message ===\n");
     uart_printf("header.len: %u\n", msg.msg_header.len);
     uart_printf("header.msg_type: %u\n", msg.msg_header.msg_type);
     uart_printf("venue_id: %u\n", msg.venue_id);
