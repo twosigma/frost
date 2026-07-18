@@ -289,13 +289,10 @@ module pc_controller #(
   assign o_mid_32bit_correction = 1'b0;
 
   // ===========================================================================
-  // Final PC Selection - Folded Priority Muxes (one-hot AND-OR)
+  // Final PC Selection - Priority-Encoded Muxes
   // ===========================================================================
-  // The next_pc / next_pc_reg priority ladders are folded into
-  // priority-resolved one-hot masks driving two-level AND-OR value networks
-  // (see the fold block below the pending-prediction machinery). The serial
-  // if/else form survives as the simulation reference ladder, asserted equal
-  // to the fold every cycle.
+  // Use explicit priority muxes instead of one-hot AND/OR trees so trap/stall
+  // gating doesn't get duplicated across every select term.
 
   // For next_pc_reg, use the REGISTERED prediction (1 cycle delayed).
   // This is because o_pc_reg represents the PC of the instruction being processed,
@@ -674,182 +671,32 @@ module pc_controller #(
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
-  // ---------------------------------------------------------------------------
-  // x3 TIMING: fold of the two PC priority ladders.
-  //
-  // In the serial if/else form every arm's value rides through the 2:1 stages
-  // of all higher-priority arms (~11 LUT levels around the o_pc_reg loop
-  // post-route, on a net-delay-dominated path). Here each arm's select is its
-  // condition ANDed with "no higher-priority arm fired" — a cumulative-OR
-  // prefix that synthesis may share and rebalance freely (deliberately no
-  // keep/dont_touch) — so every candidate value reaches o_pc / o_pc_reg
-  // through a single AND-OR pair. Arms sharing a value OR their masks first,
-  // keeping each value network at 2 LUT levels. The reset arm's all-zero
-  // value falls out of the empty OR (every mask carries !i_reset via the
-  // prefix), so reset needs no term.
-  //
-  // The priority ladders survive verbatim under `ifndef SYNTHESIS (with the
-  // behavioral rationale comments) as next_pc_ref / next_pc_reg_ref; the
-  // simulation oracle asserts fold == ladder and arm one-hotness every
-  // cycle. EDIT THE FOLD AND THE REFERENCE LADDER TOGETHER.
-  // ---------------------------------------------------------------------------
-
-  // Cumulative "an arm at or above X fired" prefix. The two ladders share
-  // their head (reset through slot-2), then diverge.
-  logic hp_thru_trap, hp_thru_fencei, hp_thru_branch, hp_thru_pdr;
-  logic hp_thru_wcs, hp_thru_hold, hp_thru_slot2;
-  assign hp_thru_trap = i_reset || trap_or_mret;
-  assign hp_thru_fencei = hp_thru_trap || i_fence_i_flush;
-  assign hp_thru_branch = hp_thru_fencei || i_branch_taken;
-  assign hp_thru_pdr = hp_thru_branch || i_pd_redirect;
-  assign hp_thru_wcs = hp_thru_pdr || i_window_cannot_serve;
-  assign hp_thru_hold = hp_thru_wcs || !i_fetch_progress;
-  assign hp_thru_slot2 = hp_thru_hold || i_slot2_prediction_used_for_pc;
-
-  // Shared-head arm masks (identical condition and priority position in both
-  // ladders; the wcs/hold arms differ only in value between the ladders).
-  logic sel_arm_trap, sel_arm_fencei, sel_arm_branch, sel_arm_pdr;
-  logic sel_arm_wcs, sel_arm_hold, sel_arm_slot2;
-  assign sel_arm_trap = trap_or_mret && !i_reset;
-  assign sel_arm_fencei = i_fence_i_flush && !hp_thru_trap;
-  assign sel_arm_branch = i_branch_taken && !hp_thru_fencei;
-  assign sel_arm_pdr = i_pd_redirect && !hp_thru_branch;
-  assign sel_arm_wcs = i_window_cannot_serve && !hp_thru_pdr;
-  assign sel_arm_hold = !i_fetch_progress && !hp_thru_wcs;
-  assign sel_arm_slot2 = i_slot2_prediction_used_for_pc && !hp_thru_hold;
-
-  // next_pc tail: pred -> target-holdoff -> consume -> catchup -> pending
-  // fetch hold -> sequential.
-  logic npc_hp_thru_pred, npc_hp_thru_thold, npc_hp_thru_consume;
-  logic npc_hp_thru_catchup, npc_hp_thru_pfetch;
-  assign npc_hp_thru_pred = hp_thru_slot2 || i_prediction_used_for_pc;
-  assign npc_hp_thru_thold = npc_hp_thru_pred || pending_prediction_target_holdoff_q;
-  assign npc_hp_thru_consume = npc_hp_thru_thold || hold_pending_prediction_consume_fetch_pc_mux;
-  assign npc_hp_thru_catchup = npc_hp_thru_consume || halfword_target_lead_catchup;
-  assign npc_hp_thru_pfetch = npc_hp_thru_catchup || hold_pending_prediction_fetch_pc_mux;
-
-  logic npc_arm_pred, npc_arm_thold, npc_arm_consume, npc_arm_catchup;
-  logic npc_arm_pfetch, npc_arm_seq;
-  assign npc_arm_pred = i_prediction_used_for_pc && !hp_thru_slot2;
-  assign npc_arm_thold = pending_prediction_target_holdoff_q && !npc_hp_thru_pred;
-  assign npc_arm_consume = hold_pending_prediction_consume_fetch_pc_mux && !npc_hp_thru_thold;
-  assign npc_arm_catchup = halfword_target_lead_catchup && !npc_hp_thru_consume;
-  assign npc_arm_pfetch = hold_pending_prediction_fetch_pc_mux && !npc_hp_thru_catchup;
-  assign npc_arm_seq = !npc_hp_thru_pfetch;
-
-  // Sub-selects inside the target-holdoff / consume arms (the nested
-  // ternaries of the reference ladder, decomposed into disjoint legs).
-  logic npc_thold_at_target;
-  assign npc_thold_at_target = (o_pc == pending_prediction_target);
-  logic npc_consume_seq_leg;
-  assign npc_consume_seq_leg = pending_prediction_allow_cross_pc_mux_q &&
-      pending_prediction_target_handoff_pc_mux && !pending_prediction_from_buffer;
-
-  // Value selects (arms sharing a value OR their masks here).
-  logic npc_sel_hold_pc, npc_sel_thold_next, npc_sel_pending_target;
-  logic npc_sel_pending_pc, npc_sel_seq, npc_sel_seq_plus_2;
-  assign npc_sel_hold_pc = sel_arm_hold || (npc_arm_thold && !npc_thold_at_target);
-  assign npc_sel_thold_next = npc_arm_thold && npc_thold_at_target;
-  assign npc_sel_pending_target =
-      (npc_arm_consume &&
-       (pending_prediction_cross_handoff_pc_mux || !npc_consume_seq_leg)) ||
-      (npc_arm_pfetch && pending_prediction_allow_cross_pc_mux_q);
-  assign npc_sel_pending_pc = npc_arm_pfetch && !pending_prediction_allow_cross_pc_mux_q;
-  assign npc_sel_seq =
-      (npc_arm_consume && !pending_prediction_cross_handoff_pc_mux && npc_consume_seq_leg) ||
-      npc_arm_seq;
-  assign npc_sel_seq_plus_2 = npc_arm_catchup;
-
   always_comb begin
-    next_pc = ({XLEN{sel_arm_trap}} & i_trap_target) |
-        ({XLEN{sel_arm_fencei}} & i_fence_i_target) |
-        ({XLEN{sel_arm_branch}} & i_branch_target) |
-        ({XLEN{sel_arm_pdr}} & i_pd_redirect_target) |
-        ({XLEN{sel_arm_wcs}} & {o_pc_reg[XLEN-1:2], 2'b00}) |
-        ({XLEN{npc_sel_hold_pc}} & o_pc) |
-        ({XLEN{sel_arm_slot2}} & i_slot2_predicted_target) |
-        ({XLEN{npc_arm_pred}} & i_predicted_target) |
-        ({XLEN{npc_sel_thold_next}} & pending_prediction_target_next_word) |
-        ({XLEN{npc_sel_pending_target}} & pending_prediction_target) |
-        ({XLEN{npc_sel_pending_pc}} & pending_prediction_pc) |
-        ({XLEN{npc_sel_seq}} & seq_next_pc) |
-        ({XLEN{npc_sel_seq_plus_2}} & seq_next_pc_plus_2);
-  end
-
-  // next_pc_reg tail: target-holdoff -> land-on-branch walk suppress ->
-  // cross handoff -> target handoff -> registered prediction -> sequential.
-  logic npr_pending_wait;
-  assign npr_pending_wait = pending_prediction_effective &&
-      !pending_prediction_allow_cross_pc_mux_q &&
-      !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit;
-
-  logic npr_hp_thru_thold, npr_hp_thru_wait, npr_hp_thru_cross;
-  logic npr_hp_thru_th, npr_hp_thru_pred_r;
-  assign npr_hp_thru_thold = hp_thru_slot2 || pending_prediction_target_holdoff_q;
-  assign npr_hp_thru_wait = npr_hp_thru_thold || npr_pending_wait;
-  assign npr_hp_thru_cross = npr_hp_thru_wait || pending_prediction_cross_handoff_pc_mux;
-  assign npr_hp_thru_th = npr_hp_thru_cross || pending_prediction_target_handoff_pc_mux;
-  assign npr_hp_thru_pred_r = npr_hp_thru_th || sel_prediction_r;
-
-  logic npr_arm_thold, npr_arm_wait, npr_arm_cross, npr_arm_th;
-  logic npr_arm_pred_r, npr_arm_seq;
-  assign npr_arm_thold = pending_prediction_target_holdoff_q && !hp_thru_slot2;
-  assign npr_arm_wait = npr_pending_wait && !npr_hp_thru_thold;
-  assign npr_arm_cross = pending_prediction_cross_handoff_pc_mux && !npr_hp_thru_wait;
-  assign npr_arm_th = pending_prediction_target_handoff_pc_mux && !npr_hp_thru_cross;
-  assign npr_arm_pred_r = sel_prediction_r && !npr_hp_thru_th;
-  assign npr_arm_seq = !npr_hp_thru_pred_r;
-
-  logic npr_sel_pc_reg, npr_sel_pending_pc;
-  assign npr_sel_pc_reg = sel_arm_wcs || sel_arm_hold || npr_arm_thold;
-  assign npr_sel_pending_pc = npr_arm_wait || npr_arm_cross;
-
-  always_comb begin
-    next_pc_reg = ({XLEN{sel_arm_trap}} & i_trap_target) |
-        ({XLEN{sel_arm_fencei}} & i_fence_i_target) |
-        ({XLEN{sel_arm_branch}} & i_branch_target) |
-        ({XLEN{sel_arm_pdr}} & i_pd_redirect_target) |
-        ({XLEN{npr_sel_pc_reg}} & o_pc_reg) |
-        ({XLEN{sel_arm_slot2}} & i_slot2_predicted_target) |
-        ({XLEN{npr_sel_pending_pc}} & pending_prediction_pc) |
-        ({XLEN{npr_arm_th}} & pending_prediction_target) |
-        ({XLEN{npr_arm_pred_r}} & i_predicted_target_r) |
-        ({XLEN{npr_arm_seq}} & seq_next_pc_reg);
-  end
-
-`ifndef SYNTHESIS
-  // Reference priority ladders (the behavioral spec of the folds above —
-  // edit both together). The oracle below asserts fold == ladder every
-  // cycle, plus one-hotness of each fold's arm set.
-  logic [XLEN-1:0] next_pc_ref, next_pc_reg_ref;
-
-  always_comb begin
-    if (i_reset) next_pc_ref = '0;
-    else if (trap_or_mret) next_pc_ref = i_trap_target;
-    else if (i_fence_i_flush) next_pc_ref = i_fence_i_target;
-    else if (i_branch_taken) next_pc_ref = i_branch_target;
-    else if (i_pd_redirect) next_pc_ref = i_pd_redirect_target;
-    else if (i_window_cannot_serve) next_pc_ref = {o_pc_reg[XLEN-1:2], 2'b00};
+    if (i_reset) next_pc = '0;
+    else if (trap_or_mret) next_pc = i_trap_target;
+    else if (i_fence_i_flush) next_pc = i_fence_i_target;
+    else if (i_branch_taken) next_pc = i_branch_target;
+    else if (i_pd_redirect) next_pc = i_pd_redirect_target;
+    else if (i_window_cannot_serve) next_pc = {o_pc_reg[XLEN-1:2], 2'b00};
     // No fetch progress: hold the fetch address so the provider can keep
     // working on the owed ask.  Sits above the prediction/pending arms
     // (their state is frozen and predictions are suppressed while invalid)
     // and below the redirects (backend events and already-delivered bundles
     // must still steer fetch).
-    else if (!i_fetch_progress) next_pc_ref = o_pc;
+    else if (!i_fetch_progress) next_pc = o_pc;
     // Slot-2 BTB prediction: higher priority than slot-1 BTB
     // because slot-2 is older in program order than the next bundle's
     // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
     // slot-1 BTB hit at pc[N+1] = sequential next bundle's slot-1 PC).
-    else if (i_slot2_prediction_used_for_pc) next_pc_ref = i_slot2_predicted_target;
-    else if (i_prediction_used_for_pc) next_pc_ref = i_predicted_target;
+    else if (i_slot2_prediction_used_for_pc) next_pc = i_slot2_predicted_target;
+    else if (i_prediction_used_for_pc) next_pc = i_predicted_target;
     // During the target-holdoff bubble, keep fetch at most one word ahead of
     // the still-held target PC. Letting it run farther ahead makes pc_reg pick
     // up instruction-size metadata from the wrong word; freezing it on the
     // target loses the normal one-word BRAM lead and shifts later spanning
     // assembly by a full word.
     else if (o_pending_prediction_target_holdoff)
-      next_pc_ref =
-          (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
+      next_pc = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
     else if (hold_pending_prediction_consume_fetch_pc_mux)
       // Upper-half predictions need a 2-step handoff:
       // 1. Land pc_reg on the predicted branch PC so the control-flow
@@ -861,7 +708,7 @@ module pc_controller #(
       // one-word fetch lead immediately. Holding fetch on the target for both
       // steps leaves the next target instruction paired with the stale target
       // word instead of the following word.
-      next_pc_ref =
+      next_pc =
           pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
           ((pending_prediction_allow_cross_pc_mux_q &&
             pending_prediction_target_handoff_pc_mux &&
@@ -872,11 +719,11 @@ module pc_controller #(
       // already consuming the target word. Restore the normal fetch lead by
       // skipping the extra halfword-parcel step and requesting the following
       // word immediately.
-      next_pc_ref = seq_next_pc_plus_2;
+      next_pc = seq_next_pc_plus_2;
     else if (hold_pending_prediction_fetch_pc_mux)
-      next_pc_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+      next_pc = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
           pending_prediction_pc;
-    else next_pc_ref = seq_next_pc;
+    else next_pc = seq_next_pc;
   end
 
   // For next_pc_reg, use the REGISTERED prediction handoff for both BTB and
@@ -889,26 +736,26 @@ module pc_controller #(
   //   - In cycle N+1 (registered): next_pc_reg = predicted_target_r (for branch instruction)
   //   - In cycle N+2: o_pc_reg = predicted_target_r (for target instruction)
   always_comb begin
-    if (i_reset) next_pc_reg_ref = '0;
-    else if (trap_or_mret) next_pc_reg_ref = i_trap_target;
-    else if (i_fence_i_flush) next_pc_reg_ref = i_fence_i_target;
-    else if (i_branch_taken) next_pc_reg_ref = i_branch_target;
-    else if (i_pd_redirect) next_pc_reg_ref = i_pd_redirect_target;
-    else if (i_window_cannot_serve) next_pc_reg_ref = o_pc_reg;
+    if (i_reset) next_pc_reg = '0;
+    else if (trap_or_mret) next_pc_reg = i_trap_target;
+    else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
+    else if (i_branch_taken) next_pc_reg = i_branch_target;
+    else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
+    else if (i_window_cannot_serve) next_pc_reg = o_pc_reg;
     // No fetch progress: hold the instruction address (nothing is being
     // delivered).  Same placement rationale as the next_pc hold arm above.
-    else if (!i_fetch_progress) next_pc_reg_ref = o_pc_reg;
+    else if (!i_fetch_progress) next_pc_reg = o_pc_reg;
     // Slot-2 BTB prediction: pc_reg jumps to the slot-2 target
     // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
     // after the redirect is NOP'd via the standard control_flow_holdoff
     // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
     // the target arrives the cycle after that.
-    else if (i_slot2_prediction_used_for_pc) next_pc_reg_ref = i_slot2_predicted_target;
+    else if (i_slot2_prediction_used_for_pc) next_pc_reg = i_slot2_predicted_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
-    else if (o_pending_prediction_target_holdoff) next_pc_reg_ref = o_pc_reg;
+    else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
     // Pending-prediction load-drop fix: suppress the land-on-branch JUMP in the
     // immediate-predecessor carve-out so pc_reg advances SEQUENTIALLY
     // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
@@ -917,59 +764,12 @@ module pc_controller #(
     // still fires when pc_reg actually reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
-      next_pc_reg_ref = pending_prediction_pc;
-    else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg_ref = pending_prediction_pc;
-    else if (pending_prediction_target_handoff_pc_mux) next_pc_reg_ref = pending_prediction_target;
-    else if (sel_prediction_r) next_pc_reg_ref = i_predicted_target_r;
-    else next_pc_reg_ref = seq_next_pc_reg;
+      next_pc_reg = pending_prediction_pc;
+    else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
+    else if (pending_prediction_target_handoff_pc_mux) next_pc_reg = pending_prediction_target;
+    else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
+    else next_pc_reg = seq_next_pc_reg;
   end
-
-  always_comb begin
-    assert (next_pc == next_pc_ref)
-    else $error("pc_controller: folded next_pc %h != ladder ref %h", next_pc, next_pc_ref);
-    assert (next_pc_reg == next_pc_reg_ref)
-    else
-      $error("pc_controller: folded next_pc_reg %h != ladder ref %h", next_pc_reg, next_pc_reg_ref);
-    assert ($onehot(
-        {
-          i_reset,
-          sel_arm_trap,
-          sel_arm_fencei,
-          sel_arm_branch,
-          sel_arm_pdr,
-          sel_arm_wcs,
-          sel_arm_hold,
-          sel_arm_slot2,
-          npc_arm_pred,
-          npc_arm_thold,
-          npc_arm_consume,
-          npc_arm_catchup,
-          npc_arm_pfetch,
-          npc_arm_seq
-        }
-    ))
-    else $error("pc_controller: next_pc fold arms not one-hot");
-    assert ($onehot(
-        {
-          i_reset,
-          sel_arm_trap,
-          sel_arm_fencei,
-          sel_arm_branch,
-          sel_arm_pdr,
-          sel_arm_wcs,
-          sel_arm_hold,
-          sel_arm_slot2,
-          npr_arm_thold,
-          npr_arm_wait,
-          npr_arm_cross,
-          npr_arm_th,
-          npr_arm_pred_r,
-          npr_arm_seq
-        }
-    ))
-    else $error("pc_controller: next_pc_reg fold arms not one-hot");
-  end
-`endif
 
   // PC registers
   logic pc_update_en;
