@@ -21,7 +21,7 @@
   access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
   instantiates the Tomasulo OOO RISC-V CPU alongside separate fetch and data RAMs:
   a half-size (IMEM_SIZE_BYTES) predecode instruction mirror, and the full
-  MEM_SIZE_BYTES data RAM built from two half-depth banks (gen_dmem_banks,
+  MEM_SIZE_BYTES data RAM built from two half-depth banks (data_memory_bank0/1,
   address-MSB select with a registered read-back mux). Both memories use Port A on the
   divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
   clock (i_clk) for runtime operations - instruction fetch from memory 0 and data
@@ -604,6 +604,10 @@ module cpu_and_mem #(
   imem_predecode #(
       .ADDR_WIDTH(ImemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
+      // Stage the sim init at the FULL unified-image depth: sw.mem may
+      // legally extend past the imem's half-size array (data belongs to the
+      // dmem banks), and $readmem hard-fails on out-of-bounds addresses.
+      .INIT_IMAGE_DEPTH_WORDS(2 ** MemWordAddrWidth),
       .INIT_FILE("sw.mem")
   ) instruction_memory (
       .i_port_a_clk(i_clk_div4),
@@ -674,32 +678,73 @@ module cpu_and_mem #(
 
   logic [31:0] dmem_bank_b_read_data[2];
 
-  for (genvar bank = 0; bank < 2; bank++) begin : gen_dmem_banks
-    tdp_bram_dc_byte_en #(
-        .DATA_WIDTH(32),
-        .ADDR_WIDTH(DmemBankAddrWidth),
-        .USE_INIT_FILE(1'b1),
-        .INIT_FILE(bank == 0 ? "sw_dmem_bank0.mem" : "sw_dmem_bank1.mem"),
-        .INIT_IMAGE_FILE("sw.mem"),
-        .INIT_IMAGE_DEPTH_WORDS(2 ** MemWordAddrWidth),
-        .INIT_IMAGE_OFFSET_WORDS(bank * (2 ** DmemBankAddrWidth))
-    ) data_memory (
-        .i_port_a_clk(i_clk_div4),
-        .i_port_b_clk(i_clk),
-        // Port A: Instruction programming (div4 clock, write only)
-        .i_port_a_byte_address(i_instr_mem_addr),
-        .i_port_a_write_data(i_instr_mem_wrdata),
-        .i_port_a_byte_write_enable(
-            i_instr_mem_we & {4{i_instr_mem_en && (dmem_a_bank_sel == bank[0])}}),
-        .o_port_a_read_data(  /* unused - write only */),
-        // Port B: Data memory for loads and stores
-        .i_port_b_byte_address(data_memory_address),
-        .i_port_b_write_data(data_memory_write_data),
-        .i_port_b_byte_write_enable(
-            data_memory_bram_byte_write_enable & {4{dmem_b_bank_sel == bank[0]}}),
-        .o_port_b_read_data(dmem_bank_b_read_data[bank])
-    );
-  end : gen_dmem_banks
+  // Under Yosys BOTH banks instantiate the BASE module with no parameter
+  // overrides at all (the entire #(...) is preprocessed out): any child
+  // paramod derivation here queues a reprocess of cpu_and_mem (itself a
+  // paramod), which regenerates the already-present parent and dies on a
+  // duplicate-module assert (kernel/rtlil.cc modules_.count, Yosys 0.64
+  // hierarchy bug — one identical child takes the cached-RTLIL path and
+  // still queues the reprocess). The overrides are dead under Yosys
+  // anyway: it skips memory init entirely (see tdp_bram_dc_byte_en), and
+  // the default ADDR_WIDTH merely halves the array depth in a netlist the
+  // CI check discards. All other tools see the full parameterization.
+  tdp_bram_dc_byte_en
+`ifndef YOSYS
+  #(
+      .DATA_WIDTH(32),
+      .ADDR_WIDTH(DmemBankAddrWidth),
+      .USE_INIT_FILE(1'b1),
+      .INIT_FILE("sw_dmem_bank0.mem"),
+      .INIT_IMAGE_FILE("sw.mem"),
+      .INIT_IMAGE_DEPTH_WORDS(2 ** MemWordAddrWidth),
+      .INIT_IMAGE_OFFSET_WORDS(0)
+  )
+`endif
+  data_memory_bank0 (
+      .i_port_a_clk(i_clk_div4),
+      .i_port_b_clk(i_clk),
+      // Port A: Instruction programming (div4 clock, write only)
+      .i_port_a_byte_address(i_instr_mem_addr),
+      .i_port_a_write_data(i_instr_mem_wrdata),
+      .i_port_a_byte_write_enable(
+          i_instr_mem_we & {4{i_instr_mem_en && (dmem_a_bank_sel == 1'b0)}}),
+      .o_port_a_read_data(  /* unused - write only */),
+      // Port B: Data memory for loads and stores
+      .i_port_b_byte_address(data_memory_address),
+      .i_port_b_write_data(data_memory_write_data),
+      .i_port_b_byte_write_enable(
+          data_memory_bram_byte_write_enable & {4{dmem_b_bank_sel == 1'b0}}),
+      .o_port_b_read_data(dmem_bank_b_read_data[0])
+  );
+
+  tdp_bram_dc_byte_en
+`ifndef YOSYS
+  #(
+      .DATA_WIDTH(32),
+      .ADDR_WIDTH(DmemBankAddrWidth),
+      .USE_INIT_FILE(1'b1),
+      .INIT_FILE("sw_dmem_bank1.mem"),
+      .INIT_IMAGE_FILE("sw.mem"),
+      .INIT_IMAGE_DEPTH_WORDS(2 ** MemWordAddrWidth),
+      .INIT_IMAGE_OFFSET_WORDS(2 ** DmemBankAddrWidth)
+  )
+`endif
+  data_memory_bank1 (
+      .i_port_a_clk(i_clk_div4),
+      .i_port_b_clk(i_clk),
+      // Port A: Instruction programming (div4 clock, write only)
+      .i_port_a_byte_address(i_instr_mem_addr),
+      .i_port_a_write_data(i_instr_mem_wrdata),
+      .i_port_a_byte_write_enable(
+          i_instr_mem_we & {4{i_instr_mem_en && (dmem_a_bank_sel == 1'b1)}}),
+      .o_port_a_read_data(  /* unused - write only */),
+      // Port B: Data memory for loads and stores
+      .i_port_b_byte_address(data_memory_address),
+      .i_port_b_write_data(data_memory_write_data),
+      .i_port_b_byte_write_enable(
+          data_memory_bram_byte_write_enable & {4{dmem_b_bank_sel == 1'b1}}),
+      .o_port_b_read_data(dmem_bank_b_read_data[1])
+  );
 
   // Registered-bit output mux: dmem_b_bank_sel_q aligns with the banks'
   // registered read data (and, port semantics being one-address, with the

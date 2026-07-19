@@ -1458,16 +1458,21 @@ module if_stage #(
                       nsb[riscv_pkg::ImemSbIsCompressedLo];
     r.valid_en = valid_en;
     r.is_comp2 = comp2;
-    return r;
+    // Function-name assignment instead of `return`: Yosys's parser rejects
+    // `return` of a typedef'd struct (CI generic/Xilinx synthesis checks).
+    pc_web_eval = r;
   endfunction
 
   pc_web_arm_t pc_web_arm[8];
   always_comb begin
     for (int c = 0; c < 8; c++) begin
+      // Plain bit-selects (no logic'() casts): the 1-bit selects of the int
+      // loop variable connect to the logic inputs directly, and Yosys does
+      // not parse type-cast syntax.
       pc_web_arm[c] = pc_web_eval(
-        logic'(c[2]),
-        logic'(c[1]),
-        logic'(c[0]),
+        c[2],
+        c[1],
+        c[0],
         i_instr_sideband[PcWebSbW-1:0],
         i_instr_sideband[(2*PcWebSbW)-1:PcWebSbW],
         instr_buffer_sideband,

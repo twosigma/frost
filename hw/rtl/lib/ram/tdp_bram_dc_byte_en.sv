@@ -29,7 +29,11 @@ module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)
     parameter int unsigned ADDR_WIDTH = 14,  // Word address width (memory depth = 2^ADDR_WIDTH)
     parameter bit USE_INIT_FILE = 1'b1,
-    parameter string INIT_FILE = "sw.mem",  // Init hex file (synthesis reads exactly this)
+    // Untyped on purpose: Yosys (CI generic/7-series/US/US+ checks) cannot
+    // parse `parameter string`; Vivado and Verilator infer string from the
+    // default value either way.
+    // verilog_lint: waive-start explicit-parameter-storage-type
+    parameter INIT_FILE = "sw.mem",  // Init hex file (synthesis reads exactly this)
     // Bank-of-a-larger-image initialization (simulation only): when
     // INIT_IMAGE_DEPTH_WORDS > 0, generic simulators load INIT_IMAGE_FILE
     // (the full image) into a staging array and copy
@@ -38,7 +42,8 @@ module tdp_bram_dc_byte_en #(
     // NEVER sees the staging array (kept behind the FROST_VIVADO_SYNTH
     // define so Vivado's strict TDP-BRAM template match is undisturbed) and
     // reads the pre-split INIT_FILE instead.
-    parameter string INIT_IMAGE_FILE = "",
+    parameter INIT_IMAGE_FILE = "",
+    // verilog_lint: waive-stop explicit-parameter-storage-type
     parameter int unsigned INIT_IMAGE_DEPTH_WORDS = 0,
     parameter int unsigned INIT_IMAGE_OFFSET_WORDS = 0
 ) (
@@ -74,15 +79,31 @@ module tdp_bram_dc_byte_en #(
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
-  // Initialize memory contents
+  // Initialize memory contents. Any SYNTHESIS view takes the plain form:
+  // Vivado's TDP-BRAM template match rejects staging-array copies (banked
+  // compositions must pass a pre-split INIT_FILE), and Yosys (the CI
+  // vendor-agnostic checks, which define SYNTHESIS) times out elaborating
+  // the 64Ki-word staging copy loops. Only generic SIMULATORS take the
+  // staging path, which lets a banked composition load from the single
+  // unsplit sw.mem.
 `ifdef FROST_VIVADO_SYNTH
-  // Plain form only: Vivado's TDP-BRAM template match rejects staging-array
-  // copies, so banked compositions must pass a pre-split INIT_FILE here.
+  `define FROST_TDP_PLAIN_INIT
+`elsif SYNTHESIS
+  `define FROST_TDP_PLAIN_INIT
+`endif
+
+`ifdef FROST_TDP_PLAIN_INIT
+`ifndef YOSYS
+  // Yosys (which pre-defines YOSYS) skips init entirely: it hard-errors on
+  // a missing $readmemh file, the CI check discards the netlist anyway, and
+  // the init files only exist when the full Vivado flow generated them.
   initial
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
     // Initialize with non-zero pattern to catch bugs where code assumes zero-init
     else
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;
+`endif
+  `undef FROST_TDP_PLAIN_INIT
 `else
   generate
     if (INIT_IMAGE_DEPTH_WORDS > 0) begin : gen_image_slice_init

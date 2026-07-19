@@ -17,7 +17,7 @@
 """Split a $readmemh word image into per-bank init files for the banked dmem.
 
 The data memory is two half-depth tdp_bram_dc_byte_en instances
-(cpu_and_mem.sv's gen_dmem_banks).
+(cpu_and_mem.sv's data_memory_bank0/1).
 Vivado cannot infer a true-dual-port BRAM from an array initialized by
 copying out of a staging array, so the synthesis path loads each physical
 bank from its own pre-split file (mirroring the imem even/odd splitter).
