@@ -510,7 +510,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "reservation_station": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
         hdl_toplevel_module="reservation_station",
-        description="Reservation Station unit tests",
+        description="Reservation Station unit tests (allocation-indexed done repair)",
+        verilator_extra_args=(
+            "-GALLOC_INDEXED_REPAIR=1",
+            "-GDISPATCH_REPAIR_BYPASS=0",
+            "-GISSUE_REPAIR_BYPASS=0",
+        ),
     ),
     "cdb_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.cdb_arbiter.test_cdb_arbiter",
@@ -772,13 +777,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo integration tests (ROB + RAT + RS + CDB arbiter)",
+        description="Tomasulo integration tests with production dispatch done repair",
+        verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo wrapper tests with CPU production split-RS dispatch",
-        verilator_extra_args=("-GSPLIT_RS_DISPATCH=1",),
+        description="Tomasulo wrapper tests with production split-RS dispatch and done repair",
+        verilator_extra_args=(
+            "-GSPLIT_RS_DISPATCH=1",
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+        ),
     ),
     # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
     # (one instruction fed per ready cycle into the cpu_ooo core). Collected by

@@ -657,6 +657,19 @@ class TomasuloInterface:
         """Return the read entry value."""
         return int(self.dut.o_read_value.value)
 
+    def drive_dispatch_bypass(self, channel: int, tag: int) -> None:
+        """Drive one registered dispatch done-repair query channel."""
+        if channel not in range(1, 7):
+            raise ValueError(f"Dispatch bypass channel must be 1..6, got {channel}")
+        getattr(self.dut, f"i_bypass_valid_{channel}").value = 1
+        getattr(self.dut, f"i_bypass_tag_{channel}").value = tag
+
+    def clear_dispatch_bypasses(self) -> None:
+        """Clear all registered dispatch done-repair query channels."""
+        for channel in range(1, 7):
+            getattr(self.dut, f"i_bypass_valid_{channel}").value = 0
+            getattr(self.dut, f"i_bypass_tag_{channel}").value = 0
+
     def set_rob_entry_epoch_mask(self, epoch_mask: int) -> None:
         """Drive synthetic ROB entry epochs for direct wrapper tests."""
         self._rob_entry_epoch_mask = epoch_mask

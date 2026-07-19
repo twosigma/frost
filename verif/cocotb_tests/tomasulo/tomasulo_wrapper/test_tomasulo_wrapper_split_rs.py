@@ -18,6 +18,12 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.triggers import Timer
+
+from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
+    AllocationRequest,
+    CDBWrite,
+)
 
 from .tomasulo_interface import (
     RS_FDIV,
@@ -140,5 +146,67 @@ async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
     await step_and_clear_dispatch(dut_if)
 
     assert_rs_counts(dut_if, {RS_MEM: 1})
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> None:
+    """Production split dispatch retains an FP repair while dequeue is held."""
+    cocotb.log.info("=== Test: Split FP Pending Done Repair Under Hold ===")
+    dut_if = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_value = 0x3FF0_0000_0000_0000
+    producer_tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x7000, dest_rf=1, dest_reg=1, dest_valid=True)
+    )
+    dut_if.drive_cdb_write(CDBWrite(tag=producer_tag, value=producer_value))
+    await dut_if.step()
+    dut_if.clear_cdb_write()
+
+    dut_if.set_read_tag(producer_tag)
+    for _ in range(6):
+        await Timer(1, unit="ps")
+        if dut_if.read_entry_done():
+            break
+        await dut_if.step()
+    assert dut_if.read_entry_done()
+    assert dut_if.read_entry_value() == producer_value
+
+    consumer_tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x7004, dest_rf=1, dest_reg=2, dest_valid=True)
+    )
+    dut_if.drive_split_rs_dispatch(
+        RS_FP,
+        rob_tag=consumer_tag,
+        op=0,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=True,
+        src2_value=0x4000_0000_0000_0000,
+        src3_ready=True,
+    )
+    await step_and_clear_dispatch(dut_if)
+
+    # Hold only after the split-routed packet is resident in the FP buffer.
+    dut.i_backend_recovery_hold.value = 1
+    dut_if.drive_dispatch_bypass(1, producer_tag)
+    dut_if.set_fu_ready(RS_FP, True)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    dut.i_backend_recovery_hold.value = 0
+    issue = None
+    for _ in range(8):
+        await Timer(1, unit="ps")
+        candidate = dut_if.read_rs_issue_for(RS_FP)
+        if candidate["valid"]:
+            issue = candidate
+            break
+        await dut_if.step()
+    assert issue is not None, "Split-routed FP packet never issued after recovery hold"
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_value
 
     cocotb.log.info("=== Test Passed ===")

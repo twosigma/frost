@@ -34,18 +34,27 @@ with two ALU pipes making dual completions common, the +1-cycle lane-1
 wakeup tax outweighed it, and the parameter remains as a per-instance
 fallback knob if the wakeup cone becomes the timing limiter again.
 
-Alongside the CDB lanes there is a six-channel done-repair snoop
+Alongside the CDB lanes there is a six-channel done-repair interface
 (`i_repair_valid_1..6` / `i_repair_tag_1..6` / `i_repair_value_1..6`):
 registered wakeups from dispatch that carry operands whose CDB
 broadcast landed before the consumer was dispatched and so were
-missed by the live snoop. The post-insertion repair snoop runs on
-resident entries every cycle; two parameters additionally fold repair
-into the fast paths — `DISPATCH_REPAIR_BYPASS` lets an entry capture a
-repaired value at insertion, and `ISSUE_REPAIR_BYPASS` lets a repair
-match satisfy the ready check and supply the value at issue. The
-timing-critical instances disable one or both of these to keep the
-repair fan-in off their dispatch/issue cones and fall back to the
-post-insertion snoop.
+missed by the live snoop. In the generic mode, a post-insertion repair
+snoop CAMs those tags against resident entries every cycle; two
+parameters additionally fold repair into the fast paths —
+`DISPATCH_REPAIR_BYPASS` lets an entry capture a repaired value at
+insertion, and `ISSUE_REPAIR_BYPASS` lets a repair match satisfy the
+ready check and supply the value at issue.
+
+The immediate INT, MUL, and MEM stations instead set
+`ALLOC_INDEXED_REPAIR=1` with both bypass parameters disabled. Dispatch
+and the registered ROB lookup launch together, so each station saves a
+one-hot token for the exact entry allocated by slot 1 and/or slot 2.
+One cycle later, channels 1/2/3 update that slot-1 entry's fixed source
+positions and channels 4/5/6 update the slot-2 entry directly. This has
+the same dispatch-to-ready latency as the registered CAM snoop while
+removing the six global repair tags from every resident source-value
+write-enable cone. Allocation tokens are captured only on committed
+dispatch fires and are discarded on either kind of flush.
 
 Issue selection is a simple lowest-index priority encode over ready
 entries. That's not strict FIFO order, but it's a close enough
@@ -97,8 +106,10 @@ elsewhere in the back-end. Older entries are preserved.
 ## Verification
 
 Cocotb tests cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2
-dispatch, lane-0 CDB wakeup for each source slot, same-cycle lane-0
-bypass, dispatch capture from lane 0, issue priority, FU ready gating, immediate
-bypass, `full_for_2` gating, and partial/full flush. Inline formal properties
-also prove the dispatch / issue / wakeup / flush invariants and cover both-slots
-and slot-2-alone dispatch.
+dispatch, allocation-indexed repair for both slots and all source positions,
+back-to-back target capture, CDB-over-repair priority, stale-target flush
+protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0 bypass,
+dispatch capture from lane 0, issue priority, FU ready gating, immediate bypass,
+`full_for_2` gating, and partial/full flush. Inline formal properties also prove
+the dispatch / issue / wakeup / flush invariants, indexed-target alignment, and
+cover both-slots and slot-2-alone dispatch.

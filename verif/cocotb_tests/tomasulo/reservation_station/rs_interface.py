@@ -469,6 +469,25 @@ class RSInterface:
         self.dut.i_cdb.value = 0
 
     # =========================================================================
+    # Registered done-repair responses
+    # =========================================================================
+
+    def drive_repair(self, channel: int, tag: int, value: int) -> None:
+        """Drive one of the six done-repair response channels."""
+        if channel not in range(1, 7):
+            raise ValueError(f"repair channel must be 1..6, got {channel}")
+        getattr(self.dut, f"i_repair_valid_{channel}").value = 1
+        getattr(self.dut, f"i_repair_tag_{channel}").value = tag & MASK_TAG
+        getattr(self.dut, f"i_repair_value_{channel}").value = value & MASK64
+
+    def clear_repairs(self) -> None:
+        """Clear all done-repair response channels."""
+        for channel in range(1, 7):
+            getattr(self.dut, f"i_repair_valid_{channel}").value = 0
+            getattr(self.dut, f"i_repair_tag_{channel}").value = 0
+            getattr(self.dut, f"i_repair_value_{channel}").value = 0
+
+    # =========================================================================
     # Issue
     # =========================================================================
 

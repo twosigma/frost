@@ -16,8 +16,10 @@ no new arithmetic, just out-of-order glue.
 The five shims span a wide range of complexity, driven by the
 underlying FU's pipeline depth:
 
-- **`int_alu_shim`** is combinational. The ALU has no state, so the
-  shim is essentially a wire with operand-format conversion. The
+- **`int_alu_shim`** is combinational. Its ALU instance disables and
+  elaborates out the stateful multiplier/divider hardware because all
+  M-extension operations use `int_muldiv_shim`; the remaining ALU is
+  essentially a wire with operand-format conversion. The
   result tag flows directly with the data. Conditional branches
   don't write the CDB at all — branch resolution lives in
   `branch_jump_unit` at top level — but JALR writes its

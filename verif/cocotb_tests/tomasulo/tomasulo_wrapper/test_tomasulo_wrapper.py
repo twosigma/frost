@@ -369,6 +369,77 @@ async def mark_done_via_cdb(dut_if: TomasuloInterface, tag: int, value: int) -> 
     dut_if.clear_cdb_write()
 
 
+async def wait_for_rob_done_value(
+    dut_if: TomasuloInterface,
+    tag: int,
+    value: int,
+    max_cycles: int = 8,
+) -> None:
+    """Wait until a CDB write is resident in the ROB and check its value."""
+    dut_if.set_read_tag(tag)
+    for _ in range(max_cycles):
+        await Timer(1, unit="ps")
+        if dut_if.read_entry_done():
+            assert dut_if.read_entry_value() == value
+            return
+        await dut_if.step()
+    raise TimeoutError(f"ROB tag {tag} did not become done")
+
+
+async def exercise_fp_pending_done_repair(
+    dut_if: TomasuloInterface,
+    rs_type: int,
+    op: int,
+    producer_tags: tuple[int, int],
+    producer_values: tuple[int, int],
+    hold_response: bool,
+) -> None:
+    """Repair an FP-family pending packet at dequeue or while dequeue is held."""
+    consumer_tag = await dut_if.dispatch(
+        make_fp_req(pc=0x6800 + rs_type * 4, fd=8 + rs_type)
+    )
+
+    dut_if.drive_rs_dispatch(
+        rs_type=rs_type,
+        rob_tag=consumer_tag,
+        op=op,
+        src1_ready=False,
+        src1_tag=producer_tags[0],
+        src2_ready=False,
+        src2_tag=producer_tags[1],
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    if hold_response:
+        # Recovery hold suppresses dispatch routing as well as dequeue, so
+        # assert it only after the packet is safely resident in the buffer.
+        dut_if.dut.i_backend_recovery_hold.value = 1
+
+    # These are the registered responses produced one cycle after dispatch.
+    # With no hold they coincide with pending-packet dequeue; with a recovery
+    # hold they must be retained in the pending packet until dequeue resumes.
+    dut_if.drive_dispatch_bypass(1, producer_tags[0])
+    dut_if.drive_dispatch_bypass(2, producer_tags[1])
+    dut_if.set_fu_ready(rs_type, True)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    if hold_response:
+        dut_if.dut.i_backend_recovery_hold.value = 0
+        await dut_if.step()
+
+    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=8)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_values[0]
+    assert issue["src2_value"] == producer_values[1]
+
+    # Consume the issue before another packet targets this station.
+    await dut_if.step()
+    dut_if.set_fu_ready(rs_type, False)
+
+
 async def issue_sw_via_mem_rs(
     dut_if: TomasuloInterface,
     tag: int,
@@ -1703,6 +1774,66 @@ async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
         assert (
             issue["rob_tag"] == tags[rs_type]
         ), f"{RS_NAMES[rs_type]}: wrong tag in issued entry"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_pending_done_repair_at_dequeue(dut: Any) -> None:
+    """FP and FDIV pending packets consume a repair response as they dequeue."""
+    cocotb.log.info("=== Test: FP-family pending done repair at dequeue ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_values = (0x3FF0_0000_0000_0000, 0x4000_0000_0000_0000)
+    producer_tags = (
+        await dut_if.dispatch(make_fp_req(pc=0x6700, fd=1)),
+        await dut_if.dispatch(make_fp_req(pc=0x6704, fd=2)),
+    )
+    await mark_done_via_cdb(dut_if, producer_tags[0], producer_values[0])
+    await mark_done_via_cdb(dut_if, producer_tags[1], producer_values[1])
+    await wait_for_rob_done_value(dut_if, producer_tags[0], producer_values[0])
+    await wait_for_rob_done_value(dut_if, producer_tags[1], producer_values[1])
+
+    for rs_type, op in ((RS_FP, OP_FADD_D), (RS_FDIV, OP_FDIV_S)):
+        await exercise_fp_pending_done_repair(
+            dut_if,
+            rs_type,
+            op,
+            producer_tags,
+            producer_values,
+            hold_response=False,
+        )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> None:
+    """FP and FDIV retain repair responses while recovery blocks dequeue."""
+    cocotb.log.info("=== Test: FP-family pending repair under recovery hold ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_values = (0x4008_0000_0000_0000, 0x4010_0000_0000_0000)
+    producer_tags = (
+        await dut_if.dispatch(make_fp_req(pc=0x6780, fd=3)),
+        await dut_if.dispatch(make_fp_req(pc=0x6784, fd=4)),
+    )
+    await mark_done_via_cdb(dut_if, producer_tags[0], producer_values[0])
+    await mark_done_via_cdb(dut_if, producer_tags[1], producer_values[1])
+    await wait_for_rob_done_value(dut_if, producer_tags[0], producer_values[0])
+    await wait_for_rob_done_value(dut_if, producer_tags[1], producer_values[1])
+
+    for rs_type, op in ((RS_FP, OP_FADD_D), (RS_FDIV, OP_FDIV_S)):
+        await exercise_fp_pending_done_repair(
+            dut_if,
+            rs_type,
+            op,
+            producer_tags,
+            producer_values,
+            hold_response=True,
+        )
 
     cocotb.log.info("=== Test Passed ===")
 

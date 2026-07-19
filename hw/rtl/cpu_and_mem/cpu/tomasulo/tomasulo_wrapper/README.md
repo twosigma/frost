@@ -35,6 +35,24 @@ left undisturbed.
 The wrapper is not a passive harness: the subsections below describe the
 logic that lives here because it straddles submodule boundaries.
 
+### Done-repair locality
+
+Dispatch registers six renamed-source tags for the ROB done/value lookup, but
+those tags are not broadcast into every resident RS entry. The immediate INT,
+MUL, and MEM stations use `ALLOC_INDEXED_REPAIR`: each station captures the
+one-hot entry allocated by the relevant dispatch slot and writes the returning
+channel directly to that entry's fixed source position one cycle later. This
+preserves the registered repair latency while avoiding a six-channel global
+CAM and its wide source-value write enables.
+
+FP, FMUL, and FDIV already pass through one-entry wrapper buffers before their
+stations. FP and FDIV repair the buffered packet while it waits and also form a
+same-cycle repaired dequeue view; FMUL rereads ROB done/value by the buffered
+packet's own tags at dequeue. Their resident stations therefore use only the
+two live CDB snoops and have the global repair ports tied off. The original
+sequential FP/FDIV pending repair remains active so a response is retained when
+recovery or back-pressure blocks dequeue.
+
 ### FMUL operand-repair queue
 
 The FMUL_RS is the only RS that takes 3 source operands (for FMA).
@@ -225,4 +243,6 @@ signals so a single capture-enable strobe doesn't need to drive all
 Each FU slot has a test-injection input that lets cocotb drive
 synthetic completions into the wrapper without exercising the FU
 shims, useful for unit-testing the top-two CDB arbitration and the CDB / RS /
-ROB interaction in isolation.
+ROB interaction in isolation. The wrapper test target enables the production
+dispatch done-repair parameter and directly covers FP/FDIV responses both on
+the dequeue cycle and while recovery holds the pending packet.
