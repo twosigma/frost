@@ -42,6 +42,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_is_compressed_for_pc.value = 0
     dut.i_sel_nop.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS4)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 0
     dut.i_prediction_holdoff.value = 0
@@ -75,6 +78,9 @@ async def test_single_wide_compressed_and_32bit_increments(dut: Any) -> None:
 
     dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS2)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     await _settle()
 
@@ -82,6 +88,9 @@ async def test_single_wide_compressed_and_32bit_increments(dut: Any) -> None:
 
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS4)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     await _settle()
 
@@ -101,6 +110,9 @@ async def test_two_wide_bundle_increments_from_compressed_slot1(dut: Any) -> Non
     for slot1_compressed, increment, pc_advance_sel in cases:
         dut.i_is_compressed.value = int(slot1_compressed)
         dut.i_pc_fetch_advance_sel.value = pc_advance_sel
+        # One-hot image of the same advance (RTL consumes it in the AND-OR
+        # fetch mux; the binary code feeds the sim equivalence oracle).
+        dut.i_pc_fetch_advance_onehot.value = 1 << (pc_advance_sel)
         dut.i_pc_reg_advance_sel.value = pc_advance_sel
         await _settle()
 
@@ -131,6 +143,9 @@ async def test_redirect_holdoff_holds_pc_reg_and_forces_fetch_plus_four(
     dut.i_pc.value = PC_HALFWORD
     dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS4)
     dut.i_any_holdoff_safe.value = 1
     dut.i_prediction_holdoff.value = 1
     dut.i_control_flow_to_halfword_r.value = 1
@@ -167,6 +182,9 @@ async def test_sel_nop_forces_pc_reg_compressed_path_while_fetch_advances(
 
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS4)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_sel_nop.value = 1
     await _settle()
@@ -200,6 +218,9 @@ async def test_prediction_from_buffer_holdoff_blocks_pc_reg_bundle_advance(
 
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS6)
     dut.i_prediction_from_buffer_holdoff.value = 1
     await _settle()
 

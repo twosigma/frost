@@ -417,16 +417,23 @@ module pc_fetch_advance_mux #(
         ref_pc_p2 = i_next_pc_plus_4;
       end
     endcase
-    assert (o_fetch_seq_next_pc == ref_pc)
-    else
-      $error("pc_fetch_advance_mux: one-hot pc %h != binary ref %h", o_fetch_seq_next_pc, ref_pc);
-    assert (o_fetch_seq_next_pc_plus_2 == ref_pc_p2)
-    else
-      $error(
-          "pc_fetch_advance_mux: one-hot pc+2 %h != binary ref %h",
-          o_fetch_seq_next_pc_plus_2,
-          ref_pc_p2
-      );
+    // Equality holds only under the module's precondition (i_advance_onehot
+    // is the one-hot image of i_advance_sel — if_stage asserts $onehot on
+    // the producer). Gating on it keeps the oracle silent in the undriven
+    // all-zero window unit benches see at time zero, without weakening the
+    // in-chip check.
+    if ($onehot(i_advance_onehot)) begin
+      assert (o_fetch_seq_next_pc == ref_pc)
+      else
+        $error("pc_fetch_advance_mux: one-hot pc %h != binary ref %h", o_fetch_seq_next_pc, ref_pc);
+      assert (o_fetch_seq_next_pc_plus_2 == ref_pc_p2)
+      else
+        $error(
+            "pc_fetch_advance_mux: one-hot pc+2 %h != binary ref %h",
+            o_fetch_seq_next_pc_plus_2,
+            ref_pc_p2
+        );
+    end
   end
 `endif
 

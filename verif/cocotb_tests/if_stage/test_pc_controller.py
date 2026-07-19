@@ -60,6 +60,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_valid.value = 0
     dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS4)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_predicted_taken.value = 0
     dut.i_predicted_target.value = 0
@@ -277,6 +280,9 @@ async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     dut.i_is_compressed.value = 1
     dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+    # One-hot image of the same advance (RTL consumes it in the AND-OR
+    # fetch mux; the binary code feeds the sim equivalence oracle).
+    dut.i_pc_fetch_advance_onehot.value = 1 << (PC_ADV_PLUS6)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
     await _advance_cycle(dut)
 
