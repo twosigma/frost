@@ -59,6 +59,15 @@
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
     parameter bit USE_INIT_FILE = 1'b1,
+    // Simulation-only init staging depth (words). The generic-sim init reads
+    // the WHOLE image file before distributing the imem's share into the
+    // even/odd banks, so the staging array must cover the largest legal
+    // image, not just this array (the imem covers only the low half of the
+    // unified memory since the fetch-array split — a bram-config image
+    // bigger than the imem, e.g. the large architecture-test programs,
+    // otherwise kills $readmem with "address beyond bounds"). 0 keeps the
+    // legacy behavior (staging sized to this array). Synthesis ignores it.
+    parameter int unsigned INIT_IMAGE_DEPTH_WORDS = 0,
     parameter bit [47:0] INIT_FILE = "sw.mem",
     parameter bit [127:0] INIT_FILE_EVEN = "sw_imem_even.mem",
     parameter bit [119:0] INIT_FILE_ODD = "sw_imem_odd.mem",
@@ -112,7 +121,9 @@ module imem_predecode #(
   // split init files directly so every synthesized memory has an explicit
   // power-up image.
 `ifndef FROST_VIVADO_SYNTH
-  logic [DataWidth-1:0] init_mem[FullDepth];
+  localparam int unsigned InitStageDepth =
+      (INIT_IMAGE_DEPTH_WORDS > FullDepth) ? INIT_IMAGE_DEPTH_WORDS : FullDepth;
+  logic [DataWidth-1:0] init_mem[InitStageDepth];
 `endif
 
   initial begin
