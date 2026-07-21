@@ -38,12 +38,12 @@ FENCE_TARGET = 0x80003000
 
 SB_IS_COMPRESSED_LO = 0
 SB_IS_COMPRESSED_HI = 1
-SB_COMPRESSED_CONTROL_LO = 2
-SB_COMPRESSED_CONTROL_HI = 3
+SB_EVEN_LOCAL_PAIR_VALID = 2
+SB_PAIRABLE_NATIVE_LO = 3
 SB_NATIVE_SERIALIZE_LO = 4
 SB_NATIVE_SERIALIZE_HI = 5
-SB_NATIVE_FP_COMPUTE_LO = 6
-SB_NATIVE_FP_COMPUTE_HI = 7
+SB_PAIRABLE_COMPRESSED_HI = 6
+SB_PAIRABLE_NATIVE_HI = 7
 SB_ALLOWS_SLOT2_AFTER_LO = 8
 SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
@@ -152,25 +152,43 @@ def _sideband(
     native_serialize_hi: bool = False,
     native_fp_compute_lo: bool = False,
     native_fp_compute_hi: bool = False,
+    native_pairable_lo: bool = False,
+    native_pairable_hi: bool = False,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
-    allows_slot2_after_lo = compressed_lo and not compressed_control_lo
-    allows_slot2_after_hi = compressed_hi and not compressed_control_hi
+    allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
+        not compressed_lo and native_pairable_lo
+    )
+    allows_slot2_after_hi = (compressed_hi and not compressed_control_hi) or (
+        not compressed_hi and native_pairable_hi
+    )
     slot2_start_valid_lo = compressed_lo or not (
         native_serialize_lo or native_fp_compute_lo
     )
     slot2_start_valid_hi = compressed_hi or not (
         native_serialize_hi or native_fp_compute_hi
     )
+    even_local_pair_valid = (
+        compressed_lo and allows_slot2_after_lo and slot2_start_valid_hi
+    )
     return (
         _bit(compressed_lo, SB_IS_COMPRESSED_LO)
         | _bit(compressed_hi, SB_IS_COMPRESSED_HI)
-        | _bit(compressed_control_lo, SB_COMPRESSED_CONTROL_LO)
-        | _bit(compressed_control_hi, SB_COMPRESSED_CONTROL_HI)
+        | _bit(even_local_pair_valid, SB_EVEN_LOCAL_PAIR_VALID)
+        | _bit(
+            not compressed_lo and allows_slot2_after_lo,
+            SB_PAIRABLE_NATIVE_LO,
+        )
         | _bit(native_serialize_lo, SB_NATIVE_SERIALIZE_LO)
         | _bit(native_serialize_hi, SB_NATIVE_SERIALIZE_HI)
-        | _bit(native_fp_compute_lo, SB_NATIVE_FP_COMPUTE_LO)
-        | _bit(native_fp_compute_hi, SB_NATIVE_FP_COMPUTE_HI)
+        | _bit(
+            compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_COMPRESSED_HI,
+        )
+        | _bit(
+            not compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_NATIVE_HI,
+        )
         | _bit(allows_slot2_after_lo, SB_ALLOWS_SLOT2_AFTER_LO)
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
@@ -330,6 +348,31 @@ async def _redirect_to(dut: Any, target: int) -> None:
     assert int(dut.o_pc.value) == target + 4
 
 
+async def _train_btb(
+    dut: Any,
+    *,
+    pc: int,
+    target: int,
+    compressed: bool = False,
+    handoff: bool = False,
+) -> None:
+    """Install one taken BTB entry while prediction remains test-disabled."""
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": pc,
+            "btb_update_target": target,
+            "btb_update_taken": True,
+            "btb_update_compressed": compressed,
+            "btb_update_requires_pc_reg_handoff": handoff,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+    await _settle()
+
+
 @cocotb.test()
 async def test_reset_holdoff_creates_initial_fetch_lead(dut: Any) -> None:
     """Reset clears PC, then the reset holdoff creates the initial one-word lead."""
@@ -411,6 +454,130 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
     )
     assert not packet2["btb_hit"]
     assert not packet2["ras_predicted"]
+
+
+@cocotb.test()
+async def test_high_half_rvc_speculates_native_candidate_without_sideband_mux(
+    dut: Any,
+) -> None:
+    """A high-half RVC packet may carry the sideband-free spanning candidate."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC + 2)
+
+    current_word = _word(lo=0xBEEF, hi=COMPRESSED_NOP)
+    next_word = _word(lo=0xCAFE, hi=0xD00D)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=next_word,
+        current_sb=_sideband(compressed_hi=True),
+    )
+    await _settle()
+
+    packet = _read_if_packet(dut)
+    _assert_packet(
+        packet,
+        pc=BASE_PC + 2,
+        raw=COMPRESSED_NOP,
+        # PD selects/decompresses raw for RVC. effective_instr is therefore a
+        # don't-care and can carry the sideband-free 32-bit spanning candidate.
+        effective=_word(lo=COMPRESSED_NOP, hi=0xCAFE),
+        compressed=True,
+    )
+
+
+@cocotb.test()
+async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
+    dut: Any,
+) -> None:
+    """A slot-1/slot-2 BTB collision cannot escape a stretched slot-2 bubble."""
+    slot1_pc = BASE_PC + 4
+    slot1_target = FENCE_TARGET
+    slot2_pc = BASE_PC + 2
+    slot2_target = BRANCH_TARGET
+
+    await _setup_test(dut)
+    await _train_btb(
+        dut,
+        pc=slot1_pc,
+        target=slot1_target,
+        handoff=True,
+    )
+    await _train_btb(
+        dut,
+        pc=slot2_pc,
+        target=slot2_target,
+        compressed=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_A,
+        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert bpc.o_prediction_used.value
+    assert bpc.o_slot2_prediction_used.value
+
+    await _advance_cycle(dut)
+
+    # Slot-2 wins both PC muxes immediately.  The younger slot-1 metadata and
+    # handoff are gone, while its holdoff load is quarantined by the registered
+    # stale-fetch bubble.
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
+    assert not bpc.o_prediction_used_r.value
+    assert not bpc.o_sel_prediction_r.value
+    assert bpc.o_prediction_holdoff.value
+    assert bpc.o_btb_only_prediction_holdoff.value
+    assert dut.slot2_redirect_q.value
+    assert dut.control_flow_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    # Stretch the mandatory bubble first with a pipeline stall, then with a
+    # fetch-invalid cycle.  No wrong-path packet or slot-1 handoff may reappear.
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    await _advance_cycle(dut)
+    assert bpc.o_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert dut.slot2_redirect_q.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    _drive_pipeline_ctrl(dut, {})
+    dut.i_instr_valid.value = 0
+    await _advance_cycle(dut)
+    assert bpc.o_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert dut.slot2_redirect_q.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    # On the first delivered target cycle, the registered bubble and both
+    # holdoffs retire together.  This is the existing bubble, not an extra one.
+    dut.i_instr_valid.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_B, next_word=ADD_INSTR_C)
+    await _advance_cycle(dut)
+
+    assert not bpc.o_prediction_holdoff.value
+    assert not bpc.o_btb_only_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert not bpc.o_sel_prediction_r.value
+    assert not dut.slot2_redirect_q.value
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=slot2_target,
+        raw=ADD_INSTR_B & 0xFFFF,
+        effective=ADD_INSTR_B,
+        compressed=False,
+    )
 
 
 @cocotb.test()

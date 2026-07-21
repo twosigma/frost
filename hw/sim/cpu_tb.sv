@@ -128,8 +128,8 @@ module cpu_tb
   // consumed. With 32b-led bundle formation, a plain NOP there would form a
   // 2-wide bundle behind any pairable 32-bit slot-1 and advance the PC by +8,
   // desynchronizing this bench's one-instruction-per-step model. Drive a
-  // SYSTEM encoding instead: its Slot2StartValid sideband bit is 0, so the
-  // aligner class-kills slot-2 and the PC steps +4 as this bench expects.
+  // SYSTEM encoding instead: its slot-2-start-valid class is 0, so the aligner
+  // class-kills slot-2 and the PC steps +4 as this bench expects.
   // The word itself can never execute — the bench serves every architectural
   // PC's instruction through tb_cur_word.
   localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)

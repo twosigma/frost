@@ -101,12 +101,16 @@ package riscv_pkg;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
-  localparam int unsigned ImemSbCompressedControlLo = 2;
-  localparam int unsigned ImemSbCompressedControlHi = 3;
+  // PC/bundle predecode.  These four predicates replace two compressed-control
+  // and two FP-class intermediates that were previously stored even though no
+  // runtime consumer read them.  The source classes are still computed locally
+  // inside imem_make_sideband to derive the public predicates below.
+  localparam int unsigned ImemSbEvenLocalPairValid = 2;
+  localparam int unsigned ImemSbPairableNativeLo = 3;
   localparam int unsigned ImemSbNativeSerializeLo = 4;
   localparam int unsigned ImemSbNativeSerializeHi = 5;
-  localparam int unsigned ImemSbNativeFpComputeLo = 6;
-  localparam int unsigned ImemSbNativeFpComputeHi = 7;
+  localparam int unsigned ImemSbPairableCompressedHi = 6;
+  localparam int unsigned ImemSbPairableNativeHi = 7;
   localparam int unsigned ImemSbAllowsSlot2AfterLo = 8;
   localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
   localparam int unsigned ImemSbSlot2StartValidLo = 10;
@@ -181,16 +185,24 @@ package riscv_pkg;
 
   function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
     logic [ImemSidebandWidth-1:0] sb;
+    logic compressed_control_lo;
+    logic compressed_control_hi;
+    logic native_fp_compute_lo;
+    logic native_fp_compute_hi;
+    logic allows_slot2_after_lo;
+    logic allows_slot2_after_hi;
+    logic slot2_start_valid_lo;
+    logic slot2_start_valid_hi;
     begin
       sb = '0;
       sb[ImemSbIsCompressedLo] = (word[1:0] != 2'b11);
       sb[ImemSbIsCompressedHi] = (word[17:16] != 2'b11);
-      sb[ImemSbCompressedControlLo] = imem_compressed_control(word[15:0]);
-      sb[ImemSbCompressedControlHi] = imem_compressed_control(word[31:16]);
+      compressed_control_lo = imem_compressed_control(word[15:0]);
+      compressed_control_hi = imem_compressed_control(word[31:16]);
       sb[ImemSbNativeSerializeLo] = imem_native_serialize(word[6:0]);
       sb[ImemSbNativeSerializeHi] = imem_native_serialize(word[22:16]);
-      sb[ImemSbNativeFpComputeLo] = imem_native_fp_compute(word[6:0]);
-      sb[ImemSbNativeFpComputeHi] = imem_native_fp_compute(word[22:16]);
+      native_fp_compute_lo = imem_native_fp_compute(word[6:0]);
+      native_fp_compute_hi = imem_native_fp_compute(word[22:16]);
       // A slot-1 allows a slot-2 after it when it is not control flow (the
       // bundle would straddle a redirect) and not a serializing class (a
       // slot-2 source renamed to a slot-1 CSR's ROB tag would never wake —
@@ -198,20 +210,36 @@ package riscv_pkg;
       // 32-bit slot-1s pair since the aligner's 32b-led shapes (NEXT_LO /
       // NEXT_HI slot-2) landed; FP-compute slot-1s pair normally (their
       // results broadcast on the CDB like any FU).
-      sb[ImemSbAllowsSlot2AfterLo] =
-          (sb[ImemSbIsCompressedLo] && !sb[ImemSbCompressedControlLo]) ||
+      allows_slot2_after_lo =
+          (sb[ImemSbIsCompressedLo] && !compressed_control_lo) ||
           (!sb[ImemSbIsCompressedLo] && !imem_native_control(word[6:0]) &&
           !sb[ImemSbNativeSerializeLo]);
-      sb[ImemSbAllowsSlot2AfterHi] =
-          (sb[ImemSbIsCompressedHi] && !sb[ImemSbCompressedControlHi]) ||
+      allows_slot2_after_hi =
+          (sb[ImemSbIsCompressedHi] && !compressed_control_hi) ||
           (!sb[ImemSbIsCompressedHi] && !imem_native_control(word[22:16]) &&
           !sb[ImemSbNativeSerializeHi]);
-      sb[ImemSbSlot2StartValidLo] =
+      slot2_start_valid_lo =
           sb[ImemSbIsCompressedLo] ||
-          !(sb[ImemSbNativeSerializeLo] || sb[ImemSbNativeFpComputeLo]);
-      sb[ImemSbSlot2StartValidHi] =
+          !(sb[ImemSbNativeSerializeLo] || native_fp_compute_lo);
+      slot2_start_valid_hi =
           sb[ImemSbIsCompressedHi] ||
-          !(sb[ImemSbNativeSerializeHi] || sb[ImemSbNativeFpComputeHi]);
+          !(sb[ImemSbNativeSerializeHi] || native_fp_compute_hi);
+
+      sb[ImemSbAllowsSlot2AfterLo] = allows_slot2_after_lo;
+      sb[ImemSbAllowsSlot2AfterHi] = allows_slot2_after_hi;
+      sb[ImemSbSlot2StartValidLo] = slot2_start_valid_lo;
+      sb[ImemSbSlot2StartValidHi] = slot2_start_valid_hi;
+
+      // Word-local PC predicates.  RVC-at-low is the only shape whose
+      // prospective slot-2 start is in this same word, so its complete class
+      // eligibility can be computed here.  The remaining bits precompute the
+      // slot-1 size/allows conjunction for the three cross-word shapes; the
+      // next word's start-valid/size still has to be joined in the aligner.
+      sb[ImemSbEvenLocalPairValid] =
+          sb[ImemSbIsCompressedLo] && allows_slot2_after_lo && slot2_start_valid_hi;
+      sb[ImemSbPairableNativeLo] = !sb[ImemSbIsCompressedLo] && allows_slot2_after_lo;
+      sb[ImemSbPairableCompressedHi] = sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
+      sb[ImemSbPairableNativeHi] = !sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
       imem_make_sideband = sb;
     end
   endfunction

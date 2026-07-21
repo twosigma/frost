@@ -503,6 +503,69 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
 
 
 @cocotb.test()
+async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> None:
+    """Slot-2 source FF clear preserves NOP and stall semantics without a D mux."""
+    await _setup_test(dut)
+    first_instr = _pack_r(
+        funct7=0,
+        rs2=19,
+        rs1=18,
+        funct3=0,
+        rd=17,
+        opcode=OPC_OP,
+    )
+    bubble_payload = _pack_r(
+        funct7=0,
+        rs2=7,
+        rs1=6,
+        funct3=0,
+        rd=5,
+        opcode=OPC_OP,
+    )
+
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": BASE_PC + 4,
+            "raw_parcel": first_instr & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": first_instr,
+        },
+        slot2=True,
+    )
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut, slot2=True)
+    assert packet["source_reg_1_early"] == 18
+    assert packet["source_reg_2_early"] == 19
+
+    # A bubble that arrives during a held cycle cannot clear the replayed
+    # source addresses. The same bubble clears them when the bundle advances.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": BASE_PC + 8,
+            "raw_parcel": bubble_payload & 0xFFFF,
+            "sel_nop": True,
+            "effective_instr": bubble_payload,
+        },
+        slot2=True,
+    )
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut, slot2=True)
+    assert packet["source_reg_1_early"] == 18
+    assert packet["source_reg_2_early"] == 19
+
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut, slot2=True)
+    assert packet["instruction"] == NOP_INSTR
+    assert packet["source_reg_1_early"] == 0
+    assert packet["source_reg_2_early"] == 0
+    assert packet["fp_source_reg_3_early"] == 0
+
+
+@cocotb.test()
 async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
     """A pipeline stall holds the registered PD-to-ID output packets."""
     await _setup_test(dut)

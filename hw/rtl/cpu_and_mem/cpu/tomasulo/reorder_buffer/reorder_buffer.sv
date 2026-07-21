@@ -314,6 +314,7 @@ module reorder_buffer #(
   // ===========================================================================
   localparam int unsigned ReorderBufferTagWidth = riscv_pkg::ReorderBufferTagWidth;
   localparam int unsigned ReorderBufferDepth = riscv_pkg::ReorderBufferDepth;
+  localparam int unsigned ReorderBufferCountWidth = ReorderBufferTagWidth + 1;
   localparam int unsigned CheckpointIdWidth = riscv_pkg::CheckpointIdWidth;
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
@@ -905,8 +906,6 @@ module reorder_buffer #(
 
   logic alloc_en;
   logic alloc_en_2;
-  (* keep = "true", max_fanout = 16 *)logic alloc_en_status;
-  (* keep = "true", max_fanout = 16 *)logic alloc_en_2_status;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_valid;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_2_valid;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_control;
@@ -918,9 +917,6 @@ module reorder_buffer #(
   // by construction).  full_for_2 covers the "only 1 free slot" case.
   assign alloc_en_2 = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
                       !full_for_2 && !i_flush_all && !i_flush_en;
-  assign alloc_en_status = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
-  assign alloc_en_2_status = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
-                             !full_for_2 && !i_flush_all && !i_flush_en;
   assign alloc_en_valid = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
   assign alloc_en_2_valid = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
                             !full_for_2 && !i_flush_all && !i_flush_en;
@@ -1682,35 +1678,77 @@ module reorder_buffer #(
   assign flush_after_head_commit = i_flush_after_head_commit;
 
   // Exported dispatch back-pressure is registered from conservative next ROB
-  // occupancy that includes allocation but not same-cycle commit.  This keeps
-  // CDB/head-done -> commit_en off the dispatch-full flop D path.  Internal
+  // occupancy that includes allocation but not same-cycle commit. Internal
   // allocation still uses the exact combinational full/full_for_2 signals above.
-  logic [ReorderBufferTagWidth:0] dispatch_tail_next;
-  logic [ReorderBufferTagWidth:0] dispatch_head_next;
-  logic [ReorderBufferTagWidth:0] dispatch_count_next;
-  logic [ReorderBufferTagWidth:0] dispatch_alloc_delta;
-  assign dispatch_alloc_delta = {
-    {ReorderBufferTagWidth - 1{1'b0}}, alloc_en_2_status, !alloc_en_2_status
-  };
+  //
+  // TIMING: the accepted request valids are a hard interface contract (asserted
+  // below): dispatch never presents slot 1 while full/flushing, and slot 2 also
+  // requires slot 1 plus !full_for_2. Use those raw valids only for this small
+  // status cone. Reusing alloc_en would put the fullness flops behind the same
+  // high-fanout enable that writes every ROB RAM replica.
+  //
+  // Likewise, precompute the three possible occupancy thresholds in parallel.
+  // The late dispatch valid then selects width 0/1/2 instead of feeding an
+  // occupancy add followed by a compare. This is exactly the former
+  // count+allocation result for every legal request and changes no cycle.
+  logic [ReorderBufferTagWidth:0] dispatch_flush_tail_next;
+  logic [ReorderBufferTagWidth:0] dispatch_flush_count_next;
+  logic                           dispatch_full_next;
+  logic                           dispatch_full_for_2_next;
+  logic [                    2:0] dispatch_full_by_width;
+  logic [                    2:0] dispatch_full_for_2_by_width;
+
+  assign dispatch_full_by_width[0] = count == ReorderBufferDepth[ReorderBufferTagWidth:0];
+  assign dispatch_full_by_width[1] = count == ReorderBufferCountWidth'(ReorderBufferDepth - 1);
+  assign dispatch_full_by_width[2] = count == ReorderBufferCountWidth'(ReorderBufferDepth - 2);
+
+  assign dispatch_full_for_2_by_width[0] =
+      count >= ReorderBufferCountWidth'(ReorderBufferDepth - 1);
+  assign dispatch_full_for_2_by_width[1] =
+      count >= ReorderBufferCountWidth'(ReorderBufferDepth - 2);
+  assign dispatch_full_for_2_by_width[2] =
+      count >= ReorderBufferCountWidth'(ReorderBufferDepth - 3);
+
   always_comb begin
-    dispatch_tail_next  = tail_ptr;
-    dispatch_head_next  = head_ptr;
-    dispatch_count_next = count;
+    dispatch_flush_tail_next = tail_ptr;
 
     if (i_flush_all || i_flush_en) begin
       if (i_flush_all) begin
-        dispatch_tail_next = head_ptr;
+        dispatch_flush_tail_next = head_ptr;
       end else if (flush_after_head_commit) begin
-        dispatch_tail_next = head_ptr;
+        dispatch_flush_tail_next = head_ptr;
       end else begin
-        dispatch_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
+        dispatch_flush_tail_next = head_ptr + {1'b0, flush_age} + 1'b1;
       end
+    end
+    dispatch_flush_count_next = dispatch_flush_tail_next - head_ptr;
+  end
 
-      dispatch_count_next = dispatch_tail_next - dispatch_head_next;
+  always_comb begin
+    if (i_flush_all || i_flush_en) begin
+      // Preserve the exact pointer-derived flush occupancy calculation.
+      dispatch_full_next = dispatch_flush_count_next == ReorderBufferDepth[ReorderBufferTagWidth:0];
+      dispatch_full_for_2_next = dispatch_flush_count_next >=
+          (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
     end else begin
-      if (alloc_en_status) begin
-        dispatch_count_next = dispatch_count_next + dispatch_alloc_delta;
-      end
+      // 2'b01 is forbidden by the slot-2-implies-slot-1 contract. Map it to
+      // width zero so an illegal slot-2 request cannot perturb status state.
+      case ({
+        i_alloc_req.alloc_valid, i_alloc_req_2.alloc_valid
+      })
+        2'b10: begin
+          dispatch_full_next       = dispatch_full_by_width[1];
+          dispatch_full_for_2_next = dispatch_full_for_2_by_width[1];
+        end
+        2'b11: begin
+          dispatch_full_next       = dispatch_full_by_width[2];
+          dispatch_full_for_2_next = dispatch_full_for_2_by_width[2];
+        end
+        default: begin
+          dispatch_full_next       = dispatch_full_by_width[0];
+          dispatch_full_for_2_next = dispatch_full_for_2_by_width[0];
+        end
+      endcase
     end
   end
 
@@ -1719,9 +1757,8 @@ module reorder_buffer #(
       dispatch_full_q       <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
-      dispatch_full_q <= (dispatch_count_next == ReorderBufferDepth[ReorderBufferTagWidth:0]);
-      dispatch_full_for_2_q <=
-          dispatch_count_next >= (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
+      dispatch_full_q       <= dispatch_full_next;
+      dispatch_full_for_2_q <= dispatch_full_for_2_next;
     end
   end
 
@@ -2856,6 +2893,20 @@ module reorder_buffer #(
     assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
   end
 
+  // Reference form of the former serial add/compare implementation. The
+  // interface assumptions above make raw alloc_valid exactly the accepted
+  // width used by the production predecoded status cone.
+  logic [ReorderBufferTagWidth:0] f_dispatch_count_next_reference;
+  always_comb begin
+    if (i_flush_all || i_flush_en) begin
+      f_dispatch_count_next_reference = dispatch_flush_count_next;
+    end else if (i_alloc_req.alloc_valid) begin
+      f_dispatch_count_next_reference = count + (i_alloc_req_2.alloc_valid ? 2'd2 : 1'b1);
+    end else begin
+      f_dispatch_count_next_reference = count;
+    end
+  end
+
   // CDB drain-window contract.  Stale CDB writes (a tag the ROB no longer
   // tracks) have reached this boundary in real runs — forensically traced to
   // MEM-slot DUPLICATE deliveries (the accept/present divergence fixed at
@@ -2907,6 +2958,17 @@ module reorder_buffer #(
 
       // count == tail_ptr - head_ptr
       p_count_consistent : assert (count == (tail_ptr - head_ptr));
+
+      // Parallel threshold selection must remain bit-identical to the original
+      // conservative next-occupancy add/compare for every legal request/flush.
+      p_dispatch_full_predecode_equiv :
+      assert (dispatch_full_next ==
+              (f_dispatch_count_next_reference ==
+               ReorderBufferDepth[ReorderBufferTagWidth:0]));
+      p_dispatch_full_for_2_predecode_equiv :
+      assert (dispatch_full_for_2_next ==
+              (f_dispatch_count_next_reference >=
+               (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1)));
 
       // full iff pointers match with different MSB
       p_full_matches_ptrs :

@@ -290,6 +290,142 @@ async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) ->
 
 
 @cocotb.test()
+async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
+    dut: Any,
+) -> None:
+    """A slot-2 redirect wins over a simultaneous younger slot-1 prediction.
+
+    Slot-2 validity is late instruction-memory sideband.  It must still kill
+    slot-1's registered handoff and metadata on the collision edge, but the two
+    holdoff flops deliberately omit that late clear.  A simultaneous slot-1
+    hit may therefore load them for the mandatory redirect bubble.  Model both
+    a fetch-invalid stretch and a registered stall, then verify the holdoffs
+    clear on the first delivered bubble cycle without reviving slot-1 state.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    dut.i_pc_2.value = SLOT2_PC
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert dut.o_prediction_used.value
+    assert dut.o_slot2_prediction_used.value
+    assert int(dut.o_predicted_target.value) == TARGET_A
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+
+    await _advance_cycle(dut)
+
+    # Slot-2 owns the redirect, so the younger slot-1 handoff/metadata die on
+    # the collision edge.  Its holdoff load is harmless bubble-only state.
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+
+    _clear_inputs(dut)
+    dut.i_any_holdoff_safe.value = 1
+    dut.i_fetch_progress.value = 0
+    await _advance_cycle(dut)
+
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+
+    dut.i_fetch_progress.value = 1
+    dut.i_stall.value = 1
+    dut.i_stall_registered.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+
+    # The registered redirect bubble remains a prediction blocker on its first
+    # delivered cycle.  Releasing the stretch therefore loads zeros and adds no
+    # extra holdoff cycle.
+    dut.i_stall.value = 0
+    dut.i_stall_registered.value = 0
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_holdoff.value
+    assert not dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+
+
+@cocotb.test()
+async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
+    """Slot-2 cannot consume a prediction while slot-1 metadata is live."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_A)
+
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    await _advance_cycle(dut)
+
+    assert dut.o_prediction_used_r.value
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+
+    _clear_inputs(dut)
+    dut.i_pc_2.value = SLOT2_PC
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_prediction_used.value
+    assert dut.o_prediction_used_r.value
+    assert dut.o_prediction_holdoff.value
+
+
+@cocotb.test()
+async def test_pd_redirect_target_match_preserves_stalled_metadata(
+    dut: Any,
+) -> None:
+    """A stalled matching PD redirect preserves metadata; a mismatch kills it."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
+
+    _clear_inputs(dut)
+    dut.i_pc.value = PC_A
+    await _advance_cycle(dut)
+
+    assert dut.o_prediction_used_r.value
+    assert dut.o_sel_prediction_r.value
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+
+    _clear_inputs(dut)
+    dut.i_stall.value = 1
+    dut.i_stall_registered.value = 1
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = TARGET_A
+    await _advance_cycle(dut)
+
+    # The redirect always kills the pc_reg handoff.  With no fetch progress,
+    # matching metadata and its holdoffs remain attached to the same target.
+    assert dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert dut.o_prediction_holdoff.value
+    assert dut.o_btb_only_prediction_holdoff.value
+
+    dut.i_pd_redirect_target.value = TARGET_SLOT2
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+    assert not dut.o_btb_only_prediction_holdoff.value
+
+
+@cocotb.test()
 async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) -> None:
     """Stable controller blockers suppress BTB predictions without hiding raw hits."""
     await _setup_test(dut)

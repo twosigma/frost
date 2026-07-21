@@ -65,6 +65,23 @@ the predicted direction and predict-time direction index with the instruction;
 PD uses that direction to compute `PC + imm` and redirect immediately when a
 conditional branch misses the BTB but is predicted taken.
 
+The PD timing boundary keeps two late controls off data carry chains without
+adding a pipeline stage. At an odd-halfword PC, IF always forms the speculative
+native spanning candidate; compressed instructions ignore that value and use
+their raw parcel, while native instructions receive the same assembled word as
+before. This prevents the sideband size bit from entering PD's branch-target
+adder. Slot-2 early source addresses similarly register their raw payload bits
+and use a synchronous clear for bubbles, flushes, and registered PD redirects,
+so invalid slots still expose x0 while the IMEM data path avoids a final NOP
+mux. Instruction delivery and redirect latency are unchanged.
+
+Slot-2 BTB redirects retain same-cycle priority over a younger slot-1
+prediction. They immediately kill that slot-1 PC-register handoff and metadata,
+then use the existing registered redirect bubble to quarantine any slot-1
+prediction holdoff loaded on the collision edge. The holdoff clears on the
+first delivered bubble cycle, so this bookkeeping split adds neither redirect
+latency nor an extra front-end bubble.
+
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
 `tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,
@@ -81,8 +98,8 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and predecode sideband |
-| `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks) and word-local class/bundle predecode sideband |
+| `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, next-line prefetch, and fence.i invalidate |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest their extracted submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reorder_buffer/rob_serializer` (each a pure boundary move — see the per-module READMEs) |

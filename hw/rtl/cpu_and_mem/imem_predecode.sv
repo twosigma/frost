@@ -44,8 +44,9 @@
  *     [63:32] = word at W+1 (next word)
  *
  * Sideband bits are stored alongside each 32-bit word.  The sideband carries
- * is-compressed and small opcode-class predecode for each halfword start,
- * letting IF avoid re-decoding raw instruction bits on the PC timing path.
+ * is-compressed, small opcode-class predecode, and word-local bundle
+ * eligibility qualifiers for each halfword start, letting IF avoid rebuilding
+ * those decisions from raw instruction bits on the PC timing path.
  * The bit definitions live in riscv_pkg (imem_make_sideband and helpers),
  * shared with the L1I fill path and mirrored by the offline generator
  * sw/common/generate_imem_predecode_init.py.

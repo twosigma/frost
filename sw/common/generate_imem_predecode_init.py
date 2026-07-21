@@ -39,6 +39,18 @@ OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 12
+SB_IS_COMPRESSED_LO = 0
+SB_IS_COMPRESSED_HI = 1
+SB_EVEN_LOCAL_PAIR_VALID = 2
+SB_PAIRABLE_NATIVE_LO = 3
+SB_NATIVE_SERIALIZE_LO = 4
+SB_NATIVE_SERIALIZE_HI = 5
+SB_PAIRABLE_COMPRESSED_HI = 6
+SB_PAIRABLE_NATIVE_HI = 7
+SB_ALLOWS_SLOT2_AFTER_LO = 8
+SB_ALLOWS_SLOT2_AFTER_HI = 9
+SB_SLOT2_START_VALID_LO = 10
+SB_SLOT2_START_VALID_HI = 11
 
 
 def parse_verilog_hex(path: Path) -> dict[int, int]:
@@ -98,40 +110,58 @@ def make_sideband(word: int) -> int:
     opcode_lo = word & 0x7F
     opcode_hi = (word >> 16) & 0x7F
 
-    if (lo & 0x3) != 0b11:
-        sideband |= 1 << 0
-    if (hi & 0x3) != 0b11:
-        sideband |= 1 << 1
-    if compressed_control(lo):
-        sideband |= 1 << 2
-    if compressed_control(hi):
-        sideband |= 1 << 3
-    if native_serialize(opcode_lo):
-        sideband |= 1 << 4
-    if native_serialize(opcode_hi):
-        sideband |= 1 << 5
-    if native_fp_compute(opcode_lo):
-        sideband |= 1 << 6
-    if native_fp_compute(opcode_hi):
-        sideband |= 1 << 7
+    compressed_lo = (lo & 0x3) != 0b11
+    compressed_hi = (hi & 0x3) != 0b11
+    compressed_control_lo = compressed_control(lo)
+    compressed_control_hi = compressed_control(hi)
+    native_serialize_lo = native_serialize(opcode_lo)
+    native_serialize_hi = native_serialize(opcode_hi)
+    native_fp_compute_lo = native_fp_compute(opcode_lo)
+    native_fp_compute_hi = native_fp_compute(opcode_hi)
+
+    allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
+        not compressed_lo and not native_control(opcode_lo) and not native_serialize_lo
+    )
+    allows_slot2_after_hi = (compressed_hi and not compressed_control_hi) or (
+        not compressed_hi and not native_control(opcode_hi) and not native_serialize_hi
+    )
+    slot2_start_valid_lo = compressed_lo or not (
+        native_serialize_lo or native_fp_compute_lo
+    )
+    slot2_start_valid_hi = compressed_hi or not (
+        native_serialize_hi or native_fp_compute_hi
+    )
+
+    if compressed_lo:
+        sideband |= 1 << SB_IS_COMPRESSED_LO
+    if compressed_hi:
+        sideband |= 1 << SB_IS_COMPRESSED_HI
+    if native_serialize_lo:
+        sideband |= 1 << SB_NATIVE_SERIALIZE_LO
+    if native_serialize_hi:
+        sideband |= 1 << SB_NATIVE_SERIALIZE_HI
     # AllowsSlot2After: compressed non-control, or native non-control
     # non-serialize (mirrors riscv_pkg::imem_make_sideband).
-    if ((sideband & (1 << 0)) and not (sideband & (1 << 2))) or (
-        not (sideband & (1 << 0))
-        and not native_control(opcode_lo)
-        and not (sideband & (1 << 4))
-    ):
-        sideband |= 1 << 8
-    if ((sideband & (1 << 1)) and not (sideband & (1 << 3))) or (
-        not (sideband & (1 << 1))
-        and not native_control(opcode_hi)
-        and not (sideband & (1 << 5))
-    ):
-        sideband |= 1 << 9
-    if (sideband & (1 << 0)) or not (sideband & ((1 << 4) | (1 << 6))):
-        sideband |= 1 << 10
-    if (sideband & (1 << 1)) or not (sideband & ((1 << 5) | (1 << 7))):
-        sideband |= 1 << 11
+    if allows_slot2_after_lo:
+        sideband |= 1 << SB_ALLOWS_SLOT2_AFTER_LO
+    if allows_slot2_after_hi:
+        sideband |= 1 << SB_ALLOWS_SLOT2_AFTER_HI
+    if slot2_start_valid_lo:
+        sideband |= 1 << SB_SLOT2_START_VALID_LO
+    if slot2_start_valid_hi:
+        sideband |= 1 << SB_SLOT2_START_VALID_HI
+
+    # Word-local PC/bundle predicates.  The RVC-at-low shape can include its
+    # same-word slot-2 class; the other three bits collapse the slot-1
+    # size/allows conjunction before the fetch-time cross-word join.
+    if compressed_lo and allows_slot2_after_lo and slot2_start_valid_hi:
+        sideband |= 1 << SB_EVEN_LOCAL_PAIR_VALID
+    if not compressed_lo and allows_slot2_after_lo:
+        sideband |= 1 << SB_PAIRABLE_NATIVE_LO
+    if compressed_hi and allows_slot2_after_hi:
+        sideband |= 1 << SB_PAIRABLE_COMPRESSED_HI
+    if not compressed_hi and allows_slot2_after_hi:
+        sideband |= 1 << SB_PAIRABLE_NATIVE_HI
 
     return sideband
 

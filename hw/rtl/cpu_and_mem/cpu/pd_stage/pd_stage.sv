@@ -159,9 +159,12 @@ module pd_stage #(
   logic [4:0] source_reg_2_2;
   logic [4:0] fp_source_reg_3_2;
 
-  assign source_reg_1_2    = final_instruction_2[19:15];
-  assign source_reg_2_2    = final_instruction_2[24:20];
-  assign fp_source_reg_3_2 = final_instruction_2[31:27];
+  // Extract the payload bits before NOP injection.  The dedicated registered
+  // clear below carries slot invalidation on the FDRE reset pin, keeping the
+  // final bubble/flush mux off these 15 timing-facing D inputs.
+  assign source_reg_1_2    = instruction_non_nop_2[19:15];
+  assign source_reg_2_2    = instruction_non_nop_2[24:20];
+  assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
 
   // ===========================================================================
   // Predicted-Taken Redirect on BTB Miss
@@ -386,18 +389,35 @@ module pd_stage #(
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
-      o_from_pd_to_id_2.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                               5'd0 : source_reg_1_2;
-      o_from_pd_to_id_2.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                               5'd0 : source_reg_2_2;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                                  5'd0 : fp_source_reg_3_2;
       o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
       o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
+    end
+  end
+
+  // Preserve the exact old source-field behavior while making invalidation a
+  // synchronous register clear rather than a LUT on every data bit.  Folding
+  // !stall into the clear is intentional: a bubble/flush arriving during a
+  // held cycle must not overwrite the replayed source addresses until the
+  // bundle advances.  Vivado can therefore map payload to D, !stall to CE,
+  // and this term to R; the residual IMEM-data -> slot-2 early-source paths
+  // lose their final LUT without retiming the instruction or adding latency.
+  logic slot2_early_source_clear;
+  assign slot2_early_source_clear = !i_pipeline_ctrl.stall &&
+      (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
+
+  always_ff @(posedge i_clk) begin
+    if (slot2_early_source_clear) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+    end else if (!i_pipeline_ctrl.stall) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= source_reg_1_2;
+      o_from_pd_to_id_2.source_reg_2_early    <= source_reg_2_2;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= fp_source_reg_3_2;
     end
   end
 

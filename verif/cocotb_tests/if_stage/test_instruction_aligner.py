@@ -30,12 +30,12 @@ COMPRESSED_J = (0b101 << 13) | 0b01
 
 SB_IS_COMPRESSED_LO = 0
 SB_IS_COMPRESSED_HI = 1
-SB_COMPRESSED_CONTROL_LO = 2
-SB_COMPRESSED_CONTROL_HI = 3
+SB_EVEN_LOCAL_PAIR_VALID = 2
+SB_PAIRABLE_NATIVE_LO = 3
 SB_NATIVE_SERIALIZE_LO = 4
 SB_NATIVE_SERIALIZE_HI = 5
-SB_NATIVE_FP_COMPUTE_LO = 6
-SB_NATIVE_FP_COMPUTE_HI = 7
+SB_PAIRABLE_COMPRESSED_HI = 6
+SB_PAIRABLE_NATIVE_HI = 7
 SB_ALLOWS_SLOT2_AFTER_LO = 8
 SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
@@ -68,25 +68,43 @@ def _sideband(
     native_serialize_hi: bool = False,
     native_fp_compute_lo: bool = False,
     native_fp_compute_hi: bool = False,
+    native_pairable_lo: bool = False,
+    native_pairable_hi: bool = False,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
-    allows_slot2_after_lo = compressed_lo and not compressed_control_lo
-    allows_slot2_after_hi = compressed_hi and not compressed_control_hi
+    allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
+        not compressed_lo and native_pairable_lo
+    )
+    allows_slot2_after_hi = (compressed_hi and not compressed_control_hi) or (
+        not compressed_hi and native_pairable_hi
+    )
     slot2_start_valid_lo = compressed_lo or not (
         native_serialize_lo or native_fp_compute_lo
     )
     slot2_start_valid_hi = compressed_hi or not (
         native_serialize_hi or native_fp_compute_hi
     )
+    even_local_pair_valid = (
+        compressed_lo and allows_slot2_after_lo and slot2_start_valid_hi
+    )
     return (
         _bit(compressed_lo, SB_IS_COMPRESSED_LO)
         | _bit(compressed_hi, SB_IS_COMPRESSED_HI)
-        | _bit(compressed_control_lo, SB_COMPRESSED_CONTROL_LO)
-        | _bit(compressed_control_hi, SB_COMPRESSED_CONTROL_HI)
+        | _bit(even_local_pair_valid, SB_EVEN_LOCAL_PAIR_VALID)
+        | _bit(
+            not compressed_lo and allows_slot2_after_lo,
+            SB_PAIRABLE_NATIVE_LO,
+        )
         | _bit(native_serialize_lo, SB_NATIVE_SERIALIZE_LO)
         | _bit(native_serialize_hi, SB_NATIVE_SERIALIZE_HI)
-        | _bit(native_fp_compute_lo, SB_NATIVE_FP_COMPUTE_LO)
-        | _bit(native_fp_compute_hi, SB_NATIVE_FP_COMPUTE_HI)
+        | _bit(
+            compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_COMPRESSED_HI,
+        )
+        | _bit(
+            not compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_NATIVE_HI,
+        )
         | _bit(allows_slot2_after_lo, SB_ALLOWS_SLOT2_AFTER_LO)
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
@@ -171,6 +189,9 @@ def _assert_slot2(
     assert bool(dut.o_is_compressed_2.value) is compressed
     assert bool(dut.o_sel_compressed_2.value) is compressed
     assert bool(dut.o_sel_nop_2.value) is sel_nop
+    assert bool(dut.o_slot2_valid_for_pc.value) is (not sel_nop)
+    if not sel_nop:
+        assert bool(dut.o_slot2_is_compressed_for_pc.value) is compressed
 
 
 @cocotb.test()
@@ -232,6 +253,109 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
         compressed=True,
         sel_nop=False,
     )
+
+
+@cocotb.test()
+async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) -> None:
+    """The word-local qualifier bits preserve every slot-1 position/size shape."""
+    await _setup_test(dut)
+
+    # A: compressed slot-1 at even -> same-word CURRENT_HI slot-2.
+    current_word = _word(lo=COMPRESSED_NOP, hi=0x2223)
+    next_word = _word(lo=0x3333, hi=0x4444)
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(compressed_lo=True),
+    )
+    await _settle()
+    _assert_slot2(
+        dut,
+        raw=0x2223,
+        effective=_word(lo=0x2223, hi=0x3333),
+        compressed=False,
+        sel_nop=False,
+    )
+
+    # B: native slot-1 at even -> NEXT_LO compressed slot-2.
+    _clear_inputs(dut)
+    current_word = 0x00B50533  # add a0,a0,a1
+    next_word = _word(lo=COMPRESSED_NOP, hi=0x5555)
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(compressed_lo=True),
+    )
+    await _settle()
+    _assert_slot2(
+        dut,
+        raw=COMPRESSED_NOP,
+        effective=0x00000013,
+        compressed=True,
+        sel_nop=False,
+    )
+
+    # The same B qualifier also permits a native NEXT_LO, the +8 bundle.
+    next_word = 0x00C585B3  # add a1,a1,a2
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(),
+    )
+    await _settle()
+    _assert_slot2(
+        dut,
+        raw=next_word & 0xFFFF,
+        effective=next_word,
+        compressed=False,
+        sel_nop=False,
+    )
+
+    # C: compressed slot-1 at odd -> NEXT_LO native slot-2.
+    _clear_inputs(dut)
+    current_word = _word(lo=0x1111, hi=COMPRESSED_NOP)
+    next_word = 0x00C585B3  # add a1,a1,a2
+    dut.i_pc_reg.value = PC_HI
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(compressed_hi=True),
+        next_sb=_sideband(),
+    )
+    await _settle()
+    _assert_slot2(
+        dut,
+        raw=next_word & 0xFFFF,
+        effective=next_word,
+        compressed=False,
+        sel_nop=False,
+    )
+
+    # D: native slot-1 at odd -> NEXT_HI compressed slot-2.  A native NEXT_HI
+    # remains invalid because it would extend beyond the 64-bit fetch window.
+    _clear_inputs(dut)
+    current_word = _word(lo=0x1111, hi=0x0533)
+    next_word = _word(lo=0x00B5, hi=COMPRESSED_NOP)
+    dut.i_pc_reg.value = PC_HI
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(native_pairable_hi=True),
+        next_sb=_sideband(compressed_hi=True),
+    )
+    await _settle()
+    _assert_slot2(
+        dut,
+        raw=COMPRESSED_NOP,
+        effective=0x00000013,
+        compressed=True,
+        sel_nop=False,
+    )
+
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(native_pairable_hi=True),
+        next_sb=_sideband(),
+    )
+    await _settle()
+    assert bool(dut.o_slot2_valid_for_pc.value) is False
+    assert bool(dut.o_sel_nop_2.value) is True
 
 
 @cocotb.test()

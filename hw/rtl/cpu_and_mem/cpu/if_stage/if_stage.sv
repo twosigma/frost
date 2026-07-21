@@ -861,8 +861,17 @@ module if_stage #(
   // 64-bit Spanning Assembly
   // ===========================================================================
   // With 64-bit fetch, both halves of a spanning instruction are available in
-  // a single cycle.  When PC[1]=1 and the instruction is 32-bit, assemble it
-  // from the current word's upper half and the next word's lower half.
+  // a single cycle.  When PC[1]=1, speculatively assemble the 32-bit candidate
+  // from the current word's upper half and the next word's lower half.  This is
+  // the architecturally selected value for a native instruction.  For an RVC
+  // instruction PD selects raw_parcel/decompression instead, so the
+  // speculative upper half is a don't-care.
+  //
+  // TIMING: do not qualify this mux with is_compressed.  That bit comes from
+  // the IMEM predecode sideband; qualifying the 32-bit candidate with it put
+  // sideband -> assembled_instr -> native branch immediate -> target adder on
+  // pd_redirect_target_r/D.  PC[1] is registered and is the only selector the
+  // native candidate actually needs.
   //
   // When the instruction buffer is active, the "next word" is the BRAM's
   // current word (the lead word).  When the buffer is inactive, the "next
@@ -888,14 +897,28 @@ module if_stage #(
   // Parity: bank_sel_r == pc_reg[2] → next word at [63:32], bits at [47:32].
   //         bank_sel_r != pc_reg[2] → next word at [31:0],  bits at [15:0].
   assign spanning_second_half = fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32];
+  assign assembled_instr = pc_reg[1] ?
+      {spanning_second_half, effective_instr[31:16]} : effective_instr;
+
+`ifndef SYNTHESIS
+  // The specialized candidate must match the old sideband-qualified value
+  // whenever the native arm is architecturally visible.  For RVC the packet's
+  // raw_parcel is selected and this 32-bit value is deliberately a don't-care.
+  logic [31:0] assembled_instr_legacy;
   always_comb begin
     if (pc_reg[1] && !is_compressed) begin
-      // 32-bit instruction at halfword boundary — assemble from two words
-      assembled_instr = {spanning_second_half, effective_instr[31:16]};
+      assembled_instr_legacy = {spanning_second_half, effective_instr[31:16]};
     end else begin
-      assembled_instr = effective_instr;
+      assembled_instr_legacy = effective_instr;
+    end
+
+    if (!$isunknown(
+            {pc_reg[1], is_compressed, spanning_second_half, effective_instr}
+        ) && !is_compressed) begin
+      p_native_assembly_matches_legacy : assert (assembled_instr == assembled_instr_legacy);
     end
   end
+`endif
 
   stall_capture_reg #(
       .WIDTH(32)

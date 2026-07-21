@@ -647,8 +647,11 @@ module instruction_aligner #(
   //   32b @ odd   -> slot-2 at NEXT_HI   (RVC only: a 32-bit slot-2 there
   //                                       would span beyond the 64-bit fetch)
   // The per-halfword sideband predecodes the allows-slot-2 predicate, the
-  // slot-1 size, and the slot-2 start-valid predicate.  That keeps the PC
-  // advance path from rebuilding those conditions from several raw bits.
+  // slot-1 size, and the slot-2 start-valid predicate.  Four otherwise-unused
+  // stored class bits additionally collapse the size/allows conjunction for
+  // every shape; the same-word RVC-at-even bit also includes slot-2's class
+  // validity.  That keeps those joins out of the live BRAM-to-PC cone without
+  // widening the 12-bit sideband memories.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({
@@ -680,6 +683,22 @@ module instruction_aligner #(
     endcase
   end
 
+  // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
+  // At a low-half PC the buffer shape is deliberately unsupported, so the
+  // low-half PC candidates below read aligned_current_sb directly.
+  logic slot1_pairable_compressed_hi_for_pc;
+  logic slot1_pairable_native_hi_for_pc;
+  assign slot1_pairable_compressed_hi_for_pc = o_use_instr_buffer ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
+      aligned_current_sb[riscv_pkg::ImemSbPairableCompressedHi];
+  assign slot1_pairable_native_hi_for_pc = o_use_instr_buffer ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
+      aligned_current_sb[riscv_pkg::ImemSbPairableNativeHi];
+
+  // The original shape candidates remain as the classification view used by
+  // the width-funnel kill-cause taps below.  In particular, they intentionally
+  // do not include slot-2 start validity, so a blocked slot-2 is still counted
+  // as a class kill rather than disappearing into the no-pair bucket.
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
   logic slot2_next_hi_candidate;
@@ -699,6 +718,22 @@ module instruction_aligner #(
   assign slot2_next_hi_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc &&
                                    !slot1_compressed_for_pc;
 
+  // PC-functional shape candidates use the write/init-time conjunctions.
+  // Only the prospective slot-2 word/class joins that cannot be known from
+  // this word remain below.
+  logic slot2_current_hi_candidate_for_pc;
+  logic slot2_next_lo_candidate_for_pc;
+  logic slot2_next_hi_candidate_for_pc;
+  assign slot2_current_hi_candidate_for_pc =
+      !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+      aligned_current_sb[riscv_pkg::ImemSbEvenLocalPairValid];
+  assign slot2_next_lo_candidate_for_pc =
+      (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+       aligned_current_sb[riscv_pkg::ImemSbPairableNativeLo]) ||
+      (!o_sel_nop && i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
+  assign slot2_next_hi_candidate_for_pc =
+      !o_sel_nop && i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
+
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
   logic slot2_next_hi_compressed;
@@ -715,18 +750,22 @@ module instruction_aligner #(
   logic slot2_current_hi_invalid;
   logic slot2_next_lo_invalid;
   logic slot2_next_hi_invalid;
-  assign slot2_current_hi_invalid =
-      !slot2_current_hi_start_valid || (slot2_bram_unsafe && !slot2_current_hi_compressed);
+  // EvenLocalPairValid already includes current-hi start validity.  A native
+  // CURRENT_HI slot-2 still needs the next BRAM word to assemble its upper
+  // half, whereas a compressed one is wholly local.
+  assign slot2_current_hi_invalid = slot2_bram_unsafe && !slot2_current_hi_compressed;
   assign slot2_next_lo_invalid = slot2_bram_unsafe || !slot2_next_lo_start_valid;
-  assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_start_valid ||
-                                 !slot2_next_hi_compressed;
+  // A compressed NEXT_HI start is intrinsically start-valid.  Native NEXT_HI
+  // cannot fit beyond the 64-bit window and remains invalid.
+  assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_compressed;
 
   logic slot2_current_hi_valid_for_pc;
   logic slot2_next_lo_valid_for_pc;
   logic slot2_next_hi_valid_for_pc;
-  assign slot2_current_hi_valid_for_pc = slot2_current_hi_candidate && !slot2_current_hi_invalid;
-  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate && !slot2_next_lo_invalid;
-  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate && !slot2_next_hi_invalid;
+  assign slot2_current_hi_valid_for_pc =
+      slot2_current_hi_candidate_for_pc && !slot2_current_hi_invalid;
+  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate_for_pc && !slot2_next_lo_invalid;
+  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate_for_pc && !slot2_next_hi_invalid;
 
   logic slot2_valid_when_enabled;
   assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc ||
@@ -737,8 +776,9 @@ module instruction_aligner #(
   // slot-2" bit does not also drive the slot-2-size mux cone.  The candidates
   // are mutually exclusive by construction (even/odd, slot-1 size).
   assign o_slot2_is_compressed_for_pc =
-      slot2_current_hi_candidate ? slot2_current_hi_compressed :
-      slot2_next_hi_candidate    ? slot2_next_hi_compressed    : slot2_next_lo_compressed;
+      slot2_current_hi_candidate_for_pc ? slot2_current_hi_compressed :
+      slot2_next_hi_candidate_for_pc    ? slot2_next_hi_compressed    :
+                                           slot2_next_lo_compressed;
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;
