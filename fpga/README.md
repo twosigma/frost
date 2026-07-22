@@ -91,10 +91,19 @@ baselines — and finally Linux is booted to the Buildroot login prompt:
 ## Building
 
 The build script runs the Vivado implementation pipeline and compiles
-`hello_world` into board-local initial BRAM contents before synthesis. Each
-step uses the configured default directive unless overridden via
-`--*-directive` flags. Steps can be started/stopped at any point using
-checkpoints.
+`hello_world` into board-local initial BRAM contents before synthesis. Non-sweep
+steps use the configured default directive unless overridden via
+`--*-directive` flags. On x3, placement ignores `--place-directive` and defaults
+to sweeping ExtraNetDelay_high and ExtraPostPlacementOpt across twelve setup
+uncertainties from 0.500 through 0.390 ns (24 jobs). Use
+`--directives` with any nonempty unique subset of legal placer directives to
+override that set. `--num-uncertainties` changes the default count of twelve;
+values begin at 0.500 ns and decrease in 0.010 ns steps. The supported range is
+1–50 uncertainties, keeping every placement seed positive (the 50th is 0.010
+ns). The total number of parallel jobs is the directive count times the
+uncertainty count. The winner is ranked by its zero-uncertainty-equivalent WNS
+while the promoted checkpoint retains the full 0.500 ns uncertainty until
+routing. Steps can be started/stopped at any point using checkpoints.
 
 ```bash
 # Full build with default directives
@@ -103,8 +112,15 @@ checkpoints.
 # Choose a specific synthesis directive
 ./fpga/build/build.py x3 --synth-directive PerformanceOptimized
 
-# Resume from placement with a specific placer directive
-./fpga/build/build.py x3 --start-at place --place-directive ExtraTimingOpt
+# Resume at the x3 placement sweep
+./fpga/build/build.py x3 --start-at place
+
+# Run only placement with two directives and four uncertainties (8 jobs)
+./fpga/build/build.py x3 --start-at place --stop-after place \
+  --directives ExtraNetDelay_low ExtraTimingOpt --num-uncertainties 4
+
+# Resume placement on Genesys2 with a specific directive
+./fpga/build/build.py genesys2 --start-at place --place-directive ExtraTimingOpt
 
 # Synth only
 ./fpga/build/build.py x3 --stop-after synth

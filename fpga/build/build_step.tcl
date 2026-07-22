@@ -454,10 +454,10 @@ if {$step eq "synth"} {
     open_checkpoint $checkpoint_path
 
     # Apply overconstraining before placement (x3 only - needed for 300 MHz
-    # timing closure). The x3 placer sweep in build.py launches each directive
-    # twice, exporting FROST_PLACE_SETUP_UNCERTAINTY=0.500 and 0.490: Vivado's
-    # placer has no seed knob, so shaving 10 ps off the overconstraint acts as
-    # a second placement seed per directive. Keep the baseline in sync with
+    # timing closure). The x3 placer sweep in build.py launches the selected
+    # directives at setup uncertainties beginning at 0.500 ns and decreasing
+    # by 0.010 ns: Vivado's placer has no seed knob, so each reduction acts as
+    # another placement seed. Keep the baseline in sync with
     # X3_PLACE_BASELINE_UNCERTAINTY_NS in build.py.
     set x3_place_baseline_uncertainty 0.5
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
@@ -465,8 +465,8 @@ if {$step eq "synth"} {
 
     place_design -directive $directive
 
-    # Add the shaved 10 ps back now that placement is done: every seed is
-    # scored, checkpointed, and handed to post_place_physopt under the
+    # Restore the full baseline uncertainty now that placement is done: every
+    # seed is scored, checkpointed, and handed to post_place_physopt under the
     # identical full 0.5 ns overconstraint (an equal handicap for picking the
     # winner). The overconstraint is NOT removed here — it stays in force
     # through post_place_physopt and is only cleared at the route step.

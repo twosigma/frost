@@ -19,8 +19,8 @@
 Steps:
 1. Synthesis                          (post_synth.dcp)
 2. Opt                                (post_opt.dcp)
-3. Place                              (post_place.dcp; x3 sweeps placer
-                                       directives x 2 overconstraint seeds)
+3. Place                              (post_place.dcp; x3 sweeps selected placer
+                                       directives x configurable seeds)
 4. Post-place phys_opt sweep          (post_place_physopt.dcp)
 5. Route (with -tns_cleanup)          (post_route.dcp / final.dcp*)
 6. Post-route phys_opt sweep          (post_route_physopt.dcp / final.dcp*)
@@ -35,15 +35,19 @@ pass and stops early as soon as a phys_opt_design pass closes timing (WNS>=0).
 Repeated phys_opt sweeps write the current best checkpoint and reports after
 every completed sweep iteration.
 
-For x3, the place, route, and second_route stages run every legal directive in
+For x3, the place, route, and second_route stages run their directive sweeps in
 parallel, wait for all jobs to finish, then promote only the best-WNS checkpoint
-and reports to the main work directory before continuing. The place stage
-additionally runs each placer directive at two overconstraint "seeds" (0.500
-and 0.490 ns pre-place setup uncertainty — Vivado's placer has no seed knob,
-so the 10 ps nudge perturbs it into a second independent solution). After
-place_design each job re-applies the full 0.500 ns overconstraint (adds the
-10 ps back), so seeds are compared under an equal handicap and
-post_place_physopt always inherits the full overconstraint.
+and reports to the main work directory before continuing. The route stages run
+every legal router directive, while the place stage defaults to two tuned
+placer directives at twelve overconstraint "seeds" (0.500 through 0.390 ns
+pre-place setup uncertainty in 10 ps increments — Vivado's placer has no seed
+knob, so these nudges perturb it into independent solutions). The --directives
+option can replace that default directive set, and --num-uncertainties changes
+the number of 10 ps-spaced seeds. After place_design each job re-applies the
+full 0.500 ns overconstraint, so seeds are compared under an equal handicap and
+post_place_physopt always inherits the full overconstraint. The placement
+results table shows both the WNS at each seed uncertainty and its
+zero-uncertainty equivalent, and ranks runs by the latter.
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -113,21 +117,43 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
+X3_PLACER_SWEEP_DIRECTIVES = [
+    "ExtraNetDelay_high",
+    "ExtraPostPlacementOpt",
+]
+
 # x3 placement runs under a pre-place setup-uncertainty overconstraint
 # (applied in build_step.tcl; needed for 300 MHz closure). Vivado's placer has
-# no seed knob, so the x3 placer sweep runs every directive once per value
-# below — shaving 10 ps off the overconstraint perturbs the placer enough to
-# act as a second seed. After place_design, build_step.tcl adds the shaved
-# 10 ps back, so every seed is scored and checkpointed under the identical
-# full 0.5 ns overconstraint and post_place_physopt always runs fully
-# overconstrained regardless of which seed wins. Baseline must match
-# x3_place_baseline_uncertainty in build_step.tcl.
+# no seed knob, so the x3 placer sweep runs each selected directive once per
+# value below. Each 10 ps reduction perturbs the placer into another solution.
+# After place_design, build_step.tcl restores the baseline, so every seed is
+# scored and checkpointed under the identical full 0.5 ns overconstraint and
+# post_place_physopt always runs fully overconstrained regardless of which seed
+# wins. Baseline must match x3_place_baseline_uncertainty in build_step.tcl.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.010
-X3_PLACE_SETUP_UNCERTAINTIES_NS = [
-    X3_PLACE_BASELINE_UNCERTAINTY_NS,
-    X3_PLACE_BASELINE_UNCERTAINTY_NS - X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS,
-]
+X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 12
+X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
+    round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
+)
+
+
+def make_x3_place_setup_uncertainties_ns(count: int) -> list[float]:
+    """Return ``count`` 10 ps-spaced placer uncertainties from the baseline."""
+    if not 1 <= count <= X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT:
+        raise ValueError(
+            f"x3 placer uncertainty count must be between 1 and "
+            f"{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}"
+        )
+    return [
+        round(
+            X3_PLACE_BASELINE_UNCERTAINTY_NS
+            - seed_index * X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS,
+            3,
+        )
+        for seed_index in range(count)
+    ]
+
 
 ROUTER_DIRECTIVES = [
     "Default",
@@ -258,6 +284,7 @@ class DirectiveSweepRun:
     start_time: float | None = None
     returncode: int | None = None
     elapsed_s: float | None = None
+    setup_uncertainty_ns: float | None = None
     wns: float | None = None
     tns: float | None = None
     failing_endpoints: int | None = None
@@ -433,17 +460,43 @@ def format_sweep_elapsed(seconds: float | None) -> str:
     return f"{sec:d}s"
 
 
+def directive_sweep_rank_wns(run: DirectiveSweepRun) -> float | None:
+    """Return the WNS used to rank a directive sweep run.
+
+    Placement timing reports are written after Tcl restores every seed to the
+    common X3_PLACE_BASELINE_UNCERTAINTY_NS. Adding that baseline reconstructs
+    the zero-uncertainty-equivalent WNS without removing the uncertainty from
+    the design checkpoint. This assumes the reported critical path is in the
+    CPU-to-CPU timing group affected by the x3 overconstraint. Router sweep
+    reports need no adjustment.
+    """
+    if run.wns is None:
+        return None
+    if run.setup_uncertainty_ns is None:
+        return run.wns
+    return run.wns + X3_PLACE_BASELINE_UNCERTAINTY_NS
+
+
+def placement_seed_wns(run: DirectiveSweepRun) -> float | None:
+    """Reconstruct WNS under the uncertainty used to place this run."""
+    rank_wns = directive_sweep_rank_wns(run)
+    if rank_wns is None or run.setup_uncertainty_ns is None:
+        return None
+    return rank_wns - run.setup_uncertainty_ns
+
+
 def directive_sweep_rank_key(run: DirectiveSweepRun) -> tuple[int, float, float]:
-    """Sort key ranking sweep runs best-first: WNS desc, then TNS desc.
+    """Sort runs best-first by comparison WNS, then reported TNS.
 
     Runs without WNS data (failed/launch-error) sort last; among equal-WNS
     runs, a missing TNS ranks worst, matching the best-run selection logic.
     """
-    if run.wns is None:
+    rank_wns = directive_sweep_rank_wns(run)
+    if rank_wns is None:
         return (1, 0.0, 0.0)
     return (
         0,
-        -run.wns,
+        -rank_wns,
         -(run.tns if run.tns is not None else float("-inf")),
     )
 
@@ -454,12 +507,22 @@ def print_x3_directive_sweep_matrix(
     title: str,
 ) -> None:
     """Print a compact matrix of x3 directive sweep results, best WNS first."""
+    show_placement_wns = any(run.setup_uncertainty_ns is not None for run in runs)
+
     print(f"\n{title}:")
-    print(
-        f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
-        f"{'WNS(ns)':>9} {'TNS(ns)':>11} {'Failing EP':>14} {'Elapsed':>8}"
-    )
-    print("-" * 93)
+    if show_placement_wns:
+        print(
+            f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
+            f"{'WNS@0':>9} {'WNS@seed':>11} {'TNS@.500':>11} "
+            f"{'Failing EP':>14} {'Elapsed':>8}"
+        )
+        print("-" * 105)
+    else:
+        print(
+            f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
+            f"{'WNS(ns)':>9} {'TNS(ns)':>11} {'Failing EP':>14} {'Elapsed':>8}"
+        )
+        print("-" * 93)
 
     for run in sorted(runs, key=directive_sweep_rank_key):
         if run.launch_error:
@@ -478,13 +541,23 @@ def print_x3_directive_sweep_matrix(
             failing = f"{run.failing_endpoints}/{run.total_endpoints}"
 
         selected = "*" if best_run is run else ""
-        print(
-            f"{selected:<3} {run.label:<30} {status:<10} "
-            f"{format_sweep_ns(run.wns):>9} "
-            f"{format_sweep_ns(run.tns):>11} "
-            f"{failing:>14} "
-            f"{format_sweep_elapsed(run.elapsed_s):>8}"
-        )
+        if show_placement_wns:
+            print(
+                f"{selected:<3} {run.label:<30} {status:<10} "
+                f"{format_sweep_ns(directive_sweep_rank_wns(run)):>9} "
+                f"{format_sweep_ns(placement_seed_wns(run)):>11} "
+                f"{format_sweep_ns(run.tns):>11} "
+                f"{failing:>14} "
+                f"{format_sweep_elapsed(run.elapsed_s):>8}"
+            )
+        else:
+            print(
+                f"{selected:<3} {run.label:<30} {status:<10} "
+                f"{format_sweep_ns(run.wns):>9} "
+                f"{format_sweep_ns(run.tns):>11} "
+                f"{failing:>14} "
+                f"{format_sweep_elapsed(run.elapsed_s):>8}"
+            )
 
 
 def close_directive_sweep_logs(runs: list[DirectiveSweepRun]) -> None:
@@ -654,6 +727,7 @@ def run_x3_step_directive_sweep(
                 label=label,
                 work_dir=work_dir,
                 stdout_path=stdout_path,
+                setup_uncertainty_ns=uncertainty_ns,
             )
             runs.append(run)
 
@@ -712,6 +786,13 @@ def run_x3_step_directive_sweep(
 
                     if run.wns is None:
                         result = "completed without timing data"
+                    elif run.setup_uncertainty_ns is not None:
+                        result = (
+                            f"WNS@0={format_sweep_ns(directive_sweep_rank_wns(run))} "
+                            f"ns, WNS@seed="
+                            f"{format_sweep_ns(placement_seed_wns(run))} ns, "
+                            f"TNS@0.500={format_sweep_ns(run.tns)} ns"
+                        )
                     else:
                         result = (
                             f"WNS={format_sweep_ns(run.wns)} ns, "
@@ -734,15 +815,7 @@ def run_x3_step_directive_sweep(
         raise SystemExit(130)
 
     eligible_runs = [run for run in runs if run.returncode == 0 and run.wns is not None]
-    best_run = None
-    if eligible_runs:
-        best_run = max(
-            eligible_runs,
-            key=lambda run: (
-                run.wns if run.wns is not None else float("-inf"),
-                run.tns if run.tns is not None else float("-inf"),
-            ),
-        )
+    best_run = min(eligible_runs, key=directive_sweep_rank_key, default=None)
 
     print_x3_directive_sweep_matrix(
         runs,
@@ -763,11 +836,19 @@ def run_x3_step_directive_sweep(
         checkpoint_name = STEP_PRODUCES_CHECKPOINT[step]
         report_prefix = STEP_REPORT_PREFIX[step]
 
-    print(
-        f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
-        f"(WNS={format_sweep_ns(best_run.wns)} ns, "
-        f"TNS={format_sweep_ns(best_run.tns)} ns)"
-    )
+    if best_run.setup_uncertainty_ns is not None:
+        print(
+            f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
+            f"(WNS@0={format_sweep_ns(directive_sweep_rank_wns(best_run))} ns, "
+            f"WNS@seed={format_sweep_ns(placement_seed_wns(best_run))} ns, "
+            f"TNS@0.500={format_sweep_ns(best_run.tns)} ns)"
+        )
+    else:
+        print(
+            f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
+            f"(WNS={format_sweep_ns(best_run.wns)} ns, "
+            f"TNS={format_sweep_ns(best_run.tns)} ns)"
+        )
     print(f"  Output: {checkpoint_name} + {report_prefix}_*.rpt")
 
     copy_results_to_main_work(
@@ -976,9 +1057,9 @@ def main() -> None:
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
-  place                       - Place design (x3 sweeps all placer directives
-                                x 2 overconstraint seeds in parallel and keeps
-                                the best-WNS result)
+  place                       - Place design (x3 sweeps selected placer
+                                directives x configurable uncertainty seeds in
+                                parallel, then keeps the best-WNS result)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps all
@@ -992,11 +1073,14 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * On x3, place ignores --place-directive and runs every placer directive at
-    two overconstraint seeds in parallel (0.500/0.490 ns pre-place setup
-    uncertainty; the 10 ps reduction stands in for a placer seed), promotes
-    only the best-WNS post_place checkpoint/reports, then continues to
-    post_place_physopt.
+  * On x3, place ignores --place-directive. By default it runs
+    ExtraNetDelay_high and ExtraPostPlacementOpt at twelve overconstraint seeds
+    in parallel (0.500 through 0.390 ns pre-place setup uncertainty in 10 ps
+    increments). --directives accepts any nonempty unique subset of the legal
+    placer directives, and --num-uncertainties changes the seed count while
+    retaining the 10 ps spacing. Both overrides require a run that includes
+    place. Results are ranked by zero-uncertainty-equivalent WNS; the winning
+    checkpoint keeps the full 0.500 ns uncertainty through post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
     including AlternateCLBRouting, in parallel and promotes only the best-WNS
@@ -1019,6 +1103,8 @@ Each non-sweep step uses a tuned default directive unless overridden with --*-di
 Examples:
   ./build.py x3                                    # Full build, tuned defaults
   ./build.py x3 --start-at place                   # Resume from post_opt checkpoint
+  ./build.py x3 --start-at place --stop-after place \\
+      --directives ExtraNetDelay_low ExtraTimingOpt --num-uncertainties 4
   ./build.py x3 --stop-after synth                 # Synth only
   ./build.py x3 --synth-directive PerformanceOptimized
   ./build.py x3 --start-at route                   # Requires post_place_physopt.dcp
@@ -1076,7 +1162,27 @@ Examples:
         choices=PLACER_DIRECTIVES,
         default=None,
         help="Placer directive for non-x3 boards (default: ExtraTimingOpt). "
-        "Ignored on x3, which sweeps all placer directives in parallel.",
+        "Ignored on x3; use --directives to customize the x3 placer sweep.",
+    )
+    parser.add_argument(
+        "--directives",
+        nargs="+",
+        choices=PLACER_DIRECTIVES,
+        metavar="DIRECTIVE",
+        help="Override the x3 placer sweep with one or more unique directives. "
+        "Each directive runs at every configured uncertainty; the run must "
+        "include the place step. Default directives: "
+        f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}.",
+    )
+    parser.add_argument(
+        "--num-uncertainties",
+        type=int,
+        metavar="N",
+        help="Number of 10 ps-spaced x3 placer uncertainties, starting at "
+        f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
+        f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
+        f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). The run must include "
+        "place.",
     )
     parser.add_argument(
         "--route-directive",
@@ -1105,6 +1211,48 @@ Examples:
     args = parser.parse_args()
 
     board_name = args.board_name
+
+    start_idx = STEPS.index(args.start_at)
+    stop_idx = STEPS.index(args.stop_after) if args.stop_after else len(STEPS) - 1
+    if stop_idx < start_idx:
+        parser.error("--stop-after cannot precede --start-at")
+    steps_to_run = STEPS[start_idx : stop_idx + 1]
+
+    if args.num_uncertainties is not None and not (
+        1 <= args.num_uncertainties <= X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT
+    ):
+        parser.error(
+            f"--num-uncertainties must be between 1 and "
+            f"{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}"
+        )
+
+    placer_sweep_overridden = (
+        args.directives is not None or args.num_uncertainties is not None
+    )
+    if placer_sweep_overridden:
+        if board_name != "x3":
+            parser.error("placer sweep overrides are only valid for x3")
+        if "place" not in steps_to_run:
+            parser.error("placer sweep overrides require a run that includes place")
+        if args.place_directive is not None:
+            parser.error(
+                "placer sweep overrides cannot be combined with --place-directive"
+            )
+
+    if args.directives is not None and len(args.directives) != len(
+        set(args.directives)
+    ):
+        parser.error("--directives must not contain duplicate values")
+
+    place_sweep_directives = args.directives or X3_PLACER_SWEEP_DIRECTIVES
+    place_uncertainty_count = (
+        args.num_uncertainties
+        if args.num_uncertainties is not None
+        else X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
+    )
+    place_setup_uncertainties_ns = make_x3_place_setup_uncertainties_ns(
+        place_uncertainty_count
+    )
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent.parent
 
@@ -1144,10 +1292,24 @@ Examples:
     ]
     if directives_summary:
         print(f"# Directives: {', '.join(directives_summary)}")
+    if board_name == "x3" and "place" in steps_to_run:
+        sweep_source = "custom" if placer_sweep_overridden else "default"
+        print(
+            f"# X3 placer sweep ({sweep_source}): "
+            f"{len(place_sweep_directives)} directives x "
+            f"{len(place_setup_uncertainties_ns)} uncertainties = "
+            f"{len(place_sweep_directives) * len(place_setup_uncertainties_ns)} "
+            "jobs"
+        )
+        print(f"#   {', '.join(place_sweep_directives)}")
+        print(
+            "#   setup uncertainties (ns): "
+            + ", ".join(f"{value:.3f}" for value in place_setup_uncertainties_ns)
+        )
     if board_name == "x3" and args.place_directive is not None:
         print(
             "# Note: --place-directive is ignored for x3; "
-            "the place stage sweeps all placer directives."
+            "use --directives to customize the placer sweep."
         )
     if board_name == "x3" and args.route_directive != "AggressiveExplore":
         print(
@@ -1175,15 +1337,6 @@ Examples:
             f"'{args.start_at}'; BRAM contents are already in the checkpoint."
         )
 
-    # Determine which steps to run
-    start_idx = STEPS.index(args.start_at)
-    if args.stop_after:
-        stop_idx = STEPS.index(args.stop_after)
-    else:
-        stop_idx = len(STEPS) - 1
-
-    steps_to_run = STEPS[start_idx : stop_idx + 1]
-
     print(f"\nSteps to run: {' -> '.join(steps_to_run)}")
 
     # Check required checkpoint for start step
@@ -1208,11 +1361,11 @@ Examples:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
                 script_dir,
                 step,
-                PLACER_DIRECTIVES,
+                place_sweep_directives,
                 "placer",
                 args.vivado_path,
                 keep_temps=args.keep_temps,
-                setup_uncertainties_ns=X3_PLACE_SETUP_UNCERTAINTIES_NS,
+                setup_uncertainties_ns=place_setup_uncertainties_ns,
             )
         elif board_name == "x3" and step in {"route", "second_route"}:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
