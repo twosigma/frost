@@ -118,11 +118,20 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
+def _fetch_hi_rd_is_x2(*, current_word: int, next_word: int) -> int:
+    """Pack the high-parcel rd==x2 predicates as {next,current}."""
+    return int(((current_word >> 23) & 0x1F) == 2) | (
+        int(((next_word >> 23) & 0x1F) == 2) << 1
+    )
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
-    dut.i_instr.value = _fetch(
-        current_word=_word(lo=COMPRESSED_NOP, hi=0x0013),
-        next_word=_word(lo=0x0023, hi=0x0033),
+    current_word = _word(lo=COMPRESSED_NOP, hi=0x0013)
+    next_word = _word(lo=0x0023, hi=0x0033)
+    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
+        current_word=current_word, next_word=next_word
     )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
@@ -142,15 +151,24 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_saved_values_valid.value = 0
 
 
-async def _settle() -> None:
-    """Let combinational outputs settle."""
+async def _settle(dut: Any) -> None:
+    """Drive the exact fetch predicate and let combinational outputs settle."""
+    # Apply any instruction-bus write made by the caller before deriving its
+    # companion predicate; an immediate VPI read can still see the old value.
+    await Timer(1, unit="ps")
+    fetch = int(dut.i_instr.value)
+    current_word = fetch & 0xFFFF_FFFF
+    next_word = (fetch >> 32) & 0xFFFF_FFFF
+    dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
+        current_word=current_word, next_word=next_word
+    )
     await Timer(1, unit="ns")
 
 
 async def _setup_test(dut: Any) -> None:
     """Initialize the combinational aligner inputs."""
     _clear_inputs(dut)
-    await _settle()
+    await _settle(dut)
 
 
 def _assert_slot1(
@@ -205,7 +223,7 @@ async def test_low_parcel_selects_current_word_and_current_hi_slot2(dut: Any) ->
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -236,7 +254,7 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
         current_sb=_sideband(compressed_hi=True),
         next_sb=_sideband(compressed_lo=True),
     )
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -267,7 +285,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
-    await _settle()
+    await _settle(dut)
     _assert_slot2(
         dut,
         raw=0x2223,
@@ -285,7 +303,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(compressed_lo=True),
     )
-    await _settle()
+    await _settle(dut)
     _assert_slot2(
         dut,
         raw=COMPRESSED_NOP,
@@ -301,7 +319,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(),
     )
-    await _settle()
+    await _settle(dut)
     _assert_slot2(
         dut,
         raw=next_word & 0xFFFF,
@@ -320,7 +338,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         current_sb=_sideband(compressed_hi=True),
         next_sb=_sideband(),
     )
-    await _settle()
+    await _settle(dut)
     _assert_slot2(
         dut,
         raw=next_word & 0xFFFF,
@@ -340,7 +358,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         current_sb=_sideband(native_pairable_hi=True),
         next_sb=_sideband(compressed_hi=True),
     )
-    await _settle()
+    await _settle(dut)
     _assert_slot2(
         dut,
         raw=COMPRESSED_NOP,
@@ -353,7 +371,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         current_sb=_sideband(native_pairable_hi=True),
         next_sb=_sideband(),
     )
-    await _settle()
+    await _settle(dut)
     assert bool(dut.o_slot2_valid_for_pc.value) is False
     assert bool(dut.o_sel_nop_2.value) is True
 
@@ -372,7 +390,7 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
         current_sb=_sideband(),
         next_sb=_sideband(compressed_lo=True, compressed_hi=True),
     )
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -401,7 +419,7 @@ async def test_buffer_selection_uses_buffer_word_and_sideband(dut: Any) -> None:
     dut.i_prev_was_compressed_at_lo.value = 1
     dut.i_instr_buffer.value = buffer_word
     dut.i_instr_buffer_sideband.value = _sideband(compressed_hi=True)
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -423,7 +441,7 @@ async def test_prediction_buffer_at_low_pc_invalidates_slot2(dut: Any) -> None:
     dut.i_use_buffer_after_prediction.value = 1
     dut.i_instr_buffer.value = buffer_word
     dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -449,7 +467,7 @@ async def test_saved_stall_values_drive_fast_compressed_path(dut: Any) -> None:
     dut.i_is_compressed_saved.value = 1
     dut.i_instr_buffer.value = buffer_word
     dut.i_instr_buffer_sideband.value = _sideband()
-    await _settle()
+    await _settle(dut)
 
     _assert_slot1(
         dut,
@@ -473,7 +491,7 @@ async def test_nop_sources_suppress_slot1_and_slot2(dut: Any) -> None:
     ):
         _clear_inputs(dut)
         setattr(getattr(dut, signal_name), "value", 1)
-        await _settle()
+        await _settle(dut)
 
         assert bool(dut.o_sel_nop.value) is True
         assert bool(dut.o_slot1_is_branch.value) is False
@@ -490,7 +508,7 @@ async def test_slot1_branch_detection_handles_compressed_and_native(dut: Any) ->
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True, compressed_control_lo=True),
     )
-    await _settle()
+    await _settle(dut)
 
     assert bool(dut.o_slot1_is_branch.value) is True
     assert bool(dut.o_sel_nop_2.value) is True
@@ -500,7 +518,7 @@ async def test_slot1_branch_detection_handles_compressed_and_native(dut: Any) ->
     dut.i_pc_reg.value = PC_HI
     dut.i_instr.value = _fetch(current_word=current_word, next_word=0)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=_sideband())
-    await _settle()
+    await _settle(dut)
 
     assert bool(dut.o_is_compressed.value) is False
     assert bool(dut.o_slot1_is_branch.value) is True
@@ -522,7 +540,7 @@ async def test_slot2_sideband_blocks_serialize_and_fp_compute_ops(dut: Any) -> N
             next_word=0,
         )
         dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb)
-        await _settle()
+        await _settle(dut)
 
         assert bool(dut.o_is_compressed.value) is True
         assert bool(dut.o_is_compressed_2.value) is False
@@ -545,7 +563,7 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
         current_sb=_sideband(),
         next_sb=_sideband(compressed_lo=True, compressed_hi=True),
     )
-    await _settle()
+    await _settle(dut)
 
     # effective carries the RVC expansion (C.SW 0xCCCC -> SW x11,28(x9))
     _assert_slot2(dut, raw=0xCCCC, effective=0x00B4AE23, compressed=True, sel_nop=False)
@@ -554,7 +572,7 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
         current_sb=_sideband(),
         next_sb=_sideband(compressed_lo=True),
     )
-    await _settle()
+    await _settle(dut)
 
     _assert_slot2(
         dut,
@@ -563,3 +581,112 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
         compressed=False,
         sel_nop=True,
     )
+
+
+@cocotb.test()
+async def test_high_parcel_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> None:
+    """The C.ADDI16SP predicate remains paired with its word across a swap."""
+    await _setup_test(dut)
+
+    # C.ADDI16SP x2,x2,16.  Toggling bit 7 changes rd from x2 to x3,
+    # making the otherwise-identical parcel C.LUI instead.
+    c_addi16sp = (0b011 << 13) | (2 << 7) | (1 << 6) | 0b01
+    c_lui_x3 = c_addi16sp ^ (1 << 7)
+    word_with_x2 = _word(lo=COMPRESSED_NOP, hi=c_addi16sp)
+    near_miss_word = _word(lo=0x0003, hi=c_lui_x3)
+
+    for swapped in (False, True):
+        _clear_inputs(dut)
+        dut.i_pc_reg.value = PC_LO
+        dut.i_instr_bank_sel_r.value = int(swapped)
+
+        if swapped:
+            # Physical {next,current} is reversed relative to the PC-aligned
+            # words; the predicate bus must reverse with it.
+            physical_current = near_miss_word
+            physical_next = word_with_x2
+            current_sb = _sideband(compressed_hi=True)
+            next_sb = _sideband(compressed_lo=True, compressed_hi=True)
+        else:
+            physical_current = word_with_x2
+            physical_next = near_miss_word
+            current_sb = _sideband(compressed_lo=True, compressed_hi=True)
+            next_sb = _sideband(compressed_hi=True)
+
+        dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr.value = _fetch(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr_sideband.value = _fetch_sideband(
+            current_sb=current_sb,
+            next_sb=next_sb,
+        )
+        await _settle(dut)
+
+        assert int(dut.i_instr_hi_rd_is_x2.value) == (0b10 if swapped else 0b01)
+        assert bool(dut.fetch_word_swapped_slot2.value) is swapped
+        assert bool(dut.aligned_current_hi_rd_is_x2.value) is True
+        assert bool(dut.aligned_next_hi_rd_is_x2.value) is False
+        _assert_slot2(
+            dut,
+            raw=c_addi16sp,
+            effective=0x01010113,  # addi x2,x2,16
+            compressed=True,
+            sel_nop=False,
+        )
+
+
+@cocotb.test()
+async def test_next_high_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> None:
+    """The NEXT_HI C.ADDI16SP candidate receives the aligned predicate."""
+    await _setup_test(dut)
+
+    c_addi16sp = (0b011 << 13) | (2 << 7) | (1 << 6) | 0b01
+    logical_current = _word(lo=0x1111, hi=0x0533)
+    logical_next = _word(lo=0x00B5, hi=c_addi16sp)
+    logical_current_sb = _sideband(native_pairable_hi=True)
+    logical_next_sb = _sideband(compressed_lo=True, compressed_hi=True)
+
+    for swapped in (False, True):
+        _clear_inputs(dut)
+        dut.i_pc_reg.value = PC_HI
+        dut.i_instr_bank_sel_r.value = int(swapped)
+
+        if swapped:
+            physical_current, physical_next = logical_next, logical_current
+            current_sb, next_sb = logical_next_sb, logical_current_sb
+        else:
+            physical_current, physical_next = logical_current, logical_next
+            current_sb, next_sb = logical_current_sb, logical_next_sb
+
+        dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr.value = _fetch(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr_sideband.value = _fetch_sideband(
+            current_sb=current_sb,
+            next_sb=next_sb,
+        )
+        await _settle(dut)
+
+        assert int(dut.i_instr_hi_rd_is_x2.value) == (0b01 if swapped else 0b10)
+        assert bool(dut.fetch_word_swapped_slot2.value) is swapped
+        assert bool(dut.aligned_current_hi_rd_is_x2.value) is False
+        assert bool(dut.aligned_next_hi_rd_is_x2.value) is True
+        _assert_slot2(
+            dut,
+            raw=c_addi16sp,
+            effective=0x01010113,  # addi x2,x2,16
+            compressed=True,
+            # NEXT_HI is deliberately suppressed in the transient no-buffer
+            # swapped state, but its fixed candidate must still be correct.
+            sel_nop=swapped,
+        )

@@ -45,8 +45,10 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
-    input logic [31:0] i_served_addr,  // Served fetch-window tag (served-window guard)
+    input logic [31:0] i_served_addr,  // Selected served-window address tag
+    input logic [XLEN-3:0] i_served_last_word,  // Selected payload's registered S+1 word
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
@@ -451,8 +453,10 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_sideband,
+      .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
       .i_served_addr,
+      .i_served_last_word,
       .i_instr_valid,
       .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),

@@ -156,6 +156,8 @@ def _check_window(dut: Any, addr: int) -> None:
         f"want 0x{want_sb:0{hex_digits}x}"
     )
     assert int(dut.o_instr_bank_sel_r.value) == ((base >> 2) & 1)
+    assert int(dut.o_served_addr.value) == addr
+    assert int(dut.o_served_last_word.value) == (((base >> 2) + 1) & 0x3FFF_FFFF)
 
 
 @cocotb.test()

@@ -52,9 +52,11 @@ module cpu_tb
   logic [63:0] i_instr;
   // Per-32-bit-word predecode sideband (ImemSidebandWidth bits each half).
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband;
+  logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
-  logic [31:0] i_served_addr;  // Served fetch-window tag (address fetched last cycle)
+  logic [31:0] i_served_addr;  // Selected BRAM window address tag
+  logic [29:0] i_served_last_word;  // Registered second-word tag for that payload
   logic [31:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
@@ -64,6 +66,7 @@ module cpu_tb
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
   logic [31:0] tb_served_addr_q;  // address whose window is presented (o_pc, 1 cycle back)
+  logic [29:0] tb_served_last_word_q;  // second word of that registered window
 
   // Ports below are unused by this instruction-feed testbench but must exist as
   // local signals so the wildcard (.*) connection to cpu_ooo resolves.
@@ -121,6 +124,7 @@ module cpu_tb
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
     tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
+    tb_served_last_word_q <= o_pc[31:2] + 1'b1;
   end
 
   // 64-bit fetch window {next_word, current_word}. The testbench feeds
@@ -139,12 +143,16 @@ module cpu_tb
   assign i_instr_sideband = {
     riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
   };
+  assign i_instr_hi_rd_is_x2 = {
+    TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2
+  };
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
-  // Served-window tag: this fixed 1-cycle provider always presents the window
-  // for last cycle's o_pc, so the tag is exactly that registered address (the
-  // if_stage served-window guard sees a window that always covers pc_reg).
+  // This fixed 1-cycle provider presents the window for last cycle's o_pc.
+  // Both tags are registered with the payload, matching the production fetch
+  // providers and keeping the IF served-window guard carry-free on its P-1 arm.
   assign i_served_addr = tb_served_addr_q;
+  assign i_served_last_word = tb_served_last_word_q;
   // Fixed 1-cycle provider: the fetch window is always valid.
   assign i_instr_valid = 1'b1;
 

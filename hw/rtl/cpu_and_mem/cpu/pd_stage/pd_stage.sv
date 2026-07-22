@@ -70,6 +70,7 @@ module pd_stage #(
 
   rvc_decompressor decompressor_inst (
       .i_instr_compressed(i_from_if_to_pd.raw_parcel),
+      .i_rd_is_x2(i_from_if_to_pd.raw_parcel[11:7] == 5'd2),
       .o_instr_expanded(decompressed_instr),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(decomp_illegal)
@@ -147,6 +148,15 @@ module pd_stage #(
 
   logic [31:0] final_instruction_2;
   logic [31:0] instruction_non_nop_2;
+  logic [21:0] slot2_instruction_non_source_q;
+  logic [21:0] final_instruction_non_source_2;
+
+  // The architectural instruction and the early hazard metadata used to
+  // duplicate the same rs1/rs2 state in two FF banks. Keep one canonical
+  // registered copy in the early fields and register only the remaining
+  // instruction bits here. This removes the deeper duplicate source-field D
+  // cone without changing the PD->ID boundary or adding a cycle.
+  localparam logic [21:0] Slot2NopNonSource = {7'b0000000, 15'h0013};
 
   assign instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
 
@@ -165,6 +175,14 @@ module pd_stage #(
   assign source_reg_1_2    = instruction_non_nop_2[19:15];
   assign source_reg_2_2    = instruction_non_nop_2[24:20];
   assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
+  assign final_instruction_non_source_2 = {final_instruction_2[31:25],
+                                            final_instruction_2[14:0]};
+  assign o_from_pd_to_id_2.instruction = {
+    slot2_instruction_non_source_q[21:15],
+    o_from_pd_to_id_2.source_reg_2_early,
+    o_from_pd_to_id_2.source_reg_1_early,
+    slot2_instruction_non_source_q[14:0]
+  };
 
   // ===========================================================================
   // Predicted-Taken Redirect on BTB Miss
@@ -360,7 +378,7 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      o_from_pd_to_id_2.instruction         <= riscv_pkg::NOP;
+      slot2_instruction_non_source_q        <= Slot2NopNonSource;
       // Slot-2 keeps its in-register NOP injection (below); inject_nop is the
       // slot-1-only x3 timing mechanism, so it is held 0 for slot-2.
       o_from_pd_to_id_2.inject_nop          <= 1'b0;
@@ -370,8 +388,9 @@ module pd_stage #(
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
       o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
-      o_from_pd_to_id_2.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                        riscv_pkg::NOP : final_instruction_2;
+      slot2_instruction_non_source_q <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                          Slot2NopNonSource :
+                                          final_instruction_non_source_2;
       o_from_pd_to_id_2.inject_nop <= 1'b0;  // slot-2 keeps in-register NOP (see reset)
       o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                           i_from_if_to_pd_2.sel_nop) ? 1'b0 :
@@ -410,7 +429,11 @@ module pd_stage #(
       (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
 
   always_ff @(posedge i_clk) begin
-    if (slot2_early_source_clear) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+    end else if (slot2_early_source_clear) begin
       o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
       o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
       o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;

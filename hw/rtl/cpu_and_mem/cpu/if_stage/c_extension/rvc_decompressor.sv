@@ -31,6 +31,10 @@
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
+    // Exact predecode of i_instr_compressed[11:7] == x2. Fixed high-half
+    // slot-2 candidates receive this from the instruction-memory fast replica;
+    // registered/local candidates compute the same predicate directly.
+    input  logic        i_rd_is_x2,
     output logic [31:0] o_instr_expanded,
     output logic        o_is_compressed,
     output logic        o_illegal
@@ -212,15 +216,11 @@ module rvc_decompressor (
           o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd1, OpcJal};
           3'b010: o_instr_expanded = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};  // C.LI
           3'b011: begin
-            if (rd_full == 5'd2) begin  // C.ADDI16SP
+            if (i_rd_is_x2) begin  // C.ADDI16SP
               o_instr_expanded = {imm_addi16sp, 5'd2, 3'b000, 5'd2, OpcOpImm};
               if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
-            end else if (rd_full != 5'd0) begin  // C.LUI
+            end else begin  // C.LUI (rd=0 is a HINT: lui x0)
               o_instr_expanded = {imm_lui, rd_full, OpcLui};
-              if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
-            end else begin
-              // C.LUI rd=0 is a HINT -> nop (lui x0); imm=0 is still reserved.
-              o_instr_expanded = {imm_lui, 5'd0, OpcLui};
               if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
             end
           end

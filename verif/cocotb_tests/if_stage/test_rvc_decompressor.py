@@ -171,6 +171,7 @@ def _imm_swsp(raw: int) -> int:
 def _drive(dut: Any, raw: int) -> None:
     """Drive one compressed instruction parcel."""
     dut.i_instr_compressed.value = raw
+    dut.i_rd_is_x2.value = ((raw >> 7) & 0x1F) == 2
 
 
 def _assert_decode(

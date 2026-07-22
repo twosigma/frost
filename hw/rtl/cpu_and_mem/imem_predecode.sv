@@ -51,8 +51,10 @@
  * shared with the L1I fill path and mirrored by the offline generator
  * sw/common/generate_imem_predecode_init.py.
  *
- * BRAM resource impact: the two half-depth banks occupy the same total
- * BRAM as the original single bank — no additional cost.
+ * BRAM resource impact: the two half-depth banks occupy the same total BRAM
+ * as the original single bank. On X3, synthesis intentionally prunes raw data
+ * lanes 31, 29, and 28 from each bank because the exact LUTRAM replicas below
+ * provide those architectural bits to the fetch port.
  *
  * Port A: Instruction programming (slow clock domain, write + read)
  * Port B: Instruction fetch (fast clock domain, read only)
@@ -64,7 +66,9 @@ module imem_predecode #(
     parameter bit [127:0] INIT_FILE_EVEN = "sw_imem_even.mem",
     parameter bit [119:0] INIT_FILE_ODD = "sw_imem_odd.mem",
     parameter bit [199:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
-    parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem"
+    parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
+    parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
+    parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem"
 ) (
     // Port A: Programming interface (slow clock)
     input  logic        i_port_a_clk,
@@ -80,6 +84,9 @@ module imem_predecode #(
     input logic [31:0] i_port_b_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
+    // Per-word high-parcel predicate, ordered like o_port_b_read_data:
+    // {next_word[27:23] == x2, current_word[27:23] == x2}.
+    output logic [1:0] o_port_b_hi_rd_is_x2,
     output logic o_port_b_bank_sel_r  // Registered fetch-word parity (PC[2] from fetch cycle)
 );
 
@@ -102,6 +109,19 @@ module imem_predecode #(
   // a long distributed-memory address route in the low-BRAM fetch path.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
+  // Mirror the two instruction-size bits, the high-parcel RVC rd==x2
+  // predicate, and raw high-parcel bits C[15], C[13], and C[12]
+  // (word[31], word[29], and word[28]) in LUTRAM. The
+  // asynchronous reads are captured at the same fetch edge as the BRAM
+  // outputs, preserving the interface latency while replacing timing-facing
+  // RAMB36 launches with fabric-FF launches.
+  // The legacy *_compressed.mem filenames contain the packed six-bit value
+  // {word[29], word[28], word[31], word[27:23] == 5'd2,
+  //  is_compressed_hi, is_compressed_lo}.
+  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  logic [5:0] memory_even_compressed[HalfDepth];
+  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  logic [5:0] memory_odd_compressed[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
@@ -123,6 +143,8 @@ module imem_predecode #(
       $readmemh(INIT_FILE_ODD, memory_odd);
       $readmemh(INIT_FILE_EVEN_SIDEBAND, memory_even_sideband);
       $readmemh(INIT_FILE_ODD_SIDEBAND, memory_odd_sideband);
+      $readmemh(INIT_FILE_EVEN_COMPRESSED, memory_even_compressed);
+      $readmemh(INIT_FILE_ODD_COMPRESSED, memory_odd_compressed);
 `else
       $readmemh(INIT_FILE, init_mem);
       // Distribute to even/odd banks
@@ -130,9 +152,21 @@ module imem_predecode #(
         if (i[0] == 1'b0) begin
           memory_even[i>>1] = init_mem[i];
           memory_even_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
+          memory_even_compressed[i>>1] = {
+            init_mem[i][29:28],
+            init_mem[i][31],
+            init_mem[i][27:23] == 5'd2,
+            memory_even_sideband[i>>1][1:0]
+          };
         end else begin
           memory_odd[i>>1] = init_mem[i];
           memory_odd_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
+          memory_odd_compressed[i>>1] = {
+            init_mem[i][29:28],
+            init_mem[i][31],
+            init_mem[i][27:23] == 5'd2,
+            memory_odd_sideband[i>>1][1:0]
+          };
         end
       end
 `endif
@@ -142,6 +176,18 @@ module imem_predecode #(
         memory_odd[i] = DataWidth'(2 * i + 1);
         memory_even_sideband[i] = riscv_pkg::imem_make_sideband(memory_even[i]);
         memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(memory_odd[i]);
+        memory_even_compressed[i] = {
+          memory_even[i][29:28],
+          memory_even[i][31],
+          memory_even[i][27:23] == 5'd2,
+          memory_even_sideband[i][1:0]
+        };
+        memory_odd_compressed[i] = {
+          memory_odd[i][29:28],
+          memory_odd[i][31],
+          memory_odd[i][27:23] == 5'd2,
+          memory_odd_sideband[i][1:0]
+        };
       end
     end
   end
@@ -150,6 +196,11 @@ module imem_predecode #(
   // =========================================================================
   // Port A: Programming interface (write to one bank per cycle)
   // =========================================================================
+  // Same-address programming/fetch collisions are intentionally unspecified.
+  // The supported Xilinx load flow arms image_load_reset on every programming
+  // write and keeps rearming it through the transfer; only execution after the
+  // reset release is valid. This port therefore does not provide live-patching
+  // coherence between its BRAM and LUTRAM replicas.
   logic [ADDR_WIDTH-1:0] port_a_word_address;
   logic [ADDR_WIDTH-2:0] port_a_half_address;
   logic                  port_a_bank_sel;  // 0 = even, 1 = odd
@@ -168,6 +219,12 @@ module imem_predecode #(
       if (i_port_a_write_enable && !port_a_bank_sel) begin
         memory_even[port_a_half_address] <= i_port_a_write_data;
         memory_even_sideband[port_a_half_address] <= write_sideband;
+        memory_even_compressed[port_a_half_address] <= {
+          i_port_a_write_data[29:28],
+          i_port_a_write_data[31],
+          i_port_a_write_data[27:23] == 5'd2,
+          write_sideband[1:0]
+        };
       end
     end
   end
@@ -178,6 +235,12 @@ module imem_predecode #(
       if (i_port_a_write_enable && port_a_bank_sel) begin
         memory_odd[port_a_half_address] <= i_port_a_write_data;
         memory_odd_sideband[port_a_half_address] <= write_sideband;
+        memory_odd_compressed[port_a_half_address] <= {
+          i_port_a_write_data[29:28],
+          i_port_a_write_data[31],
+          i_port_a_write_data[27:23] == 5'd2,
+          write_sideband[1:0]
+        };
       end
     end
   end
@@ -220,13 +283,17 @@ module imem_predecode #(
 
   logic [DataWidth-1:0] even_read_data, odd_read_data;
   logic [SidebandWidth-1:0] even_sideband, odd_sideband;
+  (* keep = "true", dont_touch = "yes" *)logic [5:0] even_compressed;
+  (* keep = "true", dont_touch = "yes" *)logic [5:0] odd_compressed;
 
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
       even_read_data <= memory_even[even_read_addr];
-      odd_read_data  <= memory_odd[odd_read_addr];
-      even_sideband  <= memory_even_sideband[even_read_addr];
-      odd_sideband   <= memory_odd_sideband[odd_read_addr];
+      odd_read_data <= memory_odd[odd_read_addr];
+      even_sideband <= memory_even_sideband[even_read_addr];
+      odd_sideband <= memory_odd_sideband[odd_read_addr];
+      even_compressed <= memory_even_compressed[even_read_addr];
+      odd_compressed <= memory_odd_compressed[odd_read_addr];
     end
   end
 
@@ -243,14 +310,56 @@ module imem_predecode #(
   //   PC[2]=0 (even word first): current = EVEN, next = ODD
   //   PC[2]=1 (odd  word first): current = ODD,  next = EVEN
   logic [DataWidth-1:0] current_word_wide, next_word_wide;
+  logic [DataWidth-1:0] even_read_data_with_fast_rvc_fields;
+  logic [DataWidth-1:0] odd_read_data_with_fast_rvc_fields;
   logic [SidebandWidth-1:0] current_sideband, next_sideband;
-  assign current_word_wide   = bank_sel_r ? odd_read_data : even_read_data;
-  assign next_word_wide      = bank_sel_r ? even_read_data : odd_read_data;
-  assign current_sideband    = bank_sel_r ? odd_sideband : even_sideband;
-  assign next_sideband       = bank_sel_r ? even_sideband : odd_sideband;
+  logic [SidebandWidth-1:0] even_sideband_with_fast_compressed;
+  logic [SidebandWidth-1:0] odd_sideband_with_fast_compressed;
+  always_comb begin
+    even_read_data_with_fast_rvc_fields = even_read_data;
+    odd_read_data_with_fast_rvc_fields = odd_read_data;
+    even_read_data_with_fast_rvc_fields[31] = even_compressed[3];
+    odd_read_data_with_fast_rvc_fields[31] = odd_compressed[3];
+    even_read_data_with_fast_rvc_fields[29:28] = even_compressed[5:4];
+    odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[5:4];
+    even_sideband_with_fast_compressed = even_sideband;
+    odd_sideband_with_fast_compressed = odd_sideband;
+    even_sideband_with_fast_compressed[1:0] = even_compressed[1:0];
+    odd_sideband_with_fast_compressed[1:0] = odd_compressed[1:0];
+  end
+  assign current_word_wide   = bank_sel_r ? odd_read_data_with_fast_rvc_fields :
+                                           even_read_data_with_fast_rvc_fields;
+  assign next_word_wide = bank_sel_r ? even_read_data_with_fast_rvc_fields :
+                                       odd_read_data_with_fast_rvc_fields;
+  assign current_sideband    = bank_sel_r ? odd_sideband_with_fast_compressed :
+                                           even_sideband_with_fast_compressed;
+  assign next_sideband       = bank_sel_r ? even_sideband_with_fast_compressed :
+                                           odd_sideband_with_fast_compressed;
 
-  assign o_port_b_read_data  = {next_word_wide, current_word_wide};
-  assign o_port_b_sideband   = {next_sideband, current_sideband};
+  assign o_port_b_read_data = {next_word_wide, current_word_wide};
+  assign o_port_b_sideband = {next_sideband, current_sideband};
+  assign o_port_b_hi_rd_is_x2 = bank_sel_r ? {even_compressed[2], odd_compressed[2]} :
+                                             {odd_compressed[2], even_compressed[2]};
   assign o_port_b_bank_sel_r = bank_sel_r;
+
+`ifndef SYNTHESIS
+  // Both replicas are written and fetched with their parent instruction word.
+  // Keep a local oracle so future init/write-path changes cannot silently let
+  // the timing replica diverge from the architectural BRAM data.
+  always_comb begin
+    if (!$isunknown({even_read_data, odd_read_data, even_compressed, odd_compressed})) begin
+      p_even_fast_c15_matches_bram : assert (even_compressed[3] == even_read_data[31]);
+      p_odd_fast_c15_matches_bram : assert (odd_compressed[3] == odd_read_data[31]);
+      p_even_fast_c13_c12_matches_bram : assert (even_compressed[5:4] == even_read_data[29:28]);
+      p_odd_fast_c13_c12_matches_bram : assert (odd_compressed[5:4] == odd_read_data[29:28]);
+      p_even_fast_hi_rd_is_x2_matches_bram :
+      assert (even_compressed[2] == (even_read_data[27:23] == 5'd2));
+      p_odd_fast_hi_rd_is_x2_matches_bram :
+      assert (odd_compressed[2] == (odd_read_data[27:23] == 5'd2));
+      p_even_fast_compressed_matches_bram : assert (even_compressed[1:0] == even_sideband[1:0]);
+      p_odd_fast_compressed_matches_bram : assert (odd_compressed[1:0] == odd_sideband[1:0]);
+    end
+  end
+`endif
 
 endmodule : imem_predecode

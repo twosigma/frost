@@ -28,12 +28,12 @@
   3. Manage instruction buffer usage for consecutive compressed instructions
   4. Assemble spanning instructions from the 64-bit fetch window
   5. Compute selection signals (NOP, compressed, or 32-bit)
-  6. Output raw parcel for PD stage decompression
+  6. Output the raw slot-1 parcel for PD-stage decompression
+  7. Pre-decompress fixed slot-2 candidates in parallel with position selection
 
-  TIMING OPTIMIZATION: This module no longer performs decompression. It outputs
-  the raw 16-bit parcel and selection signals. The PD stage performs the actual
-  RVC decompression, breaking the long combinational path from memory read
-  through decompression to pipeline registers.
+  TIMING OPTIMIZATION: Slot 1 remains raw and is decompressed in PD. Slot 2 is
+  decompressed here from fixed candidate parcels before the late position mux,
+  avoiding a serial parcel-mux/decompress/mux path into the pipeline register.
 
   This module is purely combinational.
 */
@@ -43,6 +43,9 @@ module instruction_aligner #(
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    // Ordered like i_instr: {next-word high-parcel rd==x2,
+    // current-word high-parcel rd==x2}.
+    input logic [1:0] i_instr_hi_rd_is_x2,
     input logic i_instr_bank_sel_r,  // Registered fetch-word parity (PC[2] from BRAM cycle)
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
@@ -308,6 +311,16 @@ module instruction_aligner #(
   logic [31:0] bram_next_word;
   assign bram_next_word = fetch_word_swapped_word ? i_instr[31:0] : i_instr[63:32];
 
+  // Align the fast high-parcel predicates with the same fetch-lead correction
+  // used for the two instruction words. The bus arrives as {next,current} for
+  // the served fetch address; a parity mismatch swaps both word identities.
+  logic aligned_current_hi_rd_is_x2;
+  logic aligned_next_hi_rd_is_x2;
+  assign aligned_current_hi_rd_is_x2 = fetch_word_swapped_slot2 ?
+      i_instr_hi_rd_is_x2[1] : i_instr_hi_rd_is_x2[0];
+  assign aligned_next_hi_rd_is_x2 = fetch_word_swapped_slot2 ?
+      i_instr_hi_rd_is_x2[0] : i_instr_hi_rd_is_x2[1];
+
   logic [1:0] slot2_pos;
   always_comb begin
     unique case ({
@@ -369,18 +382,21 @@ module instruction_aligner #(
 
   rvc_decompressor u_slot2_decomp_cur_hi (
       .i_instr_compressed(bram_current_word[31:16]),
+      .i_rd_is_x2(aligned_current_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_cur_hi),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_cur_hi)
   );
   rvc_decompressor u_slot2_decomp_next_lo (
       .i_instr_compressed(bram_next_word[15:0]),
+      .i_rd_is_x2(bram_next_word[11:7] == 5'd2),
       .o_instr_expanded(slot2_decomp_next_lo),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_next_lo)
   );
   rvc_decompressor u_slot2_decomp_next_hi (
       .i_instr_compressed(bram_next_word[31:16]),
+      .i_rd_is_x2(aligned_next_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_next_hi),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_next_hi)

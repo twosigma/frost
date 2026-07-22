@@ -671,6 +671,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="imem_predecode_line",
         description="Per-line predecode sideband cross-checked against the python generator",
     ),
+    "imem_predecode_fast_replica": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
+        hdl_toplevel_module="imem_predecode",
+        description="Low-BRAM C15/C13/C12, high-rd-x2, and compressed replica fetch",
+        verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
+    ),
     "fetch_provider": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider",
         hdl_toplevel_module="fetch_provider",
@@ -792,7 +798,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
     # (one instruction fed per ready cycle into the cpu_ooo core). Collected by
     # pytest so the cpu_tb suites cannot rot invisibly again (the harness once
-    # sat broken -- missing i_served_addr -- with nothing in CI noticing);
+    # sat broken -- missing the served-window tags -- with nothing in CI noticing);
     # filter to a single function with --testcase when running by hand.
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",

@@ -241,9 +241,12 @@ def _drive_fetch(
     next_sb: int = 0,
     bank_sel: int = 0,
 ) -> None:
-    """Drive the instruction fetch data and predecode sideband."""
+    """Drive instruction data, predecode sideband, and exact rd predicates."""
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
+    dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
+        int(((next_word >> 23) & 0x1F) == 2) << 1
+    )
     dut.i_instr_bank_sel_r.value = bank_sel
 
 
@@ -287,6 +290,7 @@ def _clear_inputs(dut: Any) -> None:
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
     dut.i_served_addr.value = 0
+    dut.i_served_last_word.value = 1
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
     dut.i_frontend_state_flush.value = 0
@@ -298,27 +302,28 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
-    """Model the unit-test fetch provider's served-window tag (i_served_addr).
+    """Model the selected provider's payload-aligned served-window tags.
 
-    if_stage's served-window guard (window_cannot_serve_pc_reg, if_stage.sv:766)
+    if_stage's served-window guard
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
-    window {word(i_served_addr), word(i_served_addr)+1} does not cover pc_reg's
+    window {word(i_served_addr), i_served_last_word} does not cover pc_reg's
     word (delta 0 or -1).  The guard only arms in the cached region
     (pc_reg[XLEN-1]); the directed tests use cached PCs (BASE_PC=0x80001000), so
-    it is live.  In the real SoC i_served_addr is the registered fetch address
-    (cpu_and_mem.sv:585), which tracks pc_reg for the always-valid 1-cycle
-    provider these tests model.  Mirror that here so the guard stays inert during
-    normal fetch.  pc_reg only changes on a clock edge, so refreshing once per
-    edge keeps i_served_addr aligned with pc_reg for every read in between.
+    it is live.  Register the second-word identity as S+1 exactly as every
+    production provider does.  pc_reg only changes on a clock edge, so
+    refreshing once per edge keeps both selected tags aligned between reads.
 
     word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
     F=W+1 case) to exercise the guard instead of suppressing it.
     """
-    mask = (1 << XLEN) - 1
+    addr_mask = (1 << XLEN) - 1
+    word_mask = (1 << (XLEN - 2)) - 1
 
     async def _tracker() -> None:
         while True:
-            dut.i_served_addr.value = (int(dut.pc_reg.value) + 4 * word_offset) & mask
+            served_addr = (int(dut.pc_reg.value) + 4 * word_offset) & addr_mask
+            dut.i_served_addr.value = served_addr
+            dut.i_served_last_word.value = ((served_addr >> 2) + 1) & word_mask
             await RisingEdge(dut.i_clk)
             await Timer(1, unit="step")
 
@@ -346,6 +351,48 @@ async def _redirect_to(dut: Any, target: int) -> None:
     _drive_from_ex(dut, {})
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == target + 4
+
+
+@cocotb.test()
+async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
+    """The registered S+1 tag is exact across adjacency and full wrap."""
+    await _setup_test(dut)
+
+    word_mask = (1 << (XLEN - 2)) - 1
+    cases = [
+        (0, 0),
+        (1, 0),
+        (0x3FF, 0x3FE),
+        (0x400, 0x3FF),
+        (0xFFFFF, 0xFFFFE),
+        (0x100000, 0xFFFFF),
+        (word_mask, word_mask - 1),
+        (word_mask, 0),  # S=P+1 full wrap remains deliberately rejected
+        (0, word_mask),  # S=P-1 full wrap remains modulo-exact through last=0
+        (0x200FFFFF, 0x20100000),
+        (0x20100000, 0x200FFFFF),
+        (0x20100000, 0x20100002),
+    ]
+
+    for pc_word, served_word in cases:
+        dut.pc_controller_inst.o_pc_reg.value = (pc_word & word_mask) << 2
+        dut.i_served_addr.value = served_word << 2
+        dut.i_served_last_word.value = (served_word + 1) & word_mask
+        await Timer(1, unit="step")
+
+        expected_same = served_word == pc_word
+        expected_m1 = served_word == ((pc_word - 1) & word_mask)
+        expected_p1 = pc_word != word_mask and served_word == pc_word + 1
+        expected_covers = (
+            expected_same
+            or expected_m1
+            or (expected_p1 and bool(dut.use_instr_buffer.value))
+        )
+        context = f"pc_word={pc_word:#x}, served_word={served_word:#x}"
+        assert bool(dut.served_eq_pc_word.value) == expected_same, context
+        assert bool(dut.served_last_eq_pc_word.value) == expected_m1, context
+        assert bool(dut.served_eq_pc_word_p1.value) == expected_p1, context
+        assert bool(dut.served_window_covers_pc_reg.value) == expected_covers, context
 
 
 async def _train_btb(

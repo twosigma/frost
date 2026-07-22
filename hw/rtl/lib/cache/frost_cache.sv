@@ -72,6 +72,9 @@ module frost_cache #(
     // verilog_lint: waive explicit-parameter-storage-type
     parameter DATA_MEMORY_PRIMITIVE = "block",
     parameter int unsigned DATA_READ_LATENCY = 2,
+    // Write controls launch during the existing response cycle. Latencies 1
+    // and 2 are supported; both complete before a following request can
+    // observe the same row (the instantiated L1/L2 values are 1/2).
     parameter int unsigned DATA_WRITE_LATENCY = 1,
     // Simulation-only fast cache maintenance (fence.i). 0 = FPGA: the
     // cycle-accurate maintenance FSM below is byte-for-byte unchanged. Non-zero
@@ -127,6 +130,8 @@ module frost_cache #(
       $fatal(1, "frost_cache: CACHE_SIZE_BYTES must be a multiple of LINE_BYTES");
     if (2 ** IndexBits != NumLines) $fatal(1, "frost_cache: line count must be a power of 2");
     if (2 ** OffsetBits != LINE_BYTES) $fatal(1, "frost_cache: LINE_BYTES must be a power of 2");
+    if (DATA_WRITE_LATENCY < 1 || DATA_WRITE_LATENCY > 2)
+      $fatal(1, "frost_cache: DATA_WRITE_LATENCY must be 1 or 2");
   end
 
   // ---- Request registers (captured at the upstream fire) -------------------
@@ -134,6 +139,7 @@ module frost_cache #(
   logic [ADDR_WIDTH-1:0] req_addr_q;
   logic [  LineBits-1:0] req_wdata_q;
   logic [LINE_BYTES-1:0] req_wstrb_q;
+  logic                  write_hit_q;
 
   logic [ IndexBits-1:0] req_index;
   logic [   TagBits-1:0] req_tag;
@@ -152,7 +158,7 @@ module frost_cache #(
     S_FILL_REQ,      // present the line fetch downstream
     S_FILL_WAIT,     // wait for the fetched line
     S_ALLOC,         // write the new line + tag
-    S_RESPOND,       // pulse the upstream response
+    S_RESPOND,       // pulse the response; launch a registered write hit
     S_FLUSH_SCAN,    // writeback-all: present the walk index to the tags
     S_FLUSH_CHECK,   // examine the entry; skip clean, read out dirty
     S_FLUSH_DATA,    // wait out the data-array read latency
@@ -197,7 +203,8 @@ module frost_cache #(
   logic [    LineBits-1:0] line_buf_q;
   logic [    LineBits-1:0] resp_data_q;
 
-  // ---- Tag array (sync 1-cycle read; written by sweep / hit / allocate) -----
+  // ---- Tag array (sync 1-cycle read) ----------------------------------------
+  // Written by sweep, response, and allocate states.
   logic                    tag_we;
   logic [   IndexBits-1:0] tag_waddr;
   logic [TagEntryBits-1:0] tag_wdata;
@@ -211,8 +218,8 @@ module frost_cache #(
   // Tag compare, explicitly balanced: 3-bit equality groups (one LUT6 each)
   // whose nets synthesis must keep, then a flat reduce. A plain == here has
   // been seen re-packed into a deeper LUT tree under context pressure (6 ->
-  // 8 levels when the L1I joined the X3 build), and this cone drives the
-  // data-array byte-enable fanout the cycle the tag arrives from block RAM.
+  // 8 levels when the L1I joined the X3 build). The cone now terminates at the
+  // FSM decision and write_hit_q rather than driving either RAM's write pins.
   localparam int unsigned TagCmpGroups = (TagBits + 2) / 3;
   (* dont_touch = "true" *) logic [TagCmpGroups-1:0] tag_match_group;
   for (genvar gg = 0; gg < int'(TagCmpGroups); gg++) begin : gen_tag_compare
@@ -284,7 +291,7 @@ module frost_cache #(
 
   // ---- Real-FSM writeback-all dirty-range tracker ---------------------------
   // Mirror the dirty-bit writes (tag_we with the dirty bit set, at tag_waddr --
-  // i.e. the S_TAG_CHECK write-hit and the S_ALLOC write-allocate) into the
+  // i.e. the S_RESPOND write-hit and the S_ALLOC write-allocate) into the
   // lowest/highest dirty index. The real (FPGA) writeback-all walk then scans
   // only [wb_lo_q, wb_hi_q]. No upstream request is accepted while a walk runs
   // (o_up_req_ready is low for the duration), so the span is stable across it.
@@ -390,15 +397,21 @@ module frost_cache #(
       S_TAG_CHECK: begin
         if (hit && !req_write_q) begin
           data_re = 1'b1;  // read hit: start the data-array read
-        end else if (hit && req_write_q) begin
-          // Write hit: strobed byte write into the line, mark dirty.
+        end else if (!hit && tag_rdata_valid && tag_rdata_dirty) begin
+          data_re = 1'b1;  // miss with dirty victim: read it out for writeback
+        end
+      end
+
+      S_RESPOND: begin
+        if (write_hit_q) begin
+          // Launch a write hit from registered request/decision state. This is
+          // the same response cycle as before, but neither RAM write control
+          // depends combinationally on the synchronous tag-array output.
           data_row_we   = 1'b1;
           data_wbyte_en = req_wstrb_q;
           data_wdata    = req_wdata_q;
           tag_we        = 1'b1;
           tag_wdata     = {1'b1, 1'b1, req_tag};
-        end else if (tag_rdata_valid && tag_rdata_dirty) begin
-          data_re = 1'b1;  // miss with dirty victim: read it out for writeback
         end
       end
 
@@ -457,8 +470,9 @@ module frost_cache #(
   // ---- Sequential FSM --------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state_q     <= S_SWEEP;
-      sweep_idx_q <= '0;
+      state_q      <= S_SWEEP;
+      sweep_idx_q  <= '0;
+      write_hit_q  <= 1'b0;
     end else begin
       unique case (state_q)
         S_SWEEP: begin
@@ -472,6 +486,7 @@ module frost_cache #(
         end
 
         S_IDLE: begin
+          write_hit_q <= 1'b0;
           // Maintenance has priority; ready is masked while requested, so an
           // upstream fire can never coincide with an acceptance here.
           if (i_invalidate_all) begin
@@ -493,6 +508,7 @@ module frost_cache #(
         end
 
         S_TAG_CHECK: begin
+          write_hit_q <= hit && req_write_q;
           if (hit && !req_write_q) begin
             wait_cnt_q <= 8'(DATA_READ_LATENCY);
             state_q    <= S_READ_WAIT;
@@ -554,7 +570,10 @@ module frost_cache #(
           state_q     <= S_RESPOND;
         end
 
-        S_RESPOND: state_q <= S_IDLE;
+        S_RESPOND: begin
+          write_hit_q <= 1'b0;
+          state_q     <= S_IDLE;
+        end
 
         S_FLUSH_SCAN: state_q <= S_FLUSH_CHECK;
 

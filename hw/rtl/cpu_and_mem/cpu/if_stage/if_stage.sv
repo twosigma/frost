@@ -85,10 +85,15 @@ module if_stage #(
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    input logic [XLEN-1:0] i_served_addr,  // Served fetch-window tag (full address)
-    // Fetch window valid: the {i_instr, i_instr_sideband, i_instr_bank_sel_r}
-    // window corresponds to the fetch address presented last cycle.  When low
+    input logic [XLEN-1:0] i_served_addr,  // Selected served-window address tag
+    // Registered tag for the selected payload's second word, word(S)+1.
+    // This removes the old pc_word-1 arithmetic from the served-window guard.
+    input logic [XLEN-3:0] i_served_last_word,
+    // Fetch window valid: the {i_instr, i_instr_sideband,
+    // i_instr_hi_rd_is_x2, i_instr_bank_sel_r} window corresponds to the fetch
+    // address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
     // PC and all per-delivery front-end state freeze, and the provider keeps
     // working on the owed fetch address; backend redirects still land.  The
@@ -668,6 +673,7 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
+      .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
@@ -776,41 +782,66 @@ module if_stage #(
   // present-and-dispatch on release alongside the realigned repeat. Fixed
   // by stall-gating pd_redirect_q (see its always_ff above).
   // Served-window invariant: the fetched 64-bit window covers exactly the two
-  // words {word(i_served_addr), word(i_served_addr)+1}.  pc_reg must lie in that
-  // window or the 1-bit bank-sel parity in instruction_aligner silently selects
-  // the wrong word -> wrong instruction-size sample -> pc_reg advances onto a
+  // words {word(i_served_addr), i_served_last_word}.  pc_reg must lie in that
+  // window or the aligner's one-bit bank parity can silently select the wrong
+  // word, sample the wrong instruction size, and advance pc_reg to a
   // mid-instruction byte (the workqueue_init_early epc 0x8038d7fa boot Oops).
-  // A fetch stall (L1I line-fill) can leave the served window >1 word from
-  // pc_reg, which the single parity bit cannot represent.  Detect it from the
-  // full served address; pc_controller squashes (sel_nop below), holds pc_reg,
-  // and resteers fetch onto pc_reg's word until the correct window is served.
-  // Formulated as three parallel word-address equalities against pc_reg's
-  // word and its early ±1 neighbours instead of a served−pc subtract with
-  // zero/±1 range tests: pc_reg is registered, so pc_word±1 settle while
-  // i_served_addr is still in its source mux, and the late side is then
-  // carry-free XNOR-reduce compares instead of a 30-bit borrow chain.
-  // Equivalent to the old signed-delta form for every pc_reg the cached-
-  // region gate admits: delta==0 ⟺ eq, delta==-1 ⟺ eq_m1 (pc_word==0 is
-  // outside the gate), delta==+1 ⟺ eq_p1 with the explicit no-wrap guard.
+  // A fetch stall can leave the served window more than one word from pc_reg;
+  // pc_controller then squashes, holds pc_reg, and resteers fetch onto its word.
+  //
+  // The payload providers register i_served_last_word=S+1 alongside S and the
+  // fetched data.  Comparing that tag directly with P implements the old
+  // S=P-1 arm without a PC-side subtract or a late address carry chain.  The
+  // same-word and guarded S=P+1 instruction-buffer arms remain unchanged.
   logic [XLEN-3:0] pc_reg_word;
   logic [XLEN-3:0] pc_reg_word_p1;
-  logic [XLEN-3:0] pc_reg_word_m1;
   logic served_eq_pc_word;
-  logic served_eq_pc_word_m1;
+  logic served_last_eq_pc_word;
   logic served_eq_pc_word_p1;
+  logic served_window_covers_pc_reg;
   assign pc_reg_word = pc_reg[XLEN-1:2];
   assign pc_reg_word_p1 = pc_reg_word + 1'b1;
-  assign pc_reg_word_m1 = pc_reg_word - 1'b1;
-  assign served_eq_pc_word = (i_served_addr[XLEN-1:2] == pc_reg_word);
-  assign served_eq_pc_word_m1 = (i_served_addr[XLEN-1:2] == pc_reg_word_m1);
+  assign served_eq_pc_word = i_served_addr[XLEN-1:2] == pc_reg_word;
+  assign served_last_eq_pc_word = i_served_last_word == pc_reg_word;
   assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) && !(&pc_reg_word);
+  assign served_window_covers_pc_reg = served_eq_pc_word || served_last_eq_pc_word ||
+      (served_eq_pc_word_p1 && use_instr_buffer);
+
+`ifndef SYNTHESIS
+  // The registered last-word tag is modulo word-address width, retaining the
+  // old S=MAX/P=0 S=P-1 wrap.  The S=P+1 arm still rejects P=MAX explicitly.
+  logic [XLEN-3:0] served_word_p1_reference;
+  logic served_eq_pc_word_m1_reference;
+  logic served_window_covers_reference;
+  logic served_contract_check_valid_q;
+  assign served_word_p1_reference = i_served_addr[XLEN-1:2] + 1'b1;
+  assign served_eq_pc_word_m1_reference =
+      i_served_addr[XLEN-1:2] == (pc_reg_word - 1'b1);
+  assign served_window_covers_reference = served_eq_pc_word ||
+      served_eq_pc_word_m1_reference || (served_eq_pc_word_p1 && use_instr_buffer);
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
+    else served_contract_check_valid_q <= 1'b1;
+  end
+
+  always_comb begin
+    if (served_contract_check_valid_q && !$isunknown(
+            {i_served_addr, i_served_last_word, pc_reg_word, use_instr_buffer}
+        )) begin
+      p_served_last_word_contract : assert (i_served_last_word == served_word_p1_reference);
+      p_served_window_guard_equivalent :
+      assert (served_window_covers_pc_reg == served_window_covers_reference);
+    end
+  end
+`endif
+
   logic window_cannot_serve_pc_reg;
   // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
   // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
   // tracking is approximate -- firing there only causes spurious squashes.
   assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
-      !served_eq_pc_word && !served_eq_pc_word_m1 &&
-      !(served_eq_pc_word_p1 && use_instr_buffer);
+      !served_window_covers_pc_reg;
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;

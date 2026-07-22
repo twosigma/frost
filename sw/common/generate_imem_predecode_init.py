@@ -17,9 +17,10 @@
 """Generate Vivado-friendly init files for imem_predecode.sv.
 
 The runtime instruction memory is split into even/odd banks, and its predecode
-sideband is stored in separate memories.  Simulation can derive those memories
-inside SystemVerilog from sw.mem, but Vivado is much more reliable when each
-synthesized memory is initialized directly with a file.
+sideband and narrow compressed/predicate/data replicas are stored in separate
+memories. Simulation can derive those memories inside SystemVerilog from
+sw.mem, but Vivado is much more reliable when each synthesized memory is
+initialized directly with a file.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 12
+FAST_REPLICA_WIDTH = 6
 SB_IS_COMPRESSED_LO = 0
 SB_IS_COMPRESSED_HI = 1
 SB_EVEN_LOCAL_PAIR_VALID = 2
@@ -166,6 +168,18 @@ def make_sideband(word: int) -> int:
     return sideband
 
 
+def make_fast_replica(word: int, sideband: int | None = None) -> int:
+    """Return ``{C[13:12], C[15], high-rd-is-x2, comp-hi, comp-lo}``."""
+    if sideband is None:
+        sideband = make_sideband(word)
+    return (
+        (((word >> 28) & 0b11) << 4)
+        | (((word >> 31) & 1) << 3)
+        | (int(((word >> 23) & 0x1F) == 2) << 2)
+        | (sideband & 0b11)
+    )
+
+
 def write_word_file(path: Path, values: list[int], width_hex_digits: int) -> None:
     """Write one fixed-width hexadecimal value per line."""
     with path.open("w") as output:
@@ -207,6 +221,8 @@ def main() -> int:
     parser.add_argument("--odd-data", type=Path, required=True)
     parser.add_argument("--even-sideband", type=Path, required=True)
     parser.add_argument("--odd-sideband", type=Path, required=True)
+    parser.add_argument("--even-compressed", type=Path, required=True)
+    parser.add_argument("--odd-compressed", type=Path, required=True)
     args = parser.parse_args()
 
     words = parse_verilog_hex(args.sw_mem)
@@ -215,15 +231,30 @@ def main() -> int:
     write_word_file(args.even_data, even_words, 8)
     write_word_file(args.odd_data, odd_words, 8)
     sideband_hex_digits = (SIDEBAND_WIDTH + 3) // 4
+    fast_replica_hex_digits = (FAST_REPLICA_WIDTH + 3) // 4
+    even_sideband = [make_sideband(word) for word in even_words]
+    odd_sideband = [make_sideband(word) for word in odd_words]
+    write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
+    write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
+    # The legacy *_compressed.mem images are the narrow LUTRAM replicas used
+    # by the X3 frontend:
+    # {word[29:28], word[31], word[27:23] == x2,
+    #  compressed-hi, compressed-lo}.
     write_word_file(
-        args.even_sideband,
-        [make_sideband(word) for word in even_words],
-        sideband_hex_digits,
+        args.even_compressed,
+        [
+            make_fast_replica(word, sideband)
+            for word, sideband in zip(even_words, even_sideband, strict=True)
+        ],
+        fast_replica_hex_digits,
     )
     write_word_file(
-        args.odd_sideband,
-        [make_sideband(word) for word in odd_words],
-        sideband_hex_digits,
+        args.odd_compressed,
+        [
+            make_fast_replica(word, sideband)
+            for word, sideband in zip(odd_words, odd_sideband, strict=True)
+        ],
+        fast_replica_hex_digits,
     )
 
     return 0

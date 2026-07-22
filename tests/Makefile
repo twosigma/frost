@@ -304,6 +304,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),imem_predecode)
+# Low-BRAM instruction/predecode bank and fast-replica unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),fetch_provider)
 # Fetch window provider unit bench (quadrant steer, fetch buffer, fills)
 COMPILE_ARGS := \

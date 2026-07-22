@@ -18,12 +18,15 @@
  * fetch_provider -- the variable-latency fetch window provider.
  *
  * Serves the high-address side of the core's fetch seam
- * ({instr64, sideband24, bank_sel_r} + valid) from a two-line fetch buffer
- * over the L1I line port.  The low instruction BRAM fast path is selected in
+ * ({instr64, sideband24, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
+ * served_last_word} + valid) from a two-line fetch buffer over the L1I line
+ * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
+ * block's registered instruction payload; this block supplies the remaining
+ * high-address fields. The low instruction BRAM fast path is selected in
  * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
- * drives the low-BRAM address pins.  Each filled line carries per-word
+ * drives the low-BRAM address pins. Each filled line carries per-word
  * predecode sideband computed on fill (imem_predecode_line), so DDR code
- * predecodes bit-identically to BRAM code.  The buffer's two slots are
+ * predecodes bit-identically to BRAM code. The buffer's two slots are
  * parity-mapped (line address bit 0), so the current line and the prefetched
  * next line can never collide, and a window spanning a line boundary always
  * has both halves resident before valid asserts.
@@ -70,11 +73,10 @@ module fetch_provider #(
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
-    // Full served-window address (its tag).  if_stage uses this to detect a fetch
-    // stall that left pc_reg outside the served window (>1 word away), which the
-    // 1-bit bank_sel parity cannot represent -> wrong-word size sample / mid-insn
-    // pc_reg drift.  Observe-only output; does not change fetch behaviour here.
+    // Payload-aligned served-window address and second-word tag. IF uses both
+    // to detect a stale window without rebuilding S+1 or P-1 in its PC cone.
     output logic [31:0] o_served_addr,
+    output logic [29:0] o_served_last_word,
     output logic o_instr_valid,
 
     // L1I line port (master; read-only -- write/wdata/wstrb tied inactive).
@@ -210,6 +212,7 @@ module fetch_provider #(
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
   logic bank_sel_q;
   logic [31:0] served_addr_q;
+  logic [29:0] served_last_word_q;
   logic window_ready_q;
   logic pipeline_stall_q;
 
@@ -231,16 +234,18 @@ module fetch_provider #(
       window_ready_q   <= window_ready;
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q <= fetch_addr;
-    bank_sel_q    <= fetch_addr[2];
-    ddr_instr_q   <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q <= {ddr_sb1, ddr_sb0};
+    served_addr_q      <= fetch_addr;
+    served_last_word_q <= win_addr1[31:2];
+    bank_sel_q         <= fetch_addr[2];
+    ddr_instr_q        <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q      <= {ddr_sb1, ddr_sb0};
   end
 
   assign o_instr = ddr_instr_q;
   assign o_instr_sideband = ddr_sb_pair_q;
   assign o_instr_bank_sel_r = bank_sel_q;
   assign o_served_addr = served_addr_q;
+  assign o_served_last_word = served_last_word_q;
 
   // ===========================================================================
   // Miss engine: single-outstanding line fills + next-line prefetch

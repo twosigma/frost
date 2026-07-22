@@ -448,7 +448,16 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
         rd=12,
         opcode=OPC_OP,
     )
-    slot2_instr = _pack_i(imm=7, rs1=9, funct3=0, rd=10, opcode=OPC_OP_IMM)
+    # Give every reconstructed field a distinctive value, including [31:27],
+    # which shares the canonical fp_source_reg_3_early register bank.
+    slot2_instr = _pack_r(
+        funct7=0b1011010,
+        rs2=7,
+        rs1=9,
+        funct3=0,
+        rd=10,
+        opcode=OPC_OP,
+    )
 
     _drive_if_packet(
         dut,
@@ -483,6 +492,7 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
     assert packet2["instruction"] == slot2_instr
     assert packet2["source_reg_1_early"] == 9
     assert packet2["source_reg_2_early"] == 7
+    assert packet2["fp_source_reg_3_early"] == 0b10110
     assert packet2["btb_hit"] is True
     assert packet2["btb_predicted_taken"] is True
     assert packet2["ras_predicted"] is True
@@ -530,6 +540,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
             "raw_parcel": first_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": first_instr,
+            "decomp_illegal": True,
         },
         slot2=True,
     )
@@ -537,6 +548,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     packet = _read_pd_packet(dut, slot2=True)
     assert packet["source_reg_1_early"] == 18
     assert packet["source_reg_2_early"] == 19
+    assert packet["illegal_instruction"] is True
 
     # A bubble that arrives during a held cycle cannot clear the replayed
     # source addresses. The same bubble clears them when the bundle advances.
@@ -548,6 +560,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
             "raw_parcel": bubble_payload & 0xFFFF,
             "sel_nop": True,
             "effective_instr": bubble_payload,
+            "decomp_illegal": False,
         },
         slot2=True,
     )
@@ -555,6 +568,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     packet = _read_pd_packet(dut, slot2=True)
     assert packet["source_reg_1_early"] == 18
     assert packet["source_reg_2_early"] == 19
+    assert packet["illegal_instruction"] is True
 
     _drive_pipeline_ctrl(dut, {})
     await _advance_cycle(dut)
@@ -563,6 +577,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
     assert packet["fp_source_reg_3_early"] == 0
+    assert packet["illegal_instruction"] is False
 
 
 @cocotb.test()
