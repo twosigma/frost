@@ -203,6 +203,7 @@ class LQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_early_recovery_flush.value = 0
         self.dut.i_cache_invalidate_valid.value = 0
         self.dut.i_cache_invalidate_addr.value = 0
         self.dut.i_sc_clear_reservation.value = 0
@@ -402,14 +403,18 @@ class LQInterface:
         """Deassert full flush."""
         self.dut.i_flush_all.value = 0
 
-    def drive_partial_flush(self, flush_tag: int) -> None:
-        """Drive partial flush."""
+    def drive_partial_flush(
+        self, flush_tag: int, early_recovery: bool = False
+    ) -> None:
+        """Drive a partial flush, optionally from the early-recovery phase."""
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag & MASK_TAG
+        self.dut.i_early_recovery_flush.value = 1 if early_recovery else 0
 
     def clear_partial_flush(self) -> None:
         """Deassert partial flush."""
         self.dut.i_flush_en.value = 0
+        self.dut.i_early_recovery_flush.value = 0
 
     # =========================================================================
     # Status
@@ -434,6 +439,11 @@ class LQInterface:
     def count(self) -> int:
         """Return the number of valid load queue entries."""
         return int(self.dut.o_count.value)
+
+    @property
+    def mem_outstanding(self) -> bool:
+        """Return whether the LQ is tracking a live memory response owner."""
+        return bool(self.dut.o_mem_outstanding.value)
 
     # =========================================================================
     # Reservation Register (LR/SC)

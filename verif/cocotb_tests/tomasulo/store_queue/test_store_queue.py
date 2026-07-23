@@ -17,7 +17,7 @@
 Tests cover reset, allocation, address/data update, commit + memory write
 (SW/SH/SB), FSD two-phase commit, FSW, store-to-load forwarding, forwarding
 stall, registered forwarding-metadata stability, MMIO stores, partial/full
-flush, and constrained random.
+flush, live-count event overlap, and constrained random.
 """
 
 import random
@@ -333,6 +333,94 @@ async def test_slot1_slot2_dual_alloc_early_addr_and_widen_commit(dut: Any) -> N
 
 
 # ============================================================================
+# Live-count event union and same-edge visibility
+# ============================================================================
+@cocotb.test()
+async def test_live_count_same_edge_event_union(dut: Any) -> None:
+    """Live count stays exact across concurrent add/remove and flush causes."""
+    dut_if, model = await setup(dut)
+
+    # Put one ordinary store on the drain bus, then acknowledge it on the same
+    # edge that two younger stores allocate. The exact net change is +1.
+    await alloc_addr_data(dut_if, model, rob_tag=1, address=0x2100, data=0x1111)
+    dut_if.drive_commit(1)
+    model.commit(1)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Expected the older store to reach the drain bus"
+    model.mem_write_initiate()
+    await dut_if.step()  # Let the on-bus write enter the in-flight FIFO.
+
+    dut_if.drive_mem_write_done()
+    dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=3, size=MEM_SIZE_WORD)
+    model.mem_write_done()
+    model.advance_head()
+    model.alloc(2, False, MEM_SIZE_WORD)
+    model.alloc(3, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_mem_write_done()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == model.count == 2
+    assert not dut_if.empty
+    assert int(dut.o_dispatch_count.value) == model.count
+    assert not bool(dut.o_dispatch_empty.value)
+
+    # A partial flush that removes both entries must make empty/count visible
+    # immediately after its edge; the deferred tail pullback is unrelated to
+    # live occupancy.
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_partial_flush(flush_tag=0)
+    model.partial_flush(0, 0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == model.count == 0
+    assert dut_if.empty
+    assert int(dut.o_dispatch_count.value) == 0
+    assert bool(dut.o_dispatch_empty.value)
+    await dut_if.step()  # Apply the deferred tail pullback before allocating.
+
+    # Discard and partial flush intentionally target the same sole SC. Their
+    # union is one removal, not two, and empty again changes on this edge.
+    dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD, is_sc=True)
+    model.alloc(4, False, MEM_SIZE_WORD, is_sc=True)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.count == model.count == 1
+
+    dut_if.drive_sc_discard(rob_tag=4)
+    dut_if.drive_partial_flush(flush_tag=0)
+    model.sc_discard(4)
+    model.partial_flush(0, 0)
+    await dut_if.step()
+    dut_if.clear_sc_discard()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == model.count == 0
+    assert dut_if.empty
+    await dut_if.step()  # Apply the second deferred tail pullback.
+
+    # Full flush has priority over presented dual allocation, matching the
+    # sq_valid state update and leaving the live counter at zero.
+    dut_if.drive_alloc(rob_tag=5, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=6, size=MEM_SIZE_WORD)
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+    dut_if.clear_flush_all()
+
+    assert dut_if.count == model.count == 0
+    assert dut_if.empty
+
+
+# ============================================================================
 # Test 2e: Slot-2 store is newest forwarding candidate
 # ============================================================================
 @cocotb.test()
@@ -570,6 +658,8 @@ async def test_fsd_two_phase(dut: Any) -> None:
     model.mem_write_done()
     await dut_if.step()
     dut_if.clear_mem_write_done()
+    assert dut_if.count == model.count == 1, "FSD phase 0 must not remove the SQ entry"
+    assert not dut_if.empty, "FSD must remain live between its two write phases"
 
     # Phase 1: high word at addr+4
     write_req = await wait_for_mem_write(dut_if)

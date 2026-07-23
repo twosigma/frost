@@ -223,8 +223,10 @@ def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
 
 
 def _drive_from_ex(dut: Any, fields: Mapping[str, int | bool]) -> None:
-    """Drive packed EX feedback inputs."""
+    """Drive packed EX feedback and its matching lower-priority RMW sideband."""
     dut.i_from_ex_comb.value = _pack_from_ex(fields)
+    dut.i_btb_late_update_pc.value = int(fields.get("btb_update_pc", 0))
+    dut.i_btb_late_update_taken.value = int(fields.get("btb_update_taken", 0))
 
 
 def _drive_trap_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
@@ -287,6 +289,11 @@ async def _advance_cycle(dut: Any) -> None:
 def _clear_inputs(dut: Any) -> None:
     """Drive all IF-stage inputs to safe idle values."""
     _drive_from_ex(dut, {})
+    dut.i_btb_early_update_active.value = 0
+    dut.i_btb_early_update_pc.value = 0
+    dut.i_btb_early_update_taken.value = 0
+    dut.i_btb_late_update_pc.value = 0
+    dut.i_btb_late_update_taken.value = 0
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
     dut.i_served_addr.value = 0

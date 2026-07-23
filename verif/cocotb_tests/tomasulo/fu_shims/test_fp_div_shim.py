@@ -14,15 +14,16 @@
 
 """Unit tests for the FP Divide/Sqrt Shim.
 
-Tests FDIV_S, FSQRT_S operations, busy signalling, flush behaviour,
-and pipelined back-to-back issue with FIFO-based result output.
+Tests FDIV and FSQRT operations, exact sqrt completion latency, busy
+signalling, flush behaviour, and pipelined back-to-back issue with FIFO-based
+result output.
 """
 
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 from .fp_div_shim_interface import (
     FpDivShimInterface,
@@ -30,6 +31,7 @@ from .fp_div_shim_interface import (
     OP_FDIV_S,
     OP_FDIV_D,
     OP_FSQRT_S,
+    OP_FSQRT_D,
 )
 
 # IEEE 754 single-precision constants (NaN-boxed in 64-bit)
@@ -41,6 +43,11 @@ SP_6_0 = NAN_BOX | 0x40C0_0000  # 6.0f
 # IEEE 754 double-precision constants
 DP_2_0 = 0x4000_0000_0000_0000  # 2.0
 DP_6_0 = 0x4018_0000_0000_0000  # 6.0
+DP_9_0 = 0x4022_0000_0000_0000  # 9.0
+DP_16_0 = 0x4030_0000_0000_0000  # 16.0
+DP_25_0 = 0x4039_0000_0000_0000  # 25.0
+DP_NEG_1_0 = 0xBFF0_0000_0000_0000  # -1.0
+DP_MIN_SUBNORMAL = 0x0000_0000_0000_0001  # 2^-1074
 
 # Expected NaN-boxed results
 EXPECTED_3_0 = 0xFFFF_FFFF_4040_0000  # 6.0 / 2.0 = 3.0
@@ -48,8 +55,16 @@ EXPECTED_2_0 = 0xFFFF_FFFF_4000_0000  # sqrt(4.0) = 2.0
 EXPECTED_3_0_SP = 0xFFFF_FFFF_4040_0000  # 6.0 / 2.0 = 3.0 (SP, NaN-boxed)
 EXPECTED_2_0_SP = 0xFFFF_FFFF_4000_0000  # sqrt(4.0) = 2.0 (SP, NaN-boxed)
 EXPECTED_3_0_DP = 0x4008_0000_0000_0000  # 6.0 / 2.0 = 3.0 (DP)
+EXPECTED_4_0_DP = 0x4010_0000_0000_0000  # sqrt(16.0) = 4.0 (DP)
+EXPECTED_5_0_DP = 0x4014_0000_0000_0000  # sqrt(25.0) = 5.0 (DP)
+EXPECTED_QNAN_DP = 0x7FF8_0000_0000_0000
+EXPECTED_SQRT_MIN_SUBNORMAL_DP = 0x1E60_0000_0000_0000  # 2^-537
+
+FP_FLAG_NV = 0x10
 
 MAX_LATENCY = 80  # DP pipeline is 65 stages, allow margin
+SQRT_S_VISIBLE_CYCLES = 37
+SQRT_D_VISIBLE_CYCLES = 66
 
 
 async def setup(dut: Any) -> FpDivShimInterface:
@@ -79,6 +94,44 @@ async def wait_for_completion(
     raise AssertionError(
         f"FU did not produce a valid result within {max_cycles} cycles"
     )
+
+
+async def expect_completion_at_cycle(
+    iface: FpDivShimInterface,
+    expected_cycle: int,
+    expected_tag: int,
+    expected_value: int,
+    expected_flags: int = 0,
+) -> None:
+    """Require the first shim-visible completion on one exact post-issue cycle."""
+    result = {}
+    for cycle in range(1, expected_cycle + 1):
+        await RisingEdge(iface.clock)
+        await ReadOnly()
+        result = iface.read_fu_complete()
+        if cycle < expected_cycle:
+            assert not result["valid"], (
+                f"Completion appeared at cycle {cycle}, expected cycle "
+                f"{expected_cycle}"
+            )
+
+    assert result["valid"], f"No completion at expected cycle {expected_cycle}"
+    assert (
+        result["tag"] == expected_tag
+    ), f"Tag mismatch: expected {expected_tag}, got {result['tag']}"
+    assert result["value"] == expected_value, (
+        f"Value mismatch: expected 0x{expected_value:016X}, "
+        f"got 0x{result['value']:016X}"
+    )
+    assert result["fp_flags"] == expected_flags, (
+        f"Flags mismatch: expected 0x{expected_flags:02X}, "
+        f"got 0x{result['fp_flags']:02X}"
+    )
+
+    await FallingEdge(iface.clock)
+    iface.drive_div_accepted()
+    await RisingEdge(iface.clock)
+    iface.clear_div_accepted()
 
 
 # ============================================================================
@@ -573,3 +626,86 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
         assert not result[
             "valid"
         ], f"Expected tag 4 to be suppressed, but got valid tag {result['tag']}"
+
+
+# ============================================================================
+# Test 13: FSQRT shim-visible latency is exactly unchanged
+# ============================================================================
+@cocotb.test()
+async def test_fsqrt_exact_latency(dut: Any) -> None:
+    """Require SP/DP sqrt at cycles 37/66 after issue, including shim buffering."""
+    iface = await setup(dut)
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=24,
+        op=OP_FSQRT_S,
+        src1_value=SP_4_0,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+    await expect_completion_at_cycle(
+        iface,
+        expected_cycle=SQRT_S_VISIBLE_CYCLES,
+        expected_tag=24,
+        expected_value=EXPECTED_2_0_SP,
+    )
+
+    iface.drive_issue(
+        valid=True,
+        rob_tag=25,
+        op=OP_FSQRT_D,
+        src1_value=DP_9_0,
+        src2_value=0,
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+    await expect_completion_at_cycle(
+        iface,
+        expected_cycle=SQRT_D_VISIBLE_CYCLES,
+        expected_tag=25,
+        expected_value=EXPECTED_3_0_DP,
+    )
+
+
+# ============================================================================
+# Test 14: Back-to-back FSQRT_D keeps payloads aligned with their tags
+# ============================================================================
+@cocotb.test()
+async def test_fsqrt_d_back_to_back_distinct(dut: Any) -> None:
+    """Issue four distinct DP square roots on consecutive cycles."""
+    iface = await setup(dut)
+
+    operations = [
+        (24, DP_MIN_SUBNORMAL, EXPECTED_SQRT_MIN_SUBNORMAL_DP, 0),
+        (25, DP_NEG_1_0, EXPECTED_QNAN_DP, FP_FLAG_NV),
+        (26, DP_16_0, EXPECTED_4_0_DP, 0),
+        (27, DP_25_0, EXPECTED_5_0_DP, 0),
+    ]
+
+    for tag, operand, _expected, _flags in operations:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tag,
+            op=OP_FSQRT_D,
+            src1_value=operand,
+            src2_value=0,
+        )
+        await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    collected = []
+    for _ in range(MAX_LATENCY + 20):
+        await RisingEdge(iface.clock)
+        result = iface.read_fu_complete()
+        if result["valid"]:
+            collected.append((result["tag"], result["value"], result["fp_flags"]))
+            iface.drive_div_accepted()
+            await RisingEdge(iface.clock)
+            iface.clear_div_accepted()
+        if len(collected) == len(operations):
+            break
+
+    expected = [(tag, value, flags) for tag, _operand, value, flags in operations]
+    assert collected == expected, f"Expected {expected}, got {collected}"

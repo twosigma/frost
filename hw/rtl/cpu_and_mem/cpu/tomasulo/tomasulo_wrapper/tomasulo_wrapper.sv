@@ -749,6 +749,9 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t fp_add_adapter_to_arbiter;
   riscv_pkg::fu_complete_t fp_mul_adapter_to_arbiter;
   riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
+  riscv_pkg::fu_complete_t alu2_shim_out;
+  logic                    alu2_adapter_result_pending;
 
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
@@ -761,7 +764,6 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t cdb_arb_in_5;
   riscv_pkg::fu_complete_t cdb_arb_in_6;
   riscv_pkg::fu_complete_t cdb_arb_in_7;
-  riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
   always_comb begin
     cdb_arb_in_0 = alu_adapter_to_arbiter.valid ? alu_adapter_to_arbiter : i_fu_complete_0;
     cdb_arb_in_1 = mul_adapter_to_arbiter.valid ? mul_adapter_to_arbiter : i_fu_complete_1;
@@ -770,7 +772,18 @@ module tomasulo_wrapper #(
     cdb_arb_in_4 = fp_add_adapter_to_arbiter.valid ? fp_add_adapter_to_arbiter : i_fu_complete_4;
     cdb_arb_in_5 = fp_mul_adapter_to_arbiter.valid ? fp_mul_adapter_to_arbiter : i_fu_complete_5;
     cdb_arb_in_6 = fp_div_adapter_to_arbiter.valid ? fp_div_adapter_to_arbiter : i_fu_complete_6;
+    // Build slot 7's one effective packet before arbitration. Metadata and
+    // the FP-width upper value half retain the generic adapter-or-injection
+    // choice. The integer-width value chooses live, held, or injection in one
+    // three-arm mux, bypassing the adapter's live-payload mux without adding a
+    // second priority selector. The balanced arbiter can use this same packet
+    // on either lane.
     cdb_arb_in_7 = alu2_adapter_to_arbiter.valid ? alu2_adapter_to_arbiter : i_fu_complete_7;
+    cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] =
+        !alu2_adapter_to_arbiter.valid ? i_fu_complete_7.value[riscv_pkg::XLEN-1:0] :
+        alu2_adapter_result_pending ?
+        alu2_adapter_to_arbiter.value[riscv_pkg::XLEN-1:0] :
+        alu2_shim_out.value[riscv_pkg::XLEN-1:0];
   end
 
   // Width-funnel perf observer (profiling only): >=3 FU completions request
@@ -1153,8 +1166,6 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_issue_t    int_rs_issue_2_w;
   logic                    int_rs_fu_ready_2;
   logic                    int_rs_issue_writes_cdb_hint_2;
-  logic                    alu2_adapter_result_pending;
-  riscv_pkg::fu_complete_t alu2_shim_out;
   logic                    alu2_fu_busy;
 
   assign int_rs_fu_ready = i_rs_fu_ready & ~alu_adapter_result_pending & ~i_backend_recovery_hold;
@@ -3389,6 +3400,44 @@ module tomasulo_wrapper #(
 
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
+  end
+
+  // The optimized ALU2 packet must be bit-identical to the original generic
+  // adapter-or-test-injection packet. Keep the reference local to formal so
+  // synthesis sees only the single effective slot-7 packet and its three-arm
+  // low-value mux.
+  riscv_pkg::fu_complete_t f_cdb_arb_in_7_generic;
+  always_comb begin
+    f_cdb_arb_in_7_generic =
+        alu2_adapter_to_arbiter.valid ? alu2_adapter_to_arbiter : i_fu_complete_7;
+
+    if (!alu2_adapter_to_arbiter.valid) begin
+      p_cdb_alu2_injection_source :
+      assert (
+        cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] ==
+        i_fu_complete_7.value[riscv_pkg::XLEN-1:0]
+      );
+    end else if (alu2_adapter_result_pending) begin
+      p_cdb_alu2_held_source :
+      assert (
+        cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] ==
+        alu2_adapter_to_arbiter.value[riscv_pkg::XLEN-1:0]
+      );
+    end else begin
+      p_cdb_alu2_live_adapter_identity :
+      assert (
+        alu2_adapter_to_arbiter.value[riscv_pkg::XLEN-1:0] ==
+        alu2_shim_out.value[riscv_pkg::XLEN-1:0]
+      );
+      p_cdb_alu2_live_source :
+      assert (
+        cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] ==
+        alu2_shim_out.value[riscv_pkg::XLEN-1:0]
+      );
+    end
+
+    p_cdb_alu2_effective_packet_equiv :
+    assert (cdb_arb_in_7 == f_cdb_arb_in_7_generic);
   end
 
   // -------------------------------------------------------------------------

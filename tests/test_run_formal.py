@@ -68,6 +68,11 @@ FORMAL_TARGETS = [
         "Register alias table - rename mapping with checkpoints",
     ),
     FormalTarget(
+        "rs_issue2_selector.sby",
+        "Balanced INT-RS second-port selector - serial reference equivalence",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush",
     ),

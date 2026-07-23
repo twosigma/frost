@@ -5,11 +5,22 @@ functional unit completions per cycle for broadcast on the Common
 Data Bus. Eight inputs, a primary lane plus a secondary lane, no
 internal state.
 
-Lane 0 picks the highest-priority valid completion. Lane 1 repeats the same
-priority search over the remaining valid completions, so the `o_grant` vector
-can be 0-, 1-, or 2-hot. The priority order favors the common integer traffic
-that dominates CoreMark while keeping FP/divide valid cones out of the fastest
-grant paths:
+One balanced merge tree computes both winners together. The leaves are four
+contiguous priority pairs:
+
+```
+[MUL, MEM]  [ALU, ALU2]  [DIV, FP_DIV]  [FP_MUL, FP_ADD]
+```
+
+Each node carries the highest two valid packets and their one-hot source IDs.
+Merging a higher-priority list with a lower-priority list picks the higher
+list's first packet when present; its second packet comes from the higher
+list's second, the lower list's first, or the lower list's second depending on
+whether the higher list contains two, one, or zero requests. Pair, four-entry,
+and root merges therefore bound both lane-selection cones to three stages and
+avoid a serial lane-0 encoder, lane-0 subtraction, and lane-1 encoder.
+
+The resulting `o_grant` vector can be 0-, 1-, or 2-hot. Priority remains:
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
@@ -47,7 +58,9 @@ unused.
 ## Verification
 
 The whole module is small enough to formally verify exhaustively under
-SymbiYosys: the `` `ifdef FORMAL `` block proves the top-two priority order,
-that at most two distinct FUs are granted per cycle, that both broadcast lanes
-match their granted FUs, and that the cover properties exercise every grant
-target and contention scenario.
+SymbiYosys. An independent flat primary/subtract/secondary reference implements
+the previous topology under `` `ifdef FORMAL ``; assertions prove both tree
+lanes, their complete payloads, one-hot identities, raw grants, and kill-gated
+outputs equivalent to that reference. Cocotb exhausts all 256 request-valid
+vectors with kill both low and high, using distinct payload and metadata on
+every FU, and includes directed ALU2 lane-0, lane-1, and ungranted cases.

@@ -108,6 +108,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_update_taken.value = 0
     dut.i_btb_update_compressed.value = 0
     dut.i_btb_update_requires_pc_reg_handoff.value = 0
+    dut.i_btb_early_update_active.value = 0
+    dut.i_btb_early_update_pc.value = 0
+    dut.i_btb_early_update_taken.value = 0
+    dut.i_btb_late_update_pc.value = 0
+    dut.i_btb_late_update_taken.value = 0
     dut.i_dir_update_valid.value = 0
     dut.i_dir_update_idx.value = 0
     dut.i_dir_update_taken.value = 0
@@ -163,6 +168,8 @@ async def _btb_update(
     dut.i_btb_update_taken.value = int(taken)
     dut.i_btb_update_compressed.value = int(compressed)
     dut.i_btb_update_requires_pc_reg_handoff.value = int(handoff)
+    dut.i_btb_late_update_pc.value = pc
+    dut.i_btb_late_update_taken.value = int(taken)
     await _advance_cycle(dut)
     dut.i_btb_update.value = 0
     await _settle()

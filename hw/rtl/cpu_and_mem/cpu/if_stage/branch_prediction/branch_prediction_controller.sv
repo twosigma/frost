@@ -99,6 +99,14 @@ module branch_prediction_controller (
     input logic                       i_btb_update_taken,
     input logic                       i_btb_update_compressed,
     input logic                       i_btb_update_requires_pc_reg_handoff,
+    // Direct early-recovery counter-RMW candidate.  The selected update port
+    // above remains the sole source of actual BTB writes.
+    input logic                       i_btb_early_update_active,
+    input logic [riscv_pkg::XLEN-1:0] i_btb_early_update_pc,
+    input logic                       i_btb_early_update_taken,
+    // Independently selected lower-priority counter-RMW candidate.
+    input logic [riscv_pkg::XLEN-1:0] i_btb_late_update_pc,
+    input logic                       i_btb_late_update_taken,
 
     // RAS inputs (for call/return detection)
     input riscv_pkg::instr_t i_instruction,  // Current instruction for RAS detection
@@ -221,7 +229,12 @@ module branch_prediction_controller (
       .i_update_target(i_btb_update_target),
       .i_update_taken(i_btb_update_taken),
       .i_update_compressed(i_btb_update_compressed),
-      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff)
+      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff),
+      .i_early_update_active(i_btb_early_update_active),
+      .i_early_update_pc(i_btb_early_update_pc),
+      .i_early_update_taken(i_btb_early_update_taken),
+      .i_late_update_pc(i_btb_late_update_pc),
+      .i_late_update_taken(i_btb_late_update_taken)
   );
 
   // ===========================================================================

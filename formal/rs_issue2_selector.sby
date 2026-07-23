@@ -1,0 +1,16 @@
+[tasks]
+bmc
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv rs_issue2_selector.sv
+prep -top rs_issue2_selector
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv

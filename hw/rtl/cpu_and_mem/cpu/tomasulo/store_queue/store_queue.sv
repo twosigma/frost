@@ -213,6 +213,8 @@ module store_queue #(
     // =========================================================================
     // Status
     // =========================================================================
+    // Exact registered live status. Both change on the same edge as sq_valid;
+    // the dispatch aliases exist for interface symmetry with registered full.
     output logic                       o_empty,
     output logic                       o_dispatch_empty,
     output logic                       o_committed_empty,  // No committed entries pending write
@@ -467,7 +469,18 @@ module store_queue #(
   logic                  empty;
   logic                  dispatch_full_q;
   logic                  dispatch_full_for_2_q;
-  logic [CountWidth-1:0] count;
+  // Exact live-entry count, maintained from the same accepted allocation and
+  // removal events that update sq_valid.  This is an intentional timing
+  // boundary: LQ issue consumes empty, so deriving empty directly from the
+  // sq_valid popcount put every SQ valid bit in the cache-read launch cone.
+  // The counter changes on the SAME edge as sq_valid and therefore preserves
+  // the old post-edge visibility without adding a queue or issue cycle.
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_q;
+  logic [CountWidth-1:0] live_count_next;
+  logic [CountWidth-1:0] live_remove_count;
+  logic [     DEPTH-1:0] live_remove_mask;
+  logic [     DEPTH-1:0] sc_discard_remove_mask;
+  logic                  drain_remove_valid;
   logic [CountWidth-1:0] dispatch_count_next;
   logic                  committed_empty_q;
 
@@ -513,23 +526,17 @@ module store_queue #(
   // pure tail allocation, a slot is reusable only once the head has passed
   // it, so holes inside the window (rare sc_discard frees) still consume
   // capacity until the head skip-advance walks over them. Window-based full
-  // is conservative in exactly those cases and exact otherwise. The popcount
-  // is kept for o_count/empty/visibility consumers.
+  // is conservative in exactly those cases and exact otherwise.  Live count
+  // is kept as explicit event-maintained state so empty does not put the
+  // sq_valid reduction tree in the LQ/cache issue cone.
   logic [PtrWidth-1:0] window_occupancy;
   assign window_occupancy = tail_ptr - head_ptr;
-
-  always_comb begin
-    count = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      count = count + CountWidth'(sq_valid[i]);
-    end
-  end
 
   assign full = (window_occupancy >= PtrWidth'(DEPTH));
   // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two
   // stores would not fit even if neither slot has been allocated yet.
   assign full_for_2 = (window_occupancy >= PtrWidth'(DEPTH - 1));
-  assign empty = (count == CountWidth'(0));
+  assign empty = (live_count_q == CountWidth'(0));
 
   assign o_full = full;
   assign o_full_for_2 = full_for_2;
@@ -537,8 +544,8 @@ module store_queue #(
   assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_dispatch_empty = empty;
-  assign o_count = count;
-  assign o_dispatch_count = count;
+  assign o_count = live_count_q;
+  assign o_dispatch_count = live_count_q;
 
   // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
   // valid; if both fire, slot-1 (older) takes the first free slot from
@@ -909,8 +916,9 @@ module store_queue #(
   // ===========================================================================
   // TIMING: Replaced O(DEPTH) serial scan with rotate → tree-priority-encode →
   // add-back (O(log2(DEPTH)) logic levels).  The serial scan created a 16-level
-  // chain from sq_valid through the popcount-based empty check and cascaded
-  // pointer increments; this tree form cuts it to ~4-5 levels.
+  // chain through cascaded pointer increments; this tree form cuts it to
+  // ~4-5 levels. Empty visibility now has the independent live_count_q timing
+  // boundary above, so this scan cannot leak into LQ issue through o_empty.
 
   logic [DEPTH-1:0] sq_head_valid_rotated;
   logic [IdxWidth-1:0] sq_head_first_valid_offset;
@@ -1213,6 +1221,52 @@ module store_queue #(
     end
   end
 
+  // Share the failed-SC match with sq_valid's clear arm and the live counter.
+  // Keeping one predicate makes their same-edge state transitions identical
+  // by construction rather than relying only on duplicated CAM expressions.
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      sc_discard_remove_mask[i] =
+          i_sc_discard && sq_valid[i] && sq_is_sc[i] && !sq_committed[i] &&
+          (sq_rob_tag[i] == i_sc_discard_rob_tag);
+    end
+  end
+
+  assign drain_remove_valid = i_mem_write_done && (write_inflight_cnt != 2'd0) &&
+                              write_completes_entry && sq_valid[write_entry_idx];
+
+  // Exact live-count next state.  Build one removal mask before counting so
+  // coincident causes never subtract the same entry twice: a failed SC may
+  // also be in a partial-flush suffix, while drain completion is disjoint in
+  // legal operation but is harmlessly idempotent here.  Accepted allocation
+  // targets are free by the ring invariant, so each slot contributes exactly
+  // one new live entry and cannot overlap this mask.
+  always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      live_remove_mask[i] = (i_flush_en && flush_kill_base[i]) ||
+                            sc_discard_remove_mask[i] ||
+                            (drain_remove_valid && (write_entry_idx == IdxWidth'(i)));
+    end
+  end
+
+  always_comb begin
+    live_remove_count = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      live_remove_count = live_remove_count + CountWidth'(live_remove_mask[i]);
+    end
+
+    live_count_next = live_count_q + CountWidth'(slot1_alloc_en) +
+                      CountWidth'(slot2_alloc_en) - live_remove_count;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      live_count_q <= '0;
+    end else begin
+      live_count_q <= live_count_next;
+    end
+  end
+
   // Simulation-only cross-check against the real ROB; under formal the same
   // invariant is an input assume in the FORMAL section below (and Yosys'
   // frontend rejects the assert-else action block anyway).
@@ -1261,8 +1315,7 @@ module store_queue #(
       // Failed SC invalidates its uncommitted SQ entry.
       if (i_sc_discard) begin
         for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && sq_is_sc[i] && !sq_committed[i]
-              && sq_rob_tag[i] == i_sc_discard_rob_tag) begin
+          if (sc_discard_remove_mask[i]) begin
             sq_valid[i] <= 1'b0;
           end
         end
@@ -1570,6 +1623,13 @@ module store_queue #(
   always_comb begin
     if (i_rst_n) begin
       p_count_consistent : assert (o_count == f_valid_count);
+      p_empty_matches_valid : assert (o_empty == (f_valid_count == CountWidth'(0)));
+      p_dispatch_count_exact : assert (o_dispatch_count == f_valid_count);
+      p_dispatch_empty_exact : assert (o_dispatch_empty == o_empty);
+      p_live_remove_bounded : assert (live_remove_count <= live_count_q);
+      if (!i_flush_all) begin
+        p_live_count_next_bounded : assert (live_count_next <= CountWidth'(DEPTH));
+      end
     end
   end
 
@@ -1706,6 +1766,14 @@ module store_queue #(
       cover_fsd_phase1 : cover (o_mem_write_en && sq_fp64_phase[mem_write_entry_idx_stg]);
       // Pipelined drain: two plain fast-tier writes in flight at once.
       cover_pipelined_drain : cover (o_mem_write_en && (write_inflight_cnt != 2'd0));
+      // Exercise the event counter's widest update: two accepted stores while
+      // an older completed store is removed on the same edge.
+      cover_dual_alloc_with_drain_remove :
+      cover (slot1_alloc_en && slot2_alloc_en && drain_remove_valid);
+      // The union mask must count an SC only once when discard and partial
+      // flush both remove it.
+      cover_sc_discard_in_flush :
+      cover (i_flush_en && (|(flush_kill_base & sc_discard_remove_mask)));
 
       // Cache invalidation on write completion
       cover_cache_invalidate : cover (o_cache_invalidate_valid);

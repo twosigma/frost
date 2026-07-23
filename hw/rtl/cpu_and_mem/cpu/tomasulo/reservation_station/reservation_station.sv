@@ -28,9 +28,9 @@
  *   - CDB and done-repair operand wakeup, with optional allocation-indexed
  *     repair that avoids broadcasting dispatch tags through every resident entry
  *   - Priority-encoder issue selection (lowest index first)
- *   - Optional second issue port (DUAL_ISSUE, INT_RS): second lowest-ready
- *     select skipping branch-class entries, with its own payload read and
- *     stage2 bank feeding o_issue_2 / i_fu_ready_2
+ *   - Optional second issue port (DUAL_ISSUE, INT_RS): isolated balanced
+ *     second-winner select skipping branch-class entries, with its own payload
+ *     read and stage2 bank feeding o_issue_2 / i_fu_ready_2
  *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
  *
@@ -73,10 +73,11 @@ module reservation_station #(
     // flags from the previous occupancy instead of exact flags from count_next,
     // keeping current-cycle dispatch valid off the exported-status flop D path.
     parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
-    // Second issue port (INT_RS only): a second lowest-ready select that
-    // skips branch-class entries (branches stay on port 0, which owns the
-    // single branch_resolution path), a second payload-RAM copy, and a full
-    // second stage2 bank feeding o_issue_2 / i_fu_ready_2.
+    // Second issue port (INT_RS only): an isolated balanced select for the
+    // lowest ready nonbranch other than port 0's canonical lowest-ready winner
+    // (branches stay on port 0, which owns the single branch_resolution path),
+    // a second payload-RAM copy, and a full second stage2 bank feeding
+    // o_issue_2 / i_fu_ready_2.
     parameter bit DUAL_ISSUE = 1'b0,
     // Symmetric lane-1 wakeup: include i_cdb_2 in the combinational
     // same-cycle issue-bypass cone (readiness + issue-time value
@@ -623,7 +624,6 @@ module reservation_station #(
   // Second issue port (DUAL_ISSUE). Declared unconditionally so the shared
   // count/valid bookkeeping can reference them; driven inside the generate
   // block below and tied off when DUAL_ISSUE is disabled.
-  logic [DEPTH-1:0] entry_ready_2;
   logic [$clog2(DEPTH)-1:0] issue_idx_2;
   logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
@@ -1198,30 +1198,20 @@ module reservation_station #(
   // ===========================================================================
   generate
     if (DUAL_ISSUE) begin : gen_issue2
-      // Port-1 candidates: ready entries that are not branch-class (branches
-      // own port 0 and the single branch_resolution / ROB branch-update
-      // path) and not the entry port 0 is selecting this cycle.  Excluding
-      // issue_idx even when port 0 does not fire is conservative but makes
-      // double-issue of one entry structurally impossible.
-      always_comb begin
-        for (int i = 0; i < DEPTH; i++) begin
-          entry_ready_2[i] = entry_ready[i] && !rs_is_branch_class[i] &&
-              ($clog2(DEPTH)'(i) != issue_idx);
-        end
-      end
-
-      always_comb begin
-        issue_idx_2 = '0;
-        issue_sel_2 = '0;
-        any_ready_2 = 1'b0;
-        for (int i = 0; i < DEPTH; i++) begin
-          if (entry_ready_2[i] && !any_ready_2) begin
-            issue_idx_2 = $clog2(DEPTH)'(i);
-            issue_sel_2[i] = 1'b1;
-            any_ready_2 = 1'b1;
-          end
-        end
-      end
+      // Compute only port 1 in the helper. Port 0 intentionally retains the
+      // canonical serial issue_idx / any_ready encoder above and none of its
+      // consumers depend on this tree. The helper independently summarizes
+      // the global first ready entry so its result remains the exact legacy
+      // "lowest ready nonbranch excluding port 0's winner" under backpressure.
+      rs_issue2_selector #(
+          .DEPTH(DEPTH)
+      ) u_issue2_selector (
+          .i_ready          (entry_ready),
+          .i_branch_class   (rs_is_branch_class),
+          .o_issue_2_valid  (any_ready_2),
+          .o_issue_2_idx    (issue_idx_2),
+          .o_issue_2_onehot (issue_sel_2)
+      );
 
       always_comb begin
         issue_sel_2_ohread = '0;
@@ -1511,7 +1501,6 @@ module reservation_station #(
 `endif
 `endif
     end else begin : gen_no_issue2
-      assign entry_ready_2 = '0;
       assign issue_idx_2 = '0;
       assign issue_sel_2 = '0;
       assign any_ready_2 = 1'b0;

@@ -507,6 +507,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="register_alias_table",
         description="Register Alias Table unit tests (rename, lookup, checkpoint, flush)",
     ),
+    "rs_issue2_selector": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.tomasulo.reservation_station."
+            "test_rs_issue2_selector"
+        ),
+        hdl_toplevel_module="rs_issue2_selector",
+        description="Balanced INT-RS second-port selector reference equivalence",
+    ),
     "reservation_station": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
         hdl_toplevel_module="reservation_station",
@@ -591,7 +599,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "ex_comb_synthesizer": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_ex_comb_synthesizer",
         hdl_toplevel_module="ex_comb_synthesizer",
-        description="CPU OOO from_ex_comb synthesis tests (redirect, BTB, RAS)",
+        description=(
+            "CPU OOO from_ex_comb priority and independent BTB RMW candidate tests"
+        ),
     ),
     "early_misprediction_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",

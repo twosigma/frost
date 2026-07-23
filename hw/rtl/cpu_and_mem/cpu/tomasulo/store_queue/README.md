@@ -163,15 +163,23 @@ past freed entries, collapsing onto the tail when the window empties.
 Capacity is the ring window (`tail_ptr - head_ptr`), not the live popcount:
 with pure tail allocation a slot is reusable only once the head has passed
 it, so rare mid-window holes (failed-SC discards) keep consuming capacity
-until the head walks over them. `o_full`, `o_full_for_2`, `o_empty`, and
-`o_count` are exact combinational status for local visibility. The CPU
-dispatch path instead consumes the registered `o_dispatch_full` /
-`o_dispatch_full_for_2` back-pressure (and `o_dispatch_empty` /
-`o_dispatch_count`), which add same-cycle allocations to the window but
-deliberately take no same-cycle credit for drains, flushes, or SC discards —
-the head advances the cycle after a drain completes, so an early credit
-would let dispatch send a store the SQ must refuse (a silently lost store).
-Back-pressure is therefore only ever conservatively long, never short.
+until the head walks over them. `o_full` and `o_full_for_2` are exact
+combinational window-capacity status. The CPU dispatch path instead consumes
+the registered `o_dispatch_full` / `o_dispatch_full_for_2` back-pressure,
+which adds same-cycle allocations to the window but deliberately takes no
+same-cycle credit for drains, flushes, or SC discards — the head advances the
+cycle after a drain completes, so an early credit would let dispatch send a
+store the SQ must refuse (a silently lost store). Back-pressure is therefore
+only ever conservatively long, never short.
+
+Live occupancy is maintained separately in an exact event counter. Accepted
+slot-1/slot-2 allocations increment it; a union of partial-flush, failed-SC,
+and completed-drain removal masks decrements it, so overlapping removal causes
+cannot double-count an entry. The counter updates on the same edge as
+`sq_valid`, making `o_count` / `o_dispatch_count` and `o_empty` /
+`o_dispatch_empty` exact immediately after that edge with no added issue
+latency. This registered status boundary keeps the `sq_valid` reduction tree
+out of the LQ empty-bypass and cache-read launch cone.
 
 ## Widen-commit slot 2
 
@@ -233,9 +241,11 @@ fanning out from one source FF.
 
 Cocotb tests cover allocation including 2-wide cases, address/data update,
 every store size, FSD two-phase, store-to-load forwarding, MMIO bypass,
-partial/full flush, SC discard, back-to-back pipelined drains (per-cycle
-bus sampling in `drain_pipelined_writes`), and constrained random. Inline
-formal properties cover pointer/count consistency, write prerequisites
+partial/full flush, SC discard, same-edge drain removal plus 2-wide allocation,
+overlapping flush/discard removal, back-to-back pipelined drains (per-cycle bus
+sampling in `drain_pipelined_writes`), and constrained random. Inline
+formal properties cover pointer/live-count consistency across allocation and
+all removal causes, write prerequisites
 (asserted on the staged on-bus entry), the in-flight bound and
 specials-fly-alone discipline, the committed-survives-flush invariant, and
 forwarding; a cover property witnesses two writes in flight

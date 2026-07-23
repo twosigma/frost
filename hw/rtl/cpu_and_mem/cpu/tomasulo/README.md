@@ -62,10 +62,12 @@ is not a fully symmetric 2-issue execution engine — see
 | [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
 | [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |
 
-Several of the larger modules nest extracted submodules (pure RTL boundary
-moves, no functional change): `store_queue/sq_forwarding_unit`,
-`load_queue/lq_issue_selector`, and `reorder_buffer/rob_serializer` (whose
-`serial_state_e` enum lives in `riscv_pkg` so the ROB and submodule share it).
+Several of the larger modules nest helper submodules:
+`store_queue/sq_forwarding_unit`, `load_queue/lq_issue_selector`,
+`reservation_station/rs_issue2_selector`, and
+`reorder_buffer/rob_serializer` (whose `serial_state_e` enum lives in
+`riscv_pkg` so the ROB and submodule share it). The selector is an
+exact-priority balanced replacement; the others are pure RTL boundary moves.
 Each is documented in its parent module's README.
 
 The CPU top-level (`../cpu_ooo/cpu_ooo.sv`) instantiates
@@ -126,10 +128,11 @@ A small FSM in the ROB pins most of these instructions at the commit head
 
 ### 2-wide CDB arbitration
 
-Up to two result broadcasts per cycle. Lane 0 picks the highest-priority valid
-FU completion; lane 1 picks the highest-priority remaining completion. Both
-lanes use the same fixed priority, which favors common integer traffic while
-keeping FP/divide valid cones out of the fastest grant paths:
+Up to two result broadcasts per cycle. A shared balanced top-two tree merges
+four contiguous priority pairs into two four-entry groups and then the final
+lanes, carrying complete payloads and one-hot FU identities at every node.
+This preserves the same fixed priority while avoiding a serial primary
+encoder, primary-winner subtraction, and secondary encoder:
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD

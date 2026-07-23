@@ -12,16 +12,18 @@ INT_RS is sized to absorb the bursty ALU arrivals that dominate
 CoreMark — CoreMark profiling showed INT RS full ~7% of the time
 with average occupancy ~4 at depth 8, so the queue was doubled
 without changing any other RS structure. Everything else
-(entry array, wakeup network, priority encoder) scales by parameter.
+(entry array, wakeup network, and port-0 priority encoder) scales by parameter.
 
 INT_RS is additionally built with `DUAL_ISSUE=1`: a second issue port
-(`o_issue_2` / `i_fu_ready_2`) with its own lowest-ready select, payload-RAM
-copy, and stage2 pipeline register, feeding the second single-cycle ALU pipe.
-The port-1 select skips branch-class entries — branches issue only through
-port 0, which owns the single `branch_resolution` / ROB branch-update path —
-and always excludes the entry port 0 is selecting, so the two ports can never
-double-issue one entry. The other five stations elaborate with the default
-`DUAL_ISSUE=0` and are structurally unchanged.
+(`o_issue_2` / `i_fu_ready_2`) with its own selector, payload-RAM copy, and
+stage2 pipeline register, feeding the second single-cycle ALU pipe. The
+canonical serial port-0 priority encoder remains unchanged. An independent
+balanced tree selects the lowest ready nonbranch entry other than port 0's
+global lowest-ready winner. Branches issue only through port 0, which owns the
+single `branch_resolution` / ROB branch-update path. Exclusion applies even
+when backpressure prevents port 0 from firing, so the two ports can never claim
+one entry. The other five stations elaborate with the default `DUAL_ISSUE=0`
+and are structurally unchanged.
 
 The wakeup mechanism is a two-lane Tomasulo CDB snoop: each entry compares its
 source tags against both broadcast tags every cycle, and a match captures the
@@ -65,10 +67,14 @@ the existing dispatch and issue latency while replacing the wide value flops'
 priority-decoded free-index clock enable with the entry-local invalid bit;
 the slot-2 allocation index affects only the selected input data.
 
-Issue selection is a simple lowest-index priority encode over ready
-entries. That's not strict FIFO order, but it's a close enough
-approximation for the depths used here that the slightly older
-entries usually go first anyway.
+Port-0 issue selection is a simple lowest-index priority encode over ready
+entries. That's not strict FIFO order, but it's a close enough approximation
+for the depths used here that the slightly older entries usually go first
+anyway. [`rs_issue2_selector.sv`](rs_issue2_selector.sv) computes only port 1
+with a padded pairwise merge tree. Each subtree carries any-ready, first
+ready-nonbranch, and first ready-nonbranch after excluding its first ready
+entry. The isolated tree preserves the exact serial result while removing the
+port-0-index-to-port-1-encoder dependency.
 
 ## Storage strategy
 
@@ -123,3 +129,7 @@ dispatch capture from lane 0, issue priority, FU ready gating, immediate bypass,
 `full_for_2` gating, and partial/full flush. Inline formal properties also prove
 the dispatch / issue / wakeup / flush invariants, indexed-target alignment, and
 cover both-slots and slot-2-alone dispatch.
+
+The second-port selector additionally has a direct cocotb reference test and a
+depth-one formal miter against the original serial specification. Unconstrained
+16-bit ready and branch-class inputs make that equivalence proof exhaustive.

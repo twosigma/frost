@@ -84,7 +84,11 @@ Two things the cache intentionally *doesn't* do:
   state (committed stores invalidate, loads fill with memory's view),
   so there's nothing speculative to throw away. Leaving cached lines
   hot across mispredict recovery roughly doubles the steady-state hit
-  rate on CoreMark (36.5% → 72.4%).
+  rate on CoreMark (36.5% → 72.4%). For the same reason, an ordinary
+  non-MMIO response that arrives exactly with a partial flush may still
+  fill L0 even when its killed LQ owner discards the completion. Full
+  flushes, already-pending stale-response drains, LR/AMO responses, and
+  responses made stale by a store/AMO invalidation remain ineligible.
 - **No fill from a full-flush-cycle response.** Trap/MRET/FENCE.I full
   flushes keep existing L0 lines hot, but a memory response that arrives
   on the flush cycle is treated as a drained response for a killed load

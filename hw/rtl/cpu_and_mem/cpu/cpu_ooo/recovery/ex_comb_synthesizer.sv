@@ -23,9 +23,10 @@
  * struct from the early-misprediction, commit-time-misprediction, and
  * correctly-predicted-branch-commit paths (priority in that order).
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Synthesize from_ex_comb for IF Stage" always_comb, with the parent's
- * signals presented as ports and aliased back to their original names.
+ * The lower-priority transaction is materialized independently of the early
+ * qualifier.  The selected bus still gives early recovery absolute priority,
+ * while the independent PC/outcome sideband lets the BTB calculate both
+ * counter read-modify-write candidates in parallel.
  */
 
 module ex_comb_synthesizer #(
@@ -48,10 +49,18 @@ module ex_comb_synthesizer #(
     // Correctly-predicted branch commit path (BTB update only).
     input logic                                      i_correct_branch_commit_pending,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
-    // Slot-2 correct-branch training (lowest priority; the MFC only asserts
-    // pending_2 on cycles where every higher arm is quiet).
-    input logic                                      i_correct_branch_commit_pending_2,
+    // Raw held slot-2 correct-branch training state.  Higher-priority
+    // lower-arm sources still win in late_from_ex_comb, while the final early
+    // mux controls the actual transaction.  The producer separately gates
+    // when this held state is considered served and may be cleared.
+    input logic                                      i_correct_branch_commit_pending_2_raw,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q_2,
+
+    // Lower-priority BTB counter-RMW candidate.  These outputs never depend on
+    // i_early_mispredict_active; the selected bus below remains the sole source
+    // of actual BTB writes.
+    output logic [XLEN-1:0] o_btb_late_update_pc,
+    output logic            o_btb_late_update_taken,
 
     output riscv_pkg::from_ex_comb_t o_from_ex_comb
 );
@@ -81,18 +90,91 @@ module ex_comb_synthesizer #(
   assign mispredict_commit_q            = i_mispredict_commit_q;
   assign correct_branch_commit_pending  = i_correct_branch_commit_pending;
   assign correct_branch_commit_q        = i_correct_branch_commit_q;
-  logic correct_branch_commit_pending_2;
+  logic correct_branch_commit_pending_2_raw;
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
-  assign correct_branch_commit_pending_2 = i_correct_branch_commit_pending_2;
-  assign correct_branch_commit_q_2       = i_correct_branch_commit_q_2;
+  assign correct_branch_commit_pending_2_raw = i_correct_branch_commit_pending_2_raw;
+  assign correct_branch_commit_q_2           = i_correct_branch_commit_q_2;
 
+  riscv_pkg::from_ex_comb_t late_from_ex_comb;
   riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
+  // Compute all lower-priority effects without referring to
+  // early_mispredict_active.  Besides preserving the existing lower-arm
+  // priority, this gives the BTB a late RMW read address whose structural
+  // fan-in cannot include the early-recovery qualifier.
   always_comb begin
-    from_ex_comb_synth = '0;
+    late_from_ex_comb = '0;
+
+    if (mispredict_recovery_pending) begin
+      // Commit-time fallback misprediction recovery.
+      late_from_ex_comb.branch_taken          = 1'b1;
+      late_from_ex_comb.branch_target_address = mispredict_commit_q.redirect_pc;
+
+      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
+        // BTB update for conditional branches AND JAL. Previously JAL was
+        // excluded, causing every execution of a BTB-cold JAL to mispredict
+        // (~6500 total in CoreMark). Including JAL trains the BTB so only
+        // the first execution of each unique JAL site mispredicts (~100).
+        late_from_ex_comb.btb_update                         = 1'b1;
+        late_from_ex_comb.btb_update_pc                      = mispredict_commit_q.pc;
+        late_from_ex_comb.btb_update_target                  = mispredict_commit_q.branch_target;
+        late_from_ex_comb.btb_update_taken                   = mispredict_commit_q.branch_taken;
+        late_from_ex_comb.btb_update_compressed              = mispredict_commit_q.is_compressed;
+        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
+      end
+
+      if (mispredict_commit_q.has_checkpoint) begin
+        late_from_ex_comb.ras_misprediction       = 1'b1;
+        late_from_ex_comb.ras_restore_tos         = restored_ras_tos;
+        late_from_ex_comb.ras_restore_valid_count = restored_ras_valid_count;
+        if (mispredict_commit_q.is_return) begin
+          late_from_ex_comb.ras_pop_after_restore = 1'b1;
+        end else if (mispredict_commit_q.is_call) begin
+          late_from_ex_comb.ras_push_after_restore = 1'b1;
+          late_from_ex_comb.ras_push_address_after_restore = mispredict_commit_q.pc +
+              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
+        end
+      end
+    end else if (correct_branch_commit_pending) begin
+      // Correctly-predicted branch commit: update BTB (no PC redirect).
+      // Uses registered commit data to break rob_exception → BTB critical path.
+      if (correct_branch_commit_q.is_branch && !correct_branch_commit_q.is_jal &&
+          !correct_branch_commit_q.is_jalr) begin
+        late_from_ex_comb.btb_update = 1'b1;
+        late_from_ex_comb.btb_update_pc = correct_branch_commit_q.pc;
+        late_from_ex_comb.btb_update_target = correct_branch_commit_q.branch_target;
+        late_from_ex_comb.btb_update_taken = correct_branch_commit_q.branch_taken;
+        late_from_ex_comb.btb_update_compressed = correct_branch_commit_q.is_compressed;
+        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
+      end
+
+    end else if (correct_branch_commit_pending_2_raw) begin
+      // Slot-2 correctly-predicted branch retire.  This is the raw held
+      // capture, so it remains available as the hypothetical late candidate
+      // during early recovery.  The final early mux still selects the actual
+      // write, and the producer clears this capture only on a true service
+      // cycle.
+      if (correct_branch_commit_q_2.is_branch && !correct_branch_commit_q_2.is_jal &&
+          !correct_branch_commit_q_2.is_jalr) begin
+        late_from_ex_comb.btb_update = 1'b1;
+        late_from_ex_comb.btb_update_pc = correct_branch_commit_q_2.pc;
+        late_from_ex_comb.btb_update_target = correct_branch_commit_q_2.branch_target;
+        late_from_ex_comb.btb_update_taken = correct_branch_commit_q_2.branch_taken;
+        late_from_ex_comb.btb_update_compressed = correct_branch_commit_q_2.is_compressed;
+        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
+      end
+    end
+  end
+
+  // Preserve the original selected-transaction priority and latency.  Early
+  // recovery overrides the complete lower-priority transaction in this final
+  // mux; no lower-priority source is newly accepted or dropped.
+  always_comb begin
+    from_ex_comb_synth = late_from_ex_comb;
 
     if (early_mispredict_active) begin
       // Early misprediction recovery: redirect PC and update BTB
+      from_ex_comb_synth                                    = '0;
       from_ex_comb_synth.branch_taken                       = 1'b1;
       from_ex_comb_synth.branch_target_address              = early_mispredict_redirect_pc;
 
@@ -108,66 +190,34 @@ module ex_comb_synthesizer #(
       from_ex_comb_synth.ras_misprediction                  = 1'b1;
       from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
       from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
-    end else if (mispredict_recovery_pending) begin
-      // Commit-time fallback misprediction recovery.
-      from_ex_comb_synth.branch_taken          = 1'b1;
-      from_ex_comb_synth.branch_target_address = mispredict_commit_q.redirect_pc;
-
-      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
-        // BTB update for conditional branches AND JAL. Previously JAL was
-        // excluded, causing every execution of a BTB-cold JAL to mispredict
-        // (~6500 total in CoreMark). Including JAL trains the BTB so only
-        // the first execution of each unique JAL site mispredicts (~100).
-        from_ex_comb_synth.btb_update                         = 1'b1;
-        from_ex_comb_synth.btb_update_pc                      = mispredict_commit_q.pc;
-        from_ex_comb_synth.btb_update_target                  = mispredict_commit_q.branch_target;
-        from_ex_comb_synth.btb_update_taken                   = mispredict_commit_q.branch_taken;
-        from_ex_comb_synth.btb_update_compressed              = mispredict_commit_q.is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
-
-      if (mispredict_commit_q.has_checkpoint) begin
-        from_ex_comb_synth.ras_misprediction       = 1'b1;
-        from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
-        from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
-        if (mispredict_commit_q.is_return) begin
-          from_ex_comb_synth.ras_pop_after_restore = 1'b1;
-        end else if (mispredict_commit_q.is_call) begin
-          from_ex_comb_synth.ras_push_after_restore = 1'b1;
-          from_ex_comb_synth.ras_push_address_after_restore = mispredict_commit_q.pc +
-              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
-        end
-      end
-    end else if (correct_branch_commit_pending) begin
-      // Correctly-predicted branch commit: update BTB (no PC redirect).
-      // Uses registered commit data to break rob_exception → BTB critical path.
-      if (correct_branch_commit_q.is_branch && !correct_branch_commit_q.is_jal &&
-          !correct_branch_commit_q.is_jalr) begin
-        from_ex_comb_synth.btb_update = 1'b1;
-        from_ex_comb_synth.btb_update_pc = correct_branch_commit_q.pc;
-        from_ex_comb_synth.btb_update_target = correct_branch_commit_q.branch_target;
-        from_ex_comb_synth.btb_update_taken = correct_branch_commit_q.branch_taken;
-        from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q.is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
-
-    end else if (correct_branch_commit_pending_2) begin
-      // Slot-2 correctly-predicted branch retire (held capture, served on
-      // idle cycles only — training drops under sustained contention, the
-      // same lossy contract as the slot-1 correct-branch arm).
-      if (correct_branch_commit_q_2.is_branch && !correct_branch_commit_q_2.is_jal &&
-          !correct_branch_commit_q_2.is_jalr) begin
-        from_ex_comb_synth.btb_update = 1'b1;
-        from_ex_comb_synth.btb_update_pc = correct_branch_commit_q_2.pc;
-        from_ex_comb_synth.btb_update_target = correct_branch_commit_q_2.branch_target;
-        from_ex_comb_synth.btb_update_taken = correct_branch_commit_q_2.branch_taken;
-        from_ex_comb_synth.btb_update_compressed = correct_branch_commit_q_2.is_compressed;
-        from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
-      end
-
     end
   end
 
+  assign o_btb_late_update_pc    = late_from_ex_comb.btb_update_pc;
+  assign o_btb_late_update_taken = late_from_ex_comb.btb_update_taken;
   assign o_from_ex_comb = from_ex_comb_synth;
+
+`ifndef SYNTHESIS
+  // Producer-side checks keep the early and late BTB sideband contracts
+  // observable without constraining an integrated formal proof.
+  always_comb begin
+    if (!early_mispredict_active && !$isunknown({from_ex_comb_synth, late_from_ex_comb})) begin
+      p_non_early_transaction_is_late : assert (from_ex_comb_synth == late_from_ex_comb);
+    end
+
+    if (early_mispredict_active && !$isunknown(
+            {from_ex_comb_synth.btb_update,
+                     from_ex_comb_synth.btb_update_pc,
+                     from_ex_comb_synth.btb_update_taken,
+                     early_mispredict_pc,
+                     early_mispredict_branch_taken}
+        )) begin
+      p_early_btb_update_selected : assert (from_ex_comb_synth.btb_update);
+      p_early_btb_pc_selected : assert (from_ex_comb_synth.btb_update_pc == early_mispredict_pc);
+      p_early_btb_outcome_selected :
+      assert (from_ex_comb_synth.btb_update_taken == early_mispredict_branch_taken);
+    end
+  end
+`endif
 
 endmodule : ex_comb_synthesizer

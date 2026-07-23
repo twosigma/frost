@@ -41,6 +41,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 0
     dut.i_update_requires_pc_reg_handoff.value = 0
+    dut.i_early_update_active.value = 0
+    dut.i_early_update_pc.value = 0
+    dut.i_early_update_taken.value = 0
+    dut.i_late_update_pc.value = 0
+    dut.i_late_update_taken.value = 0
 
 
 async def _settle() -> None:
@@ -73,16 +78,42 @@ async def _update(
     taken: bool,
     compressed: bool = False,
     handoff: bool = False,
+    early_active: bool = False,
+    early_pc: int | None = None,
+    early_taken: bool | None = None,
+    late_pc: int | None = None,
+    late_taken: bool | None = None,
 ) -> None:
-    """Apply one BTB update and clear the update port."""
+    """Apply one selected BTB write with independent early/late RMW inputs."""
+    selected_early_pc = pc if early_active and early_pc is None else (early_pc or 0)
+    selected_early_taken = (
+        taken if early_active and early_taken is None else bool(early_taken)
+    )
+    selected_late_pc = pc if late_pc is None else late_pc
+    selected_late_taken = taken if late_taken is None else late_taken
+    if early_active:
+        # This is the integration contract guaranteed by the update-priority
+        # mux: the sideband chooses an RMW candidate, never a different write.
+        assert selected_early_pc == pc
+        assert selected_early_taken is taken
+    else:
+        assert selected_late_pc == pc
+        assert selected_late_taken is taken
+
     dut.i_update.value = 1
     dut.i_update_pc.value = pc
     dut.i_update_target.value = target
     dut.i_update_taken.value = int(taken)
     dut.i_update_compressed.value = int(compressed)
     dut.i_update_requires_pc_reg_handoff.value = int(handoff)
+    dut.i_early_update_active.value = int(early_active)
+    dut.i_early_update_pc.value = selected_early_pc
+    dut.i_early_update_taken.value = int(selected_early_taken)
+    dut.i_late_update_pc.value = selected_late_pc
+    dut.i_late_update_taken.value = int(selected_late_taken)
     await _advance_cycle(dut)
     dut.i_update.value = 0
+    dut.i_early_update_active.value = 0
     await _settle()
 
 
@@ -221,6 +252,201 @@ async def test_two_bit_counter_hysteresis_and_saturation(dut: Any) -> None:
     await _lookup(dut, PC_A)
 
     assert not dut.o_predicted_taken.value
+
+
+@cocotb.test()
+async def test_parallel_early_and_late_rmw_share_exact_counter_history(
+    dut: Any,
+) -> None:
+    """Alternating candidate selection preserves one cycle-exact hysteresis stream."""
+    await _setup_test(dut)
+
+    # Build StronglyTaken exclusively through the late candidate.  The inactive
+    # early sideband points at unrelated state so it cannot accidentally supply
+    # the selected result.
+    for _ in range(3):
+        await _update(
+            dut,
+            pc=PC_A,
+            target=TARGET_A,
+            taken=True,
+            early_pc=PC_B,
+            early_taken=False,
+        )
+
+    # The early canonical replica must have received those late-selected writes.
+    # One not-taken update therefore moves StronglyTaken -> WeaklyTaken and must
+    # keep predicting taken.
+    await _update(
+        dut,
+        pc=PC_A,
+        target=TARGET_B,
+        taken=False,
+        early_active=True,
+        late_pc=PC_B,
+        late_taken=False,
+    )
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
+
+    await _lookup(dut, PC_A, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
+    await _lookup_slot2_alt(dut, PC_A - 4)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
+
+    # Consecutive early writes exercise same-index next-edge visibility.
+    await _update(
+        dut,
+        pc=PC_A,
+        target=TARGET_A,
+        taken=False,
+        early_active=True,
+        late_pc=PC_B,
+        late_taken=True,
+    )
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=False, target=TARGET_A)
+
+    # Switch straight back to late.  Its canonical state must include both
+    # early-selected writes: WeaklyNotTaken + taken = WeaklyTaken.
+    await _update(
+        dut,
+        pc=PC_A,
+        target=TARGET_B,
+        taken=True,
+        early_pc=PC_B,
+        early_taken=False,
+    )
+    await _lookup(dut, PC_A)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies(
+    dut: Any,
+) -> None:
+    """An early-selected replacement initializes weakly and updates all replicas."""
+    await _setup_test(dut)
+
+    for _ in range(3):
+        await _update(
+            dut,
+            pc=PC_A,
+            target=TARGET_A,
+            taken=False,
+            early_pc=PC_B,
+            early_taken=True,
+        )
+
+    # PC_A_INDEX_ALIAS collides in the canonical table but has a different tag.
+    # A taken replacement must initialize WeaklyTaken, not increment PC_A's
+    # StronglyNotTaken counter.
+    await _update(
+        dut,
+        pc=PC_A_INDEX_ALIAS,
+        target=TARGET_B,
+        taken=True,
+        compressed=True,
+        handoff=True,
+        early_active=True,
+        late_pc=PC_A,
+        late_taken=False,
+    )
+
+    await _lookup(dut, PC_A)
+    assert not dut.o_btb_hit.value
+    await _lookup(dut, PC_A_INDEX_ALIAS)
+    _assert_slot1(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+    await _lookup(dut, PC_A_INDEX_ALIAS, slot2=True)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+    await _lookup_slot2_alt(dut, PC_A_INDEX_ALIAS - 4)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+
+    # A lower-priority update on the immediately following edge observes the
+    # replacement written by the early candidate.
+    await _update(
+        dut,
+        pc=PC_A_INDEX_ALIAS,
+        target=TARGET_A,
+        taken=False,
+        early_pc=PC_B,
+        early_taken=True,
+    )
+    await _lookup(dut, PC_A_INDEX_ALIAS)
+    _assert_slot1(dut, hit=True, taken=False, target=TARGET_A)
+
+
+@cocotb.test()
+async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
+    dut: Any,
+) -> None:
+    """Same-address lookups see old state before the edge and new state after it."""
+    await _setup_test(dut)
+
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
+    dut.i_pc.value = PC_A
+    dut.i_pc_2_base.value = (PC_A - 2) & 0xFFFFFFFF
+    dut.i_pc_2_use_alt.value = 0
+
+    dut.i_update.value = 1
+    dut.i_update_pc.value = PC_A
+    dut.i_update_target.value = TARGET_B
+    dut.i_update_taken.value = 0
+    dut.i_update_compressed.value = 1
+    dut.i_update_requires_pc_reg_handoff.value = 1
+    dut.i_early_update_active.value = 1
+    dut.i_early_update_pc.value = PC_A
+    dut.i_early_update_taken.value = 0
+    dut.i_late_update_pc.value = PC_B
+    dut.i_late_update_taken.value = 1
+    await _settle()
+
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    await _advance_cycle(dut)
+
+    _assert_slot1(
+        dut,
+        hit=True,
+        taken=False,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=False,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+
+    dut.i_update.value = 0
+    dut.i_early_update_active.value = 0
+    await _settle()
 
 
 @cocotb.test()

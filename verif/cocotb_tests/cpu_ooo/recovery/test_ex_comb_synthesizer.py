@@ -132,6 +132,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_mispredict_commit_q.value = 0
     dut.i_correct_branch_commit_pending.value = 0
     dut.i_correct_branch_commit_q.value = 0
+    dut.i_correct_branch_commit_pending_2_raw.value = 0
+    dut.i_correct_branch_commit_q_2.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -150,6 +152,23 @@ def _drive_correct_branch_commit(dut: Any, fields: Mapping[str, int | bool]) -> 
     """Drive the correctly-predicted branch commit path."""
     dut.i_correct_branch_commit_pending.value = 1
     dut.i_correct_branch_commit_q.value = _pack_correct_branch_commit(fields)
+
+
+def _drive_correct_branch_commit_2(dut: Any, fields: Mapping[str, int | bool]) -> None:
+    """Drive the lower-priority slot-2 correct-branch commit path."""
+    dut.i_correct_branch_commit_pending_2_raw.value = 1
+    dut.i_correct_branch_commit_q_2.value = _pack_correct_branch_commit(fields)
+
+
+def _assert_late_btb_candidate(
+    dut: Any,
+    *,
+    pc: int,
+    taken: bool,
+) -> None:
+    """Assert the independently formed lower-priority RMW candidate."""
+    assert int(dut.o_btb_late_update_pc.value) == (pc & MASK32)
+    assert bool(dut.o_btb_late_update_taken.value) is taken
 
 
 def _assert_btb_update(
@@ -177,6 +196,7 @@ async def test_idle_output_is_zero(dut: Any) -> None:
     output = _read_from_ex(dut)
 
     assert all(value == 0 or value is False for value in output.values())
+    _assert_late_btb_candidate(dut, pc=0, taken=False)
 
 
 @cocotb.test()
@@ -229,6 +249,44 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     assert output["ras_restore_valid_count"] == 5
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
+    # The selected transaction is early, while the independent lower-priority
+    # candidate still resolves the commit-time arm without an early qualifier.
+    _assert_late_btb_candidate(dut, pc=0x22222222, taken=True)
+
+
+@cocotb.test()
+async def test_early_selected_bus_keeps_raw_slot2_as_late_candidate(dut: Any) -> None:
+    """Early A owns the write while held slot-2 B remains the parallel late RMW."""
+    await _setup_test(dut)
+
+    dut.i_early_mispredict_active.value = 1
+    dut.i_early_mispredict_redirect_pc.value = 0x80001000
+    dut.i_early_mispredict_pc.value = 0x80001080
+    dut.i_early_mispredict_branch_target.value = 0x80001100
+    dut.i_early_mispredict_branch_taken.value = 0
+    dut.i_early_mispredict_is_compressed.value = 1
+    _drive_correct_branch_commit_2(
+        dut,
+        {
+            "pc": 0x80002080,
+            "branch_target": 0x80002100,
+            "branch_taken": True,
+            "is_branch": True,
+        },
+    )
+    await _settle()
+
+    output = _read_from_ex(dut)
+    assert output["branch_taken"]
+    assert output["branch_target_address"] == 0x80001000
+    _assert_btb_update(
+        output,
+        pc=0x80001080,
+        target=0x80001100,
+        taken=False,
+        compressed=True,
+    )
+    _assert_late_btb_candidate(dut, pc=0x80002080, taken=True)
 
 
 @cocotb.test()
@@ -255,6 +313,7 @@ async def test_commit_mispredict_branch_redirects_and_updates_btb(dut: Any) -> N
     assert output["branch_target_address"] == 0x100
     _assert_btb_update(output, pc=0x80, target=0x180, taken=True, compressed=True)
     assert not output["ras_misprediction"]
+    _assert_late_btb_candidate(dut, pc=0x80, taken=True)
 
 
 @cocotb.test()
@@ -279,6 +338,7 @@ async def test_commit_mispredict_jal_updates_btb(dut: Any) -> None:
 
     assert output["branch_target_address"] == 0x400
     _assert_btb_update(output, pc=0x300, target=0x500, taken=True, compressed=False)
+    _assert_late_btb_candidate(dut, pc=0x300, taken=True)
 
 
 @cocotb.test()
@@ -395,6 +455,66 @@ async def test_correct_branch_commit_updates_btb_without_redirect(dut: Any) -> N
     assert output["branch_target_address"] == 0
     _assert_btb_update(output, pc=0xB00, target=0xB80, taken=False, compressed=True)
     assert not output["ras_misprediction"]
+    _assert_late_btb_candidate(dut, pc=0xB00, taken=False)
+
+
+@cocotb.test()
+async def test_late_candidate_preserves_correct_commit_slot_priority(dut: Any) -> None:
+    """Slot 1 beats slot 2, and slot 2 is selected when it is the only arm."""
+    await _setup_test(dut)
+
+    _drive_correct_branch_commit(
+        dut,
+        {
+            "pc": 0xD00,
+            "branch_target": 0xD80,
+            "branch_taken": False,
+            "is_branch": True,
+        },
+    )
+    _drive_correct_branch_commit_2(
+        dut,
+        {
+            "pc": 0xE00,
+            "branch_target": 0xE80,
+            "branch_taken": True,
+            "is_branch": True,
+        },
+    )
+    await _settle()
+
+    output = _read_from_ex(dut)
+    _assert_btb_update(
+        output,
+        pc=0xD00,
+        target=0xD80,
+        taken=False,
+        compressed=False,
+    )
+    _assert_late_btb_candidate(dut, pc=0xD00, taken=False)
+
+    _clear_inputs(dut)
+    _drive_correct_branch_commit_2(
+        dut,
+        {
+            "pc": 0xE00,
+            "branch_target": 0xE80,
+            "branch_taken": True,
+            "is_branch": True,
+            "is_compressed": True,
+        },
+    )
+    await _settle()
+
+    output = _read_from_ex(dut)
+    _assert_btb_update(
+        output,
+        pc=0xE00,
+        target=0xE80,
+        taken=True,
+        compressed=True,
+    )
+    _assert_late_btb_candidate(dut, pc=0xE00, taken=True)
 
 
 @cocotb.test()

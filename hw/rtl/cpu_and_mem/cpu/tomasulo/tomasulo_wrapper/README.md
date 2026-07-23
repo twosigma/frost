@@ -205,6 +205,16 @@ invariant, and the adapter uses `i_fu_result.valid` alone as the wide
 `held_result` write enable; CDB grant and adapter-pending remain confined to
 the narrow state logic. ALU1 retains the default payload-write implementation.
 
+Before arbitration, the wrapper constructs one effective ALU2 packet. Its
+metadata and upper 32 value bits use the ordinary adapter-or-test-injection
+packet; its lower 32 value bits select directly among live shim, held adapter,
+and test-injection data. This single three-arm mux avoids traversing the
+adapter's live-payload mux and a second wrapper payload mux. The same packet is
+then eligible for either lane of the shared top-two tree, with formal
+equivalence against the original generic slot-7 packet. Split-RS wrapper
+cocotb tests exercise all three source states, including a held ALU2 packet
+that must override a deliberately divergent slot-7 injection.
+
 ## Performance counters
 
 The wrapper owns 64 live performance counters (in

@@ -925,14 +925,19 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
     dut_if.clear_partial_flush()
 
     assert dut_if.count == 0, f"Tag 5 should be flushed, count={dut_if.count}"
+    assert not dut_if.mem_outstanding, "Killed response owner remained live after flush"
     assert model.mem_outstanding, "Model should keep mem_outstanding (drain)"
 
     # Late memory response arrives — should be discarded (drain)
     dut_if.drive_mem_response(0xDEAD_BEEF)
     model.mem_response_drain(0xDEAD_BEEF)
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_fill.value), "Late stale response refilled L0"
+    assert not dut_if.read_fu_complete().valid, "Late stale response completed a killed load"
     await dut_if.step()
     dut_if.clear_mem_response()
 
+    assert not dut_if.mem_outstanding
     assert not model.mem_outstanding, "mem_outstanding should be cleared after drain"
     assert dut_if.count == 0, "No valid entries after drain"  # type: ignore[unreachable]
 
@@ -943,6 +948,75 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
     dut_if.clear_alloc()
 
     assert dut_if.count == 1, "Should be able to allocate after drain"
+
+
+# ============================================================================
+# Test 22b: Partial-flush-coincident response warms L0 but is still discarded
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None:
+    """A killed load's coincident ordinary response may fill L0, not complete.
+
+    The branch-recovery flush does not change architectural memory, so an
+    ordinary non-MMIO response remains a valid cache image.  Its speculative
+    LQ owner must nevertheless be removed without producing an FU completion.
+    """
+    dut_if, model = await setup(dut)
+
+    addr = 0x1800
+    returned_word = 0xD15C_A11E
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(True)
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=addr)
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Expected the soon-to-be-flushed load to issue"
+    assert mem_req["addr"] == addr
+    model_req = model.issue_to_memory(True, SQForwardResult())
+    assert model_req is not None and model_req["addr"] == addr
+    await dut_if.step()
+
+    # Tag 5 is younger than the tag-2 flush boundary.  Present its response in
+    # the same cycle as the flush: the cache fill pulse must fire, while the
+    # LQ response-accept path remains suppressed.
+    dut_if.drive_partial_flush(flush_tag=2, early_recovery=True)
+    dut_if.drive_mem_response(returned_word)
+    model.partial_flush(2, 0)
+    model.mem_response_drain(returned_word)
+    await Timer(1, unit="ns")
+    assert bool(dut.o_l0_fill.value), (
+        "Safe ordinary response did not fill L0 on the coincident partial flush"
+    )
+    assert not dut_if.read_fu_complete().valid, (
+        "Killed load completed while its response was being drained"
+    )
+
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    dut_if.clear_mem_response()
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+
+    assert dut_if.empty, "Partial flush did not remove the response owner"
+    assert dut_if.count == 0
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=2)).valid, (
+        "Drained response produced a delayed FU completion"
+    )
+
+    # A later architectural load to the same word must consume the retained
+    # memory image from L0 without issuing another memory request.
+    await alloc_and_addr(dut_if, model, rob_tag=6, address=addr)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    result, used_fast_path = await complete_load_fast_path_or_memory(
+        dut_if, model, mem_data=returned_word, expected_addr=addr
+    )
+    assert used_fast_path, "Coincident partial-flush response did not warm L0"
+    assert result.valid and result.tag == 6
+    assert result.value == returned_word
 
 
 # ============================================================================

@@ -52,6 +52,11 @@ else ifeq ($(TOPLEVEL),reservation_station)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),rs_issue2_selector)
+# Isolated balanced INT-RS second-port selector unit test
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cdb_arbiter)
 # CDB arbiter unit test
 COMPILE_ARGS := \

@@ -83,6 +83,16 @@ module if_stage #(
 ) (
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
+    // Captured early-recovery PC/outcome bypass the selected BTB-update mux for
+    // the parallel early counter RMW.  i_from_ex_comb remains the only write
+    // transaction and therefore retains all update-source priority semantics.
+    input logic i_btb_early_update_active,
+    input logic [XLEN-1:0] i_btb_early_update_pc,
+    input logic i_btb_early_update_taken,
+    // Independently selected lower-priority counter-RMW candidate.  It never
+    // controls an actual BTB write.
+    input logic [XLEN-1:0] i_btb_late_update_pc,
+    input logic i_btb_late_update_taken,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
@@ -448,6 +458,11 @@ module if_stage #(
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
       .i_btb_update_requires_pc_reg_handoff(i_from_ex_comb.btb_update_requires_pc_reg_handoff),
+      .i_btb_early_update_active,
+      .i_btb_early_update_pc,
+      .i_btb_early_update_taken,
+      .i_btb_late_update_pc,
+      .i_btb_late_update_taken,
 
       // RAS inputs (pipelined — breaks flush → RAS → prediction_used path)
       // Registered versions of the instruction/validity signals.  See

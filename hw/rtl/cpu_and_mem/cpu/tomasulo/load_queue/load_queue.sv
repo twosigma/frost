@@ -1296,6 +1296,7 @@ module load_queue #(
   // ===========================================================================
   logic            cache_lookup_hit;
   logic [XLEN-1:0] cache_lookup_data;
+  logic            cache_fill_response_valid;
   logic            cache_fill_valid;
   logic [XLEN-1:0] cache_fill_addr;
   logic [XLEN-1:0] cache_fill_data;
@@ -1557,14 +1558,27 @@ module load_queue #(
     end
   end
 
-  // Cache fill: fill L0 cache on valid memory response (not for drained/flushed).
+  // Cache fill uses a response-valid predicate separate from architectural LQ
+  // response acceptance.  A partial flush can kill the outstanding LQ entry in
+  // the exact cycle its ordinary, side-effect-free memory response arrives.
+  // The completion must still be drained, but the returned memory image is safe
+  // to install in the persistent L0: branch recovery does not change
+  // architectural memory, and the L0 already intentionally survives partial
+  // flushes.  Keeping issued_entry_flushed out of this predicate also prevents
+  // the early-flush tag/age comparison from feeding all 128 L0 valid-bit Ds.
+  //
+  // Full-flush-cycle and already-pending stale responses remain ineligible.
+  // MMIO/LR/AMO exclusions and the cached-tier store-invalidation guards below
+  // are unchanged.
   // issued_addr already encodes the FLD phase 1 +4 (it was captured from
   // launch_mem_issue_addr, which applied the +4 inside stage_mem_issue_addr),
   // so the fill address is just the snapshot directly. Critically, this path
   // no longer goes through the lq_address_issued LUTRAM read or the +4 carry
   // chain, which were the dominant prefix of the cone reaching the data
   // memory's ADDRARDADDR pin via lq_l0_cache.lookup_fill_bypass.
-  assign cache_fill_valid = accept_mem_response
+  assign cache_fill_response_valid = i_mem_read_valid && mem_outstanding &&
+      !i_flush_all && !drop_mem_response_pending && lq_valid[issued_idx];
+  assign cache_fill_valid = cache_fill_response_valid
       && !issued_is_mmio && !issued_is_lr && !issued_is_amo
       && !(issued_is_cached &&
            (issued_cached_line_invalidated || issued_cached_line_invalidate_now));
@@ -2678,11 +2692,12 @@ module load_queue #(
     end
   end
 
-  // i_mem_read_valid only asserts when we have an outstanding read.
-  // The drain approach keeps mem_outstanding set after partial flush of
-  // the issued entry, so a late response is allowed (and discarded).
+  // A memory response belongs either to the live outstanding read or to the
+  // explicitly armed stale-response drain. A partial flush moves a killed
+  // request from mem_outstanding to drop_mem_response_pending, so allowing the
+  // latter case is necessary for formal to explore the late-drain behavior.
   always_comb begin
-    assume (!i_mem_read_valid || mem_outstanding);
+    assume (!i_mem_read_valid || mem_outstanding || drop_mem_response_pending);
   end
 
   // -------------------------------------------------------------------------
@@ -2789,6 +2804,43 @@ module load_queue #(
     if (i_rst_n && i_flush_all) begin
       p_no_accept_during_full_flush : assert (!accept_mem_response);
       p_no_l0_fill_during_full_flush : assert (!cache_fill_valid);
+    end
+  end
+
+  // A response coincident with a partial flush may warm the persistent L0,
+  // but it remains a drained response for the killed speculative LQ owner.
+  // This is the deliberate boundary that keeps the flush-tag age comparator
+  // out of the L0 valid-bit write cone without changing architectural
+  // completion behavior.
+  always_comb begin
+    if (i_rst_n && issued_entry_flushed && cache_fill_response_valid &&
+        !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
+        !(issued_is_cached &&
+          (issued_cached_line_invalidated || issued_cached_line_invalidate_now))) begin
+      p_partial_flush_response_fills_l0 : assert (cache_fill_valid);
+      p_partial_flush_fill_not_accepted : assert (!accept_mem_response);
+      p_partial_flush_fill_is_drained : assert (drop_mem_response_now);
+      p_partial_flush_fill_skips_lq_data_write :
+        assert (!lq_data_lo_we[0] && !lq_data_hi_we[0]);
+    end
+  end
+
+  // The partial-flush kill above is the only condition intentionally removed
+  // from the response-accept predicate. Every other L0 fill must still be an
+  // architecturally accepted LQ response.
+  always_comb begin
+    if (i_rst_n && cache_fill_valid) begin
+      p_fill_diverges_from_accept_only_for_kill :
+        assert (issued_entry_flushed || accept_mem_response);
+    end
+  end
+
+  // Once a stale drain is armed, its eventual response must have no LQ or
+  // persistent-cache side effect.
+  always_comb begin
+    if (i_rst_n && drop_mem_response_pending) begin
+      p_pending_drain_not_accepted : assert (!accept_mem_response);
+      p_pending_drain_does_not_fill_l0 : assert (!cache_fill_valid);
     end
   end
 

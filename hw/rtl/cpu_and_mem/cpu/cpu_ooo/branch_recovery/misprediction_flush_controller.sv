@@ -91,9 +91,11 @@ module misprediction_flush_controller #(
     output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id,
     // Slot-2 correct-branch side effects: a second, direct checkpoint-free
     // channel (never contends with the recovery arms of the primary mux)
-    // and a held BTB-training capture served when the primary channel is
-    // idle (training is lossy by design; the free pulse is not).
-    output logic o_correct_branch_commit_pending_2,
+    // and a held BTB-training capture.  Export the raw held bit, without the
+    // early-recovery service gate, so the parallel late BTB RMW address has no
+    // combinational early-active dependency.  correct_branch_2_served remains
+    // internal and still controls exactly when the held capture is cleared.
+    output logic o_correct_branch_commit_pending_2_raw,
     output riscv_pkg::correct_branch_commit_capture_t o_correct_branch_commit_q_2,
     output logic o_checkpoint_free_2,
     output logic [riscv_pkg::CheckpointIdWidth-1:0] o_checkpoint_free_id_2
@@ -403,21 +405,21 @@ module misprediction_flush_controller #(
   end
 
   // --- Output wiring.
-  assign o_mispredict_commit_q             = mispredict_commit_q;
-  assign o_mispredict_recovery_pending     = mispredict_recovery_pending;
-  assign o_fence_i_target_pc               = fence_i_target_pc;
-  assign o_correct_branch_commit_pending   = correct_branch_commit_pending;
-  assign o_correct_branch_commit_pending_2 = correct_branch_2_served;
-  assign o_correct_branch_commit_q_2       = correct_branch_commit_q_2;
-  assign o_correct_branch_commit_q         = correct_branch_commit_q;
-  assign o_flush_pipeline                  = flush_pipeline;
-  assign o_dispatch_flush                  = dispatch_flush;
-  assign o_full_flush_side_effect_kill     = full_flush_side_effect_kill;
-  assign o_frontend_state_flush            = frontend_state_flush;
-  assign o_flush_en                        = flush_en;
-  assign o_flush_tag                       = flush_tag;
-  assign o_flush_all                       = flush_all;
-  assign o_flush_all_flat                  = trap_taken_reg || mret_taken_reg || fence_i_flush;
+  assign o_mispredict_commit_q                 = mispredict_commit_q;
+  assign o_mispredict_recovery_pending         = mispredict_recovery_pending;
+  assign o_fence_i_target_pc                   = fence_i_target_pc;
+  assign o_correct_branch_commit_pending       = correct_branch_commit_pending;
+  assign o_correct_branch_commit_pending_2_raw = correct_branch_commit_pending_2;
+  assign o_correct_branch_commit_q_2           = correct_branch_commit_q_2;
+  assign o_correct_branch_commit_q             = correct_branch_commit_q;
+  assign o_flush_pipeline                      = flush_pipeline;
+  assign o_dispatch_flush                      = dispatch_flush;
+  assign o_full_flush_side_effect_kill         = full_flush_side_effect_kill;
+  assign o_frontend_state_flush                = frontend_state_flush;
+  assign o_flush_en                            = flush_en;
+  assign o_flush_tag                           = flush_tag;
+  assign o_flush_all                           = flush_all;
+  assign o_flush_all_flat                      = trap_taken_reg || mret_taken_reg || fence_i_flush;
 
 `ifndef SYNTHESIS
   // o_flush_all_flat must be bit-identical to the priority-chain o_flush_all.

@@ -55,7 +55,10 @@ underlying FU's pipeline depth:
   tag queue and a two-deep hold buffer at the tail to absorb
   back-to-back completions. A fixed-priority arbiter drains the four
   hold buffers into a shared 4-entry result FIFO. Credit-based
-  back-pressure prevents overflow.
+  back-pressure prevents overflow. The sqrt datapaths split unpack/LZC
+  from subnormal normalization and exponent adjustment at the front;
+  this preserves the fixed 36/65-cycle contracts without a wide
+  post-compute padding register.
 
 ## Common patterns
 
