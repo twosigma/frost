@@ -17,10 +17,12 @@
 """Generate Vivado-friendly init files for imem_predecode.sv.
 
 The runtime instruction memory is split into even/odd banks, and its predecode
-sideband and narrow compressed/predicate/data replicas are stored in separate
-memories. Simulation can derive those memories inside SystemVerilog from
-sw.mem, but Vivado is much more reliable when each synthesized memory is
-initialized directly with a file.
+sideband and narrow timing replicas are stored in separate memories. The
+dedicated one-bit Slot2StartValidLo images keep that PC-critical field out of
+the sideband BRAM without overfilling the existing seven-lane RAM64M8-shaped
+replica. Simulation can derive those memories inside SystemVerilog from sw.mem,
+but Vivado is much more reliable when each synthesized memory is initialized
+directly with a file.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 12
-FAST_REPLICA_WIDTH = 6
+FAST_REPLICA_WIDTH = 7
 SB_IS_COMPRESSED_LO = 0
 SB_IS_COMPRESSED_HI = 1
 SB_EVEN_LOCAL_PAIR_VALID = 2
@@ -169,15 +171,23 @@ def make_sideband(word: int) -> int:
 
 
 def make_fast_replica(word: int, sideband: int | None = None) -> int:
-    """Return ``{C[13:12], C[15], high-rd-is-x2, comp-hi, comp-lo}``."""
+    """Return the seven-bit low-BRAM timing replica for one instruction word."""
     if sideband is None:
         sideband = make_sideband(word)
     return (
-        (((word >> 28) & 0b11) << 4)
+        (((sideband >> SB_ALLOWS_SLOT2_AFTER_HI) & 1) << 6)
+        | (((word >> 28) & 0b11) << 4)
         | (((word >> 31) & 1) << 3)
         | (int(((word >> 23) & 0x1F) == 2) << 2)
         | (sideband & 0b11)
     )
+
+
+def make_slot2_start_valid_lo_replica(word: int, sideband: int | None = None) -> int:
+    """Return the one-bit low-word slot-2-start-valid timing replica."""
+    if sideband is None:
+        sideband = make_sideband(word)
+    return (sideband >> SB_SLOT2_START_VALID_LO) & 1
 
 
 def write_word_file(path: Path, values: list[int], width_hex_digits: int) -> None:
@@ -223,6 +233,8 @@ def main() -> int:
     parser.add_argument("--odd-sideband", type=Path, required=True)
     parser.add_argument("--even-compressed", type=Path, required=True)
     parser.add_argument("--odd-compressed", type=Path, required=True)
+    parser.add_argument("--even-slot2-start-valid-lo", type=Path, required=True)
+    parser.add_argument("--odd-slot2-start-valid-lo", type=Path, required=True)
     args = parser.parse_args()
 
     words = parse_verilog_hex(args.sw_mem)
@@ -238,7 +250,7 @@ def main() -> int:
     write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
     # The legacy *_compressed.mem images are the narrow LUTRAM replicas used
     # by the X3 frontend:
-    # {word[29:28], word[31], word[27:23] == x2,
+    # {allows-slot2-after-hi, word[29:28], word[31], word[27:23] == x2,
     #  compressed-hi, compressed-lo}.
     write_word_file(
         args.even_compressed,
@@ -255,6 +267,22 @@ def main() -> int:
             for word, sideband in zip(odd_words, odd_sideband, strict=True)
         ],
         fast_replica_hex_digits,
+    )
+    write_word_file(
+        args.even_slot2_start_valid_lo,
+        [
+            make_slot2_start_valid_lo_replica(word, sideband)
+            for word, sideband in zip(even_words, even_sideband, strict=True)
+        ],
+        1,
+    )
+    write_word_file(
+        args.odd_slot2_start_valid_lo,
+        [
+            make_slot2_start_valid_lo_replica(word, sideband)
+            for word, sideband in zip(odd_words, odd_sideband, strict=True)
+        ],
+        1,
     )
 
     return 0

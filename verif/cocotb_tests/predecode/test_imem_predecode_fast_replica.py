@@ -12,10 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Programming/fetch checks for imem_predecode's six-bit fast replica.
+"""Programming/fetch checks for imem_predecode's narrow timing replicas.
 
-The timing replica carries raw high-parcel ``C[15]``, ``C[13]``, and
-``C[12]``, the ``rd == x2`` predicate, and both compressed-size flags. This bench writes both
+The seven-bit RAM64M8-shaped replica carries raw high-parcel ``C[15]``,
+``C[13]``, and ``C[12]``, the ``rd == x2`` predicate, both compressed-size
+flags, and the high-parcel allows-slot-2 predicate. The two replicated high
+parcel fields reconstruct both compressed and native pairability. A one-bit
+replica carries low-parcel slot-2-start validity. This bench writes both
 interleaved banks through the programming port, then checks complete data,
 predicate, and sideband windows through both PC[2] swap cases.
 """
@@ -53,6 +56,126 @@ def _load_generator() -> ModuleType:
 _GENERATOR = _load_generator()
 SIDEBAND_WIDTH = _GENERATOR.SIDEBAND_WIDTH
 SIDEBAND_MASK = (1 << SIDEBAND_WIDTH) - 1
+FAST_SIDEBAND_MASK = (
+    0b11
+    | (1 << _GENERATOR.SB_ALLOWS_SLOT2_AFTER_HI)
+    | (1 << _GENERATOR.SB_PAIRABLE_COMPRESSED_HI)
+    | (1 << _GENERATOR.SB_PAIRABLE_NATIVE_HI)
+    | (1 << _GENERATOR.SB_SLOT2_START_VALID_LO)
+)
+
+
+def _with_hi_opcode(word: int, opcode: int) -> int:
+    """Replace the high parcel's native opcode, including its size quadrant."""
+    return (word & ~(0x7F << 16)) | ((opcode & 0x7F) << 16)
+
+
+def _with_lo_opcode(word: int, opcode: int) -> int:
+    """Replace the low parcel's native opcode, including its size quadrant."""
+    return (word & ~0x7F) | (opcode & 0x7F)
+
+
+def _with_hi_size_allows_row(word: int, *, compressed: bool, allows: bool) -> int:
+    """Set one row of the high-size/high-allows reconstruction truth table."""
+    if not compressed:
+        opcode = 0b011_0011 if allows else _GENERATOR.OPC_CSR
+        return _with_hi_opcode(word, opcode)
+
+    # C.ADDI (funct3=000) is non-control; C.J (funct3=101) is control.
+    funct3 = 0b000 if allows else 0b101
+    hi = (word >> 16) & 0xFFFF
+    hi = (hi & ~((0x7 << 13) | 0x3)) | (funct3 << 13) | 0b01
+    return (word & 0xFFFF) | (hi << 16)
+
+
+def _expected_compressed_control(parcel: int) -> bool:
+    """Independently classify compressed control-flow instructions."""
+    funct3 = (parcel >> 13) & 0x7
+    funct4 = (parcel >> 12) & 0xF
+    rs1 = (parcel >> 7) & 0x1F
+    rs2 = (parcel >> 2) & 0x1F
+    op = parcel & 0x3
+    return (op == 0b01 and funct3 in {0b001, 0b101, 0b110, 0b111}) or (
+        op == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
+    )
+
+
+def _expected_allows_slot2_after_hi(word: int) -> int:
+    """Independently model the timing-facing high allows-slot-2 lane."""
+    hi = (word >> 16) & 0xFFFF
+    opcode = hi & 0x7F
+    compressed = (hi & 0x3) != 0b11
+    if compressed:
+        return int(not _expected_compressed_control(hi))
+
+    native_control = opcode in {
+        _GENERATOR.OPC_BRANCH,
+        _GENERATOR.OPC_JAL,
+        _GENERATOR.OPC_JALR,
+    }
+    native_serialize = opcode in {
+        _GENERATOR.OPC_CSR,
+        _GENERATOR.OPC_MISC_MEM,
+        _GENERATOR.OPC_AMO,
+    }
+    return int(not native_control and not native_serialize)
+
+
+def _expected_pairable_compressed_hi(word: int) -> int:
+    """Reconstruct compressed-high pairability from size and allows."""
+    compressed = ((word >> 16) & 0x3) != 0b11
+    return int(compressed and _expected_allows_slot2_after_hi(word))
+
+
+def _expected_pairable_native_hi(word: int) -> int:
+    """Reconstruct native-high pairability from size and allows."""
+    compressed = ((word >> 16) & 0x3) != 0b11
+    return int(not compressed and _expected_allows_slot2_after_hi(word))
+
+
+def _expected_slot2_start_valid_lo(word: int) -> int:
+    """Independently model the dedicated bit-10 timing replica."""
+    lo = word & 0xFFFF
+    opcode = lo & 0x7F
+    compressed = (lo & 0x3) != 0b11
+    native_serialize = opcode in {
+        _GENERATOR.OPC_CSR,
+        _GENERATOR.OPC_MISC_MEM,
+        _GENERATOR.OPC_AMO,
+    }
+    native_fp_compute = opcode in {
+        _GENERATOR.OPC_OP_FP,
+        _GENERATOR.OPC_FMADD,
+        _GENERATOR.OPC_FMSUB,
+        _GENERATOR.OPC_FNMSUB,
+        _GENERATOR.OPC_FNMADD,
+    }
+    return int(compressed or not (native_serialize or native_fp_compute))
+
+
+def _expected_fast_replica(word: int) -> int:
+    """Independently pack the seven LUTRAM lanes used by RTL and init files."""
+    compressed = int((word & 0x3) != 0b11) | (int(((word >> 16) & 0x3) != 0b11) << 1)
+    return (
+        (_expected_allows_slot2_after_hi(word) << 6)
+        | (((word >> 28) & 0b11) << 4)
+        | (((word >> 31) & 1) << 3)
+        | (int(((word >> 23) & 0x1F) == 2) << 2)
+        | compressed
+    )
+
+
+def _check_offline_init_replica(words: list[int]) -> None:
+    """Check exact even/odd init-bank splitting and every generated LUTRAM bit."""
+    even_words, odd_words = _GENERATOR.split_words(dict(enumerate(words)), len(words))
+    assert even_words == words[::2]
+    assert odd_words == words[1::2]
+    for bank_words in (even_words, odd_words):
+        for word in bank_words:
+            assert _GENERATOR.make_fast_replica(word) == _expected_fast_replica(word)
+            assert _GENERATOR.make_slot2_start_valid_lo_replica(
+                word
+            ) == _expected_slot2_start_valid_lo(word)
 
 
 def _make_word(
@@ -70,9 +193,7 @@ def _make_word(
     word |= (fast_raw_bits & 1) << 28  # C[12]
     word = (word & ~(0x1F << 23)) | ((hi_rd & 0x1F) << 23)
     word = (word & ~0x3) | (0b01 if compressed_lo else 0b11)
-    word = (word & ~(0x3 << 16)) | (
-        (0b01 if compressed_hi else 0b11) << 16
-    )
+    word = (word & ~(0x3 << 16)) | ((0b01 if compressed_hi else 0b11) << 16)
     return word
 
 
@@ -105,17 +226,38 @@ async def _read_word(dut: Any, word_index: int, expected: int) -> None:
 
 
 def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
-    """Check full predecode plus the two fields supplied by the fast mirror."""
+    """Check full predecode plus every field supplied by the fast mirror."""
     expected = _GENERATOR.make_sideband(expected_word)
     assert got == expected, f"{label} sideband 0x{got:03x}, want 0x{expected:03x}"
 
-    expected_compressed = (
-        int((expected_word & 0x3) != 0b11)
-        | (int(((expected_word >> 16) & 0x3) != 0b11) << 1)
+    expected_compressed = int((expected_word & 0x3) != 0b11) | (
+        int(((expected_word >> 16) & 0x3) != 0b11) << 1
     )
     assert got & 0x3 == expected_compressed, (
         f"{label} compressed mirror 0b{got & 0x3:02b}, "
         f"want 0b{expected_compressed:02b}"
+    )
+    assert got & FAST_SIDEBAND_MASK == expected & FAST_SIDEBAND_MASK, (
+        f"{label} fast-sideband mirror 0x{got & FAST_SIDEBAND_MASK:03x}, "
+        f"want 0x{expected & FAST_SIDEBAND_MASK:03x}"
+    )
+    fast_replica = _GENERATOR.make_fast_replica(expected_word, expected)
+    allows_slot2_after_hi = _expected_allows_slot2_after_hi(expected_word)
+    pairable_compressed_hi = _expected_pairable_compressed_hi(expected_word)
+    pairable_native_hi = _expected_pairable_native_hi(expected_word)
+    slot2_start_valid_lo = _expected_slot2_start_valid_lo(expected_word)
+    assert (
+        (expected >> _GENERATOR.SB_ALLOWS_SLOT2_AFTER_HI) & 1
+    ) == allows_slot2_after_hi
+    assert (
+        (expected >> _GENERATOR.SB_PAIRABLE_COMPRESSED_HI) & 1
+    ) == pairable_compressed_hi
+    assert (expected >> _GENERATOR.SB_PAIRABLE_NATIVE_HI) & 1 == pairable_native_hi
+    assert (expected >> _GENERATOR.SB_SLOT2_START_VALID_LO) & 1 == slot2_start_valid_lo
+    assert fast_replica == _expected_fast_replica(expected_word)
+    assert (
+        _GENERATOR.make_slot2_start_valid_lo_replica(expected_word, expected)
+        == slot2_start_valid_lo
     )
 
 
@@ -136,9 +278,8 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
         f"want 0x{expected_data:016x}"
     )
     got_hi_rd_is_x2 = int(dut.o_port_b_hi_rd_is_x2.value)
-    expected_hi_rd_is_x2 = (
-        int(((current >> 23) & 0x1F) == 2)
-        | (int(((next_word >> 23) & 0x1F) == 2) << 1)
+    expected_hi_rd_is_x2 = int(((current >> 23) & 0x1F) == 2) | (
+        int(((next_word >> 23) & 0x1F) == 2) << 1
     )
     assert got_hi_rd_is_x2 == expected_hi_rd_is_x2, (
         f"window {current_index}: hi-rd-x2 0b{got_hi_rd_is_x2:02b}, "
@@ -161,7 +302,7 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
 
 @cocotb.test()
 async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
-    """Cover every replicated C-bit triple and both overwrite directions per bank."""
+    """Cover every replica field, bank-swap direction, and overwrite transition."""
     words = [0] * WORD_COUNT
     for fast_raw_bits in range(8):
         even_index = 2 * fast_raw_bits
@@ -181,6 +322,52 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             compressed_lo=bool(odd_fast_raw_bits & 2),
             compressed_hi=bool(odd_fast_raw_bits & 4),
         )
+
+    # Exercise both values of every predicate replica in each physical bank,
+    # including compressed, ordinary native, serialize, and FP-compute cases.
+    high_size_allows_rows = [
+        (False, False),
+        (False, True),
+        (True, False),
+        (True, True),
+    ]
+    low_opcodes = [0b000_0001, 0b011_0011, _GENERATOR.OPC_CSR, _GENERATOR.OPC_OP_FP]
+    for case_index in range(8):
+        compressed_hi, allows_hi = high_size_allows_rows[
+            case_index % len(high_size_allows_rows)
+        ]
+        low_opcode = low_opcodes[case_index % len(low_opcodes)]
+        for word_index in (2 * case_index, 2 * case_index + 1):
+            words[word_index] = _with_hi_size_allows_row(
+                words[word_index], compressed=compressed_hi, allows=allows_hi
+            )
+            words[word_index] = _with_lo_opcode(words[word_index], low_opcode)
+    for bank_parity in (0, 1):
+        observed_size_allows_rows = {
+            (
+                int(((word >> 16) & 0x3) != 0b11),
+                _expected_allows_slot2_after_hi(word),
+            )
+            for word in words[bank_parity::2]
+        }
+        assert observed_size_allows_rows == {(0, 0), (0, 1), (1, 0), (1, 1)}
+        mirrored_allows_values = {
+            _expected_allows_slot2_after_hi(word) for word in words[bank_parity::2]
+        }
+        assert mirrored_allows_values == {0, 1}
+        rebuilt_compressed_values = {
+            _expected_pairable_compressed_hi(word) for word in words[bank_parity::2]
+        }
+        assert rebuilt_compressed_values == {0, 1}
+        rebuilt_native_values = {
+            _expected_pairable_native_hi(word) for word in words[bank_parity::2]
+        }
+        assert rebuilt_native_values == {0, 1}
+        start_valid_values = {
+            _expected_slot2_start_valid_lo(word) for word in words[bank_parity::2]
+        }
+        assert start_valid_values == {0, 1}
+    _check_offline_init_replica(words)
 
     dut.i_port_a_enable.value = 0
     dut.i_port_a_byte_address.value = 0
@@ -207,35 +394,64 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     # replacement payloads make the complete fetched-word comparison catch any
     # stale BRAM field as well as a stale replica lane.
     overwrites = {
-        0: _make_word(
-            0x0BAD_C0DE,
-            fast_raw_bits=0b111,
-            hi_rd=2,
-            compressed_lo=True,
-            compressed_hi=False,
+        0: _with_hi_opcode(
+            _make_word(
+                0x0BAD_C0DE,
+                fast_raw_bits=0b111,
+                hi_rd=2,
+                compressed_lo=True,
+                compressed_hi=False,
+            ),
+            0b001_0011,
         ),
-        1: _make_word(
-            0x1234_5678,
-            fast_raw_bits=0b000,
-            hi_rd=31,
-            compressed_lo=False,
-            compressed_hi=True,
+        1: _with_hi_opcode(
+            _make_word(
+                0x1234_5678,
+                fast_raw_bits=0b000,
+                hi_rd=31,
+                compressed_lo=False,
+                compressed_hi=True,
+            ),
+            0b001_0011,
         ),
-        14: _make_word(
-            0x89AB_CDEF,
-            fast_raw_bits=0b000,
-            hi_rd=0,
-            compressed_lo=True,
-            compressed_hi=True,
+        14: _with_hi_opcode(
+            _make_word(
+                0x89AB_CDEF,
+                fast_raw_bits=0b000,
+                hi_rd=0,
+                compressed_lo=True,
+                compressed_hi=True,
+            ),
+            0b111_0011,
         ),
-        15: _make_word(
-            0x55AA_33CC,
-            fast_raw_bits=0b111,
-            hi_rd=2,
-            compressed_lo=False,
-            compressed_hi=False,
+        15: _with_hi_opcode(
+            _make_word(
+                0x55AA_33CC,
+                fast_raw_bits=0b111,
+                hi_rd=2,
+                compressed_lo=False,
+                compressed_hi=False,
+            ),
+            0b000_0001,
         ),
     }
+    # Flip the high-allows and low-start-valid replicas on every overwrite so
+    # stale values are observable in both banks and both sides of the swap mux.
+    for word_index, word in tuple(overwrites.items()):
+        old_allows = _expected_allows_slot2_after_hi(words[word_index])
+        replacement_hi_opcode = _GENERATOR.OPC_CSR if old_allows else 0b011_0011
+        word = _with_hi_opcode(word, replacement_hi_opcode)
+        old_start_valid = _expected_slot2_start_valid_lo(words[word_index])
+        replacement_opcode = _GENERATOR.OPC_OP_FP if old_start_valid else 0b011_0011
+        overwrites[word_index] = _with_lo_opcode(word, replacement_opcode)
+    for word_index, word in overwrites.items():
+        assert _expected_allows_slot2_after_hi(word) != _expected_allows_slot2_after_hi(
+            words[word_index]
+        )
+        assert _expected_slot2_start_valid_lo(word) != _expected_slot2_start_valid_lo(
+            words[word_index]
+        )
+    _check_offline_init_replica(list(overwrites.values()))
     for word_index, word in overwrites.items():
         await _write_word(dut, word_index, word)
         words[word_index] = word

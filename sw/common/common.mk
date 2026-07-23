@@ -159,6 +159,8 @@ IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
 IMEM_ODD_COMPRESSED_FILE  := sw_imem_odd_compressed.mem
+IMEM_EVEN_SLOT2_START_VALID_LO_FILE := sw_imem_even_slot2_start_valid_lo.mem
+IMEM_ODD_SLOT2_START_VALID_LO_FILE  := sw_imem_odd_slot2_start_valid_lo.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
 # These bookkeeping files deliberately use globally ignored build-artifact
 # suffixes (*.bin / *.o), so ordinary app builds never pollute git status.
@@ -167,7 +169,11 @@ DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
 IMEM_INIT_TARGETS :=
 ifeq ($(GENERATE_IMEM_INIT),1)
-IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE)
+IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) \
+                     $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
+                     $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
+                     $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
+                     $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
 
 # Make does not normally notice changes to command-line flags because the output
@@ -281,7 +287,11 @@ $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 
 # Generate direct Vivado init files for the split instruction memory banks.
 ifeq ($(GENERATE_IMEM_INIT),1)
-$(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
+$(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) \
+$(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
+$(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
+$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
+$(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
 		--depth-words 65536 \
 		--even-data $(IMEM_EVEN_INIT_FILE) \
@@ -289,7 +299,9 @@ $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_O
 		--even-sideband $(IMEM_EVEN_SIDEBAND_FILE) \
 		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE) \
 		--even-compressed $(IMEM_EVEN_COMPRESSED_FILE) \
-		--odd-compressed $(IMEM_ODD_COMPRESSED_FILE)
+		--odd-compressed $(IMEM_ODD_COMPRESSED_FILE) \
+		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
+		--odd-slot2-start-valid-lo $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
 
 # Display memory usage statistics
@@ -301,6 +313,7 @@ clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
 	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
-	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE)
+	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
+	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 
 .PHONY: all size clean

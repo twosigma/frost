@@ -1742,6 +1742,11 @@ module cpu_ooo #(
       .i_branch_taken_resolved(branch_taken_resolved),
       .i_branch_target_resolved(branch_target_resolved),
       .i_fence_i_flush(fence_i_flush),
+      // commit_bus_pipeline registers the same retiring FENCE.I predicate as
+      // fence_i_flush. Its otherwise-unused is_fence_i payload bit is a
+      // naturally low-fanout copy for the active pulse's late kill gate;
+      // tomasulo_wrapper formally checks that the two registered bits match.
+      .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_flush_all(flush_all),
       .i_flush_for_trap(early_recovery_trap_taken_reg),

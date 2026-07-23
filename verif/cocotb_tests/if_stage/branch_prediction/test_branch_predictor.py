@@ -33,8 +33,7 @@ TARGET_B = 0x80002000
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_pc.value = 0
-    dut.i_pc_2.value = 0
-    dut.i_pc_2_alt.value = 0
+    dut.i_pc_2_base.value = 0
     dut.i_pc_2_use_alt.value = 0
     dut.i_update.value = 0
     dut.i_update_pc.value = 0
@@ -90,9 +89,18 @@ async def _update(
 async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
     """Drive one lookup PC and wait for async read outputs."""
     if slot2:
-        dut.i_pc_2.value = pc
+        # The normal shifted replica stores actual U under predecessor U-2.
+        dut.i_pc_2_base.value = (pc - 2) & 0xFFFFFFFF
+        dut.i_pc_2_use_alt.value = 0
     else:
         dut.i_pc.value = pc
+    await _settle()
+
+
+async def _lookup_slot2_alt(dut: Any, base_pc: int) -> None:
+    """Look up the actual base_pc+4 entry through the shifted ALT replica."""
+    dut.i_pc_2_base.value = base_pc & 0xFFFFFFFF
+    dut.i_pc_2_use_alt.value = 1
     await _settle()
 
 
@@ -249,7 +257,7 @@ async def test_tag_mismatch_replaces_direct_mapped_entry(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
-    """The replicated slot-2 lookup port returns the same entry metadata."""
+    """The shifted normal slot-2 replica returns the actual entry metadata."""
     await _setup_test(dut)
 
     await _update(
@@ -271,6 +279,149 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
         compressed=True,
         handoff=True,
     )
+
+
+@cocotb.test()
+async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
+    dut: Any,
+) -> None:
+    """The U-2 replica preserves counters, wrap, halfword tags, and replacement."""
+    await _setup_test(dut)
+
+    actual_pc = PC_A
+    await _update(
+        dut,
+        pc=actual_pc,
+        target=TARGET_A,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+    await _lookup(dut, actual_pc, slot2=True)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_A,
+        compressed=True,
+        handoff=True,
+    )
+
+    # Counter evolution is calculated from the conventional update replica and
+    # written identically to the shifted lookup replica.
+    await _update(dut, pc=actual_pc, target=TARGET_B, taken=False)
+    await _lookup(dut, actual_pc, slot2=True)
+    _assert_slot2(dut, hit=True, taken=False, target=TARGET_B)
+
+    # Both entries occupy conventional index zero and shifted index 255.  The
+    # second must replace the first across index/tag and full-XLEN borrow.
+    first_pc = 0x80000400
+    second_pc = 0x00000000
+    await _update(dut, pc=first_pc, target=TARGET_A, taken=True)
+    await _lookup(dut, first_pc, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+    await _update(dut, pc=second_pc, target=TARGET_B, taken=True)
+    await _lookup(dut, second_pc, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
+    await _lookup(dut, first_pc, slot2=True)
+    assert not dut.o_btb_hit_2.value
+
+    # U=...402 maps to base ...400, exercising the PC[1] transition without
+    # an index borrow.
+    halfword_pc = 0x00000402
+    await _update(
+        dut,
+        pc=halfword_pc,
+        target=TARGET_A + 2,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+    await _lookup(dut, halfword_pc, slot2=True)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_A + 2,
+        compressed=True,
+        handoff=True,
+    )
+
+
+@cocotb.test()
+async def test_shifted_slot2_alt_lookup_preserves_metadata_and_counter(
+    dut: Any,
+) -> None:
+    """The shifted alternate replica behaves exactly like a lookup at base+4."""
+    await _setup_test(dut)
+
+    actual_pc = PC_A
+    base_pc = actual_pc - 4
+    await _update(
+        dut,
+        pc=actual_pc,
+        target=TARGET_A,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+    await _lookup_slot2_alt(dut, base_pc)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_A,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _update(dut, pc=actual_pc, target=TARGET_B, taken=False)
+    await _lookup_slot2_alt(dut, base_pc)
+    _assert_slot2(dut, hit=True, taken=False, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> None:
+    """Index borrow, PC wrap, and halfword tags survive the U-to-U-4 mapping."""
+    await _setup_test(dut)
+
+    cases = [
+        # update index 0 maps to shifted index 255 and borrows into the tag
+        (0x80000400, 0x800003FC, TARGET_A, False),
+        # full XLEN wrap: the actual entry at zero is keyed by 0xfffffffc
+        (0x00000000, 0xFFFFFFFC, TARGET_B, False),
+        # the same index borrow preserves PC[1] for a halfword-aligned entry
+        (0x00000402, 0x000003FE, TARGET_A + 2, True),
+    ]
+
+    previous_base: int | None = None
+    for actual_pc, base_pc, target, compressed in cases:
+        await _update(
+            dut,
+            pc=actual_pc,
+            target=target,
+            taken=True,
+            compressed=compressed,
+            handoff=compressed,
+        )
+        await _lookup_slot2_alt(dut, base_pc)
+        _assert_slot2(
+            dut,
+            hit=True,
+            taken=True,
+            target=target,
+            compressed=compressed,
+            handoff=compressed,
+        )
+
+        # All cases collide at direct-mapped index zero in the legacy BTB and
+        # therefore at shifted index 255.  Replacement must invalidate the
+        # prior shifted tag just as it invalidates the conventional one.
+        if previous_base is not None:
+            await _lookup_slot2_alt(dut, previous_base)
+            assert not dut.o_btb_hit_2.value
+            assert not dut.o_predicted_taken_2.value
+        previous_base = base_pc
 
 
 @cocotb.test()

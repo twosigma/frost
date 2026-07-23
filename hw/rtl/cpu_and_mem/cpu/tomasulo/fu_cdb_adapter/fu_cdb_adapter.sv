@@ -49,6 +49,11 @@
 
 module fu_cdb_adapter #(
     parameter bit ALLOW_GRANT_REFILL = 1'b1,
+    // Set to 0 only when the integration guarantees that a pending adapter
+    // cannot receive a valid FU payload.  Under that contract the wide data
+    // register can use i_fu_result.valid directly as its write enable, while
+    // ALLOW_GRANT_REFILL continues to control result_pending unchanged.
+    parameter bit ALLOW_GRANT_REFILL_PAYLOAD_WRITE = 1'b1,
     parameter bit REGISTER_OUTPUT = 1'b0
 ) (
     input logic i_clk,
@@ -168,12 +173,27 @@ module fu_cdb_adapter #(
   // result_pending is the only visibility bit, so any stale idle payload stays
   // dormant until the next pending capture overwrites it. This keeps grant and
   // full-flush off the wide held_result control cone.
-  always_ff @(posedge i_clk) begin
-    if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
-        (!result_pending && i_fu_result.valid)) begin
-      held_result <= i_fu_result;
+  generate
+    if (ALLOW_GRANT_REFILL_PAYLOAD_WRITE) begin : gen_grant_refill_payload_write
+      // Preserve the default implementation verbatim so adapters that allow
+      // payload refill retain their existing elaborated CE structure.
+      always_ff @(posedge i_clk) begin
+        if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
+            (!result_pending && i_fu_result.valid)) begin
+          held_result <= i_fu_result;
+        end
+      end
+    end else begin : gen_unqualified_payload_write
+      // This mode is legal only under i_fu_result.valid -> !result_pending, so
+      // valid is equivalent to the ordinary idle-capture arm without carrying
+      // pending or grant into the wide register CE.
+      always_ff @(posedge i_clk) begin
+        if (i_fu_result.valid) begin
+          held_result <= i_fu_result;
+        end
+      end
     end
-  end
+  endgenerate
 
   // ===========================================================================
   // Debug traces (simulation only)
@@ -203,6 +223,13 @@ module fu_cdb_adapter #(
   // (either held in register or being passed through combinationally)
   always_comb begin
     a_no_grant_while_idle : assume (!i_grant || result_pending || i_fu_result.valid);
+
+    if (!ALLOW_GRANT_REFILL_PAYLOAD_WRITE) begin
+      // Contract discharged by the ALU2 integration assertion in
+      // tomasulo_wrapper: its adapter-pending bit gates the corresponding RS
+      // issue-ready input before the combinational shim can assert valid.
+      a_no_input_while_pending : assume (!(result_pending && i_fu_result.valid));
+    end
   end
 
   // Partial flush and full flush should not coincide
@@ -332,6 +359,19 @@ module fu_cdb_adapter #(
             partial_flush_input
         ) && !partial_flush_held) begin
       p_latch_correct : assert (o_fu_complete == $past(i_fu_result));
+    end
+  end
+
+  // The simplified payload-write mode captures every valid input. Its formal
+  // contract above guarantees those inputs occur only while the adapter is
+  // idle; the wrapper independently asserts that integration invariant.
+  always @(posedge i_clk) begin
+    if (f_past_valid && i_rst_n && !ALLOW_GRANT_REFILL_PAYLOAD_WRITE && $past(
+            i_rst_n
+        ) && $past(
+            i_fu_result.valid
+        )) begin
+      p_simplified_payload_capture : assert (held_result == $past(i_fu_result));
     end
   end
 

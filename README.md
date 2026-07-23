@@ -359,37 +359,20 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 156,113 | 1,029,600 | 15.2% |
-|   LUT as Logic | 137,050 | 1,029,600 | 13.3% |
-|   LUT as Distributed RAM | 17,794 | — | — |
-|   LUT as Shift Register | 1,269 | — | — |
-| CLB Registers | 117,857 | 2,059,200 | 5.7% |
-| Block RAM Tile | 242 | 2,112 | 11.5% |
+| CLB LUTs | 157,152 | 1,029,600 | 15.3% |
+|   LUT as Logic | 135,899 | 1,029,600 | 13.2% |
+|   LUT as Distributed RAM | 19,830 | — | — |
+|   LUT as Shift Register | 1,423 | — | — |
+| CLB Registers | 117,367 | 2,059,200 | 5.7% |
+| Block RAM Tile | 234 | 2,112 | 11.1% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 31 | 1,320 | 2.4% |
-| CARRY8 | 4,682 | 128,700 | 3.6% |
-| F7 Muxes | 216 | 514,800 | 0.0% |
-| F8 Muxes | 53 | 257,400 | 0.0% |
+| CARRY8 | 4,684 | 128,700 | 3.6% |
+| F7 Muxes | 1,240 | 514,800 | 0.2% |
+| F8 Muxes | 565 | 257,400 | 0.2% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
-
-**Digilent Genesys2** (Kintex-7 @ 133 MHz)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 134,954 | 203,800 | 66.2% |
-|   LUT as Logic | 117,479 | 203,800 | 57.6% |
-|   LUT as Distributed RAM | 16,550 | — | — |
-|   LUT as Shift Register | 925 | — | — |
-| Slice Registers | 91,655 | 407,600 | 22.5% |
-| Block RAM Tile | 221 | 445 | 49.7% |
-| DSPs | 32 | 840 | 3.8% |
-| F7 Muxes | 106 | 101,900 | 0.1% |
-| F8 Muxes | 33 | 50,950 | 0.1% |
-| Bonded IOB | 77 | 500 | 15.4% |
-| MMCM | 3 | 10 | 30.0% |
-| PLL | 1 | 10 | 10.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 

@@ -515,6 +515,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
             "-GISSUE_REPAIR_BYPASS=0",
+            "-GSPECULATIVE_DATA_WRITES=1",
+            "-GBROADCAST_FREE_SOURCE_VALUES=1",
         ),
     ),
     "cdb_arbiter": CocotbRunConfig(
@@ -526,6 +528,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_cdb_adapter.test_fu_cdb_adapter",
         hdl_toplevel_module="fu_cdb_adapter",
         description="FU CDB adapter unit tests (holding register, pass-through, flush)",
+    ),
+    "fu_cdb_adapter_payload_no_refill": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.tomasulo.fu_cdb_adapter."
+            "test_fu_cdb_adapter_payload_no_refill"
+        ),
+        hdl_toplevel_module="fu_cdb_adapter",
+        description="FU CDB adapter simplified payload-write-enable contract",
+        verilator_extra_args=("-GALLOW_GRANT_REFILL_PAYLOAD_WRITE=0",),
     ),
     "load_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
@@ -674,7 +685,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "imem_predecode_fast_replica": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
-        description="Low-BRAM C15/C13/C12, high-rd-x2, and compressed replica fetch",
+        description=(
+            "Seven-lane high-allows instruction replica plus low slot-2-valid replica"
+        ),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),
     "fetch_provider": CocotbRunConfig(

@@ -68,7 +68,11 @@ module imem_predecode #(
     parameter bit [199:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
     parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
-    parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem"
+    parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem",
+    parameter bit [319:0] INIT_FILE_EVEN_SLOT2_START_VALID_LO =
+        "sw_imem_even_slot2_start_valid_lo.mem",
+    parameter bit [319:0] INIT_FILE_ODD_SLOT2_START_VALID_LO =
+        "sw_imem_odd_slot2_start_valid_lo.mem"
 ) (
     // Port A: Programming interface (slow clock)
     input  logic        i_port_a_clk,
@@ -109,19 +113,30 @@ module imem_predecode #(
   // a long distributed-memory address route in the low-BRAM fetch path.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
-  // Mirror the two instruction-size bits, the high-parcel RVC rd==x2
-  // predicate, and raw high-parcel bits C[15], C[13], and C[12]
-  // (word[31], word[29], and word[28]) in LUTRAM. The
+  // Mirror the high-parcel allows-slot-2 predicate, the two instruction-size bits,
+  // the high-parcel RVC rd==x2 predicate, and raw high-parcel bits C[15],
+  // C[13], and C[12] (word[31], word[29], and word[28]) in LUTRAM. The
   // asynchronous reads are captured at the same fetch edge as the BRAM
   // outputs, preserving the interface latency while replacing timing-facing
   // RAMB36 launches with fabric-FF launches.
-  // The legacy *_compressed.mem filenames contain the packed six-bit value
-  // {word[29], word[28], word[31], word[27:23] == 5'd2,
-  //  is_compressed_hi, is_compressed_lo}.
+  // The legacy *_compressed.mem filenames contain the packed seven-bit value
+  // {allows_slot2_after_hi, word[29], word[28], word[31],
+  //  word[27:23] == 5'd2, is_compressed_hi, is_compressed_lo}. Seven is the
+  // full independent-read width of RAM64M8: its eighth lane shares the write
+  // address and cannot serve this dual-port programming/fetch memory shape.
   (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
-  logic [5:0] memory_even_compressed[HalfDepth];
+  logic [6:0] memory_even_compressed[HalfDepth];
   (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
-  logic [5:0] memory_odd_compressed[HalfDepth];
+  logic [6:0] memory_odd_compressed[HalfDepth];
+  // Slot2StartValidLo is the remaining BRAM-launched sideband bit on the
+  // low-instruction-memory PC path. Keep it in a distinct one-bit LUTRAM: the
+  // seven independent-read lanes of RAM64M8 above are already occupied, while
+  // RAM64M8's eighth lane shares the write address and cannot use the fetch
+  // address required by this programming/fetch dual-port shape.
+  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  logic memory_even_slot2_start_valid_lo[HalfDepth];
+  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  logic memory_odd_slot2_start_valid_lo[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
@@ -145,6 +160,8 @@ module imem_predecode #(
       $readmemh(INIT_FILE_ODD_SIDEBAND, memory_odd_sideband);
       $readmemh(INIT_FILE_EVEN_COMPRESSED, memory_even_compressed);
       $readmemh(INIT_FILE_ODD_COMPRESSED, memory_odd_compressed);
+      $readmemh(INIT_FILE_EVEN_SLOT2_START_VALID_LO, memory_even_slot2_start_valid_lo);
+      $readmemh(INIT_FILE_ODD_SLOT2_START_VALID_LO, memory_odd_slot2_start_valid_lo);
 `else
       $readmemh(INIT_FILE, init_mem);
       // Distribute to even/odd banks
@@ -153,20 +170,26 @@ module imem_predecode #(
           memory_even[i>>1] = init_mem[i];
           memory_even_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
           memory_even_compressed[i>>1] = {
+            memory_even_sideband[i>>1][riscv_pkg::ImemSbAllowsSlot2AfterHi],
             init_mem[i][29:28],
             init_mem[i][31],
             init_mem[i][27:23] == 5'd2,
             memory_even_sideband[i>>1][1:0]
           };
+          memory_even_slot2_start_valid_lo[i>>1] =
+              memory_even_sideband[i>>1][riscv_pkg::ImemSbSlot2StartValidLo];
         end else begin
           memory_odd[i>>1] = init_mem[i];
           memory_odd_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
           memory_odd_compressed[i>>1] = {
+            memory_odd_sideband[i>>1][riscv_pkg::ImemSbAllowsSlot2AfterHi],
             init_mem[i][29:28],
             init_mem[i][31],
             init_mem[i][27:23] == 5'd2,
             memory_odd_sideband[i>>1][1:0]
           };
+          memory_odd_slot2_start_valid_lo[i>>1] =
+              memory_odd_sideband[i>>1][riscv_pkg::ImemSbSlot2StartValidLo];
         end
       end
 `endif
@@ -177,17 +200,23 @@ module imem_predecode #(
         memory_even_sideband[i] = riscv_pkg::imem_make_sideband(memory_even[i]);
         memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(memory_odd[i]);
         memory_even_compressed[i] = {
+          memory_even_sideband[i][riscv_pkg::ImemSbAllowsSlot2AfterHi],
           memory_even[i][29:28],
           memory_even[i][31],
           memory_even[i][27:23] == 5'd2,
           memory_even_sideband[i][1:0]
         };
         memory_odd_compressed[i] = {
+          memory_odd_sideband[i][riscv_pkg::ImemSbAllowsSlot2AfterHi],
           memory_odd[i][29:28],
           memory_odd[i][31],
           memory_odd[i][27:23] == 5'd2,
           memory_odd_sideband[i][1:0]
         };
+        memory_even_slot2_start_valid_lo[i] =
+            memory_even_sideband[i][riscv_pkg::ImemSbSlot2StartValidLo];
+        memory_odd_slot2_start_valid_lo[i] =
+            memory_odd_sideband[i][riscv_pkg::ImemSbSlot2StartValidLo];
       end
     end
   end
@@ -220,11 +249,14 @@ module imem_predecode #(
         memory_even[port_a_half_address] <= i_port_a_write_data;
         memory_even_sideband[port_a_half_address] <= write_sideband;
         memory_even_compressed[port_a_half_address] <= {
+          write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
           i_port_a_write_data[29:28],
           i_port_a_write_data[31],
           i_port_a_write_data[27:23] == 5'd2,
           write_sideband[1:0]
         };
+        memory_even_slot2_start_valid_lo[port_a_half_address] <=
+            write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
       end
     end
   end
@@ -236,11 +268,14 @@ module imem_predecode #(
         memory_odd[port_a_half_address] <= i_port_a_write_data;
         memory_odd_sideband[port_a_half_address] <= write_sideband;
         memory_odd_compressed[port_a_half_address] <= {
+          write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
           i_port_a_write_data[29:28],
           i_port_a_write_data[31],
           i_port_a_write_data[27:23] == 5'd2,
           write_sideband[1:0]
         };
+        memory_odd_slot2_start_valid_lo[port_a_half_address] <=
+            write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
       end
     end
   end
@@ -283,8 +318,10 @@ module imem_predecode #(
 
   logic [DataWidth-1:0] even_read_data, odd_read_data;
   logic [SidebandWidth-1:0] even_sideband, odd_sideband;
-  (* keep = "true", dont_touch = "yes" *)logic [5:0] even_compressed;
-  (* keep = "true", dont_touch = "yes" *)logic [5:0] odd_compressed;
+  (* keep = "true", dont_touch = "yes" *) logic [6:0] even_compressed;
+  (* keep = "true", dont_touch = "yes" *) logic [6:0] odd_compressed;
+  (* keep = "true", dont_touch = "yes" *) logic even_slot2_start_valid_lo;
+  (* keep = "true", dont_touch = "yes" *) logic odd_slot2_start_valid_lo;
 
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
@@ -294,6 +331,8 @@ module imem_predecode #(
       odd_sideband <= memory_odd_sideband[odd_read_addr];
       even_compressed <= memory_even_compressed[even_read_addr];
       odd_compressed <= memory_odd_compressed[odd_read_addr];
+      even_slot2_start_valid_lo <= memory_even_slot2_start_valid_lo[even_read_addr];
+      odd_slot2_start_valid_lo <= memory_odd_slot2_start_valid_lo[odd_read_addr];
     end
   end
 
@@ -326,6 +365,23 @@ module imem_predecode #(
     odd_sideband_with_fast_compressed = odd_sideband;
     even_sideband_with_fast_compressed[1:0] = even_compressed[1:0];
     odd_sideband_with_fast_compressed[1:0] = odd_compressed[1:0];
+    // The replicated high-parcel size and allows bits are the two inputs to
+    // both pairability predicates. Rebuild both here so neither public
+    // predicate depends on the timing-facing sideband BRAM launch.
+    even_sideband_with_fast_compressed[riscv_pkg::ImemSbAllowsSlot2AfterHi] = even_compressed[6];
+    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbAllowsSlot2AfterHi] = odd_compressed[6];
+    even_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableCompressedHi] =
+        even_compressed[1] && even_compressed[6];
+    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableCompressedHi] =
+        odd_compressed[1] && odd_compressed[6];
+    even_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableNativeHi] =
+        !even_compressed[1] && even_compressed[6];
+    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableNativeHi] =
+        !odd_compressed[1] && odd_compressed[6];
+    even_sideband_with_fast_compressed[riscv_pkg::ImemSbSlot2StartValidLo] =
+        even_slot2_start_valid_lo;
+    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbSlot2StartValidLo] =
+        odd_slot2_start_valid_lo;
   end
   assign current_word_wide   = bank_sel_r ? odd_read_data_with_fast_rvc_fields :
                                            even_read_data_with_fast_rvc_fields;
@@ -347,7 +403,18 @@ module imem_predecode #(
   // Keep a local oracle so future init/write-path changes cannot silently let
   // the timing replica diverge from the architectural BRAM data.
   always_comb begin
-    if (!$isunknown({even_read_data, odd_read_data, even_compressed, odd_compressed})) begin
+    if (!$isunknown(
+            {
+              even_read_data,
+              odd_read_data,
+              even_sideband,
+              odd_sideband,
+              even_compressed,
+              odd_compressed,
+              even_slot2_start_valid_lo,
+              odd_slot2_start_valid_lo
+            }
+        )) begin
       p_even_fast_c15_matches_bram : assert (even_compressed[3] == even_read_data[31]);
       p_odd_fast_c15_matches_bram : assert (odd_compressed[3] == odd_read_data[31]);
       p_even_fast_c13_c12_matches_bram : assert (even_compressed[5:4] == even_read_data[29:28]);
@@ -358,6 +425,26 @@ module imem_predecode #(
       assert (odd_compressed[2] == (odd_read_data[27:23] == 5'd2));
       p_even_fast_compressed_matches_bram : assert (even_compressed[1:0] == even_sideband[1:0]);
       p_odd_fast_compressed_matches_bram : assert (odd_compressed[1:0] == odd_sideband[1:0]);
+      p_even_fast_allows_slot2_after_hi_matches_bram :
+      assert (even_compressed[6] == even_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
+      p_odd_fast_allows_slot2_after_hi_matches_bram :
+      assert (odd_compressed[6] == odd_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
+      p_even_rebuilt_pairable_compressed_hi_matches_bram :
+      assert ((even_compressed[1] && even_compressed[6]) ==
+              even_sideband[riscv_pkg::ImemSbPairableCompressedHi]);
+      p_odd_rebuilt_pairable_compressed_hi_matches_bram :
+      assert ((odd_compressed[1] && odd_compressed[6]) ==
+              odd_sideband[riscv_pkg::ImemSbPairableCompressedHi]);
+      p_even_rebuilt_pairable_native_hi_matches_bram :
+      assert ((!even_compressed[1] && even_compressed[6]) ==
+              even_sideband[riscv_pkg::ImemSbPairableNativeHi]);
+      p_odd_rebuilt_pairable_native_hi_matches_bram :
+      assert ((!odd_compressed[1] && odd_compressed[6]) ==
+              odd_sideband[riscv_pkg::ImemSbPairableNativeHi]);
+      p_even_fast_slot2_start_valid_lo_matches_bram :
+      assert (even_slot2_start_valid_lo == even_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
+      p_odd_fast_slot2_start_valid_lo_matches_bram :
+      assert (odd_slot2_start_valid_lo == odd_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);
     end
   end
 `endif

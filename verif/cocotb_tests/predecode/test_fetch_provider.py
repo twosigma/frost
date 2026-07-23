@@ -19,7 +19,9 @@ like pc_controller would and consuming valid windows) and the L1I line port
 slave (accepting fill requests and returning patterned lines). Covered: low
 addresses staying out of the provider, DDR fills with the sequential walk
 across a line boundary (straddle + next-line prefetch), ask retargeting when a
-redirect lands while unserved, and the invalidate-discard of an in-flight fill.
+redirect lands while unserved, back-to-back publish throughput, and the
+invalidate-discard of an in-flight fill.  The RTL also carries a simulation-only
+cycle-by-cycle oracle for the folded registered readiness/tag-match state.
 """
 
 import importlib.util
@@ -207,6 +209,27 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
         await _wait_valid(dut)
         _check_window(dut, pc)
     assert DDR_BASE + 64 in reqs
+
+
+@cocotb.test()
+async def test_ready_windows_publish_back_to_back(dut: Any) -> None:
+    """Folding the next-ask match into readiness adds no delivery bubble."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=2, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    await _wait_window(dut, DDR_BASE)
+
+    # All of these windows live in the already-resident first line.  A valid
+    # cycle selects the live PC as fetch_addr and ask_d on the same edge, so the
+    # next window must publish immediately on the following cycle.
+    for offset in (4, 8, 12, 16):
+        dut.i_pc.value = DDR_BASE + offset
+        await FallingEdge(dut.i_clk)
+        assert int(dut.o_instr_valid.value) == 1, f"delivery bubble at +0x{offset:x}"
+        _check_window(dut, DDR_BASE + offset)
 
 
 @cocotb.test()

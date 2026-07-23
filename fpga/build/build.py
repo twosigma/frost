@@ -339,6 +339,10 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "IMEM_ODD_SIDEBAND_FILE": output_dir / "sw_imem_odd_sideband.mem",
         "IMEM_EVEN_COMPRESSED_FILE": output_dir / "sw_imem_even_compressed.mem",
         "IMEM_ODD_COMPRESSED_FILE": output_dir / "sw_imem_odd_compressed.mem",
+        "IMEM_EVEN_SLOT2_START_VALID_LO_FILE": output_dir
+        / "sw_imem_even_slot2_start_valid_lo.mem",
+        "IMEM_ODD_SLOT2_START_VALID_LO_FILE": output_dir
+        / "sw_imem_odd_slot2_start_valid_lo.mem",
     }
 
     for output_path in outputs.values():

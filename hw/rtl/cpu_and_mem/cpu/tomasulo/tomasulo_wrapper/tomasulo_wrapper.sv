@@ -1897,6 +1897,11 @@ module tomasulo_wrapper #(
       // bundle_fire_ok cone and (when slot-1 is FDIV) the fdiv_rs/count_reg
       // → fdiv_rs_full chain.  Pairs with i_intent_1 below.
       .SPECULATIVE_DATA_WRITES(1'b1),
+      // Prefill every free entry's wide source-value flops, then select the
+      // slot-2 payload only on alloc_idx_2.  rs_valid remains the sole commit
+      // point.  This keeps the free-entry priority decoder out of the 64-bit
+      // value-flop clock enables without changing dispatch or issue timing.
+      .BROADCAST_FREE_SOURCE_VALUES(1'b1),
       .DUAL_ISSUE(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
@@ -2695,7 +2700,13 @@ module tomasulo_wrapper #(
       .o_fu_busy              (alu2_fu_busy)
   );
 
-  fu_cdb_adapter u_alu2_adapter (
+  fu_cdb_adapter #(
+      // A pending ALU2 adapter deasserts int_rs_fu_ready_2, so the shim-valid
+      // and pending states are mutually exclusive (asserted below).  Keep the
+      // grant-refill state transition, but remove pending/grant from the wide
+      // held-result write enable.
+      .ALLOW_GRANT_REFILL_PAYLOAD_WRITE(1'b0)
+  ) u_alu2_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
       .i_fu_result     (alu2_shim_out),
@@ -2707,6 +2718,18 @@ module tomasulo_wrapper #(
       .i_flush_tag     (i_flush_tag),
       .i_rob_head_tag  (head_tag)
   );
+
+`ifndef SYNTHESIS
+  // This integration invariant is the contract that permits ALU2's simplified
+  // held-result write enable.  int_rs_fu_ready_2 is gated by adapter-pending,
+  // and the RS qualifies its stage-2 issue valid with that ready input.
+  always_comb begin
+    if (i_rst_n) begin
+      p_alu2_pending_blocks_payload_refill :
+      assert (!(alu2_adapter_result_pending && alu2_shim_out.valid));
+    end
+  end
+`endif
 
   // ===========================================================================
   // MUL/DIV Shim: translate rs_issue_t → multiplier/divider → fu_complete_t
@@ -3531,6 +3554,12 @@ module tomasulo_wrapper #(
   // -------------------------------------------------------------------------
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+
+      // Both registers sample the same retiring-FENCE.I predicate. The ROB's
+      // global pulse uses its fast head-class replica; commit_bus_q carries
+      // the bit-identical registered commit payload used as the low-fanout
+      // early-recovery copy in cpu_ooo.
+      p_registered_fence_copy_matches_flush : assert (commit_bus_q.is_fence_i == o_fence_i_flush);
 
       // INT commit clears RAT entry when tag matches.
       // RAT receives commit_bus_q (1-cycle pipelined), so check $past of

@@ -30,9 +30,13 @@ is registered, so the LQ sees it one cycle after raising
 The forwarding scan itself (per-entry qualification, newest-match priority
 select, and the output register) lives in
 [`sq_forwarding_unit.sv`](sq_forwarding_unit.sv). It reads the SQ entry-array
-state plus a per-entry forwarding-data mirror from `store_queue.sv`, then the
-winner tree carries the selected payload directly into the registered output.
-The drain side still reads the canonical `sq_data` LUTRAM at `drain_idx_q`.
+state plus a per-entry forwarding-data mirror from `store_queue.sv`. The scan
+registers the winning entry index, extraction mode, and byte offset alongside
+`match` / `can_forward`; the mirrored payload is selected and formatted after
+that boundary during the LQ's existing consume cycle. This preserves the
+one-cycle probe result while keeping the address CAM and winner tree off the 64
+payload D-pins. The drain side still reads the canonical `sq_data` LUTRAM at
+`drain_idx_q`.
 
 The scan's same-cycle committed-store guard consumes the trap-cone-free
 `i_commit_valid_scan/_scan_2` pulses (the wrapper builds them from the
@@ -213,10 +217,10 @@ Hybrid FF + LUTRAM, same idea as the LQ. Control fields stay in
 flip-flops for parallel CAM-style scan; the 64-bit data payload
 lives in a single LUTRAM instance read by the drain side at
 `drain_idx_q`, plus a per-entry flip-flop mirror written in parallel
-for the forwarding scan. The forwarding scan qualifies entries from
-the FF fields and its winner tree carries the mirrored payload
-directly into the registered output — no LUTRAM read on the
-forwarding path.
+for forwarding. The scan qualifies entries from the FF fields and
+registers only compact winner metadata. The next cycle selects the
+write-once mirror while the LQ consumes the registered result — no
+LUTRAM read and no extra cycle on the forwarding path.
 
 The forwarding-check address arrives on two functionally-identical
 ports, `i_sq_check_addr` and `i_sq_check_addr_b` (a `dont_touch`'d

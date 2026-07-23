@@ -16,7 +16,8 @@
 
 Tests cover reset, allocation, address/data update, commit + memory write
 (SW/SH/SB), FSD two-phase commit, FSW, store-to-load forwarding, forwarding
-stall, MMIO stores, partial/full flush, and constrained random.
+stall, registered forwarding-metadata stability, MMIO stores, partial/full
+flush, and constrained random.
 """
 
 import random
@@ -831,6 +832,139 @@ async def test_forward_fsd_to_fld(dut: Any) -> None:
     assert fwd.match
     assert fwd.can_forward
     assert fwd.data == fp64_data, f"Expected 0x{fp64_data:x}, got 0x{fwd.data:x}"
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Registered forwarding metadata: newest winner across physical ring wrap
+# ============================================================================
+@cocotb.test()
+async def test_forward_newest_winner_across_sq_ring_wrap(dut: Any) -> None:
+    """The post-register payload mux uses the wrapped winner's physical slot."""
+    dut_if, model = await setup(dut)
+
+    # Advance the empty SQ's physical head/tail to slot 6. The three live
+    # entries below then occupy slots 6, 7, and 0, so the newest matching
+    # store is physically below the older one across the ring wrap.
+    for tag in range(6):
+        await alloc_addr_data(
+            dut_if,
+            model,
+            rob_tag=tag,
+            address=0x8000 + 4 * tag,
+            data=0x1000 + tag,
+        )
+        await commit_and_write(dut_if, model, rob_tag=tag)
+
+    assert dut_if.empty, "SQ should be empty before the wrapped allocation"
+    dut_if.drive_rob_head_tag(6)
+
+    await alloc_addr_data(dut_if, model, 6, 0x9000, 0x6666_0006)
+    await alloc_addr_data(dut_if, model, 7, 0xA000, 0x7777_0007)
+    await alloc_addr_data(dut_if, model, 8, 0xA000, 0x8888_0008)
+
+    dut_if.drive_sq_check(addr=0xA000, rob_tag=9, size=MEM_SIZE_WORD)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match and fwd.can_forward, "Wrapped same-address stores should forward"
+    assert fwd.data == 0x8888_0008, (
+        "The newest store in wrapped slot 0 must beat the older store in slot 7: "
+        f"got 0x{fwd.data:x}"
+    )
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Registered forwarding metadata: selected entry freed on the capture edge
+# ============================================================================
+@cocotb.test()
+async def test_forward_metadata_survives_same_edge_store_free(dut: Any) -> None:
+    """A write completion cannot invalidate the captured index/offset/data."""
+    dut_if, model = await setup(dut)
+
+    # SH@+2 exercises both the captured byte offset and the post-register
+    # low-word formatting path (expected memory image 0xBEEF0000).
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=3,
+        address=0x3002,
+        data=0xBEEF,
+        size=MEM_SIZE_HALF,
+    )
+    dut_if.drive_rob_head_tag(0)
+
+    dut_if.drive_commit(3)
+    model.commit(3)
+    await dut_if.step()
+    dut_if.clear_commit()
+
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.en, "Committed halfword store should launch a write"
+    model.mem_write_initiate()
+
+    # The memory bus acknowledges one cycle after launch. On that same edge,
+    # capture a younger load's SQ probe while the selected store is freed.
+    await dut_if.step()
+    dut_if.drive_mem_write_done()
+    model.mem_write_done()
+    model.advance_head()
+    dut_if.drive_sq_check(addr=0x3003, rob_tag=5, size=MEM_SIZE_BYTE)
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert fwd.match and fwd.can_forward, "The capture-edge store must still forward"
+    assert fwd.data == 0xBEEF_0000, (
+        "Captured slot/offset must select the write-once mirror after free: "
+        f"got 0x{fwd.data:x}"
+    )
+    assert dut_if.empty, "The selected store should have been freed on the capture edge"
+
+    dut_if.clear_mem_write_done()
+    dut_if.clear_sq_check()
+
+
+# ============================================================================
+# Registered forwarding metadata: full flush on the capture edge
+# ============================================================================
+@cocotb.test()
+async def test_forward_metadata_survives_flush_capture_edge(dut: Any) -> None:
+    """Flush may clear SQ validity, but not the just-captured payload mirror."""
+    dut_if, model = await setup(dut)
+
+    store_data = 0xDEADBEEF_CAFEBABE
+    await alloc_addr_data(
+        dut_if,
+        model,
+        rob_tag=3,
+        address=0x4000,
+        data=store_data,
+        is_fp=True,
+        size=MEM_SIZE_DOUBLE,
+    )
+    dut_if.drive_rob_head_tag(0)
+
+    # The real consumer is killed by this flush. The forwarding block is
+    # intentionally allowed to capture, though, so prove its registered
+    # winner metadata still reconstructs the old high word after SQ control
+    # state is cleared at the edge.
+    dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+
+    fwd = dut_if.read_sq_forward()
+    assert (
+        fwd.match and fwd.can_forward
+    ), "Flush-edge probe should be captured coherently"
+    assert fwd.data == 0xDEAD_BEEF, (
+        "Captured high-word extraction must survive the flush edge: "
+        f"got 0x{fwd.data:x}"
+    )
+    assert dut_if.empty, "Full flush should clear all architectural SQ entries"
+
+    dut_if.clear_flush_all()
     dut_if.clear_sq_check()
 
 

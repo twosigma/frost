@@ -331,6 +331,11 @@ module pc_controller #(
 
   logic            pending_prediction_valid;
   logic [XLEN-1:0] pending_prediction_pc;
+  // Capture the compressed predecessor beside pending_prediction_pc so the
+  // live pc_reg control cone only pays for a registered equality compare.
+  // KEEP prevents synthesis from reconstructing this tag as
+  // pending_prediction_pc-2 and putting the carry chain back on pc_reg.
+  (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_target;
   logic            pending_prediction_effective;
   logic            pending_imm_pred_emit;
@@ -486,8 +491,9 @@ module pc_controller #(
   // prediction_metadata_tracker ("IF keeps walking older instructions after a BTB
   // redirect").
   //
-  // LOOP-BREAK: the predicate uses ONLY registered state -- o_pc_reg and
-  // pending_prediction_pc + a constant.  An earlier form used seq_next_pc_reg, which
+  // LOOP-BREAK: the predicate uses ONLY registered state -- o_pc_reg and the
+  // predecessor tag captured beside pending_prediction_pc.  An earlier form used
+  // seq_next_pc_reg, which
   // depends on pc_reg_advance_sel -> sel_nop; combined with gate (a) feeding
   // pending_imm_pred_emit BACK into sel_nop (via o_pending_prediction_fetch_holdoff)
   // that closed a combinational cycle (Verilator "Active region did not converge" at
@@ -507,7 +513,7 @@ module pc_controller #(
   assign pim_base =
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
       !stale_pending_prediction &&
-      (pending_prediction_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
+      (o_pc_reg == pending_prediction_prev_pc);
   // NARROW to the true drop condition: the load is only DROPPED when the served window cannot
   // deliver it (raw wcs=1).  But the load can only EMIT on the wcs=0 cycle (one after the
   // resteer), so a plain "&& wcs" would drop pim exactly then and re-NOP the load.  Instead
@@ -658,6 +664,7 @@ module pc_controller #(
   always_ff @(posedge i_clk) begin
     if (!fetch_stall && !pending_prediction_valid) begin
       pending_prediction_pc                   <= o_pc;
+      pending_prediction_prev_pc              <= o_pc - riscv_pkg::PcIncrementCompressed;
       pending_prediction_target               <= i_predicted_target;
       pending_prediction_allow_cross          <= o_pc[1];
       pending_prediction_allow_cross_pc_mux_q <= o_pc[1];
@@ -781,6 +788,24 @@ module pc_controller #(
   end
 
 `ifndef SYNTHESIS
+  // The predecessor tag is speculative don't-care state while pending-valid is
+  // low.  Once an episode is armed, it must remain the exact modulo-XLEN
+  // predecessor of the captured branch PC through holds, stalls, and redirect
+  // kill cycles.  The second assertion is a simulation-only equivalence oracle
+  // for the retired live-adder predicate; no copy of that adder is synthesized.
+  always_ff @(posedge i_clk) begin
+    if (!i_reset && pending_prediction_valid) begin
+      p_pending_prediction_prev_pc_matches_capture :
+      assert (pending_prediction_prev_pc ==
+              (pending_prediction_pc - riscv_pkg::PcIncrementCompressed));
+
+      p_pending_prediction_prev_pc_predicate_equivalent :
+      assert ((o_pc_reg == pending_prediction_prev_pc) ==
+              (pending_prediction_pc ==
+               (o_pc_reg + riscv_pkg::PcIncrementCompressed)));
+    end
+  end
+
   // The fast predictor pc_reg_next_misses_fetch_pc_for_prediction models the
   // only case its functional consumer needs: pc_reg is still behind a
   // word-aligned predicted fetch PC, and a plain instruction-size advance might

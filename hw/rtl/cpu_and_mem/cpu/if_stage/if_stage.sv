@@ -386,9 +386,11 @@ module if_stage #(
   end
 
   // Slot-2 PC candidates for BTB lookup (Session Q).  Slot-2 sits at
-  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  Both
-  // candidate BTB lookups run in parallel; the late sideband-derived slot-1
-  // size selects between lookup results instead of driving a LUTRAM address.
+  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  The
+  // two BTB replicas store those entries under shifted pc_reg keys, so pc_reg
+  // drives both RAM addresses directly.  The actual candidates remain
+  // available for direction metadata, and the late slot-1 size selects between
+  // completed lookup results instead of driving a LUTRAM address.
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
   logic            slot2_pc_use_plus4_for_btb;
@@ -420,6 +422,7 @@ module if_stage #(
       // Slot-2 PC for BTB lookup (Session Q dual-port)
       .i_pc_2(slot2_pc_plus2_for_btb),
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
+      .i_pc_2_base(pc_reg),
       .i_slot2_pc_use_alt(slot2_pc_use_plus4_for_btb),
       .i_slot2_valid(slot2_prediction_valid),
       .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
@@ -792,18 +795,38 @@ module if_stage #(
   // The payload providers register i_served_last_word=S+1 alongside S and the
   // fetched data.  Comparing that tag directly with P implements the old
   // S=P-1 arm without a PC-side subtract or a late address carry chain.  The
-  // same-word and guarded S=P+1 instruction-buffer arms remain unchanged.
+  // same-word arm remains unchanged.  The guarded S=P+1 instruction-buffer
+  // arm is split at 16 low word-address bits.  Its low increment, upper
+  // equality, and upper increment are evaluated in parallel; selecting the
+  // upper same-vs-plus-one result with the low carry limits either increment
+  // arm to two CARRY8s instead of building one 30-bit PC-side increment.
+  localparam int unsigned ServedP1LowBits = 16;
   logic [XLEN-3:0] pc_reg_word;
-  logic [XLEN-3:0] pc_reg_word_p1;
+  logic [ServedP1LowBits-1:0] pc_reg_word_low_p1;
+  logic [XLEN-ServedP1LowBits-3:0] pc_reg_word_upper_p1;
+  logic served_p1_low_wrap;
+  logic served_p1_low_match;
+  logic served_p1_upper_same;
+  logic served_p1_upper_p1;
+  logic served_p1_upper_wrap;
   logic served_eq_pc_word;
   logic served_last_eq_pc_word;
   logic served_eq_pc_word_p1;
   logic served_window_covers_pc_reg;
   assign pc_reg_word = pc_reg[XLEN-1:2];
-  assign pc_reg_word_p1 = pc_reg_word + 1'b1;
+  assign pc_reg_word_low_p1 = pc_reg_word[ServedP1LowBits-1:0] + 1'b1;
+  assign pc_reg_word_upper_p1 = pc_reg_word[XLEN-3:ServedP1LowBits] + 1'b1;
+  assign served_p1_low_wrap = &pc_reg_word[ServedP1LowBits-1:0];
+  assign served_p1_low_match = i_served_addr[ServedP1LowBits+1:2] == pc_reg_word_low_p1;
+  assign served_p1_upper_same =
+      i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word[XLEN-3:ServedP1LowBits];
+  assign served_p1_upper_p1 = i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word_upper_p1;
+  assign served_p1_upper_wrap = &pc_reg_word[XLEN-3:ServedP1LowBits];
   assign served_eq_pc_word = i_served_addr[XLEN-1:2] == pc_reg_word;
   assign served_last_eq_pc_word = i_served_last_word == pc_reg_word;
-  assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) && !(&pc_reg_word);
+  assign served_eq_pc_word_p1 = served_p1_low_match &&
+      ((!served_p1_low_wrap && served_p1_upper_same) ||
+       (served_p1_low_wrap && !served_p1_upper_wrap && served_p1_upper_p1));
   assign served_window_covers_pc_reg = served_eq_pc_word || served_last_eq_pc_word ||
       (served_eq_pc_word_p1 && use_instr_buffer);
 
@@ -812,13 +835,16 @@ module if_stage #(
   // old S=MAX/P=0 S=P-1 wrap.  The S=P+1 arm still rejects P=MAX explicitly.
   logic [XLEN-3:0] served_word_p1_reference;
   logic served_eq_pc_word_m1_reference;
+  logic served_eq_pc_word_p1_reference;
   logic served_window_covers_reference;
   logic served_contract_check_valid_q;
   assign served_word_p1_reference = i_served_addr[XLEN-1:2] + 1'b1;
-  assign served_eq_pc_word_m1_reference =
-      i_served_addr[XLEN-1:2] == (pc_reg_word - 1'b1);
+  assign served_eq_pc_word_m1_reference = i_served_addr[XLEN-1:2] == (pc_reg_word - 1'b1);
+  assign served_eq_pc_word_p1_reference =
+      (i_served_addr[XLEN-1:2] == (pc_reg_word + 1'b1)) && !(&pc_reg_word);
   assign served_window_covers_reference = served_eq_pc_word ||
-      served_eq_pc_word_m1_reference || (served_eq_pc_word_p1 && use_instr_buffer);
+      served_eq_pc_word_m1_reference ||
+      (served_eq_pc_word_p1_reference && use_instr_buffer);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
@@ -830,6 +856,8 @@ module if_stage #(
             {i_served_addr, i_served_last_word, pc_reg_word, use_instr_buffer}
         )) begin
       p_served_last_word_contract : assert (i_served_last_word == served_word_p1_reference);
+      p_served_p1_split_equivalent :
+      assert (served_eq_pc_word_p1 == served_eq_pc_word_p1_reference);
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
     end

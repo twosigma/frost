@@ -128,6 +128,11 @@ misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
+The registered slot-1 payload's `is_fence_i` bit samples the same retiring
+FENCE.I predicate as the ROB's registered global flush pulse. `cpu_ooo` reuses
+that otherwise-low-fanout payload bit for the early-recovery active-pulse kill,
+and the wrapper formal harness checks cycle-for-cycle equality after reset.
+
 The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
 are additionally masked combinationally with `!i_flush_all_wb_mask` — a
 dedicated, bit-identical flat recompute of the full-flush term
@@ -191,6 +196,14 @@ DIV, MEM, FP_ADD, FP_MUL, FP_DIV) sets `ALLOW_GRANT_REFILL=0` so CDB
 arbitration does not feed back into the FIFO/issue cones (and, for
 MEM, so SC commit ordering serializes correctly). The DIV and all
 three FP adapters additionally set `REGISTER_OUTPUT=1`.
+
+ALU2 keeps that grant-refill state behavior but sets
+`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`. Its pending bit already deasserts the
+matching INT-RS issue-ready input before the combinational ALU2 shim can assert
+valid, so pending and shim-valid cannot coincide. The wrapper asserts that
+invariant, and the adapter uses `i_fu_result.valid` alone as the wide
+`held_result` write enable; CDB grant and adapter-pending remain confined to
+the narrow state logic. ALU1 retains the default payload-write implementation.
 
 ## Performance counters
 

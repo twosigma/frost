@@ -361,6 +361,10 @@ class RSInterface:
     def drive_dispatch(self, **kwargs: Any) -> None:
         """Drive dispatch signals. Pass keyword args matching pack_rs_dispatch."""
         kwargs["valid"] = True
+        # The wrapper contract drives the fast slot-1 intent from the same
+        # per-RS valid decode.  Speculative data-write modes use it to keep a
+        # simultaneous slot-2 prefill on the second free entry.
+        self.set_intent_1(True)
         if self._flat:
             self._drive_dispatch_flat(**kwargs)
         else:
@@ -368,6 +372,7 @@ class RSInterface:
 
     def clear_dispatch(self) -> None:
         """Clear dispatch signals."""
+        self.set_intent_1(False)
         if self._flat:
             self._clear_dispatch_flat()
         else:

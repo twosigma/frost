@@ -80,6 +80,11 @@ FORMAL_TARGETS = [
         "FU CDB adapter - holding register, pass-through, back-pressure, flush",
     ),
     FormalTarget(
+        "fu_cdb_adapter_payload_no_refill.sby",
+        "FU CDB adapter - simplified payload-write-enable contract",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "load_queue.sby",
         "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
     ),

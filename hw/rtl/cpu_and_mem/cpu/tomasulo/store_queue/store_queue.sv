@@ -404,10 +404,10 @@ module store_queue #(
   // ===========================================================================
   // sq_data is written once (data_update CAM match) and read by the drain side
   // at drain_idx_q.  Store-to-load forwarding mirrors the same payload into
-  // per-entry registers so the forwarding winner tree can carry the selected
-  // data directly, avoiding a critical winner-index -> async LUTRAM -> output
-  // register path.  Valid bits in FFs gate all reads; alloc-time zeroing is
-  // unnecessary.
+  // per-entry registers.  The forwarding unit registers the winning index and
+  // selects this mirror during the following LQ consume cycle, so the CAM /
+  // winner tree does not drive 64 output-register D-pins.  Valid bits in FFs
+  // gate all reads; alloc-time zeroing is unnecessary.
 
   // Write port: resolved CAM match index from data_update
   logic                                             sq_data_we;

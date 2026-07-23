@@ -88,6 +88,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = 0
     dut.i_pc_2.value = 0
     dut.i_pc_2_alt.value = 0
+    dut.i_pc_2_base.value = 0
     dut.i_slot2_pc_use_alt.value = 0
     dut.i_slot2_valid.value = 0
     dut.i_slot2_pc_is_halfword.value = 0
@@ -309,6 +310,7 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     _clear_inputs(dut)
     dut.i_pc.value = PC_A
     dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_valid.value = 1
     await _settle()
 
@@ -376,6 +378,7 @@ async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
 
     _clear_inputs(dut)
     dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_valid.value = 1
     await _settle()
 
@@ -589,6 +592,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
     dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 2
     await _settle()
 
     assert not dut.o_slot2_btb_hit.value
@@ -615,6 +619,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     )
 
     dut.i_pc_2.value = SLOT2_HALFWORD_PC
+    dut.i_pc_2_base.value = SLOT2_HALFWORD_PC - 2
     dut.i_slot2_valid.value = 1
     dut.i_slot2_pc_is_halfword.value = 1
     dut.i_slot2_is_compressed.value = 1
@@ -635,10 +640,11 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     """The slot-2 BTB can select the pc_reg+4 candidate after parallel lookup."""
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
-    await _btb_update(dut, pc=SLOT2_PC + 4, target=TARGET_SLOT2_ALT)
+    await _btb_update(dut, pc=SLOT2_PC + 2, target=TARGET_SLOT2_ALT)
 
     dut.i_pc_2.value = SLOT2_PC
-    dut.i_pc_2_alt.value = SLOT2_PC + 4
+    dut.i_pc_2_alt.value = SLOT2_PC + 2
+    dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_pc_use_alt.value = 0
     dut.i_slot2_valid.value = 1
     await _settle()

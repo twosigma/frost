@@ -56,6 +56,15 @@ removing the six global repair tags from every resident source-value
 write-enable cone. Allocation tokens are captured only on committed
 dispatch fires and are discarded on either kind of flush.
 
+INT_RS also enables `BROADCAST_FREE_SOURCE_VALUES` together with
+`SPECULATIVE_DATA_WRITES`. Every currently-invalid entry is prefilled with
+slot 1's source values; when a speculative slot-2 write is possible, its exact
+allocation target receives slot 2's values instead. Only `rs_valid` commits an
+entry, so the additional free-entry writes are unobservable. This preserves
+the existing dispatch and issue latency while replacing the wide value flops'
+priority-decoded free-index clock enable with the entry-local invalid bit;
+the slot-2 allocation index affects only the selected input data.
+
 Issue selection is a simple lowest-index priority encode over ready
 entries. That's not strict FIFO order, but it's a close enough
 approximation for the depths used here that the slightly older
@@ -105,8 +114,9 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2
-dispatch, allocation-indexed repair for both slots and all source positions,
+Cocotb tests run with the INT_RS free-entry source-value broadcast enabled and
+cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2 dispatch,
+allocation-indexed repair for both slots and all source positions,
 back-to-back target capture, CDB-over-repair priority, stale-target flush
 protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0 bypass,
 dispatch capture from lane 0, issue priority, FU ready gating, immediate bypass,

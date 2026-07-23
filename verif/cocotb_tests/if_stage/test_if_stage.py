@@ -355,7 +355,7 @@ async def _redirect_to(dut: Any, target: int) -> None:
 
 @cocotb.test()
 async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
-    """The registered S+1 tag is exact across adjacency and full wrap."""
+    """The registered tag and split S=P+1 arm match the old guard exactly."""
     await _setup_test(dut)
 
     word_mask = (1 << (XLEN - 2)) - 1
@@ -364,8 +364,12 @@ async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> 
         (1, 0),
         (0x3FF, 0x3FE),
         (0x400, 0x3FF),
+        (0xFFFE, 0xFFFF),  # S=P+1 without carry at the 16-bit split
+        (0xFFFF, 0x10000),  # S=P+1 carrying across the 16-bit split
+        (0x10000, 0xFFFF),  # S=P-1 across the split, not S=P+1
         (0xFFFFF, 0xFFFFE),
         (0x100000, 0xFFFFF),
+        (word_mask - 1, word_mask),  # highest non-wrapping S=P+1
         (word_mask, word_mask - 1),
         (word_mask, 0),  # S=P+1 full wrap remains deliberately rejected
         (0, word_mask),  # S=P-1 full wrap remains modulo-exact through last=0

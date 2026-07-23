@@ -63,11 +63,14 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 BTB lookup candidates.  The normal port is pc_reg+2 and the
-    // alternate is pc_reg+4; i_slot2_pc_use_alt selects the native-slot-1 case
-    // after both LUTRAM lookups have completed.
+    // Slot-2 BTB lookup candidates.  i_pc_2/i_pc_2_alt retain the actual
+    // pc_reg+2/pc_reg+4 addresses for direction-predictor metadata.  Both BTB
+    // replicas are shifted so i_pc_2_base=pc_reg addresses their entries
+    // without either candidate increment on an asynchronous LUTRAM address.
+    // The late size bit selects only after both lookups have completed.
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
+    input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
     input logic                       i_slot2_pc_use_alt,
     input logic                       i_slot2_valid,
     input logic                       i_slot2_pc_is_halfword,
@@ -203,9 +206,8 @@ module branch_prediction_controller (
       .o_btb_compressed(btb_compressed),
       .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
-      // Slot-2 prediction lookup (uses pc_reg + slot-1 size)
-      .i_pc_2(i_pc_2),
-      .i_pc_2_alt(i_pc_2_alt),
+      // Shifted slot-2 BTB replicas are both addressed by pc_reg.
+      .i_pc_2_base(i_pc_2_base),
       .i_pc_2_use_alt(i_slot2_pc_use_alt),
       .o_btb_hit_2(btb_hit_2),
       .o_predicted_taken_2(btb_predicted_taken_2),

@@ -79,11 +79,11 @@ module branch_predictor #(
     // Predicted op must still execute in IF/PD/ID
     output logic            o_btb_requires_pc_reg_handoff,
 
-    // Slot-2 prediction interface.  Two candidate read ports are provided for
-    // pc_reg+2 and pc_reg+4 so the late slot-1 size bit selects after the RAM
-    // lookups instead of driving their LUTRAM address.
-    input  logic [XLEN-1:0] i_pc_2,
-    input  logic [XLEN-1:0] i_pc_2_alt,
+    // Slot-2 prediction interface.  Separate replicas hold the pc_reg+2 and
+    // pc_reg+4 entries under predecessor keys pc_reg.  Both asynchronous RAM
+    // addresses therefore use the unmodified base PC; the late slot-1 size bit
+    // selects only after both lookups have completed.
+    input  logic [XLEN-1:0] i_pc_2_base,
     input  logic            i_pc_2_use_alt,
     output logic            o_btb_hit_2,
     output logic            o_predicted_taken_2,
@@ -115,6 +115,9 @@ module branch_predictor #(
   // BTB storage
   // Keep valid bits in FFs for explicit reset. Move tag/target/counter to LUTRAM.
   logic btb_valid[BtbEntries];
+  // Each shifted slot-2 replica needs validity stored under its own key.
+  logic btb_valid_2[BtbEntries];
+  logic btb_valid_2_alt[BtbEntries];
   logic [TagBits-1:0] btb_tag_lookup;
   logic [TagBits-1:0] btb_tag_lookup_2;  // slot-2 read port
   logic [TagBits-1:0] btb_tag_lookup_2_alt;
@@ -135,15 +138,27 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] lookup_index = i_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] lookup_tag = {i_pc[XLEN-1:BTB_INDEX_BITS+2], i_pc[1]};
 
-  // Index and tag extraction for slot-2 lookup
-  wire [BTB_INDEX_BITS-1:0] lookup_index_2 = i_pc_2[BTB_INDEX_BITS+1:2];
-  wire [TagBits-1:0] lookup_tag_2 = {i_pc_2[XLEN-1:BTB_INDEX_BITS+2], i_pc_2[1]};
-  wire [BTB_INDEX_BITS-1:0] lookup_index_2_alt = i_pc_2_alt[BTB_INDEX_BITS+1:2];
-  wire [TagBits-1:0] lookup_tag_2_alt = {i_pc_2_alt[XLEN-1:BTB_INDEX_BITS+2], i_pc_2_alt[1]};
+  // Both shifted slot-2 arrays are read with the same unmodified pc_reg key.
+  wire [BTB_INDEX_BITS-1:0] lookup_index_2 = i_pc_2_base[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] lookup_tag_2 = {i_pc_2_base[XLEN-1:BTB_INDEX_BITS+2], i_pc_2_base[1]};
+  wire [BTB_INDEX_BITS-1:0] lookup_index_2_alt = lookup_index_2;
+  wire [TagBits-1:0] lookup_tag_2_alt = lookup_tag_2;
 
   // Index and tag extraction for update
   wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
+
+  // Replicate every update at the predecessor keys used by each slot-2
+  // candidate.  These subtractors are update-side only and are not part of the
+  // fetch-PC recurrence.
+  wire [XLEN-1:0] update_pc_2_key = i_update_pc - XLEN'(2);
+  wire [BTB_INDEX_BITS-1:0] update_index_2 = update_pc_2_key[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] update_tag_2 = {update_pc_2_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_key[1]};
+  wire [XLEN-1:0] update_pc_2_alt_key = i_update_pc - XLEN'(4);
+  wire [BTB_INDEX_BITS-1:0] update_index_2_alt = update_pc_2_alt_key[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] update_tag_2_alt = {
+    update_pc_2_alt_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_alt_key[1]
+  };
 
   // Tag RAMs (replicated for slot-1 lookup, slot-2 lookup, and update reads)
   sdp_dist_ram #(
@@ -164,8 +179,8 @@ module branch_predictor #(
   ) btb_tag_ram_lookup_2 (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
-      .i_write_data(update_tag),
+      .i_write_address(update_index_2),
+      .i_write_data(update_tag_2),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_tag_lookup_2)
   );
@@ -176,8 +191,8 @@ module branch_predictor #(
   ) btb_tag_ram_lookup_2_alt (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
-      .i_write_data(update_tag),
+      .i_write_address(update_index_2_alt),
+      .i_write_data(update_tag_2_alt),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_tag_lookup_2_alt)
   );
@@ -213,7 +228,7 @@ module branch_predictor #(
   ) btb_target_ram_2 (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2),
       .i_write_data(i_update_target),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_target_lookup_2)
@@ -225,7 +240,7 @@ module branch_predictor #(
   ) btb_target_ram_2_alt (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2_alt),
       .i_write_data(i_update_target),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_target_lookup_2_alt)
@@ -250,7 +265,7 @@ module branch_predictor #(
   ) btb_counter_ram_lookup_2 (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2),
       .i_write_data(next_counter),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_counter_lookup_2)
@@ -262,7 +277,7 @@ module branch_predictor #(
   ) btb_counter_ram_lookup_2_alt (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2_alt),
       .i_write_data(next_counter),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_counter_lookup_2_alt)
@@ -305,7 +320,7 @@ module branch_predictor #(
   ) btb_compressed_ram_2 (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2),
       .i_write_data(i_update_compressed),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_compressed_lookup_2)
@@ -317,7 +332,7 @@ module branch_predictor #(
   ) btb_compressed_ram_2_alt (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2_alt),
       .i_write_data(i_update_compressed),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_compressed_lookup_2_alt)
@@ -341,7 +356,7 @@ module branch_predictor #(
   ) btb_requires_pc_reg_handoff_ram_2 (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2),
       .i_write_data(i_update_requires_pc_reg_handoff),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_requires_pc_reg_handoff_lookup_2)
@@ -353,7 +368,7 @@ module branch_predictor #(
   ) btb_requires_pc_reg_handoff_ram_2_alt (
       .i_clk,
       .i_write_enable(i_update),
-      .i_write_address(update_index),
+      .i_write_address(update_index_2_alt),
       .i_write_data(i_update_requires_pc_reg_handoff),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_requires_pc_reg_handoff_lookup_2_alt)
@@ -375,11 +390,11 @@ module branch_predictor #(
   assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
 
   // Combinational slot-2 lookup.
-  wire lookup_valid_2 = btb_valid[lookup_index_2];
+  wire lookup_valid_2 = btb_valid_2[lookup_index_2];
   wire [TagBits-1:0] lookup_tag_stored_2 = btb_tag_lookup_2;
   wire [XLEN-1:0] lookup_target_2 = btb_target_lookup_2;
   wire [1:0] lookup_counter_2 = btb_counter_lookup_2;
-  wire lookup_valid_2_alt = btb_valid[lookup_index_2_alt];
+  wire lookup_valid_2_alt = btb_valid_2_alt[lookup_index_2_alt];
   wire [TagBits-1:0] lookup_tag_stored_2_alt = btb_tag_lookup_2_alt;
   wire [XLEN-1:0] lookup_target_2_alt = btb_target_lookup_2_alt;
   wire [1:0] lookup_counter_2_alt = btb_counter_lookup_2_alt;
@@ -424,12 +439,87 @@ module branch_predictor #(
     if (i_rst) begin
       // Clear all valid bits on reset
       for (int i = 0; i < BtbEntries; i++) begin
-        btb_valid[i] <= 1'b0;
+        btb_valid[i]       <= 1'b0;
+        btb_valid_2[i]     <= 1'b0;
+        btb_valid_2_alt[i] <= 1'b0;
       end
     end else if (i_update) begin
       // Update BTB entry on branch resolution
-      btb_valid[update_index] <= 1'b1;
+      btb_valid[update_index]             <= 1'b1;
+      btb_valid_2[update_index_2]         <= 1'b1;
+      btb_valid_2_alt[update_index_2_alt] <= 1'b1;
     end
   end
+
+`ifndef SYNTHESIS
+  // Conventional-key reference model for both shifted slot-2 replicas.  It
+  // stores each update under its actual branch PC and checks that reads at P
+  // match conventional reads at P+2 and P+4, including halfword/index/full-PC
+  // wrap, metadata, counter evolution, and direct-mapped replacement.
+  logic reference_valid_2[BtbEntries];
+  logic [TagBits-1:0] reference_tag_2[BtbEntries];
+  logic [XLEN-1:0] reference_target_2[BtbEntries];
+  logic [1:0] reference_counter_2[BtbEntries];
+  logic reference_compressed_2[BtbEntries];
+  logic reference_handoff_2[BtbEntries];
+
+  wire [XLEN-1:0] reference_pc_2 = i_pc_2_base + XLEN'(2);
+  wire [XLEN-1:0] reference_pc_2_alt = i_pc_2_base + XLEN'(4);
+  wire [BTB_INDEX_BITS-1:0] reference_index_2 = reference_pc_2[BTB_INDEX_BITS+1:2];
+  wire [BTB_INDEX_BITS-1:0] reference_index_2_alt = reference_pc_2_alt[BTB_INDEX_BITS+1:2];
+  wire [TagBits-1:0] reference_lookup_tag_2 = {
+    reference_pc_2[XLEN-1:BTB_INDEX_BITS+2], reference_pc_2[1]
+  };
+  wire [TagBits-1:0] reference_lookup_tag_2_alt = {
+    reference_pc_2_alt[XLEN-1:BTB_INDEX_BITS+2], reference_pc_2_alt[1]
+  };
+  wire reference_hit_2 = reference_valid_2[reference_index_2] &&
+      (reference_tag_2[reference_index_2] == reference_lookup_tag_2);
+  wire reference_hit_2_alt = reference_valid_2[reference_index_2_alt] &&
+      (reference_tag_2[reference_index_2_alt] == reference_lookup_tag_2_alt);
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i < BtbEntries; i++) begin
+        reference_valid_2[i] <= 1'b0;
+      end
+    end else if (i_update) begin
+      reference_valid_2[update_index]      <= 1'b1;
+      reference_tag_2[update_index]        <= update_tag;
+      reference_target_2[update_index]     <= i_update_target;
+      reference_counter_2[update_index]    <= next_counter;
+      reference_compressed_2[update_index] <= i_update_compressed;
+      reference_handoff_2[update_index]    <= i_update_requires_pc_reg_handoff;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(i_pc_2_base)) begin
+      p_slot2_shift_hit_equivalent : assert (btb_hit_2 == reference_hit_2);
+      p_slot2_alt_shift_hit_equivalent : assert (btb_hit_2_alt == reference_hit_2_alt);
+      if (reference_hit_2) begin
+        p_slot2_shift_target_equivalent :
+        assert (lookup_target_2 == reference_target_2[reference_index_2]);
+        p_slot2_shift_counter_equivalent :
+        assert (lookup_counter_2 == reference_counter_2[reference_index_2]);
+        p_slot2_shift_compressed_equivalent :
+        assert (btb_compressed_lookup_2 == reference_compressed_2[reference_index_2]);
+        p_slot2_shift_handoff_equivalent :
+        assert (btb_requires_pc_reg_handoff_lookup_2 == reference_handoff_2[reference_index_2]);
+      end
+      if (reference_hit_2_alt) begin
+        p_slot2_alt_shift_target_equivalent :
+        assert (lookup_target_2_alt == reference_target_2[reference_index_2_alt]);
+        p_slot2_alt_shift_counter_equivalent :
+        assert (lookup_counter_2_alt == reference_counter_2[reference_index_2_alt]);
+        p_slot2_alt_shift_compressed_equivalent :
+        assert (btb_compressed_lookup_2_alt == reference_compressed_2[reference_index_2_alt]);
+        p_slot2_alt_shift_handoff_equivalent :
+        assert (btb_requires_pc_reg_handoff_lookup_2_alt ==
+                reference_handoff_2[reference_index_2_alt]);
+      end
+    end
+  end
+`endif
 
 endmodule : branch_predictor
