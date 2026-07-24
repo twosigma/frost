@@ -65,7 +65,10 @@ fire when their entry is the oldest in flight.
 
 FP64 loads (FLD) on the 32-bit memory bus need two sequential
 accesses, so the entry has a phase bit and the data field is split
-lo/hi in the LUTRAM so each phase writes only its half.
+lo/hi in the LUTRAM so each phase writes only its half. A registered
+physical-generation pulse initializes a reused entry's resident phase bit.
+A current address update supplies phase zero directly because it can only
+match an entry before that entry's first memory phase.
 
 The per-entry AMO opcode is compacted from the 32-bit `instr_op_e` to a 4-bit
 semantic code and stored in per-entry FFs. Accepted slot-1 and slot-2

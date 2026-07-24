@@ -2395,21 +2395,26 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (slot1_alloc_oh[i]) begin
-        lq_rob_tag[i]    <= i_alloc.rob_tag;
-        lq_size[i]       <= i_alloc.size;
-        lq_is_fp[i]      <= i_alloc.is_fp;
-        lq_sign_ext[i]   <= i_alloc.sign_ext;
-        lq_fp64_phase[i] <= 1'b0;
-        lq_is_lr[i]      <= i_alloc.is_lr;
-        lq_is_amo[i]     <= i_alloc.is_amo;
+        lq_rob_tag[i]  <= i_alloc.rob_tag;
+        lq_size[i]     <= i_alloc.size;
+        lq_is_fp[i]    <= i_alloc.is_fp;
+        lq_sign_ext[i] <= i_alloc.sign_ext;
+        lq_is_lr[i]    <= i_alloc.is_lr;
+        lq_is_amo[i]   <= i_alloc.is_amo;
       end else if (slot2_alloc_oh[i]) begin
-        lq_rob_tag[i]    <= i_alloc_2.rob_tag;
-        lq_size[i]       <= i_alloc_2.size;
-        lq_is_fp[i]      <= i_alloc_2.is_fp;
-        lq_sign_ext[i]   <= i_alloc_2.sign_ext;
+        lq_rob_tag[i]  <= i_alloc_2.rob_tag;
+        lq_size[i]     <= i_alloc_2.size;
+        lq_is_fp[i]    <= i_alloc_2.is_fp;
+        lq_sign_ext[i] <= i_alloc_2.sign_ext;
+        lq_is_lr[i]    <= i_alloc_2.is_lr;
+        lq_is_amo[i]   <= i_alloc_2.is_amo;
+      end
+
+      // The registered physical-generation pulse arrives one cycle after
+      // allocation and initializes the resident phase bit from local state.
+      // This keeps the live free-target search off the phase-bit D path.
+      if (dep_replaced_oh[i]) begin
         lq_fp64_phase[i] <= 1'b0;
-        lq_is_lr[i]      <= i_alloc_2.is_lr;
-        lq_is_amo[i]     <= i_alloc_2.is_amo;
       end
     end
     // FLD phase advance: set phase 1 after phase 0 memory response
@@ -2498,8 +2503,10 @@ module load_queue #(
                                                     : lq_sign_ext[issue_mem_stored_idx];
   assign issue_mem_is_mmio = issue_mem_from_update ? i_addr_update.is_mmio
                                                    : lq_is_mmio[issue_mem_stored_idx];
-  assign issue_mem_fp64_phase = issue_mem_from_update ? lq_fp64_phase[update_issue_payload_idx]
-                                                      : lq_fp64_phase[issue_mem_stored_idx];
+  // An address update only matches an entry without a resident address, so it
+  // is necessarily the first memory phase. The constant also keeps the
+  // resident phase read out of the current-update payload cone.
+  assign issue_mem_fp64_phase = issue_mem_from_update ? 1'b0 : lq_fp64_phase[issue_mem_stored_idx];
   assign issue_mem_is_lr = issue_mem_from_update ? lq_is_lr[update_issue_payload_idx]
                                                  : lq_is_lr[issue_mem_stored_idx];
   assign issue_mem_is_amo = issue_mem_from_update ? lq_is_amo[update_issue_payload_idx]
@@ -2795,6 +2802,8 @@ module load_queue #(
         $error("LQ: allocation steering lost or invented an accepted request");
       if (|(slot1_alloc_oh & slot2_alloc_oh))
         $error("LQ: slot-1 and slot-2 onehot allocation pulses overlap");
+      if (accept_mem_response && dep_replaced_oh[issued_idx])
+        $error("LQ: memory response collided with a new physical generation");
       // The compact-kind write must have drained before launch snapshots it.
       // This is guaranteed by the intervening address/SQ-check staging edge.
       if (o_mem_read_en && sq_check_is_amo_q) begin
@@ -2879,6 +2888,14 @@ module load_queue #(
       assert (!amo_kind_alloc_present_q[1] ||
               !dep_replaced_oh[amo_kind_alloc_idx_q[1]] ||
               (amo_kind_alloc_idx_q[1] != launch_mem_issue_idx));
+    end
+  end
+
+  // Generation initialization and an old generation's response must never
+  // target the same physical entry on one edge.
+  always_comb begin
+    if (i_rst_n && accept_mem_response) begin
+      p_response_not_new_generation : assert (!dep_replaced_oh[issued_idx]);
     end
   end
 

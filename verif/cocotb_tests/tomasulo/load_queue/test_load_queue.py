@@ -15,9 +15,9 @@
 """Unit tests for the Load Queue.
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
-LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, FLD two-phase,
-FLW NaN-boxing, flush, AMO dependency ordering, CDB back-pressure, and
-constrained random.
+LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, FLD two-phase
+and slot reuse, FLW NaN-boxing, flush, AMO dependency ordering, CDB
+back-pressure, and constrained random.
 """
 
 import random
@@ -659,6 +659,77 @@ async def test_fld_two_phase(dut: Any) -> None:
         result.value == expected
     ), f"Expected 0x{expected:016x}, got 0x{result.value:016x}"
     await accept_fu_complete(dut_if)
+
+
+# ============================================================================
+# Test 14a: FLD phase initialization on physical-slot reuse
+# ============================================================================
+@cocotb.test()
+async def test_fld_phase_clears_on_physical_slot_reuse(dut: Any) -> None:
+    """A reused FLD slot starts at phase 0 on its earliest address update."""
+    dut_if, _ = await setup(dut)
+
+    # Complete an FLD in physical entry 0, leaving its unreset payload phase bit
+    # at phase 1 after the entry itself is freed.
+    dut_if.drive_alloc(rob_tag=0, is_fp=True, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(rob_tag=0, address=0x6000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"] and mem_req["addr"] == 0x6000
+    await dut_if.step()
+    dut_if.drive_mem_response(0x1111_2222)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"] and mem_req["addr"] == 0x6004
+    await dut_if.step()
+    dut_if.drive_mem_response(0x3333_4444)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 0
+    await accept_fu_complete(dut_if)
+    assert dut_if.empty
+
+    # Occupy entries 1..7 so the next allocation must reuse physical entry 0.
+    for rob_tag in range(1, LQ_DEPTH):
+        dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+    assert dut_if.count == LQ_DEPTH - 1
+
+    dut_if.drive_alloc(rob_tag=LQ_DEPTH, is_fp=True, size=MEM_SIZE_DOUBLE)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.full
+
+    # Present the production MEM-RS look-ahead, then block SQ-check capture on
+    # the address-update edge. The later stored-entry scan must therefore read
+    # the resident phase bit cleared by the physical-generation pulse, rather
+    # than getting phase zero from the current-update bypass.
+    new_address = 0x7000
+    dut_if.drive_pre_issue(rob_tag=LQ_DEPTH)
+    await dut_if.step()
+    dut_if.clear_pre_issue()
+    dut_if.drive_mem_bus_busy(True)
+    dut_if.drive_addr_update(rob_tag=LQ_DEPTH, address=new_address)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_mem_bus_busy(False)
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "Reused FLD did not issue"
+    assert mem_req["addr"] == new_address, (
+        f"Reused FLD started at stale phase-1 address 0x{mem_req['addr']:x}, "
+        f"expected 0x{new_address:x}"
+    )
 
 
 # ============================================================================

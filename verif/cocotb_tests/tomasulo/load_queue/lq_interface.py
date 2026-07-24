@@ -192,6 +192,8 @@ class LQInterface:
         # inputs but explicit init avoids future X-propagation surprises.
         self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
+        self.dut.i_pre_issue_rob_tag.value = 0
+        self.dut.i_pre_issue_needs_lq.value = 0
         self.dut.i_sq_all_older_addrs_known.value = 0
         self.dut.i_sq_forward.value = 0
         self.dut.i_mem_read_data.value = 0
@@ -267,6 +269,19 @@ class LQInterface:
     def clear_alloc_2(self) -> None:
         """Clear slot-2 allocation request."""
         self.dut.i_alloc_2.value = 0
+
+    # =========================================================================
+    # Address-update look-ahead
+    # =========================================================================
+
+    def drive_pre_issue(self, rob_tag: int) -> None:
+        """Drive the MEM-RS look-ahead one cycle before an address update."""
+        self.dut.i_pre_issue_rob_tag.value = rob_tag & MASK_TAG
+        self.dut.i_pre_issue_needs_lq.value = 1
+
+    def clear_pre_issue(self) -> None:
+        """Clear the MEM-RS address-update look-ahead."""
+        self.dut.i_pre_issue_needs_lq.value = 0
 
     # =========================================================================
     # Address Update
