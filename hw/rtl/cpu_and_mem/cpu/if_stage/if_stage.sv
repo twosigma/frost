@@ -234,6 +234,7 @@ module if_stage #(
   logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
+  logic [2:0] rvc_source_hot;
 
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
@@ -243,6 +244,7 @@ module if_stage #(
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
   logic sel_compressed_2;
+  logic [2:0] rvc_source_hot_2;
   logic slot2_valid_for_pc_live;
   logic slot2_is_compressed_for_pc_live;
   logic slot2_valid_for_pc_saved;
@@ -720,6 +722,7 @@ module if_stage #(
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
+      .o_rvc_source_hot(rvc_source_hot),
 
       // Slot-2 outputs (Session F).  sel_nop_2 already folds in slot-1 sel_nop,
       // slot-1 branch detection, and the doesn't-fit cases.
@@ -729,6 +732,7 @@ module if_stage #(
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
+      .o_rvc_source_hot_2(rvc_source_hot_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot1_is_branch(slot1_is_branch),
@@ -974,6 +978,33 @@ module if_stage #(
   assign assembled_instr = pc_reg[1] ?
       {spanning_second_half, effective_instr[31:16]} : effective_instr;
 
+  // Carry only the three source bits on the four current low-IMEM/RVC worst
+  // paths. RVC takes the exact expanded bits from the sideband; native
+  // instructions take the same bits from the assembled instruction. This
+  // preserves the existing stage boundaries while bypassing decompression for
+  // rs1[2:1] and rs2[1].
+  logic [2:0] source_hot_predecoded_live;
+  logic [2:0] source_hot_predecoded_2_live;
+  logic [2:0] source_hot_predecoded_saved;
+  logic [2:0] source_hot_predecoded_2_saved;
+  assign source_hot_predecoded_live = sel_compressed ?
+      rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
+  assign source_hot_predecoded_2_live = sel_compressed_2 ?
+      rvc_source_hot_2 : {effective_instr_2[21], effective_instr_2[17:16]};
+
+  // Capture the narrow values once on stall entry. Apply the replay select
+  // only at the packet output so the live source path does not acquire the
+  // generic stall-capture mux followed by a second replay mux.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      source_hot_predecoded_saved   <= '0;
+      source_hot_predecoded_2_saved <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      source_hot_predecoded_saved   <= source_hot_predecoded_live;
+      source_hot_predecoded_2_saved <= source_hot_predecoded_2_live;
+    end
+  end
+
 `ifndef SYNTHESIS
   // The specialized candidate must match the old sideband-qualified value
   // whenever the native arm is architecturally visible.  For RVC the packet's
@@ -1129,6 +1160,9 @@ module if_stage #(
   // Pre-assembled instruction for PD stage (spanning already assembled in IF)
   assign o_from_if_to_pd.effective_instr = replay_saved_if_outputs ? assembled_instr_sc :
                                            assembled_instr;
+  assign o_from_if_to_pd.source_hot_predecoded =
+      replay_saved_if_outputs ? source_hot_predecoded_saved :
+                                source_hot_predecoded_live;
 
   // Pre-computed link address (the slot-1 fall-through PC), feeding the RAS
   // call push.  ID recomputes the pipeline link address for JAL/JALR itself
@@ -1525,6 +1559,9 @@ module if_stage #(
   assign slot2_valid = !o_from_if_to_pd_2.sel_nop;
   assign o_from_if_to_pd_2.effective_instr = replay_saved_if_outputs ? effective_instr_2_sc :
                                              effective_instr_2;
+  assign o_from_if_to_pd_2.source_hot_predecoded =
+      replay_saved_if_outputs ? source_hot_predecoded_2_saved :
+                                source_hot_predecoded_2_live;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
 
   // BTB metadata (Session Q): slot-2 has its own BTB lookup port now.  The

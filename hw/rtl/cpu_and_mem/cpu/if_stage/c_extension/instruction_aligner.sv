@@ -30,6 +30,7 @@
   5. Compute selection signals (NOP, compressed, or 32-bit)
   6. Output the raw slot-1 parcel for PD-stage decompression
   7. Pre-decompress fixed slot-2 candidates in parallel with position selection
+  8. Select narrow per-parcel RVC source metadata from the IMEM sideband
 
   TIMING OPTIMIZATION: Slot 1 remains raw and is decompressed in PD. Slot 2 is
   decompressed here from fixed candidate parcels before the late position mux,
@@ -74,6 +75,8 @@ module instruction_aligner #(
     output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Outputting decompressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
+    // Exact {rs2[1], rs1[2:1]} of the selected parcel's RVC expansion.
+    output logic [2:0] o_rvc_source_hot,
 
     // ===========================================================================
     // Slot-2 outputs (2-wide dispatch, Session F)
@@ -97,6 +100,7 @@ module instruction_aligner #(
     output logic o_sel_nop_2,
     // Slot-2 RVC select for PD's instruction-mux (mirror of slot-1).
     output logic o_sel_compressed_2,
+    output logic [2:0] o_rvc_source_hot_2,
     // Early slot-2 metadata for the PC increment path.  This is equivalent to
     // the live, non-replay slot-2 decision below, but avoids routing the PC
     // path through the final IF->PD packet mux.
@@ -211,6 +215,19 @@ module instruction_aligner #(
   assign is_comp_buf_lo = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
   assign is_comp_buf_hi = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
 
+  logic [2:0] rvc_source_hot_instr_lo;
+  logic [2:0] rvc_source_hot_instr_hi;
+  logic [2:0] rvc_source_hot_next_lo;
+  logic [2:0] rvc_source_hot_next_hi;
+  logic [2:0] rvc_source_hot_buf_lo;
+  logic [2:0] rvc_source_hot_buf_hi;
+  assign rvc_source_hot_instr_lo = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_instr_hi = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+  assign rvc_source_hot_next_lo  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_next_hi  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+  assign rvc_source_hot_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+
   // 4:1 mux for the 1-bit is_compressed result
   always_comb begin
     unique case ({
@@ -221,6 +238,21 @@ module instruction_aligner #(
       2'b10:   o_is_compressed = is_comp_buf_lo;
       2'b11:   o_is_compressed = is_comp_buf_hi;
       default: o_is_compressed = 1'b0;
+    endcase
+  end
+
+  // Use the same word/halfword identity as raw_parcel. The metadata comes
+  // directly from the registered sideband BRAM rather than the RVC
+  // decompressor that currently feeds the four slow source-bit endpoints.
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_rvc_source_hot = rvc_source_hot_instr_lo;
+      2'b01:   o_rvc_source_hot = rvc_source_hot_instr_hi;
+      2'b10:   o_rvc_source_hot = rvc_source_hot_buf_lo;
+      2'b11:   o_rvc_source_hot = rvc_source_hot_buf_hi;
+      default: o_rvc_source_hot = 3'd0;
     endcase
   end
 
@@ -343,6 +375,15 @@ module instruction_aligner #(
       Slot2AtNextLo:    o_raw_parcel_2 = bram_next_word[15:0];
       Slot2AtNextHi:    o_raw_parcel_2 = bram_next_word[31:16];
       default:          o_raw_parcel_2 = '0;
+    endcase
+  end
+
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_rvc_source_hot_2 = rvc_source_hot_instr_hi;
+      Slot2AtNextLo:    o_rvc_source_hot_2 = rvc_source_hot_next_lo;
+      Slot2AtNextHi:    o_rvc_source_hot_2 = rvc_source_hot_next_hi;
+      default:          o_rvc_source_hot_2 = 3'd0;
     endcase
   end
 
@@ -666,8 +707,9 @@ module instruction_aligner #(
   // slot-1 size, and the slot-2 start-valid predicate.  Four otherwise-unused
   // stored class bits additionally collapse the size/allows conjunction for
   // every shape; the same-word RVC-at-even bit also includes slot-2's class
-  // validity.  That keeps those joins out of the live BRAM-to-PC cone without
-  // widening the 12-bit sideband memories.
+  // validity.  Those PC predicates remain in the compact low 12 bits; the
+  // six narrow RVC source bits above are independent and do not add another
+  // join to the live BRAM-to-PC cone.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({

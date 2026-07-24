@@ -333,8 +333,11 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "RAW_BINARY_FILE": output_dir / "sw.bin",
         "VIVADO_BRAM_FILE": output_dir / "sw.txt",
         "DISASSEMBLY_FILE": output_dir / "sw.S",
-        "IMEM_EVEN_INIT_FILE": output_dir / "sw_imem_even.mem",
-        "IMEM_ODD_INIT_FILE": output_dir / "sw_imem_odd.mem",
+        "IMEM_EVEN_COLD_INIT_FILE": output_dir / "sw_imem_even_cold.mem",
+        "IMEM_ODD_COLD_INIT_FILE": output_dir / "sw_imem_odd_cold.mem",
+        "IMEM_EVEN_FRONTEND_HOT_INIT_FILE": output_dir
+        / "sw_imem_even_frontend_hot.mem",
+        "IMEM_ODD_FRONTEND_HOT_INIT_FILE": output_dir / "sw_imem_odd_frontend_hot.mem",
         "IMEM_EVEN_SIDEBAND_FILE": output_dir / "sw_imem_even_sideband.mem",
         "IMEM_ODD_SIDEBAND_FILE": output_dir / "sw_imem_odd_sideband.mem",
         "IMEM_EVEN_COMPRESSED_FILE": output_dir / "sw_imem_even_compressed.mem",

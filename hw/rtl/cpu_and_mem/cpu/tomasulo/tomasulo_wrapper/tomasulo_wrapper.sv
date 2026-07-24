@@ -1913,6 +1913,12 @@ module tomasulo_wrapper #(
       // point.  This keeps the free-entry priority decoder out of the 64-bit
       // value-flop clock enables without changing dispatch or issue timing.
       .BROADCAST_FREE_SOURCE_VALUES(1'b1),
+      // Keep issue-time CDB tag matches physically separate from the identical
+      // comparisons that control the resident source-value writes.  Shadow
+      // tags use the existing speculative indexed writes, differ only for
+      // non-targeting slots, and equal the architectural tags for every valid
+      // entry.
+      .ISSUE_CDB_TAG_SHADOW(1'b1),
       .DUAL_ISSUE(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),

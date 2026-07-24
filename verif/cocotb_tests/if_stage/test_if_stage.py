@@ -48,7 +48,9 @@ SB_ALLOWS_SLOT2_AFTER_LO = 8
 SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
-SIDEBAND_WIDTH = 12
+SB_RVC_SOURCE_HOT_LO_LSB = 12
+SB_RVC_SOURCE_HOT_HI_LSB = 15
+SIDEBAND_WIDTH = 18
 
 PIPELINE_CTRL_FIELDS = [
     ("reset", 1),
@@ -89,6 +91,7 @@ IF_TO_PD_FIELDS = [
     ("sel_nop", 1),
     ("sel_compressed", 1),
     ("effective_instr", 32),
+    ("source_hot_predecoded", 3),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
@@ -154,6 +157,8 @@ def _sideband(
     native_fp_compute_hi: bool = False,
     native_pairable_lo: bool = False,
     native_pairable_hi: bool = False,
+    rvc_source_hot_lo: int = 0,
+    rvc_source_hot_hi: int = 0,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
@@ -193,6 +198,8 @@ def _sideband(
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
         | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
+        | ((rvc_source_hot_lo & 0x7) << SB_RVC_SOURCE_HOT_LO_LSB)
+        | ((rvc_source_hot_hi & 0x7) << SB_RVC_SOURCE_HOT_HI_LSB)
     )
 
 
@@ -200,6 +207,11 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     """Pack the fetch sideband bus as {next_word_sideband, current_word_sideband}."""
     mask = (1 << SIDEBAND_WIDTH) - 1
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
+
+
+def _source_hot(instruction: int) -> int:
+    """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
+    return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
 
 
 def _pack_pipeline_ctrl(fields: Mapping[str, int | bool]) -> int:
@@ -488,7 +500,12 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         dut,
         current_word=current_word,
         next_word=ADD_INSTR_A,
-        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_lo=3,
+            rvc_source_hot_hi=5,
+        ),
     )
     await _settle()
 
@@ -500,6 +517,7 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=current_word,
         compressed=True,
     )
+    assert packet1["source_hot_predecoded"] == 3
 
     packet2 = _read_if_packet(dut, slot2=True)
     _assert_packet(
@@ -510,6 +528,7 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=0x108000EF,
         compressed=True,
     )
+    assert packet2["source_hot_predecoded"] == 5
     assert not packet2["btb_hit"]
     assert not packet2["ras_predicted"]
 
@@ -654,6 +673,7 @@ async def test_stall_registered_replays_captured_if_packet(dut: Any) -> None:
         effective=ADD_INSTR_A,
         compressed=False,
     )
+    assert _read_if_packet(dut)["source_hot_predecoded"] == _source_hot(ADD_INSTR_A)
 
     await _advance_cycle(dut)
 
@@ -669,6 +689,89 @@ async def test_stall_registered_replays_captured_if_packet(dut: Any) -> None:
         effective=ADD_INSTR_A,
         compressed=False,
     )
+    assert packet["source_hot_predecoded"] == _source_hot(ADD_INSTR_A)
+
+
+@cocotb.test()
+async def test_stall_registered_replays_compressed_source_hot_metadata(
+    dut: Any,
+) -> None:
+    """Compressed slot metadata is captured with both packets at stall entry."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    # C.ADDI x3, 1 and C.ADDI x6, 2. Their exact decompressions carry
+    # distinctive source-hot values (1 and 7), so replaying live replacement
+    # data cannot accidentally satisfy this check.
+    compressed_addi_x3_1 = 0x0185
+    compressed_addi_x6_2 = 0x0309
+    expanded_addi_x3_1 = 0x00118193
+    expanded_addi_x6_2 = 0x00230313
+    source_hot_1 = _source_hot(expanded_addi_x3_1)
+    source_hot_2 = _source_hot(expanded_addi_x6_2)
+    current_word = _word(lo=compressed_addi_x3_1, hi=compressed_addi_x6_2)
+
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_A,
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_lo=source_hot_1,
+            rvc_source_hot_hi=source_hot_2,
+        ),
+    )
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+
+    packet1 = _read_if_packet(dut)
+    _assert_packet(
+        packet1,
+        pc=BASE_PC,
+        raw=compressed_addi_x3_1,
+        effective=current_word,
+        compressed=True,
+    )
+    assert packet1["source_hot_predecoded"] == source_hot_1 == 1
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    _assert_packet(
+        packet2,
+        pc=BASE_PC + 2,
+        raw=compressed_addi_x6_2,
+        effective=expanded_addi_x6_2,
+        compressed=True,
+    )
+    assert packet2["source_hot_predecoded"] == source_hot_2 == 7
+
+    await _advance_cycle(dut)
+
+    # Replace every live input while the registered-stall replay arm is active.
+    # Both source-hot values must remain aligned with the captured parcels.
+    _drive_fetch(dut, current_word=ADD_INSTR_C, next_word=NOP_INSTR)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+
+    packet1 = _read_if_packet(dut)
+    _assert_packet(
+        packet1,
+        pc=BASE_PC,
+        raw=compressed_addi_x3_1,
+        effective=current_word,
+        compressed=True,
+    )
+    assert packet1["source_hot_predecoded"] == source_hot_1
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    _assert_packet(
+        packet2,
+        pc=BASE_PC + 2,
+        raw=compressed_addi_x6_2,
+        effective=expanded_addi_x6_2,
+        compressed=True,
+    )
+    assert packet2["source_hot_predecoded"] == source_hot_2
 
 
 @cocotb.test()
@@ -1114,7 +1217,11 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
         current_word=ADD_INSTR_A,  # i_instr[31:0]
         next_word=0x00000004,  # i_instr[63:32] = word(W+2); lo parcel 0x0004 -> "compressed"
         current_sb=_sideband(),  # 32-bit at pc_reg
-        next_sb=_sideband(compressed_lo=True, compressed_hi=False),
+        next_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=False,
+            rvc_source_hot_lo=1,
+        ),
         bank_sel=1,  # = ~pc_reg[2]; models served window one word AHEAD (F=W+1)
     )
     await _settle()

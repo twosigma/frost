@@ -16,7 +16,8 @@
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, FLD two-phase,
-FLW NaN-boxing, flush, ordering, CDB back-pressure, and constrained random.
+FLW NaN-boxing, flush, AMO dependency ordering, CDB back-pressure, and
+constrained random.
 """
 
 import random
@@ -117,6 +118,59 @@ async def wait_for_mem_request(
 async def accept_fu_complete(dut_if: LQInterface) -> None:
     """Accept and clear the currently-presented staged completion."""
     await dut_if.accept_fu_complete()
+
+
+async def complete_prepared_amo(
+    dut_if: LQInterface,
+    *,
+    rob_tag: int,
+    address: int,
+    old_value: int,
+    expected_write: int,
+    description: str,
+) -> None:
+    """Issue one already-allocated/addressed AMO and check writeback + CDB."""
+    dut_if.drive_rob_head_tag(rob_tag)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], f"{description}: AMO read did not issue"
+    assert (
+        mem_req["addr"] == address
+    ), f"{description}: expected read address 0x{address:08x}, got 0x{mem_req['addr']:08x}"
+    await dut_if.step()
+
+    dut_if.drive_mem_response(old_value)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    await Timer(1, unit="ns")
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], f"{description}: AMO write did not become active"
+    assert (
+        amo_write["addr"] == address
+    ), f"{description}: expected write address 0x{address:08x}, got 0x{amo_write['addr']:08x}"
+    assert amo_write["data"] == (expected_write & MASK32), (
+        f"{description}: expected write data 0x{expected_write & MASK32:08x}, "
+        f"got 0x{amo_write['data']:08x}"
+    )
+
+    dut_if.drive_amo_mem_write_done(True)
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+
+    result = await wait_for_fu_complete(dut_if, max_cycles=8)
+    assert result.valid, f"{description}: old value did not reach the CDB"
+    assert (
+        result.tag == rob_tag
+    ), f"{description}: expected CDB tag {rob_tag}, got {result.tag}"
+    assert result.value == (old_value & MASK32), (
+        f"{description}: expected CDB old value 0x{old_value & MASK32:08x}, "
+        f"got 0x{result.value:016x}"
+    )
+    await accept_fu_complete(dut_if)
 
 
 async def complete_load_no_forward(
@@ -933,7 +987,9 @@ async def test_stale_response_after_partial_flush(dut: Any) -> None:
     model.mem_response_drain(0xDEAD_BEEF)
     await Timer(1, unit="ns")
     assert not bool(dut.o_l0_fill.value), "Late stale response refilled L0"
-    assert not dut_if.read_fu_complete().valid, "Late stale response completed a killed load"
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Late stale response completed a killed load"
     await dut_if.step()
     dut_if.clear_mem_response()
 
@@ -987,12 +1043,12 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
     model.partial_flush(2, 0)
     model.mem_response_drain(returned_word)
     await Timer(1, unit="ns")
-    assert bool(dut.o_l0_fill.value), (
-        "Safe ordinary response did not fill L0 on the coincident partial flush"
-    )
-    assert not dut_if.read_fu_complete().valid, (
-        "Killed load completed while its response was being drained"
-    )
+    assert bool(
+        dut.o_l0_fill.value
+    ), "Safe ordinary response did not fill L0 on the coincident partial flush"
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "Killed load completed while its response was being drained"
 
     await dut_if.step()
     dut_if.clear_partial_flush()
@@ -1002,9 +1058,9 @@ async def test_partial_flush_coincident_response_fills_l0_only(dut: Any) -> None
 
     assert dut_if.empty, "Partial flush did not remove the response owner"
     assert dut_if.count == 0
-    assert not (await wait_for_fu_complete(dut_if, max_cycles=2)).valid, (
-        "Drained response produced a delayed FU completion"
-    )
+    assert not (
+        await wait_for_fu_complete(dut_if, max_cycles=2)
+    ).valid, "Drained response produced a delayed FU completion"
 
     # A later architectural load to the same word must consume the retained
     # memory image from L0 without issuing another memory request.
@@ -1992,18 +2048,18 @@ async def test_amo_waits_for_rob_head_and_sq_committed_empty(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 35b: ROB-head AMO rescue from physical older-AMO block
+# Test 35b: ROB-head AMO ignores a physically earlier younger AMO
 # ============================================================================
 @cocotb.test()
-async def test_blocked_head_amo_rescues_when_issue_would_idle(dut: Any) -> None:
-    """A physically blocked ROB-head AMO issues when no normal candidate exists."""
+async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None:
+    """Physical queue order does not make a younger AMO block the ROB-head AMO."""
     dut_if, model = await setup(dut)
 
     from .lq_interface import AMOSWAP_W
 
-    # Physical order: younger pending AMO, then the true ROB-head AMO.  The
-    # older-AMO prefix is physical-order based, so the head AMO is masked unless
-    # the idle rescue path re-adds it.
+    # Physical order: younger pending AMO, then the true ROB-head AMO. Exact
+    # ROB-age dependency rows must not mistake that physical order for age, so
+    # the head AMO remains eligible.
     dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOSWAP_W)
     model.alloc(1, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOSWAP_W)
     await dut_if.step()
@@ -2029,10 +2085,10 @@ async def test_blocked_head_amo_rescues_when_issue_would_idle(dut: Any) -> None:
     dut_if.drive_sq_committed_empty(True)
 
     mem_req = await wait_for_mem_request(dut_if, max_cycles=AMO_RESCUE_THRESHOLD + 8)
-    assert mem_req["en"], "Blocked ROB-head AMO should be rescued"
+    assert mem_req["en"], "ROB-head AMO should ignore physically earlier younger AMO"
     assert (
         mem_req["addr"] == 0x9004
-    ), f"Expected rescued head AMO addr=0x9004, got 0x{mem_req['addr']:x}"
+    ), f"Expected head AMO addr=0x9004, got 0x{mem_req['addr']:x}"
 
 
 # ============================================================================
@@ -2153,6 +2209,180 @@ async def test_blocked_head_amo_does_not_replace_busy_sq_check(dut: Any) -> None
     assert (
         mem_req["addr"] == 0xB008
     ), f"Expected head AMO addr=0xB008 (fenced load evicted), got 0x{mem_req['addr']:x}"
+
+
+# ============================================================================
+# Test 35e: Every older-AMO dependency must retire independently
+# ============================================================================
+@cocotb.test()
+async def test_younger_load_waits_for_every_older_amo_dependency(dut: Any) -> None:
+    """Completing one of two older AMOs must not release a younger load."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # Physical/program order is AMO 0, AMO 1, then load 2. Leave AMO 1 without
+    # an address so it cannot issue after AMO 0 completes. The younger load is
+    # otherwise fully ready, making any lost dependency visible as a read.
+    for rob_tag in (0, 1):
+        dut_if.drive_alloc(
+            rob_tag=rob_tag,
+            size=MEM_SIZE_WORD,
+            is_amo=True,
+            amo_op=AMOSWAP_W,
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xC000, amo_rs2=0x1234)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_addr_update(rob_tag=2, address=0xC008)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xC000,
+        old_value=0xAAAA_5555,
+        expected_write=0x1234,
+        description="first of two older AMOs",
+    )
+
+    dut_if.drive_rob_head_tag(1)
+    for _ in range(6):
+        await Timer(1, unit="ns")
+        assert (
+            not dut_if.mem_outstanding
+        ), "Younger load launched after only one of two older AMOs completed"
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], "Younger load was released while the second older AMO was pending"
+        await dut_if.step()
+
+
+# ============================================================================
+# Test 35f: Reusing an AMO's physical slot starts a new dependency generation
+# ============================================================================
+@cocotb.test()
+async def test_younger_amo_slot_reuse_does_not_revive_stale_dependency(
+    dut: Any,
+) -> None:
+    """A younger AMO reusing a slot cannot re-block an older surviving load."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # AMO 0 occupies physical slot 0; the surviving load occupies slot 1 and
+    # records slot 0 as an older dependency. Keep the load addressless while
+    # AMO 0 completes so it cannot launch before slot 0 is deliberately reused.
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_alloc(rob_tag=1, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xD000, amo_rs2=0xCAFE)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xD000,
+        old_value=0x1020_3040,
+        expected_write=0xCAFE,
+        description="AMO before physical-slot reuse",
+    )
+    assert dut_if.count == 1, f"Expected only the surviving load, got {dut_if.count}"
+
+    # Fill physical slots 2..7, wrapping the allocator back to freed slot 0.
+    # These fillers remain addressless and therefore cannot contend for issue.
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_all_older_known(False)
+    for filler_tag in range(2, 8):
+        dut_if.drive_alloc(rob_tag=filler_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    # Tag 8 is younger than the surviving tag-1 load but reuses the exact
+    # physical bit that represented completed AMO 0.
+    dut_if.drive_alloc(
+        rob_tag=8,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.full, "Younger AMO did not reuse the final free physical slot"
+
+    dut_if.drive_addr_update(rob_tag=1, address=0xD100)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "Older load deadlocked on a reused stale AMO dependency"
+    assert (
+        mem_req["addr"] == 0xD100
+    ), f"Expected older load addr=0xD100, got 0x{mem_req['addr']:x}"
+
+
+# ============================================================================
+# Test 35g: Slot-2 sees a simultaneous older slot-1 AMO
+# ============================================================================
+@cocotb.test()
+async def test_dual_alloc_slot2_load_depends_on_slot1_amo(dut: Any) -> None:
+    """A slot-2 load captures a slot-1 AMO allocated on the same edge."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    dut_if.drive_alloc_2(rob_tag=1, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    # Only the younger load is address-ready. With no dependency capture it
+    # would pass SQ-check and issue; the addressless older AMO cannot explain
+    # an idle memory port.
+    dut_if.drive_addr_update(rob_tag=1, address=0xE004)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+
+    for _ in range(6):
+        await Timer(1, unit="ns")
+        assert (
+            not dut_if.mem_outstanding
+        ), "Slot-2 load launched through its simultaneous older slot-1 AMO"
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], "Slot-2 load did not capture the simultaneous slot-1 AMO dependency"
+        await dut_if.step()
 
 
 # ============================================================================
@@ -2279,6 +2509,370 @@ async def test_amo_add(dut: Any) -> None:
     assert result.valid, "CDB should be valid"
     assert result.value == old_val, f"Expected {old_val}, got {result.value}"
     await accept_fu_complete(dut_if)
+
+
+# ============================================================================
+# Test 37b: Slot-2-only AMO uses the compact staged operation kind
+# ============================================================================
+@cocotb.test()
+async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
+    """A slot-2-only AMO uses its compact kind after one-cycle write staging."""
+    dut_if, model = await setup(dut)
+
+    from .lq_interface import AMOADD_W
+
+    # Allocate through slot 2 only, then send the earliest normal address
+    # update. The compact-kind request drains on this address-update edge,
+    # before SQ-check phase 2 can launch the AMO read.
+    rs2_val = 11
+    old_val = 7
+    dut_if.drive_alloc_2(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOADD_W,
+    )
+    model.alloc(0, False, MEM_SIZE_WORD, False, is_amo=True, amo_op=AMOADD_W)
+    await dut_if.step()
+    dut_if.clear_alloc_2()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0x8080, amo_rs2=rs2_val)
+    model.addr_update(0, 0x8080, amo_rs2=rs2_val)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "Slot-2-only AMO should issue its memory read"
+    await dut_if.step()
+
+    dut_if.drive_mem_response(old_val)
+    model.mem_response(old_val)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    await Timer(1, unit="ns")
+    amo_write = dut_if.read_amo_mem_write()
+    assert amo_write["en"], "Slot-2-only AMO write should be active"
+    assert amo_write["addr"] == 0x8080
+    assert amo_write["data"] == old_val + rs2_val, (
+        f"Expected compact AMOADD result {old_val + rs2_val}, "
+        f"got {amo_write['data']}"
+    )
+    assert amo_write["data"] != rs2_val, "AMO operation unexpectedly decoded as AMOSWAP"
+
+    dut_if.drive_amo_mem_write_done(True)
+    model.amo_write_done()
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid, "Slot-2-only AMO should complete on the CDB"
+    assert result.tag == 0
+    assert result.value == old_val
+    await accept_fu_complete(dut_if)
+
+
+# ============================================================================
+# Test 37c: Every compact AMO kind preserves the original arithmetic
+# ============================================================================
+@cocotb.test()
+async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
+    """Exercise all nine compact kinds, including signed/unsigned edge cases."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import (
+        AMOADD_W,
+        AMOAND_W,
+        AMOMAXU_W,
+        AMOMAX_W,
+        AMOMINU_W,
+        AMOMIN_W,
+        AMOOR_W,
+        AMOSWAP_W,
+        AMOXOR_W,
+    )
+
+    cases = [
+        ("AMOSWAP", AMOSWAP_W, 0xDEAD_BEEF, 0x1234_5678, 0x1234_5678),
+        ("AMOADD-overflow", AMOADD_W, 0xFFFF_FFFE, 0x0000_0003, 0x0000_0001),
+        ("AMOXOR", AMOXOR_W, 0xA5A5_0F0F, 0x0FF0_55AA, 0xAA55_5AA5),
+        ("AMOAND", AMOAND_W, 0xF0F0_AA55, 0x0FF0_5A5A, 0x00F0_0A50),
+        ("AMOOR", AMOOR_W, 0xF000_0055, 0x0F00_AA00, 0xFF00_AA55),
+        (
+            "AMOMIN-signed",
+            AMOMIN_W,
+            0x8000_0000,
+            0x7FFF_FFFF,
+            0x8000_0000,
+        ),
+        (
+            "AMOMAX-signed",
+            AMOMAX_W,
+            0x8000_0000,
+            0x7FFF_FFFF,
+            0x7FFF_FFFF,
+        ),
+        (
+            "AMOMINU-unsigned",
+            AMOMINU_W,
+            0xFFFF_FFFF,
+            0x0000_0001,
+            0x0000_0001,
+        ),
+        (
+            "AMOMAXU-unsigned",
+            AMOMAXU_W,
+            0x8000_0000,
+            0x7FFF_FFFF,
+            0x8000_0000,
+        ),
+    ]
+
+    for case_idx, (name, amo_op, old_value, rs2_value, expected_write) in enumerate(
+        cases
+    ):
+        rob_tag = case_idx
+        address = 0x9000 + case_idx * 4
+
+        dut_if.drive_alloc(
+            rob_tag=rob_tag,
+            size=MEM_SIZE_WORD,
+            is_amo=True,
+            amo_op=amo_op,
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+        dut_if.drive_addr_update(
+            rob_tag=rob_tag,
+            address=address,
+            amo_rs2=rs2_value,
+        )
+        await dut_if.step()
+        dut_if.clear_addr_update()
+
+        await complete_prepared_amo(
+            dut_if,
+            rob_tag=rob_tag,
+            address=address,
+            old_value=old_value,
+            expected_write=expected_write,
+            description=name,
+        )
+
+
+# ============================================================================
+# Test 37d: Simultaneous dual AMO allocations retain distinct compact kinds
+# ============================================================================
+@cocotb.test()
+async def test_dual_allocated_amos_keep_distinct_compact_kinds(dut: Any) -> None:
+    """Both staged allocation ports preserve their own index and AMO kind."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOADD_W, AMOXOR_W
+
+    # Both requests are accepted on one edge and must drain to different
+    # physical entries on the next edge. Distinguishable operations catch
+    # swapped indices, swapped staging bits, and one port overwriting the other.
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOADD_W,
+    )
+    dut_if.drive_alloc_2(
+        rob_tag=1,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOXOR_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xA000, amo_rs2=7)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_addr_update(rob_tag=1, address=0xA004, amo_rs2=0xAA)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xA000,
+        old_value=5,
+        expected_write=12,
+        description="dual slot-1 AMOADD",
+    )
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=1,
+        address=0xA004,
+        old_value=0xF0,
+        expected_write=0x5A,
+        description="dual slot-2 AMOXOR",
+    )
+
+
+# ============================================================================
+# Test 37e: Rejected slot-2 AMO cannot overwrite an accepted slot-1 AMO
+# ============================================================================
+@cocotb.test()
+async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
+    """A full-for-2 rejection cannot drain through an aliased staging index."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOADD_W, AMOXOR_W
+
+    # Leave exactly one free physical entry. The second-free encoder has no
+    # valid result in this state, so its unused candidate index aliases the
+    # first target. Slot 1 must be accepted and slot 2 rejected.
+    for rob_tag in range(1, LQ_DEPTH):
+        dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    # The tail update is intentionally deferred until the prior allocation's
+    # physical-generation pulse drains. Advance once more so tail points at the
+    # sole free entry and the missing second target defaults to that same index.
+    await dut_if.step()
+
+    assert dut_if.count == LQ_DEPTH - 1
+    assert dut_if.full_for_2, "Expected capacity for only one allocation"
+
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOADD_W,
+    )
+    dut_if.drive_alloc_2(
+        rob_tag=LQ_DEPTH,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOXOR_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    assert dut_if.count == LQ_DEPTH, "Slot 1 should consume the final free entry"
+    assert dut_if.full
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xA100, amo_rs2=7)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # AMOADD(5, 7) is 12; the rejected AMOXOR payload would instead produce 2.
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xA100,
+        old_value=5,
+        expected_write=12,
+        description="slot-1 AMO with rejected aliased slot-2 candidate",
+    )
+
+
+# ============================================================================
+# Test 37f: Full/partial flush followed by physical-entry reuse
+# ============================================================================
+@cocotb.test()
+async def test_amo_kind_staging_survives_flush_and_entry_reuse(dut: Any) -> None:
+    """Canceled or stale staged writes cannot poison a reused physical entry."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOADD_W, AMOOR_W, AMOSWAP_W, AMOXOR_W
+
+    # Full flush cancels a still-pending slot-1 kind write and resets the
+    # allocator, so the replacement immediately reuses physical entry zero.
+    dut_if.drive_alloc(
+        rob_tag=2,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    assert dut_if.empty, "Full flush did not invalidate the canceled AMO"
+
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOOR_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(rob_tag=0, address=0xB000, amo_rs2=0x0F)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xB000,
+        old_value=0x50,
+        expected_write=0x5F,
+        description="full-flush reused AMOOR",
+    )
+
+    # Start the partial-flush case from physical entry zero. Unlike full flush,
+    # a partial flush deliberately lets the pending data-only write drain.
+    await dut_if.reset_dut()
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_alloc(
+        rob_tag=2,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOADD_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_partial_flush(flush_tag=1)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    assert dut_if.empty, "Partial flush did not invalidate the younger AMO"
+
+    # Partial flush leaves tail_ptr unchanged. Seven non-AMO fillers consume
+    # entries 1..7, forcing the replacement AMO to wrap and reuse entry zero,
+    # whose stale compact kind is AMOADD.
+    for filler_tag in range(8, 15):
+        dut_if.drive_alloc(rob_tag=filler_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+    assert dut_if.count == 7, f"Expected seven fillers, got {dut_if.count}"
+
+    dut_if.drive_alloc(
+        rob_tag=0,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOXOR_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.full, "Replacement AMO did not wrap into the final free entry"
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xB100, amo_rs2=0x03)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    await complete_prepared_amo(
+        dut_if,
+        rob_tag=0,
+        address=0xB100,
+        old_value=0x0F,
+        expected_write=0x0C,
+        description="partial-flush reused AMOXOR",
+    )
 
 
 # ============================================================================

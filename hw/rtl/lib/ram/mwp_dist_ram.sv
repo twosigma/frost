@@ -205,8 +205,9 @@ module mwp_dist_ram #(
   // Same-cycle staged+live writes to one address are legal and resolve
   // staged-wins (see header) — no check here.  The dangerous arrival is a
   // live write in the staged address's DRAIN cycle; the reorder buffer (the
-  // only staged-port user) excludes and checks that window at the ROB level,
-  // where allocation context exists to tell stale from legitimate.
+  // only staged-port user with live write ports) excludes and checks that
+  // window at the ROB level, where allocation context exists to tell stale
+  // from legitimate.
 `endif
 `endif
 

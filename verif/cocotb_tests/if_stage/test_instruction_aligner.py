@@ -40,7 +40,9 @@ SB_ALLOWS_SLOT2_AFTER_LO = 8
 SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
-SIDEBAND_WIDTH = 12
+SB_RVC_SOURCE_HOT_LO_LSB = 12
+SB_RVC_SOURCE_HOT_HI_LSB = 15
+SIDEBAND_WIDTH = 18
 
 
 def _word(*, lo: int, hi: int) -> int:
@@ -70,6 +72,8 @@ def _sideband(
     native_fp_compute_hi: bool = False,
     native_pairable_lo: bool = False,
     native_pairable_hi: bool = False,
+    rvc_source_hot_lo: int = 0,
+    rvc_source_hot_hi: int = 0,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
@@ -109,6 +113,8 @@ def _sideband(
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
         | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
+        | ((rvc_source_hot_lo & 0x7) << SB_RVC_SOURCE_HOT_LO_LSB)
+        | ((rvc_source_hot_hi & 0x7) << SB_RVC_SOURCE_HOT_HI_LSB)
     )
 
 
@@ -251,8 +257,8 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
     dut.i_pc_reg.value = PC_HI
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(
-        current_sb=_sideband(compressed_hi=True),
-        next_sb=_sideband(compressed_lo=True),
+        current_sb=_sideband(compressed_hi=True, rvc_source_hot_hi=0),
+        next_sb=_sideband(compressed_lo=True, rvc_source_hot_lo=3),
     )
     await _settle(dut)
 
@@ -271,6 +277,8 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
         compressed=True,
         sel_nop=False,
     )
+    assert int(dut.o_rvc_source_hot.value) == 0
+    assert int(dut.o_rvc_source_hot_2.value) == 3
 
 
 @cocotb.test()
@@ -388,7 +396,12 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
     dut.i_instr.value = _fetch(current_word=lower_word, next_word=upper_word)
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(),
-        next_sb=_sideband(compressed_lo=True, compressed_hi=True),
+        next_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_lo=0,
+            rvc_source_hot_hi=4,
+        ),
     )
     await _settle(dut)
 
@@ -407,6 +420,8 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
         compressed=True,
         sel_nop=False,
     )
+    assert int(dut.o_rvc_source_hot.value) == 0
+    assert int(dut.o_rvc_source_hot_2.value) == 4
 
 
 @cocotb.test()
@@ -418,7 +433,10 @@ async def test_buffer_selection_uses_buffer_word_and_sideband(dut: Any) -> None:
     dut.i_pc_reg.value = PC_HI
     dut.i_prev_was_compressed_at_lo.value = 1
     dut.i_instr_buffer.value = buffer_word
-    dut.i_instr_buffer_sideband.value = _sideband(compressed_hi=True)
+    dut.i_instr_buffer_sideband.value = _sideband(
+        compressed_hi=True,
+        rvc_source_hot_hi=0,
+    )
     await _settle(dut)
 
     _assert_slot1(
@@ -429,6 +447,7 @@ async def test_buffer_selection_uses_buffer_word_and_sideband(dut: Any) -> None:
         fast_compressed=True,
         use_buffer=True,
     )
+    assert int(dut.o_rvc_source_hot.value) == 0
 
 
 @cocotb.test()
@@ -561,7 +580,11 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
     dut.i_instr.value = _fetch(current_word=lower_word, next_word=upper_word)
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(),
-        next_sb=_sideband(compressed_lo=True, compressed_hi=True),
+        next_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_hi=4,
+        ),
     )
     await _settle(dut)
 
@@ -605,13 +628,21 @@ async def test_high_parcel_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> 
             # words; the predicate bus must reverse with it.
             physical_current = near_miss_word
             physical_next = word_with_x2
-            current_sb = _sideband(compressed_hi=True)
-            next_sb = _sideband(compressed_lo=True, compressed_hi=True)
+            current_sb = _sideband(compressed_hi=True, rvc_source_hot_hi=1)
+            next_sb = _sideband(
+                compressed_lo=True,
+                compressed_hi=True,
+                rvc_source_hot_hi=1,
+            )
         else:
             physical_current = word_with_x2
             physical_next = near_miss_word
-            current_sb = _sideband(compressed_lo=True, compressed_hi=True)
-            next_sb = _sideband(compressed_hi=True)
+            current_sb = _sideband(
+                compressed_lo=True,
+                compressed_hi=True,
+                rvc_source_hot_hi=1,
+            )
+            next_sb = _sideband(compressed_hi=True, rvc_source_hot_hi=1)
 
         dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
             current_word=physical_current,
@@ -649,7 +680,11 @@ async def test_next_high_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> No
     logical_current = _word(lo=0x1111, hi=0x0533)
     logical_next = _word(lo=0x00B5, hi=c_addi16sp)
     logical_current_sb = _sideband(native_pairable_hi=True)
-    logical_next_sb = _sideband(compressed_lo=True, compressed_hi=True)
+    logical_next_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        rvc_source_hot_hi=1,
+    )
 
     for swapped in (False, True):
         _clear_inputs(dut)

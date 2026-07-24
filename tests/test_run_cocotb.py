@@ -525,6 +525,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GISSUE_REPAIR_BYPASS=0",
             "-GSPECULATIVE_DATA_WRITES=1",
             "-GBROADCAST_FREE_SOURCE_VALUES=1",
+            "-GISSUE_CDB_TAG_SHADOW=1",
         ),
     ),
     "cdb_arbiter": CocotbRunConfig(
@@ -695,9 +696,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "imem_predecode_fast_replica": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
-        description=(
-            "Seven-lane high-allows instruction replica plus low slot-2-valid replica"
-        ),
+        description=("Hot/cold IMEM block banks plus narrow frontend timing replicas"),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),
     "fetch_provider": CocotbRunConfig(

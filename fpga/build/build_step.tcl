@@ -399,8 +399,10 @@ if {$step eq "synth"} {
 
     read_verilog {*}$rtl_source_files
     read_mem [file join $software_mem_directory sw.mem]
-    read_mem [file join $software_mem_directory sw_imem_even.mem]
-    read_mem [file join $software_mem_directory sw_imem_odd.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_cold.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_cold.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_frontend_hot.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_frontend_hot.mem]
     read_mem [file join $software_mem_directory sw_imem_even_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_even_compressed.mem]

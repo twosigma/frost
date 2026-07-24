@@ -67,6 +67,20 @@ the existing dispatch and issue latency while replacing the wide value flops'
 priority-decoded free-index clock enable with the entry-local invalid bit;
 the slot-2 allocation index affects only the selected input data.
 
+INT_RS also enables `ISSUE_CDB_TAG_SHADOW`. A second src1/src2 tag bank is
+written through the same speculative allocation indices and clock enables as
+the architectural tags. When a speculative slot does not target INT_RS, its
+shadow D value is complemented; a committed slot always writes the normal tag,
+and the later slot-2 write guarantees the normal value for slot-2-only
+dispatch. The two banks therefore differ while entries are invalid and
+synthesis cannot merge them, but they are asserted equal whenever an entry is
+valid. Only the same-cycle CDB issue-bypass comparisons use the shadow tags.
+Sequential ready/value capture and done-repair continue to use the
+architectural tags. This separates the low-fanout issue match from the
+otherwise-identical match that controls every bit of the source-value write
+mux, without changing wakeup or issue latency or adding loads to the
+free-entry clock-enable cone.
+
 Port-0 issue selection is a simple lowest-index priority encode over ready
 entries. That's not strict FIFO order, but it's a close enough approximation
 for the depths used here that the slightly older entries usually go first
@@ -120,15 +134,17 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests run with the INT_RS free-entry source-value broadcast enabled and
-cover dispatch, slot-2-only dispatch, same-cycle slot-1/slot-2 dispatch,
-allocation-indexed repair for both slots and all source positions,
-back-to-back target capture, CDB-over-repair priority, stale-target flush
-protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0 bypass,
-dispatch capture from lane 0, issue priority, FU ready gating, immediate bypass,
-`full_for_2` gating, and partial/full flush. Inline formal properties also prove
-the dispatch / issue / wakeup / flush invariants, indexed-target alignment, and
-cover both-slots and slot-2-alone dispatch.
+Cocotb tests run with the INT_RS free-entry source-value broadcast and
+issue-tag shadows enabled and cover dispatch, slot-2-only dispatch, same-cycle
+slot-1/slot-2 dispatch, allocation-indexed repair for both slots and all source
+positions, back-to-back target capture, CDB-over-repair priority, stale-target
+flush protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0
+bypass, dispatch capture from lane 0, issue priority, FU ready gating,
+immediate bypass, `full_for_2` gating, and partial/full flush. Inline formal
+properties in the default formal target prove the dispatch / issue / wakeup /
+flush invariants and indexed-target alignment, and cover both-slots and
+slot-2-alone dispatch. The shadow-enabled RTL additionally contains a
+valid-entry shadow-tag equality assertion for strengthened formal runs.
 
 The second-port selector additionally has a direct cocotb reference test and a
 depth-one formal miter against the original serial specification. Unconstrained

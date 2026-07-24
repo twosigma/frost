@@ -12,15 +12,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Programming/fetch checks for imem_predecode's narrow timing replicas.
+"""Programming/fetch checks for imem_predecode's physical timing banks.
 
 The seven-bit RAM64M8-shaped replica carries raw high-parcel ``C[15]``,
 ``C[13]``, and ``C[12]``, the ``rd == x2`` predicate, both compressed-size
 flags, and the high-parcel allows-slot-2 predicate. The two replicated high
 parcel fields reconstruct both compressed and native pairability. A one-bit
-replica carries low-parcel slot-2-start validity. This bench writes both
-interleaved banks through the programming port, then checks complete data,
-predicate, and sideband windows through both PC[2] swap cases.
+replica carries low-parcel slot-2-start validity. The architectural data uses
+resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
+word[6]}`` block-RAM slices. This bench writes both interleaved banks through
+the programming port, then checks complete data, predicate, and sideband
+windows (including both parcels' RVC source-hot metadata) through both PC[2]
+swap cases.
 """
 
 import importlib.util
@@ -36,6 +39,7 @@ PORT_A_PERIOD_NS = 14
 PORT_B_PERIOD_NS = 10
 WORD_COUNT = 16
 FAST_RAW_MASK = (1 << 31) | (1 << 29) | (1 << 28)
+FRONTEND_HOT_RAW_MASK = (1 << 15) | (1 << 10) | (1 << 7) | (1 << 6)
 
 
 def _load_generator() -> ModuleType:
@@ -166,12 +170,31 @@ def _expected_fast_replica(word: int) -> int:
 
 
 def _check_offline_init_replica(words: list[int]) -> None:
-    """Check exact even/odd init-bank splitting and every generated LUTRAM bit."""
+    """Check every generated physical-bank image and exact word reconstruction."""
     even_words, odd_words = _GENERATOR.split_words(dict(enumerate(words)), len(words))
     assert even_words == words[::2]
     assert odd_words == words[1::2]
     for bank_words in (even_words, odd_words):
         for word in bank_words:
+            expected_hot = (
+                (((word >> 15) & 1) << 3)
+                | (((word >> 10) & 1) << 2)
+                | (((word >> 7) & 1) << 1)
+                | ((word >> 6) & 1)
+            )
+            expected_cold = 0
+            cold_bit = 0
+            for word_bit in range(32):
+                if FRONTEND_HOT_RAW_MASK & (1 << word_bit):
+                    continue
+                expected_cold |= ((word >> word_bit) & 1) << cold_bit
+                cold_bit += 1
+            assert cold_bit == _GENERATOR.COLD_DATA_WIDTH
+            got_hot = _GENERATOR.pack_frontend_hot(word)
+            got_cold = _GENERATOR.pack_cold_data(word)
+            assert got_hot == expected_hot
+            assert got_cold == expected_cold
+            assert _GENERATOR.join_data_banks(got_cold, got_hot) == word
             assert _GENERATOR.make_fast_replica(word) == _expected_fast_replica(word)
             assert _GENERATOR.make_slot2_start_valid_lo_replica(
                 word
@@ -228,7 +251,10 @@ async def _read_word(dut: Any, word_index: int, expected: int) -> None:
 def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
     """Check full predecode plus every field supplied by the fast mirror."""
     expected = _GENERATOR.make_sideband(expected_word)
-    assert got == expected, f"{label} sideband 0x{got:03x}, want 0x{expected:03x}"
+    hex_digits = (SIDEBAND_WIDTH + 3) // 4
+    assert got == expected, (
+        f"{label} sideband 0x{got:0{hex_digits}x}, " f"want 0x{expected:0{hex_digits}x}"
+    )
 
     expected_compressed = int((expected_word & 0x3) != 0b11) | (
         int(((expected_word >> 16) & 0x3) != 0b11) << 1

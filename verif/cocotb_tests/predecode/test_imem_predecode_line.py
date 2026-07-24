@@ -122,7 +122,7 @@ def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
 
 
 async def _check_line(dut: Any, words: list[int]) -> None:
-    """Drive one line and compare every word's sideband byte to the model."""
+    """Drive one line and compare every word's sideband value to the model."""
     assert len(words) == WORDS_PER_LINE
     line = 0
     for i, word in enumerate(words):
@@ -134,9 +134,11 @@ async def _check_line(dut: Any, words: list[int]) -> None:
         mask = (1 << SIDEBAND_WIDTH) - 1
         got = (sideband >> (SIDEBAND_WIDTH * i)) & mask
         expected = _GENERATOR.make_sideband(word)
+        hex_digits = (SIDEBAND_WIDTH + 3) // 4
         assert got == expected, (
-            f"word {i} (0x{word:08x}): rtl sideband 0x{got:03x} "
-            f"!= generator 0x{expected:03x}"
+            f"word {i} (0x{word:08x}): "
+            f"rtl sideband 0x{got:0{hex_digits}x} "
+            f"!= generator 0x{expected:0{hex_digits}x}"
         )
         _assert_pc_bundle_bits(word, got)
 

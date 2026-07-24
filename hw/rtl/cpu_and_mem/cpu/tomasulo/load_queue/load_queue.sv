@@ -37,8 +37,15 @@
  *   invalidation, and oldest-first priority scan.
  *   The load address (sdp_dist_ram) and load-result payload lq_data
  *   (mwp_dist_ram, split lo/hi for FLD partial writes, 2 write ports
- *   for primary + AMO overlap) live in distributed RAM.  Valid bits in
- *   FFs gate all reads; stale LUTRAM data behind flushed entries is harmless.
+ *   for primary + AMO overlap) live in distributed RAM. The AMO operation is
+ *   compacted to a 4-bit semantic code in per-entry FFs. Allocation writes are
+ *   staged for one cycle (well before an AMO can issue), keeping the late
+ *   dispatch/allocation cone local to a tiny request register. The selected
+ *   operation and operands are consumed at the memory-response register
+ *   boundary, so no queue read-select cone remains on the following AMO
+ *   BRAM-write path.
+ *   Valid bits in FFs gate all reads; stale payload data behind flushed entries
+ *   is harmless.
  *
  * Internal load_unit instance:
  *   Byte/halfword extraction and sign extension for LB/LBU/LH/LHU.
@@ -244,10 +251,27 @@ module load_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
-  // Keep these literal for Yosys, which does not parse $bits(package::enum) reliably.
-  // instr_op_e is an untyped enum (default int), and mem_size_e is logic [1:0].
-  localparam int unsigned InstrOpWidth = 32;
+  // Keep this literal for Yosys, which does not parse $bits(package::enum)
+  // reliably. mem_size_e is logic [1:0].
   localparam int unsigned MemSizeWidth = 2;
+
+  // Only nine instr_op_e values reach the AMO arithmetic unit. Keeping the
+  // full 32-bit package enum per entry wastes storage and, with two allocation
+  // ports, previously required a banked multi-write RAM plus a live-value
+  // table. This compact semantic code is sufficient to reproduce every AMO
+  // result; INVALID preserves the old amo_compute default for malformed input.
+  typedef enum logic [3:0] {
+    AMO_KIND_SWAP    = 4'd0,
+    AMO_KIND_ADD     = 4'd1,
+    AMO_KIND_XOR     = 4'd2,
+    AMO_KIND_AND     = 4'd3,
+    AMO_KIND_OR      = 4'd4,
+    AMO_KIND_MIN     = 4'd5,
+    AMO_KIND_MAX     = 4'd6,
+    AMO_KIND_MINU    = 4'd7,
+    AMO_KIND_MAXU    = 4'd8,
+    AMO_KIND_INVALID = 4'd15
+  } amo_kind_e;
 
   // ===========================================================================
   // Helper Functions
@@ -263,6 +287,22 @@ module load_queue #(
       entry_age  = {1'b0, entry_tag} - {1'b0, head};
       flush_age  = {1'b0, flush_tag} - {1'b0, head};
       is_younger = entry_age > flush_age;
+    end
+  endfunction
+
+  // Compare two live ROB tags using one common age origin.  Dependency-mask
+  // maintenance snapshots the origin with each allocation bundle, so this
+  // arithmetic is confined to the mask-state D cone and never reaches memory
+  // issue selection directly.
+  function automatic logic is_older_than(input logic [ReorderBufferTagWidth-1:0] source_tag,
+                                         input logic [ReorderBufferTagWidth-1:0] dest_tag,
+                                         input logic [ReorderBufferTagWidth-1:0] head);
+    logic [ReorderBufferTagWidth:0] source_age;
+    logic [ReorderBufferTagWidth:0] dest_age;
+    begin
+      source_age = {1'b0, source_tag} - {1'b0, head};
+      dest_age = {1'b0, dest_tag} - {1'b0, head};
+      is_older_than = source_age < dest_age;
     end
   endfunction
 
@@ -297,72 +337,110 @@ module load_queue #(
     end
   endfunction
 
+  function automatic amo_kind_e encode_amo_kind(input riscv_pkg::instr_op_e op);
+    case (op)
+      riscv_pkg::AMOSWAP_W: encode_amo_kind = AMO_KIND_SWAP;
+      riscv_pkg::AMOADD_W:  encode_amo_kind = AMO_KIND_ADD;
+      riscv_pkg::AMOXOR_W:  encode_amo_kind = AMO_KIND_XOR;
+      riscv_pkg::AMOAND_W:  encode_amo_kind = AMO_KIND_AND;
+      riscv_pkg::AMOOR_W:   encode_amo_kind = AMO_KIND_OR;
+      riscv_pkg::AMOMIN_W:  encode_amo_kind = AMO_KIND_MIN;
+      riscv_pkg::AMOMAX_W:  encode_amo_kind = AMO_KIND_MAX;
+      riscv_pkg::AMOMINU_W: encode_amo_kind = AMO_KIND_MINU;
+      riscv_pkg::AMOMAXU_W: encode_amo_kind = AMO_KIND_MAXU;
+      default:              encode_amo_kind = AMO_KIND_INVALID;
+    endcase
+  endfunction
+
   // ===========================================================================
   // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
-  logic [             PtrWidth-1:0] head_ptr;
-  logic [             PtrWidth-1:0] tail_ptr;
+  logic      [             PtrWidth-1:0]               head_ptr;
+  logic      [             PtrWidth-1:0]               tail_ptr;
 
   // Index extraction (lower bits)
-  wire  [             IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
+  wire       [             IdxWidth-1:0]               head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
-  logic [                DEPTH-1:0] lq_valid;
-  logic [                DEPTH-1:0] lq_is_fp;
-  logic [                DEPTH-1:0] lq_addr_valid;
-  logic [                DEPTH-1:0] lq_sign_ext;
-  logic [                DEPTH-1:0] lq_is_mmio;
-  logic [                DEPTH-1:0] lq_fp64_phase;
-  logic [                DEPTH-1:0] lq_issued;
-  logic [                DEPTH-1:0] lq_data_valid;
-  logic [                DEPTH-1:0] lq_forwarded;
-  logic [                DEPTH-1:0] lq_is_lr;
-  logic [                DEPTH-1:0] lq_is_amo;
+  logic      [                DEPTH-1:0]               lq_valid;
+  logic      [                DEPTH-1:0]               lq_is_fp;
+  logic      [                DEPTH-1:0]               lq_addr_valid;
+  logic      [                DEPTH-1:0]               lq_sign_ext;
+  logic      [                DEPTH-1:0]               lq_is_mmio;
+  logic      [                DEPTH-1:0]               lq_fp64_phase;
+  logic      [                DEPTH-1:0]               lq_issued;
+  logic      [                DEPTH-1:0]               lq_data_valid;
+  logic      [                DEPTH-1:0]               lq_forwarded;
+  logic      [                DEPTH-1:0]               lq_is_lr;
+  logic      [                DEPTH-1:0]               lq_is_amo;
 
   // Per-entry multi-bit fields
-  logic [ReorderBufferTagWidth-1:0] lq_rob_tag                        [DEPTH];
-  logic [         InstrOpWidth-1:0] lq_amo_op_rd;
+  logic      [ReorderBufferTagWidth-1:0]               lq_rob_tag                        [DEPTH];
+  // Two accepted allocations always target distinct entries, so ordinary
+  // per-entry FF writes provide the required two write ports without the
+  // bank-select/LVT structure of a multi-write distributed RAM.
   (* ram_style = "registers" *)
-  logic [         MemSizeWidth-1:0] lq_size                           [DEPTH];
-  logic [         MemSizeWidth-1:0] lq_size_issue_cdb_rd;
-  logic [                 XLEN-1:0] lq_address_issue_mem_rd;
-  logic [                 XLEN-1:0] lq_address_amo_rd;
-  logic [                 XLEN-1:0] lq_amo_rs2_rd;
-  logic [             IdxWidth-1:0] amo_entry_idx;
-  logic                             full;
-  logic                             full_for_2;
+  amo_kind_e                                           lq_amo_kind                       [DEPTH];
+  (* ram_style = "registers" *)
+  logic      [         MemSizeWidth-1:0]               lq_size                           [DEPTH];
+  logic      [         MemSizeWidth-1:0]               lq_size_issue_cdb_rd;
+  logic      [                 XLEN-1:0]               lq_address_issue_mem_rd;
+  logic      [                 XLEN-1:0]               lq_amo_rs2_rd;
+  logic      [             IdxWidth-1:0]               amo_entry_idx;
+  logic                                                full;
+  logic                                                full_for_2;
 
   // Slot-1 / slot-2 alloc targets and write enables.  alloc_target points at
   // the first free slot from tail_ptr; alloc_target_2 points at the second
   // free slot.  When slot-1 is invalid but slot-2 is, slot-2 takes alloc_target.
-  logic [             PtrWidth-1:0] alloc_target_2;
-  logic                             slot1_alloc_en;
-  logic                             slot2_alloc_en;
-  logic [             IdxWidth-1:0] slot2_alloc_idx;
+  logic      [             PtrWidth-1:0]               alloc_target_2;
+  logic                                                slot1_alloc_en;
+  logic                                                slot2_alloc_en;
+  logic      [             IdxWidth-1:0]               slot2_alloc_idx;
+  logic      [                DEPTH-1:0]               first_target_oh;
+  logic      [                DEPTH-1:0]               second_target_oh;
+  // Preserve the entry-local steering boundary. Without it Vivado can factor
+  // all indexed control/metadata writes into serial, high-fanout parity terms.
+  (* keep = "true", max_fanout = 16 *)
+  logic      [                DEPTH-1:0]               slot1_alloc_oh;
+  (* keep = "true", max_fanout = 16 *)
+  logic      [                DEPTH-1:0]               slot2_alloc_oh;
 
-  // Forward declarations: slot1_alloc_en / slot2_alloc_en assignments come
-  // after alloc_target_2 / full_for_2 are computed; the LUTRAM block needs
-  // both write enables here.
-  // AMO op is written once at allocation and only read back for AMO execution.
-  // 2 write ports: slot-1 alloc (port 0) + slot-2 alloc (port 1).  Port 1
-  // writes when a slot-2 load allocates in the same cycle as slot-1.
-  mwp_dist_ram #(
-      .ADDR_WIDTH     (IdxWidth),
-      .DATA_WIDTH     (InstrOpWidth),
-      .NUM_WRITE_PORTS(2)
-  ) u_lq_amo_op (
-      .i_clk,
-      .i_write_enable ({slot2_alloc_en, slot1_alloc_en}),
-      .i_write_address({slot2_alloc_idx, alloc_target[IdxWidth-1:0]}),
-      .i_write_data   ({i_alloc_2.amo_op, i_alloc.amo_op}),
-      .i_read_address (amo_entry_idx),
-      .o_read_data    (lq_amo_op_rd)
-  );
+  // Compact AMO-kind write staging. A newly allocated LQ entry cannot produce
+  // a memory response in the following cycle: an address update must first
+  // match the now-live entry, then SQ-check staging/phase-2 must launch its
+  // read. Delaying this data-only payload write one edge is therefore invisible
+  // architecturally. Registered accepted-request bits qualify the delayed
+  // writes without carrying either live allocation request into this stage.
+  logic      [                      1:0]               amo_kind_alloc_present_q;
+  logic      [                      1:0][IdxWidth-1:0] amo_kind_alloc_idx_q;
+  amo_kind_e                                           amo_kind_alloc_data_q             [    2];
+
+  // Exact older-AMO dependencies, stored by physical LQ identity.  Row i is
+  // the set of still-pending AMO slots architecturally older than entry i.
+  // A one-cycle valid mirror detects each newly-live physical generation;
+  // tag-age comparisons terminate at the dependency FFs and dispatch does not
+  // drive any dependency-event state.
+  // A separate registered reduction gives issue selection one direct bit per
+  // entry and removes the old live ROB-head subtract/min/compare network.
+  logic      [                DEPTH-1:0]               older_amo_dep_q                   [DEPTH];
+  logic      [                DEPTH-1:0]               older_amo_dep_d                   [DEPTH];
+  logic      [                DEPTH-1:0]               older_amo_block_q;
+  logic      [                DEPTH-1:0]               older_amo_block_d;
+  logic      [                DEPTH-1:0]               pending_amo_phys;
+  logic      [                DEPTH-1:0]               dep_done_oh;
+  logic      [                DEPTH-1:0]               dep_flush_kill;
+  logic      [                DEPTH-1:0]               dep_free_oh;
+  logic      [                DEPTH-1:0]               dep_live_src;
+  logic      [                DEPTH-1:0]               dep_replaced_oh;
+  logic      [                DEPTH-1:0]               dep_new_amo_src;
+  logic      [                DEPTH-1:0]               dep_identity_valid_q;
+  logic      [ReorderBufferTagWidth-1:0]               dep_head_q;
 
   // Reservation register (LR/SC)
-  logic reservation_valid;
-  logic [XLEN-1:0] reservation_addr;
+  logic                                                reservation_valid;
+  logic      [                 XLEN-1:0]               reservation_addr;
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
 
@@ -373,6 +451,8 @@ module load_queue #(
   } amo_state_e;
   amo_state_e                              amo_state;
   logic       [    XLEN-1:0]               amo_old_value;
+  logic       [    XLEN-1:0]               amo_write_addr_q;
+  logic       [    XLEN-1:0]               amo_write_data_q;
 
   // ===========================================================================
   // lq_data LUTRAM — split lo/hi for FLD partial-word writes
@@ -527,6 +607,8 @@ module load_queue #(
   logic issued_sign_ext;
   logic issued_fp64_phase;
   logic [ReorderBufferTagWidth-1:0] issued_rob_tag;
+  amo_kind_e issued_amo_kind;
+  logic [XLEN-1:0] issued_amo_rs2;
   logic drop_mem_response_pending;  // Drop the next 1-cycle-latency response after flush
   // Registered "a cached (multi-cycle) load is in flight". Set when a cached load
   // launches; held across the whole cached read pipeline + any flush-drain window
@@ -579,49 +661,35 @@ module load_queue #(
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
       .DATA_WIDTH(XLEN)
-  ) u_lq_address_amo (
-      .i_clk,
-      .i_write_enable (lq_addr_update_we),
-      .i_write_address(lq_addr_update_idx),
-      .i_write_data   (i_addr_update.address),
-      .i_read_address (amo_entry_idx),
-      .o_read_data    (lq_address_amo_rd)
-  );
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(XLEN)
   ) u_lq_amo_rs2 (
       .i_clk,
       .i_write_enable (lq_addr_update_we),
       .i_write_address(lq_addr_update_idx),
       .i_write_data   (i_addr_update.amo_rs2),
-      .i_read_address (amo_entry_idx),
+      // Capture the operand at launch, after the required SQ-check phase has
+      // given the address-update write a full edge to become resident.
+      .i_read_address (sq_check_idx),
       .o_read_data    (lq_amo_rs2_rd)
   );
 
   // ===========================================================================
-  // AMO ALU (combinational)
+  // AMO ALU (consumed at the memory-response register boundary)
   // ===========================================================================
   function automatic logic [XLEN-1:0] amo_compute(
-      input riscv_pkg::instr_op_e op, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
-    case (op)
-      riscv_pkg::AMOSWAP_W: amo_compute = rs2;
-      riscv_pkg::AMOADD_W:  amo_compute = old_val + rs2;
-      riscv_pkg::AMOXOR_W:  amo_compute = old_val ^ rs2;
-      riscv_pkg::AMOAND_W:  amo_compute = old_val & rs2;
-      riscv_pkg::AMOOR_W:   amo_compute = old_val | rs2;
-      riscv_pkg::AMOMIN_W:  amo_compute = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
-      riscv_pkg::AMOMAX_W:  amo_compute = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
-      riscv_pkg::AMOMINU_W: amo_compute = (old_val < rs2) ? old_val : rs2;
-      riscv_pkg::AMOMAXU_W: amo_compute = (old_val > rs2) ? old_val : rs2;
-      default:              amo_compute = old_val;
+      input amo_kind_e kind, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
+    case (kind)
+      AMO_KIND_SWAP: amo_compute = rs2;
+      AMO_KIND_ADD:  amo_compute = old_val + rs2;
+      AMO_KIND_XOR:  amo_compute = old_val ^ rs2;
+      AMO_KIND_AND:  amo_compute = old_val & rs2;
+      AMO_KIND_OR:   amo_compute = old_val | rs2;
+      AMO_KIND_MIN:  amo_compute = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
+      AMO_KIND_MAX:  amo_compute = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
+      AMO_KIND_MINU: amo_compute = (old_val < rs2) ? old_val : rs2;
+      AMO_KIND_MAXU: amo_compute = (old_val > rs2) ? old_val : rs2;
+      default:       amo_compute = old_val;
     endcase
   endfunction
-
-  // AMO write interface signals
-  logic amo_write_pending;
-  logic [XLEN-1:0] amo_new_value;
 
   // AMO cache invalidation: invalidate L0 cache when AMO write completes
   logic amo_cache_inv;
@@ -800,9 +868,11 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
+  logic [DEPTH-1:0] head_mem_stored_onehot;
   logic [ReorderBufferTagWidth-1:0] head_mem_stored_rob_tag;
   logic head_mem_update_found;
   logic [IdxWidth-1:0] head_mem_update_idx;
+  logic [DEPTH-1:0] head_mem_update_onehot;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
   logic [DEPTH*ReorderBufferTagWidth-1:0] lq_rob_tag_flat;
 
@@ -814,8 +884,6 @@ module load_queue #(
   lq_issue_selector #(
       .DEPTH(DEPTH)
   ) lq_issue_selector_inst (
-      .i_clk(i_clk),
-      .i_rst_n(i_rst_n),
       .lq_valid(lq_valid),
       .lq_addr_valid(lq_addr_valid),
       .lq_is_mmio(lq_is_mmio),
@@ -827,8 +895,8 @@ module load_queue #(
       .addr_update_pre_match_q(addr_update_pre_match_q),
       .rob_head_match_q(rob_head_match_q),
       .lq_rob_tag_flat(lq_rob_tag_flat),
+      .blocked_by_amo_phys_q(older_amo_block_q),
       .head_idx(head_idx),
-      .i_rob_head_tag(i_rob_head_tag),
       .i_sq_committed_empty(i_sq_committed_empty),
       .o_issue_cdb_found(issue_cdb_found),
       .o_issue_cdb_idx(issue_cdb_idx),
@@ -844,9 +912,11 @@ module load_queue #(
       .o_update_scan_rob_tag(update_scan_rob_tag),
       .o_head_mem_stored_found(head_mem_stored_found),
       .o_head_mem_stored_idx(head_mem_stored_idx),
+      .o_head_mem_stored_onehot(head_mem_stored_onehot),
       .o_head_mem_stored_rob_tag(head_mem_stored_rob_tag),
       .o_head_mem_update_found(head_mem_update_found),
       .o_head_mem_update_idx(head_mem_update_idx),
+      .o_head_mem_update_onehot(head_mem_update_onehot),
       .o_head_mem_update_rob_tag(head_mem_update_rob_tag)
   );
 
@@ -1021,16 +1091,19 @@ module load_queue #(
     block_younger_mem     = 1'b0;  // kept for interface compat; unused in restructured scan
 
     if (head_mem_stored_found) begin
-      issue_mem_found                       = 1'b1;
-      issue_mem_idx                         = head_mem_stored_idx;
-      issue_mem_rob_tag                     = stored_issue_rob_tag;
-      issue_mem_onehot[head_mem_stored_idx] = 1'b1;
+      issue_mem_found   = 1'b1;
+      issue_mem_idx     = head_mem_stored_idx;
+      issue_mem_rob_tag = stored_issue_rob_tag;
+      // Preserve the selector's one-hot head identity. Re-decoding
+      // head_mem_stored_idx here puts the head-priority cone back onto every
+      // sq_check capture/feedback bit.
+      issue_mem_onehot  = head_mem_stored_onehot;
     end else if (i_addr_update.valid && head_mem_update_found) begin
-      issue_mem_found                       = 1'b1;
-      issue_mem_idx                         = head_mem_update_idx;
-      issue_mem_from_update                 = 1'b1;
-      issue_mem_rob_tag                     = update_issue_rob_tag;
-      issue_mem_onehot[head_mem_update_idx] = 1'b1;
+      issue_mem_found       = 1'b1;
+      issue_mem_idx         = head_mem_update_idx;
+      issue_mem_from_update = 1'b1;
+      issue_mem_rob_tag     = update_issue_rob_tag;
+      issue_mem_onehot      = head_mem_update_onehot;
     end else if (update_scan_wins) begin
       issue_mem_found       = 1'b1;
       issue_mem_idx         = update_scan_idx;
@@ -1196,24 +1269,13 @@ module load_queue #(
   assign sq_commit_interlock = sq_commit_check_block && sq_check_phase2;
 
   // AMO write fence: AMOs live in the LQ, not the SQ, so SQ disambiguation
-  // cannot see their pending memory writes.  A younger load that launches,
-  // forwards, or L0-hits while an older AMO has not yet written memory reads
-  // the pre-AMO value.  Hold the staged load until every older AMO entry has
-  // completed its write (lq_data_valid covers read+write for AMOs — it is set
-  // only on i_amo_mem_write_done).  Same-tag (the staged AMO itself) is not
-  // "older", so an AMO never fences itself.
+  // cannot see their pending memory writes.  The registered per-entry block
+  // vector names the exact dependency row held by SQ-check's registered
+  // one-hot identity. Legal ROB-tail allocation cannot introduce a new AMO
+  // older than an entry already in SQ-check, so the registered bitmap is the
+  // complete fence and no live ROB-head arithmetic remains on this path.
   logic older_amo_write_pending;
-  logic [ReorderBufferTagWidth:0] staged_load_head_age;
-  assign staged_load_head_age = {1'b0, sq_check_rob_tag_q} - {1'b0, i_rob_head_tag};
-  always_comb begin
-    older_amo_write_pending = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i] &&
-          (({1'b0, lq_rob_tag[i]} - {1'b0, i_rob_head_tag}) < staged_load_head_age)) begin
-        older_amo_write_pending = 1'b1;
-      end
-    end
-  end
+  assign older_amo_write_pending = |(older_amo_block_q & sq_check_in_flight_mask);
 
   // A staged head AMO with the committed queue empty cannot have older SQ
   // stores at all (committed == older-than-head; everything uncommitted is
@@ -1323,12 +1385,12 @@ module load_queue #(
 
       // Invalidation (from SQ or AMO write completion)
       .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
-      .i_invalidate_addr (amo_cache_inv ? lq_address_amo_rd : i_cache_invalidate_addr),
+      .i_invalidate_addr (amo_cache_inv ? amo_write_addr_q : i_cache_invalidate_addr),
 
       // Only SQ/store invalidation must suppress same-cycle L0 lookup hits.
       // AMO write completion is serialized at ROB head and blocks younger
       // memory candidates, so keeping AMO off this combinational lookup cone
-      // avoids an AMO-address LUTRAM read on the cache-hit/CDB path.
+      // avoids the registered AMO-write address on the cache-hit/CDB path.
       .i_lookup_invalidate_valid(i_cache_invalidate_valid),
       .i_lookup_invalidate_addr (i_cache_invalidate_addr),
 
@@ -1592,25 +1654,22 @@ module load_queue #(
   // wait cycles into "load in flight" vs "load stuck on something else".
   assign o_mem_outstanding = mem_outstanding;
 
-  // AMO write interface: compute new value combinationally from outstanding AMO read
-  // TIMING: Removed same-cycle AMO write fast path (accept_mem_response &&
-  // lq_is_amo) that created a BRAM-read → amo_compute → BRAM-write
-  // combinational chain (-0.424 ns, 10 logic levels through CARRY8 + LUT6).
-  // AMO writes now always go through the registered AMO_WRITE_ACTIVE path:
-  // cycle N captures amo_old_value; cycle N+1 computes and writes.
-  // Cost: +1 cycle AMO latency.
+  // AMO write interface. The memory-response edge captures the address and
+  // computed new value while it transitions the FSM to AMO_WRITE_ACTIVE.
+  // Therefore the following cycle's BRAM-write pins are driven directly from
+  // payload FFs: neither the per-entry op select nor the AMO ALU is on that
+  // endpoint path. This is cycle-identical to the previous registered state
+  // machine, which captured the old value at cycle N and computed/wrote at
+  // cycle N+1.
   always_comb begin
-    amo_write_pending = 1'b0;
-    amo_new_value = '0;
-    o_amo_mem_write_en = 1'b0;
+    o_amo_mem_write_en   = 1'b0;
     o_amo_mem_write_addr = '0;
     o_amo_mem_write_data = '0;
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
-      o_amo_mem_write_en = 1'b1;
-      o_amo_mem_write_addr = lq_address_amo_rd;
-      o_amo_mem_write_data =
-          amo_compute(riscv_pkg::instr_op_e'(lq_amo_op_rd), amo_old_value, lq_amo_rs2_rd);
+      o_amo_mem_write_en   = 1'b1;
+      o_amo_mem_write_addr = amo_write_addr_q;
+      o_amo_mem_write_data = amo_write_data_q;
     end
   end
 
@@ -1863,6 +1922,20 @@ module load_queue #(
   assign alloc_target   = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
   assign alloc_target_2 = tail_ptr + PtrWidth'({1'b0, lq_second_free_offset});
 
+  // Convert the two binary targets into explicit entry-local write pulses.
+  // Slot 2 takes the first target when slot 1 is absent, and the second target
+  // for a dual allocation. Keeping these pulses prevents synthesis from
+  // rebuilding one shared indexed-write decoder across every LQ field.
+  always_comb begin
+    first_target_oh                                = '0;
+    second_target_oh                               = '0;
+    first_target_oh[alloc_target[IdxWidth-1:0]]    = 1'b1;
+    second_target_oh[alloc_target_2[IdxWidth-1:0]] = 1'b1;
+  end
+  assign slot1_alloc_oh = first_target_oh & {DEPTH{slot1_alloc_en}};
+  assign slot2_alloc_oh = (slot1_alloc_en ? second_target_oh : first_target_oh) &
+                          {DEPTH{slot2_alloc_en}};
+
   // ===========================================================================
   // Head Advancement (tree-based find-first-valid from head)
   // ===========================================================================
@@ -2014,6 +2087,81 @@ module load_queue #(
   end
 `endif
 
+  // ===========================================================================
+  // Older-AMO dependency masks
+  // ===========================================================================
+  // The sparse LQ cannot infer age from physical position.  Instead, each row
+  // records the physical identities of unresolved AMOs that are older than
+  // that entry.  Allocation is the only event that can introduce a dependency;
+  // completion, flush, and reuse permanently prune the corresponding physical
+  // generation. A one-cycle mirror of lq_valid detects the 0->1 transition of
+  // every physical generation. Tag arithmetic therefore runs only in these
+  // state-D cones, never in the issue/SQ-check datapath.
+  always_comb begin
+    for (int unsigned j = 0; j < DEPTH; j++) begin
+      pending_amo_phys[j] = lq_valid[j] && lq_is_amo[j] && !lq_data_valid[j];
+      dep_done_oh[j] = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done &&
+                       (amo_entry_idx == IdxWidth'(j));
+      dep_flush_kill[j] = i_flush_en && lq_valid[j] &&
+          (flush_all_entries || is_younger(lq_rob_tag[j], i_flush_tag, i_rob_head_tag));
+      dep_free_oh[j] = free_entry_en && (free_entry_idx == IdxWidth'(j));
+      dep_live_src[j] = pending_amo_phys[j] && !dep_done_oh[j] && !dep_flush_kill[j];
+    end
+
+    // Allocation cannot reuse a slot on its free/flush edge: targets are chosen
+    // from the pre-edge valid mask, and flush gates allocation. Thus every new
+    // physical generation has a complete invalid cycle and an observable 0->1
+    // transition here, including both entries of a dual allocation bundle.
+    dep_replaced_oh = lq_valid & ~dep_identity_valid_q;
+    dep_new_amo_src = dep_replaced_oh & pending_amo_phys;
+
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      older_amo_dep_d[i] = '0;
+
+      // A newly-live generation rebuilds its destination row from current
+      // source identities. Comparing tags (rather than assuming physical or
+      // request order) preserves sparse and dual-allocation behavior.
+      if (!lq_valid[i] || dep_flush_kill[i] || dep_free_oh[i]) begin
+        older_amo_dep_d[i] = '0;
+      end else if (dep_replaced_oh[i]) begin
+        for (int unsigned j = 0; j < DEPTH; j++) begin
+          older_amo_dep_d[i][j] = dep_live_src[j] &&
+              is_older_than(lq_rob_tag[j], lq_rob_tag[i], dep_head_q);
+        end
+      end else begin
+        for (int unsigned j = 0; j < DEPTH; j++) begin
+          older_amo_dep_d[i][j] =
+              (older_amo_dep_q[i][j] && dep_live_src[j] && !dep_replaced_oh[j]) ||
+              (dep_new_amo_src[j] && dep_live_src[j] &&
+               is_older_than(lq_rob_tag[j], lq_rob_tag[i], dep_head_q));
+        end
+      end
+
+      older_amo_block_d[i] = |older_amo_dep_d[i];
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      dep_identity_valid_q <= '0;
+      dep_head_q <= '0;
+      older_amo_block_q <= '0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        older_amo_dep_q[i] <= '0;
+      end
+    end else begin
+      older_amo_block_q <= older_amo_block_d;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        older_amo_dep_q[i] <= older_amo_dep_d[i];
+      end
+      // Both are intentionally pre-edge snapshots. After an allocation edge,
+      // lq_valid contains the new generation while this mirror still contains
+      // zero, and dep_head_q contains that allocation edge's age origin.
+      dep_identity_valid_q <= lq_valid;
+      dep_head_q <= i_rob_head_tag;
+    end
+  end
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -2076,40 +2224,36 @@ module load_queue #(
             drop_mem_response_pending <= 1'b1;
           end
         end
-        // Leave tail_ptr unchanged. alloc_target will reuse reclaimed holes
-        // after the flush instead of compacting the tail in this cycle.
+        // No current-cycle allocation can advance the search cursor. It may
+        // still consume the prior bundle's registered generation pulse below;
+        // either origin reuses reclaimed holes because the free search is
+        // driven by the updated valid mask.
       end
 
       // -----------------------------------------------------------------
       // Allocation: write new entry at tail (control signals only;
       // data signals written in dedicated no-reset always_ff blocks)
       // -----------------------------------------------------------------
-      // Slot-1 alloc.  Slot-2 alloc (below) writes a different physical entry,
-      // so the non-blocking writes on lq_valid/etc. never collide on a bit.
-      if (slot1_alloc_en) begin
-        lq_valid[alloc_target[IdxWidth-1:0]]      <= 1'b1;
-        lq_addr_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        lq_issued[alloc_target[IdxWidth-1:0]]     <= 1'b0;
-        lq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        lq_forwarded[alloc_target[IdxWidth-1:0]]  <= 1'b0;
+      // Both ports use preserved entry-local pulses. Their vectors are
+      // disjoint, so the non-blocking writes never collide on a physical bit.
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (slot1_alloc_oh[i] || slot2_alloc_oh[i]) begin
+          lq_valid[i]      <= 1'b1;
+          lq_addr_valid[i] <= 1'b0;
+          lq_issued[i]     <= 1'b0;
+          lq_data_valid[i] <= 1'b0;
+          lq_forwarded[i]  <= 1'b0;
+        end
       end
 
-      // Slot-2 alloc — fires when a slot-2 load allocates this cycle.
-      if (slot2_alloc_en) begin
-        lq_valid[slot2_alloc_idx]      <= 1'b1;
-        lq_addr_valid[slot2_alloc_idx] <= 1'b0;
-        lq_issued[slot2_alloc_idx]     <= 1'b0;
-        lq_data_valid[slot2_alloc_idx] <= 1'b0;
-        lq_forwarded[slot2_alloc_idx]  <= 1'b0;
-      end
-
-      // tail_ptr advances past the highest slot consumed this cycle, so the
-      // next free-search starts beyond it.  When only slot-2 fires it took
-      // alloc_target (slot1_alloc_idx), so tail still advances to alloc_target+1.
-      if (slot1_alloc_en && slot2_alloc_en) begin
-        tail_ptr <= alloc_target_2 + PtrWidth'(1);
-      end else if (slot1_alloc_en || slot2_alloc_en) begin
-        tail_ptr <= alloc_target + PtrWidth'(1);
+      // tail_ptr is only a free-search cursor: validity, occupancy, and age do
+      // not depend on it. Advance it when the registered valid-generation
+      // detector observes the previous bundle. The current allocations are
+      // already visible in lq_valid, so a back-to-back search from the old
+      // cursor skips them and retains full two-wide throughput while dispatch
+      // no longer reaches the cursor D cone.
+      if (|dep_replaced_oh) begin
+        tail_ptr <= tail_ptr + PtrWidth'(1);
       end
 
       // -----------------------------------------------------------------
@@ -2166,7 +2310,8 @@ module load_queue #(
         if (issued_is_cached) slow_outstanding <= 1'b0;
         if (issued_is_amo) begin
           // AMO: start write phase (don't set data_valid yet);
-          // data signals (amo_old_value, amo_entry_idx) in no-reset block
+          // response identity/result and registered write payload are captured
+          // in the data-payload block below.
           amo_state <= AMO_WRITE_ACTIVE;
         end else if (issued_is_fp &&
             riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
@@ -2235,42 +2380,76 @@ module load_queue #(
   end
 
   // ===========================================================================
-  // Data-Only Sequential Logic (no reset sensitivity)
+  // Data-Payload Sequential Logic
   // ===========================================================================
-  // These signals are pure data payloads whose consumers are already gated by
-  // control-valid bits (lq_valid, lq_addr_valid, lq_data_valid, sq_check_pending,
-  // mem_outstanding, reservation_valid, amo_state, etc.) that ARE reset.
-  // Keeping data FFs out of the reset tree saves area, power, and fanout on
-  // the reset net.
+  // Most signals here are pure data payloads whose consumers are already gated
+  // by control-valid bits (lq_valid, lq_addr_valid, lq_data_valid,
+  // sq_check_pending, mem_outstanding, reservation_valid, amo_state, etc.) that
+  // ARE reset. Keeping those data FFs out of the reset tree saves area, power,
+  // and fanout. The compact AMO write stage below resets only its two request
+  // valid bits; its index/data payload and per-entry array remain unreset.
 
   // -----------------------------------------------------------------
   // Per-entry data: allocation writes
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
-    if (slot1_alloc_en) begin
-      lq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
-      lq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
-      lq_is_fp[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_fp;
-      lq_sign_ext[alloc_target[IdxWidth-1:0]]   <= i_alloc.sign_ext;
-      lq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
-      lq_is_lr[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_lr;
-      lq_is_amo[alloc_target[IdxWidth-1:0]]     <= i_alloc.is_amo;
-    end
-    // Slot-2 alloc data — fires when a slot-2 load allocates this cycle.
-    if (slot2_alloc_en) begin
-      lq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
-      lq_size[slot2_alloc_idx]       <= i_alloc_2.size;
-      lq_is_fp[slot2_alloc_idx]      <= i_alloc_2.is_fp;
-      lq_sign_ext[slot2_alloc_idx]   <= i_alloc_2.sign_ext;
-      lq_fp64_phase[slot2_alloc_idx] <= 1'b0;
-      lq_is_lr[slot2_alloc_idx]      <= i_alloc_2.is_lr;
-      lq_is_amo[slot2_alloc_idx]     <= i_alloc_2.is_amo;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (slot1_alloc_oh[i]) begin
+        lq_rob_tag[i]    <= i_alloc.rob_tag;
+        lq_size[i]       <= i_alloc.size;
+        lq_is_fp[i]      <= i_alloc.is_fp;
+        lq_sign_ext[i]   <= i_alloc.sign_ext;
+        lq_fp64_phase[i] <= 1'b0;
+        lq_is_lr[i]      <= i_alloc.is_lr;
+        lq_is_amo[i]     <= i_alloc.is_amo;
+      end else if (slot2_alloc_oh[i]) begin
+        lq_rob_tag[i]    <= i_alloc_2.rob_tag;
+        lq_size[i]       <= i_alloc_2.size;
+        lq_is_fp[i]      <= i_alloc_2.is_fp;
+        lq_sign_ext[i]   <= i_alloc_2.sign_ext;
+        lq_fp64_phase[i] <= 1'b0;
+        lq_is_lr[i]      <= i_alloc_2.is_lr;
+        lq_is_amo[i]     <= i_alloc_2.is_amo;
+      end
     end
     // FLD phase advance: set phase 1 after phase 0 memory response
     if (accept_mem_response && issued_is_fp &&
         riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
         !issued_fp64_phase) begin
       lq_fp64_phase[issued_idx] <= 1'b1;
+    end
+  end
+
+  // -----------------------------------------------------------------
+  // Per-entry compact AMO kind: one-cycle staged allocation writes
+  // -----------------------------------------------------------------
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      // A full flush invalidates every entry, so any pending data-only write
+      // can be discarded. Partial flushes still drain: writing stale payload
+      // behind a killed entry is harmless, while a retained entry needs it.
+      amo_kind_alloc_present_q <= '0;
+    end else begin
+      // dep_replaced_oh identifies exactly the physical generations allocated
+      // on the prior edge. The accepted-request bits distinguish a real staged
+      // write from an unaccepted candidate whose index may alias that generation.
+      if (amo_kind_alloc_present_q[0] && dep_replaced_oh[amo_kind_alloc_idx_q[0]]) begin
+        lq_amo_kind[amo_kind_alloc_idx_q[0]] <= amo_kind_alloc_data_q[0];
+      end
+      if (amo_kind_alloc_present_q[1] && dep_replaced_oh[amo_kind_alloc_idx_q[1]]) begin
+        lq_amo_kind[amo_kind_alloc_idx_q[1]] <= amo_kind_alloc_data_q[1];
+      end
+
+      // Capture candidate payload every cycle, but only accepted allocations
+      // may drain it. This matters when a rejected slot-2 candidate aliases an
+      // accepted slot-1 target because only one physical entry is free.
+      // For non-AMOs encode_amo_kind stores INVALID behind lq_is_amo == 0.
+      amo_kind_alloc_present_q[0] <= slot1_alloc_en;
+      amo_kind_alloc_present_q[1] <= slot2_alloc_en;
+      amo_kind_alloc_idx_q[0]     <= alloc_target[IdxWidth-1:0];
+      amo_kind_alloc_idx_q[1]     <= slot2_alloc_idx;
+      amo_kind_alloc_data_q[0]    <= encode_amo_kind(i_alloc.amo_op);
+      amo_kind_alloc_data_q[1]    <= encode_amo_kind(i_alloc_2.amo_op);
     end
   end
 
@@ -2508,16 +2687,27 @@ module load_queue #(
       issued_sign_ext   <= sq_check_sign_ext_q;
       issued_fp64_phase <= sq_check_fp64_phase_q;
       issued_rob_tag    <= sq_check_rob_tag_q;
+      if (sq_check_is_amo_q) begin
+        issued_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
+        issued_amo_rs2  <= lq_amo_rs2_rd;
+      end
     end
   end
 
   // -----------------------------------------------------------------
-  // Internal data: AMO old value and entry index
+  // Internal data: registered AMO write payload and completion identity.
+  // The AMO-only operation and rs2 operand were snapshotted at launch.  On a
+  // back-to-back response/launch edge, nonblocking-assignment semantics make
+  // this block consume the old response owner's snapshots while the launch
+  // block above installs the next owner's values.  issued_addr likewise still
+  // carries the response owner's exact launch address throughout this edge.
   // -----------------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && issued_is_amo) begin
-      amo_old_value <= i_mem_read_data;
-      amo_entry_idx <= issued_idx;
+      amo_old_value    <= i_mem_read_data;
+      amo_entry_idx    <= issued_idx;
+      amo_write_addr_q <= issued_addr;
+      amo_write_data_q <= amo_compute(issued_amo_kind, i_mem_read_data, issued_amo_rs2);
     end
   end
 
@@ -2599,6 +2789,24 @@ module load_queue #(
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
+      if (!$onehot0(slot1_alloc_oh) || !$onehot0(slot2_alloc_oh))
+        $error("LQ: allocation steering is not onehot-or-zero");
+      if ((|slot1_alloc_oh) != slot1_alloc_en || (|slot2_alloc_oh) != slot2_alloc_en)
+        $error("LQ: allocation steering lost or invented an accepted request");
+      if (|(slot1_alloc_oh & slot2_alloc_oh))
+        $error("LQ: slot-1 and slot-2 onehot allocation pulses overlap");
+      // The compact-kind write must have drained before launch snapshots it.
+      // This is guaranteed by the intervening address/SQ-check staging edge.
+      if (o_mem_read_en && sq_check_is_amo_q) begin
+        if (amo_kind_alloc_present_q[0] &&
+            dep_replaced_oh[amo_kind_alloc_idx_q[0]] &&
+            (amo_kind_alloc_idx_q[0] == launch_mem_issue_idx))
+          $error("LQ: slot-1 AMO-kind write had not drained before launch");
+        if (amo_kind_alloc_present_q[1] &&
+            dep_replaced_oh[amo_kind_alloc_idx_q[1]] &&
+            (amo_kind_alloc_idx_q[1] == launch_mem_issue_idx))
+          $error("LQ: slot-2 AMO-kind write had not drained before launch");
+      end
     end
   end
 `endif
@@ -2639,6 +2847,38 @@ module load_queue #(
   always_comb begin
     if (i_rst_n && (i_flush_all || i_flush_en)) begin
       p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
+    end
+  end
+
+  // The compact AMO-kind FF array has independent slot-1/slot-2 indexed
+  // writes. A dual allocation must preserve the queue allocator's
+  // distinct-address contract so neither write can overwrite the other.
+  always_comb begin
+    if (i_rst_n && slot1_alloc_en && slot2_alloc_en) begin
+      p_alloc_ports_distinct : assert (alloc_target[IdxWidth-1:0] != slot2_alloc_idx);
+    end
+    if (i_rst_n) begin
+      p_slot1_alloc_onehot0 : assert ($onehot0(slot1_alloc_oh));
+      p_slot2_alloc_onehot0 : assert ($onehot0(slot2_alloc_oh));
+      p_slot1_alloc_preserved : assert ((|slot1_alloc_oh) == slot1_alloc_en);
+      p_slot2_alloc_preserved : assert ((|slot2_alloc_oh) == slot2_alloc_en);
+      p_alloc_onehots_disjoint : assert (!(|(slot1_alloc_oh & slot2_alloc_oh)));
+    end
+  end
+
+  // The compact operation payload must be resident before an AMO launch
+  // snapshots it. Even an address update in the first cycle after allocation
+  // only captures SQ-check; phase-2 and launch occur later.
+  always_comb begin
+    if (i_rst_n && o_mem_read_en && sq_check_is_amo_q) begin
+      p_amo_kind_slot1_write_drained :
+      assert (!amo_kind_alloc_present_q[0] ||
+              !dep_replaced_oh[amo_kind_alloc_idx_q[0]] ||
+              (amo_kind_alloc_idx_q[0] != launch_mem_issue_idx));
+      p_amo_kind_slot2_write_drained :
+      assert (!amo_kind_alloc_present_q[1] ||
+              !dep_replaced_oh[amo_kind_alloc_idx_q[1]] ||
+              (amo_kind_alloc_idx_q[1] != launch_mem_issue_idx));
     end
   end
 
@@ -2708,6 +2948,15 @@ module load_queue #(
   always_comb begin
     if (i_rst_n) begin
       p_full_empty_mutex : assert (!(o_full && o_empty));
+    end
+  end
+
+  // The head selector deliberately treats this registered identity as one-hot
+  // to avoid rebuilding a physical-entry priority scan on its timing path.
+  // This follows from the live-LQ ROB-tag uniqueness assumption above.
+  always_comb begin
+    if (i_rst_n) begin
+      p_rob_head_match_onehot : assert ($onehot0(rob_head_match_q));
     end
   end
 
@@ -2820,8 +3069,7 @@ module load_queue #(
       p_partial_flush_response_fills_l0 : assert (cache_fill_valid);
       p_partial_flush_fill_not_accepted : assert (!accept_mem_response);
       p_partial_flush_fill_is_drained : assert (drop_mem_response_now);
-      p_partial_flush_fill_skips_lq_data_write :
-        assert (!lq_data_lo_we[0] && !lq_data_hi_we[0]);
+      p_partial_flush_fill_skips_lq_data_write : assert (!lq_data_lo_we[0] && !lq_data_hi_we[0]);
     end
   end
 
@@ -2831,7 +3079,7 @@ module load_queue #(
   always_comb begin
     if (i_rst_n && cache_fill_valid) begin
       p_fill_diverges_from_accept_only_for_kill :
-        assert (issued_entry_flushed || accept_mem_response);
+      assert (issued_entry_flushed || accept_mem_response);
     end
   end
 

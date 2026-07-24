@@ -67,6 +67,15 @@ module reservation_station #(
     // dispatch CE from a priority-decoded free index to the entry-local
     // !rs_valid bit; alloc_idx_2 remains only in their D-input data select.
     parameter bit BROADCAST_FREE_SOURCE_VALUES = 1'b0,
+    // Optional src1/src2 tag shadows used only by the same-cycle CDB issue
+    // bypass compares.  With speculative writes enabled, the shadows retain
+    // the architectural bank's indexed writes but complement a slot's tag
+    // when that slot does not target this RS.  They are then deliberately
+    // non-equivalent while invalid and cannot be merged, but every committed
+    // slot writes the normal tag and the banks must match for every valid
+    // entry.  This isolates issue-time matches from the identical high-fanout
+    // comparisons that control sequential source-value capture.
+    parameter bit ISSUE_CDB_TAG_SHADOW = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Optional reserve for exported dispatch back-pressure.  A non-zero value
     // lets timing-sensitive RS instances publish conservative registered full
@@ -545,11 +554,13 @@ module reservation_station #(
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
 
   logic [ReorderBufferTagWidth-1:0] rs_src1_tag[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src1_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src1_value[DEPTH];
   logic [DEPTH-1:0] rs_src1_dispatch_cdb0;
   logic [DEPTH-1:0] rs_src1_dispatch_cdb1;
 
   logic [ReorderBufferTagWidth-1:0] rs_src2_tag[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src2_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src2_value[DEPTH];
   logic [DEPTH-1:0] rs_src2_dispatch_cdb0;
   logic [DEPTH-1:0] rs_src2_dispatch_cdb1;
@@ -958,12 +969,14 @@ module reservation_station #(
 
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
-      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] &&
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb.tag;
+      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] &&
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb.tag;
       src1_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src1_ready[i] &&
-          rs_src1_tag[i] == i_cdb_2.tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb_2.tag;
       src2_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src2_ready[i] &&
-          rs_src2_tag[i] == i_cdb_2.tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb_2.tag;
       src1_repair_sel[i] = 3'd0;
       src2_repair_sel[i] = 3'd0;
       if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src1_ready[i]) begin
@@ -1668,6 +1681,29 @@ module reservation_station #(
 
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
+    // Keep a physically distinct issue-only tag bank without adding loads to
+    // the free-entry/rs_valid clock-enable cone.  These use the same indexed
+    // speculative writes as the architectural tags below.  On a speculative
+    // write for a slot that does not target this RS, complement the shadow D
+    // value so the two banks are not equivalent while invalid.  A committed
+    // slot always selects the normal tag.  Slot 2 is intentionally last: for
+    // slot-2-only dispatch alloc_idx_2 == free_idx, so its normal tag replaces
+    // slot 1's complemented speculative value before the entry becomes valid.
+    if (ISSUE_CDB_TAG_SHADOW) begin
+      if (data_write_1_en) begin
+        rs_src1_issue_tag[free_idx] <=
+            i_intent_1 ? dispatch_src1_tag : ~dispatch_src1_tag;
+        rs_src2_issue_tag[free_idx] <=
+            i_intent_1 ? dispatch_src2_tag : ~dispatch_src2_tag;
+      end
+      if (data_write_2_en) begin
+        rs_src1_issue_tag[alloc_idx_2] <=
+            dispatch_valid_2 ? dispatch_src1_tag_2 : ~dispatch_src1_tag_2;
+        rs_src2_issue_tag[alloc_idx_2] <=
+            dispatch_valid_2 ? dispatch_src2_tag_2 : ~dispatch_src2_tag_2;
+      end
+    end
+
     // In broadcast mode, the wide source-value arrays use only the entry's
     // local valid bit as their dispatch write enable.  Every free entry gets
     // slot 1's values; the exact slot-2 target gets slot 2's values instead.
@@ -1955,6 +1991,17 @@ module reservation_station #(
         end
       end
 
+      if (ISSUE_CDB_TAG_SHADOW) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (rs_valid[i]) begin
+            assert (rs_src1_issue_tag[i] == rs_src1_tag[i])
+            else $error("RS: valid entry %0d src1 issue-tag shadow mismatch", i);
+            assert (rs_src2_issue_tag[i] == rs_src2_tag[i])
+            else $error("RS: valid entry %0d src2 issue-tag shadow mismatch", i);
+          end
+        end
+      end
+
     end
   end
 `endif
@@ -2021,6 +2068,15 @@ module reservation_station #(
     end
     if (BROADCAST_FREE_SOURCE_VALUES)
       p_broadcast_free_values_requires_speculation : assert (SPECULATIVE_DATA_WRITES);
+    if (i_rst_n && ISSUE_CDB_TAG_SHADOW) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (rs_valid[i]) begin
+          // Labels omitted: Yosys rejects duplicate names from loop unrolling.
+          assert (rs_src1_issue_tag[i] == rs_src1_tag[i]);
+          assert (rs_src2_issue_tag[i] == rs_src2_tag[i]);
+        end
+      end
+    end
   end
 
   // full iff all valid

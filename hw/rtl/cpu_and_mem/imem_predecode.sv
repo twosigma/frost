@@ -23,8 +23,8 @@
  * (PC[1]=1), both halves are available in a single read.
  *
  * Architecture:
- *   memory_even — stores words at even word indices (0, 2, 4, …)
- *   memory_odd  — stores words at odd  word indices (1, 3, 5, …)
+ *   memory_even_{cold,frontend_hot} — even words (0, 2, 4, …)
+ *   memory_odd_{cold,frontend_hot}  — odd words  (1, 3, 5, …)
  *
  * For any fetch address, both banks are read in parallel.  The bank
  * addresses differ by at most 1 depending on whether the fetch word
@@ -44,17 +44,21 @@
  *     [63:32] = word at W+1 (next word)
  *
  * Sideband bits are stored alongside each 32-bit word.  The sideband carries
- * is-compressed, small opcode-class predecode, and word-local bundle
- * eligibility qualifiers for each halfword start, letting IF avoid rebuilding
- * those decisions from raw instruction bits on the PC timing path.
+ * is-compressed, small opcode-class predecode, word-local bundle eligibility
+ * qualifiers, and {rs2[1], rs1[2:1]} from each halfword's exact RVC expansion.
+ * IF therefore avoids rebuilding PC decisions and the four current source-bit
+ * timing endpoints from raw instruction data.
  * The bit definitions live in riscv_pkg (imem_make_sideband and helpers),
  * shared with the L1I fill path and mirrored by the offline generator
  * sw/common/generate_imem_predecode_init.py.
  *
- * BRAM resource impact: the two half-depth banks occupy the same total BRAM
- * as the original single bank. On X3, synthesis intentionally prunes raw data
- * lanes 31, 29, and 28 from each bank because the exact LUTRAM replicas below
- * provide those architectural bits to the fetch port.
+ * BRAM resource impact: each 32-bit half-depth data bank is physically split
+ * into a 28-bit cold bank plus one 4-bit frontend-hot bank containing word bits
+ * {15, 10, 7, 6}. At 8K entries those shapes use seven plus one RAMB36,
+ * respectively, so the split is resource-neutral while giving the four current
+ * low-IMEM timing lanes one independently placeable block-RAM launch.
+ * Synthesis also prunes raw data lanes 31, 29, and 28 from the fetch outputs
+ * because the exact LUTRAM replicas below provide those architectural bits.
  *
  * Port A: Instruction programming (slow clock domain, write + read)
  * Port B: Instruction fetch (fast clock domain, read only)
@@ -63,8 +67,10 @@ module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
-    parameter bit [127:0] INIT_FILE_EVEN = "sw_imem_even.mem",
-    parameter bit [119:0] INIT_FILE_ODD = "sw_imem_odd.mem",
+    parameter bit [255:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",
+    parameter bit [255:0] INIT_FILE_ODD_COLD = "sw_imem_odd_cold.mem",
+    parameter bit [255:0] INIT_FILE_EVEN_FRONTEND_HOT = "sw_imem_even_frontend_hot.mem",
+    parameter bit [255:0] INIT_FILE_ODD_FRONTEND_HOT = "sw_imem_odd_frontend_hot.mem",
     parameter bit [199:0] INIT_FILE_EVEN_SIDEBAND = "sw_imem_even_sideband.mem",
     parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
@@ -95,22 +101,58 @@ module imem_predecode #(
 );
 
   localparam int unsigned DataWidth = 32;
+  localparam int unsigned ColdDataWidth = 28;
+  localparam int unsigned FrontendHotWidth = 4;
   localparam int unsigned SidebandWidth = riscv_pkg::ImemSidebandWidth;
   localparam int unsigned HalfDepth = 2 ** (ADDR_WIDTH - 1);
   localparam int unsigned FullDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned ByteAddrBits = 2;  // 32-bit word alignment
 
+  // The hot order is fixed end-to-end, including the offline init files:
+  //   hot[3:0] = {word[15], word[10], word[7], word[6]}.
+  // Cold packs the remaining bits in architectural order. These are pure
+  // rewires, so splitting/rejoining adds no logic level or interface latency.
+  function automatic logic [FrontendHotWidth-1:0] pack_frontend_hot(
+      input logic [DataWidth-1:0] word);
+    return {word[15], word[10], word[7], word[6]};
+  endfunction
+
+  function automatic logic [ColdDataWidth-1:0] pack_cold_data(input logic [DataWidth-1:0] word);
+    return {word[31:16], word[14:11], word[9:8], word[5:0]};
+  endfunction
+
+  function automatic logic [DataWidth-1:0] join_data_banks(
+      input logic [ColdDataWidth-1:0] cold, input logic [FrontendHotWidth-1:0] frontend_hot);
+    return {
+      cold[27:12],
+      frontend_hot[3],
+      cold[11:8],
+      frontend_hot[2],
+      cold[7:6],
+      frontend_hot[1:0],
+      cold[5:0]
+    };
+  endfunction
+
   // =========================================================================
   // Even/odd interleaved memory banks
   // =========================================================================
-  // memory_even[k] holds the word whose full word-index is 2*k   (even)
-  // memory_odd [k] holds the word whose full word-index is 2*k+1 (odd)
+  // The even pair holds the word whose full word-index is 2*k.
+  // The odd pair holds the word whose full word-index is 2*k+1.
   /* verilator lint_off MULTIDRIVEN */
-  (* ram_style = "block" *) logic [DataWidth-1:0] memory_even[HalfDepth];
-  (* ram_style = "block" *) logic [DataWidth-1:0] memory_odd[HalfDepth];
+  (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_even_cold[HalfDepth];
+  (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_odd_cold[HalfDepth];
+  // Keep the timing-facing four-bit slices distinct from the cold arrays.
+  // Their 8Kx4 shape maps exactly to one RAMB36 per parity bank.
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
+  logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
+  logic [FrontendHotWidth-1:0] memory_odd_frontend_hot[HalfDepth];
   // Keep the predecode sideband in BRAM.  LUTRAM looked attractive for size,
   // but on X3 it spreads the sideband arrays across fabric and puts pc_reg on
-  // a long distributed-memory address route in the low-BRAM fetch path.
+  // a long distributed-memory address route in the low-BRAM fetch path. The
+  // six source-hot bits widen these arrays without adding another memory read
+  // or pipeline stage.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
   // Mirror the high-parcel allows-slot-2 predicate, the two instruction-size bits,
@@ -154,8 +196,10 @@ module imem_predecode #(
   initial begin
     if (USE_INIT_FILE) begin
 `ifdef FROST_VIVADO_SYNTH
-      $readmemh(INIT_FILE_EVEN, memory_even);
-      $readmemh(INIT_FILE_ODD, memory_odd);
+      $readmemh(INIT_FILE_EVEN_COLD, memory_even_cold);
+      $readmemh(INIT_FILE_ODD_COLD, memory_odd_cold);
+      $readmemh(INIT_FILE_EVEN_FRONTEND_HOT, memory_even_frontend_hot);
+      $readmemh(INIT_FILE_ODD_FRONTEND_HOT, memory_odd_frontend_hot);
       $readmemh(INIT_FILE_EVEN_SIDEBAND, memory_even_sideband);
       $readmemh(INIT_FILE_ODD_SIDEBAND, memory_odd_sideband);
       $readmemh(INIT_FILE_EVEN_COMPRESSED, memory_even_compressed);
@@ -167,7 +211,8 @@ module imem_predecode #(
       // Distribute to even/odd banks
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
-          memory_even[i>>1] = init_mem[i];
+          memory_even_cold[i>>1] = pack_cold_data(init_mem[i]);
+          memory_even_frontend_hot[i>>1] = pack_frontend_hot(init_mem[i]);
           memory_even_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
           memory_even_compressed[i>>1] = {
             memory_even_sideband[i>>1][riscv_pkg::ImemSbAllowsSlot2AfterHi],
@@ -179,7 +224,8 @@ module imem_predecode #(
           memory_even_slot2_start_valid_lo[i>>1] =
               memory_even_sideband[i>>1][riscv_pkg::ImemSbSlot2StartValidLo];
         end else begin
-          memory_odd[i>>1] = init_mem[i];
+          memory_odd_cold[i>>1] = pack_cold_data(init_mem[i]);
+          memory_odd_frontend_hot[i>>1] = pack_frontend_hot(init_mem[i]);
           memory_odd_sideband[i>>1] = riscv_pkg::imem_make_sideband(init_mem[i]);
           memory_odd_compressed[i>>1] = {
             memory_odd_sideband[i>>1][riscv_pkg::ImemSbAllowsSlot2AfterHi],
@@ -195,22 +241,28 @@ module imem_predecode #(
 `endif
     end else begin
       for (int i = 0; i < HalfDepth; i++) begin
-        memory_even[i] = DataWidth'(2 * i);
-        memory_odd[i] = DataWidth'(2 * i + 1);
-        memory_even_sideband[i] = riscv_pkg::imem_make_sideband(memory_even[i]);
-        memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(memory_odd[i]);
+        logic [DataWidth-1:0] even_default_word;
+        logic [DataWidth-1:0] odd_default_word;
+        even_default_word = DataWidth'(2 * i);
+        odd_default_word = DataWidth'(2 * i + 1);
+        memory_even_cold[i] = pack_cold_data(even_default_word);
+        memory_odd_cold[i] = pack_cold_data(odd_default_word);
+        memory_even_frontend_hot[i] = pack_frontend_hot(even_default_word);
+        memory_odd_frontend_hot[i] = pack_frontend_hot(odd_default_word);
+        memory_even_sideband[i] = riscv_pkg::imem_make_sideband(even_default_word);
+        memory_odd_sideband[i] = riscv_pkg::imem_make_sideband(odd_default_word);
         memory_even_compressed[i] = {
           memory_even_sideband[i][riscv_pkg::ImemSbAllowsSlot2AfterHi],
-          memory_even[i][29:28],
-          memory_even[i][31],
-          memory_even[i][27:23] == 5'd2,
+          even_default_word[29:28],
+          even_default_word[31],
+          even_default_word[27:23] == 5'd2,
           memory_even_sideband[i][1:0]
         };
         memory_odd_compressed[i] = {
           memory_odd_sideband[i][riscv_pkg::ImemSbAllowsSlot2AfterHi],
-          memory_odd[i][29:28],
-          memory_odd[i][31],
-          memory_odd[i][27:23] == 5'd2,
+          odd_default_word[29:28],
+          odd_default_word[31],
+          odd_default_word[27:23] == 5'd2,
           memory_odd_sideband[i][1:0]
         };
         memory_even_slot2_start_valid_lo[i] =
@@ -246,7 +298,8 @@ module imem_predecode #(
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
       if (i_port_a_write_enable && !port_a_bank_sel) begin
-        memory_even[port_a_half_address] <= i_port_a_write_data;
+        memory_even_cold[port_a_half_address] <= pack_cold_data(i_port_a_write_data);
+        memory_even_frontend_hot[port_a_half_address] <= pack_frontend_hot(i_port_a_write_data);
         memory_even_sideband[port_a_half_address] <= write_sideband;
         memory_even_compressed[port_a_half_address] <= {
           write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
@@ -265,7 +318,8 @@ module imem_predecode #(
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
       if (i_port_a_write_enable && port_a_bank_sel) begin
-        memory_odd[port_a_half_address] <= i_port_a_write_data;
+        memory_odd_cold[port_a_half_address] <= pack_cold_data(i_port_a_write_data);
+        memory_odd_frontend_hot[port_a_half_address] <= pack_frontend_hot(i_port_a_write_data);
         memory_odd_sideband[port_a_half_address] <= write_sideband;
         memory_odd_compressed[port_a_half_address] <= {
           write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
@@ -287,8 +341,10 @@ module imem_predecode #(
       if (i_port_a_write_enable) begin
         o_port_a_read_data <= i_port_a_write_data;
       end else begin
-        o_port_a_read_data <= port_a_bank_sel ?
-            memory_odd[port_a_half_address] : memory_even[port_a_half_address];
+        o_port_a_read_data <= port_a_bank_sel ? join_data_banks(
+            memory_odd_cold[port_a_half_address], memory_odd_frontend_hot[port_a_half_address]) :
+            join_data_banks(memory_even_cold[port_a_half_address],
+                            memory_even_frontend_hot[port_a_half_address]);
       end
     end
   end
@@ -316,6 +372,9 @@ module imem_predecode #(
   assign even_read_addr = port_b_bank_sel ? (port_b_half_address + 1'd1) : port_b_half_address;
   assign odd_read_addr  = port_b_half_address;
 
+  logic [ColdDataWidth-1:0] even_read_data_cold, odd_read_data_cold;
+  logic [FrontendHotWidth-1:0] even_read_data_frontend_hot;
+  logic [FrontendHotWidth-1:0] odd_read_data_frontend_hot;
   logic [DataWidth-1:0] even_read_data, odd_read_data;
   logic [SidebandWidth-1:0] even_sideband, odd_sideband;
   (* keep = "true", dont_touch = "yes" *) logic [6:0] even_compressed;
@@ -325,8 +384,10 @@ module imem_predecode #(
 
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
-      even_read_data <= memory_even[even_read_addr];
-      odd_read_data <= memory_odd[odd_read_addr];
+      even_read_data_cold <= memory_even_cold[even_read_addr];
+      odd_read_data_cold <= memory_odd_cold[odd_read_addr];
+      even_read_data_frontend_hot <= memory_even_frontend_hot[even_read_addr];
+      odd_read_data_frontend_hot <= memory_odd_frontend_hot[odd_read_addr];
       even_sideband <= memory_even_sideband[even_read_addr];
       odd_sideband <= memory_odd_sideband[odd_read_addr];
       even_compressed <= memory_even_compressed[even_read_addr];
@@ -335,6 +396,9 @@ module imem_predecode #(
       odd_slot2_start_valid_lo <= memory_odd_slot2_start_valid_lo[odd_read_addr];
     end
   end
+
+  assign even_read_data = join_data_banks(even_read_data_cold, even_read_data_frontend_hot);
+  assign odd_read_data  = join_data_banks(odd_read_data_cold, odd_read_data_frontend_hot);
 
   // Register the bank select alongside the BRAM outputs so the swap mux
   // is aligned with the data (both registered on the same clock edge).

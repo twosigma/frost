@@ -18,7 +18,7 @@
  * fetch_provider -- the variable-latency fetch window provider.
  *
  * Serves the high-address side of the core's fetch seam
- * ({instr64, sideband24, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
+ * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
  * served_last_word} + valid) from a two-line fetch buffer over the L1I line
  * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
  * block's registered instruction payload; this block supplies the remaining

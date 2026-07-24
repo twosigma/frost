@@ -97,7 +97,7 @@ package riscv_pkg;
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
   // The fetch interface returns two words, so its sideband bus is twice this
   // width: {next_word_sideband, current_word_sideband}.
-  localparam int unsigned ImemSidebandWidth = 12;
+  localparam int unsigned ImemSidebandWidth = 18;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
@@ -115,6 +115,10 @@ package riscv_pkg;
   localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
   localparam int unsigned ImemSbSlot2StartValidLo = 10;
   localparam int unsigned ImemSbSlot2StartValidHi = 11;
+  // Only the RVC-expanded source bits on the four current low-IMEM timing
+  // endpoints are stored: {rs2[1], rs1[2:1]} for each halfword start.
+  localparam int unsigned ImemSbRvcSourceHotLoLsb = 12;
+  localparam int unsigned ImemSbRvcSourceHotHiLsb = 15;
 
   // Predecode sideband generation: one sideband value per 32-bit
   // instruction-memory word, a pure function of that word (no lookahead:
@@ -183,6 +187,189 @@ package riscv_pkg;
     end
   endfunction
 
+  // Return {expanded instruction[21], expanded instruction[17:16]}, i.e.
+  // {rs2[1], rs1[2:1]}, for one RVC parcel. Some formats do not semantically
+  // consume one or both source fields, but these bits deliberately match the
+  // literal decompressed instruction, including illegal encodings and hints.
+  // That makes this narrow metadata an exact replacement for the four current
+  // RVC source-field timing endpoints rather than relying on source-use gating.
+  function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
+                                                     input logic rd_is_x2);
+    logic [ 4:0] rs1;
+    logic [ 4:0] rs2;
+    logic [ 4:0] rd_full;
+    logic [ 4:0] rs2_full;
+    logic [ 4:0] rs1_prime;
+    logic [ 4:0] rs2_prime;
+    logic [ 4:0] shamt;
+    logic [11:0] imm_addi4spn;
+    logic [11:0] imm_lw_sw;
+    logic [11:0] imm_ld_sd;
+    logic [11:0] imm_ci;
+    logic [11:0] imm_addi16sp;
+    logic [19:0] imm_lui;
+    logic [11:0] imm_j;
+    logic [11:0] imm_lwsp;
+    logic [11:0] imm_ldsp;
+    begin
+      rd_full = parcel[11:7];
+      rs2_full = parcel[6:2];
+      rs1_prime = {2'b01, parcel[9:7]};
+      rs2_prime = {2'b01, parcel[4:2]};
+      shamt = parcel[6:2];
+      imm_addi4spn = {2'b0, parcel[10:7], parcel[12:11], parcel[5], parcel[6], 2'b00};
+      imm_lw_sw = {5'b0, parcel[5], parcel[12:10], parcel[6], 2'b00};
+      imm_ld_sd = {4'b0, parcel[6:5], parcel[12:10], 3'b000};
+      imm_ci = {{6{parcel[12]}}, parcel[12], parcel[6:2]};
+      imm_addi16sp = {
+        {2{parcel[12]}}, parcel[12], parcel[4:3], parcel[5], parcel[2], parcel[6], 4'b0000
+      };
+      imm_lui = {{14{parcel[12]}}, parcel[12], parcel[6:2]};
+      imm_j = {
+        parcel[12],
+        parcel[8],
+        parcel[10:9],
+        parcel[6],
+        parcel[7],
+        parcel[2],
+        parcel[11],
+        parcel[5:3],
+        1'b0
+      };
+      imm_lwsp = {4'b0, parcel[3:2], parcel[12], parcel[6:4], 2'b00};
+      imm_ldsp = {3'b0, parcel[4:2], parcel[12], parcel[6:5], 3'b000};
+
+      rs1 = 5'd0;
+      rs2 = 5'd0;
+      unique case (parcel[1:0])
+        2'b00: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.ADDI4SPN
+              rs1 = 5'd2;
+              rs2 = imm_addi4spn[4:0];
+            end
+            3'b010, 3'b011: begin  // C.LW / C.FLW
+              rs1 = rs1_prime;
+              rs2 = imm_lw_sw[4:0];
+            end
+            3'b001: begin  // C.FLD
+              rs1 = rs1_prime;
+              rs2 = imm_ld_sd[4:0];
+            end
+            3'b101, 3'b110, 3'b111: begin  // C.FSD / C.SW / C.FSW
+              rs1 = rs1_prime;
+              rs2 = rs2_prime;
+            end
+            default: begin  // Reserved encoding expands to zero.
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        2'b01: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.ADDI / C.NOP
+              rs1 = rd_full;
+              rs2 = imm_ci[4:0];
+            end
+            3'b001, 3'b101: begin  // C.JAL / C.J
+              rs1 = {5{imm_j[11]}};
+              rs2 = {imm_j[4:1], imm_j[11]};
+            end
+            3'b010: begin  // C.LI
+              rs1 = 5'd0;
+              rs2 = imm_ci[4:0];
+            end
+            3'b011: begin
+              if (rd_is_x2) begin  // C.ADDI16SP
+                rs1 = 5'd2;
+                rs2 = imm_addi16sp[4:0];
+              end else begin  // C.LUI
+                rs1 = imm_lui[7:3];
+                rs2 = imm_lui[12:8];
+              end
+            end
+            3'b100: begin
+              unique case (parcel[11:10])
+                2'b00, 2'b01, 2'b10: begin  // C.SRLI / C.SRAI / C.ANDI
+                  rs1 = rs1_prime;
+                  rs2 = shamt;
+                end
+                default: begin  // C.SUB / C.XOR / C.OR / C.AND
+                  if (!parcel[12]) begin
+                    rs1 = rs1_prime;
+                    rs2 = rs2_prime;
+                  end
+                  // parcel[12]=1 is reserved on RV32 and expands to zero.
+                end
+              endcase
+            end
+            3'b110, 3'b111: begin  // C.BEQZ / C.BNEZ
+              rs1 = rs1_prime;
+              rs2 = 5'd0;
+            end
+            default: begin
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        2'b10: begin
+          unique case (parcel[15:13])
+            3'b000: begin  // C.SLLI
+              rs1 = rd_full;
+              rs2 = shamt;
+            end
+            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP
+              rs1 = 5'd2;
+              rs2 = imm_lwsp[4:0];
+            end
+            3'b001: begin  // C.FLDSP
+              rs1 = 5'd2;
+              rs2 = imm_ldsp[4:0];
+            end
+            3'b100: begin
+              if (!parcel[12]) begin
+                if (rs2_full == 5'd0) begin  // C.JR
+                  rs1 = rd_full;
+                  rs2 = 5'd0;
+                end else begin  // C.MV
+                  rs1 = 5'd0;
+                  rs2 = rs2_full;
+                end
+              end else if (rs2_full == 5'd0) begin
+                if (rd_full == 5'd0) begin  // C.EBREAK
+                  rs1 = 5'd0;
+                  rs2 = 5'd1;
+                end else begin  // C.JALR
+                  rs1 = rd_full;
+                  rs2 = 5'd0;
+                end
+              end else begin  // C.ADD
+                rs1 = rd_full;
+                rs2 = rs2_full;
+              end
+            end
+            3'b101, 3'b110, 3'b111: begin  // C.FSDSP / C.SWSP / C.FSWSP
+              rs1 = 5'd2;
+              rs2 = rs2_full;
+            end
+            default: begin
+              rs1 = 5'd0;
+              rs2 = 5'd0;
+            end
+          endcase
+        end
+        default: begin
+          // Quadrant 3 is native and never consumes the RVC metadata.
+          rs1 = 5'd0;
+          rs2 = 5'd0;
+        end
+      endcase
+      imem_rvc_source_hot = {rs2[1], rs1[2:1]};
+    end
+  endfunction
+
   function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
     logic [ImemSidebandWidth-1:0] sb;
     logic compressed_control_lo;
@@ -240,6 +427,8 @@ package riscv_pkg;
       sb[ImemSbPairableNativeLo] = !sb[ImemSbIsCompressedLo] && allows_slot2_after_lo;
       sb[ImemSbPairableCompressedHi] = sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
       sb[ImemSbPairableNativeHi] = !sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
+      sb[ImemSbRvcSourceHotLoLsb+:3] = imem_rvc_source_hot(word[15:0], word[11:7] == 5'd2);
+      sb[ImemSbRvcSourceHotHiLsb+:3] = imem_rvc_source_hot(word[31:16], word[27:23] == 5'd2);
       imem_make_sideband = sb;
     end
   endfunction
@@ -666,6 +855,11 @@ package riscv_pkg;
     logic sel_compressed;  // True if raw_parcel is a compressed instruction
     // Effective 32-bit instruction word (aligned or spanning-assembled)
     instr_t effective_instr;
+    // Exact {rs2[1], rs1[2:1]} bits for the selected architectural
+    // instruction. Compressed values come from the IMEM sideband; native
+    // values come from effective_instr. PD uses this narrow path for the four
+    // current low-IMEM/RVC source-field timing endpoints.
+    logic [2:0] source_hot_predecoded;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken

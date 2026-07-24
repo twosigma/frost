@@ -50,6 +50,7 @@ IF_TO_PD_FIELDS = [
     ("sel_nop", 1),
     ("sel_compressed", 1),
     ("effective_instr", 32),
+    ("source_hot_predecoded", 3),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
@@ -117,6 +118,11 @@ def _pack_if_to_pd(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(IF_TO_PD_FIELDS, fields)
 
 
+def _source_hot(instruction: int) -> int:
+    """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
+    return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
+
+
 def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive the packed pipeline control bundle."""
     dut.i_pipeline_ctrl.value = _pack_pipeline_ctrl(fields)
@@ -146,6 +152,8 @@ def _drive_if_packet(
         "bp_dir_idx": 0,
     }
     packet.update(fields)
+    if "source_hot_predecoded" not in fields:
+        packet["source_hot_predecoded"] = _source_hot(int(packet["effective_instr"]))
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value
@@ -338,6 +346,7 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": 0xDEADBEEF,
+            "source_hot_predecoded": _source_hot(expected),
         },
     )
     await _advance_cycle(dut)
@@ -403,6 +412,7 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": 0,
+            "source_hot_predecoded": _source_hot(expanded),
         },
     )
     await _advance_cycle(dut)

@@ -153,8 +153,10 @@ VIVADO_BRAM_FILE        := sw.txt  # BRAM initialization format for Vivado
 DDR_HEX_FILE            := sw_ddr.mem  # Cached-region (DDR) image, region-relative
 DDR_TXT_FILE            := sw_ddr.txt  # DDR image for the JTAG loader (dense words)
 DISASSEMBLY_FILE        := sw.S    # Human-readable disassembly
-IMEM_EVEN_INIT_FILE     := sw_imem_even.mem
-IMEM_ODD_INIT_FILE      := sw_imem_odd.mem
+IMEM_EVEN_COLD_INIT_FILE := sw_imem_even_cold.mem
+IMEM_ODD_COLD_INIT_FILE  := sw_imem_odd_cold.mem
+IMEM_EVEN_FRONTEND_HOT_INIT_FILE := sw_imem_even_frontend_hot.mem
+IMEM_ODD_FRONTEND_HOT_INIT_FILE  := sw_imem_odd_frontend_hot.mem
 IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
@@ -169,7 +171,9 @@ DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
 IMEM_INIT_TARGETS :=
 ifeq ($(GENERATE_IMEM_INIT),1)
-IMEM_INIT_TARGETS := $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) \
+IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
+                     $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) \
+                     $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
                      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
                      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
                      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
@@ -287,15 +291,18 @@ $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 
 # Generate direct Vivado init files for the split instruction memory banks.
 ifeq ($(GENERATE_IMEM_INIT),1)
-$(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) \
+$(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
+$(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
 $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
 $(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
 		--depth-words 65536 \
-		--even-data $(IMEM_EVEN_INIT_FILE) \
-		--odd-data $(IMEM_ODD_INIT_FILE) \
+		--even-cold $(IMEM_EVEN_COLD_INIT_FILE) \
+		--odd-cold $(IMEM_ODD_COLD_INIT_FILE) \
+		--even-frontend-hot $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) \
+		--odd-frontend-hot $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 		--even-sideband $(IMEM_EVEN_SIDEBAND_FILE) \
 		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE) \
 		--even-compressed $(IMEM_EVEN_COMPRESSED_FILE) \
@@ -312,7 +319,9 @@ size: $(EXECUTABLE_ELF_FILE)
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
-	      $(IMEM_EVEN_INIT_FILE) $(IMEM_ODD_INIT_FILE) $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
+	      $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
+	      $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
+	      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
 	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 
